@@ -169,12 +169,12 @@ class SlackTransport(
                 NotificationAction.OPEN -> put("url", message.deepLink)
                 NotificationAction.APPROVE_AND_RUN -> {
                     put("action_id", ACTION_APPROVE)
-                    put("value", message.taskId.toString())
+                    put("value", "${message.taskId}:${message.revision}")
                     put("style", "primary")
                 }
                 NotificationAction.DENY -> {
                     put("action_id", ACTION_DENY)
-                    put("value", message.taskId.toString())
+                    put("value", "${message.taskId}:${message.revision}")
                     put("style", "danger")
                 }
             }

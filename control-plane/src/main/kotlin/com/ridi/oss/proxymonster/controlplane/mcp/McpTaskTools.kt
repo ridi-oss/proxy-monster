@@ -18,6 +18,7 @@ import com.ridi.oss.proxymonster.controlplane.CatalogColumn
 import com.ridi.oss.proxymonster.controlplane.Config
 import com.ridi.oss.proxymonster.controlplane.ControlPlaneCore
 import com.ridi.oss.proxymonster.controlplane.CreateQueryRequestInput
+import com.ridi.oss.proxymonster.controlplane.EditQueryRequestInput
 import com.ridi.oss.proxymonster.controlplane.EditorTaskService
 import com.ridi.oss.proxymonster.controlplane.EngineWireSerializer
 import com.ridi.oss.proxymonster.controlplane.QueryResultMeta
@@ -137,7 +138,13 @@ internal class McpTaskTools(
             "list_my_approvals" -> structured(approvals.listOwn(p, args.string("status")))
             "list_approval_inbox" -> structured(approvals.inbox(p, ip))
             "get_approval" -> structured(approvals.detail(p, ip, args.requiredLong("id")))
-            "approve_approval" -> structured(approvals.approve(p, ip, actor(ctx), args.requiredLong("id")))
+            "edit_approval" -> structured(
+                approvals.edit(
+                    p, ip, actor(ctx), args.requiredLong("id"),
+                    EditQueryRequestInput(args.requiredString("sql"), args.string("title"), args.string("reason")),
+                ),
+            )
+            "approve_approval" -> structured(approvals.approve(p, ip, actor(ctx), args.requiredLong("id"), args.requiredLong("revision").toInt()))
             "reject_approval" -> structured(
                 approvals.reject(p, ip, actor(ctx), args.requiredLong("id"), args.requiredString("reason")),
             )

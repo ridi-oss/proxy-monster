@@ -2,6 +2,8 @@
   "task": {
     "requested": "*{requester}* 님이 *{datasource}*에서 {statement} 실행을 요청했습니다{role}{reason}{statementNote}",
     "requested_fallback": "{requester} 님이 {datasource}에서 쿼리 실행을 요청했습니다",
+    "edited": "*{requester}* 님이 요청을 수정해 *{datasource}*에서 {statement} 실행을 요청했습니다{role}{reason}{statementNote}",
+    "edited_fallback": "{requester} 님이 {datasource}에 대한 요청을 수정했습니다",
     "submitted": "*{datasource}*에서 쿼리를 실행하려는 요청이 승인 대기 중입니다{role}.{notified}",
     "submitted_fallback": "{datasource}에 대한 요청이 승인 대기 중입니다",
     "decided_approved": "*{datasource}*에서 {statement}를 실행하려는 *{requester}* 님의 요청을 *{decidedBy}* 님이 승인했고 실행 중입니다.{statementNote}",
@@ -31,6 +33,7 @@
     "already_status": "이미 {status} 상태입니다 — 처리할 것이 없습니다.",
     "already_done": "이미 처리된 요청입니다.",
     "not_authorized": "이 요청을 처리할 권한이 없습니다.",
-    "run_failed": "승인되었지만 실행을 시작하지 못했습니다. 요청을 열어 다시 시도하세요."
+    "run_failed": "승인되었지만 실행을 시작하지 못했습니다. 요청을 열어 다시 시도하세요.",
+    "request_changed": "이 메시지가 전송된 뒤 요청이 수정되었습니다. 요청을 열어 새 SQL을 확인하세요."
   }
 }

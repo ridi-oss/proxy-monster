@@ -123,6 +123,7 @@ class NotificationService(
                 requestedDurationSec = 0,
                 status = "PENDING",
                 createdAt = "",
+                revision = 1,
             )
             val approvers = recipients.recipientsFor(subject)
             for (transport in transports) {
@@ -243,7 +244,7 @@ class NotificationService(
         // `pending` is the LIVE task state, not merely the request event: a backed-off task.requested that
         // finally delivers after the task was decided must not be the first to surface a flagged statement
         // under FULL. Once the status leaves PENDING, FULL falls back to the hint like every handled message.
-        val pending = row.event == NotificationEvent.TASK_REQUESTED && req.status == "PENDING"
+        val pending = (row.event == NotificationEvent.TASK_REQUESTED || row.event == NotificationEvent.TASK_EDITED) && req.status == "PENDING"
         val show = row.event != NotificationEvent.TASK_SUBMITTED &&
             discloseStatement(disclosure, pending = pending, cleared = cleared)
         val statement = renderStatement(req.sql, show, transport.statementHardLimit)
@@ -265,6 +266,7 @@ class NotificationService(
         return NotificationMessage(
             event = row.event,
             taskId = req.id,
+            revision = req.revision,
             requester = req.principal,
             datasource = req.datasourceName ?: "—",
             roleName = req.roleName,
@@ -299,7 +301,7 @@ class NotificationService(
         statement: RenderedStatement,
     ): Set<NotificationAction> = buildSet {
         add(NotificationAction.OPEN)
-        if (event == NotificationEvent.TASK_REQUESTED && req.status == "PENDING") {
+        if ((event == NotificationEvent.TASK_REQUESTED || event == NotificationEvent.TASK_EDITED) && req.status == "PENDING") {
             add(NotificationAction.DENY)
             // Approve-and-run also RUNS the query, which needs result storage — without it the click would
             // approve but never start the run, so the button is not offered when it cannot be honored.

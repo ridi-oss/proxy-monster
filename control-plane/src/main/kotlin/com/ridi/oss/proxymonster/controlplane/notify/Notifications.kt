@@ -14,6 +14,8 @@ enum class NotificationEvent(val wire: String) {
     TASK_REQUESTED("task.requested"),
     TASK_SUBMITTED("task.submitted"),
     TASK_DECIDED("task.decided"),
+    /** The requester replaced the SQL: the request is pending again, under a new revision. */
+    TASK_EDITED("task.edited"),
     TASK_EXECUTED("task.executed"),
     TASK_FAILED("task.failed"),
     TASK_CANCELLED("task.cancelled"),
@@ -130,6 +132,7 @@ enum class NotificationAction { APPROVE_AND_RUN, DENY, OPEN }
 data class NotificationMessage(
     val event: NotificationEvent,
     val taskId: Long,
+    val revision: Int,
     val requester: String,
     val datasource: String,
     val roleName: String?,

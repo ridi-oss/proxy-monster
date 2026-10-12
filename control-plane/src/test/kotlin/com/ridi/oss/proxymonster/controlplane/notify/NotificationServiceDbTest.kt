@@ -5,7 +5,10 @@ import com.ridi.oss.proxymonster.controlplane.AuditEvent
 import com.ridi.oss.proxymonster.controlplane.Decision
 import com.ridi.oss.proxymonster.controlplane.DecryptedResult
 import com.ridi.oss.proxymonster.controlplane.QueryResultStore
+import com.ridi.oss.proxymonster.controlplane.RequestEdit
 import com.ridi.oss.proxymonster.controlplane.ResultCrypto
+import com.ridi.oss.proxymonster.controlplane.management.AuditActor
+import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
 import com.ridi.oss.proxymonster.controlplane.support.EnforcementFixture
 import com.ridi.oss.proxymonster.controlplane.support.FakeTransport
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
@@ -243,6 +246,38 @@ class NotificationServiceDbTest {
         assertEquals(1, transport.updated.size, "the decided event edits the existing message")
         assertEquals("ref-fake", transport.updated.first().ref)
         assertEquals(0, transport.addressCalls.get(), "editing needs only the handle — no addressOf round-trip")
+    }
+
+    @Test
+    fun `a repeated decision redraws the message again`() = runBlocking {
+        val task = newTask().id
+        enqueue(task, NotificationEvent.TASK_REQUESTED, "sam@x")
+        svc.drainOnce()
+        repeat(2) {
+            enqueue(task, NotificationEvent.TASK_DECIDED, "sam@x")
+            svc.drainOnce()
+        }
+        assertEquals(2, transport.updated.count { it.event == NotificationEvent.TASK_DECIDED })
+    }
+
+    @Test
+    fun `every edit redraws the message with the new SQL and its approve buttons`() = runBlocking {
+        val task = newTask().id
+        enqueue(task, NotificationEvent.TASK_REQUESTED, "sam@x")
+        svc.drainOnce()
+        val recorder = ManagementAuditRecorder(fx.auditStore)
+        val actor = AuditActor("req@example.com", clientAddr = null, channel = "console")
+        for (sql in listOf("SELECT 2", "SELECT 3")) {
+            fx.accessStore.editQueryRequest(task, listOf(sql), RequestEdit("h", null, "ALLOW", false), actor, recorder) { c, r ->
+                svc.emit(c, NotificationEvent.TASK_EDITED, r)
+            }
+            svc.drainOnce()
+        }
+
+        val edits = transport.updated.filter { it.event == NotificationEvent.TASK_EDITED && it.ref == "ref-fake" }
+        assertEquals(listOf("SELECT 2", "SELECT 3"), edits.map { it.statement.text }.distinct())
+        assertEquals(listOf(2, 3), edits.map { it.revision }.distinct())
+        assertTrue(edits.all { NotificationAction.DENY in it.actions }, "a pending edit offers the decision again")
     }
 
     @Test

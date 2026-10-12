@@ -237,11 +237,12 @@ class McpToolCoverageDbTest {
                 approvalId = it.result().jsonObject.getValue("request").jsonObject.getValue("id").jsonPrimitive.long
             }
         }
+        on("edit_approval") { client.ok(req, "edit_approval", args("id" to approvalId, "sql" to sql)) }
         on("list_my_approvals") { client.ok(req, "list_my_approvals") }
         on("list_approval_inbox") { client.ok(adm, "list_approval_inbox") }
         on("get_approval") { client.ok(adm, "get_approval", args("id" to approvalId)) }
         on("reject_approval") { client.ok(adm, "reject_approval", args("id" to rejectApprovalId, "reason" to "coverage")) }
-        on("approve_approval") { client.ok(adm, "approve_approval", args("id" to approvalId)) }
+        on("approve_approval") { client.ok(adm, "approve_approval", args("id" to approvalId, "revision" to 1)) }
         on("execute_approval") {
             client.ok(adm, "execute_approval", args("id" to approvalId)).also {
                 withTimeout(10_000) {

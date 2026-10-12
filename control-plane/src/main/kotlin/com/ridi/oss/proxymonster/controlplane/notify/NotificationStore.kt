@@ -39,10 +39,17 @@ class NotificationStore(private val dataSource: DataSource) {
         recipient: String,
         kind: NotificationKind,
     ) {
+        // An update redraws the message from the request's current state, so a repeat (a second edit, or a
+        // decision after an edit) re-queues its row instead of collapsing onto it.
+        val onConflict = if (event.isUpdate) {
+            "DO UPDATE SET status = 'PENDING', attempts = 0, next_attempt_at = now(), last_error = NULL, updated_at = now()"
+        } else {
+            "DO NOTHING"
+        }
         c.prepareStatement(
             """INSERT INTO notification_outbox (task_id, event, transport, recipient, kind)
                VALUES (?, ?, ?, ?, ?)
-               ON CONFLICT (task_id, event, transport, recipient, kind) DO NOTHING""",
+               ON CONFLICT (task_id, event, transport, recipient, kind) $onConflict""",
         ).use { ps ->
             ps.setLong(1, taskId)
             ps.setString(2, event.wire)

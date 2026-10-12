@@ -53,6 +53,7 @@ touching the workflow.
 | `task.requested`                               | a request is filed   | everyone Cedar says may approve it (the requester too, where policy allows)                   |
 | `task.submitted`                               | a request is filed   | the requester — their own receipt (plus the approver message above, if they may also approve) |
 | `task.decided`                                 | approved or rejected | the requester, and everyone told above                                                        |
+| `task.edited`                                  | the requester edits  | the requester, and everyone told above; it shows the new SQL and asks for approval again      |
 | `task.executed` `task.failed` `task.cancelled` | the run ends         | the requester and the approver                                                                |
 
 Anyone told about a request is told how it ended. That is what stops a stale

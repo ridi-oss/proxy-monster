@@ -19,7 +19,10 @@
     "done": "완료",
     "copy": "복사",
     "copied": "복사됨",
-    "copyCommand": "명령어 복사"
+    "copyCommand": "명령어 복사",
+    "edit": "수정",
+    "saving": "저장 중…",
+    "save": "저장"
   },
   "fields": {
     "requester": "요청자",
@@ -183,7 +186,14 @@
     "statementLabel": "{total}개 중 {n}번째 문장",
     "statementTab": "{n}번 문장",
     "statementRows": "{rows}행",
-    "batchSummary": "문장 {count}개"
+    "batchSummary": "문장 {count}개",
+    "editTitle": "요청 수정",
+    "editDescription": "SQL을 바꾸면 요청이 다시 대기 상태가 되어 새로 승인받아야 합니다.",
+    "editSqlLabel": "SQL",
+    "editReasonLabel": "사유",
+    "editedToast": "요청을 수정했습니다",
+    "editFailed": "요청을 수정하지 못했습니다.",
+    "revision": "수정본 {revision}"
   },
   "approveDialog": {
     "approveFailed": "승인에 실패했습니다",

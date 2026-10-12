@@ -131,7 +131,7 @@ class McpQueryToolsDbTest {
         val client = createClient { expectSuccess = false }
         val principal = analyst("scope")
         val taskTools = McpCapabilityRegistry.entries.filter { it.gate == McpGate.RESOURCE }
-        assertEquals(35, taskTools.size)
+        assertEquals(36, taskTools.size)
         for (tool in taskTools) {
             val allButOwn = token(principal, McpCapabilityRegistry.supportedScopes - tool.requiredScope)
             val response = client.rawCall(allButOwn, tool.toolName)
@@ -225,7 +225,7 @@ class McpQueryToolsDbTest {
 
                     val inbox = client.call(approverToken, "list_approval_inbox").ok().getValue("result").jsonArray
                     assertTrue(inbox.any { it.jsonObject.getValue("id").jsonPrimitive.long == id })
-                    assertEquals("APPROVED", client.call(approverToken, "approve_approval", idArg(id)).ok().result().str("status"))
+                    assertEquals("APPROVED", client.call(approverToken, "approve_approval", approveArgs(id)).ok().result().str("status"))
                     assertEquals("EXECUTING", client.call(approverToken, "execute_approval", idArg(id)).ok().result().str("decision"))
 
                     withTimeout(10_000) {
@@ -262,7 +262,7 @@ class McpQueryToolsDbTest {
         )
         try {
             val id = pendingRequest(requester, fx.datasource.id)
-            val result = client.call(token(requester, setOf("mcp:query", "mcp:approvals:write")), "approve_approval", idArg(id))
+            val result = client.call(token(requester, setOf("mcp:query", "mcp:approvals:write")), "approve_approval", approveArgs(id))
             assertEquals("approval.not_approver", result.error())
             assertEquals("PENDING", core.accessStore.getRequest(id)?.status)
         } finally {
@@ -294,8 +294,8 @@ class McpQueryToolsDbTest {
                 .map { it.jsonObject.getValue("id").jsonPrimitive.long }
             assertTrue(onA in inbox, "inbox $inbox")
             assertFalse(onB in inbox, "inbox $inbox")
-            assertEquals("approval.not_approver", client.call(token, "approve_approval", idArg(onB)).error())
-            assertEquals("APPROVED", client.call(token, "approve_approval", idArg(onA)).ok().result().str("status"))
+            assertEquals("approval.not_approver", client.call(token, "approve_approval", approveArgs(onB)).error())
+            assertEquals("APPROVED", client.call(token, "approve_approval", approveArgs(onA)).ok().result().str("status"))
         } finally {
             core.cedarPolicyStore.delete(policy.id)
         }
@@ -539,13 +539,13 @@ class McpQueryToolsDbTest {
                     .map { it.jsonObject.getValue("id").jsonPrimitive.long }
                 if (channel == "mcp") {
                     assertFalse(id in inbox, "inbox $inbox")
-                    assertEquals("approval.not_approver", client.call(approverToken, "approve_approval", idArg(id)).error())
+                    assertEquals("approval.not_approver", client.call(approverToken, "approve_approval", approveArgs(id)).error())
                     assertEquals("common.not_found", client.call(approverToken, "get_approval", idArg(id)).error())
                     assertEquals("PENDING", core.accessStore.getRequest(id)?.status)
                     continue
                 }
                 assertTrue(id in inbox, "inbox $inbox")
-                assertEquals("APPROVED", client.call(approverToken, "approve_approval", idArg(id)).ok().result().str("status"))
+                assertEquals("APPROVED", client.call(approverToken, "approve_approval", approveArgs(id)).ok().result().str("status"))
                 assertEquals(
                     1L,
                     scalar(
@@ -809,6 +809,7 @@ class McpQueryToolsDbTest {
     }
 
     private fun idArg(id: Long) = buildJsonObject { put("id", id) }
+    private fun approveArgs(id: Long) = buildJsonObject { put("id", id); put("revision", 1) }
 
     private suspend fun HttpClient.rawCall(
         token: String,

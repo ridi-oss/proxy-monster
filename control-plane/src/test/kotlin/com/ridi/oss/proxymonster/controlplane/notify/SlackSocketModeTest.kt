@@ -15,6 +15,7 @@ import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -97,6 +98,14 @@ class SlackSocketModeTest {
     } ?: false
 
     @Test
+    fun `a click carries the revision its message showed`() = withSocket { _ ->
+        slack.pushEnvelope(envelope("env-rev", value = "42:3"))
+        val it = awaitDispatch()
+        assertEquals(42L, it.taskId)
+        assertEquals(3, it.revision)
+    }
+
+    @Test
     fun `a valid click is acked and dispatched with the resolved principal`() = withSocket { _ ->
         slack.pushEnvelope(envelope("env-1"))
         val it = awaitDispatch()
@@ -104,6 +113,7 @@ class SlackSocketModeTest {
         assertEquals("okta|clicker", it.principal, "the verified Slack email is mapped to the directory principal, not trusted raw")
         assertEquals(SlackTransport.ACTION_APPROVE, it.actionId)
         assertEquals(42L, it.taskId)
+        assertNull(it.revision, "a button from before revisions names none")
         assertEquals("C_MOCK", it.triggerChannel)
         assertEquals("1700000000001.000100", it.triggerTs)
         assertTrue(awaitAck("env-1"), "every envelope must be acked so Slack does not redeliver it")

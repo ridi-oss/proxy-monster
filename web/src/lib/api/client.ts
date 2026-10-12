@@ -616,8 +616,20 @@ export function getApproval(id: number): Promise<QueryRequestDetail> {
   return request<QueryRequestDetail>(`/api/approvals/${id}`)
 }
 
-export function approveApproval(id: number): Promise<AccessRequest> {
-  return request<AccessRequest>(`/api/approvals/${id}/approve`, { method: 'POST' })
+/** Approve the revision the approver read; the server refuses it if the request was edited since. */
+export function approveApproval(id: number, revision: number): Promise<AccessRequest> {
+  return request<AccessRequest>(`/api/approvals/${id}/approve`, {
+    method: 'POST',
+    body: JSON.stringify({ revision }),
+  })
+}
+
+/** Replace the SQL of the caller's own pending or approved request; it goes back to pending. */
+export function editApproval(id: number, input: { sql: string; reason?: string }): Promise<AccessRequest> {
+  return request<AccessRequest>(`/api/approvals/${id}/edit`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
 }
 
 export function rejectApproval(id: number, reason: string): Promise<AccessRequest> {

@@ -1,7 +1,9 @@
 package com.ridi.oss.proxymonster.controlplane.notify
 
 import com.ridi.oss.proxymonster.controlplane.AccessRequest
+import com.ridi.oss.proxymonster.controlplane.RequestEdit
 import com.ridi.oss.proxymonster.controlplane.RoleAssignmentInput
+import com.ridi.oss.proxymonster.controlplane.management.AuditActor
 import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
 import com.ridi.oss.proxymonster.controlplane.support.EnforcementFixture
 import com.ridi.oss.proxymonster.controlplane.support.FakeTransport
@@ -72,8 +74,8 @@ class SlackDecisionHandlerDbTest {
         evaluatedDecision = "ALLOW", roleId = roleId,
     ).id
 
-    private fun click(taskId: Long, principal: String, actionId: String) = SlackInteraction(
-        principal = principal, actionId = actionId, taskId = taskId,
+    private fun click(taskId: Long, principal: String, actionId: String, revision: Int = 1) = SlackInteraction(
+        principal = principal, actionId = actionId, taskId = taskId, revision = revision,
         responseUrl = null, triggerChannel = "C_MOCK", triggerTs = "1.1",
     )
 
@@ -87,6 +89,23 @@ class SlackDecisionHandlerDbTest {
         assertEquals("", reply, "success says nothing back to the clicker")
         assertEquals("APPROVED", statusOf(id))
         assertTrue(approvedRuns.any { it.id == id }, "approving from Slack also runs it")
+    }
+
+    @Test
+    fun `an approve from a message older than the request's last edit is refused`() = runBlocking {
+        val id = pendingRequest()
+        fx.accessStore.editQueryRequest(
+            id, listOf("SELECT id FROM users WHERE id = 1"), RequestEdit("h", null, "ALLOW", false),
+            AuditActor(requester, clientAddr = null, channel = "console"), ManagementAuditRecorder(fx.auditStore),
+        )
+        val reply = handler.handle(click(id, approver, SlackTransport.ACTION_APPROVE, revision = 1))
+
+        assertTrue(reply.contains("changed"), "got: $reply")
+        assertEquals("PENDING", statusOf(id))
+        assertTrue(handler.handle(click(id, approver, SlackTransport.ACTION_DENY, revision = 1)).contains("changed"))
+        assertEquals("PENDING", statusOf(id), "a deny from before the edit rejects nothing")
+        assertEquals("", handler.handle(click(id, approver, SlackTransport.ACTION_APPROVE, revision = 2)))
+        assertEquals("APPROVED", statusOf(id))
     }
 
     @Test

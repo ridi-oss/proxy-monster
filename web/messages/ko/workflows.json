@@ -44,7 +44,8 @@
     "sourceDecision": "원본 결정",
     "requesterReason": "요청자 사유",
     "grantDuration": "부여 기간",
-    "pullRequest": "풀 리퀘스트"
+    "source": "출처",
+    "scope": "범위"
   },
   "durations": {
     "asRequested": "요청한 기간대로",
@@ -79,7 +80,9 @@
     "unknownRole": "알 수 없는 역할",
     "noSqlAttached": "첨부된 SQL이 없습니다.",
     "proactive": "선제 요청",
-    "datasourceNumbered": "데이터소스 #{id}"
+    "datasourceNumbered": "데이터소스 #{id}",
+    "sourceGithub": "GitHub",
+    "sourceMcp": "MCP"
   },
   "masterDetail": {
     "pageTitle": "워크플로우",

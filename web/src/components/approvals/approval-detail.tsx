@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { mutate as globalMutate } from 'swr'
 import { toast } from 'sonner'
@@ -8,6 +8,7 @@ import { cancelApproval, editApproval, executeApproval, forceRunApproval, reject
 import { onTaskEvent, subscribeTaskEvents } from '@/lib/api/task-events'
 import { swrKeys, useApproval } from '@/lib/hooks'
 import type { AccessRequest } from '@/lib/api/types'
+import { approveLabelKey, runsOnMerge } from '@/lib/approvals'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -25,6 +26,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { ErrorState, LoadingState } from '@/components/page-scaffold'
 import { ApprovalResultTabs } from './approval-result-tabs'
 import { ApproveQueryDialog } from './approve-query-dialog'
+import { Field, RequestOrigin } from './request-origin'
 
 const STATUS_STYLE: Record<string, string> = {
   DRAFT: 'border-border text-muted-foreground',
@@ -48,17 +50,6 @@ const DECISION_STYLE: Record<string, string> = {
 
 function formatTimestamp(iso?: string | null): string {
   return iso ? new Date(iso).toLocaleString() : '—'
-}
-
-function Field({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div className="space-y-1">
-      <p className="text-muted-foreground text-[10px] font-semibold tracking-widest uppercase">
-        {label}
-      </p>
-      <div className="text-sm">{children}</div>
-    </div>
-  )
 }
 
 /**
@@ -215,7 +206,7 @@ export function ApprovalDetail({ id }: { id: number }) {
     }
   }
 
-  const fromGithub = request.source === 'github'
+  const fromGithub = runsOnMerge(request)
   const approvedCopy = fromGithub
     ? t('approvalDetail.approvedGithub')
     : t('approvalDetail.approvedExecuteUnderR')
@@ -265,7 +256,7 @@ export function ApprovalDetail({ id }: { id: number }) {
                   disabled={busy !== null}
                   className="bg-emerald-600 text-white hover:bg-emerald-700"
                 >
-                  {t('actions.approveAndRun')}
+                  {t(approveLabelKey(request))}
                 </Button>
               </div>
             )}
@@ -296,13 +287,7 @@ export function ApprovalDetail({ id }: { id: number }) {
                 {request.sourceDecisionId != null ? `#${request.sourceDecisionId}` : t('values.proactive')}
               </code>
             </Field>
-            {request.pullRequest?.prUrl && (
-              <Field label={t('fields.pullRequest')}>
-                <a href={request.pullRequest.prUrl} target="_blank" rel="noreferrer" className="font-mono underline">
-                  {request.pullRequest.path ?? request.pullRequest.prUrl}
-                </a>
-              </Field>
-            )}
+            <RequestOrigin request={request} />
           </div>
 
           <div className="space-y-3">
@@ -364,7 +349,7 @@ export function ApprovalDetail({ id }: { id: number }) {
                 {t('approvalDetail.approverExecution')}
               </p>
 
-              {data.canExecute && !runStarted && (
+              {data.canExecute && !runStarted && !fromGithub && (
                 <div className="space-y-2">
                   <p className="text-muted-foreground text-sm">
                     {t('approvalDetail.runUnderRole', { principal: request.principal })}
@@ -406,10 +391,8 @@ export function ApprovalDetail({ id }: { id: number }) {
                 </div>
               )}
 
-              {!runStarted && !data.canExecute && request.status === 'APPROVED' && (
-                <p className="text-muted-foreground text-sm">
-                  {fromGithub ? t('approvalDetail.approvedGithub') : t('approvalDetail.awaitingApprover')}
-                </p>
+              {!runStarted && !data.canExecute && !fromGithub && request.status === 'APPROVED' && (
+                <p className="text-muted-foreground text-sm">{t('approvalDetail.awaitingApprover')}</p>
               )}
             </div>
           )}

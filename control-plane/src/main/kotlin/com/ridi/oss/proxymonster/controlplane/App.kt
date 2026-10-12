@@ -17,6 +17,9 @@ import com.ridi.oss.proxymonster.controlplane.management.DatasourceManagementSer
 import com.ridi.oss.proxymonster.controlplane.management.IdentityManagementService
 import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
 import com.ridi.oss.proxymonster.controlplane.notify.installNotifications
+import com.ridi.oss.proxymonster.controlplane.source.GitHubAdapter
+import com.ridi.oss.proxymonster.controlplane.source.GitHubSourceFlow
+import com.ridi.oss.proxymonster.controlplane.source.PrincipalDirectory
 import com.ridi.oss.proxymonster.controlplane.management.ManagementException
 import com.ridi.oss.proxymonster.controlplane.management.PolicyManagementService
 import com.ridi.oss.proxymonster.controlplane.management.auditEntity
@@ -392,9 +395,19 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
 
     // Out-of-band task notifications (docs/notifications.md): the outbox drain and, when Slack is
     // configured, the inbound Socket Mode connection. Null and inert when no transport is configured.
+    val sourceAdapter = config.github?.let {
+        GitHubAdapter(
+            it,
+            object : PrincipalDirectory {
+                override fun activePrincipal(principal: String) = userGroupStore.activePrincipal(principal)
+
+                override fun activePrincipalByEmail(email: String) = userGroupStore.activePrincipalByEmail(email)
+            },
+        )
+    }
     val notifications = installNotifications(
         config, dataSource, authz, roleResolver, accessStore, datasourceStore, policyStore,
-        queryResultStore, store, runExecService, taskCompletionHub,
+        queryResultStore, store, runExecService, taskCompletionHub, sourceAdapter,
     )
 
     // OIDC (docs/auth-model.md): provider-agnostic via discovery, so any OIDC IdP works. `discovery`/
@@ -597,6 +610,13 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
         roleResolver, authz, runExecService, this@module, core.systemClassification, taskCompletionHub,
         notifications,
     )
+    val githubFlow = sourceAdapter?.let { adapter ->
+        GitHubSourceFlow(
+            adapter, approvalService, accessStore, datasourceStore, policyStore, authz, notifications,
+            locale = config.notifyLocale,
+            webUrl = GitHubSourceFlow.webUrlFor(config.github!!.apiUrl),
+        ).also { flow -> launch { flow.runPollLoop() } }
+    }
     val auditService = AuditService(authz, store)
     val tokenService = TokenService(tokenStore, userGroupStore, authz, core.authAudit)
     val workloadTokenService = WorkloadTokenService(config, tokenStore, core.authAudit)
@@ -680,6 +700,7 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
         scimRoutes(config, userGroupStore, tokenStore, accessStore, principalSessionStore, managementAudit, this@module.environment.log)
 
         workloadTokenRoutes(config, workloadTokenService)
+        if (githubFlow != null) githubSourceRoutes(config, tokenStore, githubFlow)
 
         // Datasource + catalog + classification config API. Admin-gated: admin.datasources.
         // The events hub backs the admin "refresh now" push + the "which datasources have a proxy attached"

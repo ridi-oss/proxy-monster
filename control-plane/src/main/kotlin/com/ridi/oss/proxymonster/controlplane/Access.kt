@@ -16,11 +16,14 @@ import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
+import java.math.BigInteger
 import java.sql.Connection
+import java.sql.PreparedStatement
 import java.sql.ResultSet
 import java.sql.Timestamp
 import java.time.Instant
@@ -36,6 +39,8 @@ data class RequestEdit(
     val carriesProtectedLiteral: Boolean?,
     val title: String? = null,
     val reason: String? = null,
+    /** A pull request's file: its new key and the head it was filed for. */
+    val origin: RequestOrigin? = null,
 )
 
 @Serializable
@@ -68,6 +73,8 @@ data class AccessRequest(
     val statementCarriesProtectedLiteral: Boolean? = null,
     val source: String = "console",
     val scope: String? = null,
+    /** The file's key from its name: what orders a pull request's files and, with [contentHash], keys the change. */
+    val fileKey: String? = null,
     val changeKey: String? = null,
     val mergedAt: String? = null,
     /** Starts at 1 and grows with each edit of the SQL; an approval names the revision it approves. */
@@ -75,6 +82,43 @@ data class AccessRequest(
     val revisedAt: String? = null,
     /** [contentHash] of the request's SQL; an edit that keeps it keeps the revision and the approval. */
     val contentHash: String? = null,
+    val pullRequest: PullRequestRef? = null,
+) {
+    val fromPullRequest: Boolean get() = source == SOURCE_GITHUB
+}
+
+/** [AccessRequest.source] of a request filed from a GitHub pull request. */
+const val SOURCE_GITHUB = "github"
+
+/** The pull request a GitHub request came from. */
+@Serializable
+data class PullRequestRef(
+    /** `owner/name` of the pull request's repository. */
+    val repository: String,
+    val pr: Int,
+    val prUrl: String? = null,
+    val path: String? = null,
+    /** The pull request head the request was last filed for. */
+    val headSha: String? = null,
+    val defaultSchema: String? = null,
+    /** How the scope's latest filing orders file keys: `numeric` or `string`. */
+    val keyOrder: String? = null,
+    /** The head of its scope's latest filing; the request belongs to that filing when [headSha] equals it. */
+    val filedHead: String? = null,
+    /** The pull request's merge commit, recorded when it merged. */
+    val mergeSha: String? = null,
+    val prAutoMerge: Boolean = false,
+    /** The review an approval came from; null for a console or Slack approval. */
+    val approvedReviewId: String? = null,
+)
+
+/** Where a request filed from a source repository sits: its ordered line, its file, and its pull request. */
+data class RequestOrigin(
+    val scope: String,
+    val fileKey: String,
+    val contentHash: String,
+    val changeKey: String,
+    val pullRequest: PullRequestRef,
 )
 
 /**
@@ -116,6 +160,32 @@ fun contentHash(sql: String, dialect: Dialect): String =
     sqlGrantHash(sql, dialect)?.let { "n:$it" } ?: "r:${sha256Hex(sql)}"
 
 fun changeKey(fileKey: String, contentHash: String): String = sha256Hex(fileKey + "\n" + contentHash)
+
+/** How a pull request's file keys sort: `numeric` keeps `9` before `10`, `string` compares bytes. */
+@Serializable
+enum class KeyOrder {
+    @SerialName("numeric") NUMERIC,
+    @SerialName("string") STRING,
+    ;
+
+    val wireName: String get() = name.lowercase()
+
+    companion object {
+        fun fromWire(value: String?): KeyOrder = entries.firstOrNull { it.wireName == value } ?: NUMERIC
+    }
+}
+
+/** Orders `(fileKey, path)` pairs by key, then by path; [KeyOrder.NUMERIC] needs every key to be digits. */
+fun compareFileKeys(order: KeyOrder): Comparator<Pair<String, String>> {
+    val byKey: Comparator<Pair<String, String>> = when (order) {
+        KeyOrder.NUMERIC -> compareBy { BigInteger(it.first) }
+        KeyOrder.STRING -> Comparator { a, b -> compareBytes(a.first, b.first) }
+    }
+    return byKey.thenComparing { a, b -> compareBytes(a.second, b.second) }
+}
+
+private fun compareBytes(a: String, b: String): Int =
+    java.util.Arrays.compareUnsigned(a.toByteArray(Charsets.UTF_8), b.toByteArray(Charsets.UTF_8))
 
 // ---- Store -------------------------------------------------------------------------------
 
@@ -247,6 +317,7 @@ class AccessStore(internal val dataSource: DataSource) {
         recorder: ManagementAuditRecorder? = null,
         source: String = "console",
         contentHash: String? = null,
+        origin: RequestOrigin? = null,
     ): AccessRequest {
         require(statements.isNotEmpty()) { "a query request needs at least one statement" }
         val id = dataSource.inTx { c ->
@@ -260,8 +331,9 @@ class AccessStore(internal val dataSource: DataSource) {
                 """INSERT INTO access_request
                    (principal, kind, role_id, datasource_id, deny_reason, source_decision_id, reason, title,
                     evaluated_decision, requested_duration_sec, execute_as, creator_kind,
-                    statement_carries_protected_literal, source, content_hash)
-                   VALUES (?, 'QUERY', ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, 'WORKFLOW', ?, ?, ?)
+                    statement_carries_protected_literal, source, scope, change_key, path, pr_url,
+                    repository, pr, default_schema, head_sha, file_key, content_hash, key_order)
+                   VALUES (?, 'QUERY', ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, 'WORKFLOW', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT (source_decision_id) WHERE kind = 'QUERY' AND status = 'PENDING' AND source_decision_id IS NOT NULL
                    DO NOTHING
                    RETURNING id""",
@@ -278,7 +350,18 @@ class AccessStore(internal val dataSource: DataSource) {
                 ps.setString(10, json.encodeToString(stringList, executeAs))
                 if (carriesProtectedLiteral == null) ps.setNull(11, java.sql.Types.BOOLEAN) else ps.setBoolean(11, carriesProtectedLiteral)
                 ps.setString(12, source)
-                ps.setString(13, contentHash)
+                val ref = origin?.pullRequest
+                ps.setString(13, origin?.scope)
+                ps.setString(14, origin?.changeKey)
+                ps.setString(15, ref?.path)
+                ps.setString(16, ref?.prUrl)
+                ps.setString(17, ref?.repository)
+                if (ref == null) ps.setNull(18, java.sql.Types.INTEGER) else ps.setInt(18, ref.pr)
+                ps.setString(19, ref?.defaultSchema)
+                ps.setString(20, ref?.headSha)
+                ps.setString(21, origin?.fileKey)
+                ps.setString(22, contentHash ?: origin?.contentHash)
+                ps.setString(23, ref?.keyOrder)
                 ps.executeQuery().use { rs ->
                     if (rs.next()) rs.getLong(1) else throw DuplicatePendingQueryRequestException()
                 }
@@ -446,8 +529,9 @@ class AccessStore(internal val dataSource: DataSource) {
         rejectionReason: String?,
         decidedBy: String,
         revision: Int,
+        reviewId: String? = null,
     ): AccessRequest? {
-        val won = dataSource.inTx { c -> decideQueryRequest(id, approved, rejectionReason, decidedBy, c, revision) }
+        val won = dataSource.inTx { c -> decideQueryRequest(id, approved, rejectionReason, decidedBy, c, revision, reviewId) }
         return if (won) getRequest(id) else null
     }
 
@@ -459,11 +543,12 @@ class AccessStore(internal val dataSource: DataSource) {
         decidedBy: String,
         c: Connection,
         revision: Int,
+        reviewId: String? = null,
     ): Boolean {
         val decidedAt = Timestamp.from(Instant.now())
         return c.prepareStatement(
             """UPDATE access_request
-               SET status = ?, decided_by = ?, decided_at = ?, approved_at = ?, rejection_reason = ?
+               SET status = ?, decided_by = ?, decided_at = ?, approved_at = ?, rejection_reason = ?, approved_review_id = ?
                WHERE id = ? AND kind = 'QUERY' AND status = 'PENDING' AND revision = ?""",
         ).use { ps ->
             ps.setString(1, if (approved) "APPROVED" else "REJECTED")
@@ -471,8 +556,9 @@ class AccessStore(internal val dataSource: DataSource) {
             ps.setTimestamp(3, decidedAt)
             if (approved) ps.setTimestamp(4, decidedAt) else ps.setNull(4, java.sql.Types.TIMESTAMP)
             ps.setString(5, rejectionReason)
-            ps.setLong(6, id)
-            ps.setInt(7, revision)
+            ps.setString(6, if (approved) reviewId else null)
+            ps.setLong(7, id)
+            ps.setInt(8, revision)
             ps.executeUpdate() > 0
         }
     }
@@ -492,15 +578,19 @@ class AccessStore(internal val dataSource: DataSource) {
         // Queues the decision notification in the SAME transaction as the transition, so a crash can never
         // leave a request decided with nobody told. No-op when the notification layer is not configured.
         onDecided: ((Connection, AccessRequest) -> Unit)? = null,
+        // Appended to the audit summary, e.g. the review an approval came from.
+        detail: String? = null,
+        reviewId: String? = null,
     ): AccessRequest? {
         val before = getRequest(id)
         val roleName = before?.roleName
         val won = dataSource.inTx { c ->
-            decideQueryRequest(id, approved, rejectionReason, decidedBy, c, revision).also { transitioned ->
+            decideQueryRequest(id, approved, rejectionReason, decidedBy, c, revision, reviewId).also { transitioned ->
                 if (transitioned) {
                     recorder.record(
                         c, actor, AuthzAction.TASK_APPROVE, auditEntity("AccessRequest", id.toString()),
-                        if (approved) "approve query request #$id revision $revision under role '$roleName'" else "reject query request #$id revision $revision",
+                        (if (approved) "approve query request #$id revision $revision under role '$roleName'" else "reject query request #$id revision $revision") +
+                            (detail?.let { " ($it)" } ?: ""),
                     )
                     // The row the hook sees carries the decision that just landed: the pre-read plus the
                     // fields this transaction set, since the UPDATE is not visible to another connection yet.
@@ -511,6 +601,7 @@ class AccessStore(internal val dataSource: DataSource) {
                                 status = if (approved) "APPROVED" else "REJECTED",
                                 decidedBy = decidedBy,
                                 rejectionReason = rejectionReason,
+                                pullRequest = prior.pullRequest?.copy(approvedReviewId = if (approved) reviewId else null),
                             ),
                         )
                     }
@@ -539,7 +630,9 @@ class AccessStore(internal val dataSource: DataSource) {
                    SET status = 'PENDING', decided_by = NULL, decided_at = NULL, approved_at = NULL,
                        rejection_reason = NULL, source_decision_id = NULL, deny_reason = ?, evaluated_decision = ?,
                        statement_carries_protected_literal = ?, title = COALESCE(?, title), reason = COALESCE(?, reason),
-                       content_hash = ?, revision = revision + 1, revised_at = now()
+                       content_hash = ?, revision = revision + 1, revised_at = now(), approved_review_id = NULL,
+                       file_key = COALESCE(?, file_key),
+                       change_key = COALESCE(?, change_key), head_sha = COALESCE(?, head_sha)
                    WHERE id = ? AND kind = 'QUERY' AND creator_kind = 'WORKFLOW' AND status IN ('PENDING', 'APPROVED')
                    RETURNING revision""",
             ).use { ps ->
@@ -549,7 +642,10 @@ class AccessStore(internal val dataSource: DataSource) {
                 ps.setString(4, edit.title)
                 ps.setString(5, edit.reason)
                 ps.setString(6, edit.contentHash)
-                ps.setLong(7, id)
+                ps.setString(7, edit.origin?.fileKey)
+                ps.setString(8, edit.origin?.changeKey)
+                ps.setString(9, edit.origin?.pullRequest?.headSha)
+                ps.setLong(10, id)
                 ps.executeQuery().use { rs -> if (rs.next()) rs.getInt(1) else null }
             } ?: return@inTx false
             c.prepareStatement("DELETE FROM query_result WHERE task_id = ?").use { ps ->
@@ -570,23 +666,30 @@ class AccessStore(internal val dataSource: DataSource) {
         return if (edited) getRequest(id) else null
     }
 
-    /** Replace the title or reason (null keeps) of a PENDING or APPROVED request whose SQL did not change. */
+    /**
+     * Replace the title or reason (null keeps) of a PENDING or APPROVED request whose SQL did not change, and a
+     * pull request's file its [pullRequest] path and head.
+     */
     fun editQueryRequestDetails(
         id: Long,
         title: String?,
         reason: String?,
         actor: AuditActor,
         recorder: ManagementAuditRecorder,
+        pullRequest: PullRequestRef? = null,
     ): AccessRequest? {
         val edited = dataSource.inTx { c ->
             val revision = c.prepareStatement(
-                """UPDATE access_request SET title = COALESCE(?, title), reason = COALESCE(?, reason)
+                """UPDATE access_request SET title = COALESCE(?, title), reason = COALESCE(?, reason),
+                       path = COALESCE(?, path), head_sha = COALESCE(?, head_sha)
                    WHERE id = ? AND kind = 'QUERY' AND creator_kind = 'WORKFLOW' AND status IN ('PENDING', 'APPROVED')
                    RETURNING revision""",
             ).use { ps ->
                 ps.setString(1, title)
                 ps.setString(2, reason)
-                ps.setLong(3, id)
+                ps.setString(3, pullRequest?.path)
+                ps.setString(4, pullRequest?.headSha)
+                ps.setLong(5, id)
                 ps.executeQuery().use { rs -> if (rs.next()) rs.getInt(1) else null }
             } ?: return@inTx false
             recorder.record(
@@ -626,22 +729,201 @@ class AccessStore(internal val dataSource: DataSource) {
             ps.executeQuery().use { it.next() }
         }
         // Re-read under the lock: a concurrent winner has moved the row off APPROVED and loses as false.
-        val approved = c.prepareStatement("SELECT status FROM access_request WHERE id = ?").use { ps ->
+        var repository: String? = null
+        var pr: Int? = null
+        c.prepareStatement("SELECT status, repository, pr FROM access_request WHERE id = ?").use { ps ->
             ps.setLong(1, id)
-            ps.executeQuery().use { rs -> rs.next() && rs.getString(1) == "APPROVED" }
+            ps.executeQuery().use { rs ->
+                if (!rs.next() || rs.getString(1) != "APPROVED") return
+                repository = rs.getString(2)
+                pr = rs.getInt(3).takeUnless { rs.wasNull() }
+            }
         }
-        if (!approved) return
-        val busy = c.prepareStatement(
-            """SELECT 1 FROM access_request
-               WHERE scope = ? AND id <> ?
-                 AND (status = 'EXECUTING' OR (status = 'EXECUTED' AND merged_at IS NULL AND source = 'github'))
-               LIMIT 1""",
-        ).use { ps ->
-            ps.setString(1, scope)
-            ps.setLong(2, id)
+        val busy = c.prepareStatement("SELECT 1 FROM access_request r WHERE $SCOPE_BUSY_WHERE LIMIT 1").use { ps ->
+            ps.setScopeBusy(scope, id, repository, pr)
             ps.executeQuery().use { it.next() }
         }
         if (busy) throw TaskServiceException(HttpStatusCode.Conflict, ApiError("approval.scope_busy"))
+    }
+
+    private fun PreparedStatement.setScopeBusy(scope: String, id: Long, repository: String?, pr: Int?) {
+        setString(1, scope)
+        setLong(2, id)
+        setString(3, repository)
+        if (pr == null) setNull(4, java.sql.Types.INTEGER) else setInt(4, pr)
+    }
+
+    /** Every request filed from one pull request, any status, in file order. */
+    fun listGithubRequests(repository: String, pr: Int): List<AccessRequest> = dataSource.connection.use { c ->
+        c.prepareStatement(
+            "$REQ_SELECT WHERE ar.source = 'github' AND ar.repository = ? AND ar.pr = ? ORDER BY ar.path, ar.id",
+        ).use { ps ->
+            ps.setString(1, repository)
+            ps.setInt(2, pr)
+            ps.executeQuery().use { rs -> val o = ArrayList<AccessRequest>(); while (rs.next()) o += rs.toRequest(); o }
+        }
+    }
+
+    /**
+     * Pull requests, by repository, with a request waiting to be approved or run, or run but not yet merged, or
+     * carrying the key of another pull request's unmerged run.
+     */
+    fun pullRequestsToPoll(): Map<String, List<Int>> = dataSource.connection.use { c ->
+        c.prepareStatement(
+            """SELECT DISTINCT ar.repository, ar.pr FROM access_request ar
+               WHERE ar.source = 'github' AND ar.repository IS NOT NULL AND ar.pr IS NOT NULL
+                 AND (ar.status IN ('PENDING', 'APPROVED', 'EXECUTING')
+                      OR (ar.status = 'EXECUTED' AND ar.merged_at IS NULL)
+                      OR (ar.status = 'ALREADY_RAN' AND ar.merged_at IS NULL
+                          AND EXISTS (SELECT 1 FROM access_request x
+                                      WHERE x.scope = ar.scope AND x.change_key = ar.change_key
+                                        AND x.status = 'EXECUTED' AND x.merged_at IS NULL)))
+               ORDER BY ar.repository, ar.pr""",
+        ).use { ps ->
+            ps.executeQuery().use { rs ->
+                val o = LinkedHashMap<String, MutableList<Int>>()
+                while (rs.next()) o.getOrPut(rs.getString(1)) { ArrayList() } += rs.getInt(2)
+                o
+            }
+        }
+    }
+
+    fun changeKeyExecuted(scope: String, changeKey: String): Boolean = dataSource.connection.use { c ->
+        c.prepareStatement(
+            "SELECT 1 FROM access_request WHERE scope = ? AND change_key = ? AND status = 'EXECUTED' LIMIT 1",
+        ).use { ps ->
+            ps.setString(1, scope)
+            ps.setString(2, changeKey)
+            ps.executeQuery().use { it.next() }
+        }
+    }
+
+    /** The request that keeps [scope] busy for a pull request other than [excludeRepository]#[excludePr]. */
+    fun scopeBlocker(scope: String, excludeRepository: String, excludePr: Int): AccessRequest? = dataSource.connection.use { c ->
+        c.prepareStatement(
+            "$REQ_SELECT WHERE ar.id = (SELECT MIN(r.id) FROM access_request r WHERE $SCOPE_BUSY_WHERE)",
+        ).use { ps ->
+            ps.setScopeBusy(scope, 0, excludeRepository, excludePr)
+            ps.executeQuery().use { rs -> if (rs.next()) rs.toRequest() else null }
+        }
+    }
+
+    /** End a request that has not started with [status]: DELETED, ALREADY_RAN or CANCELLED. */
+    fun endUnstarted(id: Long, status: String): Boolean = dataSource.connection.use { c ->
+        require(status in setOf("DELETED", "ALREADY_RAN", "CANCELLED"))
+        c.prepareStatement(
+            "UPDATE access_request SET status = ? WHERE id = ? AND kind = 'QUERY' AND status IN ('PENDING', 'APPROVED')",
+        ).use { ps ->
+            ps.setString(1, status)
+            ps.setLong(2, id)
+            ps.executeUpdate() > 0
+        }
+    }
+
+    /** Return an approved, not-started request to PENDING, recording a [TASK_APPROVE][AuthzAction.TASK_APPROVE] event. */
+    fun reopenQueryRequest(id: Long, actor: AuditActor, recorder: ManagementAuditRecorder, detail: String): Boolean =
+        dataSource.inTx { c ->
+            val won = c.prepareStatement(
+                """UPDATE access_request SET status = 'PENDING', decided_by = NULL, decided_at = NULL, approved_at = NULL,
+                       approved_review_id = NULL
+                   WHERE id = ? AND kind = 'QUERY' AND status = 'APPROVED'""",
+            ).use { ps ->
+                ps.setLong(1, id)
+                ps.executeUpdate() > 0
+            }
+            if (won) {
+                recorder.record(
+                    c, actor, AuthzAction.TASK_APPROVE, auditEntity("AccessRequest", id.toString()),
+                    "withdraw the approval of query request #$id ($detail)",
+                )
+            }
+            won
+        }
+
+    /**
+     * Record that a pull request merged: its own requests, and the scope's executed requests carrying its keys.
+     * [mergeSha] is recorded only on rows of [repository], since only its history can contain it.
+     */
+    fun markMerged(repository: String, pr: Int, scope: String, changeKeys: List<String>, at: Instant, mergeSha: String?) {
+        dataSource.connection.use { c ->
+            c.prepareStatement(
+                """UPDATE access_request SET merged_at = ?, merge_sha = CASE WHEN repository = ? THEN ? END
+                   WHERE merged_at IS NULL
+                     AND ((source = 'github' AND repository = ? AND pr = ? AND scope = ?)
+                       OR (source = 'github' AND scope = ? AND status = 'EXECUTED' AND change_key = ANY (?)))""",
+            ).use { ps ->
+                ps.setTimestamp(1, Timestamp.from(at))
+                ps.setString(2, repository)
+                ps.setString(3, mergeSha)
+                ps.setString(4, repository)
+                ps.setInt(5, pr)
+                ps.setString(6, scope)
+                ps.setString(7, scope)
+                ps.setArray(8, c.createArrayOf("text", changeKeys.toTypedArray()))
+                ps.executeUpdate()
+            }
+        }
+    }
+
+    /**
+     * Stamp [headSha] on the pull request's requests in [scope] whose key is still among [changeKeys], and record
+     * it, with the filing's [keyOrder], as the scope's filed head on all of them.
+     */
+    fun setPrHead(repository: String, pr: Int, scope: String, changeKeys: List<String>, headSha: String, keyOrder: String) {
+        dataSource.inTx { c ->
+            c.prepareStatement(
+                """UPDATE access_request SET head_sha = ?
+                   WHERE source = 'github' AND repository = ? AND pr = ? AND scope = ? AND change_key = ANY (?)
+                     AND head_sha IS DISTINCT FROM ?""",
+            ).use { ps ->
+                ps.setString(1, headSha)
+                ps.setString(2, repository)
+                ps.setInt(3, pr)
+                ps.setString(4, scope)
+                ps.setArray(5, c.createArrayOf("text", changeKeys.toTypedArray()))
+                ps.setString(6, headSha)
+                ps.executeUpdate()
+            }
+            c.prepareStatement(
+                """UPDATE access_request SET filed_head = ?, key_order = ?
+                   WHERE source = 'github' AND repository = ? AND pr = ? AND scope = ?""",
+            ).use { ps ->
+                ps.setString(1, headSha)
+                ps.setString(2, keyOrder)
+                ps.setString(3, repository)
+                ps.setInt(4, pr)
+                ps.setString(5, scope)
+                ps.executeUpdate()
+            }
+        }
+    }
+
+    /** The latest run in [scope] whose pull request in [repository] merged with a recorded merge commit. */
+    fun lastMergedRun(scope: String, repository: String): AccessRequest? = dataSource.connection.use { c ->
+        c.prepareStatement(
+            """$REQ_SELECT
+               WHERE ar.scope = ? AND ar.repository = ? AND ar.source = 'github' AND ar.status = 'EXECUTED'
+                 AND ar.merge_sha IS NOT NULL
+               ORDER BY ar.merged_at DESC, ar.id DESC LIMIT 1""",
+        ).use { ps ->
+            ps.setString(1, scope)
+            ps.setString(2, repository)
+            ps.executeQuery().use { rs -> if (rs.next()) rs.toRequest() else null }
+        }
+    }
+
+    fun setPrAutoMerge(repository: String, pr: Int, enabled: Boolean) {
+        dataSource.connection.use { c ->
+            c.prepareStatement(
+                "UPDATE access_request SET pr_auto_merge = ? WHERE source = 'github' AND repository = ? AND pr = ? AND pr_auto_merge <> ?",
+            ).use { ps ->
+                ps.setBoolean(1, enabled)
+                ps.setString(2, repository)
+                ps.setInt(3, pr)
+                ps.setBoolean(4, enabled)
+                ps.executeUpdate()
+            }
+        }
     }
 
     fun markExecuted(id: Long): Boolean = dataSource.connection.use { c -> markExecuted(id, c) }
@@ -992,12 +1274,32 @@ class AccessStore(internal val dataSource: DataSource) {
         statementCarriesProtectedLiteral = getBoolean("statement_carries_protected_literal").let { if (wasNull()) null else it },
         source = getString("source") ?: "console",
         scope = getString("scope"),
+        fileKey = getString("file_key"),
         changeKey = getString("change_key"),
         mergedAt = getTimestamp("merged_at")?.toInstant()?.toString(),
         revision = getInt("revision"),
         revisedAt = getTimestamp("revised_at")?.toInstant()?.toString(),
         contentHash = getString("content_hash"),
+        pullRequest = pullRequestRef(),
     )
+
+    private fun ResultSet.pullRequestRef(): PullRequestRef? {
+        if (getString("source") != SOURCE_GITHUB) return null
+        val repository = getString("repository") ?: return null
+        val pr = getInt("pr").takeUnless { wasNull() } ?: return null
+        return PullRequestRef(
+            repository, pr,
+            prUrl = getString("pr_url"),
+            path = getString("path"),
+            headSha = getString("head_sha"),
+            defaultSchema = getString("default_schema"),
+            keyOrder = getString("key_order"),
+            filedHead = getString("filed_head"),
+            mergeSha = getString("merge_sha"),
+            prAutoMerge = getBoolean("pr_auto_merge"),
+            approvedReviewId = getString("approved_review_id"),
+        )
+    }
 
     private fun ResultSet.toGrant() = AccessGrant(
         id = getLong("id"), principal = getString("principal"), roleId = getLong("role_id"), roleName = getString("role_name"),
@@ -1020,7 +1322,9 @@ class AccessStore(internal val dataSource: DataSource) {
                       ar.deny_reason, ar.source_decision_id, ar.title, ar.evaluated_decision,
                       ar.approved_at, ar.executing_at, ar.executed_at, ar.execute_as, ar.creator_kind,
                       ar.statement_carries_protected_literal, ar.source, ar.scope, ar.change_key,
-                      ar.merged_at, ar.revision, ar.revised_at, ar.content_hash
+                      ar.merged_at, ar.revision, ar.revised_at, ar.path, ar.pr_url, ar.repository, ar.pr,
+                      ar.default_schema, ar.pr_auto_merge, ar.head_sha, ar.merge_sha,
+                      ar.approved_review_id, ar.filed_head, ar.file_key, ar.content_hash, ar.key_order
                FROM access_request ar LEFT JOIN app_role r ON r.id = ar.role_id
                LEFT JOIN datasource d ON d.id = ar.datasource_id"""
         // The app_role join is filtered to LIVE roles: a grant of a soft-deleted role must resolve to no
@@ -1030,6 +1334,23 @@ class AccessStore(internal val dataSource: DataSource) {
             """SELECT ag.id, ag.principal, ag.role_id, r.name AS role_name,
                       ag.granted_by, ag.granted_at, ag.expires_at, ag.revoked_at
                FROM access_grant ag JOIN app_role r ON r.id = ag.role_id AND r.deleted_at IS NULL"""
+
+        /**
+         * Over `access_request r`: another pull request's run that holds the scope, unless that pull request's
+         * latest filing has a file whose current version failed. Binds scope, id, repository, pr.
+         */
+        const val SCOPE_BUSY_WHERE =
+            """r.scope = ? AND r.id <> ?
+               AND NOT COALESCE(r.source = 'github' AND r.repository = ? AND r.pr = ?, FALSE)
+               AND (r.status = 'EXECUTING'
+                    OR (r.status = 'EXECUTED' AND r.merged_at IS NULL AND r.source = 'github'
+                        AND NOT EXISTS (SELECT 1 FROM access_request f
+                                        WHERE f.scope = r.scope AND f.repository = r.repository AND f.pr = r.pr
+                                          AND f.status = 'FAILED' AND f.head_sha IS NOT DISTINCT FROM f.filed_head
+                                          AND NOT EXISTS (SELECT 1 FROM access_request n
+                                                          WHERE n.scope = f.scope AND n.repository = f.repository
+                                                            AND n.pr = f.pr AND n.path = f.path AND n.id > f.id
+                                                            AND n.status NOT IN ('DELETED', 'ALREADY_RAN', 'CANCELLED')))))"""
     }
 }
 

@@ -340,6 +340,14 @@ class GitHubAdapter(
             files = files.map {
                 ChangedFile(it.string("path") ?: error("GitHub returned a file without a path"), fileChange(it.string("changeType")))
             },
+            commits = node.obj("authors")?.array("nodes").orEmpty().mapNotNull { (it as? JsonObject)?.obj("commit") }.map { c ->
+                val author = c.obj("author")
+                CommitAuthor(
+                    userId = author?.obj("user")?.long("databaseId")?.toString(),
+                    email = author?.string("email"),
+                    merge = (c.obj("parents")?.long("totalCount") ?: 0) > 1,
+                )
+            },
         )
     }
 
@@ -387,11 +395,12 @@ class GitHubAdapter(
             "author { login ... on User { databaseId } ... on Bot { databaseId } } " +
             "autoMergeRequest { enabledAt enabledBy { login ... on User { databaseId } } } " +
             "${reviewsSelection("")} ${filesSelection("")} " +
-            "commits(last:1) { nodes { commit { oid ${rollupSelection(numberVar, "")} } } }"
+            "commits(last:1) { nodes { commit { oid ${rollupSelection(numberVar, "")} } } } " +
+            "authors: commits(first:100) { nodes { commit { parents { totalCount } author { email user { databaseId } } } } }"
 
     private fun reviewsSelection(after: String): String =
         "reviews(first:100$after) { pageInfo { hasNextPage endCursor } " +
-            "nodes { databaseId state submittedAt url author { login ... on User { databaseId } } } }"
+            "nodes { databaseId state submittedAt url commit { oid } author { login ... on User { databaseId } } } }"
 
     private fun filesSelection(after: String): String =
         "files(first:100$after) { pageInfo { hasNextPage endCursor } nodes { path changeType } }"
@@ -408,6 +417,7 @@ class GitHubAdapter(
             ?: error("GitHub returned an unknown review state"),
         submittedAt = node.instant("submittedAt"),
         url = node.string("url").orEmpty(),
+        commit = node.obj("commit")?.string("oid"),
     )
 
     private fun check(node: JsonObject): Check {

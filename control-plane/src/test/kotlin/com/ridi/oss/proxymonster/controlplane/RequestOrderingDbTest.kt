@@ -115,6 +115,43 @@ class RequestOrderingDbTest {
         assertTrue(core.accessStore.claimExecution(request("APPROVED", console, changeKey = "k1")))
     }
 
+    private fun onPullRequest(id: Long, repository: String, pr: Int): Long {
+        dataSource.connection.use { c ->
+            c.prepareStatement("UPDATE access_request SET repository = ?, pr = ? WHERE id = ?").use { ps ->
+                ps.setString(1, repository)
+                ps.setInt(2, pr)
+                ps.setLong(3, id)
+                ps.executeUpdate()
+            }
+        }
+        return id
+    }
+
+    @Test
+    fun `an executed unmerged sibling of the same pull request does not block`() {
+        val s = scope()
+        onPullRequest(request("EXECUTED", s, changeKey = "k1", source = "github"), "acme/shop", 7)
+        val id = onPullRequest(request("APPROVED", s, changeKey = "k2", source = "github"), "acme/shop", 7)
+        assertTrue(core.accessStore.claimExecution(id))
+    }
+
+    @Test
+    fun `an executed unmerged request of another pull request blocks`() {
+        val s = scope()
+        onPullRequest(request("EXECUTED", s, changeKey = "k1", source = "github"), "acme/shop", 7)
+        val id = onPullRequest(request("APPROVED", s, changeKey = "k2", source = "github"), "acme/shop", 8)
+        assertRefused("approval.scope_busy", id)
+    }
+
+    @Test
+    fun `a pull request with a failed file does not hold the scope`() {
+        val s = scope()
+        onPullRequest(request("EXECUTED", s, changeKey = "k1", source = "github"), "acme/shop", 7)
+        onPullRequest(request("FAILED", s, changeKey = "k2", source = "github"), "acme/shop", 7)
+        val id = onPullRequest(request("APPROVED", s, changeKey = "k3", source = "github"), "acme/shop", 8)
+        assertTrue(core.accessStore.claimExecution(id))
+    }
+
     @Test
     fun `a request without a scope claims as before`() {
         val id = request("APPROVED", scope = null)

@@ -182,7 +182,14 @@ class ApprovalService(
     private class Analysis(val decision: EnfAction, val denyReason: String?, val carriesProtectedLiteral: Boolean?)
 
     /** Analysis only: nothing executes and no audit row is written. Each statement previews on its own. */
-    private fun analyze(principal: String, ds: Datasource, statements: List<String>, requesterIp: String?): Analysis {
+    private fun analyze(
+        principal: String,
+        ds: Datasource,
+        statements: List<String>,
+        requesterIp: String?,
+        // A pull request's file runs in its own schema, so it is analyzed there too.
+        searchPath: List<String>? = null,
+    ): Analysis {
         val catalog = datasourceStore.catalog(ds.id)
         // Carries requester_ip so the preview matches the real editor execution's verdict.
         val composeContext = AuthzContext(requesterIp = requesterIp)
@@ -200,6 +207,7 @@ class ApprovalService(
                 authz = authz, auditStore = auditStore,
                 context = composeContext,
                 systemClassification = systemClassification,
+                liveSearchPath = searchPath,
             )
         }
         // Worst statement wins (DENY > MASK > ALLOW).
@@ -216,10 +224,141 @@ class ApprovalService(
                 null
             } else {
                 statements
-                    .map { protectedPredicateLiterals(ds, it, catalog)?.isNotEmpty() }
+                    .map { protectedPredicateLiterals(ds, it, catalog, liveSearchPath = searchPath)?.isNotEmpty() }
                     .reduce { a, b -> if (a == null || b == null) null else a || b }
             },
         )
+    }
+
+    /**
+     * Create the request for one SQL file of a pull request. An [alreadyRan] file's key already ran in its scope, so
+     * its request is kept for merge tracking only and notifies no one.
+     */
+    fun requestFromPullRequest(
+        requester: String,
+        actor: AuditActor,
+        ds: Datasource,
+        roleName: String,
+        statements: List<String>,
+        origin: RequestOrigin,
+        source: String,
+        alreadyRan: Boolean,
+    ): AccessRequest {
+        val role = policyStore.getRoleByName(roleName) ?: throw serviceNotFound("role")
+        val analysis = analyze(requester, ds, statements, requesterIp = null, origin.pullRequest.defaultSchema?.let(::listOf))
+        val request = accessStore.createQueryRequest(
+            principal = requester,
+            datasourceId = ds.id,
+            statements = statements,
+            denyReason = analysis.denyReason,
+            sourceDecisionId = null,
+            reason = origin.pullRequest.prUrl,
+            title = origin.pullRequest.path,
+            evaluatedDecision = analysis.decision.name,
+            roleId = role.id,
+            actor = actor,
+            recorder = recorder,
+            carriesProtectedLiteral = analysis.carriesProtectedLiteral,
+            onCreated = if (alreadyRan) {
+                null
+            } else {
+                { c, taskId, executeAs ->
+                    notifications?.emitRequested(c, taskId, requester, ds, executeAs, source, origin.pullRequest)
+                }
+            },
+            source = source,
+            origin = origin,
+        )
+        if (alreadyRan) {
+            accessStore.endUnstarted(request.id, "ALREADY_RAN")
+            return accessStore.getRequest(request.id)!!
+        }
+        notifications?.wake()
+        return request
+    }
+
+    /**
+     * Give a pull request's not-yet-run request [req] its file as of this filing, through [revise]. An
+     * [alreadyRan] key is kept for merge tracking only and notifies no one.
+     */
+    fun editFromPullRequest(
+        req: AccessRequest,
+        sql: String,
+        statements: List<String>,
+        origin: RequestOrigin,
+        actor: AuditActor,
+        alreadyRan: Boolean,
+    ): AccessRequest {
+        val ds = req.datasourceId?.let(datasourceStore::get) ?: throw serviceNotFound("datasource")
+        val edited = revise(req, ds, sql, statements, origin.pullRequest.path, null, actor, null, origin, notify = !alreadyRan)
+            ?: return workflowRequest(req.id)
+        if (alreadyRan) {
+            accessStore.endUnstarted(edited.id, "ALREADY_RAN")
+            return workflowRequest(edited.id)
+        }
+        return edited
+    }
+
+    /** Approve a PENDING request from a source review; null when Cedar denies [principal] or it is not PENDING. */
+    fun approveFromReview(principal: String, id: Long, reviewId: String, reviewUrl: String): AccessRequest? {
+        val req = accessStore.getRequest(id)?.takeIf { it.isWorkflowApproval && it.status == "PENDING" } ?: return null
+        val decision = authz.authorizeWithContext(
+            principal,
+            AuthzAction.TASK_APPROVE,
+            req.toApprovalResource(),
+            // A review carries no attested address, so a policy requiring one denies.
+            AuthzContext(channel = Channel.GITHUB.contextValue),
+            req.datasourceName,
+            req.datasourceId?.let(datasourceStore::getIncludingDeleted)?.tags.orEmpty(),
+        )
+        if (decision is AuthzDecision.Deny) return null
+        val updated = accessStore.decideQueryRequest(
+            id, approved = true, rejectionReason = null, decidedBy = principal,
+            actor = AuditActor(principal, clientAddr = null, channel = Channel.GITHUB.contextValue),
+            recorder = recorder,
+            onDecided = { c, decided -> notifications?.emit(c, NotificationEvent.TASK_DECIDED, decided) },
+            detail = "review $reviewUrl",
+            reviewId = reviewId,
+            revision = req.revision,
+        ) ?: return null
+        notifications?.wake()
+        log.info("query approval approved from review request={} requester={} decider={}", id, req.principal, principal)
+        return updated
+    }
+
+    /** Return an approved, not-started request to PENDING because the review that approved it no longer counts. */
+    fun withdrawApproval(id: Long, reviewUrl: String): Boolean {
+        val req = accessStore.getRequest(id) ?: return false
+        val actor = AuditActor(req.decidedBy ?: "github", clientAddr = null, channel = Channel.GITHUB.contextValue)
+        return accessStore.reopenQueryRequest(id, actor, recorder, "review $reviewUrl")
+    }
+
+    /**
+     * Run an approved pull-request request inline when its auto-merge triggers it, as [executor]. The ordering
+     * gate's [TaskServiceException] (`approval.scope_busy`) propagates.
+     */
+    suspend fun runOnMerge(executor: String, id: Long): AccessRequest {
+        val req = workflowRequest(id)
+        if (req.status in setOf("EXECUTING", "EXECUTED", "FAILED", "CANCELLED")) throw alreadyExecuted()
+        if (req.status != "APPROVED") throw TaskServiceException(HttpStatusCode.Conflict, ApiError("approval.not_approved"))
+        val store = queryResultStore ?: throw resultStorageNotConfigured()
+        val ds = req.datasourceId?.let(datasourceStore::get)
+            ?: throw TaskServiceException(HttpStatusCode.Conflict, notFoundError("datasource"))
+        if (store.statements(id).none { it.sql != null }) {
+            throw TaskServiceException(HttpStatusCode.Conflict, ApiError("approval.no_sql"))
+        }
+        val executeAs = policyStore.liveRoleNames(req.executeAs)
+        if (executeAs.isEmpty()) throw TaskServiceException(HttpStatusCode.Conflict, ApiError("approval.no_execute_role"))
+        if (store.claimAndStartRun(id, executor) { c -> accessStore.claimExecution(id, c) } == null) throw alreadyExecuted()
+        runApprovedTask(
+            id = id, executor = executor, ds = ds, executeAs = executeAs,
+            requesterIp = null, requesterPrincipal = req.principal, req = req,
+            config = config, accessStore = accessStore, store = store, auditStore = auditStore,
+            runExecService = runExecService, taskCompletionHub = taskCompletionHub,
+            notifications = notifications, log = log,
+            defaultSchema = req.pullRequest?.defaultSchema,
+        )
+        return accessStore.getRequest(id)!!
     }
 
     /**
@@ -261,7 +400,8 @@ class ApprovalService(
         val visibleMeta = queryResultStore?.meta(id)?.let(::visible)
         val visibleStatements = queryResultStore?.statements(id).orEmpty().map(::visible)
         // Mirrors execute's gates: only the approver of record gets a Run affordance.
-        val canExecute = queryResultStore != null && isApprover && req.status == "APPROVED" && req.decidedBy == principal
+        val canExecute = queryResultStore != null && isApprover && req.status == "APPROVED" && req.decidedBy == principal &&
+            !req.fromPullRequest
         val canCancel = req.status == "EXECUTING" && mayDecide(principal, requesterIp, AuthzAction.TASK_CANCEL, req)
         return QueryRequestDetail(
             req,
@@ -270,7 +410,7 @@ class ApprovalService(
             statements = visibleStatements,
             canExecute = canExecute,
             canCancel = canCancel,
-            canEdit = req.principal == principal && req.status in EDITABLE,
+            canEdit = req.principal == principal && req.status in EDITABLE && !req.fromPullRequest,
         )
     }
 
@@ -320,6 +460,8 @@ class ApprovalService(
     fun edit(principal: String, requesterIp: String?, actor: AuditActor, id: Long, input: EditQueryRequestInput): AccessRequest {
         val req = workflowRequest(id)
         if (req.principal != principal) throw TaskServiceException(HttpStatusCode.Forbidden, ApiError("approval.edit_forbidden"))
+        // The file in the pull request is the request's source, so a push is what changes it.
+        if (req.fromPullRequest) throw TaskServiceException(HttpStatusCode.Conflict, ApiError("approval.github_edit_by_push"))
         if (req.status !in EDITABLE) throw notEditable()
         if (input.sql.isBlank()) throw fieldRequired("sql")
         if (input.reason != null && input.reason.isBlank()) throw fieldRequired("reason")
@@ -347,15 +489,19 @@ class ApprovalService(
         reason: String?,
         actor: AuditActor,
         requesterIp: String?,
+        origin: RequestOrigin? = null,
+        notify: Boolean = true,
     ): AccessRequest? {
         val hash = contentHash(sql, ds.engine.dialect)
-        if (hash == req.contentHash) return accessStore.editQueryRequestDetails(req.id, title, reason, actor, recorder)
-        val analysis = analyze(req.principal, ds, statements, requesterIp)
+        if (hash == req.contentHash) {
+            return accessStore.editQueryRequestDetails(req.id, title, reason, actor, recorder, origin?.pullRequest)
+        }
+        val analysis = analyze(req.principal, ds, statements, requesterIp, origin?.pullRequest?.defaultSchema?.let(::listOf))
         val edited = accessStore.editQueryRequest(
             req.id, statements,
-            RequestEdit(hash, analysis.denyReason, analysis.decision.name, analysis.carriesProtectedLiteral, title, reason),
+            RequestEdit(hash, analysis.denyReason, analysis.decision.name, analysis.carriesProtectedLiteral, title, reason, origin),
             actor, recorder,
-            onEdited = { c, r -> notifications?.emit(c, NotificationEvent.TASK_EDITED, r) },
+            onEdited = if (notify) { c, r -> notifications?.emit(c, NotificationEvent.TASK_EDITED, r) } else null,
         ) ?: return null
         notifications?.wake()
         return edited
@@ -392,6 +538,8 @@ class ApprovalService(
         val req = workflowRequest(id)
         // Authorize BEFORE disclosing task state, so the 409s below are never a state oracle for a non-approver.
         if (!mayDecide(executor, requesterIp, AuthzAction.TASK_APPROVE, req)) throw notApprover()
+        // The merge trigger runs it, so the run and the merge stay one outcome.
+        if (req.fromPullRequest) throw TaskServiceException(HttpStatusCode.Conflict, ApiError("approval.github_runs_on_merge"))
         if (req.status in setOf("EXECUTING", "EXECUTED", "FAILED", "CANCELLED")) throw alreadyExecuted()
         if (req.status != "APPROVED") throw TaskServiceException(HttpStatusCode.Conflict, ApiError("approval.not_approved"))
         // The approver of record executes, so the run's identity always falls inside the task.assume permit.

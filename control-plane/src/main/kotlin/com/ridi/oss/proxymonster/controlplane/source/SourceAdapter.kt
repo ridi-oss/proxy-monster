@@ -2,7 +2,17 @@ package com.ridi.oss.proxymonster.controlplane.source
 
 import java.time.Instant
 
-data class Repo(val owner: String, val name: String)
+data class Repo(val owner: String, val name: String) {
+    val fullName: String get() = "$owner/$name"
+
+    companion object {
+        private val FULL_NAME = Regex("""^[^/\s]+/[^/\s]+$""")
+
+        /** `owner/name`, or null when it is not exactly that. */
+        fun parse(fullName: String): Repo? =
+            if (FULL_NAME.matches(fullName)) Repo(fullName.substringBefore('/'), fullName.substringAfter('/')) else null
+    }
+}
 
 /** [id] is the source's stable numeric user id; a login can be renamed and reused. */
 data class SourceUser(val id: String, val login: String)
@@ -21,11 +31,15 @@ data class Review(
     val state: ReviewState,
     val submittedAt: Instant?,
     val url: String,
+    /** The commit the review was submitted on; null when that commit is gone from the pull request. */
+    val commit: String? = null,
 )
 
 data class Check(val name: String, val required: Boolean, val status: CheckStatus, val conclusion: CheckConclusion?)
 
 data class ChangedFile(val path: String, val change: FileChange)
+
+data class CommitAuthor(val userId: String?, val email: String?, val merge: Boolean)
 
 data class AutoMerge(val enabledBy: SourceUser?, val enabledAt: Instant?)
 
@@ -47,7 +61,14 @@ data class PullRequest(
     /** Null when the head commit's rollup could not be read. */
     val checks: List<Check>?,
     val files: List<ChangedFile>,
-)
+    val commits: List<CommitAuthor> = emptyList(),
+) {
+    /** The emails of [user]'s own non-merge commits. */
+    fun commitEmailsBy(user: SourceUser): List<String> =
+        commits.filter { !it.merge && it.userId == user.id }
+            .mapNotNull { it.email?.trim()?.takeIf(String::isNotEmpty) }
+            .distinct()
+}
 
 data class RateLimit(val remaining: Int, val resetAt: Instant)
 

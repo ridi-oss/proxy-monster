@@ -64,7 +64,7 @@ class SlackDecisionHandler(
             return reply("not_authorized")
         }
 
-        val approve = interaction.actionId == SlackTransport.ACTION_APPROVE
+        val approve = interaction.actionId != SlackTransport.ACTION_DENY
         // A decision is about the SQL the message showed, so a click from before an edit decides nothing.
         if (req.revision != interaction.revision) return reply("request_changed")
         val actor = AuditActor(
@@ -90,7 +90,8 @@ class SlackDecisionHandler(
             "query approval {} from slack request={} requester={} decider={}",
             if (approve) "approved" else "rejected", req.id, req.principal, interaction.principal,
         )
-        if (!approve) return ""
+        // A pull request's merge runs its request; an approve-only click never runs.
+        if (!approve || interaction.actionId != SlackTransport.ACTION_APPROVE || req.fromPullRequest) return ""
 
         // Approving from Slack also runs it: whoever approves is the one who must execute, so offering
         // approve-without-run here would strand the task waiting for a console visit.

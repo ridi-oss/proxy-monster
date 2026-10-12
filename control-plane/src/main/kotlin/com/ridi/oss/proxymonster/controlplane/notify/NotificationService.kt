@@ -2,6 +2,7 @@ package com.ridi.oss.proxymonster.controlplane.notify
 
 import com.ridi.oss.proxymonster.controlplane.AccessRequest
 import com.ridi.oss.proxymonster.controlplane.AccessStore
+import com.ridi.oss.proxymonster.controlplane.PullRequestRef
 import com.ridi.oss.proxymonster.controlplane.QueryResultStore
 import io.ktor.http.URLBuilder
 import io.ktor.http.appendPathSegments
@@ -79,6 +80,10 @@ class NotificationService(
             val targets: List<Pair<String, NotificationKind>> = when (event) {
                 // emit() only carries later events; a pending request is enqueued by emitRequested. Kept total.
                 NotificationEvent.TASK_REQUESTED -> recipients.recipientsFor(req).map { it to NotificationKind.APPROVER }
+                // An alert reaches everyone who may approve (admins included) and every party, fresh.
+                NotificationEvent.TASK_CLOSED_AFTER_RUN, NotificationEvent.TASK_MERGED_WITHOUT_FILE ->
+                    recipients.recipientsFor(req, listOfNotNull(req.principal, req.decidedBy, req.executedBy))
+                        .map { it to NotificationKind.APPROVER }
                 // Every later event edits the threads of exactly the people who were TOLD about the request —
                 // the approver side is those who got it (recomputing eligibility would skip an approver whose
                 // role was revoked since, stranding their live buttons), the requester side is the requester's
@@ -92,11 +97,29 @@ class NotificationService(
                 }
             }
             for (transport in transports) {
-                for ((recipient, kind) in targets) {
+                for ((recipient, kind) in targetsOn(transport, req, targets)) {
                     store.enqueue(c, req.id, event, transport.name, recipient, kind)
                 }
             }
         }.onFailure { log.warn("notification emit failed task={} event={}", req.id, event.wire, it) }
+    }
+
+    /** A task-addressed transport gets one row at the task's address, or none; a person-addressed one gets [targets]. */
+    private fun targetsOn(
+        transport: NotificationTransport,
+        req: AccessRequest,
+        targets: List<Pair<String, NotificationKind>>,
+    ): List<Pair<String, NotificationKind>> = when {
+        !transport.addressesTasks -> targets
+        else -> listOfNotNull(transport.taskAddress(req)?.let { it to NotificationKind.APPROVER })
+    }
+
+    /** [emit] on its own transaction, then wake the drainer; for an event with no task change to join. */
+    fun emitEvent(event: NotificationEvent, req: AccessRequest) {
+        if (!enabled) return
+        runCatching { store.inTransaction { c -> emit(c, event, req) } }
+            .onFailure { log.warn("notification emit failed task={} event={}", req.id, event.wire, it) }
+        wake()
     }
 
     /**
@@ -111,6 +134,8 @@ class NotificationService(
         requester: String,
         ds: com.ridi.oss.proxymonster.controlplane.Datasource,
         roleName: String?,
+        source: String = "console",
+        pullRequest: PullRequestRef? = null,
     ) {
         if (!enabled) return
         runCatching {
@@ -124,9 +149,17 @@ class NotificationService(
                 status = "PENDING",
                 createdAt = "",
                 revision = 1,
+                source = source,
+                pullRequest = pullRequest,
             )
             val approvers = recipients.recipientsFor(subject)
             for (transport in transports) {
+                if (transport.addressesTasks) {
+                    transport.taskAddress(subject)?.let {
+                        store.enqueue(c, taskId, NotificationEvent.TASK_REQUESTED, transport.name, it, NotificationKind.APPROVER)
+                    }
+                    continue
+                }
                 for (recipient in approvers) {
                     store.enqueue(c, taskId, NotificationEvent.TASK_REQUESTED, transport.name, recipient, NotificationKind.APPROVER)
                 }
@@ -190,7 +223,7 @@ class NotificationService(
         // A non-update row that already left a ref was delivered by a prior attempt whose markSent did not
         // commit (the post succeeded, then the bookkeeping failed). Re-posting would double-send and strand
         // the first message's live approve/deny buttons — adopt the ref and finish the row instead.
-        if (!row.event.isUpdate && existingRef != null) return store.markSent(row.id)
+        if (row.event.isCreation && existingRef != null) return store.markSent(row.id)
 
         // Editing an existing message needs only its ref, not the recipient's address — so an update skips
         // the address lookup entirely. For Slack that is two saved round-trips per update
@@ -212,7 +245,10 @@ class NotificationService(
 
         when (result) {
             is DeliveryResult.Sent -> {
-                store.rememberMessage(row.taskId, transport.name, row.recipient, row.kind, result.externalRef)
+                // An alert's fresh post must not displace the message later events edit.
+                if (row.event.isCreation || row.event.isUpdate) {
+                    store.rememberMessage(row.taskId, transport.name, row.recipient, row.kind, result.externalRef)
+                }
                 store.markSent(row.id)
             }
             is DeliveryResult.Drop -> store.markDead(row.id, result.reason)
@@ -263,6 +299,16 @@ class NotificationService(
         val meta = queryResultStore
             ?.takeIf { row.recipient == req.principal || row.recipient == req.executedBy }
             ?.meta(req.id)
+        // The redacted error goes to the run's parties and to the task's own address (the pull request).
+        val failedRun = if (
+            row.event == NotificationEvent.TASK_FAILED &&
+            (row.recipient == req.principal || row.recipient == req.executedBy || transport.taskAddress(req) == row.recipient)
+        ) {
+            runCatching { queryResultStore?.accessFor(req.id) }.getOrNull()
+        } else {
+            null
+        }
+        val failure = runCatching { failedRun?.errorDetail?.message }.getOrNull()?.takeIf { it.isNotBlank() }
         return NotificationMessage(
             event = row.event,
             taskId = req.id,
@@ -283,6 +329,15 @@ class NotificationService(
             deepLink = URLBuilder(webBaseUrl).appendPathSegments("workflows", req.id.toString()).buildString(),
             actions = actionsFor(row.event, req, statement),
             notifiedApprovers = notifiedApprovers,
+            source = req.source,
+            path = req.pullRequest?.path,
+            prUrl = req.pullRequest?.prUrl,
+            schema = req.pullRequest?.defaultSchema,
+            autoMergeEnabled = req.pullRequest?.prAutoMerge ?: false,
+            statementCount = req.statementCount,
+            failure = failure,
+            failedStatement = failedRun?.takeIf { it.meta.status == "FAILED" && !it.sql.isNullOrBlank() }
+                ?.let { FailedStatement(it.meta.ordinal, it.sql!!) },
         )
     }
 
@@ -305,7 +360,12 @@ class NotificationService(
             add(NotificationAction.DENY)
             // Approve-and-run also RUNS the query, which needs result storage — without it the click would
             // approve but never start the run, so the button is not offered when it cannot be honored.
-            if (statement.complete && queryResultStore != null) add(NotificationAction.APPROVE_AND_RUN)
+            // A pull request's merge starts its run, so its request is approved without running.
+            if (req.fromPullRequest) {
+                if (statement.complete) add(NotificationAction.APPROVE)
+            } else if (statement.complete && queryResultStore != null) {
+                add(NotificationAction.APPROVE_AND_RUN)
+            }
         }
     }
 

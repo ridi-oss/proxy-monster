@@ -149,7 +149,7 @@ class SlackSocketMode(
 
         val action = payload["actions"]?.jsonArray?.firstOrNull()?.jsonObject ?: return
         val actionId = action["action_id"]?.jsonPrimitive?.content ?: return
-        if (actionId != SlackTransport.ACTION_APPROVE && actionId != SlackTransport.ACTION_DENY) return
+        if (actionId !in setOf(SlackTransport.ACTION_APPROVE, SlackTransport.ACTION_APPROVE_ONLY, SlackTransport.ACTION_DENY)) return
         val value = action["value"]?.jsonPrimitive?.content?.split(':') ?: return
         val taskId = value[0].toLongOrNull() ?: return
         val revision = value.getOrNull(1)?.let { it.toIntOrNull() ?: return }

@@ -913,6 +913,14 @@ class UserGroupStore(internal val dataSource: DataSource) {
         }
     }
 
+    /** [principal] when an active directory user holds it, else null. */
+    fun activePrincipal(principal: String): String? = dataSource.connection.use { c ->
+        c.prepareStatement("SELECT principal FROM app_user WHERE principal = ? AND active").use { ps ->
+            ps.setString(1, principal)
+            ps.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
+        }
+    }
+
     private fun findGroupIdByExternalId(externalId: String): Long? = dataSource.connection.use { c ->
         c.prepareStatement("SELECT id FROM app_group WHERE external_id=? AND deleted_at IS NULL").use { ps ->
             ps.setString(1, externalId)

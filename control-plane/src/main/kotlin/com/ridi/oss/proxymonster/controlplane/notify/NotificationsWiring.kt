@@ -13,6 +13,7 @@ import com.ridi.oss.proxymonster.controlplane.UserGroupStore
 import com.ridi.oss.proxymonster.controlplane.authz.Authz
 import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
 import com.ridi.oss.proxymonster.controlplane.runApprovedTask
+import com.ridi.oss.proxymonster.controlplane.source.SourceAdapter
 import io.ktor.server.application.Application
 import kotlinx.coroutines.launch
 import java.time.Duration
@@ -38,12 +39,14 @@ fun Application.installNotifications(
     auditStore: AuditStore,
     runExecService: RunExecService,
     taskCompletionHub: TaskCompletionHub,
+    sourceAdapter: SourceAdapter? = null,
 ): NotificationService? {
     val slackHttp = if (config.slackBotToken != null && config.slackAppToken != null) slackHttpClient() else null
     val transports = buildList {
         if (slackHttp != null && config.slackBotToken != null) {
             add(SlackTransport(slackHttp, config.slackBotToken, config.webBaseUrl, NotificationRenderer()))
         }
+        if (sourceAdapter != null) add(PullRequestCommentTransport(sourceAdapter))
     }
     if (transports.isEmpty()) return null
 

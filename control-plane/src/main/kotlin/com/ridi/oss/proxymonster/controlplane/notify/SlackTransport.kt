@@ -143,7 +143,7 @@ class SlackTransport(
                 }
             },
         )
-        val actions = if (truncated) message.actions - NotificationAction.APPROVE_AND_RUN else message.actions
+        val actions = if (truncated) message.actions - APPROVALS else message.actions
         if (actions.isNotEmpty()) {
             add(
                 buildJsonObject {
@@ -169,6 +169,11 @@ class SlackTransport(
                 NotificationAction.OPEN -> put("url", message.deepLink)
                 NotificationAction.APPROVE_AND_RUN -> {
                     put("action_id", ACTION_APPROVE)
+                    put("value", "${message.taskId}:${message.revision}")
+                    put("style", "primary")
+                }
+                NotificationAction.APPROVE -> {
+                    put("action_id", ACTION_APPROVE_ONLY)
                     put("value", "${message.taskId}:${message.revision}")
                     put("style", "primary")
                 }
@@ -259,7 +264,10 @@ class SlackTransport(
     companion object {
         const val TRANSPORT = "slack"
         const val ACTION_APPROVE = "pm_approve_and_run"
+        const val ACTION_APPROVE_ONLY = "pm_approve"
         const val ACTION_DENY = "pm_deny"
+
+        private val APPROVALS = setOf(NotificationAction.APPROVE_AND_RUN, NotificationAction.APPROVE)
 
         /** A Block Kit section's `text` hard-caps here; a longer body is a permanent invalid_blocks reject. */
         private const val SECTION_TEXT_LIMIT = 3000

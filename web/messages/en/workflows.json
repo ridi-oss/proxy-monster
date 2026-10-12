@@ -41,7 +41,8 @@
     "rejectionReason": "Rejection reason",
     "sourceDecision": "Source decision",
     "requesterReason": "Requester reason",
-    "grantDuration": "Grant duration"
+    "grantDuration": "Grant duration",
+    "pullRequest": "Pull request"
   },
   "durations": {
     "asRequested": "As requested",
@@ -175,6 +176,7 @@
     "rejectedToast": "Query approval rejected",
     "rejectFailed": "reject failed",
     "approvedExecuteUnderR": "Approved — an approver may submit it under the requested role.",
+    "approvedGithub": "Approved — it runs when the pull request is ready to merge.",
     "runUnderRole": "Run the approved query under the requested role. Progress and results update automatically.",
     "runStatus": "{status} · {rows, plural, one {# row} other {# rows}} · expires {expires}",
     "failedCode": "Execution failed: {code}",
@@ -202,7 +204,9 @@
     "title": "Approve & run query request",
     "descriptionWithPrincipal": "Approve {principal}'s query request and run it under the requested role.",
     "descriptionFallback": "Approve this query request and run it under the requested role.",
-    "executeUnderRNote": "Once approved, an approver runs the query under the requested role and releases the result — the requester never sees more than that role would."
+    "executeUnderRNote": "Once approved, an approver runs the query under the requested role and releases the result — the requester never sees more than that role would.",
+    "titleGithub": "Approve query request",
+    "approvedToast": "Approved {principal}'s request."
   },
   "tokenDialog": {
     "generateFailed": "Generate failed",

@@ -344,6 +344,7 @@ of a route and the gate it calls. Paths are relative to
 | OAuth 2.1 authorization server | `/.well-known/oauth-authorization-server`, `/oauth/**` | `oauth/OAuthRoutes.kt` | protocol-native (PKCE, client metadata, consent CSRF); `/oauth/consents` needs a session |
 | MCP admin surface | `/mcp`, `/.well-known/oauth-protected-resource**` | `mcp/McpServer.kt` | MCP access-token bearer + host/origin checks in an interceptor; metadata routes public |
 | CI token exchange | `/api/workload/token` | `WorkloadTokenRoutes.kt` | none — verifies the CI OIDC JWT itself; mints a `WORKLOAD` bearer |
+| GitHub SQL source | `/api/github/requests` | `GitHubSourceRoutes.kt` | `requireWorkload` — `WORKLOAD` bearer; filing adds Cedar `task.request` for the Workload on the datasource |
 | SCIM 2.0 provisioning | `/api/scim/v2/**` | `Scim.kt` | `requireScimAuth` — `PM_SCIM_TOKEN` bearer, TLS-only; 501 when unconfigured |
 | Audit ingest (from the proxy) | `/api/ingest/decision` | `App.kt` | `X-PM-Ingest-Token` vs `PM_SECRET_TOKEN`; open when that env is unset (dev only) |
 | Audit read | `/api/audit`, `/api/audit/{id}` | `AuditRoutes.kt` | `requireApi` + Cedar `audit.read` — allow on `AuditLog` returns all rows, else own rows only |

@@ -209,7 +209,8 @@ SELECT 1 FROM access_request r
                              WHERE f.scope = r.scope AND f.pr = r.pr AND f.status = 'FAILED'
                                AND NOT EXISTS (SELECT 1 FROM access_request n
                                                 WHERE n.scope = f.scope AND n.pr = f.pr AND n.path = f.path
-                                                  AND n.id > f.id AND n.status <> 'SUPERSEDED'))));
+                                                  AND n.id > f.id
+                                                  AND n.status NOT IN ('DELETED', 'ALREADY_RAN', 'CANCELLED')))));
 -- none → the execute-once claim on the request
 ```
 
@@ -384,11 +385,13 @@ like any other.
   a policy can allow or forbid approving from GitHub per datasource. A GitHub
   review carries no requester IP, so a policy that needs a network tag fails
   closed for it.
-- Only a review submitted after the request was filed approves it; the request
-  records that review's ID. If that review is later dismissed, or the same
-  reviewer later requests changes, the request returns from APPROVED to PENDING
-  if it has not started. Other reviews, and approvals from the console, Slack,
-  or MCP, are not withdrawn by GitHub reviews.
+- Only a review submitted after the request was filed, or last edited, and on
+  the commit it was filed for approves it, so a review started before a push
+  cannot approve the SQL the push brought; the request records that review's ID.
+  If that review is later dismissed, or the same reviewer later requests
+  changes, the request returns from APPROVED to PENDING if it has not started.
+  Other reviews, and approvals from the console, Slack, or MCP, are not
+  withdrawn by GitHub reviews.
 - The approval is recorded as `decided_by` the mapped user on the `github`
   channel, with the review URL in the audit event.
 
@@ -522,15 +525,19 @@ GitHub requests only:
 
 A request belongs to the PR's current filing when its `head_sha` equals
 `filed_head`. Push 1 at head `abc` files `0041`: its request has
-`head_sha = abc` and `filed_head = abc`. Push 2 at head `def` edits `0041`,
-which files a new request with `head_sha = def`, and `filed_head` becomes `def`
-on both. The `abc` request no longer matches, so it is out of the current set. A
-push that leaves `0041` unchanged moves its `head_sha` to the new head instead.
+`head_sha = abc` and `filed_head = abc`. Push 2 at head `def` edits `0041`, and
+its request takes the file through the same edit as a console edit: SQL whose
+content hash changed is analyzed again and returns the request to PENDING under
+the next `revision`; SQL with the same hash keeps the stored text, the revision,
+and the approval. Either way `head_sha` becomes `def`, and a file moved to
+another path with the same key keeps its request under the new path. A request
+that already ran, failed, or was rejected is never edited; new SQL gets a new
+request.
 
-New status `SUPERSEDED`: the request will never run. In the example, the `abc`
-request becomes SUPERSEDED when push 2 is filed. So does a request whose PR
-closes without merging before its SQL ran, and one whose change key already ran
-in the scope from another PR.
+A push that removes a file ends its request as `DELETED`. A new status,
+`ALREADY_RAN`, marks a request whose change key already ran in the scope from
+another PR; it is kept so the merge can be recorded. A request whose PR closes
+or merges before its SQL ran becomes `CANCELLED`.
 
 ## Alternative: a prerequisite chain
 

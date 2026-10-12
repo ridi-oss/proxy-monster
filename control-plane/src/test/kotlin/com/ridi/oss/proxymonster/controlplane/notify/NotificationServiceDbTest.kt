@@ -281,6 +281,24 @@ class NotificationServiceDbTest {
     }
 
     @Test
+    fun `an alert posts fresh and leaves the request message as the one later events edit`() = runBlocking {
+        val task = newTask().id
+        transport.deliverResult = DeliveryResult.Sent("ref-request")
+        enqueue(task, NotificationEvent.TASK_REQUESTED, "sam@x")
+        svc.drainOnce()
+
+        transport.deliverResult = DeliveryResult.Sent("ref-alert")
+        enqueue(task, NotificationEvent.TASK_MERGED_WITHOUT_FILE, "sam@x")
+        svc.drainOnce()
+        assertEquals(NotificationEvent.TASK_MERGED_WITHOUT_FILE, transport.delivered.last().event, "the alert is a fresh post")
+        assertEquals("ref-request", store.externalRef(task, "fake", "sam@x", NotificationKind.APPROVER))
+
+        enqueue(task, NotificationEvent.TASK_EXECUTED, "sam@x")
+        svc.drainOnce()
+        assertEquals(listOf("ref-request"), transport.updated.map { it.ref })
+    }
+
+    @Test
     fun `an update waits while the requested message it edits is still pending`() = runBlocking {
         val task = newTask().id
         transport.deliverResult = DeliveryResult.Retry("ratelimited") // the requested stays pending

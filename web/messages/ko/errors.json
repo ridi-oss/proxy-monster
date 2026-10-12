@@ -14,6 +14,10 @@
   "approval": {
     "already_decided": "이미 처리된 요청입니다.",
     "already_executed": "이 요청은 이미 실행되었습니다 — 승인된 쿼리는 정확히 한 번만 실행됩니다.",
+    "github_runs_on_merge": "풀 리퀘스트에서 올라온 요청입니다. 풀 리퀘스트를 머지할 준비가 되면 실행됩니다.",
+    "github_key_not_numeric": "{path}의 파일 키가 숫자가 아닙니다. numeric 정렬에서는 파일 키가 숫자로만 이루어져야 합니다. string 정렬을 쓰거나 files 패턴을 바꿔 주세요.",
+    "github_stale_head": "풀 리퀘스트의 현재 헤드({head})가 아닌 커밋에서 올린 요청입니다. 현재 헤드에서 다시 올려 주세요.",
+    "github_repository_mismatch": "이 워크로드 토큰은 다른 저장소에서 발급되었습니다.",
     "exactly_one_source_required": "원본 결정(decision) 또는 데이터소스+SQL 중 하나만 지정하세요.",
     "no_policy_configured": "이 데이터소스에 설정된 쿼리 승인 정책이 없습니다.",
     "no_sql": "이 요청에는 실행할 SQL이 없습니다.",
@@ -41,7 +45,8 @@
     "statement_skipped": "건너뜀 — 앞선 문장에서 실행이 중단되었습니다.",
     "request_changed": "요청을 연 뒤 내용이 수정되었습니다. 새 SQL을 확인하고 다시 승인하세요.",
     "not_editable": "실행되지 않은 대기 중이거나 승인된 요청만 수정할 수 있습니다.",
-    "edit_forbidden": "요청자만 이 요청을 수정할 수 있습니다."
+    "edit_forbidden": "요청자만 이 요청을 수정할 수 있습니다.",
+    "github_edit_by_push": "GitHub 풀 리퀘스트에서 온 요청은 여기가 아니라 해당 파일을 푸시해서 수정합니다."
   },
   "auth": {
     "invalid_id_token": "유효하지 않은 ID 토큰입니다.",

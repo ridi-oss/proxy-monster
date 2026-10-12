@@ -148,6 +148,8 @@ func TestPostgresStatementKind(t *testing.T) {
 		{"DROP TYPE ty", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
 		{"DROP DOMAIN dom", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
 		{"DROP EXTENSION ext", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
+		{"CREATE FUNCTION f() RETURNS TABLE (a INT) LANGUAGE sql STABLE AS $$ SELECT 1 $$", pb.StatementKind_STATEMENT_KIND_CREATE_FUNCTION},
+		{"CREATE FUNCTION f() RETURNS SETOF INT LANGUAGE sql STABLE AS $$ SELECT 1 $$", pb.StatementKind_STATEMENT_KIND_CREATE_FUNCTION},
 		{"COMMENT ON TABLE users IS 'x'", pb.StatementKind_STATEMENT_KIND_ALTER_TABLE},
 		{"comment on table users is 'x'", pb.StatementKind_STATEMENT_KIND_ALTER_TABLE},
 		{"COMMENT ON COLUMN users.ssn IS 'x'", pb.StatementKind_STATEMENT_KIND_ALTER_TABLE},

@@ -343,6 +343,22 @@ scopes last 1 hour by default (`PM_ELEVATED_SCOPE_TTL`); `pmon status` shows
 when, and once they lapse prints the `pmon login --scopes …` that gets them
 back. A scope is a ceiling: it never grants what your roles do not.
 
+## SQL from a GitHub pull request: when a run fails
+
+When your team files SQL from pull requests
+([sql-from-github.md](../sql-from-github.md)), a failed file shows on the PR:
+
+- The `query executed` check turns red with `<path> failed`, and the PR comment
+  shows the failed statement and the target's error.
+- Statements before the failed one were applied; it and the ones after it were
+  not. On MySQL each DDL statement commits on its own, so a failure at statement
+  3 of 5 leaves 1 and 2 applied.
+- Fix it by pushing a new commit. Changed content gets a new change key, so the
+  file is a new request and needs a new approval; it runs once approved.
+- Files of the PR that already executed do not run again.
+- If the file partly applied in a way a follow-up file cannot fix, ask an admin
+  to reconcile it before you push.
+
 ## Troubleshooting
 
 **`You do not have access to connect to this datasource.`** No role of yours

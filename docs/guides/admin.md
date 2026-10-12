@@ -221,6 +221,28 @@ offers approval only when it shows the whole statement. `PM_NOTIFY_STATEMENT`
 on the `slack` channel with no `requester_ip`, so a policy conditioned on the
 address denies it there.
 
+## Recovering a SQL run from GitHub
+
+Requests filed from pull requests ([sql-from-github.md](../sql-from-github.md))
+appear in **Workflows** marked GitHub, with their scope; `get_approval` over MCP
+returns the same request. Approving one from the console, Slack, or MCP never
+runs it: it runs when the PR is ready to merge.
+
+- **A file partly applied.** The request is FAILED. Its detail lists every
+  statement with its own status, so you see which ones were applied. Undo them,
+  or have the author leave them out of the fix and accept that `main` does not
+  record them.
+- **A PR closed after its SQL ran.** Approvers (admins included) and the
+  request's parties get a `task.closed_after_run` alert. The target changed but
+  `main` did not, and the scope stays blocked until the file reaches `main`:
+  reopen and merge the PR, or merge a new PR that adds the identical file (same
+  key and content), which turns green without running. To undo the change, land
+  the file first, then a file that reverts it.
+- **A file removed from the PR after it ran.** When the PR merges, a
+  `task.merged_without_file` alert goes out: the target has SQL `main` does not.
+  The scope is not blocked. Add the identical file in a new PR so `main` records
+  it, or a file that reverts it.
+
 ## Deciding on where a request comes from
 
 Every decision carries a context the control plane attests; a client cannot

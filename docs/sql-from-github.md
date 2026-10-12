@@ -1,6 +1,6 @@
 # SQL from GitHub — reviewed files, approved in proxy-monster, run as they merge
 
-WIP.
+Built.
 
 A team keeps its schema changes (and occasional data fixes) as `.sql` files in
 its own repository. A pull request adds a file; CI proves it applies cleanly in

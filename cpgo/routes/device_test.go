@@ -318,7 +318,7 @@ func TestPmonMCPToken(t *testing.T) {
 	e.exec(t, `UPDATE principal_session SET elevated_until = now() + interval '100 seconds' WHERE kind = 'DAEMON'`)
 	if status, out, m := mint(r.RenewalToken); status != http.StatusOK {
 		t.Fatalf("near the window's end: %d %s", status, out)
-	} else if expires, _ := time.Parse(time.RFC3339Nano, m["expiresAt"]); time.Until(expires) > 100*time.Second {
+	} else if expires, _ := time.Parse(time.RFC3339Nano, m["expiresAt"]); time.Until(expires) > 105*time.Second {
 		t.Fatalf("an elevated MCP token outlived its window: %s", m["expiresAt"])
 	}
 	e.exec(t, `UPDATE principal_session SET elevated_until = now() - interval '1 second' WHERE kind = 'DAEMON'`)

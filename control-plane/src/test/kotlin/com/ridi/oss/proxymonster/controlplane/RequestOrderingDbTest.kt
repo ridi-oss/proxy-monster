@@ -141,7 +141,7 @@ class RequestOrderingDbTest {
             val decisionId = core.auditStore.insert(
                 AuditEvent(principal = requester, datasource = ds.name, statement = "select ${seq.incrementAndGet()}", decision = Decision.DENY),
             )
-            val input = CreateApprovalInput(sourceDecisionId = decisionId, reason = "r", roleId = role.id)
+            val input = CreateQueryRequestInput(sourceDecisionId = decisionId, reason = "r", roleId = role.id)
             val created = if (source == null) {
                 approvals.create(requester, null, actor, input)
             } else {

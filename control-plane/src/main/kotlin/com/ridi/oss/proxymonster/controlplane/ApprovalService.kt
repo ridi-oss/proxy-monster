@@ -81,15 +81,15 @@ class ApprovalService(
         return decision !is AuthzDecision.Deny
     }
 
-    /** [roleName] names R when [CreateApprovalInput.roleId] is null; it resolves only after the task.request gate. */
+    /** [roleName] names R when [CreateQueryRequestInput.roleId] is null; it resolves only after the task.request gate. */
     fun create(
         principal: String,
         requesterIp: String?,
         actor: AuditActor,
-        input: CreateApprovalInput,
+        input: CreateQueryRequestInput,
         roleName: String? = null,
         source: String = "console",
-    ): CreateApprovalResponse {
+    ): CreateQueryRequestResponse {
         if (input.reason.isBlank()) throw fieldRequired("reason")
 
         val hasSource = input.sourceDecisionId != null
@@ -142,7 +142,7 @@ class ApprovalService(
                 throw pendingExists()
             }
             notifications?.wake()
-            return CreateApprovalResponse(request, wouldAllow = false)
+            return CreateQueryRequestResponse(request, wouldAllow = false)
         }
 
         validateProactiveCompose(input.datasourceId, input.sql, input.title, input.reason)?.let { throw fieldRequired(it) }
@@ -206,7 +206,7 @@ class ApprovalService(
             source = source,
         )
         notifications?.wake()
-        return CreateApprovalResponse(request, wouldAllow = decision.action == EnfAction.ALLOW)
+        return CreateQueryRequestResponse(request, wouldAllow = decision.action == EnfAction.ALLOW)
     }
 
     /**
@@ -236,7 +236,7 @@ class ApprovalService(
     fun inbox(principal: String, requesterIp: String?): List<AccessRequest> =
         accessStore.listQueryRequests("PENDING", null).filter { mayDecide(principal, requesterIp, AuthzAction.TASK_APPROVE, it) }
 
-    fun detail(principal: String, requesterIp: String?, id: Long): ApprovalDetail {
+    fun detail(principal: String, requesterIp: String?, id: Long): QueryRequestDetail {
         val req = workflowRequest(id)
         val isApprover = mayDecide(principal, requesterIp, AuthzAction.TASK_APPROVE, req)
         // Task metadata is gated by task.read. Saved rows are separate and remain behind task.assume.
@@ -250,7 +250,7 @@ class ApprovalService(
         // Mirrors execute's gates: only the approver of record gets a Run affordance.
         val canExecute = queryResultStore != null && isApprover && req.status == "APPROVED" && req.decidedBy == principal
         val canCancel = req.status == "EXECUTING" && mayDecide(principal, requesterIp, AuthzAction.TASK_CANCEL, req)
-        return ApprovalDetail(
+        return QueryRequestDetail(
             req,
             canDecide = req.status == "PENDING" && isApprover,
             result = visibleMeta,
@@ -323,7 +323,7 @@ class ApprovalService(
     }
 
     /** Claim the approved task and launch its run under R. The returned [Job] completes at its terminal state. */
-    fun execute(executor: String, requesterIp: String?, id: Long): Pair<ExecuteApprovalResponse, Job> {
+    fun execute(executor: String, requesterIp: String?, id: Long): Pair<ExecuteQueryRequestResponse, Job> {
         val req = workflowRequest(id)
         // Authorize BEFORE disclosing task state, so the 409s below are never a state oracle for a non-approver.
         if (!mayDecide(executor, requesterIp, AuthzAction.TASK_APPROVE, req)) throw notApprover()
@@ -357,7 +357,7 @@ class ApprovalService(
                 notifications = notifications, log = log,
             )
         }
-        return ExecuteApprovalResponse(decision = "EXECUTING") to job
+        return ExecuteQueryRequestResponse(decision = "EXECUTING") to job
     }
 
     /**
@@ -460,7 +460,7 @@ class ApprovalService(
     private fun fieldRequired(field: String) =
         TaskServiceException(HttpStatusCode.BadRequest, ApiError("common.field_required", mapOf("fields" to field)))
 
-    private fun roleIdOf(input: CreateApprovalInput, roleName: String?): Long = input.roleId
+    private fun roleIdOf(input: CreateQueryRequestInput, roleName: String?): Long = input.roleId
         ?: roleName?.let { (policyStore.getRoleByName(it) ?: throw serviceNotFound("role")).id }
         ?: throw roleRequired()
 

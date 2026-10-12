@@ -74,7 +74,7 @@ import kotlin.test.fail
  * Route/DB regression coverage for `POST /api/approvals/{id}/execute`'s DENY-under-R fail-closed
  * floor (Approvals.kt:589-670): a request elevated to role R, already APPROVED for APPROVER_EXEC, whose
  * execute-under-R decision comes back DENY must (1) never leak columns/rows in the HTTP response
- * ([ExecuteApprovalResponse.result] stays null) and (2) never write a `query_result` row — the early
+ * ([ExecuteQueryRequestResponse.result] stays null) and (2) never write a `query_result` row — the early
  * return at :642-644 must precede [QueryResultStore.save] at :657, not race it. Runs a REAL fake proxy over
  * gRPC (the SAME [ControlPlaneCore] wired into both [RunExecService] and [ControlPlaneGrpcService], so
  * the fake proxy's Events/runExec streams land on the same `proxyEventsHub` — mirrors
@@ -271,7 +271,7 @@ class ApprovalExecuteRouteDbTest {
             withTimeout(5_000) { proxy.await() }
 
             assertEquals(HttpStatusCode.Accepted, response.status)
-            assertEquals("EXECUTING", response.body<ExecuteApprovalResponse>().decision)
+            assertEquals("EXECUTING", response.body<ExecuteQueryRequestResponse>().decision)
             awaitUntil("DENY marks task and child failed") {
                 core.accessStore.getRequest(id)?.status == "FAILED" && resultStore.meta(id)?.status == "FAILED"
             }
@@ -568,7 +568,7 @@ class ApprovalExecuteRouteDbTest {
             withTimeout(5_000) { proxy.await() }
 
             assertEquals(HttpStatusCode.Accepted, response.status)
-            assertEquals("EXECUTING", response.body<ExecuteApprovalResponse>().decision)
+            assertEquals("EXECUTING", response.body<ExecuteQueryRequestResponse>().decision)
             awaitUntil("successful run completes") {
                 core.accessStore.getRequest(id)?.status == "EXECUTED" && resultStore.meta(id)?.status == "DONE"
             }
@@ -634,7 +634,7 @@ class ApprovalExecuteRouteDbTest {
             // The response must come back BEFORE Done — the whole point of the async submit.
             val response = withTimeout(5_000) { responseDeferred.await() }
             assertEquals(HttpStatusCode.Accepted, response.status)
-            assertEquals("EXECUTING", response.body<ExecuteApprovalResponse>().decision)
+            assertEquals("EXECUTING", response.body<ExecuteQueryRequestResponse>().decision)
 
             // ...and while the proxy still holds Done, the durable state is observably in flight.
             awaitUntil("task EXECUTING and child RUNNING while in flight") {
@@ -681,7 +681,7 @@ class ApprovalExecuteRouteDbTest {
             proxyRequests.send(proxyRunMsg { serving = runServing {} })
             assertEquals(HttpStatusCode.Accepted, withTimeout(5_000) { execute.await() }.status)
             awaitUntil("approval child RUNNING") { resultStore.meta(id)?.status == "RUNNING" }
-            assertEquals(true, client.get("/api/approvals/$id").body<ApprovalDetail>().canCancel)
+            assertEquals(true, client.get("/api/approvals/$id").body<QueryRequestDetail>().canCancel)
 
             val cancelled = client.post("/api/approvals/$id/cancel")
             assertEquals(HttpStatusCode.OK, cancelled.status)

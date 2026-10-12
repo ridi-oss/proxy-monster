@@ -11,7 +11,7 @@ import type {
   AccessRequestInput,
   AppGroup,
   AppGroupInput,
-  ApprovalDetail,
+  QueryRequestDetail,
   AppUser,
   AppUserInput,
   AuditEvent,
@@ -22,8 +22,8 @@ import type {
   Classification,
   ClassificationDelete,
   ClassificationInput,
-  CreateApprovalInput,
-  CreateApprovalResponse,
+  CreateQueryRequestInput,
+  CreateQueryRequestResponse,
   CreateTokenInput,
   Datasource,
   DatasourceInput,
@@ -32,7 +32,7 @@ import type {
   DefaultSchemaResult,
   EditorSubmitResponse,
   EditorTaskStatus,
-  ExecuteApprovalResponse,
+  ExecuteQueryRequestResponse,
   GroupMember,
   GroupRoleMapping,
   Identity,
@@ -589,8 +589,8 @@ export function revokeAccessGrant(id: number): Promise<void> {
 
 // ---- Query approvals -------------------------------------------------------
 
-export function createApproval(input: CreateApprovalInput): Promise<CreateApprovalResponse> {
-  return request<CreateApprovalResponse>('/api/approvals', {
+export function createApproval(input: CreateQueryRequestInput): Promise<CreateQueryRequestResponse> {
+  return request<CreateQueryRequestResponse>('/api/approvals', {
     method: 'POST',
     body: JSON.stringify(input),
   })
@@ -612,8 +612,8 @@ export function getApprovalInbox(): Promise<AccessRequest[]> {
   return request<AccessRequest[]>('/api/approvals/inbox')
 }
 
-export function getApproval(id: number): Promise<ApprovalDetail> {
-  return request<ApprovalDetail>(`/api/approvals/${id}`)
+export function getApproval(id: number): Promise<QueryRequestDetail> {
+  return request<QueryRequestDetail>(`/api/approvals/${id}`)
 }
 
 export function approveApproval(id: number): Promise<AccessRequest> {
@@ -630,8 +630,8 @@ export function rejectApproval(id: number, reason: string): Promise<AccessReques
 // ---- Task execution / result ------------------------------------------------
 
 /** Submit an approved task for asynchronous execution. */
-export function executeApproval(id: number): Promise<ExecuteApprovalResponse> {
-  return request<ExecuteApprovalResponse>(`/api/approvals/${id}/execute`, { method: 'POST' })
+export function executeApproval(id: number): Promise<ExecuteQueryRequestResponse> {
+  return request<ExecuteQueryRequestResponse>(`/api/approvals/${id}/execute`, { method: 'POST' })
 }
 
 /** Cancel an executing approved task. */

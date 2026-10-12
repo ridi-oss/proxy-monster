@@ -164,14 +164,14 @@ class ApprovalDiscoverPickSubmitRouteDbTest {
         val submitResponse = client.post("/api/approvals") {
             contentType(ContentType.Application.Json)
             setBody(
-                CreateApprovalInput(
+                CreateQueryRequestInput(
                     datasourceId = fx.datasource.id, sql = sql, title = "need ssn",
                     reason = "investigating an incident", roleId = fullReader.roleId,
                 ),
             )
         }
         assertEquals(HttpStatusCode.Created, submitResponse.status)
-        val created = submitResponse.body<CreateApprovalResponse>()
+        val created = submitResponse.body<CreateQueryRequestResponse>()
         assertEquals(fullReader.roleId, created.request.roleId, "the picked roleId must be carried onto the created request")
         assertEquals("full-reader", created.request.roleName)
 
@@ -198,11 +198,11 @@ class ApprovalDiscoverPickSubmitRouteDbTest {
 
         val cases = listOf(
             // datasourceId absent (but sql present -> still the proactive branch) -> "datasourceId".
-            "datasourceId" to CreateApprovalInput(datasourceId = null, sql = sql, title = "need it", reason = "investigating"),
+            "datasourceId" to CreateQueryRequestInput(datasourceId = null, sql = sql, title = "need it", reason = "investigating"),
             // datasourceId present -> proactive branch; sql absent -> "sql".
-            "sql" to CreateApprovalInput(datasourceId = fx.datasource.id, sql = null, title = "need it", reason = "investigating"),
+            "sql" to CreateQueryRequestInput(datasourceId = fx.datasource.id, sql = null, title = "need it", reason = "investigating"),
             // datasourceId + sql present; title blank -> "title".
-            "title" to CreateApprovalInput(datasourceId = fx.datasource.id, sql = sql, title = "  ", reason = "investigating"),
+            "title" to CreateQueryRequestInput(datasourceId = fx.datasource.id, sql = sql, title = "  ", reason = "investigating"),
         )
 
         for ((expectedField, input) in cases) {
@@ -225,7 +225,7 @@ class ApprovalDiscoverPickSubmitRouteDbTest {
         // a query approval must run under R (execute-under-R); there is no requester-run / no-elevation mode.
         val response = client.post("/api/approvals") {
             contentType(ContentType.Application.Json)
-            setBody(CreateApprovalInput(datasourceId = fx.datasource.id, sql = sql, title = "need it", reason = "investigating", roleId = null))
+            setBody(CreateQueryRequestInput(datasourceId = fx.datasource.id, sql = sql, title = "need it", reason = "investigating", roleId = null))
         }
         assertEquals(HttpStatusCode.BadRequest, response.status)
         assertEquals("approval.role_required", response.body<ApiError>().code)
@@ -244,13 +244,13 @@ class ApprovalDiscoverPickSubmitRouteDbTest {
         for ((statement, protected) in listOf(sql to false, "SELECT LOWER(region) FROM users WHERE ssn = 'secret'" to true)) {
             val submit = client.post("/api/approvals") {
                 contentType(ContentType.Application.Json)
-                setBody(CreateApprovalInput(
+                setBody(CreateQueryRequestInput(
                     datasourceId = fx.datasource.id, sql = statement, title = "function preview",
                     reason = "catalog forwarding test", roleId = fullReader.roleId,
                 ))
             }
             assertEquals(HttpStatusCode.Created, submit.status)
-            val created = submit.body<CreateApprovalResponse>()
+            val created = submit.body<CreateQueryRequestResponse>()
             if (!protected) assertTrue(created.wouldAllow, created.toString())
             assertEquals(if (protected) true else null, fx.accessStore.getRequest(created.request.id)!!.statementCarriesProtectedLiteral)
         }

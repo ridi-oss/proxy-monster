@@ -415,11 +415,11 @@ export interface AccessGrant {
   revokedAt?: string | null
 }
 
-export type CreateApprovalInput =
+export type CreateQueryRequestInput =
   | { sourceDecisionId: number; reason: string; title?: string; roleId?: number }
   | { datasourceId: number; sql: string; title: string; reason: string; roleId?: number }
 
-export interface CreateApprovalResponse {
+export interface CreateQueryRequestResponse {
   request: AccessRequest
   wouldAllow: boolean
 }
@@ -467,7 +467,7 @@ export interface QueryResultMeta {
   columns: string[]
 }
 
-export interface ApprovalDetail {
+export interface QueryRequestDetail {
   request: AccessRequest
   canDecide: boolean
   result?: QueryResultMeta | null
@@ -499,7 +499,7 @@ export interface QueryResultView {
 }
 
 /** Submit acknowledgement; completion is observed through task polling. */
-export interface ExecuteApprovalResponse {
+export interface ExecuteQueryRequestResponse {
   decision: 'EXECUTING'
 }
 

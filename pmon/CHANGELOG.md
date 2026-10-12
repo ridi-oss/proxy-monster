@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.12](https://github.com/ridi-oss/proxy-monster/compare/pmon-v0.1.11...pmon-v0.1.12) (2026-10-12)
+
+
+### Features
+
+* **tray:** install for me or all users; put pmon on PATH and uninstall from the app ([c3ad842](https://github.com/ridi-oss/proxy-monster/commit/c3ad84281e270e7236bd7883bcd20b3a5cdc46c0))
+
+
+### Bug Fixes
+
+* **pmon:** report the release's version ([3185266](https://github.com/ridi-oss/proxy-monster/commit/3185266fc2e93092f0ce6f5a0e80e2d972e299f8))
+
 ## [0.1.11](https://github.com/ridi-oss/proxy-monster/compare/pmon-v0.1.10...pmon-v0.1.11) (2026-10-12)
 
 

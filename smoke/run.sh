@@ -12,19 +12,19 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 SMOKE_DIR="${SMOKE_DIR:-${TMPDIR:-/tmp}/pm-smoke}"
 PROJECT="${SMOKE_COMPOSE_PROJECT:-pm-smoke}"
-export SMOKE_CP_DB_PORT="${SMOKE_CP_DB_PORT:-47010}"
-export SMOKE_MYSQL_PORT="${SMOKE_MYSQL_PORT:-47011}"
-export SMOKE_PG_PORT="${SMOKE_PG_PORT:-47012}"
-export SMOKE_ATHENA_PORT="${SMOKE_ATHENA_PORT:-47013}"
-CP_HTTP="${SMOKE_CP_HTTP_PORT:-47000}"
-CP_GRPC="${SMOKE_CP_GRPC_PORT:-47001}"
-CP_CHILD_HTTP="${SMOKE_CP_CHILD_HTTP_PORT:-47030}"
-CP_CHILD_GRPC="${SMOKE_CP_CHILD_GRPC_PORT:-47031}"
-PROXY_MYSQL="${SMOKE_PROXY_MYSQL_PORT:-47002}"
-PROXY_PG="${SMOKE_PROXY_PG_PORT:-47003}"
-PROXY_ATHENA="${SMOKE_PROXY_ATHENA_PORT:-47014}"
-PMON_BASE="${SMOKE_PMON_PORT_BASE:-47020}"
-WEB="${SMOKE_WEB_PORT:-47004}"
+export SMOKE_CP_DB_PORT="${SMOKE_CP_DB_PORT:-17010}"
+export SMOKE_MYSQL_PORT="${SMOKE_MYSQL_PORT:-17011}"
+export SMOKE_PG_PORT="${SMOKE_PG_PORT:-17012}"
+export SMOKE_ATHENA_PORT="${SMOKE_ATHENA_PORT:-17013}"
+CP_HTTP="${SMOKE_CP_HTTP_PORT:-17000}"
+CP_GRPC="${SMOKE_CP_GRPC_PORT:-17001}"
+CP_CHILD_HTTP="${SMOKE_CP_CHILD_HTTP_PORT:-17030}"
+CP_CHILD_GRPC="${SMOKE_CP_CHILD_GRPC_PORT:-17031}"
+PROXY_MYSQL="${SMOKE_PROXY_MYSQL_PORT:-17002}"
+PROXY_PG="${SMOKE_PROXY_PG_PORT:-17003}"
+PROXY_ATHENA="${SMOKE_PROXY_ATHENA_PORT:-17014}"
+PMON_BASE="${SMOKE_PMON_PORT_BASE:-17020}"
+WEB="${SMOKE_WEB_PORT:-17004}"
 
 KEEP=0; BUILD=1; ONLY=""; ENGINE=""
 while [ $# -gt 0 ]; do
@@ -59,17 +59,37 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if [ "$BUILD" = 1 ]; then
-  echo "smoke: building control plane, cp-go, goproxy, pmon"
-  (cd "$ROOT" && ./gradlew --no-daemon -q :control-plane:installDist) > "$SMOKE_DIR/logs/build-cp.log" 2>&1
-  (cd "$ROOT/cpgo" && go build -o "$SMOKE_DIR/bin/cp-go" ./cmd/cp-go)
-  (cd "$ROOT/goproxy" && go build -o "$SMOKE_DIR/bin/goproxy" ./cmd/goproxy)
-  (cd "$ROOT/pmon" && go build -o "$SMOKE_DIR/bin/pmon" .)
-fi
-
 echo "smoke: starting datastores (compose project $PROJECT)"
 compose down -v >/dev/null 2>&1 || true
-compose up -d --wait > "$SMOKE_DIR/logs/compose.log" 2>&1
+compose up -d --wait > "$SMOKE_DIR/logs/compose.log" 2>&1 &
+compose_pid=$!
+pids+=("$compose_pid")
+
+if [ "$BUILD" = 1 ]; then
+  echo "smoke: building control plane, cp-go, goproxy, pmon"
+  builds=()
+  (cd "$ROOT" && ./gradlew --no-daemon -q :control-plane:installDist) > "$SMOKE_DIR/logs/build-cp.log" 2>&1 &
+  builds+=($!)
+  pids+=($!)
+  for target in cpgo:cp-go:./cmd/cp-go goproxy:goproxy:./cmd/goproxy pmon:pmon:.; do
+    IFS=: read -r dir bin pkg <<< "$target"
+    (cd "$ROOT/$dir" && go build -o "$SMOKE_DIR/bin/$bin" "$pkg") > "$SMOKE_DIR/logs/build-$bin.log" 2>&1 &
+    builds+=($!)
+    pids+=($!)
+  done
+  for b in "${builds[@]}"; do
+    wait "$b" || { echo "smoke: a build failed; see $SMOKE_DIR/logs/build-*.log" >&2; exit 1; }
+  done
+fi
+wait "$compose_pid" || { echo "smoke: the datastores did not come up; see $SMOKE_DIR/logs/compose.log" >&2; exit 1; }
+
+# next dev takes seconds to start, so the console starts now and is awaited once the proxies are up.
+echo "smoke: starting the console on :$WEB"
+(
+  cd "$ROOT/web" && exec env PM_PROXY_TARGET="http://127.0.0.1:$CP_HTTP" PM_WEB_DEV_ORIGINS=127.0.0.1,localhost \
+    pnpm exec next dev -p "$WEB" -H 127.0.0.1 > "$SMOKE_DIR/logs/web.log" 2>&1
+) &
+pids+=($!)
 
 RESULT_KEY=$(openssl rand -base64 32)
 SECRET=smoke-$(openssl rand -hex 8)
@@ -129,17 +149,17 @@ for _ in $(seq 1 60); do
 done
 [ "$n" = 3 ] || { echo "smoke: a proxy did not register; see $SMOKE_DIR/logs/proxy-*.log" >&2; exit 1; }
 
-echo "smoke: starting the console on :$WEB"
-(
-  cd "$ROOT/web" && exec env PM_PROXY_TARGET="http://127.0.0.1:$CP_HTTP" PM_WEB_DEV_ORIGINS=127.0.0.1,localhost \
-    pnpm exec next dev -p "$WEB" -H 127.0.0.1 > "$SMOKE_DIR/logs/web.log" 2>&1
-) &
-pids+=($!)
 for _ in $(seq 1 90); do
   curl -sf -m 3 -o /dev/null "http://127.0.0.1:$WEB/login" 2>/dev/null && break
   sleep 2
 done
 curl -sf -m 3 -o /dev/null "http://127.0.0.1:$WEB/login" || { echo "smoke: the console did not come up; see $SMOKE_DIR/logs/web.log" >&2; exit 1; }
+
+# SMOKE_WAIT_FOR names a file a background browser install writes its exit status to.
+if [ -n "${SMOKE_WAIT_FOR:-}" ]; then
+  for _ in $(seq 1 300); do [ -s "$SMOKE_WAIT_FOR" ] && break; sleep 1; done
+  [ "$(cat "$SMOKE_WAIT_FOR" 2>/dev/null)" = 0 ] || { echo "smoke: the browser install failed or timed out" >&2; exit 1; }
+fi
 
 args=(--cp "http://127.0.0.1:$CP_HTTP" --web "http://127.0.0.1:$WEB" --root "$ROOT" --cp-db "postgresql://proxymonster:proxymonster@127.0.0.1:$SMOKE_CP_DB_PORT/proxymonster" --pmon "$SMOKE_DIR/bin/pmon" --pmon-dir "$SMOKE_DIR/pmon" --pmon-port-base "$PMON_BASE" --logs "$SMOKE_DIR/logs")
 args+=(--datasource "mysql:smoke-mysql:$PROXY_MYSQL" --datasource "postgres:smoke-postgres:$PROXY_PG" --datasource "athena:smoke-athena:$PROXY_ATHENA")

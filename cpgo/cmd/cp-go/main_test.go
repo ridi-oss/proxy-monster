@@ -74,30 +74,45 @@ func startFront(t *testing.T) (config, context.CancelFunc, <-chan int) {
 	t.Setenv("CPGO_FAKE_CHILD", "1")
 	t.Setenv("PM_TRUSTED_PROXIES", "10.9.9.9")
 	st := dbtest.Open(t)
-	cfg := config{
-		HTTPPort: freePort(t), GRPCPort: freePort(t),
-		Child: os.Args[0], ChildHTTPPort: freePort(t), ChildGRPCPort: freePort(t),
-		StartTimeout: 30 * time.Second,
-		DBURL:        st.JDBCURL, DBUser: st.User, DBPassword: st.Password,
-		SessionSecret: dbtest.Secret,
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan int, 1)
-	go func() { done <- run(ctx, cfg) }()
-	deadline := time.Now().Add(30 * time.Second)
-	for {
-		resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/health", cfg.HTTPPort))
-		if err == nil {
-			_ = resp.Body.Close()
-			break
+	// freePort releases its port before run binds it, so another process can take it in between; run then
+	// exits before serving, and a fresh set of ports is the fix.
+	for attempt := 1; ; attempt++ {
+		cfg := config{
+			HTTPPort: freePort(t), GRPCPort: freePort(t),
+			Child: os.Args[0], ChildHTTPPort: freePort(t), ChildGRPCPort: freePort(t),
+			StartTimeout: 30 * time.Second,
+			DBURL:        st.JDBCURL, DBUser: st.User, DBPassword: st.Password,
+			SessionSecret: dbtest.Secret,
 		}
-		if time.Now().After(deadline) {
-			cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan int, 1)
+		go func() { done <- run(ctx, cfg) }()
+		if serving(cfg.HTTPPort, done) {
+			return cfg, cancel, done
+		}
+		cancel()
+		if attempt == 3 {
 			t.Fatal("cp-go never served")
+		}
+	}
+}
+
+// serving waits for /health on port, and reports false if run returned first or 30s passed.
+func serving(port int, done <-chan int) bool {
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case <-done:
+			return false
+		default:
+		}
+		if resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/health", port)); err == nil {
+			_ = resp.Body.Close()
+			return true
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	return cfg, cancel, done
+	return false
 }
 
 func TestRunForwardsToChildOnLoopback(t *testing.T) {

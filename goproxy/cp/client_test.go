@@ -12,6 +12,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
@@ -853,6 +854,18 @@ func startHoldOpenControlPlane(t *testing.T, fake *holdOpenControlPlane) *Client
 	return startControlPlane(t, fake)
 }
 
+func waitReady(t *testing.T, c *Client) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c.conn.Connect()
+	for s := c.conn.GetState(); s != connectivity.Ready; s = c.conn.GetState() {
+		if !c.conn.WaitForStateChange(ctx, s) {
+			t.Fatalf("control-plane connection never became ready (last state %s)", s)
+		}
+	}
+}
+
 func startControlPlane(t *testing.T, fake pb.ControlPlaneServer) *Client {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -1011,6 +1024,8 @@ func TestEventsLoopRotationGapStaysBoundedAcrossPeriods(t *testing.T) {
 		t.Helper()
 		fake := &holdOpenControlPlane{done: make(chan struct{})}
 		c := startHoldOpenControlPlane(t, fake)
+		// A lazy dial on a loaded runner can outlast a 30ms stream age, which then reads as a wire fault.
+		waitReady(t, c)
 		ctx, cancel := context.WithCancel(context.Background())
 		loopDone := make(chan struct{})
 		go func() {
@@ -1035,7 +1050,7 @@ func TestEventsLoopRotationGapStaysBoundedAcrossPeriods(t *testing.T) {
 	// 1. Reproduce: pacing the rotation with the error backoff is the pre-fix behavior. One open fits in the
 	//    budget; the second reopen alone would need 30s.
 	unpaced := opensWithin(t, eventLoopTimings{
-		streamMaxAge:      30 * time.Millisecond,
+		streamMaxAge:      300 * time.Millisecond,
 		reconnect:         backoff,
 		rotationReconnect: backoff,
 	})

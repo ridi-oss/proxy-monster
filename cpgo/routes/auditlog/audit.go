@@ -1,4 +1,4 @@
-package routes
+package auditlog
 
 import (
 	"context"
@@ -13,6 +13,12 @@ import (
 	"github.com/ridi-oss/proxy-monster/cpgo/bridge"
 	"github.com/ridi-oss/proxy-monster/cpgo/store/db"
 )
+
+func Register(mux *http.ServeMux, pool *pgxpool.Pool, gate api.Gate, authz Authorizer) {
+	a := audit{pool: pool, authz: authz}
+	mux.HandleFunc("GET /api/audit", gate.RequireAPI(a.list))
+	mux.HandleFunc("GET /api/audit/{id}", gate.RequireAPI(a.get))
+}
 
 // Authorizer is the Cedar decision a route asks for.
 type Authorizer interface {
@@ -60,7 +66,7 @@ func (a audit) list(w http.ResponseWriter, r *http.Request) {
 	principal := api.Principal(ctx)
 	all, err := a.authz.Authorize(ctx, principal, "audit.read", bridge.AuditLog, api.RequesterIP(ctx))
 	if err != nil {
-		fail(w, err)
+		api.Fail(w, err)
 		return
 	}
 	q := db.New(a.pool)
@@ -71,7 +77,7 @@ func (a audit) list(w http.ResponseWriter, r *http.Request) {
 		rows, err = q.AuditLogOf(ctx, db.AuditLogOfParams{Principal: principal, Limit: int32(limit)})
 	}
 	if err != nil {
-		fail(w, err)
+		api.Fail(w, err)
 		return
 	}
 	out := make([]auditEvent, 0, len(rows))
@@ -96,12 +102,12 @@ func (a audit) get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		fail(w, err)
+		api.Fail(w, err)
 		return
 	}
 	ok, err := a.authz.Authorize(ctx, api.Principal(ctx), "audit.read", bridge.AuditRecord(e.Principal), api.RequesterIP(ctx))
 	if err != nil {
-		fail(w, err)
+		api.Fail(w, err)
 		return
 	}
 	if !ok {
@@ -113,7 +119,7 @@ func (a audit) get(w http.ResponseWriter, r *http.Request) {
 
 func toAuditEvent(r db.AuditEvent) auditEvent {
 	e := auditEvent{
-		ID: r.ID, TS: javaInstant(r.Ts), Principal: r.Principal, Roles: r.Roles, Datasource: r.Datasource,
+		ID: r.ID, TS: api.JavaInstant(r.Ts), Principal: r.Principal, Roles: r.Roles, Datasource: r.Datasource,
 		ClientAddr: r.ClientAddr, Statement: r.Statement, Decision: r.Decision, FailedStage: r.FailedStage,
 		EffectiveNamespace: r.EffectiveNamespace, MaskedColumns: r.MaskedColumns, PIITouched: r.PiiTouched,
 		LatencyMS: r.LatencyMs, Detail: r.Detail, Channel: r.Channel, ContextTags: r.ContextTags,

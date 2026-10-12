@@ -384,7 +384,10 @@ export interface AccessRequest {
   /** Grows with each edit of the SQL; an approval names the revision it approves. */
   revision: number
   revisedAt?: string | null
-  source?: string
+  source?: 'console' | 'mcp' | 'github'
+  scope?: string | null
+  changeKey?: string | null
+  mergedAt?: string | null
   pullRequest?: PullRequestRef | null
   /** An admin let this GitHub request skip its scope's freshness and one-PR-at-a-time checks. */
   forceRun?: boolean
@@ -399,6 +402,8 @@ export interface PullRequestRef {
   prUrl?: string | null
   /** The file's path in git. */
   path?: string | null
+  headSha?: string | null
+  mergeSha?: string | null
 }
 
 export interface AccessRequestInput {

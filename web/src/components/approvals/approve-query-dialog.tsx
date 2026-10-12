@@ -7,6 +7,7 @@ import { toast } from 'sonner'
 import { approveApproval, executeApproval, ApiError } from '@/lib/api/client'
 import type { AccessRequest } from '@/lib/api/types'
 import { swrKeys } from '@/lib/hooks'
+import { approveLabelKey, runsOnMerge } from '@/lib/approvals'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -43,18 +44,14 @@ export function ApproveQueryDialog({
   const t = useTranslations('Workflows')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  // A pull request's merge runs its request, so the console only approves it.
-  const runsOnMerge = request?.source === 'github'
+  const approveOnly = runsOnMerge(request)
 
   const handleOpenChange = (open: boolean) => {
     if (!open && !busy) onClose()
   }
 
-  // Approve and run are one action here, mirroring the Slack "Approve and run" button: the approver is
-  // always the executor (the query runs under the requested role, execute-under-R), so approving without
-  // running would just strand the task waiting for a second click. Approval is committed first; if only the
-  // run fails, the request stays APPROVED and the detail's Run button lets the approver retry.
-  const handleApproveAndRun = async () => {
+  // Approval commits first; a console request then runs at once, a GitHub one waits for its merge.
+  const handleApprove = async () => {
     if (!request) return
     setBusy(true)
     setError(null)
@@ -66,7 +63,7 @@ export function ApproveQueryDialog({
       return
     }
     try {
-      if (runsOnMerge) {
+      if (approveOnly) {
         toast.success(t('approveDialog.approvedToast', { principal: request.principal }))
       } else {
         await executeApproval(request.id)
@@ -90,9 +87,9 @@ export function ApproveQueryDialog({
     <Dialog open={request !== null} onOpenChange={handleOpenChange}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>{t(runsOnMerge ? 'approveDialog.titleGithub' : 'approveDialog.title')}</DialogTitle>
+          <DialogTitle>{t(approveOnly ? 'approveDialog.titleGithub' : 'approveDialog.title')}</DialogTitle>
           <DialogDescription>
-            {runsOnMerge
+            {approveOnly
               ? t('approvalDetail.approvedGithub')
               : request
                 ? t('approveDialog.descriptionWithPrincipal', { principal: request.principal })
@@ -106,7 +103,7 @@ export function ApproveQueryDialog({
           </div>
         )}
 
-        {!runsOnMerge && (
+        {!approveOnly && (
           <p className="text-muted-foreground text-sm">{t('approveDialog.executeUnderRNote')}</p>
         )}
 
@@ -115,13 +112,13 @@ export function ApproveQueryDialog({
             {t('actions.cancel')}
           </Button>
           <Button
-            onClick={handleApproveAndRun}
+            onClick={handleApprove}
             disabled={busy}
             className="bg-emerald-600 text-white hover:bg-emerald-700"
           >
-            {runsOnMerge
-              ? t(busy ? 'actions.approving' : 'actions.approve')
-              : t(busy ? 'actions.approvingAndRunning' : 'actions.approveAndRun')}
+            {busy
+              ? t(approveOnly ? 'actions.approving' : 'actions.approvingAndRunning')
+              : t(approveLabelKey(request))}
           </Button>
         </DialogFooter>
       </DialogContent>

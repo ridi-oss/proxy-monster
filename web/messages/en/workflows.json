@@ -44,7 +44,8 @@
     "sourceDecision": "Source decision",
     "requesterReason": "Requester reason",
     "grantDuration": "Grant duration",
-    "pullRequest": "Pull request"
+    "source": "Source",
+    "scope": "Scope"
   },
   "durations": {
     "asRequested": "As requested",
@@ -79,7 +80,9 @@
     "unknownRole": "unknown role",
     "noSqlAttached": "No SQL attached.",
     "proactive": "proactive",
-    "datasourceNumbered": "datasource #{id}"
+    "datasourceNumbered": "datasource #{id}",
+    "sourceGithub": "GitHub",
+    "sourceMcp": "MCP"
   },
   "masterDetail": {
     "pageTitle": "Workflows",

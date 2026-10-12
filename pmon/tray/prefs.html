@@ -248,6 +248,9 @@ async function refresh() { state = await call('state'); applyAppearance(); rende
 // Reads overlap (events, the 30 s poll, a toggle); only the newest one may land.
 let aiSeq = 0;
 async function refreshAI() { const n = ++aiSeq; const r = await call('aiState'); if (n === aiSeq) { ai = r; if (pane === 'ai') render(); } }
+let term = { shown: false };
+let termSeq = 0;
+async function refreshTerm() { const n = ++termSeq; const r = await call('terminalState'); if (n === termSeq) { term = r; if (pane === 'general') render(); } }
 window.pmRefresh = () => { refresh(); refreshAI(); };
 
 const $ = s => document.querySelector(s);
@@ -381,6 +384,10 @@ function generalPane() {
       <div class="card-foot"><span class="hint">${esc(t(u.forced ? 's.general.updatesManaged' : 's.general.updatesHint'))}</span><button class="btn" data-act="checkupdates">${esc(t('s.btn.checkUpdates'))}</button></div></div>` : ''}
     <div class="card"><div class="card-body"><div class="row"><div class="grow"><div class="title">${esc(t('s.general.notifications'))}</div><div class="sub">${esc(t('s.general.notificationsDesc'))}</div></div></div></div>
       <div class="card-foot"><span class="hint">${esc(t('s.general.notificationsHint'))}</span></div></div>
+    ${term.shown ? `<div class="card"><div class="card-body"><div class="row"><div class="grow"><div class="title">${esc(t('s.general.terminal'))}</div><div class="sub">${esc(term.mode === 'all' ? t('s.general.terminalAll', { path: term.link }) : term.mode === 'me' ? t('s.general.terminalMe', { path: term.link }) : term.found ? t('s.general.terminalOther', { path: term.found }) : t('s.general.terminalNone'))}</div></div>
+        <button class="btn" data-act="terminal" data-v="me"${term.mode === 'me' ? ' disabled' : ''}>${esc(t('s.btn.forMe'))}</button><button class="btn" data-act="terminal" data-v="all"${term.mode === 'all' || !term.allUsers ? ' disabled' : ''}>${esc(t('s.btn.forAll'))}</button></div></div>
+      <div class="card-foot"><span class="hint">${esc(t(term.allUsers ? 's.general.terminalHint' : 's.general.terminalHintMe'))}</span></div></div>` : ''}
+    ${state.uninstallShown ? `<div class="card"><div class="card-body"><div class="row"><div class="grow"><div class="title">${esc(t('s.general.uninstall'))}</div><div class="sub">${esc(t('s.general.uninstallDesc'))}</div></div><button class="btn danger" data-act="uninstall">${esc(t('s.btn.uninstall'))}</button></div></div></div>` : ''}
   </section>`;
 }
 
@@ -413,7 +420,7 @@ function render() {
   if (keep && document.getElementById(keep)) document.getElementById(keep).focus();
 }
 
-function go(p) { pane = p; adding = false; editing = null; menuFor = null; err = ''; render(); if (p === 'ai') refreshAI(); }
+function go(p) { pane = p; adding = false; editing = null; menuFor = null; err = ''; render(); if (p === 'ai') refreshAI(); if (p === 'general') refreshTerm(); }
 $('#nav').addEventListener('click', e => { const b = e.target.closest('button'); if (b) go(b.dataset.pane); });
 
 document.addEventListener('change', async e => {
@@ -437,6 +444,8 @@ document.addEventListener('click', async e => {
     case 'login': await act(call('setOpenAtLogin', b.getAttribute('aria-checked') !== 'true')); break;
     case 'autoupdate': await act(call('setAutoUpdates', b.getAttribute('aria-checked') !== 'true')); break;
     case 'checkupdates': await act(call('checkUpdates')); break;
+    case 'terminal': await act(call('linkTerminal', b.dataset.v)); await refreshTerm(); break;
+    case 'uninstall': await act(call('uninstall')); break;
     case 'theme': await act(call('setTheme', b.dataset.v)); break;
     case 'goto-servers': go('servers'); break;
     case 'link': call('openLink', b.dataset.url); break;
@@ -473,7 +482,7 @@ document.addEventListener('keydown', e => {
 
 // ---- demo backend, used only when the page is opened outside the app ----
 const demoState = {
-  running: true, loginItemOn: true, loginItemShown: true, language: 'system', lang: (navigator.language || 'en').startsWith('ko') ? 'ko' : 'en', theme: 'system',
+  running: true, loginItemOn: true, loginItemShown: true, uninstallShown: true, language: 'system', lang: (navigator.language || 'en').startsWith('ko') ? 'ko' : 'en', theme: 'system',
   versions: { app: '0.1.8', pmon: '0.1.8', daemon: '0.1.8' }, updates: { shown: true, auto: true, forced: false },
   servers: [
     { name: 'acme', url: 'https://pm.acme.example', version: '0.1.31', signedIn: true, account: 'dana@acme.example', endsAt: 'Today 18:40', left: '9h 12m left', datasources: 12 },
@@ -491,6 +500,7 @@ async function demo(name, args) {
   switch (name) {
     case 'state': return JSON.parse(JSON.stringify(demoState));
     case 'aiState': return JSON.parse(JSON.stringify(demoAI));
+    case 'terminalState': return { shown: true, allUsers: true, mode: 'me', link: '~/.local/bin/pmon', found: '~/.local/bin/pmon' };
     case 'setServer': { const [n, u] = args; const s = find(n); if (s) { s.url = u; s.signedIn = false; } else demoState.servers.push({ name: n, url: u, signedIn: false, datasources: 0 }); return ''; }
     case 'removeServer': demoState.servers = demoState.servers.filter(s => s.name !== args[0]); return '';
     case 'signIn': { const s = find(args[0]); Object.assign(s, { signedIn: true, ended: false, ending: false, account: 'dana@acme.example', endsAt: 'Tomorrow 09:40', left: '12h left', datasources: s.datasources || 7 }); return ''; }

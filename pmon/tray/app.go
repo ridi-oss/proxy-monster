@@ -148,6 +148,7 @@ func (a *app) onReady() {
 	go a.watchDaemon()
 	go a.ticker()
 	go a.watchAppearance()
+	go offerTerminal()
 }
 
 func (a *app) onExit() {

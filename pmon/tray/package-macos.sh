@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Package the app build-app.sh built for distribution: a .zip of the app (for the Homebrew cask) and a .pkg
-# that installs it into /Applications with `pmon` linked onto PATH.
+# that installs it into ~/Applications (only for me) or /Applications (all users). The app itself offers to put
+# `pmon` on PATH on its first launch.
 #
 #   ./package-macos.sh "<path/to/Proxy Monster Desktop.app>" <out-dir>
 #
@@ -46,15 +47,13 @@ if [ -n "${NOTARY_KEY_PATH:-}" ]; then
     ditto -c -k --keepParent "$APP" "$ZIP"
 fi
 
-# The pkg payload is laid out from /. The pmon link is part of the payload rather than a postinstall step,
-# so the receipt records it and an uninstall can find it.
+# The payload is the app alone, laid out from the install domain's root: the user's home or /.
 ROOT="$WORK/root"
-mkdir -p "$ROOT/Applications" "$ROOT/usr/local/bin"
+mkdir -p "$ROOT/Applications"
 ditto "$APP" "$ROOT/Applications/$NAME"
-ln -s "/Applications/$NAME/Contents/MacOS/pmon" "$ROOT/usr/local/bin/pmon"
 
 # Not relocatable: otherwise Installer "upgrades" a copy of the app it finds anywhere else on disk (a dev build
-# in ~/Downloads, say) instead of writing /Applications, and the pmon link then points at nothing.
+# in ~/Downloads, say) instead of writing the Applications folder.
 pkgbuild --analyze --root "$ROOT" "$WORK/components.plist" >/dev/null
 plutil -replace 0.BundleIsRelocatable -bool NO "$WORK/components.plist"
 pkgbuild --root "$ROOT" --component-plist "$WORK/components.plist" --install-location / \
@@ -66,7 +65,7 @@ cat >"$WORK/distribution.xml" <<XML
 <installer-gui-script minSpecVersion="2">
     <title>${NAME%.app}</title>
     <options customize="never" require-scripts="false" hostArchitectures="arm64,x86_64"/>
-    <domains enable_localSystem="true"/>
+    <domains enable_localSystem="true" enable_currentUserHome="true"/>
     <choices-outline><line choice="default"/></choices-outline>
     <choice id="default" title="${NAME%.app}"><pkg-ref id="com.ridi.oss.proxymonster.pmontray"/></choice>
     <pkg-ref id="com.ridi.oss.proxymonster.pmontray" version="$VERSION">component.pkg</pkg-ref>

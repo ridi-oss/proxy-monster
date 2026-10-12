@@ -163,3 +163,19 @@ void pm_set_appearance(void *window, int mode) {
     }
   });
 }
+
+// Drops this app's user defaults, Sparkle's included: they share the app's domain.
+void pm_forget_prefs(void) {
+  NSString *domain = NSBundle.mainBundle.bundleIdentifier;
+  if (domain) {
+    [[NSUserDefaults standardUserDefaults] removePersistentDomainForName:domain];
+  }
+}
+
+// Moves path to the Trash; NULL on success, else the error (malloc'd).
+char *pm_trash(const char *path) {
+  NSError *err = nil;
+  NSURL *url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:path]];
+  if ([[NSFileManager defaultManager] trashItemAtURL:url resultingItemURL:nil error:&err]) return NULL;
+  return strdup(err.localizedDescription.UTF8String);
+}

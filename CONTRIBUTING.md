@@ -100,7 +100,7 @@ failure modes. The design-doc index is [docs/README.md](./docs/README.md).
 
 ## Releases
 
-Three release trains, each with its own version and changelog
+Four release trains, each with its own version and changelog
 (`release-please-config.json`). Merging a release PR tags and publishes; a push
 to `main` only opens or updates the PR.
 
@@ -109,6 +109,7 @@ to `main` only opens or updates the PR.
 | --- | --- | --- |
 | Server | `server-v0.1.0` | `goproxy`, `control-plane`, `auditmon`, `engine`, `auth`, `proto`, `web` |
 | Client | `pmon-v0.1.0` | `pmon`, the client CLI |
+| CI | `pm-ci-v0.1.0` | `sql-action`, the `pm-ci` binary its GitHub Action runs |
 | Library | `mysqlwire/v0.1.0` | `mysqlwire`, published for `go get` |
 
 The paths a commit touches decide its train, so a `pmon/` change never bumps the

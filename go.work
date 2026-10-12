@@ -8,4 +8,5 @@ use (
 	./mysqlwire
 	./pmon
 	./pmon/tray
+	./sql-action
 )

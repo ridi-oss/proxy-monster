@@ -1,0 +1,73 @@
+name: pm-ci release binaries
+
+# Attaches per-platform pm-ci archives to a pm-ci-v* release, so sql-action installs a binary instead of
+# compiling Go in every workflow run.
+on:
+  push:
+    tags: ["pm-ci-v*"]
+  # Re-run for an existing tag with `gh workflow run pm-ci-release-binaries.yml --ref <tag>`.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# Two runs for one tag would interleave their uploads.
+concurrency:
+  group: pm-ci-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  binaries:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Require a pm-ci-v* tag
+        run: |
+          [[ "$GITHUB_REF" == refs/tags/pm-ci-v* ]] || { echo "::error::run this on a pm-ci-v* tag, not $GITHUB_REF"; exit 1; }
+
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: sql-action/go.mod
+
+      - name: Build and archive every platform
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -uo pipefail
+          version="${TAG#pm-ci-v}"
+          mkdir -p dist
+
+          # Every target is attempted even after one fails, as in pmon-release-binaries.yml. GOWORK=off
+          # resolves sql-action's own go.mod and lets Go stamp the revision.
+          failed=()
+          for target in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64; do
+            os="${target%/*}"; arch="${target#*/}"
+            echo "::group::$os/$arch"
+            if (cd sql-action && GOWORK=off CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
+                  go build -trimpath -ldflags "-s -w" -o "../dist/pm-ci" .) &&
+               tar -C dist -czf "dist/pm-ci_${version}_${os}_${arch}.tar.gz" pm-ci; then
+              echo "built $os/$arch"
+            else
+              echo "::error::pm-ci build failed for $os/$arch"
+              failed+=("$os/$arch")
+            fi
+            rm -f dist/pm-ci
+            echo "::endgroup::"
+          done
+
+          if [ ${#failed[@]} -ne 0 ]; then
+            echo "::error::${#failed[@]} of 4 targets failed: ${failed[*]}"
+            exit 1
+          fi
+
+      - name: Attach them to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          .github/scripts/release-checksums.sh "$TAG" pm-ci_ dist
+          gh release upload "$TAG" dist/*.tar.gz dist/checksums.txt --repo "$GITHUB_REPOSITORY" --clobber

@@ -16,7 +16,7 @@ require (
 	github.com/moby/moby/api v1.55.0
 	github.com/ridi-oss/proxy-monster/analyzer v0.0.0-00010101000000-000000000000
 	github.com/ridi-oss/proxy-monster/mysqlwire v0.1.4
-	github.com/ridi-oss/sqlglot-go v0.37.2
+	github.com/ridi-oss/sqlglot-go v0.37.3
 	github.com/testcontainers/testcontainers-go v0.44.0
 	github.com/tidwall/buntdb v1.3.2
 	golang.org/x/crypto v0.55.0

@@ -153,7 +153,8 @@ func TestSanitizeErrorStripsValueMessages(t *testing.T) {
 		{"22001", `value too long for type character varying(4)`},
 		// An allowlisted SQLSTATE whose message does not match any of its templates.
 		{"42P01", `relation "orders" does not exist: ` + diagSentinel},
-		{"42P01", `relation "a"b" does not exist`},
+		{"42703", `column "a"b" does not exist`},
+		{"42701", `column "x" of relation "a" of relation "b" already exists`},
 		{"42P01", diagSentinel},
 		{"42P01", `column "shipped_at" does not exist`},
 		{"42703", `column "shipped_at" does not exist` + "\n" + diagSentinel},

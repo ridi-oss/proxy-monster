@@ -170,7 +170,7 @@ func emitParsedFacts(parsed exp.Expression, eng engine, qualifySchema schema.Sch
 		facts = passthroughFacts()
 	case exp.KindAnalyze:
 		facts = emitAnalyzeFacts(root, eng, qualifySchema, validatedNamespace)
-	case exp.KindAlter, exp.KindDrop, exp.KindTruncateTable:
+	case exp.KindAlter, exp.KindDrop, exp.KindTruncateTable, exp.KindComment:
 		facts = ddlFacts(root, eng)
 	case exp.KindCreate:
 		// A CREATE that reads columns (CREATE TABLE AS SELECT, CREATE VIEW) has lineage to trace and goes

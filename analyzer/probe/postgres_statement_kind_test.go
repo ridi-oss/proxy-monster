@@ -147,7 +147,16 @@ func TestPostgresStatementKind(t *testing.T) {
 		{"DROP TYPE ty", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
 		{"DROP DOMAIN dom", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
 		{"DROP EXTENSION ext", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
-		{"COMMENT ON TABLE users IS 'x'", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
+		{"COMMENT ON TABLE users IS 'x'", pb.StatementKind_STATEMENT_KIND_ALTER_TABLE},
+		{"comment on table users is 'x'", pb.StatementKind_STATEMENT_KIND_ALTER_TABLE},
+		{"COMMENT ON COLUMN users.ssn IS 'x'", pb.StatementKind_STATEMENT_KIND_ALTER_TABLE},
+		{"COMMENT ON VIEW v IS 'x'", pb.StatementKind_STATEMENT_KIND_ALTER_VIEW},
+		{"COMMENT ON MATERIALIZED VIEW mv IS 'x'", pb.StatementKind_STATEMENT_KIND_ALTER_VIEW},
+		{"COMMENT ON FUNCTION f() IS 'x'", pb.StatementKind_STATEMENT_KIND_ALTER_FUNCTION},
+		{"COMMENT ON PROCEDURE p() IS 'x'", pb.StatementKind_STATEMENT_KIND_ALTER_PROCEDURE},
+		{"COMMENT ON SCHEMA public IS 'x'", pb.StatementKind_STATEMENT_KIND_ALTER_DATABASE},
+		{"COMMENT ON INDEX i IS 'x'", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
+		{"COMMENT ON ROLE r IS 'x'", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
 		{"SECURITY LABEL ON TABLE users IS 'label'", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN},
 
 		// --- account / privilege (mostly unmapped; only a bare-Command GRANT <role> resolves) ---
@@ -216,5 +225,16 @@ func TestPostgresStatementKindNoUnspecified(t *testing.T) {
 		if got := factsKind(pgFacts(t, sql)); got == pb.StatementKind_STATEMENT_KIND_UNSPECIFIED {
 			t.Errorf("%q left StatementKind UNSPECIFIED — must be a real kind or STMT_UNKNOWN", sql)
 		}
+	}
+}
+
+// TestPostgresCommentOnIsResolvedDDL: COMMENT ON resolves like the ALTER it maps to, not as unanalyzable.
+func TestPostgresCommentOnIsResolvedDDL(t *testing.T) {
+	f := pgFacts(t, "COMMENT ON COLUMN users.ssn IS 'x'")
+	if !f.GetResolved() || f.GetFailureClass() != pb.FailureClass_FAILURE_CLASS_UNSPECIFIED || !f.GetCatalogChanging() {
+		t.Fatalf("facts = %v, want resolved catalog-changing DDL", f)
+	}
+	if extra := nonExecuteGrants(f); len(extra) != 0 {
+		t.Fatalf("grants beyond execute = %v, want none", extra)
 	}
 }

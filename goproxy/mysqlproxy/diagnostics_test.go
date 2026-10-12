@@ -233,7 +233,7 @@ func TestRedactedErrMessageStripsValues(t *testing.T) {
 }
 
 func TestMysqlSchemaMessagesExcludeValueCarriers(t *testing.T) {
-	for _, essno := range []int{1062, 1586, 1292, 1366, 1064, 1300, 1105, 1265, 1406, 1264, 1231, 1411, 1115, 1273, 1286, 1060, 1166} {
+	for _, essno := range []int{1062, 1586, 1292, 1366, 1064, 1300, 1105, 1265, 1406, 1264, 1231, 1411, 1115, 1273, 1286, 1060, 1166, 3511} {
 		if _, ok := mysqlSchemaMessages[essno]; ok {
 			t.Errorf("essno %d can carry a value or literal and must not be allowlisted", essno)
 		}

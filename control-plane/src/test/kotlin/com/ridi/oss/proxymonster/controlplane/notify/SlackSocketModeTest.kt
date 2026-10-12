@@ -7,7 +7,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
@@ -88,6 +90,12 @@ class SlackSocketModeTest {
 
     private suspend fun awaitDispatch() = withTimeout(5_000) { received.receive() }
 
+    // The client acks before it dispatches, but the mock records an ack only once its reader gets to the frame.
+    private suspend fun awaitAck(envelopeId: String): Boolean = withTimeoutOrNull(5_000) {
+        while (slack.acks().none { it["envelope_id"]?.jsonPrimitive?.content == envelopeId }) delay(10)
+        true
+    } ?: false
+
     @Test
     fun `a valid click is acked and dispatched with the resolved principal`() = withSocket { _ ->
         slack.pushEnvelope(envelope("env-1"))
@@ -98,10 +106,7 @@ class SlackSocketModeTest {
         assertEquals(42L, it.taskId)
         assertEquals("C_MOCK", it.triggerChannel)
         assertEquals("1700000000001.000100", it.triggerTs)
-        assertTrue(
-            slack.acks().any { a -> a["envelope_id"]?.jsonPrimitive?.content == "env-1" },
-            "every envelope must be acked so Slack does not redeliver it",
-        )
+        assertTrue(awaitAck("env-1"), "every envelope must be acked so Slack does not redeliver it")
         assertTrue(slack.requestsFor("auth.test").isNotEmpty(), "the workspace was resolved from the bot token")
     }
 

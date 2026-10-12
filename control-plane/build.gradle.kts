@@ -148,6 +148,9 @@ tasks.test {
     // Ryuk (the resource reaper) can't attach to the Desktop raw socket cleanly; the shared-container
     // singletons never stop mid-run and the JVM exit frees them, so disable it.
     environment("TESTCONTAINERS_RYUK_DISABLED", "true")
+    // Each fork starts its own PostgreSQL and MySQL container once, so N forks run 2N database servers.
+    maxParallelForks = (findProperty("pm.testForks") as String?)?.toInt()
+        ?: (Runtime.getRuntime().availableProcessors() / 2).coerceIn(1, 4)
     // The FFM binding's native-access jvmArg is added to every module's Test task in the root build;
     // :control-plane depends (transitively) on :analyzer:jvm, whose processResources builds the lib.
 }

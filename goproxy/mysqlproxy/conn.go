@@ -291,6 +291,16 @@ func (s *Server) handleConn(clientConn net.Conn) {
 					lastSeq, stop = last, !clean
 					return clean, nil
 				})
+				if denied && serveErr == nil {
+					rejected, err := writeDeny(clientConn, targetDbConn, deprecateEOF, seqBase, sql, decision)
+					if err != nil {
+						return 0, true, true
+					}
+					if rejected {
+						qe.AwaitCompletion(engine.EmitCompletion(s.client, decision, relayStats, engine.StatusRejected, start))
+					}
+					return lastSeq, stop, false
+				}
 				// Post-relay, best-effort completion: only a relayed (Proceed) statement reports. A DENY relayed
 				// nothing, and EmitCompletion additionally no-ops for a decision with no audit id.
 				if !denied {
@@ -305,15 +315,6 @@ func (s *Server) handleConn(clientConn net.Conn) {
 						_ = mysqlwire.WritePacket(clientConn, lastSeq+1, mysqlwire.ErrPacketState(1105, "HY000", "proxy-monster: catalog refresh failed"))
 					}
 					return 0, true, true
-				}
-				if denied {
-					reason := "policy"
-					if decision != nil && decision.DenyReason != "" {
-						reason = decision.DenyReason
-					}
-					if err := mysqlwire.WritePacket(clientConn, seqBase+1, mysqlwire.ErrPacketState(1142, "42000", "proxy-monster denied: "+reason)); err != nil {
-						return 0, true, true
-					}
 				}
 				return lastSeq, stop, false
 			}
@@ -375,7 +376,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 			sql := string(payload[1:])
 			var frozen []string
 			var frozenAnsiQuotes bool
-			proceed, allowed, err := s.authorize(qe, clientConn, seq, sql, token, clientAddr, identity.ConnectionID, refetcher.RunAll, func() (engine.SessionObservation, error) {
+			proceed, allowed, err := s.authorize(qe, clientConn, targetDbConn, deprecateEOF, seq, sql, token, clientAddr, identity.ConnectionID, refetcher.RunAll, func() (engine.SessionObservation, error) {
 				obs, err := probeSession(targetDbConn, deprecateEOF)
 				if err == nil {
 					frozen = append([]string{}, obs.Namespace...)
@@ -465,7 +466,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 			// namespace rather than live session state, then dirty the engine cache immediately so it cannot
 			// leak into the next statement's decision.
 			qe.MarkNamespaceDirty()
-			proceed, allowed, err := s.authorize(qe, clientConn, seq, ps.sql, token, clientAddr, identity.ConnectionID, refetcher.RunAll, func() (engine.SessionObservation, error) {
+			proceed, allowed, err := s.authorize(qe, clientConn, targetDbConn, deprecateEOF, seq, ps.sql, token, clientAddr, identity.ConnectionID, refetcher.RunAll, func() (engine.SessionObservation, error) {
 				return mysqlSession(ps.namespace, ps.ansiQuotes), nil
 			})
 			qe.MarkNamespaceDirty()
@@ -572,7 +573,8 @@ func (s *Server) handleConn(clientConn net.Conn) {
 
 func (s *Server) authorize(
 	qe *engine.QueryEngine,
-	clientConn net.Conn,
+	clientConn, targetDbConn net.Conn,
+	deprecateEOF bool,
 	seq byte,
 	sql, token, clientAddr string,
 	connectionID []byte,
@@ -598,15 +600,11 @@ func (s *Server) authorize(
 		}
 		return engine.Proceed{}, false, errors.New("mysqlproxy: authorization failed mechanically")
 	case engine.Deny:
-		reason := "policy"
-		if v.Decision != nil && v.Decision.DenyReason != "" {
-			reason = v.Decision.DenyReason
+		start := time.Now()
+		rejected, err := writeDeny(clientConn, targetDbConn, deprecateEOF, seq, sql, v.Decision)
+		if rejected {
+			qe.AwaitCompletion(engine.EmitCompletion(s.client, v.Decision, engine.RelayStats{}, engine.StatusRejected, start))
 		}
-		err := mysqlwire.WritePacket(clientConn, seq+1, mysqlwire.ErrPacketState(
-			1142,
-			"42000",
-			"proxy-monster denied: "+reason,
-		))
 		return engine.Proceed{}, false, err
 	case engine.Proceed:
 		return v, true, nil

@@ -298,6 +298,7 @@ func decisionFromWire(d *pb.WireDecision) ([]*pb.ProxyCommand, *engine.Decision)
 		AfterStatement:      afterStatement,
 		Generation:          v.GetGeneration(),
 		SanitizeDiagnostics: v.GetSanitizeDiagnostics(),
+		CheckTargetSyntax:   action == "DENY" && v.GetCheckTargetSyntax(),
 		Submission:          submission,
 		ResultFingerprint:   v.GetResultFingerprint(),
 	}

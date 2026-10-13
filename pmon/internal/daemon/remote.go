@@ -77,10 +77,15 @@ func findRemoteSocket(ctx context.Context, ctl, target string) (string, error) {
 	case 1:
 		return socks[0], nil
 	}
-	if out, err := sshOutput(ctx, "-S", ctl, "--", target, remoteShell("pmon socket-path")); err == nil && slices.Contains(socks, lastLine(out)) {
-		return lastLine(out), nil
+	out, err = sshOutput(ctx, "-S", ctl, "--", target, remoteShell("pmon socket-path"))
+	if err != nil || !strings.HasPrefix(lastLine(out), "/") {
+		return "", fmt.Errorf("%d pmon daemons run on %s, and no pmon there names the default one", len(socks), target)
 	}
-	return "", fmt.Errorf("%d pmon daemons run on %s, and no pmon there names the default one", len(socks), target)
+	// The default daemon may be the one not running among them, which a start fixes.
+	if def := lastLine(out); slices.Contains(socks, def) {
+		return def, nil
+	}
+	return "", nil
 }
 
 func validTarget(target string) error {

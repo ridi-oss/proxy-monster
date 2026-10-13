@@ -41,3 +41,15 @@ func TestRemoteShellRunsTheLoginShell(t *testing.T) {
 		t.Errorf("remoteShell = %s", got)
 	}
 }
+
+func TestDaemonSocketSkipsForwardSockets(t *testing.T) {
+	for path, want := range map[string]bool{
+		"/tmp/pmon-501/pmon-9a631b7f1a34259a.sock":           true,
+		"/tmp/pmon-501/pmon-9a631b7f1a34259a-r49960de5.sock": false,
+		"/tmp/pmon-501/pmon-9a63.sock":                       false,
+	} {
+		if got := daemonSocket.MatchString(path); got != want {
+			t.Errorf("daemonSocket(%q) = %v", path, got)
+		}
+	}
+}

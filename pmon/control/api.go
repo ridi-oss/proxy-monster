@@ -159,7 +159,8 @@ const (
 	RemoteConnected  RemoteState = "connected"
 	// RemoteNoDaemon is a working connection to a remote whose pmon daemon is not running.
 	RemoteNoDaemon RemoteState = "no-daemon"
-	// RemoteNoPmon is a working connection to a remote that has no pmon on its PATH.
+	// RemoteNoPmon is a remote whose daemon could not be started: no pmon on its PATH or in Proxy Monster Desktop.
+	// A running daemon needs no pmon there; only starting one does.
 	RemoteNoPmon RemoteState = "no-pmon"
 	RemoteDown   RemoteState = "down"
 )

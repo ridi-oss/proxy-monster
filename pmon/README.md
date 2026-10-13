@@ -117,8 +117,10 @@ same port range as this machine's datasources. `--remote` runs any command
 against the remote daemon through that socket; `start` starts it over ssh. The
 SSH target is the remote's name, so a short name, keys and jump hosts come from
 `~/.ssh/config`. ssh runs with `BatchMode`, so it never prompts: use a key or an
-agent. The remote needs `pmon` on its login shell's `PATH`. `pmon remote` lists
-each remote's state, and the menu-bar app shows each remote as its own submenu.
+agent. Reaching a running remote daemon needs nothing more there; starting one
+uses `pmon` from the remote's login-shell `PATH`, else Proxy Monster Desktop's
+bundled `pmon`. `pmon remote` lists each remote's state, and the menu-bar app
+shows each remote as its own submenu.
 
 ## Commands
 

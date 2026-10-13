@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.1.13](https://github.com/ridi-oss/proxy-monster/compare/pmon-v0.1.12...pmon-v0.1.13) (2026-10-13)
+
+
+### Features
+
+* **pmon:** forward a remote daemon's datasources to local ports ([ed47036](https://github.com/ridi-oss/proxy-monster/commit/ed47036d1d70226e87a330834c2a527394477e38))
+* **pmon:** keep an SSH connection to a remote pmon daemon ([c5a0654](https://github.com/ridi-oss/proxy-monster/commit/c5a06545cb1ad247cc90e8ab6a49022505b86797))
+* **pmon:** pmon --remote runs any command against a remote daemon ([50e8141](https://github.com/ridi-oss/proxy-monster/commit/50e81414e100b1a31219b2e7627f2736567841f2))
+* **pmon:** reach a remote daemon without pmon on the remote's PATH ([346c862](https://github.com/ridi-oss/proxy-monster/commit/346c86295115b5907e4be021254ac446d864481a))
+* **pmon:** register a remote's servers with AI apps ([23a6c87](https://github.com/ridi-oss/proxy-monster/commit/23a6c8797d279ee2e8999bc12a238695e76b671a))
+* **tray:** manage remotes in Settings, and notify when one drops ([5e95341](https://github.com/ridi-oss/proxy-monster/commit/5e95341ab0f18c049fb6940433194a575781d590))
+* **tray:** show remote daemons in the menu and act on them ([d9bddcc](https://github.com/ridi-oss/proxy-monster/commit/d9bddcc6edfbfb27729440d4d47f679dc11df1d4))
+* **tray:** the status icon marks only what needs attention, and a ready update ([16c8f12](https://github.com/ridi-oss/proxy-monster/commit/16c8f124a4fc733ac06da5f396181fb28e7e9edd))
+
+
+### Bug Fixes
+
+* **pmon:** read a stopped default daemon beside others as not running ([f84d9d4](https://github.com/ridi-oss/proxy-monster/commit/f84d9d428c7d193cc382917378dddc9cd6d3f764))
+* **pmon:** remote tunnel fixes from review ([1c18291](https://github.com/ridi-oss/proxy-monster/commit/1c18291f6cd91676e2ef8109a357ca6847c4f002))
+
+
+### Refactoring
+
+* **pmon:** key a remote's forwards by server and datasource ([8361d7e](https://github.com/ridi-oss/proxy-monster/commit/8361d7e8ab1a3e04128cdb71a1d587f726d465f5))
+
+
+### Documentation
+
+* **pmon:** remotes and --remote ([bebc6f2](https://github.com/ridi-oss/proxy-monster/commit/bebc6f264ae24cee136266f66a39161b1284084b))
+
 ## [0.1.12](https://github.com/ridi-oss/proxy-monster/compare/pmon-v0.1.11...pmon-v0.1.12) (2026-10-12)
 
 

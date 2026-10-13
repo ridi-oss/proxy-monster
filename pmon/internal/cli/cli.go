@@ -6,7 +6,7 @@ import (
 	"github.com/alecthomas/kong"
 )
 
-// version is what this binary reports: `" + self + " --version`, the daemon's /status, and the skew warning.
+// version is what this binary reports: `pmon --version`, the daemon's /status, and the skew warning.
 var version string
 
 // root is the kong grammar for pmon's subcommands (matching goproxy's kong usage, kept consistent across the

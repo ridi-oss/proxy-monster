@@ -206,6 +206,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}
 
 	d.publish(control.Event{Kind: "shutdown", Message: "the daemon is stopping"})
+	d.stopRemotes()
 	d.closeAllListeners()
 	// Close established sessions too, matching logout and revocation: `pmon stop` warned the user these would be
 	// dropped, so drop them deliberately rather than leaving it to process exit.

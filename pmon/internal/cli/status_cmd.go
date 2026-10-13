@@ -39,6 +39,13 @@ func (statusCmd) Run() error {
 	} else {
 		fmt.Println("daemon:    running, idle")
 	}
+	for _, r := range s.Remotes {
+		detail := ""
+		if r.Error != "" {
+			detail = " — " + r.Error
+		}
+		fmt.Printf("remote:    %s  %s%s\n", r.Target, r.State, detail)
+	}
 	if len(s.Servers) == 0 {
 		fmt.Println("servers:   none (run `" + self + " login --url <control-plane-url>`)")
 		return nil

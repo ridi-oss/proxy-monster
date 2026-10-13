@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"strings"
 	"text/tabwriter"
 
 	"github.com/ridi-oss/proxy-monster/pmon/control"
@@ -96,7 +95,7 @@ var self = "pmon"
 // useRemote points this command at the daemon on target, through the forwarded socket this machine's daemon
 // keeps for it.
 func useRemote(target string) error {
-	if target == "" || strings.HasPrefix(target, "-") || strings.ContainsAny(target, " \t\n'\"\\%`") {
+	if !control.ValidTarget(target) {
 		return fmt.Errorf("%q is not an ssh target", target)
 	}
 	ctx := context.Background()

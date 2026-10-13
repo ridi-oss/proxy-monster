@@ -59,6 +59,9 @@ func NewRemoteClient(socket string, ports map[string]int) *Client {
 	return c
 }
 
+// CloseIdle closes the connections the client keeps for reuse; a client used for a while then dropped must call it.
+func (c *Client) CloseIdle() { c.http.CloseIdleConnections() }
+
 // NewClientAt is a client of the daemon listening on socket, such as a remote daemon's forwarded socket.
 func NewClientAt(socket string) *Client {
 	c := clientFor([]string{socket})
@@ -175,7 +178,11 @@ func (c *Client) Status(ctx context.Context) (*Status, error) {
 	if err == nil && c.ports != nil {
 		// A remote port is reachable here only through its forward; one without a forward is not reachable.
 		for i, ds := range st.Datasources {
-			st.Datasources[i].LocalPort = c.ports[ds.Server+"/"+ds.Name]
+			port := c.ports[ds.Server+"/"+ds.Name]
+			st.Datasources[i].LocalPort = port
+			if port == 0 && ds.Brokered {
+				st.Datasources[i].Brokered, st.Datasources[i].Reason = false, "not forwarded to this machine yet"
+			}
 		}
 	}
 	return st, err

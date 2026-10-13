@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.1.32](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.31...server-v0.1.32) (2026-10-13)
+
+
+### Features
+
+* **control-plane:** add a GitHub source adapter ([98fa818](https://github.com/ridi-oss/proxy-monster/commit/98fa81844a516a0ba2a9c9e6fb742e8e390f8424))
+* **control-plane:** exchange CI OIDC tokens for a workload principal ([82afcd8](https://github.com/ridi-oss/proxy-monster/commit/82afcd8a4cfa0aeeab7c0b9a3b8aa79c3c6611bb))
+* **control-plane:** give users their groups in Cedar ([69d3030](https://github.com/ridi-oss/proxy-monster/commit/69d303023e53d2d82c321c12479b4fb71c7c68a9))
+* **control-plane:** let a requester edit a query request before it runs ([08f1082](https://github.com/ridi-oss/proxy-monster/commit/08f1082a1863246dd255f62cb3391efc84502b2c))
+* **control-plane:** let an admin force a GitHub request past the scope checks ([7239100](https://github.com/ridi-oss/proxy-monster/commit/7239100ad58741d0fb550c2b098e5acde07ef120))
+* **control-plane:** run reviewed SQL from GitHub pull requests ([09f1cbe](https://github.com/ridi-oss/proxy-monster/commit/09f1cbe2690f7148b090922cab06ed5f0d965b9c))
+* **control-plane:** serialize requests by scope ([474c16a](https://github.com/ridi-oss/proxy-monster/commit/474c16abbcaf1a37585065d452b60456c2649195))
+* **proxy:** open a run's target connection in its default schema ([31b2f54](https://github.com/ridi-oss/proxy-monster/commit/31b2f548739b0eb7bb0f74dd5ff9eee26dc12e75))
+* **sql-action:** file SQL requests from GitHub Actions ([158ef65](https://github.com/ridi-oss/proxy-monster/commit/158ef650ba9c3fc3f401202927e4b3bad1df1457))
+* **web:** show GitHub requests and approve them without running ([bb1cfeb](https://github.com/ridi-oss/proxy-monster/commit/bb1cfebd1715320a320b3b1c934ad9b11d06a123))
+
+
+### Bug Fixes
+
+* **analyzer:** bump sqlglot-go to v0.37.4 ([ae83ff4](https://github.com/ridi-oss/proxy-monster/commit/ae83ff4697089d13370418710668927d604a57fc))
+* **pmon:** report the release's version ([3185266](https://github.com/ridi-oss/proxy-monster/commit/3185266fc2e93092f0ce6f5a0e80e2d972e299f8))
+
+
+### Refactoring
+
+* **control-plane:** name the query request DTOs after the query request ([3aa4013](https://github.com/ridi-oss/proxy-monster/commit/3aa401347b9fdb0ab94dbfe3369b100d641a1bd5))
+
+
+### Documentation
+
+* **guides:** recover a failed SQL run from GitHub ([768202a](https://github.com/ridi-oss/proxy-monster/commit/768202a38751d9224f24c9b06622d9f360f73d6c))
+* propose driving a remote pmon daemon over SSH ([cc83518](https://github.com/ridi-oss/proxy-monster/commit/cc83518af84afd7b42e5595f997a5c6494010e0e))
+* propose running reviewed SQL files from GitHub ([fe5a7b6](https://github.com/ridi-oss/proxy-monster/commit/fe5a7b69b3f46880e02d086b5724a390fa4b8523))
+
 ## [0.1.31](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.30...server-v0.1.31) (2026-10-12)
 
 

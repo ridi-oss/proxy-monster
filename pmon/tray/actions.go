@@ -20,9 +20,9 @@ import (
 func (a *app) run(act action) {
 	switch act.op {
 	case opSignIn:
-		a.doSignIn(act.server)
+		a.doSignIn(act.remote, act.server)
 	case opSignOut:
-		a.doSignOut(act.server)
+		a.doSignOut(act.remote, act.server)
 	case opCopy:
 		if err := copyToClipboard(act.payload); err != nil {
 			notify(T("n.copyFailed"), err.Error())
@@ -30,7 +30,7 @@ func (a *app) run(act action) {
 		}
 		notify(T("n.copied"), T("n.copiedBody", "label", act.label))
 	case opStart:
-		a.doStart()
+		a.doStart(act.remote)
 	case opRestart:
 		a.doRestart()
 	case opLoginItem:
@@ -54,7 +54,7 @@ func busy() { notify("Proxy Monster", T("n.busy")) }
 
 // doSignIn starts the daemon if needed, then asks IT to run the device-auth flow. The verification prompt is
 // streamed back, so the browser opens and the user code reaches a notification rather than a terminal.
-func (a *app) doSignIn(server string) {
+func (a *app) doSignIn(remote, server string) {
 	// Serialize only the DAEMON-START half. The device flow that follows runs for as long as the control plane's
 	// device TTL (~10 min) if the user never finishes in the browser, and holding a plain mutex across it would
 	// block Quit and Sign Out for that whole window — a mutex is not context-aware, so cancelling a.ctx would
@@ -63,19 +63,19 @@ func (a *app) doSignIn(server string) {
 		busy()
 		return
 	}
-	client, err := control.EnsureDaemon(a.ctx)
+	client, err := a.clientFor(remote)
 	a.unlockAction()
 	if err != nil {
 		notify(T("n.startFailed"), err.Error())
 		return
 	}
-	a.setSigningIn(server, true)
-	defer a.setSigningIn(server, false)
+	a.setSigningIn(keyPrefix(remote)+server, true)
+	defer a.setSigningIn(keyPrefix(remote)+server, false)
 	if err := signInFlow(a.ctx, client, server); err != nil {
 		notify(T("n.signInFailed"), err.Error())
 		return
 	}
-	a.refresh(client)
+	a.refreshFor(remote, client)
 }
 
 // signInFlow runs one server's device sign-in: the browser opens the prefilled verification page, and the
@@ -108,20 +108,28 @@ func signInFlow(ctx context.Context, client *control.Client, server string) erro
 	})
 }
 
-func (a *app) doSignOut(server string) {
+func (a *app) doSignOut(remote, server string) {
 	if !a.tryLockAction() {
 		busy()
 		return
 	}
 	defer a.unlockAction()
 
-	client, err := control.Connect(a.ctx)
+	var client *control.Client
+	var err error
+	if remote == "" {
+		client, err = control.Connect(a.ctx)
+	} else {
+		client, err = a.remoteClient(remote)
+	}
 	if err != nil {
-		a.render(nil)
+		if remote == "" {
+			a.render(nil)
+		}
 		return
 	}
 	// Signing out closes the brokers, which drops live sessions — the same warning the CLI gives.
-	if !a.confirmDroppingConns("signOut", server) {
+	if !confirmDropOn(a.ctx, client, "signOut", server) {
 		return
 	}
 	notEnded, err := client.Logout(a.ctx, control.LogoutRequest{Server: server})
@@ -132,15 +140,25 @@ func (a *app) doSignOut(server string) {
 	if len(notEnded) > 0 {
 		notify(T("n.signedOutLocal"), T("n.signedOutLocalBody", "server", server))
 	}
-	a.refresh(client)
+	a.refreshFor(remote, client)
 }
 
-func (a *app) doStart() {
+func (a *app) doStart(remote string) {
 	if !a.tryLockAction() {
 		busy()
 		return
 	}
 	defer a.unlockAction()
+	if remote != "" {
+		local, err := control.Connect(a.ctx)
+		if err == nil {
+			err = local.StartRemote(a.ctx, remote)
+		}
+		if err != nil {
+			notify(T("n.startFailed"), err.Error())
+		}
+		return
+	}
 
 	if _, err := control.Connect(a.ctx); err == nil {
 		return // already running; the watcher will have rendered it
@@ -215,6 +233,24 @@ func (a *app) doQuit() {
 // stale nil would silently skip the dialog and drop someone's in-flight query. Only a daemon that is genuinely
 // unreachable — nothing to disturb — proceeds without asking.
 func (a *app) confirmDroppingConns(kind, server string) bool { return confirmDrop(a.ctx, kind, server) }
+
+// confirmDropOn is confirmDrop for the daemon behind client, such as a remote one.
+func confirmDropOn(ctx context.Context, client *control.Client, kind, server string) bool {
+	s, err := client.Status(ctx)
+	if err != nil {
+		return true
+	}
+	n := 0
+	for _, ds := range s.Datasources {
+		if ds.Server == server {
+			n += ds.LiveConns
+		}
+	}
+	if n == 0 {
+		return true
+	}
+	return confirm(T("confirm."+kind, "name", server), Tn("confirm.conns", n), T("confirm."+kind+"Button"))
+}
 
 // confirmDrop's kind is "signOut", "restart", "quit", "update" or "remove"; it picks the dialog's title and button.
 func confirmDrop(ctx context.Context, kind, server string) bool {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"maps"
 	"strconv"
 	"strings"
 	"sync"
@@ -43,9 +44,12 @@ type app struct {
 	actionBusy sync.Mutex
 	actionHeld bool
 
-	mu        sync.Mutex
-	status    *control.Status // nil means "no daemon reachable"
-	signingIn map[string]bool
+	mu     sync.Mutex
+	status *control.Status // nil means "no daemon reachable"
+	// remotes is each remote daemon's own status, by SSH target; remoteWatch stops the watcher behind it.
+	remotes     map[string]*control.Status
+	remoteWatch map[string]remoteWatcher
+	signingIn   map[string]bool
 	// warned is the sign-in end each server was last warned about, so each ending is announced once.
 	warned map[string]time.Time
 	// ended is the sign-in end each server's "ended" notice was posted for.
@@ -116,8 +120,11 @@ func (a *app) view() view {
 	a.mu.Lock()
 	ai, updates, pending := a.ai, a.updates, a.pendingUpdate
 	a.mu.Unlock()
+	a.mu.Lock()
+	remotes := maps.Clone(a.remotes)
+	a.mu.Unlock()
 	return view{now: time.Now(), signingIn: signingIn, loginItemOn: on, loginItemShow: supported, ai: ai, pmonVersion: a.pmonVersion,
-		updates: updates, pendingUpdate: pending}
+		updates: updates, pendingUpdate: pending, remotes: remotes}
 }
 
 func (a *app) setSigningIn(server string, on bool) {

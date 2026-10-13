@@ -33,6 +33,7 @@ func (a *app) render(s *control.Status) {
 	a.mu.Lock()
 	a.status = s
 	a.mu.Unlock()
+	a.watchRemotes(s)
 	a.redraw()
 }
 

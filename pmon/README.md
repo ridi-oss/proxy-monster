@@ -119,8 +119,9 @@ SSH target is the remote's name, so a short name, keys and jump hosts come from
 `~/.ssh/config`. ssh runs with `BatchMode`, so it never prompts: use a key or an
 agent. Reaching a running remote daemon needs nothing more there; starting one
 uses `pmon` from the remote's login-shell `PATH`, else Proxy Monster Desktop's
-bundled `pmon`. `pmon remote` lists each remote's state, and the menu-bar app
-shows each remote as its own submenu.
+bundled `pmon`. `pmon remote` lists each remote's state. The menu-bar app shows
+each remote as its own submenu, adds and removes remotes in Settings › Servers,
+and notifies you when a connected remote drops.
 
 ## Commands
 

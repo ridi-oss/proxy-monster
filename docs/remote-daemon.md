@@ -9,7 +9,8 @@ questions, is the
 [design artifact](https://claude.ai/artifact/BTJw1gsknMRdypvpnQhy2b); viewing it
 requires access granted by the maintainers.
 
-Status: proposal; not started.
+Status: built. Not yet: managing remotes from Settings, and a notification when
+a remote disconnects.
 
 ## Settled
 

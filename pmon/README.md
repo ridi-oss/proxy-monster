@@ -98,6 +98,28 @@ server is not logged in, `pmon mcp` exits with the `pmon login` to run. Name the
 pmon server after the proxy-monster instance, as the `get_pmon_guide` MCP tool
 does, so `pmon-<instance>` names one install everywhere.
 
+### Remotes
+
+A remote is another macOS or Linux machine whose pmon daemon this one drives
+over SSH: sign in with this machine's browser, and connect to its datasources
+here.
+
+```sh
+pmon remote add devbox                 # any ssh target: a Host alias, host, or user@host
+pmon --remote devbox login hr          # or PMON_REMOTE=devbox
+pmon --remote devbox show hr orders    # a connection string on a port of this machine
+pmon --remote devbox mcp --install     # pmon-devbox-<server> entries in this machine's AI apps
+```
+
+The daemon keeps one shared ssh connection per remote and forwards the remote's
+control socket and each of its datasources to a loopback port here, from the
+same port range as this machine's datasources. `--remote` runs any command
+against the remote daemon through that socket; `start` starts it over ssh. The
+SSH target is the remote's name, so a short name, keys and jump hosts come from
+`~/.ssh/config`. ssh runs with `BatchMode`, so it never prompts: use a key or an
+agent. The remote needs `pmon` on its login shell's `PATH`. `pmon remote` lists
+each remote's state, and the menu-bar app shows each remote as its own submenu.
+
 ## Commands
 
 <!-- prettier-ignore -->
@@ -109,6 +131,8 @@ does, so `pmon-<instance>` names one install everywhere.
 | `pmon show [server] <ds>` | One datasource's local connection string |
 | `pmon mcp [server]` | Local stdio MCP server relaying to the server's `/mcp` over the pmon login |
 | `pmon status` | Daemon state: every server's login, expiry, and scopes, brokered datasources, live connections |
+| `pmon remote add <ssh-target>` / `remove <ssh-target>` / `list` | Manage remotes, whose daemons this one reaches over SSH |
+| `pmon --remote <ssh-target> <command>` | Run a command against a remote's daemon (also `PMON_REMOTE`) |
 | `pmon start` / `stop` / `restart` | Daemon lifecycle (`-f` / `--force` on `stop` and `restart` skips the live-connection prompt) |
 | `pmon --version` | The release this binary was built from |
 
@@ -213,4 +237,5 @@ pmon CLI ──┐                        ┌── menu-bar app
 | --- | --- |
 | `PMON_CONFIG_DIR` | State directory (default: the user config dir). Set it to run several independent daemons |
 | `PMON_PORT_BASE` | Low end of the loopback port range (default 6100). Needed when two daemons share a machine — a separate state dir isolates state, not ports |
+| `PMON_REMOTE` | SSH target of the remote whose daemon commands address, as `--remote` |
 | `PMON_BINARY` | The `pmon` binary that runs the daemon. Resolved automatically (this binary if it is `pmon`, else a sibling `pmon`, else `PATH`); set it for an unbundled dev build |

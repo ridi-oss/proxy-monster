@@ -7,6 +7,7 @@ import com.cedarpolicy.value.EntityTypeName
 import com.cedarpolicy.value.EntityUID
 import com.cedarpolicy.value.IpAddress
 import com.cedarpolicy.value.PrimBool
+import com.cedarpolicy.value.PrimLong
 import com.cedarpolicy.value.PrimString
 import com.cedarpolicy.value.Unknown
 import com.cedarpolicy.value.Value
@@ -18,6 +19,12 @@ import com.ridi.oss.proxymonster.controlplane.userSession
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.response.respond
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.longOrNull
 
 /**
  * The Cedar action set (docs/authz-model.md). `cedarId` is the literal Cedar `Action::"..."` id — see
@@ -215,8 +222,12 @@ sealed interface AuthzDecision {
     data class Deny(val reason: String, val code: String = "forbidden") : AuthzDecision
 }
 
-/** A user's Cedar parents: its resolved roles and its local groups. */
-data class UserParents(val roles: Set<String>, val groups: Set<String> = emptySet())
+/** A user's Cedar parents (its resolved roles and local groups) and its stored [UserAttribute] values. */
+data class UserParents(
+    val roles: Set<String>,
+    val groups: Set<String> = emptySet(),
+    val attributes: JsonObject = JsonObject(emptyMap()),
+)
 
 /** The Cedar principal a decision marshals: a user with its parents, or a CI workload with its token claims. */
 sealed interface AuthzPrincipal {
@@ -291,12 +302,29 @@ private fun dedupeByEuid(entities: List<Entity>): Set<Entity> {
     return seen.values.toSet()
 }
 
-/** A User entity with its roles and groups as parents, plus those parent entities. */
+/** A User entity with its roles and groups as parents and its declared attributes, plus those parent entities. */
 private fun userEntities(user: String, parents: UserParents): List<Entity> {
     val roleEuids = parents.roles.map { ROLE_TYPE.of(it) }
     val groupEuids = parents.groups.map { GROUP_TYPE.of(it) }
-    return listOf(Entity(USER_TYPE.of(user), emptyMap(), (roleEuids + groupEuids).toMutableSet())) +
+    val attrs = CedarSchema.userAttributes.mapNotNull { a ->
+        parents.attributes[a.name]?.let { a.cedarValue(it) }?.let { a.name to it }
+    }.toMap()
+    return listOf(Entity(USER_TYPE.of(user), attrs, (roleEuids + groupEuids).toMutableSet())) +
         (roleEuids + groupEuids).map { Entity(it) }
+}
+
+/** A stored value as its declared Cedar type; null (attribute absent) when an earlier declaration stored another type. */
+private fun UserAttribute.cedarValue(stored: JsonElement): Value? {
+    val primitive = stored as? JsonPrimitive
+    return when (type) {
+        UserAttribute.Type.STRING -> primitive?.takeIf { it.isString }?.let { PrimString(it.content) }
+        UserAttribute.Type.USER -> primitive?.takeIf { it.isString }?.let { USER_TYPE.of(it.content) }
+        UserAttribute.Type.LONG -> primitive?.takeUnless { it.isString }?.longOrNull?.let(::PrimLong)
+        UserAttribute.Type.BOOL -> primitive?.takeUnless { it.isString }?.booleanOrNull?.let(::PrimBool)
+        UserAttribute.Type.STRING_SET -> (stored as? JsonArray)
+            ?.map { (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.let { p -> PrimString(p.content) } ?: return null }
+            ?.let { CedarList(it) }
+    }
 }
 
 private fun workloadEntity(w: AuthzPrincipal.Workload): Entity = Entity(

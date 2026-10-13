@@ -6,6 +6,7 @@ import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.ACTION
 import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.CHANNEL_PMON
 import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.CHANNEL_SESSION
 import com.ridi.oss.proxymonster.auth.canonicalScopes
+import com.ridi.oss.proxymonster.controlplane.authz.fromClaims
 import com.ridi.oss.proxymonster.controlplane.management.AuditActor
 import com.ridi.oss.proxymonster.controlplane.management.auditEntity
 import io.ktor.client.HttpClient
@@ -880,7 +881,9 @@ private suspend fun revalidateSession(
                 )
                 return
             }
-            userGroupStore.provisionFromOidc(row.principal, claims.email, claims.groups, oidc.groupMapping)
+            userGroupStore.provisionFromOidc(
+                row.principal, claims.email, claims.groups, oidc.groupMapping, oidc.userAttributes.fromClaims(claims.claims),
+            )
             if (roleResolver.resolve(row.principal).isEmpty()) {
                 // Reconciliation is principal-global, so a zero-role verdict ends every live web
                 // session for the principal regardless of which kind produced this candidate. Daemon

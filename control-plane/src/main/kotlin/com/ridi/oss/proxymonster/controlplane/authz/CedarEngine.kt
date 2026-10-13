@@ -106,12 +106,38 @@ internal data class CedarRequest(
 object CedarSchema {
     private const val RESOURCE_PATH = "/authz/schema.cedarschema"
 
-    val text: String = CedarSchema::class.java.getResourceAsStream(RESOURCE_PATH)
+    private const val USER_DECLARATION = "entity User in [Role, Group];"
+
+    private val bundledText: String = CedarSchema::class.java.getResourceAsStream(RESOURCE_PATH)
         ?.bufferedReader()
         ?.use { it.readText() }
         ?: error("authz: $RESOURCE_PATH is missing from the classpath (control-plane/src/main/resources/authz/)")
 
-    val schema: Schema = Schema.parse(Schema.JsonOrCedar.Cedar, text)
+    @Volatile var text: String = bundledText
+        private set
+
+    @Volatile var schema: Schema = Schema.parse(Schema.JsonOrCedar.Cedar, bundledText)
+        private set
+
+    /** The id_token claims `User` carries ([UserAttribute]); set once at boot, before any policy is validated. */
+    @Volatile var userAttributes: List<UserAttribute> = emptyList()
+        private set
+
+    fun declareUserAttributes(attributes: List<UserAttribute>) {
+        check(bundledText.contains(USER_DECLARATION)) { "authz: $RESOURCE_PATH no longer declares `$USER_DECLARATION`" }
+        val declaration = if (attributes.isEmpty()) USER_DECLARATION
+        else "entity User in [Role, Group] = { ${attributes.joinToString(", ") { "${it.name}?: ${it.type.cedar}" }} };"
+        val candidate = bundledText.replace(USER_DECLARATION, declaration)
+        val parsed = try {
+            Schema.parse(Schema.JsonOrCedar.Cedar, candidate)
+        } catch (e: Exception) {
+            throw IllegalArgumentException("PM_OIDC_USER_ATTRIBUTES does not form a valid Cedar schema: ${e.message}", e)
+        }
+        text = candidate
+        schema = parsed
+        userAttributes = attributes
+        augmentedSchemas.clear()
+    }
 
     // Each schema action's DIRECT parent actions, parsed from `action "a"[, "b"] [in ["p", ...]] appliesTo`.
     // The statement-classification actions nest (stmt.kind.<k> in stmt.cat.<leaf>, stmt.cat.<leaf> in
@@ -120,7 +146,7 @@ object CedarSchema {
         val decl = Regex("""action\s+((?:"[^"]+"\s*,?\s*)+?)(?:in\s*\[([^\]]*)])?\s*appliesTo""")
         val quoted = Regex(""""([^"]+)"""")
         val map = HashMap<String, MutableSet<String>>()
-        decl.findAll(text).forEach { m ->
+        decl.findAll(bundledText).forEach { m ->
             val names = quoted.findAll(m.groupValues[1]).map { it.groupValues[1] }.toList()
             val parents = m.groupValues[2].takeIf { it.isNotBlank() }
                 ?.let { p -> quoted.findAll(p).mapTo(mutableSetOf()) { it.groupValues[1] } } ?: emptySet()
@@ -276,6 +302,24 @@ object CedarSchema {
             .map { (cmd, replacement) ->
                 "Utility::\"…/$cmd\" is no longer emitted — this policy would never match. Use $replacement instead."
             }
+
+    private val HAS_ATTRIBUTE = Regex("""\bhas\s+(?:([A-Za-z_][A-Za-z0-9_]*)|"([^"]*)")""")
+    private val DECLARED_ATTRIBUTE = Regex("""([A-Za-z_][A-Za-z0-9_]*)\??\s*:""")
+
+    /**
+     * Enabled-policy lint for a `has <name>` no schema type declares. Cedar types it as false rather than
+     * rejecting it, so a policy reading an attribute dropped from PM_OIDC_USER_ATTRIBUTES silently stops
+     * matching — a forbid that no longer fires.
+     */
+    fun undeclaredAttributeLint(sources: List<Pair<Long, String>>): List<String> {
+        val declared = DECLARED_ATTRIBUTE.findAll(text).mapTo(HashSet()) { it.groupValues[1] }
+        return sources.flatMap { (id, src) ->
+            HAS_ATTRIBUTE.findAll(src).map { it.groupValues[1].ifEmpty { it.groupValues[2] } }
+                .filter { it !in declared }.distinct()
+                .map { "policy $id: `has $it` names an attribute no schema type declares, so it is always false" }
+                .toList()
+        }
+    }
 
     /** Enabled-policy lint for retired Utility commands — see [retiredUtilityErrors]. */
     fun retiredUtilityLint(sources: List<Pair<Long, String>>): List<String> =

@@ -57,6 +57,10 @@ configured per proxy under `PM_TARGET_*`.
   (default `openid profile email groups offline_access`); map IdP groups → local
   groups/roles (explicit map to target `system:*`). Example:
   `PM_OIDC_GROUP_MAP=okta-admins=system:admin,okta-devs=developers`
+- `PM_OIDC_USER_ATTRIBUTES` — _optional_. id_token claims copied onto the Cedar
+  `User` as `<name>:<String|Long|Bool|Set<String>|User>` pairs
+  ([docs/auth-model.md](./docs/auth-model.md#user-attributes)). Example:
+  `PM_OIDC_USER_ATTRIBUTES=manager:User,department:String`
 - `PM_SESSION_SECRET` — _required (prod)_. Signs web sessions; ≥32 chars,
   non-default (enforced when debug is off). Example:
   `$(openssl rand -base64 48)`

@@ -48,7 +48,8 @@ discovery (`OidcDiscovery.kt`), so the flow is provider-agnostic:
                       issued) at the IdP /token
                       → VALIDATE id_token (IdTokenValidator): JWKS signature, iss, aud, exp, AND nonce
                       → principal = email ?? sub
-                      → JIT-provision the app_user (+ map groups claim → local groups)
+                      → JIT-provision the app_user (+ map groups claim → local groups,
+                        + store the PM_OIDC_USER_ATTRIBUTES claims)
                       → set signed-cookie session { principal }
 ```
 
@@ -65,6 +66,36 @@ discovery (`OidcDiscovery.kt`), so the flow is provider-agnostic:
 - The `groups` claim feeds JIT provisioning (local group membership), _not_
   roles. Roles come from `RoleResolver` over the local directory, never from the
   token.
+
+### User attributes
+
+`PM_OIDC_USER_ATTRIBUTES` copies named id_token claims onto the Cedar `User`
+entity, as optional attributes of the same name. Types are `String`, `Long`,
+`Bool`, `Set<String>`, and `User` (a principal name, compared as an entity):
+
+```
+PM_OIDC_USER_ATTRIBUTES=manager:User,department:String
+```
+
+Route each approval to the requester's manager, with no per-team policy.
+`task.read` lets the manager open the request from their inbox:
+
+```cedar
+permit (principal, action in [Action::"task.approve", Action::"task.read"], resource is Request)
+when { resource.requester has manager && resource.requester.manager == principal };
+```
+
+- Values are stored on `app_user.attributes` at every login and daemon refresh.
+  A claim that is absent or of the wrong type removes the attribute. A change in
+  the IdP takes effect at the user's next login.
+- A `User` value must use the same form as the principal (`email`, else `sub`).
+  In Okta, add an app token claim `manager` = `user.profile.managerId` when
+  `managerId` holds the manager's email.
+- Cedar types `has <undeclared>` as false. A policy that reads an attribute
+  removed from the list stops matching instead of failing to load, and `/health`
+  lists it.
+- A run under a task's frozen `execute_as` roles carries neither groups nor
+  attributes.
 
 ## CLI / daemon login — web verification page
 

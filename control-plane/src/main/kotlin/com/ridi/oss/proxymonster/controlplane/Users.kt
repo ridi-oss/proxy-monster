@@ -16,6 +16,9 @@ import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.put
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
 import java.sql.Connection
 import java.sql.PreparedStatement
 import java.sql.ResultSet
@@ -358,9 +361,10 @@ class UserGroupStore(internal val dataSource: DataSource) {
         email: String?,
         idpGroups: List<String>,
         mapping: OidcGroupMapping = OidcGroupMapping(emptyMap(), null),
+        attributes: JsonObject = JsonObject(emptyMap()),
     ): AppUser {
         val userId = com.ridi.oss.proxymonster.auth.OidcDirectoryProvisioner(dataSource)
-            .provision(principal, email, idpGroups, mapping)
+            .provision(principal, email, idpGroups, mapping, attributes.toString())
         return getUser(userId)!!
     }
 
@@ -649,16 +653,16 @@ class UserGroupStore(internal val dataSource: DataSource) {
         "DELETE FROM group_role WHERE group_id=? AND role_id=?",
     ).use { ps -> ps.setLong(1, groupId); ps.setLong(2, roleId); ps.executeUpdate() > 0 }
 
-    /** This principal's groups and the roles they grant. Empty if no (active) app_user row. */
+    /** This principal's groups, the roles they grant, and its attributes. Empty if no (active) app_user row. */
     fun groupParents(principal: String): UserParents =
-        // INNER JOINs from app_user: an unknown or inactive principal yields zero rows (fail-closed).
-        // LEFT JOINs to roles keep a group that grants none.
+        // Rows only for an active app_user: an unknown or inactive principal yields none (fail-closed). The
+        // LEFT JOINs keep a user in no group (for its attributes) and a group that grants no role.
         dataSource.connection.use { c ->
             c.prepareStatement(
-                """SELECT g.name, r.name
+                """SELECT u.attributes::text, g.name, r.name
                    FROM app_user u
-                   JOIN group_member gm ON gm.user_id = u.id
-                   JOIN app_group g ON g.id = gm.group_id AND g.deleted_at IS NULL
+                   LEFT JOIN group_member gm ON gm.user_id = u.id
+                   LEFT JOIN app_group g ON g.id = gm.group_id AND g.deleted_at IS NULL
                    LEFT JOIN group_role gr ON gr.group_id = g.id
                    LEFT JOIN app_role r ON r.id = gr.role_id AND r.deleted_at IS NULL
                    WHERE u.principal = ? AND u.active""",
@@ -667,11 +671,13 @@ class UserGroupStore(internal val dataSource: DataSource) {
                 ps.executeQuery().use { rs ->
                     val groups = sortedSetOf<String>()
                     val roles = sortedSetOf<String>()
+                    var attributes: JsonObject? = null
                     while (rs.next()) {
-                        groups += rs.getString(1)
-                        rs.getString(2)?.let { roles += it }
+                        if (attributes == null) attributes = Json.parseToJsonElement(rs.getString(1)).jsonObject
+                        rs.getString(2)?.let { groups += it }
+                        rs.getString(3)?.let { roles += it }
                     }
-                    UserParents(roles, groups)
+                    UserParents(roles, groups, attributes ?: JsonObject(emptyMap()))
                 }
             }
         }

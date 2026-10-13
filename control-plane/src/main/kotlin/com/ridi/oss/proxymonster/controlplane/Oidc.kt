@@ -4,6 +4,7 @@ import com.ridi.oss.proxymonster.auth.pkceS256
 import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.ACTION_OIDC_LOGIN
 import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.CHANNEL_OIDC
 import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.PRINCIPAL_UNATTRIBUTED
+import com.ridi.oss.proxymonster.controlplane.authz.fromClaims
 import com.ridi.oss.proxymonster.controlplane.management.AuditActor
 import com.ridi.oss.proxymonster.controlplane.management.auditEntity
 import io.ktor.client.HttpClient
@@ -295,7 +296,9 @@ fun Route.oidcRoutes(
         try {
             // membership is reconciled to the mapped claim set — added AND removed — so IdP group changes
             // (including admin, via system:admin) take effect on the next login. Deactivation stays SCIM's job.
-            userGroupStore.provisionFromOidc(principal, claims.email, claims.groups, oidc.groupMapping)
+            userGroupStore.provisionFromOidc(
+                principal, claims.email, claims.groups, oidc.groupMapping, oidc.userAttributes.fromClaims(claims.claims),
+            )
             // Gate a principal with no effective roles to the no-access screen before minting a session.
             if (roleResolver.resolve(principal).isEmpty()) {
                 log.warn("OIDC callback principal has no effective roles: {}", principal)

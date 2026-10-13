@@ -155,7 +155,9 @@ Verified on the real Cedar engine in [docs/cedar-sim/](./cedar-sim/)
 ## How it uses authz
 
 - Approve / execute: `authorize(approver, task.approve, request, context)` — one
-  action, `request in Role::R`.
+  action, `request in Role::R`. `resource.requester` carries the requester's
+  groups and [user attributes](./auth-model.md#user-attributes), so
+  `resource.requester.manager == principal` routes approval to their manager.
 - Execute run: `decideQuery` under `assumeRoles={R}` on the `workflow-executor`
   channel (via `RunExecService.run` + proxy `Decide`) → R's enforced result. A
   column R cannot read at all ⇒ Q-under-R denied ⇒ pick another role / narrow Q.

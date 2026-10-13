@@ -226,6 +226,7 @@ data class DecisionContext(
     val referencedSchemas: Set<com.ridi.oss.proxymonster.grpc.ObjectRef> = emptySet(),
     /** Parsed dotted-identifier candidates used by the catalog-miss retry path. */
     val schemaCandidates: Set<com.ridi.oss.proxymonster.grpc.ObjectRef> = emptySet(),
+    val checkTargetSyntax: Boolean = false,
 )
 
 /**
@@ -689,7 +690,7 @@ fun decideQuery(
             ).withCaps(datasourceCaps).let { relay ->
                 if (relaysRows(statementKind)) spentRate(auditStore, principal, ds.name, datasourceCaps)?.let { deny(it) } ?: relay else relay
             }
-            is AuthzDecision.Deny -> deny(reason, catalogMiss = true)
+            is AuthzDecision.Deny -> deny(reason, catalogMiss = true).copy(checkTargetSyntax = true)
         }
     }
 

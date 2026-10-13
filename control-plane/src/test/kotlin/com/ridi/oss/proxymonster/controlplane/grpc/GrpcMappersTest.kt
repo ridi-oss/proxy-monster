@@ -72,6 +72,13 @@ class GrpcMappersTest {
     }
 
     @Test
+    fun `the target syntax check crosses only when the decision asks for it`() {
+        val checked = ctx(EnfAction.DENY, denyReason = "fail-closed").copy(checkTargetSyntax = true).toWireDecision(1, 0, emptyList()).verdict
+        assertTrue(checked.checkTargetSyntax)
+        assertFalse(ctx(EnfAction.DENY, denyReason = "fail-closed").toWireDecision(1, 0, emptyList()).verdict.checkTargetSyntax)
+    }
+
+    @Test
     fun `targeted after-statement refetch maps schema and hash`() {
         val hash = ByteString.copyFromUtf8("h1")
         val d = ctx(EnfAction.ALLOW).toWireDecision(

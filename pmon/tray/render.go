@@ -34,6 +34,7 @@ func (a *app) render(s *control.Status) {
 	a.status = s
 	a.mu.Unlock()
 	a.watchRemotes(s)
+	a.noticeRemoteDrops(s)
 	a.redraw()
 }
 

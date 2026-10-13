@@ -14,6 +14,28 @@ type remoteWatcher struct {
 	stop   context.CancelFunc
 }
 
+// noticeRemoteDrops notifies once when a remote that was connected loses its connection.
+func (a *app) noticeRemoteDrops(s *control.Status) {
+	now := map[string]control.RemoteInfo{}
+	if s != nil {
+		for _, r := range s.Remotes {
+			now[r.Target] = r
+		}
+	}
+	a.mu.Lock()
+	prev := a.remoteStates
+	a.remoteStates = map[string]control.RemoteState{}
+	for target, r := range now {
+		a.remoteStates[target] = r.State
+	}
+	a.mu.Unlock()
+	for target, r := range now {
+		if prev[target] == control.RemoteConnected && (r.State == control.RemoteDown || r.State == control.RemoteConnecting) {
+			notify(T("n.remoteDown", "remote", target), r.Error)
+		}
+	}
+}
+
 // watchRemotes runs one watcher per remote whose socket is forwarded, and drops the rest with their status.
 func (a *app) watchRemotes(s *control.Status) {
 	want := map[string]string{}

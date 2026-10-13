@@ -49,7 +49,9 @@ type app struct {
 	// remotes is each remote daemon's own status, by SSH target; remoteWatch stops the watcher behind it.
 	remotes     map[string]*control.Status
 	remoteWatch map[string]remoteWatcher
-	signingIn   map[string]bool
+	// remoteStates is each remote's state at the last status, to notice a dropped connection.
+	remoteStates map[string]control.RemoteState
+	signingIn    map[string]bool
 	// warned is the sign-in end each server was last warned about, so each ending is announced once.
 	warned map[string]time.Time
 	// ended is the sign-in end each server's "ended" notice was posted for.

@@ -56,6 +56,14 @@ type prefsState struct {
 	UninstallShown bool          `json:"uninstallShown"`
 	Versions       prefsVersions `json:"versions"`
 	Updates        prefsUpdates  `json:"updates"`
+	Remotes        []prefsRemote `json:"remotes"`
+}
+
+// prefsRemote is one remote machine whose daemon this machine's daemon reaches over SSH.
+type prefsRemote struct {
+	Target string              `json:"target"`
+	State  control.RemoteState `json:"state"`
+	Error  string              `json:"error,omitempty"`
 }
 
 // prefsUpdates is the Updates setting; Shown is false in a build without an updater.
@@ -107,7 +115,7 @@ func (p *prefs) state() prefsState {
 	if _, ok := catalogs[language]; !ok {
 		language = "system"
 	}
-	st := prefsState{Language: language, Lang: lang(), Theme: theme(), LoginItemOn: on, LoginItemShown: shown, UninstallShown: canUninstall, Servers: []prefsServer{},
+	st := prefsState{Remotes: []prefsRemote{}, Language: language, Lang: lang(), Theme: theme(), LoginItemOn: on, LoginItemShown: shown, UninstallShown: canUninstall, Servers: []prefsServer{},
 		Versions: prefsVersions{App: version, Pmon: p.pmonVersion}}
 	st.Updates.Shown = updatesConfigured()
 	st.Updates.Auto, st.Updates.Forced = autoUpdates()
@@ -121,6 +129,9 @@ func (p *prefs) state() prefsState {
 	}
 	st.Running = true
 	st.defaultServer = s.DefaultServer
+	for _, r := range s.Remotes {
+		st.Remotes = append(st.Remotes, prefsRemote{Target: r.Target, State: r.State, Error: r.Error})
+	}
 	st.Versions.Daemon = s.Version
 	now := time.Now()
 	for _, srv := range s.Servers {
@@ -262,6 +273,8 @@ func (p *prefs) handlers() map[string]func(args []json.RawMessage) (any, error) 
 		"signIn":       one(func(n string) any { return p.signIn(n) }),
 		"signOut":      one(p.signOut),
 		"removeServer": one(p.removeServer),
+		"addRemote":    one(func(t string) any { return p.addRemote(t) }),
+		"removeRemote": one(func(t string) any { return p.removeRemote(t) }),
 		"openLink":     one(func(u string) any { return p.openLink(u) }),
 		"setLanguage":  one(func(l string) any { return p.setLanguage(l) }),
 		"setTheme":     one(func(t string) any { return p.setTheme(t) }),
@@ -406,6 +419,27 @@ func (p *prefs) restart() any {
 		return errText(err)
 	}
 	_, err := control.EnsureDaemon(p.ctx)
+	return errText(err)
+}
+
+// addRemote saves an SSH target; this machine's daemon then keeps a connection to that machine's daemon.
+func (p *prefs) addRemote(target string) string {
+	client, err := control.EnsureDaemon(p.ctx)
+	if err == nil {
+		err = client.AddRemote(p.ctx, strings.TrimSpace(target))
+	}
+	return errText(err)
+}
+
+// removeRemote closes a remote's connection, which drops connections through its forwarded ports.
+func (p *prefs) removeRemote(target string) any {
+	if !confirm(T("confirm.removeRemote", "remote", target), T("confirm.removeRemoteBody"), T("confirm.removeButton")) {
+		return nil
+	}
+	client, err := control.Connect(p.ctx)
+	if err == nil {
+		err = client.RemoveRemote(p.ctx, target)
+	}
 	return errText(err)
 }
 

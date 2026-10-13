@@ -69,3 +69,22 @@ func TestIconCountsRemoteServers(t *testing.T) {
 		t.Errorf("icon %v: a remote that is down has no servers to count", got)
 	}
 }
+
+func TestRemoteDropNotifiesOnce(t *testing.T) {
+	var got []string
+	prev := notify
+	notify = func(title, body string) { got = append(got, title+" | "+body) }
+	t.Cleanup(func() { notify = prev })
+	a := &app{}
+	status := func(state control.RemoteState, err string) *control.Status {
+		return &control.Status{Remotes: []control.RemoteInfo{{Target: "devbox", State: state, Error: err}}}
+	}
+	a.noticeRemoteDrops(status(control.RemoteConnecting, ""))
+	a.noticeRemoteDrops(status(control.RemoteConnected, ""))
+	a.noticeRemoteDrops(status(control.RemoteDown, "Connection reset by peer"))
+	a.noticeRemoteDrops(status(control.RemoteConnecting, ""))
+	a.noticeRemoteDrops(status(control.RemoteDown, "Connection refused"))
+	if len(got) != 1 || got[0] != "devbox disconnected | Connection reset by peer" {
+		t.Errorf("notifications %q, want one for the drop", got)
+	}
+}

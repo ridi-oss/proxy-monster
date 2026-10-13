@@ -245,5 +245,21 @@
   "menu.remoteDown": "{remote} — not connected",
   "menu.remoteNoPmon": "{remote} — pmon not found",
   "menu.remoteNotRunning": "{remote} — not running",
-  "menu.notForwarded": "not forwarded yet"
+  "menu.notForwarded": "not forwarded yet",
+  "s.remote.title": "Remote machines",
+  "s.remote.desc": "Use the pmon daemon on another Mac or Linux machine over SSH: sign in here, and connect to its datasources from this machine.",
+  "s.remote.placeholder": "SSH target, such as devbox or dana@devbox",
+  "s.remote.hint": "SSH must connect without a password prompt (a key or an agent), and the machine needs pmon. A Host alias in ~/.ssh/config gives a short name.",
+  "s.remote.state.connected": "Connected",
+  "s.remote.state.connecting": "Connecting…",
+  "s.remote.state.no-daemon": "Not running",
+  "s.remote.state.no-pmon": "pmon not found",
+  "s.remote.state.down": "Not connected",
+  "s.btn.addRemote": "Add",
+  "s.btn.removeRemote": "Remove",
+  "s.toast.remoteAdded": "Added {remote}",
+  "s.toast.remoteRemoved": "Removed {remote}",
+  "confirm.removeRemote": "Remove {remote}?",
+  "confirm.removeRemoteBody": "This machine stops reaching its daemon, and connections through its forwarded ports close. Its own sign-ins stay on that machine.",
+  "n.remoteDown": "{remote} disconnected"
 }

@@ -39,7 +39,7 @@ var remoteCheckEvery = 15 * time.Second
 func remoteShell(cmd string) string { return `exec "$SHELL" -lc '` + cmd + `'` }
 
 func validTarget(target string) error {
-	if target == "" || strings.HasPrefix(target, "-") || strings.ContainsAny(target, " \t\n'\"\\") {
+	if !control.ValidTarget(target) {
 		return fmt.Errorf("%q is not an ssh target", target)
 	}
 	return nil
@@ -95,17 +95,24 @@ func (d *Daemon) StartRemote(ctx context.Context, req control.RemoteRequest) err
 		info = r.info
 	}
 	d.mu.Unlock()
-	switch {
-	case r == nil:
+	if r == nil {
 		return fmt.Errorf("unknown remote %q — `pmon remote add %s` first", req.Target, req.Target)
-	case info.State == control.RemoteConnected:
-		return nil
-	case info.State != control.RemoteNoDaemon:
+	}
+	if info.State != control.RemoteConnected && info.State != control.RemoteNoDaemon {
 		return fmt.Errorf("remote %q is %s: %s", req.Target, info.State, info.Error)
 	}
-	ctl, _, err := state.RemotePaths(req.Target)
+	ctl, sock, err := state.RemotePaths(req.Target)
 	if err != nil {
 		return err
+	}
+	// The cached state can still say connected just after the remote stopped, so ask the remote itself.
+	probe := control.NewClientAt(sock)
+	defer probe.CloseIdle()
+	answer, cancel := context.WithTimeout(ctx, 5*time.Second)
+	_, err = probe.Status(answer)
+	cancel()
+	if err == nil {
+		return nil
 	}
 	if _, err := sshOutput(ctx, "-S", ctl, "--", req.Target, remoteShell("pmon start")); err != nil {
 		return fmt.Errorf("start the daemon on %s: %w", req.Target, err)
@@ -123,10 +130,10 @@ func (d *Daemon) StartRemote(ctx context.Context, req control.RemoteRequest) err
 			return fmt.Errorf("the daemon on %s did not answer within 20s", req.Target)
 		case <-time.After(500 * time.Millisecond):
 		}
-		d.mu.Lock()
-		now := r.info.State
-		d.mu.Unlock()
-		if now == control.RemoteConnected {
+		answer, cancel := context.WithTimeout(ctx, 2*time.Second)
+		_, err := probe.Status(answer)
+		cancel()
+		if err == nil {
 			return nil
 		}
 	}
@@ -245,9 +252,16 @@ func (d *Daemon) connectRemote(ctx context.Context, r *remote, ctl, sock string)
 
 	forwarded := false
 	forwards := map[string]portForward{}
+	probeClient := control.NewClientAt(sock)
+	defer probeClient.CloseIdle()
 	check := func() {
 		if !forwarded {
-			remoteSock, err := sshOutput(ctx, "-S", ctl, "--", r.target, remoteShell("pmon socket-path"))
+			out, err := sshOutput(ctx, "-S", ctl, "--", r.target, remoteShell("pmon socket-path"))
+			// A login profile may print before pmon does, so the path is the last line.
+			remoteSock := lastLine(out)
+			if err == nil && !strings.HasPrefix(remoteSock, "/") {
+				err = fmt.Errorf("pmon socket-path printed %q", remoteSock)
+			}
 			if err != nil {
 				d.setRemote(r, control.RemoteInfo{State: control.RemoteNoPmon, Error: errText(err)})
 				return
@@ -260,9 +274,13 @@ func (d *Daemon) connectRemote(ctx context.Context, r *remote, ctl, sock string)
 		}
 		probe, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
-		st, err := control.NewClientAt(sock).Status(probe)
+		st, err := probeClient.Status(probe)
 		if err != nil {
-			d.setRemote(r, control.RemoteInfo{State: control.RemoteNoDaemon, Socket: sock})
+			info := control.RemoteInfo{State: control.RemoteNoDaemon, Socket: sock, Ports: forwardedPorts(forwards)}
+			if !errors.Is(err, control.ErrDaemonNotRunning) {
+				info.Error = err.Error()
+			}
+			d.setRemote(r, info)
 			return
 		}
 		ports, failed := d.syncForwards(ctx, r.target, ctl, *st, forwards)
@@ -322,10 +340,15 @@ func (d *Daemon) syncForwards(ctx context.Context, target, ctl string, st contro
 		}
 		var local int
 		if err := d.commit(func(c *state.Config) error {
+			if !slices.Contains(c.Remotes, target) {
+				return errRemoteRemoved
+			}
 			local = c.AssignRemotePort(target, key)
 			return nil
 		}); err != nil {
-			failed = err.Error()
+			if !errors.Is(err, errRemoteRemoved) {
+				failed = err.Error()
+			}
 			continue
 		}
 		f := portForward{local: local, remote: remotePort}
@@ -335,16 +358,19 @@ func (d *Daemon) syncForwards(ctx context.Context, target, ctl string, st contro
 		}
 		forwards[key] = f
 	}
+	return forwardedPorts(forwards), failed
+}
+
+func forwardedPorts(forwards map[string]portForward) map[string]int {
 	ports := make(map[string]int, len(forwards))
 	for key, f := range forwards {
 		ports[key] = f.local
 	}
-	return ports, failed
+	return ports
 }
 
 // watchRemote nudges changed whenever the remote daemon publishes an event, so a new datasource is forwarded
-// at once rather than at the next check. It retries every 2s, so a remote daemon that just started is followed
-// at once too.
+// at once rather than at the next check, and whenever the stream ends, so a remote that stopped shows at once.
 func watchRemote(ctx context.Context, sock string, changed chan<- struct{}) {
 	nudge := func() {
 		select {
@@ -353,9 +379,8 @@ func watchRemote(ctx context.Context, sock string, changed chan<- struct{}) {
 		}
 	}
 	for ctx.Err() == nil {
-		if err := control.NewClientAt(sock).Events(ctx, func(control.Event) { nudge() }); err == nil {
-			nudge()
-		}
+		_ = control.NewClientAt(sock).Events(ctx, func(control.Event) { nudge() })
+		nudge()
 		select {
 		case <-ctx.Done():
 			return
@@ -365,6 +390,27 @@ func watchRemote(ctx context.Context, sock string, changed chan<- struct{}) {
 }
 
 var errMasterExited = errors.New("ssh exited")
+
+var errRemoteRemoved = errors.New("the remote was removed")
+
+// stopRemotes ends every remote's ssh connection and waits for it, so no ssh outlives the daemon.
+func (d *Daemon) stopRemotes() {
+	d.mu.Lock()
+	rs := make([]*remote, 0, len(d.remotes))
+	for _, r := range d.remotes {
+		rs = append(rs, r)
+	}
+	d.mu.Unlock()
+	for _, r := range rs {
+		r.cancel()
+	}
+	for _, r := range rs {
+		select {
+		case <-r.done:
+		case <-time.After(5 * time.Second):
+		}
+	}
+}
 
 // waitForMaster waits until the shared connection's control socket answers. errMasterExited means it took ssh's
 // exit from exited.
@@ -402,6 +448,11 @@ func sshOutput(ctx context.Context, args ...string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(out.String()), nil
+}
+
+func lastLine(s string) string {
+	s = strings.TrimSpace(s)
+	return strings.TrimSpace(s[strings.LastIndex(s, "\n")+1:])
 }
 
 // tailBuffer keeps the last few KB a process wrote, for its final error line.

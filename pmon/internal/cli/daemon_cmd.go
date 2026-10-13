@@ -9,7 +9,7 @@ import (
 	"github.com/ridi-oss/proxy-monster/pmon/internal/providers"
 )
 
-// daemonCmd runs the daemon in the foreground. It is the exec target of `" + self + " start` (which spawns it
+// daemonCmd runs the daemon in the foreground. It is the exec target of `pmon start` (which spawns it
 // detached) and the entry point for anyone who wants to supervise pmon themselves — a systemd unit, a
 // container, or a terminal to watch it in.
 type daemonCmd struct{}

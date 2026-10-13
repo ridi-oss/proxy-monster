@@ -96,7 +96,7 @@ func (c *serverUnsetCmd) Run() error {
 	return nil
 }
 
-// serverDefaultCmd is `" + self + " server default [name]`: the server a command addresses when it names none.
+// serverDefaultCmd is `pmon server default [name]`: the server a command addresses when it names none.
 type serverDefaultCmd struct {
 	Name string `arg:"" optional:"" help:"Server to make the default."`
 }
@@ -127,7 +127,7 @@ func (c *serverDefaultCmd) Run() error {
 	return nil
 }
 
-// serverRenameCmd is `" + self + " server rename [name] [new-name]`. The AI apps' entries for the server move with it.
+// serverRenameCmd is `pmon server rename [name] [new-name]`. The AI apps' entries for the server move with it.
 type serverRenameCmd struct {
 	Name  string `arg:"" optional:"" help:"Server to rename (default: the default server)."`
 	To    string `arg:"" optional:"" name:"new-name" help:"New name (default: the name the server advertises)."`
@@ -167,6 +167,9 @@ func (c *serverRenameCmd) Run() error {
 		return nil
 	}
 	fmt.Printf("server %q renamed to %q\n", res.Name, res.To)
+	if remoteTarget != "" {
+		return moveAIEntries(remoteTarget+"/"+res.Name, remoteTarget+"/"+res.To, "")
+	}
 	def := s.DefaultServer
 	if def == res.Name {
 		def = res.To

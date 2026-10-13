@@ -14,7 +14,7 @@ import (
 	"github.com/ridi-oss/proxy-monster/pmon/internal/state"
 )
 
-// versionCmd is `" + self + " version`: this binary, the running daemon, and what each server reports now.
+// versionCmd is `pmon version`: this binary, the running daemon, and what each server reports now.
 type versionCmd struct{}
 
 func (versionCmd) Run() error {

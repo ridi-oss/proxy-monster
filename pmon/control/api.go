@@ -5,7 +5,11 @@
 // Transport is a Unix socket under a per-user 0700 directory, so only the same OS user can connect.
 package control
 
-import "github.com/ridi-oss/proxy-monster/pmon/driver"
+import (
+	"strings"
+
+	"github.com/ridi-oss/proxy-monster/pmon/driver"
+)
 
 // Status is the daemon's whole observable state, and the only thing a peer formats. Live listener facts come
 // from the daemon's own maps, never from the sticky port map on disk — a revoked datasource keeps its port
@@ -159,6 +163,12 @@ const (
 	RemoteNoPmon RemoteState = "no-pmon"
 	RemoteDown   RemoteState = "down"
 )
+
+// ValidTarget reports whether target can be an SSH target: not empty, not an ssh option, and free of what a shell
+// or a format string would read.
+func ValidTarget(target string) bool {
+	return target != "" && !strings.HasPrefix(target, "-") && !strings.ContainsAny(target, " \t\n'\"\\%`$;|&<>")
+}
 
 // RemoteRequest names a remote by its SSH target: {"target": "devbox"}.
 type RemoteRequest struct {

@@ -7,9 +7,9 @@ import (
 	"github.com/ridi-oss/proxy-monster/pmon/internal/aiapps"
 )
 
-// moveAIEntries points the AI apps' `" + self + " mcp <from>` entries at a server renamed to to: an entry for the
+// moveAIEntries points the AI apps' `pmon mcp <from>` entries at a server renamed to to: an entry for the
 // old name would reach no server. The new entry is added before the old one is removed. def is the default
-// server after the rename, which a bare `" + self + " mcp` entry follows on its own.
+// server after the rename, which a bare `pmon mcp` entry follows on its own.
 func moveAIEntries(from, to, def string) error {
 	pmon, err := pmonPath()
 	if err != nil {

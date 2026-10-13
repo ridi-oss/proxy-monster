@@ -12,7 +12,8 @@ import (
 // The daemon keeps serving when the binary on disk is replaced. A warning, not a restart: it holds a
 // live session. Written to stderr, so it stays out of piped output.
 func warnVersionSkew(s *control.Status) {
-	if s == nil {
+	// A remote's version is the other machine's install; restarting it would not bring it to this build.
+	if s == nil || remoteTarget != "" {
 		return
 	}
 	if s.Version == "" {

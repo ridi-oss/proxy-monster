@@ -9,7 +9,7 @@ import (
 
 func withRemote(state control.RemoteState) *control.Status {
 	s := twoServers()
-	s.Remotes = []control.RemoteInfo{{Target: "devbox", State: state, Socket: "/tmp/x.sock", Ports: map[string]int{"acme/orders": 47100}}}
+	s.Remotes = []control.RemoteInfo{{Target: "devbox", State: state, Socket: "/tmp/x.sock", Forwards: []control.Forward{{Server: "acme", Datasource: "orders", Port: 47100}}}}
 	return s
 }
 

@@ -197,7 +197,7 @@ func remoteEntry(r control.RemoteInfo, v view) entry {
 		return e
 	}
 	e := entry{key: key, title: r.Target}
-	forwarded := forwardedStatus(rs, r.Ports)
+	forwarded := r.Localize(rs)
 	for _, srv := range forwarded.Servers {
 		e.children = append(e.children, serverEntry(forwarded, srv, v, r.Target))
 	}
@@ -205,16 +205,6 @@ func remoteEntry(r control.RemoteInfo, v view) entry {
 		e.children = []entry{{key: key + "#none", title: T("menu.noServer"), disabled: true}}
 	}
 	return e
-}
-
-// forwardedStatus is a remote's status with each datasource on its forwarded port here, or 0 while it has none.
-func forwardedStatus(s *control.Status, ports map[string]int) *control.Status {
-	out := *s
-	out.Datasources = slices.Clone(s.Datasources)
-	for i, ds := range out.Datasources {
-		out.Datasources[i].LocalPort = ports[ds.Server+"/"+ds.Name]
-	}
-	return &out
 }
 
 func serverEntry(s *control.Status, srv control.ServerInfo, v view, remote string) entry {

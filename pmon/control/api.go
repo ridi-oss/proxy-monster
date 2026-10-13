@@ -6,6 +6,7 @@
 package control
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/ridi-oss/proxy-monster/pmon/driver"
@@ -145,10 +146,37 @@ type RemoteInfo struct {
 	Target string      `json:"target"` // the ssh target, also its name: "devbox", "dana@devbox.example"
 	State  RemoteState `json:"state"`
 	// Error is ssh's or the remote shell's last word: "ssh: connect to host devbox port 22: Connection refused".
-	Error  string `json:"error,omitempty"`
-	Socket string `json:"socket,omitempty"` // "/tmp/pmon-501/pmon-9a631b7f1a34259a-r49960de5.sock"
-	// Ports maps each forwarded "server/datasource" to its loopback port here: {"acme/orders": 6103}.
-	Ports map[string]int `json:"ports,omitempty"`
+	Error    string    `json:"error,omitempty"`
+	Socket   string    `json:"socket,omitempty"` // "/tmp/pmon-501/pmon-9a631b7f1a34259a-r49960de5.sock"
+	Forwards []Forward `json:"forwards,omitempty"`
+}
+
+// Forward is one remote datasource on a loopback port here: {"server": "acme", "datasource": "orders", "port": 6103}.
+type Forward struct {
+	Server     string `json:"server"`
+	Datasource string `json:"datasource"`
+	Port       int    `json:"port"`
+}
+
+// Port is a remote datasource's loopback port here, or 0 while it is not forwarded.
+func (r RemoteInfo) Port(server, datasource string) int {
+	for _, f := range r.Forwards {
+		if f.Server == server && f.Datasource == datasource {
+			return f.Port
+		}
+	}
+	return 0
+}
+
+// Localize is a remote daemon's status with each datasource on its port here: the remote's own port means
+// nothing on this machine.
+func (r RemoteInfo) Localize(s *Status) *Status {
+	out := *s
+	out.Datasources = slices.Clone(s.Datasources)
+	for i, ds := range out.Datasources {
+		out.Datasources[i].LocalPort = r.Port(ds.Server, ds.Name)
+	}
+	return &out
 }
 
 // RemoteState is where a remote's connection stands.

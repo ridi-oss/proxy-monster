@@ -480,8 +480,9 @@ func (c *Config) AssignPort(server, name string) int {
 	return port
 }
 
-// AssignRemotePort is AssignPort for a remote's datasource, keyed "server/datasource", from the same ports.
-func (c *Config) AssignRemotePort(target, key string) int {
+// AssignRemotePort is AssignPort for a remote's datasource, from the same ports.
+func (c *Config) AssignRemotePort(target, server, datasource string) int {
+	key := server + "/" + datasource
 	if c.RemotePorts == nil {
 		c.RemotePorts = map[string]map[string]int{}
 	}

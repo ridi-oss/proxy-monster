@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -300,7 +301,7 @@ func (d *Daemon) connectRemote(ctx context.Context, r *remote, ctl, sock string)
 	}
 
 	forwarded := ""
-	forwards := map[string]portForward{}
+	forwards := map[dsKey]portForward{}
 	probeClient := control.NewClientAt(sock)
 	defer probeClient.CloseIdle()
 	check := func() {
@@ -336,15 +337,15 @@ func (d *Daemon) connectRemote(ctx context.Context, r *remote, ctl, sock string)
 				_ = os.Remove(sock)
 				forwarded = ""
 			}
-			info := control.RemoteInfo{State: control.RemoteNoDaemon, Socket: sock, Ports: forwardedPorts(forwards)}
+			info := control.RemoteInfo{State: control.RemoteNoDaemon, Socket: sock, Forwards: forwardList(forwards)}
 			if !errors.Is(err, control.ErrDaemonNotRunning) {
 				info.Error = err.Error()
 			}
 			d.setRemote(r, info)
 			return
 		}
-		ports, failed := d.syncForwards(ctx, r.target, ctl, *st, forwards)
-		d.setRemote(r, control.RemoteInfo{State: control.RemoteConnected, Socket: sock, Ports: ports, Error: failed})
+		list, failed := d.syncForwards(ctx, r.target, ctl, *st, forwards)
+		d.setRemote(r, control.RemoteInfo{State: control.RemoteConnected, Socket: sock, Forwards: list, Error: failed})
 	}
 	check()
 	t := time.NewTicker(remoteCheckEvery)
@@ -379,12 +380,12 @@ func (f portForward) spec() string {
 }
 
 // syncForwards makes forwards match the remote's brokered datasources: each gets its sticky local port. It returns
-// the port map for /status and, when a forward failed (its local port is taken), why.
-func (d *Daemon) syncForwards(ctx context.Context, target, ctl string, st control.Status, forwards map[string]portForward) (map[string]int, string) {
-	want := map[string]int{}
+// the forwards for /status and, when a forward failed (its local port is taken), why.
+func (d *Daemon) syncForwards(ctx context.Context, target, ctl string, st control.Status, forwards map[dsKey]portForward) ([]control.Forward, string) {
+	want := map[dsKey]int{}
 	for _, ds := range st.Datasources {
 		if ds.LocalPort > 0 {
-			want[ds.Server+"/"+ds.Name] = ds.LocalPort
+			want[dsKey{ds.Server, ds.Name}] = ds.LocalPort
 		}
 	}
 	for key, f := range forwards {
@@ -403,7 +404,7 @@ func (d *Daemon) syncForwards(ctx context.Context, target, ctl string, st contro
 			if !slices.Contains(c.Remotes, target) {
 				return errRemoteRemoved
 			}
-			local = c.AssignRemotePort(target, key)
+			local = c.AssignRemotePort(target, key.server, key.name)
 			return nil
 		}); err != nil {
 			if !errors.Is(err, errRemoteRemoved) {
@@ -413,20 +414,23 @@ func (d *Daemon) syncForwards(ctx context.Context, target, ctl string, st contro
 		}
 		f := portForward{local: local, remote: remotePort}
 		if _, err := sshOutput(ctx, "-S", ctl, "-O", "forward", "-L", f.spec(), "--", target); err != nil {
-			failed = fmt.Sprintf("%s: %v", key, err)
+			failed = fmt.Sprintf("%s/%s: %v", key.server, key.name, err)
 			continue
 		}
 		forwards[key] = f
 	}
-	return forwardedPorts(forwards), failed
+	return forwardList(forwards), failed
 }
 
-func forwardedPorts(forwards map[string]portForward) map[string]int {
-	ports := make(map[string]int, len(forwards))
+func forwardList(forwards map[dsKey]portForward) []control.Forward {
+	list := make([]control.Forward, 0, len(forwards))
 	for key, f := range forwards {
-		ports[key] = f.local
+		list = append(list, control.Forward{Server: key.server, Datasource: key.name, Port: f.local})
 	}
-	return ports
+	slices.SortFunc(list, func(a, b control.Forward) int {
+		return cmp.Or(strings.Compare(a.Server, b.Server), strings.Compare(a.Datasource, b.Datasource))
+	})
+	return list
 }
 
 // watchRemote nudges changed whenever the remote daemon publishes an event, so a new datasource is forwarded

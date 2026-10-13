@@ -86,7 +86,7 @@ class RoleResolver(
      */
     fun resolve(principal: String): Set<String> = resolveParents(principal).roles
 
-    /** [resolve]'s roles plus the principal's local groups, sharing one group lookup. */
+    /** [resolve]'s roles plus the principal's local groups and attributes, sharing one directory lookup. */
     fun resolveParents(principal: String): UserParents {
         if (userGroupStore.isDeactivated(principal)) return UserParents(emptySet())
         val viaGroups = userGroupStore.groupParents(principal)
@@ -95,7 +95,7 @@ class RoleResolver(
             accessStore.listGrants(principal, activeOnly = true).map { it.roleName },
             viaGroups.roles.toList(),
         )
-        return UserParents(roles, viaGroups.groups)
+        return viaGroups.copy(roles = roles)
     }
 
     /** [resolve]'s roles, each with every source that grants it; a deactivated principal has none. */

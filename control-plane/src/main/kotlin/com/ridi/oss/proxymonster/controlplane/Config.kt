@@ -1,6 +1,7 @@
 package com.ridi.oss.proxymonster.controlplane
 
 import com.ridi.oss.proxymonster.auth.clampTtlSeconds
+import com.ridi.oss.proxymonster.controlplane.authz.UserAttribute
 import java.net.URI
 import java.nio.file.Files
 import java.nio.file.Path
@@ -40,6 +41,7 @@ data class OidcConfig(
     val redirectUri: String,
     val scopes: String,
     val groupMapping: OidcGroupMapping,
+    val userAttributes: List<UserAttribute> = emptyList(),
 )
 
 /**
@@ -210,6 +212,7 @@ data class Config(
                         // refresh-grant IdP liveness check (docs/auth-model.md).
                         scopes = env("PM_OIDC_SCOPES") ?: "openid profile email groups offline_access",
                         groupMapping = OidcGroupMapping.parse(env("PM_OIDC_GROUP_MAP"), env("PM_OIDC_GROUP_PREFIX")),
+                        userAttributes = UserAttribute.parseList(env("PM_OIDC_USER_ATTRIBUTES")),
                     )
                 } else {
                     null

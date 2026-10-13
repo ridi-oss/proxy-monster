@@ -13,6 +13,7 @@ class OidcDirectoryProvisioner(private val dataSource: DataSource) {
         email: String?,
         idpGroups: List<String>,
         mapping: OidcGroupMapping = OidcGroupMapping(emptyMap(), null),
+        attributesJson: String = "{}",
     ): Long = dataSource.connection.use { connection ->
         connection.autoCommit = false
         try {
@@ -25,6 +26,12 @@ class OidcDirectoryProvisioner(private val dataSource: DataSource) {
             ).use { statement ->
                 statement.setString(1, principal)
                 statement.setString(2, email)
+                statement.executeUpdate()
+            }
+            // Outside the SCIM guard: SCIM never writes attributes, so a SCIM row would keep a stale claim.
+            connection.prepareStatement("UPDATE app_user SET attributes = ?::jsonb WHERE principal = ?").use { statement ->
+                statement.setString(1, attributesJson)
+                statement.setString(2, principal)
                 statement.executeUpdate()
             }
             val userId = connection.userId(principal)

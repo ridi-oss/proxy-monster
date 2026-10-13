@@ -9,6 +9,7 @@ import com.nimbusds.jose.jwk.gen.RSAKeyGenerator
 import com.nimbusds.jwt.JWTClaimsSet
 import com.nimbusds.jwt.SignedJWT
 import com.ridi.oss.proxymonster.auth.pkceS256
+import com.ridi.oss.proxymonster.controlplane.authz.UserAttribute
 import com.ridi.oss.proxymonster.controlplane.management.auditEntity
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
@@ -69,6 +70,7 @@ class OidcWebSessionDbTest {
     private val nonce = AtomicReference<String>()
     private val tokenCodeVerifier = AtomicReference<String>()
     private val callbackPrincipal = AtomicReference("oidc-web@example.com")
+    private val callbackManager = AtomicReference<String?>(null)
     private var port = 0
     private val issuer get() = "http://127.0.0.1:$port"
 
@@ -114,6 +116,21 @@ class OidcWebSessionDbTest {
         verifyCallback(scopes = "openid email offline_access", resultKey = ByteArray(32) { it.toByte() }, expectRefresh = true)
         verifyCallback(scopes = "openid email offline_access", resultKey = null, expectRefresh = false)
         verifyCallback(scopes = "openid email", resultKey = ByteArray(32) { it.toByte() }, expectRefresh = false)
+    }
+
+    @Test
+    fun `oidc callback stores a declared claim on the user`() {
+        callbackManager.set("lead@example.com")
+        try {
+            verifyCallback(
+                scopes = "openid email",
+                resultKey = null,
+                expectRefresh = false,
+                expectAttributes = """{"manager": "lead@example.com"}""",
+            )
+        } finally {
+            callbackManager.set(null)
+        }
     }
 
     @Test
@@ -324,6 +341,7 @@ class OidcWebSessionDbTest {
         seedRole: Boolean = true,
         expectSession: Boolean = true,
         returnTo: String? = null,
+        expectAttributes: String = "{}",
     ) = testApplication {
         requireDockerOrSkip()
         val dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_oidc_web"))
@@ -352,6 +370,12 @@ class OidcWebSessionDbTest {
         nonce.set(assertNotNull(query["nonce"]))
         val callback = client.get("/auth/oidc/callback?code=ok&state=$state")
         assertEquals(HttpStatusCode.Found, callback.status)
+        dataSource.connection.use { c ->
+            c.prepareStatement("SELECT attributes::text FROM app_user WHERE principal = ?").use { ps ->
+                ps.setString(1, principal)
+                ps.executeQuery().use { rs -> assertTrue(rs.next()); assertEquals(expectAttributes, rs.getString(1)) }
+            }
+        }
         val setCookies = assertNotNull(callback.headers.getAll(HttpHeaders.SetCookie))
         if (!expectSession) {
             assertEquals("/login?error=no_access", callback.headers[HttpHeaders.Location])
@@ -494,6 +518,7 @@ class OidcWebSessionDbTest {
             redirectUri = "http://control-plane.test/auth/oidc/callback",
             scopes = scopes,
             groupMapping = OidcGroupMapping(emptyMap(), null),
+            userAttributes = UserAttribute.parseList("manager:User"),
         ),
         resultKey = resultKey,
         scimToken = null,
@@ -514,6 +539,7 @@ class OidcWebSessionDbTest {
             .expirationTime(Date(System.currentTimeMillis() + 300_000))
             .claim("nonce", expectedNonce)
             .claim("email", callbackPrincipal.get())
+            .apply { callbackManager.get()?.let { claim("manager", it) } }
             .build()
         return SignedJWT(JWSHeader.Builder(JWSAlgorithm.RS256).keyID(key.keyID).build(), claims).also {
             it.sign(RSASSASigner(key))

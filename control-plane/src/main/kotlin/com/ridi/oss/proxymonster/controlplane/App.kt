@@ -642,6 +642,7 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
                 // An enabled policy naming a retired Utility command never matches. New writes are
                 // rejected, but an upgraded install already has them stored.
                 addAll(CedarSchema.retiredUtilityLint(cedarPolicyStore.enabledSources()))
+                addAll(CedarSchema.undeclaredAttributeLint(cedarPolicyStore.enabledSources()))
             }
             call.respond(
                 kotlinx.serialization.json.JsonObject(

@@ -56,6 +56,7 @@ data class ValidatedIdToken(
     val email: String?,
     val groups: List<String>,
     val nonce: String?,
+    val claims: Map<String, Any?> = emptyMap(),
 )
 
 class IdTokenValidator(
@@ -86,6 +87,7 @@ class IdTokenValidator(
                 email = claims.getClaim("email") as? String,
                 groups = (claims.getClaim("groups") as? List<*>)?.mapNotNull { it as? String } ?: emptyList(),
                 nonce = actualNonce,
+                claims = claims.claims,
             )
         } catch (e: Exception) {
             log.warn("id_token validation failed", e)

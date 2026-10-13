@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.controlplane.authz.CedarSchema
 import com.ridi.oss.proxymonster.controlplane.grpc.ControlPlaneGrpcService
 import com.ridi.oss.proxymonster.controlplane.grpc.GrpcServer
 import io.ktor.server.engine.embeddedServer
@@ -40,6 +41,7 @@ fun main() {
     }
     val db = Db(config)
     db.migrate()
+    CedarSchema.declareUserAttributes(config.oidc?.userAttributes.orEmpty())
 
     // The single shared enforcement dependency graph — used by BOTH the gRPC service and the HTTP
     // module below. Sharing is mandatory (see ControlPlaneCore): Cedar's policy-cache invalidation is

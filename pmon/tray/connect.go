@@ -123,7 +123,7 @@ func (a *app) openConnectLink(raw string) {
 			notify(T("n.signedOutLocal"), T("n.signedOutLocalBody", "server", link.name))
 		}
 	}
-	a.doSignIn(link.name)
+	a.doSignIn("", link.name)
 }
 
 func sameAddress(a, b string) bool {

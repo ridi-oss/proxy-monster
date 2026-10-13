@@ -240,5 +240,10 @@
   "s.btn.uninstall": "Uninstall…",
   "terminal.askBodyMe": "Proxy Monster includes the pmon command. Only for Me links it in ~/.local/bin and adds that folder to your shell profile if it is not there. You can change this in Settings.",
   "terminal.allNeedsSystemApp": "Other users cannot open this copy of Proxy Monster in your home folder. Install it for all users to link pmon for them.",
-  "s.general.terminalHintMe": "This copy is installed only for you, so pmon can be linked only for you. Open a new terminal window after a change."
+  "s.general.terminalHintMe": "This copy is installed only for you, so pmon can be linked only for you. Open a new terminal window after a change.",
+  "menu.remoteConnecting": "{remote} — connecting…",
+  "menu.remoteDown": "{remote} — not connected",
+  "menu.remoteNoPmon": "{remote} — pmon not found",
+  "menu.remoteNotRunning": "{remote} — not running",
+  "menu.notForwarded": "not forwarded yet"
 }

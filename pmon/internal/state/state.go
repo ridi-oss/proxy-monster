@@ -34,6 +34,8 @@ type Config struct {
 	Default string `json:"default"`
 	// Remotes are the SSH targets whose pmon daemons this daemon keeps a connection to.
 	Remotes []string `json:"remotes,omitempty"`
+	// RemotePorts is the sticky loopback port of each remote datasource, by SSH target, then "server/datasource".
+	RemotePorts map[string]map[string]int `json:"remotePorts,omitempty"`
 }
 
 // Server is one control plane pmon logs in to.
@@ -433,7 +435,10 @@ func (c Config) Resolve(name string) string { return cmp.Or(name, c.Default) }
 // Clone returns a deep copy, so a caller can read it outside the daemon's lock.
 func (c *Config) Clone() Config {
 	out := Config{LocalPassword: c.LocalPassword, Servers: make(map[string]*Server, len(c.Servers)), Default: c.Default,
-		Remotes: slices.Clone(c.Remotes)}
+		Remotes: slices.Clone(c.Remotes), RemotePorts: make(map[string]map[string]int, len(c.RemotePorts))}
+	for target, ports := range c.RemotePorts {
+		out.RemotePorts[target] = maps.Clone(ports)
+	}
 	for name, srv := range c.Servers {
 		dup := *srv
 		dup.Ports = maps.Clone(srv.Ports)
@@ -470,9 +475,37 @@ func (c *Config) AssignPort(server, name string) int {
 	if p, ok := srv.Ports[name]; ok {
 		return p
 	}
+	port := c.freePort()
+	srv.Ports[name] = port
+	return port
+}
+
+// AssignRemotePort is AssignPort for a remote's datasource, keyed "server/datasource", from the same ports.
+func (c *Config) AssignRemotePort(target, key string) int {
+	if c.RemotePorts == nil {
+		c.RemotePorts = map[string]map[string]int{}
+	}
+	if c.RemotePorts[target] == nil {
+		c.RemotePorts[target] = map[string]int{}
+	}
+	if p, ok := c.RemotePorts[target][key]; ok {
+		return p
+	}
+	port := c.freePort()
+	c.RemotePorts[target][key] = port
+	return port
+}
+
+// freePort is the lowest port at or above [PortBase] no server or remote datasource holds.
+func (c *Config) freePort() int {
 	used := map[int]bool{}
 	for _, s := range c.Servers {
 		for _, p := range s.Ports {
+			used[p] = true
+		}
+	}
+	for _, ports := range c.RemotePorts {
+		for _, p := range ports {
 			used[p] = true
 		}
 	}
@@ -480,7 +513,6 @@ func (c *Config) AssignPort(server, name string) int {
 	for used[port] {
 		port++
 	}
-	srv.Ports[name] = port
 	return port
 }
 

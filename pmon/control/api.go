@@ -143,6 +143,8 @@ type RemoteInfo struct {
 	// Error is ssh's or the remote shell's last word: "ssh: connect to host devbox port 22: Connection refused".
 	Error  string `json:"error,omitempty"`
 	Socket string `json:"socket,omitempty"` // "/tmp/pmon-501/pmon-9a631b7f1a34259a-r49960de5.sock"
+	// Ports maps each forwarded "server/datasource" to its loopback port here: {"acme/orders": 6103}.
+	Ports map[string]int `json:"ports,omitempty"`
 }
 
 // RemoteState is where a remote's connection stands.

@@ -277,7 +277,8 @@ func (d *Daemon) connectRemote(ctx context.Context, r *remote, ctl, sock string)
 	_ = os.Remove(sock)
 	_ = os.Remove(ctl)
 	var stderr tailBuffer
-	master := sshCommand(ctx, "-M", "-S", ctl, "-N",
+	// -v names the step a stalled connection waits on, such as an agent that never signs.
+	master := sshCommand(ctx, "-M", "-S", ctl, "-N", "-v",
 		"-o", "BatchMode=yes", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3",
 		"-o", "ControlPersist=no", "-o", "StreamLocalBindUnlink=yes", "--", r.target)
 	master.Stderr = &stderr
@@ -287,7 +288,7 @@ func (d *Daemon) connectRemote(ctx context.Context, r *remote, ctl, sock string)
 	exited := make(chan error, 1)
 	go func() { exited <- master.Wait() }()
 	ended := func(err error) error {
-		if s := stderr.last(); s != "" {
+		if s := stderr.lastError(); s != "" {
 			return errors.New(s)
 		}
 		if err != nil {
@@ -302,6 +303,14 @@ func (d *Daemon) connectRemote(ctx context.Context, r *remote, ctl, sock string)
 		}
 		_ = master.Process.Kill()
 		<-exited
+		if s := stderr.last(); s != "" {
+			step := strings.TrimPrefix(s, "debug1: ")
+			if strings.HasPrefix(step, "Server accepts key") {
+				// 1Password queues an app-started client's request in its menu-bar icon instead of showing the dialog.
+				return fmt.Errorf("%w: the ssh agent did not sign with %s — it may be waiting for approval (1Password lists the request in its menu-bar icon)", err, strings.TrimPrefix(step, "Server accepts key: "))
+			}
+			return fmt.Errorf("%w; ssh's last step: %s", err, step)
+		}
 		return err
 	}
 
@@ -538,6 +547,19 @@ func (b *tailBuffer) Write(p []byte) (int, error) {
 		b.buf = b.buf[len(b.buf)-4096:]
 	}
 	return len(p), nil
+}
+
+// lastError is the last line that is not -v's debug output: ssh's own error.
+func (b *tailBuffer) lastError() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	lines := strings.Split(strings.TrimSpace(string(b.buf)), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if l := strings.TrimSpace(lines[i]); l != "" && !strings.HasPrefix(l, "debug") {
+			return l
+		}
+	}
+	return ""
 }
 
 func (b *tailBuffer) last() string {

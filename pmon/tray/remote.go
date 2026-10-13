@@ -94,7 +94,7 @@ func (a *app) remoteClient(target string) (*control.Client, error) {
 	if s != nil {
 		for _, r := range s.Remotes {
 			if r.Target == target && r.Socket != "" {
-				return control.NewRemoteClient(r.Socket, r.Ports), nil
+				return control.NewRemoteClient(r), nil
 			}
 		}
 	}

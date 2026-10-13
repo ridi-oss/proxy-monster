@@ -133,10 +133,10 @@ func TestRemoteTunnelLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := waitFor("connected with a forward", func(r control.RemoteInfo) bool {
-		return r.State == control.RemoteConnected && r.Ports["acme/orders"] > 0
+		return r.State == control.RemoteConnected && r.Port("acme", "orders") > 0
 	})
-	if r.Ports["acme/orders"] != state.PortBase() {
-		t.Errorf("forwarded on %d, want the first port of this daemon's range %d", r.Ports["acme/orders"], state.PortBase())
+	if r.Port("acme", "orders") != state.PortBase() {
+		t.Errorf("forwarded on %d, want the first port of this daemon's range %d", r.Port("acme", "orders"), state.PortBase())
 	}
 	if b, _ := os.ReadFile(logPath); !strings.Contains(string(b), fmt.Sprintf("forward 127.0.0.1:%d:127.0.0.1:6100", state.PortBase())) {
 		t.Errorf("no datasource forward in:\n%s", b)

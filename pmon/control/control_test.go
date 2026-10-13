@@ -419,7 +419,7 @@ func TestRemoteClientReportsForwardedPorts(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	s, err := NewRemoteClient(sock, map[string]int{"acme/orders": 47100}).Status(ctx)
+	s, err := NewRemoteClient(RemoteInfo{Socket: sock, Forwards: []Forward{{Server: "acme", Datasource: "orders", Port: 47100}}}).Status(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -427,7 +427,7 @@ func TestRemoteClientReportsForwardedPorts(t *testing.T) {
 		t.Errorf("ports %v, want the forwarded one and 0 for the unforwarded one", got)
 	}
 	// No forwards yet still hides the remote's own ports.
-	if s, err := NewRemoteClient(sock, nil).Status(ctx); err != nil || s.Datasources[0].LocalPort != 0 {
+	if s, err := NewRemoteClient(RemoteInfo{Socket: sock}).Status(ctx); err != nil || s.Datasources[0].LocalPort != 0 {
 		t.Errorf("with no forwards: %+v, %v", s.Datasources, err)
 	}
 }

@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"net"
 	"net/http"
 	"os"
@@ -27,35 +26,25 @@ var ErrDaemonNotRunning = errors.New("the pmon daemon is not running")
 // Client speaks the control API over the daemon's unix socket.
 type Client struct {
 	http *http.Client
-	// ports maps a remote daemon's "server/datasource" to its port on this machine; nil for a local daemon.
-	ports map[string]int
+	// remote is the remote daemon behind a forwarded socket, whose datasources it reports on their ports here.
+	remote *RemoteInfo
 	// forwarded is a socket ssh forwards: ssh accepts the connection even when nothing listens on the far end,
 	// then closes it, so an EOF before any reply means the remote daemon is not running.
 	forwarded bool
 }
 
 // remote is the remote daemon every client in this process addresses, set by [UseRemote].
-var remote *remoteDaemon
-
-type remoteDaemon struct {
-	target, socket string
-	ports          map[string]int
-}
+var remote *RemoteInfo
 
 // UseRemote points every client this process makes at a remote daemon's forwarded control socket, with its
 // datasources reported on their forwarded ports.
-func UseRemote(target, socket string, ports map[string]int) {
-	remote = &remoteDaemon{target: target, socket: socket, ports: ports}
-}
+func UseRemote(r RemoteInfo) { remote = &r }
 
 // NewRemoteClient is a client of a remote daemon through its forwarded socket, reporting each datasource on its
-// forwarded port from ports ("server/datasource" to port), or on port 0 when it has none.
-func NewRemoteClient(socket string, ports map[string]int) *Client {
-	c := NewClientAt(socket)
-	c.ports = maps.Clone(ports)
-	if c.ports == nil {
-		c.ports = map[string]int{}
-	}
+// port here, or on port 0 while it is not forwarded.
+func NewRemoteClient(r RemoteInfo) *Client {
+	c := NewClientAt(r.Socket)
+	c.remote = &r
 	return c
 }
 
@@ -73,7 +62,7 @@ func NewClientAt(socket string) *Client {
 // working the moment one comes up, with no reconstruction.
 func NewClient() (*Client, error) {
 	if remote != nil {
-		return NewRemoteClient(remote.socket, remote.ports), nil
+		return NewRemoteClient(*remote), nil
 	}
 	return newLocalClient()
 }
@@ -175,12 +164,10 @@ func (c *Client) Status(ctx context.Context) (*Status, error) {
 		return nil, err
 	}
 	st, err := decodeStatus(raw)
-	if err == nil && c.ports != nil {
-		// A remote port is reachable here only through its forward; one without a forward is not reachable.
+	if err == nil && c.remote != nil {
+		st = c.remote.Localize(st)
 		for i, ds := range st.Datasources {
-			port := c.ports[ds.Server+"/"+ds.Name]
-			st.Datasources[i].LocalPort = port
-			if port == 0 && ds.Brokered {
+			if ds.LocalPort == 0 && ds.Brokered {
 				st.Datasources[i].Brokered, st.Datasources[i].Reason = false, "not forwarded to this machine yet"
 			}
 		}
@@ -406,7 +393,7 @@ func EnsureDaemon(ctx context.Context) (*Client, error) {
 		if err != nil {
 			return nil, err
 		}
-		if err := local.StartRemote(ctx, remote.target); err != nil {
+		if err := local.StartRemote(ctx, remote.Target); err != nil {
 			return nil, err
 		}
 	} else if err := StartDaemon(); err != nil {
@@ -616,7 +603,7 @@ func waitForRemoteExit(ctx context.Context, c *Client, timeout time.Duration) er
 			return nil
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("the daemon on %s did not stop within %s", remote.target, timeout)
+			return fmt.Errorf("the daemon on %s did not stop within %s", remote.Target, timeout)
 		}
 		select {
 		case <-ctx.Done():

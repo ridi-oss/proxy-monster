@@ -39,6 +39,13 @@ func (c *mcpCmd) register(ctx context.Context) error {
 		return err
 	}
 	setup := aiapps.Setup{Pmon: pmon, Confirm: confirmClaudeRestart, Default: s.DefaultServer}
+	if remoteTarget != "" {
+		// A remote's servers run `pmon --remote <target> mcp <server>`; a bare `pmon mcp` is this machine's default.
+		setup.Default = ""
+		for i := range servers {
+			servers[i].Name = remoteTarget + "/" + servers[i].Name
+		}
+	}
 	failed := 0
 	for _, app := range apps {
 		err := app.Batch(setup, func(setup aiapps.Setup) error {

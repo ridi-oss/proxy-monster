@@ -62,9 +62,11 @@ flowchart LR
   state.
 - Tray: each remote is a menu group with the usual server and datasource items.
   Sign-in links come from the remote daemon and open in the laptop's browser.
-- The remote needs `pmon` on its non-interactive PATH and sshd's default
-  `AllowStreamLocalForwarding` and `AllowTcpForwarding`. A stopped remote daemon
-  is started with `ssh <target> pmon start` on demand.
+- The remote needs sshd's default `AllowStreamLocalForwarding` and
+  `AllowTcpForwarding`. The daemon's socket is found by listing
+  `/tmp/pmon-<uid>/`, so a running daemon needs no `pmon` on the remote's PATH;
+  only starting one does, with `pmon` from the login-shell PATH or else Proxy
+  Monster Desktop's bundled one.
 
 ## Build plan
 

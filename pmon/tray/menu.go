@@ -174,16 +174,19 @@ func remoteEntry(r control.RemoteInfo, v view) entry {
 	key := "remote:" + r.Target
 	rs := v.remotes[r.Target]
 	switch {
-	case r.State == control.RemoteNoDaemon || (r.State == control.RemoteConnected && rs == nil):
-		return entry{key: key, title: T("menu.remoteNotRunning", "remote", r.Target), children: []entry{
-			{key: key + "#start", title: T("menu.start"), act: &action{op: opStart, remote: r.Target}}}}
+	case r.State == control.RemoteNoDaemon || r.State == control.RemoteNoPmon || (r.State == control.RemoteConnected && rs == nil):
+		title := T("menu.remoteNotRunning", "remote", r.Target)
+		var children []entry
+		if r.State == control.RemoteNoPmon {
+			title = T("menu.remoteNoPmon", "remote", r.Target)
+			children = append(children, entry{key: key + "#error", title: shorten(r.Error, 70), disabled: true})
+		}
+		children = append(children, entry{key: key + "#start", title: T("menu.start"), act: &action{op: opStart, remote: r.Target}})
+		return entry{key: key, title: title, children: children}
 	case r.State != control.RemoteConnected:
 		title := T("menu.remoteDown", "remote", r.Target)
-		switch r.State {
-		case control.RemoteConnecting:
+		if r.State == control.RemoteConnecting {
 			title = T("menu.remoteConnecting", "remote", r.Target)
-		case control.RemoteNoPmon:
-			title = T("menu.remoteNoPmon", "remote", r.Target)
 		}
 		e := entry{key: key, title: title}
 		if r.Error != "" {

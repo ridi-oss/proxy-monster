@@ -24,7 +24,7 @@ import (
 )
 
 // TestFakeSSH is the ssh the tunnel tests run: it plays the shared connection, its forwards, and a remote
-// shell whose pmon reports FAKE_REMOTE_SOCK.
+// shell whose socket listing holds FAKE_REMOTE_SOCK; it has no pmon, which a running daemon does not need.
 func TestFakeSSH(t *testing.T) {
 	if os.Getenv("FAKE_SSH_LOG") == "" {
 		t.Skip("helper process")
@@ -57,7 +57,9 @@ func TestFakeSSH(t *testing.T) {
 		log("forward " + spec)
 	case slices.Contains(args, "cancel"):
 		log("cancel " + args[slices.Index(args, "-L")+1])
-	case strings.Contains(args[len(args)-1], "pmon socket-path"):
+	case strings.Contains(args[len(args)-1], "pmon-*.sock"):
+		// A forward socket of that machine's own remotes lists beside the daemon's.
+		fmt.Println(strings.TrimSuffix(os.Getenv("FAKE_REMOTE_SOCK"), ".sock") + "-r1234abcd.sock")
 		fmt.Println(os.Getenv("FAKE_REMOTE_SOCK"))
 	}
 	os.Exit(0)
@@ -70,7 +72,7 @@ func fakeRemoteDaemon(t *testing.T) string {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.RemoveAll(dir) })
-	sock := filepath.Join(dir, "d.sock")
+	sock := filepath.Join(dir, "pmon-0123456789abcdef.sock")
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
 		t.Fatal(err)
@@ -169,6 +171,50 @@ func TestRemoteTunnelLifecycle(t *testing.T) {
 	for _, pid := range masters() {
 		if alive(pid) {
 			t.Errorf("ssh %d outlived the daemon", pid)
+		}
+	}
+}
+
+// The listing runs in the remote user's own shell, which only hands it to sh: zsh must not abort on a glob that
+// matches nothing, which is a stopped daemon's normal case.
+func TestListDaemonSocketsInEveryShell(t *testing.T) {
+	for _, shell := range []string{"sh", "bash", "zsh"} {
+		path, err := exec.LookPath(shell)
+		if err != nil {
+			continue
+		}
+		out, err := exec.Command(path, "-c", listDaemonSockets).CombinedOutput()
+		if err != nil {
+			t.Errorf("%s: %v: %s", shell, err, out)
+		}
+	}
+}
+
+// A crashed daemon leaves its socket file behind with no process holding it; the listing must skip it.
+func TestListDaemonSocketsSkipsDeadSockets(t *testing.T) {
+	if _, err := exec.LookPath("lsof"); err != nil {
+		t.Skip("no lsof")
+	}
+	dir, err := state.SocketPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dead := filepath.Join(filepath.Dir(dir), fmt.Sprintf("pmon-%016x.sock", time.Now().UnixNano()))
+	ln, err := net.Listen("unix", dead)
+	if err != nil {
+		t.Skipf("socket folder not usable here: %v", err)
+	}
+	ln.(*net.UnixListener).SetUnlinkOnClose(false)
+	ln.Close()
+	t.Cleanup(func() { os.Remove(dead) })
+	for _, shell := range []string{"sh", "bash", "zsh"} {
+		path, err := exec.LookPath(shell)
+		if err != nil {
+			continue
+		}
+		out, err := exec.Command(path, "-c", listDaemonSockets).CombinedOutput()
+		if err != nil || strings.Contains(string(out), dead) {
+			t.Errorf("%s listed the dead socket or failed: %v: %s", shell, err, out)
 		}
 	}
 }

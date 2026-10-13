@@ -112,7 +112,7 @@ func useRemote(target string) error {
 			continue
 		}
 		switch r.State {
-		case control.RemoteConnected, control.RemoteNoDaemon:
+		case control.RemoteConnected, control.RemoteNoDaemon, control.RemoteNoPmon:
 			control.UseRemote(target, r.Socket, r.Ports)
 			self = "pmon --remote " + target
 			remoteTarget = target

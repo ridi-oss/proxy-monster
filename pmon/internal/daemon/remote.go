@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"reflect"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -37,6 +38,49 @@ var remoteCheckEvery = 15 * time.Second
 // remoteShell runs a pmon command through the remote user's login shell: a non-interactive ssh session skips the
 // profile that puts Homebrew's or mise's pmon on PATH.
 func remoteShell(cmd string) string { return `exec "$SHELL" -lc '` + cmd + `'` }
+
+// listDaemonSockets prints the remote user's live control sockets. Reaching a running daemon needs no pmon on
+// the remote; only starting one does (startPmon). sh runs it, so zsh's no-match error and fish's syntax do not
+// apply. Only a folder and sockets the user owns count, as the daemon itself requires, so another user cannot
+// plant one; a socket no process holds open (lsof, else ss) is a crashed daemon's and does not count.
+const listDaemonSockets = `sh -c 'd=/tmp/pmon-$(id -u); { [ -d "$d" ] && [ ! -L "$d" ] && [ -O "$d" ]; } || exit 0; ` +
+	`if command -v lsof >/dev/null 2>&1; then live=$(lsof -a -U -u "$(id -u)" -Fn 2>/dev/null); ` +
+	`elif command -v ss >/dev/null 2>&1; then live=$(ss -xl 2>/dev/null); else live=all; fi; ` +
+	`for f in "$d"/pmon-*.sock; do [ -S "$f" ] && [ -O "$f" ] || continue; ` +
+	`case "$live" in all|*"$f"*) echo "$f";; esac; done; true'`
+
+// daemonSocket matches a daemon's socket, not a "-r<hash>" socket that machine forwards for its own remotes.
+var daemonSocket = regexp.MustCompile(`/pmon-[0-9a-f]{16}\.sock$`)
+
+// startPmon starts the remote daemon with the pmon the login shell finds, else Proxy Monster Desktop's bundled one.
+const startPmon = `sh -c 'p=$("$SHELL" -lc "command -v pmon" 2>/dev/null | tail -n 1); ` +
+	`for c in "$p" "$HOME/Applications/Proxy Monster Desktop.app/Contents/MacOS/pmon" "/Applications/Proxy Monster Desktop.app/Contents/MacOS/pmon"; do ` +
+	`[ -n "$c" ] && [ -x "$c" ] && exec "$c" start; done; echo "no pmon on PATH or in Proxy Monster Desktop" >&2; exit 127'`
+
+// findRemoteSocket is the running remote daemon's control socket, or "" when none runs. With several daemons, the
+// remote's own pmon names the default one.
+func findRemoteSocket(ctx context.Context, ctl, target string) (string, error) {
+	out, err := sshOutput(ctx, "-S", ctl, "--", target, listDaemonSockets)
+	if err != nil {
+		return "", err
+	}
+	var socks []string
+	for _, line := range strings.Split(out, "\n") {
+		if line = strings.TrimSpace(line); daemonSocket.MatchString(line) {
+			socks = append(socks, line)
+		}
+	}
+	switch len(socks) {
+	case 0:
+		return "", nil
+	case 1:
+		return socks[0], nil
+	}
+	if out, err := sshOutput(ctx, "-S", ctl, "--", target, remoteShell("pmon socket-path")); err == nil && slices.Contains(socks, lastLine(out)) {
+		return lastLine(out), nil
+	}
+	return "", fmt.Errorf("%d pmon daemons run on %s, and no pmon there names the default one", len(socks), target)
+}
 
 func validTarget(target string) error {
 	if !control.ValidTarget(target) {
@@ -98,7 +142,9 @@ func (d *Daemon) StartRemote(ctx context.Context, req control.RemoteRequest) err
 	if r == nil {
 		return fmt.Errorf("unknown remote %q — `pmon remote add %s` first", req.Target, req.Target)
 	}
-	if info.State != control.RemoteConnected && info.State != control.RemoteNoDaemon {
+	switch info.State {
+	case control.RemoteConnected, control.RemoteNoDaemon, control.RemoteNoPmon:
+	default:
 		return fmt.Errorf("remote %q is %s: %s", req.Target, info.State, info.Error)
 	}
 	ctl, sock, err := state.RemotePaths(req.Target)
@@ -114,7 +160,10 @@ func (d *Daemon) StartRemote(ctx context.Context, req control.RemoteRequest) err
 	if err == nil {
 		return nil
 	}
-	if _, err := sshOutput(ctx, "-S", ctl, "--", req.Target, remoteShell("pmon start")); err != nil {
+	if _, err := sshOutput(ctx, "-S", ctl, "--", req.Target, startPmon); err != nil {
+		if strings.Contains(err.Error(), "no pmon on PATH") {
+			d.setRemote(r, control.RemoteInfo{State: control.RemoteNoPmon, Error: err.Error()})
+		}
 		return fmt.Errorf("start the daemon on %s: %w", req.Target, err)
 	}
 	deadline := time.After(20 * time.Second)
@@ -250,32 +299,43 @@ func (d *Daemon) connectRemote(ctx context.Context, r *remote, ctl, sock string)
 		return err
 	}
 
-	forwarded := false
+	forwarded := ""
 	forwards := map[string]portForward{}
 	probeClient := control.NewClientAt(sock)
 	defer probeClient.CloseIdle()
 	check := func() {
-		if !forwarded {
-			out, err := sshOutput(ctx, "-S", ctl, "--", r.target, remoteShell("pmon socket-path"))
-			// A login profile may print before pmon does, so the path is the last line.
-			remoteSock := lastLine(out)
-			if err == nil && !strings.HasPrefix(remoteSock, "/") {
-				err = fmt.Errorf("pmon socket-path printed %q", remoteSock)
-			}
-			if err != nil {
-				d.setRemote(r, control.RemoteInfo{State: control.RemoteNoPmon, Error: errText(err)})
+		if forwarded == "" {
+			remoteSock, err := findRemoteSocket(ctx, ctl, r.target)
+			switch {
+			case err != nil:
+				d.setRemote(r, control.RemoteInfo{State: control.RemoteDown, Error: errText(err)})
+				return
+			case remoteSock == "":
+				// Kept unless a start found no pmon, which only a new start attempt clears.
+				d.mu.Lock()
+				noPmon := r.info.State == control.RemoteNoPmon
+				d.mu.Unlock()
+				if !noPmon {
+					d.setRemote(r, control.RemoteInfo{State: control.RemoteNoDaemon, Socket: sock})
+				}
 				return
 			}
 			if _, err := sshOutput(ctx, "-S", ctl, "-O", "forward", "-L", sock+":"+remoteSock, "--", r.target); err != nil {
 				d.setRemote(r, control.RemoteInfo{State: control.RemoteDown, Error: errText(err)})
 				return
 			}
-			forwarded = true
+			forwarded = remoteSock
 		}
 		probe, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
 		st, err := probeClient.Status(probe)
 		if err != nil {
+			if errors.Is(err, control.ErrDaemonNotRunning) {
+				// The socket may be a crashed daemon's: forget it, so the next check looks again.
+				_, _ = sshOutput(ctx, "-S", ctl, "-O", "cancel", "-L", sock+":"+forwarded, "--", r.target)
+				_ = os.Remove(sock)
+				forwarded = ""
+			}
 			info := control.RemoteInfo{State: control.RemoteNoDaemon, Socket: sock, Ports: forwardedPorts(forwards)}
 			if !errors.Is(err, control.ErrDaemonNotRunning) {
 				info.Error = err.Error()

@@ -335,6 +335,7 @@ message Verdict {
   int64 max_bytes = 13;
   // The engine-specific companion to rewritten_sql (analyzer.proto Submission); absent = text only.
   proxymonster.analyzer.v1.Submission submission = 14;
+  bool check_target_syntax = 15;
 }
 message BeforeDecide {
   repeated ProxyCommand commands = 1;

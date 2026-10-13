@@ -23,7 +23,9 @@ type remote struct {
 	target string
 	cancel context.CancelFunc
 	done   chan struct{}
-	info   control.RemoteInfo // guarded by Daemon.mu
+	// recheck asks the connection to check the remote now rather than at its next tick.
+	recheck chan struct{}
+	info    control.RemoteInfo // guarded by Daemon.mu
 }
 
 // sshCommand runs ssh; replaceable in tests.
@@ -84,6 +86,52 @@ func (d *Daemon) RemoveRemote(req control.RemoteRequest) error {
 	return nil
 }
 
+// StartRemote starts the pmon daemon on a connected remote over its ssh connection, and returns once it answers.
+func (d *Daemon) StartRemote(ctx context.Context, req control.RemoteRequest) error {
+	d.mu.Lock()
+	r := d.remotes[req.Target]
+	var info control.RemoteInfo
+	if r != nil {
+		info = r.info
+	}
+	d.mu.Unlock()
+	switch {
+	case r == nil:
+		return fmt.Errorf("unknown remote %q — `pmon remote add %s` first", req.Target, req.Target)
+	case info.State == control.RemoteConnected:
+		return nil
+	case info.State != control.RemoteNoDaemon:
+		return fmt.Errorf("remote %q is %s: %s", req.Target, info.State, info.Error)
+	}
+	ctl, _, err := state.RemotePaths(req.Target)
+	if err != nil {
+		return err
+	}
+	if _, err := sshOutput(ctx, "-S", ctl, "--", req.Target, remoteShell("pmon start")); err != nil {
+		return fmt.Errorf("start the daemon on %s: %w", req.Target, err)
+	}
+	deadline := time.After(20 * time.Second)
+	for {
+		select {
+		case r.recheck <- struct{}{}:
+		default:
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline:
+			return fmt.Errorf("the daemon on %s did not answer within 20s", req.Target)
+		case <-time.After(500 * time.Millisecond):
+		}
+		d.mu.Lock()
+		now := r.info.State
+		d.mu.Unlock()
+		if now == control.RemoteConnected {
+			return nil
+		}
+	}
+}
+
 func (d *Daemon) startRemotes() {
 	for _, target := range d.snapshot().Remotes {
 		d.startRemote(target)
@@ -97,7 +145,7 @@ func (d *Daemon) startRemote(target string) {
 		return
 	}
 	ctx, cancel := context.WithCancel(d.ctx)
-	r := &remote{target: target, cancel: cancel, done: make(chan struct{}),
+	r := &remote{target: target, cancel: cancel, done: make(chan struct{}), recheck: make(chan struct{}, 1),
 		info: control.RemoteInfo{Target: target, State: control.RemoteConnecting}}
 	d.remotes[target] = r
 	d.mu.Unlock()
@@ -231,6 +279,8 @@ func (d *Daemon) connectRemote(ctx context.Context, r *remote, ctl, sock string)
 		select {
 		case <-changed:
 			check()
+		case <-r.recheck:
+			check()
 		case err := <-exited:
 			return ended(err)
 		case <-ctx.Done():
@@ -293,19 +343,23 @@ func (d *Daemon) syncForwards(ctx context.Context, target, ctl string, st contro
 }
 
 // watchRemote nudges changed whenever the remote daemon publishes an event, so a new datasource is forwarded
-// at once rather than at the next check.
+// at once rather than at the next check. It retries every 2s, so a remote daemon that just started is followed
+// at once too.
 func watchRemote(ctx context.Context, sock string, changed chan<- struct{}) {
+	nudge := func() {
+		select {
+		case changed <- struct{}{}:
+		default:
+		}
+	}
 	for ctx.Err() == nil {
-		_ = control.NewClientAt(sock).Events(ctx, func(control.Event) {
-			select {
-			case changed <- struct{}{}:
-			default:
-			}
-		})
+		if err := control.NewClientAt(sock).Events(ctx, func(control.Event) { nudge() }); err == nil {
+			nudge()
+		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(remoteCheckEvery):
+		case <-time.After(2 * time.Second):
 		}
 	}
 }

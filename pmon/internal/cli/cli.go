@@ -1,8 +1,12 @@
 package cli
 
-import "github.com/alecthomas/kong"
+import (
+	"strings"
 
-// version is what this binary reports: `pmon --version`, the daemon's /status, and the skew warning.
+	"github.com/alecthomas/kong"
+)
+
+// version is what this binary reports: `" + self + " --version`, the daemon's /status, and the skew warning.
 var version string
 
 // root is the kong grammar for pmon's subcommands (matching goproxy's kong usage, kept consistent across the
@@ -22,8 +26,12 @@ type root struct {
 	Socket  socketCmd  `cmd:"" name:"socket-path" hidden:"" help:"Print the daemon's control-socket path (what a remote pmon forwards over SSH)."`
 	Ver     versionCmd `cmd:"" name:"version" help:"Print the version of pmon, of its daemon, and of each server."`
 
-	Version kong.VersionFlag `help:"Print the version and exit." short:"V"`
+	Version  kong.VersionFlag `help:"Print the version and exit." short:"V"`
+	OnRemote string           `name:"remote" env:"PMON_REMOTE" placeholder:"SSH-TARGET" help:"Run the command against the pmon daemon on a remote (see 'pmon remote')."`
 }
+
+// localOnly are the commands --remote does not apply to: they manage this machine's daemon and its remotes.
+var localOnly = map[string]bool{"remote": true, "daemon": true, "socket-path": true}
 
 // Main parses the command line and runs the chosen command, reporting v as this binary's version.
 func Main(v string) {
@@ -35,5 +43,8 @@ func Main(v string) {
 		kong.UsageOnError(),
 		kong.Vars{"version": version},
 	)
+	if r.OnRemote != "" && !localOnly[strings.Fields(ctx.Command())[0]] {
+		ctx.FatalIfErrorf(useRemote(r.OnRemote))
+	}
 	ctx.FatalIfErrorf(ctx.Run())
 }

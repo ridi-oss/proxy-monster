@@ -96,7 +96,7 @@ func (c *serverUnsetCmd) Run() error {
 	return nil
 }
 
-// serverDefaultCmd is `pmon server default [name]`: the server a command addresses when it names none.
+// serverDefaultCmd is `" + self + " server default [name]`: the server a command addresses when it names none.
 type serverDefaultCmd struct {
 	Name string `arg:"" optional:"" help:"Server to make the default."`
 }
@@ -113,13 +113,13 @@ func (c *serverDefaultCmd) Run() error {
 			return err
 		}
 		if s.Server(s.DefaultServer) == nil {
-			return errors.New("no default server — pick one with `pmon server default <name>`")
+			return errors.New("no default server — pick one with `" + self + " server default <name>`")
 		}
 		fmt.Println(s.DefaultServer)
 		return nil
 	}
 	if err := client.SetDefault(ctx, control.SetDefaultRequest{Name: c.Name}); errors.Is(err, control.ErrUnknownRoute) {
-		return errors.New("the running daemon predates `pmon server default` — run `pmon restart`")
+		return errors.New("the running daemon predates `" + self + " server default` — run `" + self + " restart`")
 	} else if err != nil {
 		return err
 	}
@@ -127,7 +127,7 @@ func (c *serverDefaultCmd) Run() error {
 	return nil
 }
 
-// serverRenameCmd is `pmon server rename [name] [new-name]`. The AI apps' entries for the server move with it.
+// serverRenameCmd is `" + self + " server rename [name] [new-name]`. The AI apps' entries for the server move with it.
 type serverRenameCmd struct {
 	Name  string `arg:"" optional:"" help:"Server to rename (default: the default server)."`
 	To    string `arg:"" optional:"" name:"new-name" help:"New name (default: the name the server advertises)."`
@@ -157,7 +157,7 @@ func (c *serverRenameCmd) Run() error {
 	}
 	res, err := client.RenameServer(ctx, control.RenameServerRequest{Name: name, To: c.To})
 	if errors.Is(err, control.ErrUnknownRoute) {
-		return errors.New("the running daemon predates `pmon server rename` — run `pmon restart`")
+		return errors.New("the running daemon predates `" + self + " server rename` — run `" + self + " restart`")
 	}
 	if err != nil {
 		return err
@@ -191,7 +191,7 @@ func (serverListCmd) Run() error {
 		return err
 	}
 	if len(s.Servers) == 0 {
-		fmt.Println("no servers — add one with `pmon server set --url <control-plane-url>`")
+		fmt.Println("no servers — add one with `" + self + " server set --url <control-plane-url>`")
 		return nil
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
@@ -228,7 +228,7 @@ func warnNotEnded(servers ...string) {
 // its instance: that daemon reads it as the server called default, and would move that server and log it out.
 func requireNamingDaemon(s *control.Status, name string) error {
 	if name == "" && s.FixedDefault {
-		return errors.New("the running daemon predates naming a server after its instance — name the server, or run `pmon restart`")
+		return errors.New("the running daemon predates naming a server after its instance — name the server, or run `" + self + " restart`")
 	}
 	return nil
 }
@@ -237,7 +237,7 @@ func requireNamingDaemon(s *control.Status, name string) error {
 func serverOrDefault(s *control.Status, name string) (string, error) {
 	switch {
 	case name == "" && s.Server(s.DefaultServer) == nil:
-		return "", errors.New("no default server — name one, or pick one with `pmon server default <name>`")
+		return "", errors.New("no default server — name one, or pick one with `" + self + " server default <name>`")
 	case name == "":
 		return s.DefaultServer, nil
 	case s.Server(name) == nil:
@@ -249,7 +249,7 @@ func serverOrDefault(s *control.Status, name string) (string, error) {
 // loginHint is the command that logs in to server; the default server needs no name.
 func loginHint(server string, isDefault bool) string {
 	if isDefault {
-		return "pmon login"
+		return self + " login"
 	}
-	return "pmon login " + server
+	return self + " login " + server
 }

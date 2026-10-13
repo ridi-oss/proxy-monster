@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -39,7 +40,7 @@ func (c *showCmd) Run() error {
 	ctx := context.Background()
 	client, err := control.Connect(ctx)
 	if err != nil {
-		return fmt.Errorf("the daemon is not running — run `pmon login` (or `pmon start` if you are already logged in)")
+		return errors.New("the daemon is not running — run `" + self + " login` (or `" + self + " start` if you are already logged in)")
 	}
 	s, err := client.Status(ctx)
 	if err != nil {
@@ -56,7 +57,7 @@ func (c *showCmd) Run() error {
 	}
 	srv := s.Server(server)
 	if srv == nil && len(c.Args) == 1 {
-		return fmt.Errorf("no default server — name one (known: %s), or pick one with `pmon server default <name>`", strings.Join(serverNames(s), ", "))
+		return fmt.Errorf("no default server — name one (known: %s), or pick one with `"+self+" server default <name>`", strings.Join(serverNames(s), ", "))
 	}
 	if srv == nil {
 		return fmt.Errorf("unknown server %q — known: %s", server, strings.Join(serverNames(s), ", "))
@@ -143,7 +144,7 @@ func serverNames(s *control.Status) []string {
 // showHint is the command that prints a connection string for a datasource on server.
 func showHint(server string, isDefault bool) string {
 	if isDefault {
-		return "pmon show <datasource>"
+		return self + " show <datasource>"
 	}
-	return "pmon show " + server + " <datasource>"
+	return self + " show " + server + " <datasource>"
 }

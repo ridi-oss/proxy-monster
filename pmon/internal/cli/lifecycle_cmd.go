@@ -143,7 +143,7 @@ func (c *logoutCmd) Run() error {
 func loginLine(s *control.Status) string {
 	servers := s.LoggedInServers()
 	if len(servers) == 0 {
-		return "not logged in; run `pmon login`"
+		return "not logged in; run `" + self + " login`"
 	}
 	parts := make([]string, 0, len(servers))
 	for _, srv := range servers {

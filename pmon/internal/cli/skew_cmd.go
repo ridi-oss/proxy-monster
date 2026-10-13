@@ -18,7 +18,7 @@ func warnVersionSkew(s *control.Status) {
 	if s.Version == "" {
 		fmt.Fprintf(os.Stderr,
 			"warning: the running daemon reports no version, so it predates this CLI (%s).\n"+
-				"         run `pmon restart` to pick up the current build.\n",
+				"         run `"+self+" restart` to pick up the current build.\n",
 			version)
 		return
 	}
@@ -29,7 +29,7 @@ func warnVersionSkew(s *control.Status) {
 	}
 	fmt.Fprintf(os.Stderr,
 		"warning: the running daemon is %s but this CLI is %s.\n"+
-			"         run `pmon restart` to pick up the current build.\n",
+			"         run `"+self+" restart` to pick up the current build.\n",
 		s.Version, version)
 }
 
@@ -37,7 +37,7 @@ func warnVersionSkew(s *control.Status) {
 // "no servers" and prompt a needless fresh login.
 func requireCurrentDaemon(s *control.Status) error {
 	if s.Outdated() {
-		return fmt.Errorf("the running daemon predates this CLI (%s) and cannot report its servers — run `pmon restart`", version)
+		return fmt.Errorf("the running daemon predates this CLI (%s) and cannot report its servers — run `"+self+" restart`", version)
 	}
 	return nil
 }

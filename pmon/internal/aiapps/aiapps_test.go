@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sync"
 	"testing"
 )
@@ -250,5 +251,26 @@ func TestAnotherPmonsEntryIsPmons(t *testing.T) {
 	}
 	if servers, _, _ := readDesktopServers(claudeDesktopConfig()); len(servers) != 0 {
 		t.Errorf("remove left %v", servers)
+	}
+}
+
+func TestRemoteRelayEntries(t *testing.T) {
+	srv := Server{Name: "dana@devbox/acme.prod"}
+	if got := srv.EntryName(); got != "pmon-dana-devbox-acme-prod" {
+		t.Errorf("EntryName = %q", got)
+	}
+	if got := relayArgs(srv.Name); !slices.Equal(got, []string{"--remote", "dana@devbox", "mcp", "acme.prod"}) {
+		t.Errorf("relayArgs = %v", got)
+	}
+	remoteArgs := []string{"--remote", "devbox", "mcp", "acme"}
+	switch {
+	case !ownCommand("/usr/local/bin/pmon", remoteArgs, "devbox/acme", ""):
+		t.Error("the remote relay is not recognized as devbox/acme")
+	case ownCommand("/usr/local/bin/pmon", remoteArgs, "acme", "acme"):
+		t.Error("the remote relay counts as the local acme")
+	case ownCommand("/usr/local/bin/pmon", []string{"mcp", "acme"}, "devbox/acme", ""):
+		t.Error("the local relay counts as devbox/acme")
+	case ownCommand("/usr/local/bin/pmon", []string{"--remote", "other", "mcp", "acme"}, "devbox/acme", ""):
+		t.Error("another remote's relay counts as devbox/acme")
 	}
 }

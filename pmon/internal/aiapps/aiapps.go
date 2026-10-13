@@ -53,6 +53,7 @@ func (e *NotInstalledError) Error() string { return e.App + " is not installed."
 
 // Server is a pmon server as an AI app reaches it (see Lookup).
 type Server struct {
+	// Name is the server's name, or "<ssh-target>/<name>" for a server on a remote daemon.
 	Name string
 	// MCPURL is the server's MCP endpoint, whose https entries pmon's relay replaces.
 	MCPURL string
@@ -60,9 +61,23 @@ type Server struct {
 	entry string
 }
 
-// EntryName is the name pmon registers the server under in an AI app.
+// EntryName is the name pmon registers the server under in an AI app, such as pmon-acme or pmon-devbox-acme.
+// AI apps refuse dots and slashes in a name, so anything but letters, digits, - and _ becomes -.
 func (s Server) EntryName() string {
-	return cmp.Or(s.entry, "pmon-"+strings.ReplaceAll(s.Name, ".", "-"))
+	return cmp.Or(s.entry, "pmon-"+strings.Map(func(r rune) rune {
+		if r == '-' || r == '_' || r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' {
+			return r
+		}
+		return '-'
+	}, s.Name))
+}
+
+// relayArgs are the pmon arguments of a server's relay: `mcp <name>`, or `--remote <target> mcp <name>`.
+func relayArgs(server string) []string {
+	if target, name, ok := strings.Cut(server, "/"); ok {
+		return []string{"--remote", target, "mcp", name}
+	}
+	return []string{"mcp", server}
 }
 
 // App is an app that can run `pmon mcp <server>` as a local MCP server.
@@ -163,7 +178,7 @@ func claudeDesktop() App {
 			return anyCurrent(entries, s, server)
 		},
 		add: func(s Setup, srv Server) (string, []string, error) {
-			raw, err := json.Marshal(mcpCommand{Command: s.Pmon, Args: []string{"mcp", srv.Name}, Env: DaemonEnv()})
+			raw, err := json.Marshal(mcpCommand{Command: s.Pmon, Args: relayArgs(srv.Name), Env: DaemonEnv()})
 			if err != nil {
 				return "", nil, err
 			}
@@ -305,7 +320,13 @@ func writeDesktopConfig(path string, before []byte, servers, top map[string]json
 // and Proxy Monster Desktop register different copies, and either may replace or remove the other's entry.
 func ownCommand(command string, args []string, server, def string) bool {
 	name := strings.ToLower(filepath.Base(strings.ReplaceAll(command, `\`, "/")))
-	if name != "pmon" && name != "pmon.exe" || len(args) == 0 || args[0] != "mcp" {
+	if name != "pmon" && name != "pmon.exe" {
+		return false
+	}
+	if len(args) == 4 && args[0] == "--remote" && args[2] == "mcp" {
+		return args[1]+"/"+args[3] == server
+	}
+	if len(args) == 0 || args[0] != "mcp" {
 		return false
 	}
 	return len(args) == 2 && args[1] == server || len(args) == 1 && server == def
@@ -437,7 +458,7 @@ func cliApp(id, name, bin string, scope []string, file configFile) App {
 			for k, v := range DaemonEnv() {
 				add = append(add, envFlag, k+"="+v)
 			}
-			if _, err := run(append(add, "--", s.Pmon, "mcp", srv.Name)...); err != nil {
+			if _, err := run(append(append(add, "--", s.Pmon), relayArgs(srv.Name)...)...); err != nil {
 				return "", nil, restore(err)
 			}
 			var replaced []string

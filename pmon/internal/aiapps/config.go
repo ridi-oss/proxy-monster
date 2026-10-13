@@ -295,7 +295,7 @@ func configApp(id, name string, file configFile) App {
 				return "", nil, err
 			}
 			entry := freeName(others, srv, s.Default)
-			if err := file.write(entry, mcpCommand{Command: s.Pmon, Args: []string{"mcp", srv.Name}, Env: DaemonEnv()}); err != nil {
+			if err := file.write(entry, mcpCommand{Command: s.Pmon, Args: relayArgs(srv.Name), Env: DaemonEnv()}); err != nil {
 				return "", nil, err
 			}
 			var replaced []string

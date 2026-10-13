@@ -87,6 +87,9 @@ func (c *socketCmd) Run() error {
 	return nil
 }
 
+// remoteTarget is the SSH target under --remote, else "".
+var remoteTarget string
+
 // self is how hints name this program: "pmon", or "pmon --remote <target>" for a command run against a remote.
 var self = "pmon"
 
@@ -113,6 +116,7 @@ func useRemote(target string) error {
 		case control.RemoteConnected, control.RemoteNoDaemon:
 			control.UseRemote(target, r.Socket, r.Ports)
 			self = "pmon --remote " + target
+			remoteTarget = target
 			return nil
 		case control.RemoteConnecting:
 			return fmt.Errorf("remote %q is still connecting — try again in a moment", target)

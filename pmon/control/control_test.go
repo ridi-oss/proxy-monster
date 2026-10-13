@@ -78,6 +78,8 @@ func (f *fakeBackend) AddRemote(RemoteRequest) error { return nil }
 
 func (f *fakeBackend) RemoveRemote(RemoteRequest) error { return nil }
 
+func (f *fakeBackend) StartRemote(context.Context, RemoteRequest) error { return nil }
+
 func (f *fakeBackend) RenameServer(context.Context, RenameServerRequest) (RenameServerResult, error) {
 	return RenameServerResult{}, nil
 }
@@ -402,5 +404,30 @@ func TestStatusFromAnOlderDaemon(t *testing.T) {
 	none, err := decodeStatus([]byte(`{"servers":[{"name":"default"}],"defaultServer":""}`))
 	if err != nil || none.DefaultServer != "" || none.FixedDefault {
 		t.Errorf("a daemon with no default: %+v, %v", none, err)
+	}
+}
+
+func TestRemoteClientReportsForwardedPorts(t *testing.T) {
+	backend := newFakeBackend()
+	backend.status.Datasources = []Datasource{
+		{Server: "acme", Name: "orders", LocalPort: 6100},
+		{Server: "acme", Name: "users", LocalPort: 6101},
+	}
+	serve(t, backend)
+	sock, err := state.SocketPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	s, err := NewRemoteClient(sock, map[string]int{"acme/orders": 47100}).Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := []int{s.Datasources[0].LocalPort, s.Datasources[1].LocalPort}; got[0] != 47100 || got[1] != 0 {
+		t.Errorf("ports %v, want the forwarded one and 0 for the unforwarded one", got)
+	}
+	// No forwards yet still hides the remote's own ports.
+	if s, err := NewRemoteClient(sock, nil).Status(ctx); err != nil || s.Datasources[0].LocalPort != 0 {
+		t.Errorf("with no forwards: %+v, %v", s.Datasources, err)
 	}
 }

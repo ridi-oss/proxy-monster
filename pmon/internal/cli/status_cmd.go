@@ -21,7 +21,7 @@ func (statusCmd) Run() error {
 	ctx := context.Background()
 	client, err := control.Connect(ctx)
 	if err != nil {
-		fmt.Println("daemon:    not running (run `pmon start`, or `pmon login` to start it and log in)")
+		fmt.Println("daemon:    not running (run `" + self + " start`, or `" + self + " login` to start it and log in)")
 		return nil
 	}
 	s, err := client.Status(ctx)
@@ -40,7 +40,7 @@ func (statusCmd) Run() error {
 		fmt.Println("daemon:    running, idle")
 	}
 	if len(s.Servers) == 0 {
-		fmt.Println("servers:   none (run `pmon login --url <control-plane-url>`)")
+		fmt.Println("servers:   none (run `" + self + " login --url <control-plane-url>`)")
 		return nil
 	}
 	for _, srv := range s.Servers {
@@ -53,7 +53,7 @@ func (statusCmd) Run() error {
 			fmt.Printf("version:   %s\n", srv.ServerVersion)
 		}
 		if n := srv.InstanceName; n != "" && n != srv.Name && s.Server(n) == nil {
-			fmt.Printf("name:      the server calls itself %q — `pmon server rename %s` to use that name\n", n, srv.Name)
+			fmt.Printf("name:      the server calls itself %q — `"+self+" server rename %s` to use that name\n", n, srv.Name)
 		}
 		if !srv.LoggedIn {
 			fmt.Printf("login:     not logged in (run `%s`)\n", loginHint(srv.Name, srv.Default))
@@ -114,7 +114,7 @@ func (statusCmd) Run() error {
 	if err := tw.Flush(); err != nil {
 		return err
 	}
-	fmt.Println("\n`pmon show [server] <datasource>` for a connection string")
+	fmt.Println("\n`" + self + " show [server] <datasource>` for a connection string")
 	return nil
 }
 

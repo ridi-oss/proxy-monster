@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"os"
@@ -26,14 +27,55 @@ var ErrDaemonNotRunning = errors.New("the pmon daemon is not running")
 // Client speaks the control API over the daemon's unix socket.
 type Client struct {
 	http *http.Client
+	// ports maps a remote daemon's "server/datasource" to its port on this machine; nil for a local daemon.
+	ports map[string]int
+	// forwarded is a socket ssh forwards: ssh accepts the connection even when nothing listens on the far end,
+	// then closes it, so an EOF before any reply means the remote daemon is not running.
+	forwarded bool
+}
+
+// remote is the remote daemon every client in this process addresses, set by [UseRemote].
+var remote *remoteDaemon
+
+type remoteDaemon struct {
+	target, socket string
+	ports          map[string]int
+}
+
+// UseRemote points every client this process makes at a remote daemon's forwarded control socket, with its
+// datasources reported on their forwarded ports.
+func UseRemote(target, socket string, ports map[string]int) {
+	remote = &remoteDaemon{target: target, socket: socket, ports: ports}
+}
+
+// NewRemoteClient is a client of a remote daemon through its forwarded socket, reporting each datasource on its
+// forwarded port from ports ("server/datasource" to port), or on port 0 when it has none.
+func NewRemoteClient(socket string, ports map[string]int) *Client {
+	c := NewClientAt(socket)
+	c.ports = maps.Clone(ports)
+	if c.ports == nil {
+		c.ports = map[string]int{}
+	}
+	return c
 }
 
 // NewClientAt is a client of the daemon listening on socket, such as a remote daemon's forwarded socket.
-func NewClientAt(socket string) *Client { return clientFor([]string{socket}) }
+func NewClientAt(socket string) *Client {
+	c := clientFor([]string{socket})
+	c.forwarded = true
+	return c
+}
 
 // NewClient dials the socket lazily per request — so a Client constructed while the daemon is down starts
 // working the moment one comes up, with no reconstruction.
 func NewClient() (*Client, error) {
+	if remote != nil {
+		return NewRemoteClient(remote.socket, remote.ports), nil
+	}
+	return newLocalClient()
+}
+
+func newLocalClient() (*Client, error) {
 	sockets, err := state.SocketPaths()
 	if err != nil {
 		return nil, err
@@ -84,7 +126,7 @@ func (c *Client) do(ctx context.Context, method, path string, body any) (*http.R
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		if isDialFailure(err) {
+		if isDialFailure(err) || (c.forwarded && (errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF))) {
 			return nil, ErrDaemonNotRunning
 		}
 		return nil, err
@@ -129,7 +171,14 @@ func (c *Client) Status(ctx context.Context) (*Status, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
 		return nil, err
 	}
-	return decodeStatus(raw)
+	st, err := decodeStatus(raw)
+	if err == nil && c.ports != nil {
+		// A remote port is reachable here only through its forward; one without a forward is not reachable.
+		for i, ds := range st.Datasources {
+			st.Datasources[i].LocalPort = c.ports[ds.Server+"/"+ds.Name]
+		}
+	}
+	return st, err
 }
 
 // decodeStatus reads a status, including one from a daemon that predates choosing the default server.
@@ -228,6 +277,15 @@ func (c *Client) SetDefault(ctx context.Context, req SetDefaultRequest) error {
 // AddRemote saves an SSH target; the daemon then keeps a connection to that machine's daemon.
 func (c *Client) AddRemote(ctx context.Context, target string) error {
 	resp, err := c.do(ctx, http.MethodPost, PathRemoteAdd, RemoteRequest{Target: target})
+	if err != nil {
+		return err
+	}
+	return resp.Body.Close()
+}
+
+// StartRemote asks this daemon to start the pmon daemon on a remote it is connected to.
+func (c *Client) StartRemote(ctx context.Context, target string) error {
+	resp, err := c.do(ctx, http.MethodPost, PathRemoteStart, RemoteRequest{Target: target})
 	if err != nil {
 		return err
 	}
@@ -336,7 +394,15 @@ func EnsureDaemon(ctx context.Context) (*Client, error) {
 	} else if !errors.Is(err, ErrDaemonNotRunning) {
 		return nil, err
 	}
-	if err := StartDaemon(); err != nil {
+	if remote != nil {
+		local, err := newLocalClient()
+		if err != nil {
+			return nil, err
+		}
+		if err := local.StartRemote(ctx, remote.target); err != nil {
+			return nil, err
+		}
+	} else if err := StartDaemon(); err != nil {
 		return nil, err
 	}
 	if err := waitForDaemon(ctx, c, daemonStartTimeout); err != nil {
@@ -513,6 +579,12 @@ func StopDaemon(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if remote != nil {
+		if err := c.Shutdown(ctx); err != nil {
+			return err
+		}
+		return waitForRemoteExit(ctx, c, 10*time.Second)
+	}
 	if err := c.Shutdown(ctx); err == nil {
 		return waitForExit(ctx, 10*time.Second)
 	}
@@ -527,6 +599,24 @@ func StopDaemon(ctx context.Context) error {
 		return fmt.Errorf("could not signal the daemon (pid %d): %w", pid, err)
 	}
 	return waitForExit(ctx, 10*time.Second)
+}
+
+// waitForRemoteExit waits until a remote daemon stops answering; its pid lock is on the other machine.
+func waitForRemoteExit(ctx context.Context, c *Client, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		if _, err := c.Status(ctx); errors.Is(err, ErrDaemonNotRunning) {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("the daemon on %s did not stop within %s", remote.target, timeout)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
 }
 
 // waitForExit waits for the pid lock to free, which is the daemon's true exit (the socket may linger).

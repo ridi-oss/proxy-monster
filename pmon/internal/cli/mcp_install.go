@@ -15,7 +15,7 @@ import (
 	"github.com/ridi-oss/proxy-monster/pmon/internal/aiapps"
 )
 
-// register adds or removes `pmon mcp <server>` in the AI apps on this machine.
+// register adds or removes `" + self + " mcp <server>` in the AI apps on this machine.
 func (c *mcpCmd) register(ctx context.Context) error {
 	client, err := control.EnsureDaemon(ctx)
 	if err != nil {
@@ -97,7 +97,7 @@ func (c *mcpCmd) targetServers(ctx context.Context, s *control.Status) ([]aiapps
 	names := c.Servers
 	if len(names) == 0 {
 		if len(known) == 0 {
-			return nil, errors.New("no servers — add one with `pmon server set --url <control-plane-url>`")
+			return nil, errors.New("no servers — add one with `" + self + " server set --url <control-plane-url>`")
 		}
 		names = known
 	}

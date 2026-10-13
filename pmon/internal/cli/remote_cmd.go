@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/ridi-oss/proxy-monster/pmon/control"
@@ -84,4 +85,40 @@ func (c *socketCmd) Run() error {
 	}
 	fmt.Println(p)
 	return nil
+}
+
+// self is how hints name this program: "pmon", or "pmon --remote <target>" for a command run against a remote.
+var self = "pmon"
+
+// useRemote points this command at the daemon on target, through the forwarded socket this machine's daemon
+// keeps for it.
+func useRemote(target string) error {
+	if target == "" || strings.HasPrefix(target, "-") || strings.ContainsAny(target, " \t\n'\"\\%`") {
+		return fmt.Errorf("%q is not an ssh target", target)
+	}
+	ctx := context.Background()
+	local, err := control.Connect(ctx)
+	if err != nil {
+		return fmt.Errorf("--remote needs this machine's daemon, which keeps the ssh connection: %w", err)
+	}
+	s, err := local.Status(ctx)
+	if err != nil {
+		return err
+	}
+	for _, r := range s.Remotes {
+		if r.Target != target {
+			continue
+		}
+		switch r.State {
+		case control.RemoteConnected, control.RemoteNoDaemon:
+			control.UseRemote(target, r.Socket, r.Ports)
+			self = "pmon --remote " + target
+			return nil
+		case control.RemoteConnecting:
+			return fmt.Errorf("remote %q is still connecting — try again in a moment", target)
+		default:
+			return fmt.Errorf("remote %q is %s: %s", target, r.State, r.Error)
+		}
+	}
+	return fmt.Errorf("%q is not a remote — `pmon remote add %s` adds it", target, target)
 }

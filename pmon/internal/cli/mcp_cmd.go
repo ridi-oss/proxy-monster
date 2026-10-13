@@ -51,7 +51,7 @@ func (c *mcpCmd) Run() error {
 		Tokens: func(ctx context.Context) (mcpbridge.Token, error) {
 			tok, err := client.MCPToken(ctx, control.MCPTokenRequest{Server: server})
 			if errors.Is(err, control.ErrUnknownRoute) {
-				return mcpbridge.Token{}, fmt.Errorf("the running daemon predates `pmon mcp` — run `pmon restart`")
+				return mcpbridge.Token{}, errors.New("the running daemon predates `" + self + " mcp` — run `" + self + " restart`")
 			}
 			if err != nil {
 				return mcpbridge.Token{}, err

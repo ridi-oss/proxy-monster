@@ -105,7 +105,7 @@ func (c *loginCmd) Run() error {
 		return err
 	}
 	warnVersionSkew(s)
-	fmt.Printf("%d datasource(s) brokered from %q — `pmon status` for the list, `%s` for a connection string\n",
+	fmt.Printf("%d datasource(s) brokered from %q — `"+self+" status` for the list, `%s` for a connection string\n",
 		brokeredCount(s, server), server, showHint(server, server == s.DefaultServer))
 	return nil
 }

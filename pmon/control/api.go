@@ -293,4 +293,5 @@ const (
 	PathMCPToken      = "/mcp-token"
 	PathRemoteAdd     = "/remotes/add"
 	PathRemoteRemove  = "/remotes/remove"
+	PathRemoteStart   = "/remotes/start"
 )

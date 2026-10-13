@@ -269,3 +269,25 @@ func TestDefaultServerMigration(t *testing.T) {
 		}
 	}
 }
+
+func TestRemotePortsShareThePoolWithServerPorts(t *testing.T) {
+	t.Setenv("PMON_PORT_BASE", "47000")
+	c := Config{Servers: map[string]*Server{"acme": {}}}
+	if p := c.AssignPort("acme", "orders"); p != 47000 {
+		t.Fatalf("server port %d", p)
+	}
+	if p := c.AssignRemotePort("devbox", "acme/orders"); p != 47001 {
+		t.Fatalf("remote port %d, want the next free one", p)
+	}
+	if p := c.AssignPort("acme", "users"); p != 47002 {
+		t.Fatalf("server port %d, want one past the remote's", p)
+	}
+	if p := c.AssignRemotePort("devbox", "acme/orders"); p != 47001 {
+		t.Fatalf("remote port moved to %d", p)
+	}
+	clone := c.Clone()
+	clone.RemotePorts["devbox"]["acme/orders"] = 1
+	if c.RemotePorts["devbox"]["acme/orders"] != 47001 {
+		t.Fatal("Clone shares the remote port map")
+	}
+}

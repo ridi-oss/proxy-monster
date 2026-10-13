@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"reflect"
 	"slices"
 	"sort"
 	"strings"
@@ -66,6 +67,7 @@ func (d *Daemon) RemoveRemote(req control.RemoteRequest) error {
 			return fmt.Errorf("unknown remote %q", req.Target)
 		}
 		c.Remotes = slices.DeleteFunc(c.Remotes, func(t string) bool { return t == req.Target })
+		delete(c.RemotePorts, req.Target)
 		return nil
 	}); err != nil {
 		return err
@@ -119,7 +121,7 @@ func (d *Daemon) remoteInfos() []control.RemoteInfo {
 func (d *Daemon) setRemote(r *remote, info control.RemoteInfo) {
 	info.Target = r.target
 	d.mu.Lock()
-	changed := r.info != info
+	changed := !reflect.DeepEqual(r.info, info)
 	r.info = info
 	d.mu.Unlock()
 	if changed {
@@ -194,6 +196,7 @@ func (d *Daemon) connectRemote(ctx context.Context, r *remote, ctl, sock string)
 	}
 
 	forwarded := false
+	forwards := map[string]portForward{}
 	check := func() {
 		if !forwarded {
 			remoteSock, err := sshOutput(ctx, "-S", ctl, "--", r.target, remoteShell("pmon socket-path"))
@@ -209,17 +212,25 @@ func (d *Daemon) connectRemote(ctx context.Context, r *remote, ctl, sock string)
 		}
 		probe, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
-		if _, err := control.NewClientAt(sock).Status(probe); err != nil {
+		st, err := control.NewClientAt(sock).Status(probe)
+		if err != nil {
 			d.setRemote(r, control.RemoteInfo{State: control.RemoteNoDaemon, Socket: sock})
 			return
 		}
-		d.setRemote(r, control.RemoteInfo{State: control.RemoteConnected, Socket: sock})
+		ports, failed := d.syncForwards(ctx, r.target, ctl, *st, forwards)
+		d.setRemote(r, control.RemoteInfo{State: control.RemoteConnected, Socket: sock, Ports: ports, Error: failed})
 	}
 	check()
 	t := time.NewTicker(remoteCheckEvery)
 	defer t.Stop()
+	changed := make(chan struct{}, 1)
+	watchCtx, stopWatch := context.WithCancel(ctx)
+	defer stopWatch()
+	go watchRemote(watchCtx, sock, changed)
 	for {
 		select {
+		case <-changed:
+			check()
 		case err := <-exited:
 			return ended(err)
 		case <-ctx.Done():
@@ -228,6 +239,73 @@ func (d *Daemon) connectRemote(ctx context.Context, r *remote, ctl, sock string)
 			return ctx.Err()
 		case <-t.C:
 			check()
+		}
+	}
+}
+
+// portForward is one remote datasource forwarded to a local port.
+type portForward struct{ local, remote int }
+
+func (f portForward) spec() string {
+	return fmt.Sprintf("127.0.0.1:%d:127.0.0.1:%d", f.local, f.remote)
+}
+
+// syncForwards makes forwards match the remote's brokered datasources: each gets its sticky local port. It returns
+// the port map for /status and, when a forward failed (its local port is taken), why.
+func (d *Daemon) syncForwards(ctx context.Context, target, ctl string, st control.Status, forwards map[string]portForward) (map[string]int, string) {
+	want := map[string]int{}
+	for _, ds := range st.Datasources {
+		if ds.LocalPort > 0 {
+			want[ds.Server+"/"+ds.Name] = ds.LocalPort
+		}
+	}
+	for key, f := range forwards {
+		if remotePort, ok := want[key]; !ok || remotePort != f.remote {
+			_, _ = sshOutput(ctx, "-S", ctl, "-O", "cancel", "-L", f.spec(), "--", target)
+			delete(forwards, key)
+		}
+	}
+	var failed string
+	for key, remotePort := range want {
+		if _, ok := forwards[key]; ok {
+			continue
+		}
+		var local int
+		if err := d.commit(func(c *state.Config) error {
+			local = c.AssignRemotePort(target, key)
+			return nil
+		}); err != nil {
+			failed = err.Error()
+			continue
+		}
+		f := portForward{local: local, remote: remotePort}
+		if _, err := sshOutput(ctx, "-S", ctl, "-O", "forward", "-L", f.spec(), "--", target); err != nil {
+			failed = fmt.Sprintf("%s: %v", key, err)
+			continue
+		}
+		forwards[key] = f
+	}
+	ports := make(map[string]int, len(forwards))
+	for key, f := range forwards {
+		ports[key] = f.local
+	}
+	return ports, failed
+}
+
+// watchRemote nudges changed whenever the remote daemon publishes an event, so a new datasource is forwarded
+// at once rather than at the next check.
+func watchRemote(ctx context.Context, sock string, changed chan<- struct{}) {
+	for ctx.Err() == nil {
+		_ = control.NewClientAt(sock).Events(ctx, func(control.Event) {
+			select {
+			case changed <- struct{}{}:
+			default:
+			}
+		})
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(remoteCheckEvery):
 		}
 	}
 }

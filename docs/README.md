@@ -95,6 +95,7 @@ a facts layer.
 | --- | --- |
 | [`backlog.md`](./backlog.md) | Roadmap: planned and open work. |
 | [`cp-go-migration.md`](./cp-go-migration.md) | Proposal: move the control plane to Go behind a Go front door, slice by slice. |
+| [`remote-daemon.md`](./remote-daemon.md) | Proposal: drive a pmon daemon on a macOS or Linux machine over SSH from the laptop's tray and CLI. |
 | [`cedar-sim/`](./cedar-sim/) | Runnable Cedar verification behind the approval workflow's assume-role-at-view options. |
 
 ## Relationships

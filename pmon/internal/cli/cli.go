@@ -9,6 +9,7 @@ var version string
 // repo rather than hand-rolled flag sets).
 type root struct {
 	Server  serverCmd  `cmd:"" help:"Manage the servers pmon logs in to."`
+	Remote  remoteCmd  `cmd:"" help:"Manage the remote machines whose pmon daemons this one reaches over SSH."`
 	Login   loginCmd   `cmd:"" help:"Authenticate in your browser; starts the daemon and opens the brokers."`
 	Logout  logoutCmd  `cmd:"" help:"Clear a server's credentials and close its brokers (the daemon stays up)."`
 	Show    showCmd    `cmd:"" help:"Print one datasource's local connection string."`
@@ -18,6 +19,7 @@ type root struct {
 	Stop    stopCmd    `cmd:"" help:"Stop the daemon."`
 	Restart restartCmd `cmd:"" help:"Stop the daemon and start a fresh one."`
 	Daemon  daemonCmd  `cmd:"" hidden:"" help:"Run the daemon in the foreground (the exec target of 'pmon start')."`
+	Socket  socketCmd  `cmd:"" name:"socket-path" hidden:"" help:"Print the daemon's control-socket path (what a remote pmon forwards over SSH)."`
 	Ver     versionCmd `cmd:"" name:"version" help:"Print the version of pmon, of its daemon, and of each server."`
 
 	Version kong.VersionFlag `help:"Print the version and exit." short:"V"`

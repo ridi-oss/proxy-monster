@@ -74,6 +74,10 @@ func (f *fakeBackend) UnsetServer(UnsetServerRequest) ([]string, error) { return
 
 func (f *fakeBackend) SetDefault(SetDefaultRequest) error { return nil }
 
+func (f *fakeBackend) AddRemote(RemoteRequest) error { return nil }
+
+func (f *fakeBackend) RemoveRemote(RemoteRequest) error { return nil }
+
 func (f *fakeBackend) RenameServer(context.Context, RenameServerRequest) (RenameServerResult, error) {
 	return RenameServerResult{}, nil
 }

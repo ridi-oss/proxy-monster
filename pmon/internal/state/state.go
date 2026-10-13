@@ -18,6 +18,7 @@ import (
 	"regexp"
 	"slices"
 	"strconv"
+	"strings"
 )
 
 // Config is pmon's persisted state, written by the daemon and read back on its next start. Stored 0600 in
@@ -31,6 +32,8 @@ type Config struct {
 	// Default names the server a command addresses when it names none. It may name no configured server,
 	// such as after that server is deleted; a command that needs it then says so.
 	Default string `json:"default"`
+	// Remotes are the SSH targets whose pmon daemons this daemon keeps a connection to.
+	Remotes []string `json:"remotes,omitempty"`
 }
 
 // Server is one control plane pmon logs in to.
@@ -212,6 +215,18 @@ func socketPathAt(root string) (string, error) {
 		return "", fmt.Errorf("no control-socket path fits the %d-byte limit (tried %q)", maxSocketPath, p)
 	}
 	return p, nil
+}
+
+// RemotePaths are the SSH control socket and the forwarded pmon control socket for an SSH target, beside this
+// daemon's own socket so they share its private folder and its length limit.
+func RemotePaths(target string) (ctl, sock string, err error) {
+	own, err := SocketPath()
+	if err != nil {
+		return "", "", err
+	}
+	sum := sha256.Sum256([]byte(target))
+	base := strings.TrimSuffix(own, ".sock") + "-r" + hex.EncodeToString(sum[:4])
+	return base + ".ctl", base + ".sock", nil
 }
 
 func legacySocketPath() (string, error) {
@@ -417,7 +432,8 @@ func (c Config) Resolve(name string) string { return cmp.Or(name, c.Default) }
 
 // Clone returns a deep copy, so a caller can read it outside the daemon's lock.
 func (c *Config) Clone() Config {
-	out := Config{LocalPassword: c.LocalPassword, Servers: make(map[string]*Server, len(c.Servers)), Default: c.Default}
+	out := Config{LocalPassword: c.LocalPassword, Servers: make(map[string]*Server, len(c.Servers)), Default: c.Default,
+		Remotes: slices.Clone(c.Remotes)}
 	for name, srv := range c.Servers {
 		dup := *srv
 		dup.Ports = maps.Clone(srv.Ports)

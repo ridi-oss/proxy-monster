@@ -31,6 +31,8 @@ type Status struct {
 	FixedDefault bool `json:"-"`
 	// Datasources is every datasource across all servers, sorted by server then name.
 	Datasources []Datasource `json:"datasources"`
+	// Remotes are the remote daemons this daemon keeps an SSH connection to.
+	Remotes []RemoteInfo `json:"remotes,omitempty"`
 }
 
 // ServerInfo is one configured control plane and its login.
@@ -131,6 +133,34 @@ func (s *Status) LoggedInServers() []ServerInfo {
 		}
 	}
 	return out
+}
+
+// RemoteInfo is one remote daemon reached over SSH. Socket is its control socket forwarded to this machine, which
+// a peer talks to like a local daemon's; it is set only while State is RemoteConnected or RemoteNoDaemon.
+type RemoteInfo struct {
+	Target string      `json:"target"` // the ssh target, also its name: "devbox", "dana@devbox.example"
+	State  RemoteState `json:"state"`
+	// Error is ssh's or the remote shell's last word: "ssh: connect to host devbox port 22: Connection refused".
+	Error  string `json:"error,omitempty"`
+	Socket string `json:"socket,omitempty"` // "/tmp/pmon-501/pmon-9a631b7f1a34259a-r49960de5.sock"
+}
+
+// RemoteState is where a remote's connection stands.
+type RemoteState string
+
+const (
+	RemoteConnecting RemoteState = "connecting"
+	RemoteConnected  RemoteState = "connected"
+	// RemoteNoDaemon is a working connection to a remote whose pmon daemon is not running.
+	RemoteNoDaemon RemoteState = "no-daemon"
+	// RemoteNoPmon is a working connection to a remote that has no pmon on its PATH.
+	RemoteNoPmon RemoteState = "no-pmon"
+	RemoteDown   RemoteState = "down"
+)
+
+// RemoteRequest names a remote by its SSH target: {"target": "devbox"}.
+type RemoteRequest struct {
+	Target string `json:"target"`
 }
 
 // LoginRequest asks the daemon to run a device-auth flow against Server ([state.DefaultServer] when empty). A
@@ -259,4 +289,6 @@ const (
 	PathShutdown      = "/shutdown"
 	PathEvents        = "/events"
 	PathMCPToken      = "/mcp-token"
+	PathRemoteAdd     = "/remotes/add"
+	PathRemoteRemove  = "/remotes/remove"
 )

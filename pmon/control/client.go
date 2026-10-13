@@ -28,6 +28,9 @@ type Client struct {
 	http *http.Client
 }
 
+// NewClientAt is a client of the daemon listening on socket, such as a remote daemon's forwarded socket.
+func NewClientAt(socket string) *Client { return clientFor([]string{socket}) }
+
 // NewClient dials the socket lazily per request — so a Client constructed while the daemon is down starts
 // working the moment one comes up, with no reconstruction.
 func NewClient() (*Client, error) {
@@ -35,6 +38,10 @@ func NewClient() (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	return clientFor(sockets), nil
+}
+
+func clientFor(sockets []string) *Client {
 	return &Client{http: &http.Client{
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -54,7 +61,7 @@ func NewClient() (*Client, error) {
 				return nil, dialErr
 			},
 		},
-	}}, nil
+	}}
 }
 
 // do issues a control request. A dial failure becomes [ErrDaemonNotRunning] so callers branch on one error.
@@ -212,6 +219,24 @@ func (c *Client) SetServer(ctx context.Context, req SetServerRequest) (SetServer
 // SetDefault makes a server the one a command addresses when it names none.
 func (c *Client) SetDefault(ctx context.Context, req SetDefaultRequest) error {
 	resp, err := c.do(ctx, http.MethodPost, PathServerDefault, req)
+	if err != nil {
+		return err
+	}
+	return resp.Body.Close()
+}
+
+// AddRemote saves an SSH target; the daemon then keeps a connection to that machine's daemon.
+func (c *Client) AddRemote(ctx context.Context, target string) error {
+	resp, err := c.do(ctx, http.MethodPost, PathRemoteAdd, RemoteRequest{Target: target})
+	if err != nil {
+		return err
+	}
+	return resp.Body.Close()
+}
+
+// RemoveRemote closes a remote's connection and forgets it.
+func (c *Client) RemoveRemote(ctx context.Context, target string) error {
+	resp, err := c.do(ctx, http.MethodPost, PathRemoteRemove, RemoteRequest{Target: target})
 	if err != nil {
 		return err
 	}

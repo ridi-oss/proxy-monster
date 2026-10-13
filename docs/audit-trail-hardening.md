@@ -191,11 +191,12 @@ event — its own append-only, chained `audit_event` (`kind = "completion"`) via
 gRPC `ReportCompletion`, referencing the decision `id` as `decision_id`,
 carrying `rows_returned` + `bytes_returned` (rows catch "many records," bytes
 catch "few wide rows / big blob"), terminal status in `outcome`
-(`ok|error|canceled`), and relay wall time in `latency_ms`. The proxy tallies as
-it relays. One completion is emitted at statement end, so mass-export is caught
-after the rows left, which is fine for alerting (Cedar is the enforcement gate).
-DENY → no completion; error/cancel → a completion with `outcome` + partial
-counts.
+(`ok|error|canceled|rejected`), and relay wall time in `latency_ms`. The proxy
+tallies as it relays. One completion is emitted at statement end, so mass-export
+is caught after the rows left, which is fine for alerting (Cedar is the
+enforcement gate). DENY → no completion; error/cancel → a completion with
+`outcome` + partial counts; a DENY the target rejected as a syntax error
+(`check_target_syntax`) → a `rejected` completion with zero counts.
 
 <!-- prettier-ignore -->
 | Rule | Fires on | Primary signal |

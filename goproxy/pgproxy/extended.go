@@ -43,13 +43,26 @@ type boundPortal struct {
 	relayed engine.RelayStats
 }
 
-func renderExtendedVerdict(sess *session, verdict engine.Verdict) (engine.Proceed, bool, error) {
+func (s *Server) renderExtendedVerdict(sess *session, verdict engine.Verdict, sql string) (engine.Proceed, bool, error) {
 	switch verdict := verdict.(type) {
 	case engine.Fail:
 		sess.skipToSync, sess.abortAtSync = true, true
 		err := sendError(sess.client, "ERROR", "58000", "proxy-monster: "+verdict.Message, false, 0)
 		return engine.Proceed{}, false, err
 	case engine.Deny:
+		if verdict.Decision != nil && verdict.Decision.CheckTargetSyntax {
+			start := time.Now()
+			prepareErr, err := s.targetPrepareError(sess, sql)
+			if err != nil {
+				return engine.Proceed{}, false, err
+			}
+			if prepareErr != nil && prepareErr.Code == sqlStateSyntaxError {
+				sess.skipToSync = true
+				forwardError(sess, prepareErr)
+				sess.qe.AwaitCompletion(engine.EmitCompletion(s.client, verdict.Decision, engine.RelayStats{}, engine.StatusRejected, start))
+				return engine.Proceed{}, false, sess.client.Flush()
+			}
+		}
 		reason := "policy"
 		if verdict.Decision != nil && verdict.Decision.DenyReason != "" {
 			reason = verdict.Decision.DenyReason
@@ -110,7 +123,7 @@ func (s *Server) handleParse(sess *session, message *pgproto3.Parse) error {
 	sess.qe.MarkNamespaceDirty()
 	sess.pendingDirty = false
 	verdict := sess.qe.Authorize(sess.authzInput(message.Query, sess.token, sess.clientAddr, sess.connectionID, s.refetcher(sess, true).RunAll))
-	proceed, allowed, err := renderExtendedVerdict(sess, verdict)
+	proceed, allowed, err := s.renderExtendedVerdict(sess, verdict, message.Query)
 	if err != nil || !allowed {
 		return err
 	}
@@ -376,7 +389,7 @@ func (s *Server) handleExecute(sess *session, message *pgproto3.Execute) error {
 		},
 	})
 	sess.qe.MarkNamespaceDirty()
-	proceed, allowed, err := renderExtendedVerdict(sess, verdict)
+	proceed, allowed, err := s.renderExtendedVerdict(sess, verdict, portal.sql)
 	if err != nil || !allowed {
 		return err
 	}

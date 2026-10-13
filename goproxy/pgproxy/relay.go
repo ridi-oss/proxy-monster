@@ -464,6 +464,23 @@ func (s *Server) serveQuery(sess *session, sql string, mode relayMode) (queryRes
 		}
 		return result, closeRelay(sess, err)
 	}
+	if denied && decision != nil && decision.CheckTargetSyntax {
+		prepareErr, err := s.targetPrepareError(sess, sql)
+		if err != nil {
+			return queryResult{stop: true}, closeRelay(sess, err)
+		}
+		if err := syncTarget(sess); err != nil {
+			return queryResult{stop: true}, closeRelay(sess, err)
+		}
+		if prepareErr != nil && prepareErr.Code == sqlStateSyntaxError {
+			forwardError(sess, prepareErr)
+			if mode == relayQuery {
+				sess.client.Send(&pgproto3.ReadyForQuery{TxStatus: sess.lastTxStatus})
+			}
+			sess.qe.AwaitCompletion(engine.EmitCompletion(s.client, decision, engine.RelayStats{}, engine.StatusRejected, start))
+			return queryResult{stop: true}, sess.client.Flush()
+		}
+	}
 	if denied {
 		reason := "policy"
 		if decision != nil && decision.DenyReason != "" {

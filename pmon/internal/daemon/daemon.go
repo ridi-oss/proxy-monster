@@ -103,6 +103,8 @@ type Daemon struct {
 	// instances is each server's /api/instance as last read; absent for a server
 	// older than that route, or one not reached yet.
 	instances map[string]instance.Info
+	// remotes is the SSH connection to each saved remote daemon.
+	remotes map[string]*remote
 
 	subMu   sync.Mutex
 	subs    map[int]chan control.Event
@@ -122,6 +124,7 @@ func New(version string, providers *driver.Registry) *Daemon {
 		startedAt:        time.Now(),
 		rediscover:       make(chan struct{}, 1),
 		instances:        map[string]instance.Info{},
+		remotes:          map[string]*remote{},
 		listeners:        map[dsKey]*brokerListener{},
 		datasources:      map[dsKey]driver.Endpoint{},
 		unbrokered:       map[dsKey]driver.Endpoint{},
@@ -189,6 +192,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 		fmt.Fprintln(os.Stderr, "not logged in — the daemon is idle; run `pmon login`")
 	}
 
+	d.startRemotes()
 	go d.rediscoverLoop(ctx)
 	go d.renewLoop(ctx)
 	go d.versionLoop(ctx)
@@ -277,6 +281,7 @@ func (d *Daemon) Status() control.Status {
 		Servers:       make([]control.ServerInfo, 0, len(d.cfg.Servers)),
 		DefaultServer: d.cfg.Default,
 		Datasources:   make([]control.Datasource, 0, len(d.datasources)+len(d.unbrokered)),
+		Remotes:       d.remoteInfos(),
 	}
 	for name, srv := range d.cfg.Servers {
 		out.Servers = append(out.Servers, control.ServerInfo{

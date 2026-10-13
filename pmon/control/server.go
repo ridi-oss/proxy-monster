@@ -31,6 +31,10 @@ type Backend interface {
 	SetDefault(req SetDefaultRequest) error
 	// RenameServer renames a server, keeping its login and sticky ports.
 	RenameServer(ctx context.Context, req RenameServerRequest) (RenameServerResult, error)
+	// AddRemote saves an SSH target and keeps a connection to its daemon.
+	AddRemote(req RemoteRequest) error
+	// RemoveRemote closes a remote's connection and forgets it.
+	RemoveRemote(req RemoteRequest) error
 	// Reload forces an immediate rediscovery.
 	Reload()
 	// Subscribe opens a state-change stream; the returned cancel must be called when the stream ends.
@@ -91,6 +95,8 @@ func Listen(backend Backend) (*Server, error) {
 	mux.HandleFunc(PathServerUnset, s.handleServerUnset)
 	mux.HandleFunc(PathServerDefault, s.handleServerDefault)
 	mux.HandleFunc(PathServerRename, s.handleServerRename)
+	mux.HandleFunc(PathRemoteAdd, s.remoteHandler(s.backend.AddRemote))
+	mux.HandleFunc(PathRemoteRemove, s.remoteHandler(s.backend.RemoveRemote))
 	mux.HandleFunc(PathReload, s.handleReload)
 	mux.HandleFunc(PathShutdown, s.handleShutdown)
 	mux.HandleFunc(PathEvents, s.handleEvents)
@@ -244,6 +250,24 @@ func (s *Server) handleServerDefault(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, s.backend.Status())
+}
+
+func (s *Server) remoteHandler(apply func(RemoteRequest) error) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !requireMethod(w, r, http.MethodPost) {
+			return
+		}
+		var req RemoteRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := apply(req); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, s.backend.Status())
+	}
 }
 
 func (s *Server) handleServerRename(w http.ResponseWriter, r *http.Request) {

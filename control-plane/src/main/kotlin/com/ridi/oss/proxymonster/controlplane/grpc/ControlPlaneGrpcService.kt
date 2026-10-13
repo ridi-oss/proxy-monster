@@ -95,7 +95,7 @@ internal const val CONTROL_PROTOCOL_VERSION = 4
 // The completion-event terminal statuses the proxy reports: a clean finish, a target DB/relay error carrying
 // partial counts, or a canceled statement. Any other value is rejected fail-closed so a malformed report
 // can't write an uninterpretable outcome into the audit trail.
-private val COMPLETION_STATUSES = setOf("ok", "error", "canceled")
+private val COMPLETION_STATUSES = setOf("ok", "error", "canceled", "rejected")
 
 /**
  * Build the session-temp overlay from a decide request's proxy-supplied [temps], applying BOTH

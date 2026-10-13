@@ -75,10 +75,11 @@ COPY --from=cpgo /out/cp-go ./bin/cp-go
 RUN chown -R pm:pm /app
 USER pm
 
-# FFM restricted-method grant for the analyzer's native downcall (java.lang.foreign); the generated
-# start script appends $JAVA_OPTS to its java invocation, same as the root Gradle build's
-# JavaExec/Test jvmArgs locally. Override PM_HTTP_PORT via env; the healthcheck reads it back.
-ENV JAVA_OPTS="--enable-native-access=ALL-UNNAMED -XX:MaxRAMPercentage=60 -XX:+ExitOnOutOfMemoryError"
+# JDK_JAVA_OPTIONS, not JAVA_OPTS: the java launcher reads it on its own, so an operator's JAVA_OPTS
+# adds to these flags instead of dropping the analyzer's FFM grant (--enable-native-access).
+# 60% of RAM leaves room for the analyzer's native memory and cp-go; exit on OOM so the container is replaced.
+# Override PM_HTTP_PORT via env; the healthcheck reads it back.
+ENV JDK_JAVA_OPTIONS="--enable-native-access=ALL-UNNAMED -XX:MaxRAMPercentage=60 -XX:+ExitOnOutOfMemoryError"
 ENV PM_HTTP_PORT=8080
 EXPOSE 8080
 

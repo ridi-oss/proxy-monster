@@ -133,9 +133,16 @@ func TestIconState(t *testing.T) {
 		{"no servers", &control.Status{}, view{now: now}, iconIdle},
 		{"all signed in", twoServers(), view{now: now}, iconSignedIn},
 		{"one ending", &control.Status{LoggedIn: true, Servers: []control.ServerInfo{signedIn("acme", 9*time.Hour), signedIn("b", 20*time.Minute)}}, view{now: now}, iconExpiring},
-		{"one signed out", &control.Status{LoggedIn: true, Servers: []control.ServerInfo{signedIn("acme", 9*time.Hour), {Name: "b"}}}, view{now: now}, iconSignedOut},
-		{"renewal refused", &control.Status{LoggedIn: true, Servers: []control.ServerInfo{{Name: "acme", LoggedIn: true, ReauthRequired: true}}}, view{now: now}, iconSignedOut},
+		{"one never signed in", &control.Status{LoggedIn: true, Servers: []control.ServerInfo{signedIn("acme", 9*time.Hour), {Name: "b"}}}, view{now: now}, iconSignedIn},
+		{"none signed in", &control.Status{Servers: []control.ServerInfo{{Name: "acme"}, {Name: "b"}}}, view{now: now}, iconIdle},
+		{"renewal refused", &control.Status{LoggedIn: true, Servers: []control.ServerInfo{{Name: "acme", LoggedIn: true, ReauthRequired: true}}}, view{now: now}, iconEnded},
+		{"one ended beside a signed-in one", &control.Status{LoggedIn: true, Servers: []control.ServerInfo{signedIn("acme", 9*time.Hour), {Name: "b", LoggedIn: true, ReauthRequired: true}}}, view{now: now}, iconEnded},
+		{"ended beats ending", &control.Status{LoggedIn: true, Servers: []control.ServerInfo{signedIn("acme", 20*time.Minute), {Name: "b", LoggedIn: true, ReauthRequired: true}}}, view{now: now}, iconEnded},
 		{"signing in", twoServers(), view{now: now, signingIn: map[string]bool{"acme": true}}, iconBusy},
+		{"update ready", twoServers(), view{now: now, pendingUpdate: "0.1.13"}, iconUpdate},
+		{"update ready, nothing signed in", &control.Status{}, view{now: now, pendingUpdate: "0.1.13"}, iconIdleUpdate},
+		{"update waits behind an ending sign-in", &control.Status{LoggedIn: true, Servers: []control.ServerInfo{signedIn("acme", 20*time.Minute)}}, view{now: now, pendingUpdate: "0.1.13"}, iconExpiring},
+		{"update waits behind an ended sign-in", &control.Status{LoggedIn: true, Servers: []control.ServerInfo{{Name: "acme", LoggedIn: true, ReauthRequired: true}}}, view{now: now, pendingUpdate: "0.1.13"}, iconEnded},
 	} {
 		if got := iconFor(tc.s, tc.v); got != tc.want {
 			t.Errorf("%s: icon %v, want %v", tc.name, got, tc.want)
@@ -248,8 +255,8 @@ func TestASignInPastItsWindowReadsAsEnded(t *testing.T) {
 	if e := find(menu, "signin:ridi"); e.disabled || e.title != "Sign In Again…" {
 		t.Errorf("sign-in item = %+v", e)
 	}
-	if got := iconFor(s, view{now: now}); got != iconSignedOut {
-		t.Errorf("icon = %v, want signed out", got)
+	if got := iconFor(s, view{now: now}); got != iconEnded {
+		t.Errorf("icon = %v, want ended", got)
 	}
 }
 

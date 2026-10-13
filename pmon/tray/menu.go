@@ -285,21 +285,34 @@ func timeLeft(d time.Duration) string {
 	}
 }
 
-// iconFor is the menu-bar icon's state: the most urgent thing across all servers.
+// iconFor is the menu-bar icon's state: whether anything in use needs attention. A server never signed in to,
+// or signed out of on purpose, does not count; a downloaded update shows only when nothing else does.
 func iconFor(s *control.Status, v view) iconState {
 	if len(v.signingIn) > 0 {
 		return iconBusy
 	}
-	if s == nil || s.Outdated() || len(s.Servers) == 0 {
-		return iconIdle
-	}
-	state := iconSignedIn
-	for _, srv := range s.Servers {
-		if !srv.LoggedIn || signInEnded(srv, v.now) {
-			return iconSignedOut
+	state := iconIdle
+	if s != nil && !s.Outdated() {
+		for _, srv := range s.Servers {
+			if signInEnded(srv, v.now) {
+				return iconEnded
+			}
+			if !srv.LoggedIn {
+				continue
+			}
+			if end, ok := signInEnd(srv); ok && end.Sub(v.now) < endingSoon {
+				state = iconExpiring
+			} else if state == iconIdle {
+				state = iconSignedIn
+			}
 		}
-		if end, ok := signInEnd(srv); ok && end.Sub(v.now) < endingSoon {
-			state = iconExpiring
+	}
+	if v.pendingUpdate != "" {
+		switch state {
+		case iconIdle:
+			return iconIdleUpdate
+		case iconSignedIn:
+			return iconUpdate
 		}
 	}
 	return state

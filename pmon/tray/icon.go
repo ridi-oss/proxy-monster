@@ -23,11 +23,13 @@ var trayIcon []byte
 type iconState int
 
 const (
-	iconIdle      iconState = iota // no server, or no daemon: the shield faded
-	iconSignedIn                   // the plain shield
-	iconExpiring                   // a clock badge: a sign-in ends soon
-	iconSignedOut                  // a slash: a configured server is signed out
-	iconBusy                       // three dots: a browser sign-in is open
+	iconIdle       iconState = iota // nothing signed in and nothing ended, or no daemon: the shield faded
+	iconSignedIn                    // the plain shield
+	iconExpiring                    // a clock badge: a sign-in ends soon
+	iconEnded                       // a slash: a sign-in ended on its own
+	iconBusy                        // three dots: a browser sign-in is open
+	iconUpdate                      // an arrow badge on the plain shield: an update is ready
+	iconIdleUpdate                  // the arrow badge on the faded shield
 )
 
 var stateIcons = buildStateIcons()
@@ -39,10 +41,12 @@ func buildStateIcons() map[iconState][]byte {
 	}
 	icons := map[iconState][]byte{iconSignedIn: trayIcon}
 	for state, draw := range map[iconState]func(*image.NRGBA){
-		iconIdle:      func(m *image.NRGBA) { fade(m, 0.35) },
-		iconExpiring:  drawClockBadge,
-		iconSignedOut: func(m *image.NRGBA) { fade(m, 0.55); drawSlash(m) },
-		iconBusy:      func(m *image.NRGBA) { fade(m, 0.75); drawDots(m) },
+		iconIdle:       func(m *image.NRGBA) { fade(m, 0.35) },
+		iconExpiring:   drawClockBadge,
+		iconEnded:      func(m *image.NRGBA) { fade(m, 0.55); drawSlash(m) },
+		iconBusy:       func(m *image.NRGBA) { fade(m, 0.75); drawDots(m) },
+		iconUpdate:     drawUpdateBadge,
+		iconIdleUpdate: func(m *image.NRGBA) { fade(m, 0.35); drawUpdateBadge(m) },
 	} {
 		m := image.NewNRGBA(base.Bounds())
 		for y := range m.Bounds().Dy() {
@@ -87,6 +91,28 @@ func drawClockBadge(m *image.NRGBA) {
 			hand := (math.Abs(px-cx) < 0.9 && py <= cy && py > cy-4.5) || (math.Abs(py-cy) < 0.9 && px >= cx && px < cx+3.5)
 			switch {
 			case d <= r-1.8 && !hand:
+				setAlpha(m, x, y, 0)
+			case d <= r:
+				setAlpha(m, x, y, 255)
+			case d <= r+1.6:
+				setAlpha(m, x, y, 0)
+			}
+		}
+	}
+}
+
+// drawUpdateBadge draws a solid disc at the bottom-right corner, clear of the shield, with a down arrow cut out
+// of it: the clock's place, but filled, so the two badges read apart.
+func drawUpdateBadge(m *image.NRGBA) {
+	const cx, cy, r = 24.0, 24.0, 7.0
+	for y := 14; y < 32; y++ {
+		for x := 14; x < 32; x++ {
+			px, py := float64(x)+0.5, float64(y)+0.5
+			d := math.Hypot(px-cx, py-cy)
+			shaft := math.Abs(px-cx) < 1.1 && py > cy-4.5 && py < cy+1.5
+			head := py >= cy-0.5 && py <= cy+3.5 && math.Abs(px-cx) <= (cy+3.5-py)*0.95
+			switch {
+			case d <= r && (shaft || head):
 				setAlpha(m, x, y, 0)
 			case d <= r:
 				setAlpha(m, x, y, 255)

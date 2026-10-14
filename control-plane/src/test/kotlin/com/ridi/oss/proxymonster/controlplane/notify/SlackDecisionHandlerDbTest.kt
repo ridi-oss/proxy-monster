@@ -33,6 +33,8 @@ import kotlin.test.assertTrue
 class SlackDecisionHandlerDbTest {
     private lateinit var fx: EnforcementFixture
     private lateinit var handler: SlackDecisionHandler
+    private lateinit var threads: SlackThreadHandler
+    private lateinit var approvalService: ApprovalService
 
     private val requester = "requester@example.com"
     private val approver = "admin@example.com"
@@ -70,6 +72,8 @@ class SlackDecisionHandlerDbTest {
             null, fx.roleResolver, fx.authz, RunExecService(ControlPlaneCore(fx.dataSource)),
             CoroutineScope(Dispatchers.Unconfined), notifications = notifications,
         )
+        approvalService = approvals
+        threads = SlackThreadHandler(NotificationStore(fx.dataSource), fx.accessStore, { approvals }, notifications)
         handler = SlackDecisionHandler(fx.accessStore, { approvals }, notifications, "en") { _, taskId ->
             if (onApprovedThrows) throw RuntimeException("run failed")
             approvedRuns += fx.accessStore.getRequest(taskId)!!
@@ -183,6 +187,24 @@ class SlackDecisionHandlerDbTest {
         val reply = handler.respond(click(id, approver, SlackTransport.ACTION_APPROVE_ONLY).copy(viewId = "V1"))
         assertTrue(reply is SlackReply.UpdateView && "approved" in reply.view.toString(), "got: $reply")
         assertEquals("APPROVED", statusOf(id))
+    }
+
+    @Test
+    fun `a channel reply is a comment under its Slack author, a DM reply needs task comment`() = runBlocking {
+        val id = pendingRequest()
+        val store = NotificationStore(fx.dataSource)
+        store.rememberMessage(id, SlackTransport.TRANSPORT_CHANNEL, "C1", NotificationKind.APPROVER, "C1:1.0")
+        store.rememberMessage(id, SlackTransport.TRANSPORT, outsider, NotificationKind.APPROVER, "D1:1.0")
+        store.rememberMessage(id, SlackTransport.TRANSPORT, approver, NotificationKind.APPROVER, "D2:1.0")
+        val msg = SlackThreadMessage(SlackThreadMessage.Kind.NEW, "C1", "2.0", "1.0", null, "Pat", "who is this for?")
+
+        threads.onMessage(msg)
+        threads.onMessage(msg.copy(ts = "3.0", threadTs = "9.9"))
+        threads.onMessage(SlackThreadMessage(SlackThreadMessage.Kind.NEW, "D1", "2.0", "1.0", outsider, "o", "let me see"))
+        threads.onMessage(SlackThreadMessage(SlackThreadMessage.Kind.NEW, "D2", "2.0", "1.0", approver, "a", "looks fine"))
+
+        val comments = approvalService.detail(approver, null, id).timeline.filter { it.kind == "comment" }
+        assertEquals(listOf("slack:Pat" to "who is this for?", approver to "looks fine"), comments.map { it.actor to it.body })
     }
 
     @Test

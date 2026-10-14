@@ -406,6 +406,8 @@ export interface RequestEvent {
   revision?: number | null
   origin: string
   createdAt: string
+  editedAt?: string | null
+  deleted?: boolean
 }
 
 /** The pull request a GitHub request came from. */
@@ -515,6 +517,8 @@ export interface QueryRequestDetail {
   canComment?: boolean
   canCc?: boolean
   timeline?: RequestEvent[]
+  /** Approvers who were notified or acted, and CCs. */
+  participants?: string[]
   result?: QueryResultMeta | null
   /** Every statement of the batch, in run order. One entry for a single-statement request. */
   statements?: QueryResultMeta[]

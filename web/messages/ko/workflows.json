@@ -283,6 +283,9 @@
       "cancelled": "실행이 취소되었습니다.",
       "cc_added": "님이 {body} 님을 참조로 추가했습니다",
       "cc_removed": "님이 {body} 님을 참조에서 뺐습니다"
-    }
+    },
+    "notOnRequest": "이 요청의 참여자가 아님",
+    "edited": "수정됨",
+    "deleted": "삭제된 댓글입니다."
   }
 }

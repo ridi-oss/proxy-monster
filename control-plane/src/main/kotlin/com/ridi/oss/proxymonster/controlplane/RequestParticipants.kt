@@ -29,6 +29,12 @@ object RequestParticipants {
         }
     }
 
+    fun list(c: Connection, requestId: Long): List<String> =
+        c.prepareStatement("SELECT DISTINCT principal FROM request_participant WHERE request_id = ? ORDER BY principal").use { ps ->
+            ps.setLong(1, requestId)
+            ps.executeQuery().use { rs -> val o = ArrayList<String>(); while (rs.next()) o += rs.getString(1); o }
+        }
+
     fun remove(c: Connection, requestId: Long, principal: String, kind: ParticipantKind): Boolean =
         c.prepareStatement("DELETE FROM request_participant WHERE request_id = ? AND principal = ? AND kind = ?").use { ps ->
             ps.setLong(1, requestId)

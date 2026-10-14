@@ -330,7 +330,12 @@ class SlackNotificationE2eDbTest {
         svc.drainOnce()
         val update = slack.lastRequest("chat.update")!!
         assertEquals("C_MOCK", update.json!!["channel"]!!.jsonPrimitive.content, "the original message is edited")
-        assertEquals(1, slack.requestsFor("chat.postMessage").size, "no second message was posted")
+        val (replies, topLevel) = slack.requestsFor("chat.postMessage").partition { it.json?.get("thread_ts") != null }
+        assertEquals(1, topLevel.size, "no second message was posted")
+        assertTrue(
+            replies.any { it.json!!["text"]!!.jsonPrimitive.content == "*admin@example.com* approved revision 1." },
+            "the timeline went into the thread as replies",
+        )
     }
 
     @Test

@@ -70,5 +70,20 @@
     "comment_hint": "Reply in the channel thread to comment.",
     "forbidden": "You cannot open this request.",
     "done": "Done. The request is now {status}."
+  },
+  "thread": {
+    "edited": "*{actor}* edited the SQL (revision {revision}).",
+    "approved": "*{actor}* approved revision {revision}.",
+    "rejected": "*{actor}* rejected it: {body}",
+    "unapproved": "*{actor}* withdrew the approval.",
+    "expired": "The approval expired, so the request is pending again.",
+    "withdrawn": "The approving review no longer counts, so the request is pending again.",
+    "closed": "*{actor}* closed the request.",
+    "ran": "*{actor}* ran it.",
+    "executed": "The run finished.",
+    "failed": "The run failed.",
+    "cancelled": "The run was canceled.",
+    "cc_added": "*{actor}* added {body} as a CC.",
+    "cc_removed": "*{actor}* removed {body} from the CCs."
   }
 }

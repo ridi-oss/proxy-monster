@@ -31,6 +31,7 @@ class SlackSocketModeTest {
     private lateinit var slack: MockSlack
     private lateinit var http: HttpClient
     private val received = Channel<SlackInteraction>(Channel.UNLIMITED)
+    private val messages = Channel<SlackThreadMessage>(Channel.UNLIMITED)
     private val principalByEmail = mutableMapOf<String, String>()
 
     private val botToken = "xoxb-test"
@@ -60,6 +61,7 @@ class SlackSocketModeTest {
         appToken = appToken,
         principalForEmail = { principalByEmail[it] },
         onInteraction = { received.send(it); SlackReply.Ephemeral(reply) },
+        onMessage = { messages.send(it) },
         api = slack.apiBase,
     )
 
@@ -96,6 +98,23 @@ class SlackSocketModeTest {
         while (slack.acks().none { it["envelope_id"]?.jsonPrimitive?.content == envelopeId }) delay(10)
         true
     } ?: false
+
+    private fun messageEvent(id: String, event: String) =
+        """{"envelope_id":"$id","type":"events_api","payload":{"team_id":"T_WORKSPACE","type":"event_callback","event":$event}}"""
+
+    @Test
+    fun `a thread reply is dispatched with its author, and bot posts and top-level messages are not`() = withSocket { _ ->
+        slack.pushEnvelope(messageEvent("m-bot", """{"type":"message","channel":"C1","ts":"2.0","thread_ts":"1.0","bot_id":"B1","text":"copy"}"""))
+        slack.pushEnvelope(messageEvent("m-top", """{"type":"message","channel":"C1","ts":"3.0","user":"U_CLICKER","text":"hi"}"""))
+        slack.pushEnvelope(messageEvent("m-reply", """{"type":"message","channel":"C1","ts":"4.0","thread_ts":"1.0","user":"U_CLICKER","text":"why?"}"""))
+        slack.pushEnvelope(
+            messageEvent("m-edit", """{"type":"message","subtype":"message_changed","channel":"C1","message":{"ts":"4.0","user":"U_CLICKER","text":"why not?"}}"""),
+        )
+        val reply = withTimeout(5_000) { messages.receive() }
+        assertEquals(SlackThreadMessage(SlackThreadMessage.Kind.NEW, "C1", "4.0", "1.0", "okta|clicker", "U_CLICKER", "why?"), reply)
+        val edit = withTimeout(5_000) { messages.receive() }
+        assertEquals(SlackThreadMessage(SlackThreadMessage.Kind.EDITED, "C1", "4.0", text = "why not?"), edit)
+    }
 
     @Test
     fun `a click carries the revision its message showed`() = withSocket { _ ->

@@ -70,5 +70,20 @@
     "comment_hint": "댓글은 채널 스레드에 답글로 남기세요.",
     "forbidden": "이 요청을 열 수 없습니다.",
     "done": "처리했습니다. 요청은 이제 {status} 상태입니다."
+  },
+  "thread": {
+    "edited": "*{actor}* 님이 SQL을 수정했습니다 (리비전 {revision}).",
+    "approved": "*{actor}* 님이 리비전 {revision}을 승인했습니다.",
+    "rejected": "*{actor}* 님이 거부했습니다: {body}",
+    "unapproved": "*{actor}* 님이 승인을 취소했습니다.",
+    "expired": "승인이 만료되어 다시 승인 대기 중입니다.",
+    "withdrawn": "승인한 리뷰가 더 이상 유효하지 않아 다시 승인 대기 중입니다.",
+    "closed": "*{actor}* 님이 요청을 닫았습니다.",
+    "ran": "*{actor}* 님이 실행했습니다.",
+    "executed": "실행이 끝났습니다.",
+    "failed": "실행이 실패했습니다.",
+    "cancelled": "실행이 취소되었습니다.",
+    "cc_added": "*{actor}* 님이 {body} 님을 참조로 추가했습니다.",
+    "cc_removed": "*{actor}* 님이 {body} 님을 참조에서 뺐습니다."
   }
 }

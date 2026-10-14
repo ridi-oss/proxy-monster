@@ -490,6 +490,33 @@ whole statement when they may read the request, and only the buttons they may
 use. A click inside the modal goes through the same `ApprovalService` call as a
 DM button and redraws the modal with the outcome.
 
+### Threads
+
+Every message about a request is the start of a thread: each approver's and CC's
+DM, the requester's receipt, and the channel message. A reply in any of them
+becomes a comment on the request, and the request's later timeline entries —
+comments from the console or another thread, LGTMs, CC changes, approvals,
+expiry, runs — are posted into every thread as replies. A comment is never
+posted back into the thread it was written in, and the bot ignores messages from
+any bot, its own copies included.
+
+- A channel reply is recorded without a Cedar check, since the channel already
+  saw it, under the author's principal or, when no active user matches their
+  verified email, `slack:<name>`. The console marks a comment by someone who is
+  not on the request.
+- A DM reply is a comment by the DM's owner and needs their `task.comment`.
+- Neither adds a participant, so a reply never grants access.
+- Editing or deleting a reply in Slack edits or deletes the comment and every
+  copy of it in the other threads.
+
+Each thread keeps a cursor (`notification_message.last_event_id`); a thread
+created later starts at the request's latest entry rather than replaying it.
+
+The Slack app needs, on top of `chat:write`, `im:write`, `users:read`, and
+`users:read.email`: the `channels:history`, `groups:history`, and `im:history`
+scopes, and the `message.channels`, `message.groups`, and `message.im` event
+subscriptions, delivered over Socket Mode.
+
 ## Configuration
 
 | Variable              | Default | Meaning                                                                                                                                                                                         |

@@ -96,6 +96,20 @@ class NotificationRenderer(private val catalog: MessageCatalog = MessageCatalog(
         return parts.takeIf { it.isNotEmpty() }?.joinToString(" · ")
     }
 
+    /** One timeline entry as a reply in a request's thread. */
+    fun threadLine(e: com.ridi.oss.proxymonster.controlplane.RequestEvent, locale: String): String {
+        val actor = e.actor?.let(::escapeMrkdwn).orEmpty()
+        val body = e.body?.take(REASON_MAX_CHARS * 6)?.let(::escapeMrkdwn).orEmpty()
+        return when (e.kind) {
+            "comment" -> "*$actor*: $body"
+            "lgtm" -> "*$actor*: LGTM" + if (body.isNotEmpty()) "\n> " + body.replace("\n", "\n> ") else ""
+            else -> catalog.text(
+                "thread.${e.kind}", locale,
+                mapOf("actor" to actor, "body" to body, "revision" to (e.revision ?: 1).toString()),
+            )
+        }
+    }
+
     /** The plain-text line for a client that renders no blocks. Never carries the statement. */
     fun fallbackText(m: NotificationMessage, locale: String): String = catalog.text(
         // Keyed on the EVENT: approve and reject share one fallback line, so the body key (which splits them)

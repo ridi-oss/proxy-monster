@@ -142,6 +142,34 @@ class SlackTransport(
         return send("chat.update", body) { externalRef }
     }
 
+    override val supportsReplies = true
+
+    override suspend fun reply(threadRef: String, text: String): DeliveryResult {
+        val channel = threadRef.substringBefore(':', "")
+        val ts = threadRef.substringAfter(':', "")
+        if (channel.isEmpty() || ts.isEmpty()) return DeliveryResult.Drop("malformed message ref")
+        val body = buildJsonObject {
+            put("channel", channel)
+            put("thread_ts", ts)
+            put("text", text)
+        }
+        return send("chat.postMessage", body) { resp ->
+            resp["ts"]?.jsonPrimitive?.contentOrNullSafe()?.let { "$channel:$it" }
+        }
+    }
+
+    override suspend fun editReply(replyRef: String, text: String?): DeliveryResult {
+        val channel = replyRef.substringBefore(':', "")
+        val ts = replyRef.substringAfter(':', "")
+        if (channel.isEmpty() || ts.isEmpty()) return DeliveryResult.Drop("malformed message ref")
+        val body = buildJsonObject {
+            put("channel", channel)
+            put("ts", ts)
+            if (text != null) put("text", text)
+        }
+        return send(if (text == null) "chat.delete" else "chat.update", body) { replyRef }
+    }
+
     /** The Block Kit body: one context-free summary section, then the actions the message is allowed to offer. */
     private fun blocksFor(message: NotificationMessage, locale: String) = kotlinx.serialization.json.buildJsonArray {
         // A section's text field hard-caps at 3000; overrun is a permanent invalid_blocks reject that would

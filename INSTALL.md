@@ -183,7 +183,11 @@ configured per proxy under `PM_TARGET_*`.
   leaves the whole layer inert and the workflow unchanged, never a
   half-configured mode. Socket Mode means the CP dials out; no inbound ingress
   is added. Set `PM_WEB_ORIGIN` too, or the message's "open request" link points
-  at the control plane rather than the console.
+  at the control plane rather than the console. Replies in a request's threads
+  become comments only when the app also has the `channels:history`,
+  `groups:history`, and `im:history` scopes and the `message.channels`,
+  `message.groups`, and `message.im` events
+  ([docs/notifications.md](./docs/notifications.md#threads)).
 - `PM_NOTIFY_STATEMENT` — _optional_. How much of a requester's SQL a
   notification may carry: `auto` (default) shows a statement only when a
   disclosure hint clears it, hiding one whose predicate compares a literal

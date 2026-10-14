@@ -439,6 +439,7 @@ class ApprovalService(
             canComment = may(AuthzAction.TASK_COMMENT),
             canCc = may(AuthzAction.TASK_CC),
             timeline = RequestEvents.list(accessStore.dataSource, id),
+            participants = accessStore.dataSource.connection.use { RequestParticipants.list(it, id) },
             result = visibleMeta,
             statements = visibleStatements,
             canExecute = canExecute,
@@ -545,6 +546,8 @@ class ApprovalService(
         body: String?,
         lgtm: Boolean = false,
         channel: Channel = Channel.WORKFLOW_VIEWER,
+        sourceThread: String? = null,
+        slackRef: String? = null,
     ): RequestEvent {
         val text = body?.trim()?.takeIf { it.isNotEmpty() }
         if (!lgtm && text == null) throw fieldRequired("body")
@@ -554,8 +557,11 @@ class ApprovalService(
         val req = workflowRequest(id)
         if (!mayDecide(principal, requesterIp, AuthzAction.TASK_COMMENT, req, channel)) throw notCommenter()
         val kind = if (lgtm) RequestEventKind.LGTM else RequestEventKind.COMMENT
-        return accessStore.dataSource.inTx { c -> RequestEvents.record(c, id, kind, principal, actor.channel, text) }
-            ?: throw serviceNotFound(REQUEST)
+        val event = accessStore.dataSource.inTx { c ->
+            RequestEvents.record(c, id, kind, principal, actor.channel, text, sourceThread, slackRef)
+        } ?: throw serviceNotFound(REQUEST)
+        notifications?.wake()
+        return event
     }
 
     /** Add or remove a CC. [who] is a principal or an email of an active user. */
@@ -864,12 +870,12 @@ class ApprovalService(
     private fun AccessRequest.approvalExpired(): Boolean =
         !fromPullRequest && approvedAt?.let { Instant.parse(it).isBefore(Instant.now().minus(APPROVAL_TTL)) } == true
 
-    private companion object {
-        const val REQUEST = "query approval request"
-        const val INVOLVED_LIMIT = 200
+    companion object {
+        private const val REQUEST = "query approval request"
+        private const val INVOLVED_LIMIT = 200
         const val COMMENT_MAX_CHARS = 4000
-        val SYSTEM_ACTOR = AuditActor("system", channel = SYSTEM_ORIGIN)
-        val EDITABLE = setOf("PENDING", "APPROVED")
-        val FORCEABLE = setOf("PENDING", "APPROVED")
+        private val SYSTEM_ACTOR = AuditActor("system", channel = SYSTEM_ORIGIN)
+        private val EDITABLE = setOf("PENDING", "APPROVED")
+        private val FORCEABLE = setOf("PENDING", "APPROVED")
     }
 }

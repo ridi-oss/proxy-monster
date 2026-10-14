@@ -48,6 +48,7 @@ import type {
   RateReset,
   RateResetRequestInput,
   RefreshResult,
+  RequestEvent,
   Role,
   RoleAssignment,
   RoleAssignmentInput,
@@ -646,6 +647,18 @@ export function executeApproval(id: number): Promise<ExecuteQueryRequestResponse
 }
 
 /** Cancel an executing approved task. */
+export function commentOnApproval(id: number, body: string | null, lgtm = false): Promise<RequestEvent> {
+  return request<RequestEvent>(`/api/approvals/${id}/comments`, { method: 'POST', body: JSON.stringify({ body, lgtm }) })
+}
+
+export function addApprovalCc(id: number, principal: string): Promise<AccessRequest> {
+  return request<AccessRequest>(`/api/approvals/${id}/ccs`, { method: 'POST', body: JSON.stringify({ principal }) })
+}
+
+export function removeApprovalCc(id: number, principal: string): Promise<AccessRequest> {
+  return request<AccessRequest>(`/api/approvals/${id}/ccs/${encodeURIComponent(principal)}`, { method: 'DELETE' })
+}
+
 export function unapproveApproval(id: number): Promise<AccessRequest> {
   return request<AccessRequest>(`/api/approvals/${id}/unapprove`, { method: 'POST' })
 }

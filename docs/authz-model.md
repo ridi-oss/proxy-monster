@@ -81,7 +81,7 @@ self-service is a possible later convenience.
   `result.cap` (never consulted for access — its policies carry the result-cap
   annotations, [`result-caps.md`](./result-caps.md)); `datasource.connect`; the
   approval lifecycle `task.request`/`task.read`/
-  `task.approve`/`task.run`/`task.assume`/`task.cancel`/`task.delete`/`task.force_run`
+  `task.approve`/`task.run`/`task.comment`/`task.cc`/`task.assume`/`task.cancel`/`task.delete`/`task.force_run`
   and `grant.revoke`; `token.mint`/`token.list`/`token.revoke` (credential
   issuance/management); `audit.read`; and `admin.datasources`/
   `admin.policies`/`admin.identity`. Context-tag policies use generated
@@ -303,14 +303,15 @@ owning its own workflow:
   / decide / execute / encrypted-result storage + retention. It calls authz only
   to decide _who may act_. The whole lifecycle is Cedar-gated: `task.request`
   (open a request against a datasource), `task.approve` (approve / reject /
-  unapprove; plus the self-approval `forbid`), `task.run` (run an approved
-  request under role R), `task.read` (request/grant metadata), `task.assume`
-  (view the two-party stored result under role R), `task.force_run` (let a
-  GitHub request skip its scope's freshness and one-PR-at-a-time checks), and
-  `grant.revoke` for JIT access grants. `task.cancel` closes a request that has
-  not run or stops a running one. On execute the proxy re-runs the approved
-  query through `decideQuery` as the runner with `providedRoles={R}`. Routing is
-  Cedar policies scoped by the request's Role / Datasource.
+  unapprove; plus the self-approval `forbid`), `task.comment` (comment or LGTM),
+  `task.cc` (add or remove CCs), `task.run` (run an approved request under role
+  R), `task.read` (request/grant metadata), `task.assume` (view the two-party
+  stored result under role R), `task.force_run` (let a GitHub request skip its
+  scope's freshness and one-PR-at-a-time checks), and `grant.revoke` for JIT
+  access grants. `task.cancel` closes a request that has not run or stops a
+  running one. On execute the proxy re-runs the approved query through
+  `decideQuery` as the runner with `providedRoles={R}`. Routing is Cedar
+  policies scoped by the request's Role / Datasource.
 - Admin API / UI: each route gates on
   `authorize(principal, admin.*, resource, context)`; the endpoints and their
   side effects are the API's.
@@ -356,7 +357,7 @@ of a route and the gate it calls. Paths are relative to
 | Editor sessions and tasks | `/api/editor/**` | `Query.kt` | `requireApi` + owner scope; cancel adds `task.cancel`, result adds `task.assume` |
 | Task-completion SSE | `/api/tasks/events` | `App.kt` | resolves the session itself; each push re-filtered through `task.read` |
 | Editor query history | `/api/query-history` | `QueryHistory.kt` | `requireApi`, own rows only |
-| Query-approval workflow | `/api/approvals**` | `Approvals.kt` | `requireApi` + per-route Cedar (`task.read` / `task.approve` / `task.run` / `task.cancel` / `task.assume` / `task.force_run`) |
+| Query-approval workflow | `/api/approvals**` | `Approvals.kt` | `requireApi` + per-route Cedar (`task.read` / `task.approve` / `task.run` / `task.comment` / `task.cc` / `task.cancel` / `task.assume` / `task.force_run`) |
 | JIT access requests and grants | `/api/access-requests**`, `/api/access-grants**` | `Access.kt` | `requireApi` + `task.read` forward-filtering; revoke = `requireAuthz(grant.revoke)` |
 | Wire tokens | `/api/wire-tokens`, `/api/tokens**` | `Tokens.kt` | `requireAuthz(token.mint / token.list / token.revoke)` on the token's real owner and kind |
 | Roles, mask functions | `/api/roles**`, `/api/mask-fns**` | `Policies.kt` | `requireAdmin(admin.policies)`; `GET /api/roles` is `requireApi` |

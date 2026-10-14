@@ -56,6 +56,7 @@ touching the workflow.
 | `task.decided`                                 | approved or rejected             | the requester, and everyone told above                                                        |
 | `task.edited`                                  | the requester edits              | the requester, and everyone told above; it shows the new SQL and asks for approval again      |
 | `task.reopened`                                | unapproved, or 24 hours unrun    | the requester, and everyone told above; it asks for approval again                            |
+| `task.cc_added`                                | someone is added as a CC         | that CC, in a thread of their own that later events edit                                      |
 | `task.executed` `task.failed` `task.cancelled` | the run ends, or it is closed    | the requester and the approver                                                                |
 | `task.force_run`                               | an admin forces a GitHub request | everyone who may approve it and its parties, fresh; and the PR                                |
 
@@ -444,6 +445,9 @@ is on.
 | -------- | ------------------------------ | ------------------ |
 | PENDING  | approve and run, approve, deny | close request      |
 | APPROVED | run, unapprove, deny           | run, close request |
+
+A CC's message offers **LGTM** while the request is pending or approved. An LGTM
+is recorded on the request and shown to everyone, but never approves.
 
 **approve and run** and **approve** are offered only when the message shows the
 full statement (see [above](#never-approve-what-you-cannot-see)). A GitHub

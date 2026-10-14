@@ -89,6 +89,21 @@ task exists but no rows.
    (`QueryResultStore.purgeExpired`, swept with `RESULT_PURGE_INTERVAL_MS` = 15
    min).
 
+Each request has a timeline (`request_event`), returned with
+`GET /api/approvals/{id}`: its state changes plus comments, LGTMs, and CC
+changes. `POST .../comments` adds a comment or, with `lgtm`, an LGTM, gated by
+`task.comment`; an LGTM is shown but never approves. A CC is added with
+`POST .../ccs` and removed with `DELETE .../ccs/{principal}`, gated by
+`task.cc`. CCs are `request_participant` rows of kind `cc`, read by Cedar as
+`resource.ccs`: the seeded `system:task-cc-parties` lets the requester and CCs
+read, comment, and manage CCs, and `system:admin` gets the same. A CC gets a
+Slack DM with an LGTM button.
+
+`GET /api/approvals/involved` lists the caller's own requests and those they
+took part in, from `request_participant`. That table only drives the list; a row
+can outlive its holder's access, and opening the request is a live `task.read`.
+Another person's statement is listed only when it carries no protected literal.
+
 A new request must carry R — the create route rejects a null `roleId`
 (`approval.role_required`) — so every approval is execute-under-R + view-as-R.
 

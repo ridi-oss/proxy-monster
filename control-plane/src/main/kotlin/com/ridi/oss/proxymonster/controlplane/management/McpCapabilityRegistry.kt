@@ -38,6 +38,8 @@ object McpCapabilityRegistry {
         AuthzAction.TASK_DELETE,
         AuthzAction.TASK_FORCE_RUN,
         AuthzAction.TASK_RUN,
+        AuthzAction.TASK_COMMENT,
+        AuthzAction.TASK_CC,
         AuthzAction.GRANT_REVOKE,
         AuthzAction.AUDIT_READ,
         AuthzAction.TOKEN_MINT,
@@ -146,6 +148,9 @@ object McpCapabilityRegistry {
         task("get_approval_result", AuthzAction.TASK_ASSUME, "mcp:query", write = false),
         task("cancel_approval", AuthzAction.TASK_CANCEL, "mcp:query", write = true),
         task("force_run_approval", AuthzAction.TASK_FORCE_RUN, "mcp:approvals:write", write = true),
+        task("unapprove_approval", AuthzAction.TASK_APPROVE, "mcp:approvals:write", write = true),
+        task("comment_approval", AuthzAction.TASK_COMMENT, "mcp:query", write = true),
+        task("set_approval_cc", AuthzAction.TASK_CC, "mcp:query", write = true),
 
         // A label only: the answer is the caller's own Cedar decisions.
         task("get_my_permissions", AuthzAction.TASK_READ, "mcp:read", write = false),
@@ -186,7 +191,7 @@ object McpCapabilityRegistry {
         "list_connectable_datasources", "describe_datasource", "run_query", "get_query_result", "get_query_status",
         "cancel_query", "discover_roles", "request_approval", "edit_approval", "list_my_approvals", "list_approval_inbox", "get_approval",
         "approve_approval", "reject_approval", "execute_approval", "get_approval_result", "cancel_approval",
-        "force_run_approval",
+        "force_run_approval", "unapprove_approval", "comment_approval", "set_approval_cc",
         "get_my_permissions", "get_pmon_guide", "get_usage_guide", "get_admin_guide", "list_audit", "get_audit_event", "request_access", "list_access_requests",
         "list_access_grants", "reset_my_rate", "list_query_history", "clear_query_history", "delete_query_task",
         "approve_access_request", "reject_access_request", "revoke_access_grant",

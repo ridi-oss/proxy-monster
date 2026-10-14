@@ -265,6 +265,7 @@ class SlackTransport(
         const val ACTION_RUN = "pm_run"
         const val ACTION_UNAPPROVE = "pm_unapprove"
         const val ACTION_CLOSE = "pm_close"
+        const val ACTION_LGTM = "pm_lgtm"
 
         val ACTION_IDS = mapOf(
             NotificationAction.APPROVE_AND_RUN to ACTION_APPROVE,
@@ -273,6 +274,7 @@ class SlackTransport(
             NotificationAction.UNAPPROVE to ACTION_UNAPPROVE,
             NotificationAction.DENY to ACTION_DENY,
             NotificationAction.CLOSE to ACTION_CLOSE,
+            NotificationAction.LGTM to ACTION_LGTM,
         )
 
         private val APPROVALS = setOf(NotificationAction.APPROVE_AND_RUN, NotificationAction.APPROVE)

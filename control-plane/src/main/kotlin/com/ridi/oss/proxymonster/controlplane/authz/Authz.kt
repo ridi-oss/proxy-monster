@@ -42,6 +42,8 @@ enum class AuthzAction(val cedarId: String) {
     TASK_READ("task.read"),
     TASK_ASSUME("task.assume"),
     TASK_RUN("task.run"),
+    TASK_COMMENT("task.comment"),
+    TASK_CC("task.cc"),
     TASK_CANCEL("task.cancel"),
     TASK_DELETE("task.delete"),
     TASK_FORCE_RUN("task.force_run"),
@@ -85,6 +87,7 @@ sealed interface AuthzResource {
         val datasourceName: String? = null,
         val roleName: String? = null,
         val source: String = "console",
+        val ccs: List<String> = emptyList(),
     ) : AuthzResource
 
     /** An issued JIT access grant (`access_grant` row). [owner] is the elevated principal, so an
@@ -576,6 +579,7 @@ class Authz(
                     extraEntities += userEntities(executedBy, parentsOf(executedBy))
                     put("executedBy", USER_TYPE.of(executedBy))
                 }
+                if (resource.ccs.isNotEmpty()) put("ccs", CedarList(resource.ccs.map { USER_TYPE.of(it) as Value }))
                 put("source", PrimString(resource.source) as Value)
             }
             Entity(reqEuid, attrs, parents) to extraEntities

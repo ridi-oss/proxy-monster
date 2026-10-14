@@ -267,6 +267,16 @@ class McpToolCoverageDbTest {
             }
             client.ok(adm, "force_run_approval", args("id" to github))
         }
+        on("comment_approval") { client.ok(req, "comment_approval", args("id" to approvalId, "body" to "coverage")) }
+        on("set_approval_cc") { client.ok(req, "set_approval_cc", args("id" to approvalId, "principal" to admin)) }
+        on("unapprove_approval") {
+            val approved = core.accessStore.createQueryRequest(
+                principal = requester, datasourceId = ds.id, statements = listOf(sql), denyReason = null,
+                sourceDecisionId = null, reason = "coverage", title = null, evaluatedDecision = "ALLOW", roleId = role(ANALYST),
+            ).id
+            client.ok(adm, "approve_approval", args("id" to approved, "revision" to 1))
+            client.ok(adm, "unapprove_approval", args("id" to approved))
+        }
 
         // JIT access, rates, audit, permissions and tokens.
         on("get_my_permissions") { client.ok(req, "get_my_permissions") }

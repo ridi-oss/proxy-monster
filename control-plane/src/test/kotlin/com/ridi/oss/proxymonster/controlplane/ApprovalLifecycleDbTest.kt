@@ -127,6 +127,30 @@ class ApprovalLifecycleDbTest {
     }
 
     @Test
+    fun `a CC can read, comment and LGTM, and any participant manages the CCs`() {
+        val id = approved()
+        val cc = "cc@example.com"
+        core.userGroupStore.createUser(AppUserInput(principal = cc), core.tokenStore, core.accessStore, PrincipalSessionStore(dataSource, null))
+        assertFailsWith<TaskServiceException> { approvals.detail(cc, null, id) }
+        assertFailsWith<TaskServiceException> { approvals.setCc(outsider, null, actor(outsider), id, cc, add = true) }
+
+        approvals.setCc(requester, null, actor(requester), id, cc, add = true)
+        val asCc = approvals.detail(cc, null, id)
+        assertTrue(asCc.canComment && asCc.canCc)
+        assertFalse(asCc.canExecute, "a CC cannot run it")
+        approvals.comment(cc, null, actor(cc), id, "looks fine to me")
+        approvals.comment(cc, null, actor(cc), id, null, lgtm = true)
+        assertEquals("APPROVED", status(id), "an LGTM never changes the status")
+        assertFailsWith<TaskServiceException> { approvals.comment(outsider, null, actor(outsider), id, "hi") }
+
+        approvals.setCc(adminB, null, actor(adminB), id, cc, add = false)
+        assertFailsWith<TaskServiceException> { approvals.detail(cc, null, id) }
+
+        val kinds = approvals.detail(requester, null, id).timeline.map { it.kind }
+        assertEquals(listOf("requested", "approved", "cc_added", "comment", "lgtm", "cc_removed"), kinds)
+    }
+
+    @Test
     fun `an approval older than a day returns to pending and is no longer runnable`() {
         val id = approved()
         dataSource.connection.use { c ->
@@ -140,6 +164,7 @@ class ApprovalLifecycleDbTest {
 
         approvals.expireApprovals()
         assertEquals("PENDING", status(id))
+        assertEquals("expired", approvals.detail(requester, null, id).timeline.last().kind)
         val audit = dataSource.connection.use { c ->
             c.prepareStatement("SELECT count(*) FROM audit_event WHERE statement LIKE ?").use { ps ->
                 ps.setString(1, "%withdraw the approval of query request #$id (approval expired)%")

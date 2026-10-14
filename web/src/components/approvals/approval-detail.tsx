@@ -33,6 +33,8 @@ import { Textarea } from '@/components/ui/textarea'
 import { ErrorState, LoadingState } from '@/components/page-scaffold'
 import { ApprovalResultTabs } from './approval-result-tabs'
 import { ApproveQueryDialog } from './approve-query-dialog'
+import { ApprovalTimeline } from './approval-timeline'
+import { useAuth } from '@/lib/auth'
 import { Field, RequestOrigin } from './request-origin'
 
 const STATUS_STYLE: Record<string, string> = {
@@ -88,6 +90,7 @@ export function ApprovalDetail({ id }: { id: number }) {
   const [editError, setEditError] = useState<string | null>(null)
   // The request as it was when the approver opened the dialog; a poll that brings a newer revision must not change it.
   const [approving, setApproving] = useState<{ request: AccessRequest; run: boolean } | null>(null)
+  const { identity } = useAuth()
   const [rejectOpen, setRejectOpen] = useState(false)
   const [rejectReason, setRejectReason] = useState('')
   const [rejectError, setRejectError] = useState<string | null>(null)
@@ -453,6 +456,8 @@ export function ApprovalDetail({ id }: { id: number }) {
               )}
             </div>
           )}
+
+          <ApprovalTimeline id={id} detail={data} principal={identity?.principal} onChanged={refresh} />
         </CardContent>
       </Card>
             </div>

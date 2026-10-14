@@ -96,6 +96,7 @@ class NotificationService(
                         add(r to NotificationKind.APPROVER)
                     }
                     add(req.principal to NotificationKind.REQUESTER)
+                    for (cc in req.ccs) add(cc to NotificationKind.CC)
                 }
             }
             for (transport in transports) {
@@ -114,6 +115,16 @@ class NotificationService(
     ): List<Pair<String, NotificationKind>> = when {
         !transport.addressesTasks -> targets
         else -> listOfNotNull(transport.taskAddress(req)?.let { it to NotificationKind.APPROVER })
+    }
+
+    /** Open [cc]'s own thread on a request they were just added to. Person-addressed transports only. */
+    fun emitCcAdded(c: Connection, req: AccessRequest, cc: String) {
+        if (!enabled) return
+        runCatching {
+            for (transport in transports.filter { !it.addressesTasks }) {
+                store.enqueue(c, req.id, NotificationEvent.TASK_CC_ADDED, transport.name, cc, NotificationKind.CC)
+            }
+        }.onFailure { log.warn("notification emit failed task={} event=task.cc_added", req.id, it) }
     }
 
     /** [emit] on its own transaction, then wake the drainer; for an event with no task change to join. */
@@ -285,7 +296,7 @@ class NotificationService(
         // `pending` is the LIVE task state, not merely the request event: a backed-off task.requested that
         // finally delivers after the task was decided must not be the first to surface a flagged statement
         // under FULL. Once the status leaves PENDING, FULL falls back to the hint like every handled message.
-        val pending = row.event in ASKS_FOR_APPROVAL && req.status == "PENDING"
+        val pending = row.kind == NotificationKind.APPROVER && row.event in ASKS_FOR_APPROVAL && req.status == "PENDING"
         val show = row.event != NotificationEvent.TASK_SUBMITTED &&
             discloseStatement(disclosure, pending = pending, cleared = cleared)
         val statement = renderStatement(req.sql, show, transport.statementHardLimit)
@@ -365,6 +376,10 @@ class NotificationService(
         if (!event.isCreation && !event.isUpdate) return@buildSet
         val runnable = !req.fromPullRequest && queryResultStore != null
         val approver = kind == NotificationKind.APPROVER
+        if (kind == NotificationKind.CC) {
+            if (req.status == "PENDING" || req.status == "APPROVED") add(NotificationAction.LGTM)
+            return@buildSet
+        }
         when (req.status) {
             "PENDING" -> if (approver) {
                 add(NotificationAction.DENY)

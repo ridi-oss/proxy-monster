@@ -392,6 +392,20 @@ export interface AccessRequest {
   /** An admin let this GitHub request skip its scope's freshness and one-PR-at-a-time checks. */
   forceRun?: boolean
   forceRunBy?: string | null
+  ccs?: string[]
+}
+
+/** One entry of a query request's timeline. `actor` is null for an event the system made. */
+export interface RequestEvent {
+  id: number
+  kind:
+    | 'requested' | 'edited' | 'approved' | 'rejected' | 'unapproved' | 'expired' | 'withdrawn' | 'closed'
+    | 'ran' | 'executed' | 'failed' | 'cancelled' | 'comment' | 'lgtm' | 'cc_added' | 'cc_removed'
+  actor?: string | null
+  body?: string | null
+  revision?: number | null
+  origin: string
+  createdAt: string
 }
 
 /** The pull request a GitHub request came from. */
@@ -498,6 +512,9 @@ export interface QueryRequestDetail {
   canUnapprove?: boolean
   /** Close a request that has not run; canCancel stops a running one. */
   canClose?: boolean
+  canComment?: boolean
+  canCc?: boolean
+  timeline?: RequestEvent[]
   result?: QueryResultMeta | null
   /** Every statement of the batch, in run order. One entry for a single-statement request. */
   statements?: QueryResultMeta[]

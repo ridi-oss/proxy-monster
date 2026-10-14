@@ -87,6 +87,7 @@ data class AccessRequest(
     /** An admin let this request run past its scope's freshness and one-PR-at-a-time checks. */
     val forceRun: Boolean = false,
     val forceRunBy: String? = null,
+    val ccs: List<String> = emptyList(),
 ) {
     val fromPullRequest: Boolean get() = source == SOURCE_GITHUB
 }
@@ -132,7 +133,7 @@ data class RequestOrigin(
  */
 fun AccessRequest.toApprovalResource() = AuthzResource.ApprovalRequest(
     requester = principal, approver = decidedBy, executedBy = executedBy,
-    datasourceName = datasourceName, roleName = roleName, source = source,
+    datasourceName = datasourceName, roleName = roleName, source = source, ccs = ccs,
 )
 
 @Serializable
@@ -374,6 +375,7 @@ class AccessStore(internal val dataSource: DataSource) {
                 }
             }
             insertStatements(c, taskId, statements)
+            RequestEvents.record(c, taskId, RequestEventKind.REQUESTED, principal, source)
             if (actor != null && recorder != null) {
                 recorder.record(
                     c, actor, AuthzAction.TASK_REQUEST, auditEntity("AccessRequest", taskId.toString()),
@@ -569,7 +571,7 @@ class AccessStore(internal val dataSource: DataSource) {
             ps.setInt(8, revision)
             ps.setString(9, if (approved) "APPROVED" else "REJECTED")
             ps.executeUpdate() > 0
-        }.also { if (it) RequestParticipants.add(c, id, listOf(decidedBy), ParticipantKind.APPROVER) }
+        }
     }
 
     /**
@@ -596,6 +598,10 @@ class AccessStore(internal val dataSource: DataSource) {
         val won = dataSource.inTx { c ->
             decideQueryRequest(id, approved, rejectionReason, decidedBy, c, revision, reviewId).also { transitioned ->
                 if (transitioned) {
+                    RequestEvents.record(
+                        c, id, if (approved) RequestEventKind.APPROVED else RequestEventKind.REJECTED,
+                        decidedBy, actor.channel, rejectionReason,
+                    )
                     recorder.record(
                         c, actor, AuthzAction.TASK_APPROVE, auditEntity("AccessRequest", id.toString()),
                         (if (approved) "approve query request #$id revision $revision under role '$roleName'" else "reject query request #$id revision $revision") +
@@ -663,6 +669,7 @@ class AccessStore(internal val dataSource: DataSource) {
                 ps.executeUpdate()
             }
             insertStatements(c, id, statements)
+            RequestEvents.record(c, id, RequestEventKind.EDITED, actor.principal, actor.channel)
             recorder.record(
                 c, actor, AuthzAction.TASK_REQUEST, auditEntity("AccessRequest", id.toString()),
                 "edit query request #$id to revision $revision (sql ${sha256Hex(statements.joinToString(";\n")).take(12)})",
@@ -839,6 +846,7 @@ class AccessStore(internal val dataSource: DataSource) {
         actor: AuditActor,
         recorder: ManagementAuditRecorder,
         detail: String,
+        event: RequestEventKind = RequestEventKind.WITHDRAWN,
         onReopened: ((Connection, AccessRequest) -> Unit)? = null,
     ): Boolean =
         dataSource.inTx { c ->
@@ -855,6 +863,7 @@ class AccessStore(internal val dataSource: DataSource) {
                     c, actor, AuthzAction.TASK_APPROVE, auditEntity("AccessRequest", id.toString()),
                     "withdraw the approval of query request #$id ($detail)",
                 )
+                RequestEvents.record(c, id, event, actor.principal.takeIf { event != RequestEventKind.EXPIRED }, actor.channel)
                 onReopened?.let { hook -> getRequest(id, c)?.let { hook(c, it) } }
             }
             won
@@ -887,6 +896,7 @@ class AccessStore(internal val dataSource: DataSource) {
         }
         if (!won) return@inTx null
         recorder.record(c, actor, AuthzAction.TASK_CANCEL, auditEntity("AccessRequest", id.toString()), "close query request #$id")
+        RequestEvents.record(c, id, RequestEventKind.CLOSED, actor.principal, actor.channel)
         getRequest(id, c)?.also { onClosed?.invoke(c, it) }
     }
 
@@ -1023,7 +1033,7 @@ class AccessStore(internal val dataSource: DataSource) {
         ps.setTimestamp(1, Timestamp.from(Instant.now()))
         ps.setLong(2, id)
         ps.executeUpdate() > 0
-    }
+    }.also { if (it) RequestEvents.record(c, id, RequestEventKind.EXECUTED, null, SYSTEM_ORIGIN) }
 
     fun markFailed(id: Long): Boolean = dataSource.connection.use { c -> markFailed(id, c) }
 
@@ -1039,7 +1049,7 @@ class AccessStore(internal val dataSource: DataSource) {
     ).use { ps ->
         ps.setLong(1, id)
         ps.executeUpdate() > 0
-    }
+    }.also { if (it) RequestEvents.record(c, id, RequestEventKind.FAILED, null, SYSTEM_ORIGIN) }
 
     fun markCancelled(id: Long): Boolean = dataSource.connection.use { c -> markCancelled(id, c) }
 
@@ -1049,7 +1059,7 @@ class AccessStore(internal val dataSource: DataSource) {
     ).use { ps ->
         ps.setLong(1, id)
         ps.executeUpdate() > 0
-    }
+    }.also { if (it) RequestEvents.record(c, id, RequestEventKind.CANCELLED, null, SYSTEM_ORIGIN) }
 
     fun markDeleted(id: Long): Boolean = dataSource.connection.use { c ->
         c.prepareStatement(
@@ -1382,6 +1392,7 @@ class AccessStore(internal val dataSource: DataSource) {
         pullRequest = pullRequestRef(),
         forceRun = getBoolean("force_run"),
         forceRunBy = getString("force_run_by"),
+        ccs = (getArray("ccs")?.array as? Array<*>)?.map { it as String }.orEmpty(),
     )
 
     private fun ResultSet.pullRequestRef(): PullRequestRef? {
@@ -1428,7 +1439,9 @@ class AccessStore(internal val dataSource: DataSource) {
                       ar.merged_at, ar.revision, ar.revised_at, ar.path, ar.pr_url, ar.repository, ar.pr,
                       ar.default_schema, ar.pr_auto_merge, ar.head_sha, ar.merge_sha,
                       ar.approved_review_id, ar.filed_head, ar.file_key, ar.content_hash, ar.key_order,
-                      ar.force_run, ar.force_run_by
+                      ar.force_run, ar.force_run_by,
+                      (SELECT coalesce(array_agg(p.principal ORDER BY p.principal), '{}') FROM request_participant p
+                       WHERE p.request_id = ar.id AND p.kind = 'cc') AS ccs
                FROM access_request ar LEFT JOIN app_role r ON r.id = ar.role_id
                LEFT JOIN datasource d ON d.id = ar.datasource_id"""
         // The app_role join is filtered to LIVE roles: a grant of a soft-deleted role must resolve to no

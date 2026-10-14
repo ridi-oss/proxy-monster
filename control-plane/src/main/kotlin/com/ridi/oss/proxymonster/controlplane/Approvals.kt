@@ -19,6 +19,7 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
+import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import kotlinx.coroutines.CoroutineScope
@@ -121,6 +122,10 @@ fun discoverRoles(
     return DiscoverRolesResponse(options = options)
 }
 
+@Serializable data class CommentInput(val body: String? = null, val lgtm: Boolean = false)
+
+@Serializable data class CcInput(val principal: String)
+
 @Serializable data class QueryRequestDetail(
     val request: AccessRequest,
     val canDecide: Boolean,
@@ -130,6 +135,9 @@ fun discoverRoles(
     val canUnapprove: Boolean = false,
     // Closing a request that has not run; [canCancel] stops a running one.
     val canClose: Boolean = false,
+    val canComment: Boolean = false,
+    val canCc: Boolean = false,
+    val timeline: List<RequestEvent> = emptyList(),
     // The active statement's execution metadata. Rows remain behind the result endpoint.
     val result: QueryResultMeta? = null,
     // Every statement, in run order, with its own status.
@@ -511,6 +519,42 @@ fun Route.approvalRoutes(
         val body = call.receive<RejectInput>()
         try {
             call.respond(service.reject(principal, call.httpRequesterIp(config), call.auditActor(config), id, body.reason))
+        } catch (e: TaskServiceException) {
+            call.respondServiceError(e)
+        }
+    }
+
+    post("/api/approvals/{id}/comments") {
+        val principal = call.requireApi() ?: return@post
+        val id = call.idParam() ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
+        val input = call.receive<CommentInput>()
+        try {
+            call.respond(
+                HttpStatusCode.Created,
+                service.comment(principal, call.httpRequesterIp(config), call.auditActor(config), id, input.body, input.lgtm),
+            )
+        } catch (e: TaskServiceException) {
+            call.respondServiceError(e)
+        }
+    }
+
+    post("/api/approvals/{id}/ccs") {
+        val principal = call.requireApi() ?: return@post
+        val id = call.idParam() ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
+        val input = call.receive<CcInput>()
+        try {
+            call.respond(service.setCc(principal, call.httpRequesterIp(config), call.auditActor(config), id, input.principal, add = true))
+        } catch (e: TaskServiceException) {
+            call.respondServiceError(e)
+        }
+    }
+
+    delete("/api/approvals/{id}/ccs/{principal}") {
+        val principal = call.requireApi() ?: return@delete
+        val id = call.idParam() ?: return@delete call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
+        val cc = call.parameters["principal"] ?: return@delete call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
+        try {
+            call.respond(service.setCc(principal, call.httpRequesterIp(config), call.auditActor(config), id, cc, add = false))
         } catch (e: TaskServiceException) {
             call.respondServiceError(e)
         }

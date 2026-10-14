@@ -32,6 +32,7 @@ asserted by the client.
 | `task.request` | datasource | Raising a request |
 | `task.approve` `task.assume` `task.cancel` `task.delete` | request | Deciding, viewing the result of, or withdrawing one |
 | `task.run` | request | Running an approved one; seeded for the requester and `system:admin` |
+| `task.comment` `task.cc` | request | Commenting or LGTM, and changing its CCs; seeded for the requester, its CCs, and `system:admin` |
 | `task.force_run` | request | Running a GitHub request past its scope's freshness and one-PR-at-a-time checks |
 | `task.read` | request, grant | Reading either |
 | `grant.revoke` | grant | Ending a live grant |

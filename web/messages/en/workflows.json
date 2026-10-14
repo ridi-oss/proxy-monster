@@ -255,5 +255,34 @@
     "spentRate": "Spent rate",
     "approvedToast": "Approved — reset {principal}'s result rates",
     "note": "Approving writes a reset marker: {principal}'s relayed volume before the approval stops counting toward every rate window. Per-statement caps are unchanged."
+  },
+  "timeline": {
+    "heading": "Timeline",
+    "ccs": "CC",
+    "addCc": "Add CC",
+    "ccPlaceholder": "Principal or email",
+    "removeCc": "Remove {principal}",
+    "commentPlaceholder": "Write a comment",
+    "comment": "Comment",
+    "giveLgtm": "LGTM",
+    "lgtmBadge": "LGTM",
+    "viaSlack": "via Slack",
+    "failed": "That did not go through.",
+    "events": {
+      "requested": "requested this (revision {revision})",
+      "edited": "edited the SQL (revision {revision})",
+      "approved": "approved revision {revision}",
+      "rejected": "rejected it: {body}",
+      "unapproved": "withdrew the approval",
+      "expired": "The approval expired, so the request is pending again.",
+      "withdrawn": "— the approving review no longer counts, so the request is pending again",
+      "closed": "closed the request",
+      "ran": "ran it",
+      "executed": "The run finished.",
+      "failed": "The run failed.",
+      "cancelled": "The run was canceled.",
+      "cc_added": "added {body} as a CC",
+      "cc_removed": "removed {body} from the CCs"
+    }
   }
 }

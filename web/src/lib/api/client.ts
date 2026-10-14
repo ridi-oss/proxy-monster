@@ -603,13 +603,12 @@ export function discoverApprovalRoles(input: DiscoverRolesRequest): Promise<Disc
   })
 }
 
-export function getMyApprovals(status?: string): Promise<AccessRequest[]> {
-  const qs = status ? `?status=${encodeURIComponent(status)}` : ''
-  return request<AccessRequest[]>(`/api/approvals${qs}`)
-}
-
 export function getApprovalInbox(): Promise<AccessRequest[]> {
   return request<AccessRequest[]>('/api/approvals/inbox')
+}
+
+export function getInvolvedApprovals(): Promise<AccessRequest[]> {
+  return request<AccessRequest[]>('/api/approvals/involved')
 }
 
 export function getApproval(id: number): Promise<QueryRequestDetail> {

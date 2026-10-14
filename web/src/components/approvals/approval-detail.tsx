@@ -118,7 +118,7 @@ export function ApprovalDetail({ id }: { id: number }) {
 
   const refresh = () => {
     globalMutate(swrKeys.approval(id))
-    globalMutate(swrKeys.myApprovals(undefined))
+    globalMutate(swrKeys.involvedApprovals)
     globalMutate(swrKeys.approvalInbox)
     globalMutate(['approval-result', id])
   }

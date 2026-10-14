@@ -11,6 +11,7 @@ import {
   getAccessRequests,
   getApproval,
   getApprovalInbox,
+  getInvolvedApprovals,
   getAuthConfig,
   getCatalog,
   getCedarPolicies,
@@ -25,7 +26,6 @@ import {
   getMaskFns,
   getMcpConnect,
   getMePermissions,
-  getMyApprovals,
   getQueryHistory,
   getRoleAssignments,
   getRoles,
@@ -46,7 +46,7 @@ const KEYS = {
   auditEvent: (id: number) => ['audit-event', id] as const,
   approval: (id: number) => ['approval', id] as const,
   approvalInbox: 'approval-inbox',
-  myApprovals: (status?: string) => ['my-approvals', status ?? null] as const,
+  involvedApprovals: 'approvals-involved',
   roles: 'roles',
   users: 'users',
   groups: 'groups',
@@ -126,8 +126,8 @@ export function useApprovalInbox(opts?: SWRConfiguration) {
   return useSWR(KEYS.approvalInbox, getApprovalInbox, opts)
 }
 
-export function useMyApprovals(status?: string, opts?: SWRConfiguration) {
-  return useSWR(KEYS.myApprovals(status), () => getMyApprovals(status), opts)
+export function useInvolvedApprovals(opts?: SWRConfiguration) {
+  return useSWR(KEYS.involvedApprovals, getInvolvedApprovals, opts)
 }
 
 export function useRoles() {

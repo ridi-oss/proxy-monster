@@ -107,6 +107,7 @@ entity Request in [Datasource, Role] = {
     requester: User,
     approver?: User,
     executedBy?: User,
+    ccs?: Set<User>,
     released?: Bool,
     source: String,
 };
@@ -198,6 +199,14 @@ action "task.assume"
   };
 
 action "task.cancel", "task.delete"
+  appliesTo {
+    principal: [User, Role],
+    resource: [Request],
+    context: RequestContext,
+  };
+
+// Comments or LGTMs on a request, and adds or removes its CCs.
+action "task.comment", "task.cc"
   appliesTo {
     principal: [User, Role],
     resource: [Request],

@@ -355,7 +355,8 @@ class ApprovalService(
         }
         val executeAs = policyStore.liveRoleNames(req.executeAs)
         if (executeAs.isEmpty()) throw TaskServiceException(HttpStatusCode.Conflict, ApiError("approval.no_execute_role"))
-        if (store.claimAndStartRun(id, executor) { c -> accessStore.claimExecution(id, c) } == null) throw alreadyExecuted()
+        val claimed = store.claimAndStartRun(id, executor, Channel.GITHUB.contextValue) { c -> accessStore.claimExecution(id, c) }
+        if (claimed == null) throw alreadyExecuted()
         runApprovedTask(
             id = id, executor = executor, ds = ds, executeAs = executeAs,
             requesterIp = null, requesterPrincipal = req.principal, req = req,
@@ -429,6 +430,9 @@ class ApprovalService(
             canReject = req.status in EDITABLE && isApprover,
             canUnapprove = approved && isApprover,
             canClose = req.status in EDITABLE && !req.fromPullRequest && mayCancel,
+            canComment = mayDecide(principal, requesterIp, AuthzAction.TASK_COMMENT, req),
+            canCc = mayDecide(principal, requesterIp, AuthzAction.TASK_CC, req),
+            timeline = RequestEvents.list(accessStore.dataSource, id),
             result = visibleMeta,
             statements = visibleStatements,
             canExecute = canExecute,
@@ -521,20 +525,75 @@ class ApprovalService(
         val req = workflowRequest(id)
         if (!mayDecide(principal, requesterIp, AuthzAction.TASK_APPROVE, req, channel)) throw notApprover()
         if (req.status != "APPROVED" || req.fromPullRequest) throw notApproved()
-        if (!reopen(id, actor, "unapproved by $principal")) throw notApproved()
+        if (!reopen(id, actor, "unapproved by $principal", RequestEventKind.UNAPPROVED)) throw notApproved()
         log.info("query approval unapproved request={} by={}", id, principal)
+        return workflowRequest(id)
+    }
+
+    /** Add a comment, or with [lgtm] an LGTM, which is shown but never approves. */
+    fun comment(
+        principal: String,
+        requesterIp: String?,
+        actor: AuditActor,
+        id: Long,
+        body: String?,
+        lgtm: Boolean = false,
+        channel: Channel = Channel.WORKFLOW_VIEWER,
+    ): RequestEvent {
+        val text = body?.trim()?.takeIf { it.isNotEmpty() }
+        if (!lgtm && text == null) throw fieldRequired("body")
+        if (text != null && text.length > COMMENT_MAX_CHARS) {
+            throw TaskServiceException(HttpStatusCode.BadRequest, ApiError("approval.comment_too_long", mapOf("max" to "$COMMENT_MAX_CHARS")))
+        }
+        val req = workflowRequest(id)
+        if (!mayDecide(principal, requesterIp, AuthzAction.TASK_COMMENT, req, channel)) throw notCommenter()
+        val kind = if (lgtm) RequestEventKind.LGTM else RequestEventKind.COMMENT
+        return accessStore.dataSource.inTx { c -> RequestEvents.record(c, id, kind, principal, actor.channel, text) }
+            ?: throw serviceNotFound(REQUEST)
+    }
+
+    /** Add or remove a CC. [who] is a principal or an email of an active user. */
+    fun setCc(
+        principal: String,
+        requesterIp: String?,
+        actor: AuditActor,
+        id: Long,
+        who: String,
+        add: Boolean,
+        channel: Channel = Channel.WORKFLOW_VIEWER,
+    ): AccessRequest {
+        val req = workflowRequest(id)
+        if (!mayDecide(principal, requesterIp, AuthzAction.TASK_CC, req, channel)) {
+            throw TaskServiceException(HttpStatusCode.Forbidden, ApiError("approval.cc_forbidden"))
+        }
+        val cc = who.trim().takeIf { it in roleResolver.listActivePrincipals() }
+            ?: userGroupStore.activePrincipalByEmail(who.trim())
+            ?: if (add) throw TaskServiceException(HttpStatusCode.BadRequest, ApiError("approval.unknown_user")) else who.trim()
+        if (add && cc == req.principal) throw TaskServiceException(HttpStatusCode.BadRequest, ApiError("approval.cc_requester"))
+        accessStore.dataSource.inTx { c ->
+            val changed = if (add) {
+                cc !in req.ccs && run { RequestParticipants.add(c, id, listOf(cc), ParticipantKind.CC); true }
+            } else {
+                RequestParticipants.remove(c, id, cc, ParticipantKind.CC)
+            }
+            if (changed) {
+                RequestEvents.record(c, id, if (add) RequestEventKind.CC_ADDED else RequestEventKind.CC_REMOVED, principal, actor.channel, cc)
+                if (add) accessStore.getRequest(id, c)?.let { notifications?.emitCcAdded(c, it, cc) }
+            }
+        }
+        if (add) notifications?.wake()
         return workflowRequest(id)
     }
 
     /** Return every console request approved more than [APPROVAL_TTL] ago and not yet run to PENDING. */
     fun expireApprovals() {
         for (id in accessStore.expiredApprovals()) {
-            if (reopen(id, SYSTEM_ACTOR, "approval expired")) log.info("query approval expired request={}", id)
+            if (reopen(id, SYSTEM_ACTOR, "approval expired", RequestEventKind.EXPIRED)) log.info("query approval expired request={}", id)
         }
     }
 
-    private fun reopen(id: Long, actor: AuditActor, detail: String): Boolean =
-        accessStore.reopenQueryRequest(id, actor, recorder, detail) { c, r ->
+    private fun reopen(id: Long, actor: AuditActor, detail: String, event: RequestEventKind): Boolean =
+        accessStore.reopenQueryRequest(id, actor, recorder, detail, event) { c, r ->
             notifications?.emit(c, NotificationEvent.TASK_REOPENED, r)
         }.also { if (it) notifications?.wake() }
 
@@ -659,7 +718,8 @@ class ApprovalService(
         if (executeAs.isEmpty()) throw TaskServiceException(HttpStatusCode.Conflict, ApiError("approval.no_execute_role"))
 
         // Claim and start the child in ONE transaction, so a cancel never lands in an EXECUTING-without-child gap.
-        if (store.claimAndStartRun(id, executor) { c -> accessStore.claimExecution(id, c) } == null) throw alreadyExecuted()
+        val claimed = store.claimAndStartRun(id, executor, channel.contextValue) { c -> accessStore.claimExecution(id, c) }
+        if (claimed == null) throw alreadyExecuted()
 
         val job = appScope.launch {
             runApprovedTask(
@@ -791,6 +851,8 @@ class ApprovalService(
 
     private fun notApprover() = TaskServiceException(HttpStatusCode.Forbidden, ApiError("approval.not_approver"))
 
+    private fun notCommenter() = TaskServiceException(HttpStatusCode.Forbidden, ApiError("approval.comment_forbidden"))
+
     private fun notApproved() = TaskServiceException(HttpStatusCode.Conflict, ApiError("approval.not_approved"))
 
     private fun AccessRequest.approvalExpired(): Boolean =
@@ -799,7 +861,8 @@ class ApprovalService(
     private companion object {
         const val REQUEST = "query approval request"
         const val INVOLVED_LIMIT = 200
-        val SYSTEM_ACTOR = AuditActor("system", channel = "system")
+        const val COMMENT_MAX_CHARS = 4000
+        val SYSTEM_ACTOR = AuditActor("system", channel = SYSTEM_ORIGIN)
         val EDITABLE = setOf("PENDING", "APPROVED")
         val FORCEABLE = setOf("PENDING", "APPROVED")
     }

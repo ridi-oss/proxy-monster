@@ -255,5 +255,34 @@
     "spentRate": "소진된 한도",
     "approvedToast": "승인됨 — {principal}의 결과 한도 초기화",
     "note": "승인하면 초기화 표시가 기록됩니다: 승인 이전 {principal}의 전송량은 모든 기간 한도에서 제외됩니다. 문장별 상한은 그대로입니다."
+  },
+  "timeline": {
+    "heading": "타임라인",
+    "ccs": "참조",
+    "addCc": "참조 추가",
+    "ccPlaceholder": "사용자 이름 또는 이메일",
+    "removeCc": "{principal} 제거",
+    "commentPlaceholder": "댓글 쓰기",
+    "comment": "댓글 달기",
+    "giveLgtm": "LGTM",
+    "lgtmBadge": "LGTM",
+    "viaSlack": "Slack에서",
+    "failed": "처리하지 못했습니다.",
+    "events": {
+      "requested": "님이 요청했습니다 (리비전 {revision})",
+      "edited": "님이 SQL을 수정했습니다 (리비전 {revision})",
+      "approved": "님이 승인했습니다 (리비전 {revision})",
+      "rejected": "님이 거부했습니다: {body}",
+      "unapproved": "님이 승인을 취소했습니다",
+      "expired": "승인이 만료되어 다시 승인 대기 중입니다.",
+      "withdrawn": "— 승인한 리뷰가 더 이상 유효하지 않아 다시 승인 대기 중입니다",
+      "closed": "님이 요청을 닫았습니다",
+      "ran": "님이 실행했습니다",
+      "executed": "실행이 끝났습니다.",
+      "failed": "실행이 실패했습니다.",
+      "cancelled": "실행이 취소되었습니다.",
+      "cc_added": "님이 {body} 님을 참조로 추가했습니다",
+      "cc_removed": "님이 {body} 님을 참조에서 뺐습니다"
+    }
   }
 }

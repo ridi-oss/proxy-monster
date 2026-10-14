@@ -121,6 +121,8 @@
       "taskCancel": "작업 취소",
       "taskDelete": "작업 삭제",
       "taskRun": "승인된 쿼리 요청 실행",
+      "taskComment": "쿼리 요청에 댓글이나 LGTM 남기기",
+      "taskCc": "쿼리 요청의 참조 추가 또는 제거",
       "grantRevoke": "접근 권한 부여 철회",
       "resultReadUnmasked": "접근한 컬럼의 평문 조회",
       "resultReadMasked": "마스킹된 값 (컬럼의 마스크 함수 또는 안전한 기본값)",

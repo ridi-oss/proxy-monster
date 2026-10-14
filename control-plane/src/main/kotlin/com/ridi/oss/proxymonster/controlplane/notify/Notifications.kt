@@ -18,6 +18,8 @@ enum class NotificationEvent(val wire: String) {
     TASK_EDITED("task.edited"),
     /** An approval was withdrawn or expired: the request is pending again. */
     TASK_REOPENED("task.reopened"),
+    /** Someone was added as a CC: their own thread, like a receipt. */
+    TASK_CC_ADDED("task.cc_added"),
     TASK_EXECUTED("task.executed"),
     TASK_FAILED("task.failed"),
     TASK_CANCELLED("task.cancelled"),
@@ -33,10 +35,10 @@ enum class NotificationEvent(val wire: String) {
      *  creation events — the approvers' request and the requester's own receipt — start threads; every later
      *  event edits the message its recipient already holds, except an alert. */
     val isUpdate: Boolean get() =
-        this !in setOf(TASK_REQUESTED, TASK_SUBMITTED, TASK_CLOSED_AFTER_RUN, TASK_MERGED_WITHOUT_FILE, TASK_FORCE_RUN)
+        this !in setOf(TASK_REQUESTED, TASK_SUBMITTED, TASK_CC_ADDED, TASK_CLOSED_AFTER_RUN, TASK_MERGED_WITHOUT_FILE, TASK_FORCE_RUN)
 
     /** The events that open a task's thread; a ref already left for one means a prior attempt delivered it. */
-    val isCreation: Boolean get() = this == TASK_REQUESTED || this == TASK_SUBMITTED
+    val isCreation: Boolean get() = this == TASK_REQUESTED || this == TASK_SUBMITTED || this == TASK_CC_ADDED
 
     companion object {
         fun fromWire(wire: String): NotificationEvent? = entries.firstOrNull { it.wire == wire }
@@ -62,6 +64,7 @@ val ASKS_FOR_APPROVAL = setOf(NotificationEvent.TASK_REQUESTED, NotificationEven
 enum class NotificationKind(val wire: String) {
     APPROVER("approver"),
     REQUESTER("requester"),
+    CC("cc"),
     ;
 
     companion object {
@@ -136,7 +139,7 @@ fun discloseStatement(disclosure: StatementDisclosure, pending: Boolean, cleared
     }
 
 /** An action a message may offer. [OPEN] is always available; the others are gated by the request's state. */
-enum class NotificationAction { APPROVE_AND_RUN, APPROVE, RUN, UNAPPROVE, DENY, CLOSE, OPEN }
+enum class NotificationAction { APPROVE_AND_RUN, APPROVE, RUN, LGTM, UNAPPROVE, DENY, CLOSE, OPEN }
 
 /**
  * One notification, transport-neutral. Carries message KEYS and their values rather than finished prose, so

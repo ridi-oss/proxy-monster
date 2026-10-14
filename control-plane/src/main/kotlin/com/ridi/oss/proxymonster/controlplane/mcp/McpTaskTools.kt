@@ -154,6 +154,13 @@ internal class McpTaskTools(
             )
             "cancel_approval" -> structured(approvals.cancel(p, ip, actor(ctx), args.requiredLong("id")))
             "force_run_approval" -> structured(approvals.forceRun(p, ip, actor(ctx), args.requiredLong("id")))
+            "unapprove_approval" -> structured(approvals.unapprove(p, ip, actor(ctx), args.requiredLong("id")))
+            "comment_approval" -> structured(
+                approvals.comment(p, ip, actor(ctx), args.requiredLong("id"), args.string("body"), args.boolean("lgtm") ?: false),
+            )
+            "set_approval_cc" -> structured(
+                approvals.setCc(p, ip, actor(ctx), args.requiredLong("id"), args.requiredString("principal"), add = args.boolean("remove") != true),
+            )
             "get_pmon_guide" -> structured(
                 pmonGuide(config, core.datasourceStore.list().filter { mayConnect(core.authz, core.roleResolver, p, ip, it) }.map { it.name }),
             )

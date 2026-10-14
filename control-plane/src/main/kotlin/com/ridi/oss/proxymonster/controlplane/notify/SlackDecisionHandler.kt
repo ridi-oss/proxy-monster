@@ -54,6 +54,7 @@ class SlackDecisionHandler(
                 SlackTransport.ACTION_UNAPPROVE -> service.unapprove(principal, null, actor, req.id, Channel.SLACK)
                 SlackTransport.ACTION_CLOSE -> service.cancel(principal, null, actor, req.id, Channel.SLACK)
                 SlackTransport.ACTION_RUN -> run(principal, req.id)
+                SlackTransport.ACTION_LGTM -> service.comment(principal, null, actor, req.id, null, lgtm = true, Channel.SLACK)
                 else -> return ""
             }
         }
@@ -63,6 +64,7 @@ class SlackDecisionHandler(
                 "approval.not_approver" -> reply("not_authorized")
                 "approval.not_runner" -> reply("not_runner")
                 "approval.cancel_forbidden" -> reply("not_closer")
+                "approval.comment_forbidden" -> reply("not_commenter")
                 "approval.request_changed" -> reply("request_changed")
                 "approval.expired" -> reply("expired")
                 else -> accessStore.getRequest(req.id)
@@ -71,6 +73,7 @@ class SlackDecisionHandler(
             }
         }
         log.info("slack {} request={} requester={} by={}", interaction.actionId, req.id, req.principal, principal)
+        if (interaction.actionId == SlackTransport.ACTION_LGTM) return reply("lgtm_recorded")
 
         // A pull request's merge runs its request; an approve-only click never runs.
         if (interaction.actionId != SlackTransport.ACTION_APPROVE || req.fromPullRequest) return ""

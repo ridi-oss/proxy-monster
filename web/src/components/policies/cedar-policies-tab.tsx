@@ -85,6 +85,8 @@ const ACTION_REFERENCE: { resource: string; actions: { name: string; noteKey: st
     actions: [
       { name: 'task.approve', noteKey: 'taskApprove' },
       { name: 'task.run', noteKey: 'taskRun' },
+      { name: 'task.comment', noteKey: 'taskComment' },
+      { name: 'task.cc', noteKey: 'taskCc' },
       { name: 'task.read', noteKey: 'taskRead' },
       { name: 'task.assume', noteKey: 'taskAssume' },
       { name: 'task.cancel', noteKey: 'taskCancel' },

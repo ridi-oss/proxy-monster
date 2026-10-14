@@ -156,13 +156,14 @@ class QueryResultStore(private val dataSource: DataSource, private val crypto: R
     fun claimAndStartRun(
         taskId: Long,
         executedBy: String,
+        origin: String = "console",
         claimParent: (Connection) -> Boolean,
     ): QueryResultMeta? = dataSource.inTx { c ->
         if (!claimParent(c)) return@inTx null
         val child = pendingChild(c, taskId)
             ?: error("task $taskId claimed for execution but has no pending child")
         if (!startChild(c, child.id, executedBy)) error("task $taskId child ${child.id} not startable")
-        RequestParticipants.add(c, taskId, listOf(executedBy), ParticipantKind.APPROVER)
+        RequestEvents.record(c, taskId, RequestEventKind.RAN, executedBy, origin)
         meta(taskId, child.ordinal, c)
     }
 

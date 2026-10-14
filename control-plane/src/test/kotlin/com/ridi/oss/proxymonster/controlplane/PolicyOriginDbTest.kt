@@ -67,7 +67,7 @@ class PolicyOriginDbTest {
             }
         }
         assertEquals(
-            "ced043492ac535d26e32d1afc6e56017",
+            "ad00b2c96c88078baaf31dac6c62b9eb",
             digest,
             "the seeded security posture changed: a policy body, id, key, origin, enabled flag, role, " +
                 "group, or group-to-role link differs from what a fresh install is supposed to enforce",
@@ -292,6 +292,8 @@ class PolicyOriginDbTest {
               action in
                 [Action::"task.approve",
                  Action::"task.run",
+                 Action::"task.comment",
+                 Action::"task.cc",
                  Action::"task.read",
                  Action::"grant.revoke",
                  Action::"task.request",

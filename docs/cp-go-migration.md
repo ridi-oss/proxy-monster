@@ -32,6 +32,24 @@ flowchart TD
 bind host is new: without it Kotlin listens on every interface and can be
 reached without going through `cp-go`. If the child exits, `cp-go` exits.
 
+Until a slice moves, the processes call each other over loopback with the
+per-boot `PM_CP_INTERNAL_TOKEN`, one token for both directions:
+
+- Go to Kotlin: HTTP `/internal/*`, such as `POST /internal/authorize` until
+  Cedar moves (phase 4). It only shrinks, so it stays HTTP.
+- Kotlin to Go: gRPC. When Kotlin code that stays for now needs an operation Go
+  owns, the slice gets a service in its own file under `proto/src/main/proto/`.
+  `cp-go` serves it through `cpgo/gobridge` on a loopback port it names to the
+  child as `PM_CP_GO_GRPC_ADDR`, checking the token in the `x-pm-internal-token`
+  metadata, and Kotlin calls the generated stub on `CpGoBridge.channel`. Kotlin
+  tests run a fake of the service. A whole operation crosses; a single row
+  inside a Kotlin transaction does not. A service is deleted when its Kotlin
+  caller moves to Go, and the listener with the last one (phase 8).
+
+| Service        | Kotlin caller                                                                 | Deleted when                      |
+| -------------- | ----------------------------------------------------------------------------- | --------------------------------- |
+| `GitHubSource` | the SQL-from-GitHub flow ([sql-from-github.md](./sql-from-github.md#sources)) | the flow moves with approvals (5) |
+
 Both processes ship in the existing control-plane image, with `cp-go` as the
 entrypoint, so deployment does not change. After the last phase the image is one
 Go binary with no JRE and no native libraries.

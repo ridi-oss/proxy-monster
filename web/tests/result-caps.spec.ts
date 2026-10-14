@@ -209,7 +209,7 @@ test('an approver sees the RATE_RESET request on Workflows and approves it', asy
   await page.route('**/api/access-requests?status=PENDING', (route) => fulfillJson(route, 200, [RATE_RESET_REQUEST]))
   await page.route('**/api/access-requests', (route) => fulfillJson(route, 200, [RATE_RESET_REQUEST]))
   await page.route('**/api/approvals/inbox', (route) => fulfillJson(route, 200, []))
-  await page.route('**/api/approvals/involved', (route) => fulfillJson(route, 200, []))
+  await page.route('**/api/requests/involved', (route) => fulfillJson(route, 200, []))
   let approved = false
   await page.route('**/api/access-requests/77/approve', async (route) => {
     approved = true
@@ -238,7 +238,7 @@ test('the Workflows "New request" menu files a RATE_RESET request for a wire-sid
   await page.route('**/api/access-requests?status=PENDING', (route) => fulfillJson(route, 200, []))
   await page.route('**/api/access-requests', (route) => fulfillJson(route, 200, []))
   await page.route('**/api/approvals/inbox', (route) => fulfillJson(route, 200, []))
-  await page.route('**/api/approvals/involved', (route) => fulfillJson(route, 200, []))
+  await page.route('**/api/requests/involved', (route) => fulfillJson(route, 200, []))
   await page.route('**/api/access-requests/77', (route) => fulfillJson(route, 200, RATE_RESET_REQUEST))
   let filed: Record<string, unknown> | null = null
   await page.route('**/api/access-requests/rate-reset', async (route) => {

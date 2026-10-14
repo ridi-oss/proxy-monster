@@ -48,6 +48,7 @@ class ApprovalService(
     // Decisions (approve/reject) record a kind="admin" management event; the result lifecycle
     // (execute/cancel/view) uses e3Record's separate approval_lifecycle path.
     private val recorder = ManagementAuditRecorder(auditStore)
+    val threads = RequestThreads(accessStore, datasourceStore, roleResolver, userGroupStore, authz, recorder, notifications)
 
     /**
      * Whether [principal] may open a query-approval request against [ds] (task.request on the Datasource).
@@ -391,15 +392,6 @@ class ApprovalService(
     fun listOwn(principal: String, status: String?): List<AccessRequest> =
         accessStore.listQueryRequests(status = status, principal = principal)
 
-    /**
-     * Requests the caller filed or took part in, from the participant list rather than a Cedar check per row.
-     * Another person's statement shows only when it carries no protected literal, as in a Slack channel.
-     */
-    fun involved(principal: String): List<AccessRequest> =
-        accessStore.listInvolvedQueryRequests(principal, INVOLVED_LIMIT).map { req ->
-            if (req.principal == principal || req.statementCarriesProtectedLiteral == false) req else req.copy(sql = null)
-        }
-
     /** Every PENDING request the caller may approve (Cedar task.approve), not a group-membership join. */
     fun inbox(principal: String, requesterIp: String?): List<AccessRequest> =
         accessStore.listQueryRequests("PENDING", null).filter { mayDecide(principal, requesterIp, AuthzAction.TASK_APPROVE, it) }
@@ -435,11 +427,10 @@ class ApprovalService(
                 may(AuthzAction.TASK_RUN),
             canReject = req.status in EDITABLE && isApprover,
             canUnapprove = approved && isApprover,
-            canClose = req.status in EDITABLE && !req.fromPullRequest && mayCancel,
+            canClose = req.closable && mayCancel,
             canComment = may(AuthzAction.TASK_COMMENT),
             canCc = may(AuthzAction.TASK_CC),
             timeline = RequestEvents.list(accessStore.dataSource, id),
-            participants = accessStore.dataSource.connection.use { RequestParticipants.list(it, id) },
             result = visibleMeta,
             statements = visibleStatements,
             canExecute = canExecute,
@@ -537,66 +528,6 @@ class ApprovalService(
         return workflowRequest(id)
     }
 
-    /** Add a comment, or with [lgtm] an LGTM, which is shown but never approves. */
-    fun comment(
-        principal: String,
-        requesterIp: String?,
-        actor: AuditActor,
-        id: Long,
-        body: String?,
-        lgtm: Boolean = false,
-        channel: Channel = Channel.WORKFLOW_VIEWER,
-        sourceThread: String? = null,
-        slackRef: String? = null,
-    ): RequestEvent {
-        val text = body?.trim()?.takeIf { it.isNotEmpty() }
-        if (!lgtm && text == null) throw fieldRequired("body")
-        if (text != null && text.length > COMMENT_MAX_CHARS) {
-            throw TaskServiceException(HttpStatusCode.BadRequest, ApiError("approval.comment_too_long", mapOf("max" to "$COMMENT_MAX_CHARS")))
-        }
-        val req = workflowRequest(id)
-        if (!mayDecide(principal, requesterIp, AuthzAction.TASK_COMMENT, req, channel)) throw notCommenter()
-        val kind = if (lgtm) RequestEventKind.LGTM else RequestEventKind.COMMENT
-        val event = accessStore.dataSource.inTx { c ->
-            RequestEvents.record(c, id, kind, principal, actor.channel, text, sourceThread, slackRef)
-        } ?: throw serviceNotFound(REQUEST)
-        notifications?.wake()
-        return event
-    }
-
-    /** Add or remove a CC. [who] is a principal or an email of an active user. */
-    fun setCc(
-        principal: String,
-        requesterIp: String?,
-        actor: AuditActor,
-        id: Long,
-        who: String,
-        add: Boolean,
-        channel: Channel = Channel.WORKFLOW_VIEWER,
-    ): AccessRequest {
-        val req = workflowRequest(id)
-        if (!mayDecide(principal, requesterIp, AuthzAction.TASK_CC, req, channel)) {
-            throw TaskServiceException(HttpStatusCode.Forbidden, ApiError("approval.cc_forbidden"))
-        }
-        val cc = who.trim().takeIf { it in roleResolver.listActivePrincipals() }
-            ?: userGroupStore.activePrincipalByEmail(who.trim())
-            ?: if (add) throw TaskServiceException(HttpStatusCode.BadRequest, ApiError("approval.unknown_user")) else who.trim()
-        if (add && cc == req.principal) throw TaskServiceException(HttpStatusCode.BadRequest, ApiError("approval.cc_requester"))
-        accessStore.dataSource.inTx { c ->
-            val changed = if (add) {
-                cc !in req.ccs && run { RequestParticipants.add(c, id, listOf(cc), ParticipantKind.CC); true }
-            } else {
-                RequestParticipants.remove(c, id, cc, ParticipantKind.CC)
-            }
-            if (changed) {
-                RequestEvents.record(c, id, if (add) RequestEventKind.CC_ADDED else RequestEventKind.CC_REMOVED, principal, actor.channel, cc)
-                if (add) accessStore.getRequest(id, c)?.let { notifications?.emitCcAdded(c, it, cc) }
-            }
-        }
-        if (add) notifications?.wake()
-        return workflowRequest(id)
-    }
-
     /** Return every console request approved more than [APPROVAL_TTL] ago and not yet run to PENDING. */
     fun expireApprovals() {
         for (id in accessStore.expiredApprovals()) {
@@ -674,15 +605,7 @@ class ApprovalService(
         when (req.status) {
             "EXECUTED", "FAILED", "CANCELLED" -> return req
             "EXECUTING" -> Unit
-            in EDITABLE -> {
-                if (req.fromPullRequest) throw TaskServiceException(HttpStatusCode.Conflict, ApiError("approval.not_cancelable"))
-                accessStore.closeQueryRequest(id, actor, recorder) { c, closed ->
-                    notifications?.emit(c, NotificationEvent.TASK_CANCELLED, closed)
-                } ?: throw TaskServiceException(HttpStatusCode.Conflict, ApiError("approval.not_cancelable"))
-                notifications?.wake()
-                log.info("query approval closed request={} by={}", id, principal)
-                return workflowRequest(id)
-            }
+            in EDITABLE -> return threads.close(principal, requesterIp, actor, id, channel)
             else -> throw TaskServiceException(HttpStatusCode.Conflict, ApiError("approval.not_cancelable"))
         }
         val store = queryResultStore ?: throw resultStorageNotConfigured()
@@ -872,8 +795,6 @@ class ApprovalService(
 
     companion object {
         private const val REQUEST = "query approval request"
-        private const val INVOLVED_LIMIT = 200
-        const val COMMENT_MAX_CHARS = 4000
         private val SYSTEM_ACTOR = AuditActor("system", channel = SYSTEM_ORIGIN)
         private val EDITABLE = setOf("PENDING", "APPROVED")
         private val FORCEABLE = setOf("PENDING", "APPROVED")

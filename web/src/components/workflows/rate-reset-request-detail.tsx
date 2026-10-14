@@ -8,9 +8,11 @@ import { mutate } from 'swr'
 import { toast } from 'sonner'
 import { approveAccessRequest } from '@/lib/api/client'
 import type { AccessRequest } from '@/lib/api/types'
-import { swrKeys } from '@/lib/hooks'
+import { swrKeys, useRequestThread } from '@/lib/hooks'
 import { cn } from '@/lib/utils'
 import { RejectDialog } from '@/components/access/reject-dialog'
+import { CloseRequestButton, RequestTimeline } from '@/components/approvals/request-timeline'
+import { useAuth } from '@/lib/auth'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 
@@ -29,7 +31,9 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
   )
 }
 
-function refresh() {
+function refresh(id: number) {
+  void mutate(swrKeys.requestThread(id))
+  void mutate(swrKeys.involvedApprovals)
   void mutate(swrKeys.accessRequests('PENDING'))
   void mutate(swrKeys.accessRequests(undefined))
 }
@@ -38,13 +42,15 @@ export function RateResetRequestDetail({ request }: { request: AccessRequest }) 
   const t = useTranslations('Workflows')
   const [approving, setApproving] = useState(false)
   const [rejecting, setRejecting] = useState<AccessRequest | null>(null)
+  const { identity } = useAuth()
+  const canDecide = useRequestThread(request.id).data?.canDecide ?? false
 
   const handleApprove = async () => {
     setApproving(true)
     try {
       await approveAccessRequest(request.id)
       toast.success(t('rateResetDetail.approvedToast', { principal: request.principal }))
-      refresh()
+      refresh(request.id)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t('roleDetail.approveFailed'))
     } finally {
@@ -70,17 +76,22 @@ export function RateResetRequestDetail({ request }: { request: AccessRequest }) 
             </div>
             {request.status === 'PENDING' && (
               <div className="flex flex-wrap items-end justify-end gap-2">
-                <Button
-                  variant="outline"
-                  onClick={() => setRejecting(request)}
-                  disabled={approving}
-                  className="border-red-500/30 text-red-500 hover:bg-red-500/10 hover:text-red-500"
-                >
-                  {t('actions.reject')}
-                </Button>
-                <Button onClick={handleApprove} disabled={approving}>
-                  {approving ? t('actions.approving') : t('actions.approve')}
-                </Button>
+                <CloseRequestButton request={request} onClosed={() => refresh(request.id)} />
+                {canDecide && (
+                  <>
+                  <Button
+                    variant="outline"
+                    onClick={() => setRejecting(request)}
+                    disabled={approving}
+                    className="border-red-500/30 text-red-500 hover:bg-red-500/10 hover:text-red-500"
+                  >
+                    {t('actions.reject')}
+                  </Button>
+                  <Button onClick={handleApprove} disabled={approving}>
+                    {approving ? t('actions.approving') : t('actions.approve')}
+                  </Button>
+                  </>
+                )}
               </div>
             )}
           </div>
@@ -110,9 +121,10 @@ export function RateResetRequestDetail({ request }: { request: AccessRequest }) 
             </Field>
           )}
           <p className="text-muted-foreground text-xs">{t('rateResetDetail.note', { principal: request.principal })}</p>
+          <RequestTimeline request={request} principal={identity?.principal} onChanged={() => refresh(request.id)} />
         </CardContent>
       </Card>
-      <RejectDialog request={rejecting} onClose={() => setRejecting(null)} onRejected={refresh} />
+      <RejectDialog request={rejecting} onClose={() => setRejecting(null)} onRejected={() => refresh(request.id)} />
     </div>
   )
 }

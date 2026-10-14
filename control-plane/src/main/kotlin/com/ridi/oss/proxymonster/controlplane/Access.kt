@@ -235,8 +235,8 @@ class AccessStore(internal val dataSource: DataSource) {
     /** Insert a ROLE access request on the caller's transaction, returning its id. */
     fun createRequest(principal: String, input: AccessRequestInput, c: Connection, source: String = "console"): Long =
         c.prepareStatement(
-            """INSERT INTO access_request (principal, role_id, datasource_id, reason, requested_duration_sec, source)
-               VALUES (?, ?, ?, ?, ?, ?) RETURNING id""",
+            """INSERT INTO access_request (principal, role_id, datasource_id, reason, requested_duration_sec, source, creator_kind)
+               VALUES (?, ?, ?, ?, ?, ?, 'WORKFLOW') RETURNING id""",
         ).use { ps ->
             ps.setString(1, principal)
             ps.setLong(2, input.roleId)
@@ -265,6 +265,7 @@ class AccessStore(internal val dataSource: DataSource) {
                 c, actor, AuthzAction.TASK_REQUEST, auditEntity("AccessRequest", newId.toString()),
                 "open access request #$newId for role '$roleName'",
             )
+            RequestEvents.record(c, newId, RequestEventKind.REQUESTED, principal, source)
             newId
         }
         return getRequest(id)!!
@@ -279,8 +280,8 @@ class AccessStore(internal val dataSource: DataSource) {
     ): AccessRequest {
         val id = dataSource.inTx { c ->
             val newId = c.prepareStatement(
-                """INSERT INTO access_request (principal, kind, reason, deny_reason, requested_duration_sec)
-                   VALUES (?, 'RATE_RESET', ?, ?, 0) RETURNING id""",
+                """INSERT INTO access_request (principal, kind, reason, deny_reason, requested_duration_sec, creator_kind)
+                   VALUES (?, 'RATE_RESET', ?, ?, 0, 'WORKFLOW') RETURNING id""",
             ).use { ps ->
                 ps.setString(1, principal)
                 ps.setString(2, input.reason)
@@ -291,6 +292,7 @@ class AccessStore(internal val dataSource: DataSource) {
                 c, actor, AuthzAction.TASK_REQUEST, auditEntity("AccessRequest", newId.toString()),
                 "open rate reset request #$newId",
             )
+            RequestEvents.record(c, newId, RequestEventKind.REQUESTED, principal, actor.channel)
             newId
         }
         return getRequest(id)!!
@@ -881,21 +883,22 @@ class AccessStore(internal val dataSource: DataSource) {
         }
     }
 
-    /** End a PENDING or APPROVED request as CANCELLED, recording a [TASK_CANCEL][AuthzAction.TASK_CANCEL] event. */
-    fun closeQueryRequest(
+    /** End a request that has not started as CANCELLED, recording a [TASK_CANCEL][AuthzAction.TASK_CANCEL] event. */
+    fun closeRequest(
         id: Long,
         actor: AuditActor,
         recorder: ManagementAuditRecorder,
         onClosed: ((Connection, AccessRequest) -> Unit)? = null,
     ): AccessRequest? = dataSource.inTx { c ->
         val won = c.prepareStatement(
-            "UPDATE access_request SET status = 'CANCELLED' WHERE id = ? AND kind = 'QUERY' AND status IN ('PENDING', 'APPROVED')",
+            """UPDATE access_request ar SET status = 'CANCELLED'
+               WHERE ar.id = ? AND $WORKFLOW_REQUEST AND (ar.status = 'PENDING' OR (ar.status = 'APPROVED' AND ar.kind = 'QUERY'))""",
         ).use { ps ->
             ps.setLong(1, id)
             ps.executeUpdate() > 0
         }
         if (!won) return@inTx null
-        recorder.record(c, actor, AuthzAction.TASK_CANCEL, auditEntity("AccessRequest", id.toString()), "close query request #$id")
+        recorder.record(c, actor, AuthzAction.TASK_CANCEL, auditEntity("AccessRequest", id.toString()), "close request #$id")
         RequestEvents.record(c, id, RequestEventKind.CLOSED, actor.principal, actor.channel)
         getRequest(id, c)?.also { onClosed?.invoke(c, it) }
     }
@@ -1150,11 +1153,11 @@ class AccessStore(internal val dataSource: DataSource) {
         }
     }
 
-    /** Workflow QUERY requests [principal] filed or took part in, newest first, at most [limit]. */
-    fun listInvolvedQueryRequests(principal: String, limit: Int): List<AccessRequest> = dataSource.connection.use { c ->
+    /** Requests [principal] filed or took part in, newest first, at most [limit]. */
+    fun listInvolvedRequests(principal: String, limit: Int): List<AccessRequest> = dataSource.connection.use { c ->
         c.prepareStatement(
             """$REQ_SELECT
-               WHERE ar.kind = 'QUERY' AND ar.creator_kind = 'WORKFLOW'
+               WHERE $WORKFLOW_REQUEST
                  AND (ar.principal = ? OR EXISTS (
                       SELECT 1 FROM request_participant p WHERE p.request_id = ar.id AND p.principal = ?))
                ORDER BY ar.created_at DESC LIMIT ?""",
@@ -1230,6 +1233,7 @@ class AccessStore(internal val dataSource: DataSource) {
         val dur = durationSec ?: req.requestedDurationSec
         dataSource.inTx { c ->
             approve(id, durationSec, decidedBy, c)?.let { grantId ->
+                RequestEvents.record(c, id, RequestEventKind.APPROVED, decidedBy, actor.channel)
                 if (req.kind == "RATE_RESET") {
                     recorder.record(
                         c, actor, AuthzAction.TASK_APPROVE, auditEntity("AccessRequest", id.toString()),
@@ -1298,6 +1302,7 @@ class AccessStore(internal val dataSource: DataSource) {
         val req = getRequest(id) ?: return null
         dataSource.inTx { c ->
             if (reject(id, reason, decidedBy, c)) {
+                RequestEvents.record(c, id, RequestEventKind.REJECTED, decidedBy, actor.channel, reason)
                 recorder.record(
                     c, actor, AuthzAction.TASK_APPROVE, auditEntity("AccessRequest", id.toString()),
                     "reject access request #$id from '${req.principal}'",
@@ -1420,6 +1425,8 @@ class AccessStore(internal val dataSource: DataSource) {
     )
 
     private companion object {
+        // Workflow requests only: the editor's and the wire proxy's own task rows share this table.
+        const val WORKFLOW_REQUEST = "ar.creator_kind = 'WORKFLOW'"
         // A pull request's approval lasts until its merge runs it. Binds the oldest approved_at still live.
         const val APPROVAL_LIVE = "(source = 'github' OR approved_at IS NULL OR approved_at > ?)"
         const val REQ_SELECT =

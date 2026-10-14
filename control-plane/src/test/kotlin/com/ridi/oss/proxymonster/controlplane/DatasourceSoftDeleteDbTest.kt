@@ -209,7 +209,7 @@ class DatasourceSoftDeleteDbTest {
     private fun insertQueryRequest(datasourceId: Long, principal: String, status: String = "EXECUTED") {
         dataSource.connection.use { c ->
             c.prepareStatement(
-                "INSERT INTO access_request (kind, principal, datasource_id, status) VALUES ('QUERY', ?, ?, ?)",
+                "INSERT INTO access_request (kind, principal, datasource_id, status, creator_kind) VALUES ('QUERY', ?, ?, ?, 'WORKFLOW')",
             ).use { ps ->
                 ps.setString(1, principal)
                 ps.setLong(2, datasourceId)

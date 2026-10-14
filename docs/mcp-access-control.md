@@ -405,10 +405,10 @@ All under `admin.policies` (write tools also require `mcp:policies:write`):
 - `unapprove_approval` (`task.approve`, scope `mcp:approvals:write`) — REST:
   `POST /api/approvals/{id}/unapprove`.
 - `comment_approval` (`task.comment`, scope `mcp:query`) — a comment, or with
-  `lgtm` an LGTM (REST: `POST /api/approvals/{id}/comments`).
+  `lgtm` an LGTM, on any request (REST: `POST /api/requests/{id}/comments`).
 - `set_approval_cc` (`task.cc`, scope `mcp:query`) — adds or, with `remove`,
-  removes a CC (REST: `POST /api/approvals/{id}/ccs`,
-  `DELETE /api/approvals/{id}/ccs/{principal}`).
+  removes a CC on any request (REST: `POST /api/requests/{id}/ccs`,
+  `DELETE /api/requests/{id}/ccs/{principal}`).
 - `get_approval_result` (`task.assume`, scope `mcp:query`) — one page of an
   approval's rows (REST: `GET /api/approvals/{id}/result`).
 - `cancel_approval` (`task.cancel`, scope `mcp:query`) — closes a request that

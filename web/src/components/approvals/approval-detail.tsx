@@ -33,7 +33,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { ErrorState, LoadingState } from '@/components/page-scaffold'
 import { ApprovalResultTabs } from './approval-result-tabs'
 import { ApproveQueryDialog } from './approve-query-dialog'
-import { ApprovalTimeline } from './approval-timeline'
+import { RequestTimeline } from './request-timeline'
 import { useAuth } from '@/lib/auth'
 import { Field, RequestOrigin } from './request-origin'
 
@@ -131,6 +131,7 @@ export function ApprovalDetail({ id }: { id: number }) {
     globalMutate(swrKeys.involvedApprovals)
     globalMutate(swrKeys.approvalInbox)
     globalMutate(['approval-result', id])
+    globalMutate(swrKeys.requestThread(id))
   }
 
   const handleRun = async () => {
@@ -457,7 +458,7 @@ export function ApprovalDetail({ id }: { id: number }) {
             </div>
           )}
 
-          <ApprovalTimeline id={id} detail={data} principal={identity?.principal} onChanged={refresh} />
+          <RequestTimeline request={request} principal={identity?.principal} onChanged={refresh} />
         </CardContent>
       </Card>
             </div>

@@ -76,10 +76,16 @@ class ApprovalInvolvedListDbTest {
             install(Sessions) { webSessionCookie(sessionStore, config.sessionSecret) }
             routing {
                 testLoginRoute(sessionStore, config)
-                approvalRoutes(
+                val approvals = ApprovalService(
                     config, core.accessStore, core.auditStore, core.datasourceStore, core.policyStore,
                     core.userGroupStore, null, core.roleResolver, core.authz, RunExecService(core),
+                    kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Unconfined),
                 )
+                approvalRoutes(
+                    config, core.accessStore, core.auditStore, core.datasourceStore, core.policyStore,
+                    core.userGroupStore, null, core.roleResolver, core.authz, RunExecService(core), service = approvals,
+                )
+                requestRoutes(config, approvals.threads)
             }
         }
     }
@@ -101,7 +107,7 @@ class ApprovalInvolvedListDbTest {
     ).id
 
     private suspend fun HttpClient.involved(): Map<Long, AccessRequest> =
-        get("/api/approvals/involved").body<List<AccessRequest>>().associateBy { it.id }
+        get("/api/requests/involved").body<List<AccessRequest>>().associateBy { it.id }
 
     @Test
     fun `decider, notified approver and requester list the request, an outsider does not`() = testApplication {

@@ -357,7 +357,8 @@ of a route and the gate it calls. Paths are relative to
 | Editor sessions and tasks | `/api/editor/**` | `Query.kt` | `requireApi` + owner scope; cancel adds `task.cancel`, result adds `task.assume` |
 | Task-completion SSE | `/api/tasks/events` | `App.kt` | resolves the session itself; each push re-filtered through `task.read` |
 | Editor query history | `/api/query-history` | `QueryHistory.kt` | `requireApi`, own rows only |
-| Query-approval workflow | `/api/approvals**` | `Approvals.kt` | `requireApi` + per-route Cedar (`task.read` / `task.approve` / `task.run` / `task.comment` / `task.cc` / `task.cancel` / `task.assume` / `task.force_run`) |
+| Query-approval workflow | `/api/approvals**` | `Approvals.kt` | `requireApi` + per-route Cedar (`task.read` / `task.approve` / `task.run` / `task.cancel` / `task.assume` / `task.force_run`) |
+| Request threads (every kind) | `/api/requests**` | `RequestThreads.kt` | `requireApi` + per-route Cedar (`task.read` / `task.comment` / `task.cc` / `task.cancel`) |
 | JIT access requests and grants | `/api/access-requests**`, `/api/access-grants**` | `Access.kt` | `requireApi` + `task.read` forward-filtering; revoke = `requireAuthz(grant.revoke)` |
 | Wire tokens | `/api/wire-tokens`, `/api/tokens**` | `Tokens.kt` | `requireAuthz(token.mint / token.list / token.revoke)` on the token's real owner and kind |
 | Roles, mask functions | `/api/roles**`, `/api/mask-fns**` | `Policies.kt` | `requireAdmin(admin.policies)`; `GET /api/roles` is `requireApi` |

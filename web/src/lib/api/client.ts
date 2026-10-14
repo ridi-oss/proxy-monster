@@ -49,6 +49,7 @@ import type {
   RateResetRequestInput,
   RefreshResult,
   RequestEvent,
+  RequestThread,
   Role,
   RoleAssignment,
   RoleAssignmentInput,
@@ -609,7 +610,7 @@ export function getApprovalInbox(): Promise<AccessRequest[]> {
 }
 
 export function getInvolvedApprovals(): Promise<AccessRequest[]> {
-  return request<AccessRequest[]>('/api/approvals/involved')
+  return request<AccessRequest[]>('/api/requests/involved')
 }
 
 export function getApproval(id: number): Promise<QueryRequestDetail> {
@@ -648,15 +649,23 @@ export function executeApproval(id: number): Promise<ExecuteQueryRequestResponse
 
 /** Cancel an executing approved task. */
 export function commentOnApproval(id: number, body: string | null, lgtm = false): Promise<RequestEvent> {
-  return request<RequestEvent>(`/api/approvals/${id}/comments`, { method: 'POST', body: JSON.stringify({ body, lgtm }) })
+  return request<RequestEvent>(`/api/requests/${id}/comments`, { method: 'POST', body: JSON.stringify({ body, lgtm }) })
 }
 
 export function addApprovalCc(id: number, principal: string): Promise<AccessRequest> {
-  return request<AccessRequest>(`/api/approvals/${id}/ccs`, { method: 'POST', body: JSON.stringify({ principal }) })
+  return request<AccessRequest>(`/api/requests/${id}/ccs`, { method: 'POST', body: JSON.stringify({ principal }) })
 }
 
 export function removeApprovalCc(id: number, principal: string): Promise<AccessRequest> {
-  return request<AccessRequest>(`/api/approvals/${id}/ccs/${encodeURIComponent(principal)}`, { method: 'DELETE' })
+  return request<AccessRequest>(`/api/requests/${id}/ccs/${encodeURIComponent(principal)}`, { method: 'DELETE' })
+}
+
+export function getRequestThread(id: number): Promise<RequestThread> {
+  return request<RequestThread>(`/api/requests/${id}/thread`)
+}
+
+export function closeRequest(id: number): Promise<AccessRequest> {
+  return request<AccessRequest>(`/api/requests/${id}/close`, { method: 'POST' })
 }
 
 export function unapproveApproval(id: number): Promise<AccessRequest> {

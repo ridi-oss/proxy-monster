@@ -479,7 +479,7 @@ class Stack:
         wait("the run on auto-merge", lambda: detail(req["id"])["status"] in ("EXECUTED", "FAILED"))
         expect(detail(req["id"])["status"] == "EXECUTED", f"the run failed: {detail(req['id'])}")
         wait("query executed green", lambda: (gh.check(repo, head) or {}).get("conclusion") == "success")
-        expect(any("Statements run" in c for c in gh.comments_on(repo, 1)), f"the PR comment reports the run: {gh.comments_on(repo, 1)}")
+        wait("the PR comment reports the run", lambda: any("Statements run" in c for c in gh.comments_on(repo, 1)))
 
         gh.update_pr(repo, 1, state="MERGED", merged=True, mergeCommit=head,
                      mergedAt=dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))

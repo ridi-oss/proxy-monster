@@ -35,6 +35,7 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.Application
+import io.ktor.server.application.ApplicationStopped
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.application.install
 import io.ktor.server.auth.Authentication
@@ -398,6 +399,8 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
 
     // Out-of-band task notifications (docs/notifications.md): the outbox drain and, when Slack is
     // configured, the inbound Socket Mode connection. Null and inert when no transport is configured.
+    val cpGoBridge = config.cpGoBridge?.let(::CpGoBridge)
+    cpGoBridge?.let { bridge -> monitor.subscribe(ApplicationStopped) { bridge.close() } }
     val sourceAdapter = config.github?.let {
         GitHubAdapter(
             it,
@@ -406,6 +409,7 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
 
                 override fun activePrincipalByEmail(email: String) = userGroupStore.activePrincipalByEmail(email)
             },
+            cpGoBridge!!.channel,
         )
     }
     lateinit var approvalService: ApprovalService

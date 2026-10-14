@@ -314,6 +314,19 @@ check, read and dismiss reviews, and map a GitHub user. Another forge is another
 adapter. Requests, scopes, keys, and the one-PR-at-a-time rule do not depend on
 the source.
 
+The GitHub App lives in `cp-go`: it signs the App's JWTs, keeps installation
+tokens, and makes every GitHub call, and the Kotlin control plane reaches it
+over loopback. Set `PM_GITHUB_APP_ID` and exactly one key:
+
+- `PM_GITHUB_APP_KMS_KEY_ID`: an AWS KMS key (`RSA_2048`, `SIGN_VERIFY`) holding
+  the App's private key, imported once. `cp-go` signs with `kms:Sign`
+  (`RSASSA_PKCS1_V1_5_SHA_256`, message type `DIGEST`), so the key never leaves
+  KMS.
+- `PM_GITHUB_APP_PRIVATE_KEY` or `PM_GITHUB_APP_PRIVATE_KEY_FILE`: the PEM.
+
+`PM_GITHUB_API_URL` points at GitHub Enterprise Server (`…/api/v3`), and
+`PM_GITHUB_CA_FILE` adds the CA certificates (PEM) it is signed with.
+
 Outcomes reach Slack and the PR through the existing notifications
 ([notifications.md](./notifications.md)): the run's result, a failure, a PR
 merged without a file that ran, and a PR closed after its SQL ran are task
@@ -417,7 +430,10 @@ PM_GITHUB_IDENTITY=external-identity,verified-email,commit-email
   The App reads the PR's first 100 commits.
 
 The first resolver that matches wins. If none matches, the user is unmapped: a
-review does not count, and a PR author gets no request.
+review does not count, and a PR author gets no request. A resolver whose lookup
+fails, such as `external-identity` when the App cannot read SAML identities,
+fails the mapping rather than fall through to the next; leave it out of
+`PM_GITHUB_IDENTITY` instead.
 
 An organization with neither SAML nor a verified domain uses `commit-email` for
 requesters and approves in the console or Slack.

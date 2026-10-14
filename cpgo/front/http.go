@@ -31,7 +31,7 @@ func Route(mux *http.ServeMux, forward http.Handler) http.Handler {
 	})
 }
 
-// NewHTTP forwards every request to the Kotlin control plane at upstream (e.g. http://127.0.0.1:18090).
+// NewHTTP forwards every request to upstream: the Kotlin control plane (e.g. http://127.0.0.1:18090) or web.
 func NewHTTP(upstream *url.URL, edges TrustedEdges) http.Handler {
 	return &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {

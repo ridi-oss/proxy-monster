@@ -42,8 +42,18 @@ def sh(*cmd, cwd=None, check=True):
     return r.stdout.strip()
 
 
+TRANSIENT = ("Bad Gateway", "502", "503", "Something went wrong")
+
+
+# GitHub answers an occasional 502 or GraphQL "Something went wrong"; a run of 40-odd checks meets one.
 def gh(*a, check=True):
-    return sh("gh", *a, check=check)
+    for attempt in range(3):
+        try:
+            return sh("gh", *a, check=check)
+        except RuntimeError as e:
+            if attempt == 2 or not any(t in str(e) for t in TRANSIENT):
+                raise
+            time.sleep(5 * (attempt + 1))
 
 
 def check(name, ok, detail=""):
@@ -55,7 +65,7 @@ jar = http.cookiejar.CookieJar()
 opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
 
 
-def api(method, path, body=None):
+def call(method, path, body=None):
     req = urllib.request.Request(CP + path, method=method, data=json.dumps(body).encode() if body is not None else None,
                                  headers={"Content-Type": "application/json", "Origin": CP})
     try:
@@ -66,7 +76,20 @@ def api(method, path, body=None):
 
 
 # The approver signs in through the debug login, so the control plane runs with PM_AUTH_DEBUG=true.
-api("POST", "/auth/debug", {"principal": APPROVER, "roles": ["system:admin"]})
+def login():
+    call("POST", "/auth/debug", {"principal": APPROVER, "roles": ["system:admin"]})
+
+
+# A run outlasts the console session's idle limit, so a 401 signs in again.
+def api(method, path, body=None):
+    status, out = call(method, path, body)
+    if status == 401:
+        login()
+        status, out = call(method, path, body)
+    return status, out
+
+
+login()
 
 
 def mysql(q):

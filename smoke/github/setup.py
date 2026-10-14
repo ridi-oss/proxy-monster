@@ -234,8 +234,10 @@ def start_runner(st, state_dir, pm_ci):
         sh("./config.sh", "--unattended", "--url", f"https://github.com/{full}", "--token", token,
            "--labels", LABEL, "--name", f"{LABEL}-{platform.node().split('.')[0]}", "--replace", cwd=runner)
         log("runner registered")
+    # The runner runs as you, so your global git config (an insteadOf rewriting to SSH, say) would change
+    # how jobs fetch; actions/checkout must use the job's token over HTTPS.
     with open(os.path.join(runner, ".env"), "w") as f:
-        f.write(f"PM_CI_BIN={pm_ci}\n")
+        f.write(f"PM_CI_BIN={pm_ci}\nGIT_CONFIG_GLOBAL=/dev/null\n")
     pid = st.get("runner_pid")
     if pid and subprocess.run(["kill", "-0", str(pid)], capture_output=True).returncode == 0:
         log("runner running, pid", pid)

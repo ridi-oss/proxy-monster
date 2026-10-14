@@ -39,6 +39,7 @@ class SlackThreadHandler(
                 RequestEvents.record(c, thread.taskId, RequestEventKind.COMMENT, author, ORIGIN, text, thread.externalRef, ref)
             }
             notifications.wake()
+            ccMentions(m, thread.taskId)
             return
         }
         val principal = m.principal ?: return
@@ -48,6 +49,19 @@ class SlackThreadHandler(
                 channel = Channel.SLACK, sourceThread = thread.externalRef, slackRef = ref,
             )
         }.onFailure { log.info("slack reply not recorded task={} by={}: {}", thread.taskId, principal, it.message) }
+        ccMentions(m, thread.taskId)
+    }
+
+    /** A participant who @-mentions someone in a thread adds them as a CC, under the participant's own task.cc. */
+    private fun ccMentions(m: SlackThreadMessage, taskId: Long) {
+        val principal = m.principal ?: return
+        val threads = approvals().threads
+        val ccs = threads.request(taskId).ccs
+        for (mentioned in m.mentions.filter { it !in ccs }) {
+            runCatching {
+                threads.setCc(principal, null, AuditActor(principal, channel = ORIGIN), taskId, mentioned, add = true, Channel.SLACK)
+            }.onFailure { log.info("slack mention not added as cc task={} by={} cc={}: {}", taskId, principal, mentioned, it.message) }
+        }
     }
 
     private companion object {

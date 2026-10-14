@@ -37,6 +37,8 @@ interface EngineDefinition {
     val systemSchemas: Set<String>
     /** True when one connection's catalog measurement answers for every connection of the datasource. */
     val catalogIsConnectionIndependent: Boolean
+    /** True when the proxy can prepare a statement on the target without running it (`check_target_error`). */
+    val checksTargetErrors: Boolean
 
     /** The analyzer catalog segment for a datasource whose registration database is [dbName]. */
     fun catalogName(dbName: String): String
@@ -87,6 +89,7 @@ val Engine.wireName: String get() = definition.wireName
 val Engine.dialect: Dialect get() = definition.dialect
 val Engine.systemSchemas: Set<String> get() = definition.systemSchemas
 val Engine.catalogIsConnectionIndependent: Boolean get() = definition.catalogIsConnectionIndependent
+val Engine.checksTargetErrors: Boolean get() = definition.checksTargetErrors
 
 val Engine.isMySql: Boolean get() = this == Engine.MYSQL
 val Engine.isPostgres: Boolean get() = this == Engine.POSTGRES

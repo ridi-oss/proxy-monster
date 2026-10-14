@@ -43,23 +43,18 @@ type boundPortal struct {
 	relayed engine.RelayStats
 }
 
-func (s *Server) renderExtendedVerdict(sess *session, verdict engine.Verdict, sql string) (engine.Proceed, bool, error) {
+func (s *Server) renderExtendedVerdict(sess *session, verdict engine.Verdict) (engine.Proceed, bool, error) {
 	switch verdict := verdict.(type) {
 	case engine.Fail:
 		sess.skipToSync, sess.abortAtSync = true, true
 		err := sendError(sess.client, "ERROR", "58000", "proxy-monster: "+verdict.Message, false, 0)
 		return engine.Proceed{}, false, err
 	case engine.Deny:
-		if verdict.Decision != nil && verdict.Decision.CheckTargetSyntax {
-			start := time.Now()
-			prepareErr, err := s.targetPrepareError(sess, sql)
-			if err != nil {
-				return engine.Proceed{}, false, err
-			}
-			if prepareErr != nil && prepareErr.Code == sqlStateSyntaxError {
+		if verdict.Decision != nil && verdict.Decision.TargetError != nil {
+			if targetErr, ok := verdict.Decision.TargetError.Message.(*pgproto3.ErrorResponse); ok {
 				sess.skipToSync = true
-				forwardError(sess, prepareErr)
-				sess.qe.AwaitCompletion(engine.EmitCompletion(s.client, verdict.Decision, engine.RelayStats{}, engine.StatusRejected, start))
+				forwardError(sess, targetErr)
+				sess.qe.AwaitCompletion(engine.EmitCompletion(s.client, verdict.Decision, engine.RelayStats{}, engine.StatusError, time.Now()))
 				return engine.Proceed{}, false, sess.client.Flush()
 			}
 		}
@@ -122,8 +117,12 @@ func (s *Server) handleParse(sess *session, message *pgproto3.Parse) error {
 	// the probe fails and produces a fail-safe 58000 refusal before PostgreSQL's equivalent 25P02 Parse.
 	sess.qe.MarkNamespaceDirty()
 	sess.pendingDirty = false
-	verdict := sess.qe.Authorize(sess.authzInput(message.Query, sess.token, sess.clientAddr, sess.connectionID, s.refetcher(sess, true).RunAll))
-	proceed, allowed, err := s.renderExtendedVerdict(sess, verdict, message.Query)
+	in := sess.authzInput(message.Query, sess.token, sess.clientAddr, sess.connectionID, s.refetcher(sess, true).RunAll)
+	in.CheckTargetError = func(sql string) (*engine.TargetError, error) {
+		return s.checkTargetError(sess, sql, message.ParameterOIDs)
+	}
+	verdict := sess.qe.Authorize(in)
+	proceed, allowed, err := s.renderExtendedVerdict(sess, verdict)
 	if err != nil || !allowed {
 		return err
 	}
@@ -387,9 +386,10 @@ func (s *Server) handleExecute(sess *session, message *pgproto3.Execute) error {
 		ProbeTempColumns: func() ([]engine.TempColumn, error) {
 			return portal.temps, nil
 		},
+		CheckTargetError: func(sql string) (*engine.TargetError, error) { return s.checkTargetError(sess, sql, nil) },
 	})
 	sess.qe.MarkNamespaceDirty()
-	proceed, allowed, err := s.renderExtendedVerdict(sess, verdict, portal.sql)
+	proceed, allowed, err := s.renderExtendedVerdict(sess, verdict)
 	if err != nil || !allowed {
 		return err
 	}

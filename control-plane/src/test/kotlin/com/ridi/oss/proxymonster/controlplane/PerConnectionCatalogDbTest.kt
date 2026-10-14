@@ -16,6 +16,7 @@ import com.ridi.oss.proxymonster.controlplane.support.requireDocker
 import com.ridi.oss.proxymonster.controlplane.support.SharedMySql
 import com.ridi.oss.proxymonster.controlplane.systemSchemas
 import com.ridi.oss.proxymonster.controlplane.isPostgres
+import com.ridi.oss.proxymonster.grpc.targetCheck
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.TestInstance
@@ -133,6 +134,7 @@ abstract class PerConnectionCatalogDbContract {
                         sql,
                         listOf(shadowSchema, "pg_catalog", schema),
                         null,
+                        targetCheck = targetCheck {},
                     ),
                 )
                 assertEquals(EnfAction.DENY, verdict.ctx.action, verdict.ctx.toString())

@@ -27,6 +27,7 @@ internal object PostgresEngineDefinition : EngineDefinition {
     override val systemSchemas = setOf("pg_catalog", "information_schema")
     // pg_temp_* schemas and transactional DDL depend on the connection.
     override val catalogIsConnectionIndependent = false
+    override val checksTargetErrors = true
 
     override fun catalogName(dbName: String): String = dbName
     override fun defaultSchema(dbName: String): String = "public"

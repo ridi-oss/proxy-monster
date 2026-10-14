@@ -36,6 +36,7 @@ internal object AthenaEngineDefinition : EngineDefinition {
     override val connectionProperties = setOf("region", "workgroup", "catalog", "database")
     override val systemSchemas = setOf("information_schema")
     override val catalogIsConnectionIndependent = true
+    override val checksTargetErrors = false
 
     override fun catalogName(dbName: String): String = dbName.lowercase()
     override fun defaultSchema(dbName: String): String = dbName

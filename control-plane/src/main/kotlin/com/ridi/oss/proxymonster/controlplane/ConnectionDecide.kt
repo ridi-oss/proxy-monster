@@ -7,6 +7,8 @@ import com.ridi.oss.proxymonster.controlplane.authz.AuthzContext
 import com.ridi.oss.proxymonster.grpc.EnfAction
 import com.ridi.oss.proxymonster.grpc.ProxyCommand
 import com.ridi.oss.proxymonster.grpc.Refetch
+import com.ridi.oss.proxymonster.grpc.TargetCheck
+import com.ridi.oss.proxymonster.grpc.checkTargetError
 import com.ridi.oss.proxymonster.grpc.proxyCommand
 import kotlinx.coroutines.sync.withLock
 
@@ -41,6 +43,7 @@ suspend fun decideConnection(
     providedRoles: Set<String>? = null,
     tempColumns: List<CatalogColumn> = emptyList(),
     httpRequesterIp: String? = null,
+    targetCheck: TargetCheck? = null,
 ): EnforcementOutcome? = core.connectionCatalog.withConnection(connectionId) { connection ->
     // Snapshot the generation at entry; the registry mutex is held through analysis + audit, so only an
     // applyPush (which needs the same mutex) can bump it — impossible mid-flow. Stamping the entry value and
@@ -109,12 +112,16 @@ suspend fun decideConnection(
         core.authz,
         Channel.WIRE,
     )
-    val effectiveCtx = if (wireGateDenied) {
-        wireTaskForbiddenDeny(ctx.effectiveRoles, ctx.contextTags)
-    } else {
-        ctx
+    val effectiveCtx = when {
+        wireGateDenied -> wireTaskForbiddenDeny(ctx.effectiveRoles, ctx.contextTags)
+        !ctx.checkTargetError || channel != Channel.WIRE || !ds.engine.checksTargetErrors -> ctx
+        targetCheck == null -> return@withConnection EnforcementOutcome.BeforeDecide(
+            listOf(proxyCommand { checkTargetError = checkTargetError {} }),
+        )
+        targetCheck.errorCode.isNotEmpty() -> ctx.targetErrorAllow(targetCheck.errorCode)
+        else -> ctx
     }
-    val relayed = effectiveCtx.action != EnfAction.DENY
+    val relayed = effectiveCtx.action != EnfAction.DENY && !effectiveCtx.forwardTargetError
     val afterStatement = if (relayed && effectiveCtx.catalogChanging) {
         // schemaCandidates too: DDL reads no column, so its target schema appears in no source or read
         // grant, and a cross-schema `ALTER` would leave the schema it just changed held and stale.

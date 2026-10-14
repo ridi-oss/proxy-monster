@@ -492,6 +492,45 @@ func TestDecideMapsRequestAndRetriesBeforeDecide(t *testing.T) {
 	}
 }
 
+func TestDecideRunsTheTargetErrorCheck(t *testing.T) {
+	check := &pb.ProxyCommand{Command: &pb.ProxyCommand_CheckTargetError{CheckTargetError: &pb.CheckTargetError{}}}
+	fake := &fakeControlPlane{decideQueue: []*pb.WireDecision{
+		wireBefore(check),
+		wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW, DecisionId: 7, ForwardTargetError: true}),
+	}}
+	c := startFakeControlPlane(t, fake)
+	observed := &engine.TargetError{Code: "1064", Message: []byte{0xff}}
+	var checked []string
+	out := c.Decide(engine.DecideRequest{
+		SQL:          "SELECT $$",
+		ConnectionID: []byte("0123456789abcdef"),
+		CheckTargetError: func(sql string) (*engine.TargetError, error) {
+			checked = append(checked, sql)
+			return observed, nil
+		},
+	})
+	if out.IsErr() || !out.Decision.ForwardTargetError || out.TargetError != observed {
+		t.Fatalf("Decide = %+v, want the forward verdict carrying the observed error", out)
+	}
+	if len(checked) != 1 || checked[0] != "SELECT $$" {
+		t.Fatalf("checked = %v, want the statement once", checked)
+	}
+	fake.mu.Lock()
+	requests := append([]*pb.DecisionRequest(nil), fake.decideReqs...)
+	fake.mu.Unlock()
+	if len(requests) != 2 || requests[0].GetTargetCheck() != nil || requests[1].GetTargetCheck().GetErrorCode() != "1064" {
+		t.Fatalf("requests = %+v, want the re-sent request to carry error code 1064", requests)
+	}
+
+	t.Run("missing checker", func(t *testing.T) {
+		c := startFakeControlPlane(t, &fakeControlPlane{decideResp: wireBefore(check)})
+		out := c.Decide(engine.DecideRequest{})
+		if !out.IsErr() || !strings.Contains(out.Err, "no checker") {
+			t.Fatalf("Decide = %+v", out)
+		}
+	})
+}
+
 func TestDecideOmitsUnobservedPostgresTypeVisibility(t *testing.T) {
 	fake := &fakeControlPlane{}
 	c := startFakeControlPlane(t, fake)

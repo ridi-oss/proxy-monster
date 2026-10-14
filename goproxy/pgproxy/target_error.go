@@ -4,13 +4,14 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5/pgproto3"
+	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 )
 
-const sqlStateSyntaxError = "42601"
-
-func (s *Server) targetPrepareError(sess *session, sql string) (*pgproto3.ErrorResponse, error) {
+// checkTargetError prepares sql on the target without executing it and returns the target's ErrorResponse.
+// It ends with Flush, so in extended mode the client's own Sync clears a failed Parse.
+func (s *Server) checkTargetError(sess *session, sql string, parameterOIDs []uint32) (*engine.TargetError, error) {
 	statementName := fmt.Sprintf("__pm_syntax_check_%d__", extendedProbeSequence.Add(1))
-	sess.targetDb.Send(&pgproto3.Parse{Name: statementName, Query: sql})
+	sess.targetDb.Send(&pgproto3.Parse{Name: statementName, Query: sql, ParameterOIDs: parameterOIDs})
 	sess.targetDb.Send(&pgproto3.Close{ObjectType: 'S', Name: statementName})
 	sess.targetDb.Send(&pgproto3.Flush{})
 	if err := sess.targetDb.Flush(); err != nil {
@@ -33,11 +34,20 @@ func (s *Server) targetPrepareError(sess *session, sql string) (*pgproto3.ErrorR
 			return nil, nil
 		case *pgproto3.ErrorResponse:
 			copied := *message
-			return &copied, nil
+			return &engine.TargetError{Code: message.Code, Message: &copied}, nil
 		default:
 			return nil, failClosedRelay(sess, "58000", "proxy-monster: malformed target-DB response", fmt.Errorf("unexpected target DB prepare response %T", message))
 		}
 	}
+}
+
+// checkTargetErrorAndSync is checkTargetError for a simple query, which has no client Sync to follow.
+func (s *Server) checkTargetErrorAndSync(sess *session, sql string) (*engine.TargetError, error) {
+	targetErr, err := s.checkTargetError(sess, sql, nil)
+	if err != nil {
+		return nil, err
+	}
+	return targetErr, syncTarget(sess)
 }
 
 func syncTarget(sess *session) error {

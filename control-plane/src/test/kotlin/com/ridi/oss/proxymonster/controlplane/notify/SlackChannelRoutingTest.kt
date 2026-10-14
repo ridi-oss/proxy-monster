@@ -12,7 +12,7 @@ class SlackChannelRoutingTest {
     private val tags = mapOf(1L to listOf("service:manta", "system:production"), 2L to listOf("system:production"), 3L to listOf("other"))
     private val routes = listOf(SlackChannelRoute("service:manta", "C_MANTA"), SlackChannelRoute("system:production", "C_PROD"))
 
-    private fun req(ds: Long) = AccessRequest(id = 9, principal = "p", datasourceId = ds, requestedDurationSec = 0, status = "PENDING", createdAt = "", revision = 1)
+    private fun req(ds: Long?) = AccessRequest(id = 9, principal = "p", datasourceId = ds, requestedDurationSec = 0, status = "PENDING", createdAt = "", revision = 1)
 
     private fun transports(channelOnly: Boolean): Pair<SlackTransport, SlackTransport> {
         val router = SlackChannelRouter(routes, channelOnly) { tags[it].orEmpty() }
@@ -27,6 +27,7 @@ class SlackChannelRoutingTest {
         assertEquals("C_MANTA", channel.taskAddress(req(1)))
         assertEquals("C_PROD", channel.taskAddress(req(2)))
         assertNull(channel.taskAddress(req(3)))
+        assertEquals("C_MANTA", channel.taskAddress(req(null)), "a request on no datasource goes to the first channel")
     }
 
     @Test

@@ -35,6 +35,7 @@ class SlackDecisionHandlerDbTest {
     private lateinit var handler: SlackDecisionHandler
     private lateinit var threads: SlackThreadHandler
     private lateinit var approvalService: ApprovalService
+    private lateinit var access: com.ridi.oss.proxymonster.controlplane.AccessService
 
     private val requester = "requester@example.com"
     private val approver = "admin@example.com"
@@ -74,7 +75,10 @@ class SlackDecisionHandlerDbTest {
         )
         approvalService = approvals
         threads = SlackThreadHandler(NotificationStore(fx.dataSource), fx.accessStore, { approvals }, notifications)
-        handler = SlackDecisionHandler(fx.accessStore, { approvals }, notifications, "en") { _, taskId ->
+        access = com.ridi.oss.proxymonster.controlplane.AccessService(
+            fx.accessStore, fx.datasourceStore, fx.auditStore, fx.roleResolver, fx.authz, ManagementAuditRecorder(fx.auditStore), notifications,
+        )
+        handler = SlackDecisionHandler(fx.accessStore, { approvals }, { access }, notifications, "en") { _, taskId ->
             if (onApprovedThrows) throw RuntimeException("run failed")
             approvedRuns += fx.accessStore.getRequest(taskId)!!
         }
@@ -205,6 +209,56 @@ class SlackDecisionHandlerDbTest {
 
         val comments = approvalService.detail(approver, null, id).timeline.filter { it.kind == "comment" }
         assertEquals(listOf("slack:Pat" to "who is this for?", approver to "looks fine"), comments.map { it.actor to it.body })
+    }
+
+    @Test
+    fun `a role request is approved, denied and reviewed from Slack like a query request`() = runBlocking {
+        val role = fx.policyStore.createRole(com.ridi.oss.proxymonster.controlplane.RoleInput("slack-role-${System.nanoTime()}"))
+        val mk = {
+            fx.accessStore.createRequest(
+                requester, com.ridi.oss.proxymonster.controlplane.AccessRequestInput(roleId = role.id, reason = "on call"),
+                AuditActor(requester, channel = "console"), ManagementAuditRecorder(fx.auditStore),
+            ).id
+        }
+        val approved = mk()
+        val review = handler.respond(click(approved, approver, SlackTransport.ACTION_REVIEW).copy(triggerId = "T1"))
+        val view = (review as SlackReply.OpenView).view.toString()
+        assertTrue(SlackTransport.ACTION_APPROVE_ONLY in view && SlackTransport.ACTION_DENY in view, view)
+        assertTrue(SlackTransport.ACTION_APPROVE !in view.replace(SlackTransport.ACTION_APPROVE_ONLY, ""), "a role request has nothing to run")
+        assertEquals("", handler.handle(click(approved, approver, SlackTransport.ACTION_APPROVE_ONLY)))
+        assertEquals("APPROVED", statusOf(approved))
+        assertTrue(fx.accessStore.listGrants(requester, true).any { it.roleName == role.name }, "approving from Slack grants the role")
+        assertTrue(handler.handle(click(approved, approver, SlackTransport.ACTION_DENY)).contains("Already approved"))
+
+        val denied = mk()
+        assertEquals("", handler.handle(click(denied, approver, SlackTransport.ACTION_DENY)))
+        assertEquals("REJECTED", statusOf(denied))
+
+        val closed = mk()
+        assertTrue(handler.handle(click(closed, requester, SlackTransport.ACTION_APPROVE_ONLY)).contains("not authorized"))
+        assertEquals("", handler.handle(click(closed, requester, SlackTransport.ACTION_CLOSE)))
+        assertEquals("CANCELLED", statusOf(closed))
+    }
+
+    @Test
+    fun `a role click is decided on the slack channel, so a slack-only forbid refuses it`() = runBlocking {
+        val role = fx.policyStore.createRole(com.ridi.oss.proxymonster.controlplane.RoleInput("slack-forbidden-${System.nanoTime()}"))
+        fx.cedarPolicyStore.create(
+            com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput(
+                name = "no-slack-approvals-${role.id}",
+                cedarSrc = """forbid(principal, action == Action::"task.approve", resource)
+                    when { resource in Role::"${role.name}" && context has channel && context.channel == "slack" };""",
+            ),
+            updatedBy = null,
+        )
+        val id = fx.accessStore.createRequest(
+            requester, com.ridi.oss.proxymonster.controlplane.AccessRequestInput(roleId = role.id, reason = "x"),
+            AuditActor(requester, channel = "console"), ManagementAuditRecorder(fx.auditStore),
+        ).id
+        assertTrue(handler.handle(click(id, approver, SlackTransport.ACTION_APPROVE_ONLY)).contains("not authorized"))
+        assertEquals("PENDING", statusOf(id))
+        access.approve(approver, null, AuditActor(approver, channel = "console"), id, null)
+        assertEquals("APPROVED", statusOf(id), "the console channel is not forbidden")
     }
 
     @Test

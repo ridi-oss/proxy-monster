@@ -36,7 +36,11 @@
     "statement_hidden": "a query",
     "statement_hidden_note": "_The statement is not shown here. Open the request to read it._",
     "notified": "Notified for approval: {notified}",
-    "failure": "> {error}"
+    "failure": "> {error}",
+    "any_datasource": "any datasource",
+    "duration_hours": "{n} hours",
+    "duration_minutes": "{n} minutes",
+    "spent_rate": "Spent rate: {rate}"
   },
   "action": {
     "review": "Review",
@@ -69,7 +73,9 @@
     "no_actions": "You have no actions on this request.",
     "comment_hint": "Reply in the channel thread to comment.",
     "forbidden": "You cannot open this request.",
-    "done": "Done. The request is now {status}."
+    "done": "Done. The request is now {status}.",
+    "role": "Role *{role}* on *{datasource}* for {duration}.",
+    "rate_reset": "Spent rate: {rate}"
   },
   "thread": {
     "edited": "*{actor}* edited the SQL (revision {revision}).",
@@ -85,5 +91,31 @@
     "cancelled": "The run was canceled.",
     "cc_added": "*{actor}* added {body} as a CC.",
     "cc_removed": "*{actor}* removed {body} from the CCs."
+  },
+  "role": {
+    "requested": "*{requester}* asks for the *{roleName}* role on *{datasource}* for {duration}.{reason}",
+    "requested_fallback": "{requester} asks for the {role} role on {datasource}",
+    "submitted": "Your request for the *{roleName}* role on *{datasource}* is pending approval.{notified}",
+    "submitted_fallback": "Your request for the {role} role is pending approval",
+    "decided_approved": "*{requester}*'s request for the *{roleName}* role on *{datasource}* was approved by *{decidedBy}*.",
+    "decided_rejected": "*{requester}*'s request for the *{roleName}* role on *{datasource}* was denied by *{decidedBy}*.",
+    "decided_fallback": "{requester}'s request for the {role} role was decided by {decidedBy}",
+    "cancelled": "*{requester}*'s request for the *{roleName}* role on *{datasource}* was closed.",
+    "cancelled_fallback": "{requester}'s request for the {role} role was closed",
+    "cc_added": "You were added to *{requester}*'s request for the *{roleName}* role on *{datasource}*.{reason}",
+    "cc_added_fallback": "You were added to {requester}'s request for the {role} role"
+  },
+  "rate_reset": {
+    "requested": "*{requester}* asks to reset their spent result rates.{spentRate}{reason}",
+    "requested_fallback": "{requester} asks to reset their spent result rates",
+    "submitted": "Your request to reset your spent result rates is pending approval.{notified}",
+    "submitted_fallback": "Your rate reset request is pending approval",
+    "decided_approved": "*{requester}*'s request to reset their spent result rates was approved by *{decidedBy}*.",
+    "decided_rejected": "*{requester}*'s request to reset their spent result rates was denied by *{decidedBy}*.",
+    "decided_fallback": "{requester}'s rate reset request was decided by {decidedBy}",
+    "cancelled": "*{requester}*'s request to reset their spent result rates was closed.",
+    "cancelled_fallback": "{requester}'s rate reset request was closed",
+    "cc_added": "You were added to *{requester}*'s request to reset their spent result rates.{reason}",
+    "cc_added_fallback": "You were added to {requester}'s rate reset request"
   }
 }

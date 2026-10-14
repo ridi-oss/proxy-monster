@@ -181,6 +181,12 @@ data class NotificationMessage(
     val failedStatement: FailedStatement? = null,
     /** FORCE_RUN only: the admin who forced the run. */
     val forcedBy: String? = null,
+    /** QUERY, ROLE or RATE_RESET; picks the message text. */
+    val requestKind: String = "QUERY",
+    /** A role request's requested grant length. */
+    val durationSec: Long = 0,
+    /** A rate reset's spent rate, as the requester's denial named it. */
+    val spentRate: String? = null,
     /** Mentioned on a message everyone in a channel reads: who may approve, and the CCs. */
     val approvers: List<String> = emptyList(),
     val ccs: List<String> = emptyList(),

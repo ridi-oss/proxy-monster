@@ -12,7 +12,7 @@ import (
 )
 
 func Register(mux *http.ServeMux, pool *pgxpool.Pool, gate api.Gate) {
-	ac := access{pool: pool, authz: gate.Authz}
+	ac := access{pool: pool, authz: gate.Authz, kotlin: gate.Kotlin}
 	mux.HandleFunc("GET /api/access-requests", gate.RequireAPI(ac.requests))
 	mux.HandleFunc("GET /api/access-grants", gate.RequireAPI(ac.grants))
 	mux.HandleFunc("GET /api/approvals", gate.RequireAPI(ac.ownApprovals))
@@ -144,8 +144,9 @@ func toGrant(g db.AccessGrantsRow) accessGrant {
 }
 
 type access struct {
-	pool  *pgxpool.Pool
-	authz api.Authorizer
+	pool   *pgxpool.Pool
+	authz  api.Authorizer
+	kotlin api.Kotlin
 }
 
 // requests lists the requests (status-filtered when asked) the caller may task.read.

@@ -200,6 +200,15 @@ func (c *Client) DatasourceDeleted(ctx context.Context, name string) error {
 	}{name}, nil)
 }
 
+// RequestNotified asks Kotlin to send the notification for a request a Go write opened ("requested") or decided
+// ("decided").
+func (c *Client) RequestNotified(ctx context.Context, id int64, event string) error {
+	return c.post(ctx, c.upstream.JoinPath("/internal/request-notified").String(), struct {
+		ID    int64  `json:"id"`
+		Event string `json:"event"`
+	}{id, event}, nil)
+}
+
 func (c *Client) post(ctx context.Context, url string, in, out any) error {
 	body, err := json.Marshal(in)
 	if err != nil {

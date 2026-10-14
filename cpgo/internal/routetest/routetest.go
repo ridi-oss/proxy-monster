@@ -31,7 +31,7 @@ type Env struct {
 
 // fakeKotlin records what Go told Kotlin and answers attached as the datasources with a proxy.
 type fakeKotlin struct {
-	Ended, Deleted, Attached []string
+	Ended, Deleted, Attached, Notified []string
 }
 
 func (k *fakeKotlin) SessionsEnded(_ context.Context, p string) error {
@@ -43,6 +43,11 @@ func (k *fakeKotlin) ProxiesAttached(context.Context) ([]string, error) { return
 
 func (k *fakeKotlin) DatasourceDeleted(_ context.Context, name string) error {
 	k.Deleted = append(k.Deleted, name)
+	return nil
+}
+
+func (k *fakeKotlin) RequestNotified(_ context.Context, id int64, event string) error {
+	k.Notified = append(k.Notified, fmt.Sprintf("%d:%s", id, event))
 	return nil
 }
 
@@ -189,4 +194,13 @@ func (e *Env) Exec(t *testing.T, sql string, args ...any) {
 	if _, err := e.St.Pool.Exec(context.Background(), sql, args...); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func (e *Env) Count(t *testing.T, sql string, args ...any) int {
+	t.Helper()
+	var n int
+	if err := e.St.Pool.QueryRow(context.Background(), sql, args...).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
 }

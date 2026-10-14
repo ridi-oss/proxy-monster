@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/ridi-oss/proxy-monster/cpgo/audit"
 	"github.com/ridi-oss/proxy-monster/cpgo/bridge"
 	"github.com/ridi-oss/proxy-monster/cpgo/store/db"
+	"github.com/ridi-oss/proxy-monster/cpgo/timeline"
 )
 
 func getRequest(ctx context.Context, q db.DBTX, id int64) (*accessRequest, error) {
@@ -73,12 +75,12 @@ func (a access) createRequest(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	a.created(w, r, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (int64, error) {
+	a.created(w, r, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (int64, string, error) {
 		q := db.New(tx)
 		id, err := q.CreateRoleRequest(ctx, db.CreateRoleRequestParams{Principal: actor.Principal, RoleID: in.RoleID,
 			DatasourceID: in.DatasourceID, Reason: in.Reason, RequestedDurationSec: duration})
 		if err != nil {
-			return 0, err
+			return 0, "", err
 		}
 		var role *string
 		name, err := q.RoleNameOf(ctx, *in.RoleID)
@@ -86,11 +88,14 @@ func (a access) createRequest(w http.ResponseWriter, r *http.Request) {
 		case err == nil:
 			role = &name
 		case !errors.Is(err, pgx.ErrNoRows):
-			return 0, err
+			return 0, "", err
 		}
 		idText := strconv.FormatInt(id, 10)
-		return id, audit.Admin(ctx, tx, actor, "task.request", audit.Entity("AccessRequest", idText),
-			"open access request #"+idText+" for role '"+orNull(role)+"'")
+		if err := audit.Admin(ctx, tx, actor, "task.request", audit.Entity("AccessRequest", idText),
+			"open access request #"+idText+" for role '"+orNull(role)+"'"); err != nil {
+			return 0, "", err
+		}
+		return id, notifyRequested, timeline.Record(ctx, tx, id, timeline.Requested, &actor.Principal, actor.Channel, nil)
 	})
 }
 
@@ -109,31 +114,49 @@ func (a access) requestRateReset(w http.ResponseWriter, r *http.Request) {
 		api.WriteError(w, http.StatusBadRequest, "common.field_required", map[string]string{"fields": "reason"})
 		return
 	}
-	a.created(w, r, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (int64, error) {
+	a.created(w, r, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (int64, string, error) {
 		id, err := db.New(tx).CreateRateResetRequest(ctx, db.CreateRateResetRequestParams{Principal: actor.Principal,
 			Reason: in.Reason, DenyReason: in.DenyReason})
 		if err != nil {
-			return 0, err
+			return 0, "", err
 		}
 		idText := strconv.FormatInt(id, 10)
-		return id, audit.Admin(ctx, tx, actor, "task.request", audit.Entity("AccessRequest", idText), "open rate reset request #"+idText)
+		if err := audit.Admin(ctx, tx, actor, "task.request", audit.Entity("AccessRequest", idText), "open rate reset request #"+idText); err != nil {
+			return 0, "", err
+		}
+		return id, notifyRequested, timeline.Record(ctx, tx, id, timeline.Requested, &actor.Principal, actor.Channel, nil)
 	})
 }
 
+// The notification Kotlin sends once a write commits, as its AccessService does after its own.
+const (
+	notifyRequested = "requested"
+	notifyDecided   = "decided"
+)
+
+// requestWrite writes on tx and returns the request it names and the notification to send, if any.
+type requestWrite func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (id int64, notify string, err error)
+
 // created commits write and answers 201 with the request it opened.
-func (a access) created(w http.ResponseWriter, r *http.Request, write func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (int64, error)) {
+func (a access) created(w http.ResponseWriter, r *http.Request, write requestWrite) {
 	a.decided(w, r, http.StatusCreated, write)
 }
 
-// decided commits write, then answers status with the request it names as committed.
-func (a access) decided(w http.ResponseWriter, r *http.Request, status int, write func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (int64, error)) {
+// decided commits write, asks Kotlin to send its notification, then answers status with the request as committed.
+func (a access) decided(w http.ResponseWriter, r *http.Request, status int, write requestWrite) {
 	ctx := r.Context()
 	var id int64
+	var notify string
 	err := pgx.BeginFunc(ctx, a.pool, func(tx pgx.Tx) error {
 		var err error
-		id, err = write(ctx, tx, api.ActorOf(ctx))
+		id, notify, err = write(ctx, tx, api.ActorOf(ctx))
 		return err
 	})
+	if err == nil && notify != "" {
+		if nerr := a.kotlin.RequestNotified(ctx, id, notify); nerr != nil {
+			slog.Warn("access: notification not sent", "request", id, "event", notify, "err", nerr)
+		}
+	}
 	var req *accessRequest
 	if err == nil {
 		if req, err = getRequest(ctx, a.pool, id); err == nil && req == nil {
@@ -258,14 +281,17 @@ func (a access) approve(w http.ResponseWriter, r *http.Request, id int64) {
 	if in.DurationSec != nil {
 		duration = *in.DurationSec
 	}
-	a.decided(w, r, http.StatusOK, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (int64, error) {
+	a.decided(w, r, http.StatusOK, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (int64, string, error) {
 		if req.Kind != "RATE_RESET" && req.RoleID == nil {
-			return id, nil
+			return id, "", nil
 		}
 		q := db.New(tx)
 		n, err := q.ApproveRequest(ctx, db.ApproveRequestParams{DecidedBy: &actor.Principal, ID: id})
 		if err != nil || n == 0 {
-			return id, err
+			return id, "", err
+		}
+		if err := timeline.Record(ctx, tx, id, timeline.Approved, &actor.Principal, actor.Channel, nil); err != nil {
+			return id, "", err
 		}
 		idText := strconv.FormatInt(id, 10)
 		if req.Kind == "RATE_RESET" {
@@ -274,18 +300,18 @@ func (a access) approve(w http.ResponseWriter, r *http.Request, id int64) {
 				reason = *req.Reason
 			}
 			if _, err := insertRateReset(ctx, tx, req.Principal, actor.Principal, reason); err != nil {
-				return id, err
+				return id, "", err
 			}
-			return id, audit.Admin(ctx, tx, actor, "task.approve", audit.Entity("AccessRequest", idText),
+			return id, notifyDecided, audit.Admin(ctx, tx, actor, "task.approve", audit.Entity("AccessRequest", idText),
 				"approve rate reset request #"+idText+": reset spent rates of '"+req.Principal+"'")
 		}
 		expires := time.Now().Add(time.Duration(duration) * time.Second)
 		grant, err := q.InsertGrant(ctx, db.InsertGrantParams{RequestID: &id, Principal: req.Principal, RoleID: *req.RoleID,
 			GrantedBy: &actor.Principal, ExpiresAt: &expires})
 		if err != nil {
-			return id, err
+			return id, "", err
 		}
-		return id, audit.Admin(ctx, tx, actor, "task.approve", audit.Entity("AccessGrant", strconv.FormatInt(grant, 10)),
+		return id, notifyDecided, audit.Admin(ctx, tx, actor, "task.approve", audit.Entity("AccessGrant", strconv.FormatInt(grant, 10)),
 			"approve access request #"+idText+": grant role '"+orNull(req.RoleName)+"' to '"+req.Principal+"' for "+
 				strconv.FormatInt(duration, 10)+"s")
 	})
@@ -301,13 +327,16 @@ func (a access) reject(w http.ResponseWriter, r *http.Request, id int64) {
 			err = &api.ManagementError{Code: "common.invalid_value", Params: api.Params{{"field", "body"}}}
 		}
 		if err == nil {
-			a.decided(w, r, http.StatusOK, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (int64, error) {
+			a.decided(w, r, http.StatusOK, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (int64, string, error) {
 				n, err := db.New(tx).RejectRequest(ctx, db.RejectRequestParams{RejectionReason: in.Reason, DecidedBy: &actor.Principal, ID: id})
 				if err != nil || n == 0 {
-					return id, err
+					return id, "", err
+				}
+				if err := timeline.Record(ctx, tx, id, timeline.Rejected, &actor.Principal, actor.Channel, in.Reason); err != nil {
+					return id, "", err
 				}
 				idText := strconv.FormatInt(id, 10)
-				return id, audit.Admin(ctx, tx, actor, "task.approve", audit.Entity("AccessRequest", idText),
+				return id, notifyDecided, audit.Admin(ctx, tx, actor, "task.approve", audit.Entity("AccessRequest", idText),
 					"reject access request #"+idText+" from '"+req.Principal+"'")
 			})
 			return

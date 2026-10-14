@@ -114,6 +114,8 @@ type Kotlin interface {
 	ProxiesAttached(ctx context.Context) ([]string, error)
 	// DatasourceDeleted: drop the in-memory catalog keyed by the deleted datasource's name.
 	DatasourceDeleted(ctx context.Context, name string) error
+	// RequestNotified: a committed write opened or decided the request; send its notification.
+	RequestNotified(ctx context.Context, id int64, event string) error
 }
 
 // Gate authenticates console requests for Go routes.

@@ -68,6 +68,9 @@ data class InternalPrincipalRequest(val principal: String)
 data class InternalNameRequest(val name: String)
 
 @Serializable
+data class InternalRequestNotified(val id: Long, val event: String)
+
+@Serializable
 data class InternalNamesResult(val names: List<String>)
 
 @Serializable
@@ -101,6 +104,7 @@ fun Route.internalAuthorizeRoute(
     sessionsEnded: (principal: String) -> Unit = {},
     proxiesAttached: () -> Set<String> = { emptySet() },
     datasourceDeleted: (name: String) -> Unit = {},
+    requestNotified: (id: Long, event: String) -> Boolean = { _, _ -> false },
 ) {
     if (token.isNullOrEmpty()) return
     post("/internal/authorize") {
@@ -190,6 +194,17 @@ fun Route.internalAuthorizeRoute(
             return@post call.respond(HttpStatusCode.NotFound)
         }
         datasourceDeleted(call.receive<InternalNameRequest>().name)
+        call.respond(HttpStatusCode.NoContent)
+    }
+    // cp-go committed a write that opened ("requested") or decided ("decided") a request: send its notification.
+    post("/internal/request-notified") {
+        if (!constantTimeEquals(call.request.headers[INTERNAL_TOKEN_HEADER], token)) {
+            return@post call.respond(HttpStatusCode.NotFound)
+        }
+        val request = call.receive<InternalRequestNotified>()
+        if (!requestNotified(request.id, request.event)) {
+            return@post call.respondError(HttpStatusCode.BadRequest, "common.invalid_value", mapOf("field" to "event"))
+        }
         call.respond(HttpStatusCode.NoContent)
     }
 }

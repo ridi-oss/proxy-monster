@@ -16,6 +16,7 @@ import com.ridi.oss.proxymonster.controlplane.management.AuditSource
 import com.ridi.oss.proxymonster.controlplane.management.DatasourceManagementService
 import com.ridi.oss.proxymonster.controlplane.management.IdentityManagementService
 import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
+import com.ridi.oss.proxymonster.controlplane.notify.NotificationEvent
 import com.ridi.oss.proxymonster.controlplane.notify.installNotifications
 import com.ridi.oss.proxymonster.controlplane.source.GitHubAdapter
 import com.ridi.oss.proxymonster.controlplane.source.GitHubSourceFlow
@@ -762,6 +763,14 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
             config.internalToken, authz, core::mayConnectById, cedarPolicyStore::markCommittedMutation,
             core::mayRequestById, runExecService::closeSessionsForPrincipal, core.proxyEventsHub::attached,
             { name -> core.connectionCatalog.invalidateDatasource(name) },
+            { id, event ->
+                val req = core.accessStore.getRequest(id)
+                when {
+                    event == "requested" -> true.also { req?.let { notifications?.emitRequestedEvent(it) } }
+                    event == "decided" -> true.also { req?.let { notifications?.emitEvent(NotificationEvent.TASK_DECIDED, it) } }
+                    else -> false
+                }
+            },
         )
 
         // Dev-only login shortcut; gated by PM_AUTH_DEBUG. OIDC (above) is the production path.

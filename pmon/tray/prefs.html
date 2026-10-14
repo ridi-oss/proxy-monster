@@ -175,6 +175,7 @@ h1 { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: -0.025em; }
 .about { display: grid; justify-items: center; gap: 6px; padding: 18px 0 6px; text-align: center; }
 .about .mark { width: 64px; height: 64px; border-radius: 16px; }
 .about .mark svg { width: 34px; height: 34px; }
+.group { margin: 22px 0 10px; font-size: 13px; font-weight: 600; color: var(--muted-foreground); }
 .about h2 { margin: 8px 0 0; font-size: 18px; font-weight: 600; letter-spacing: -0.02em; }
 .kv { display: grid; grid-template-columns: max-content 1fr; gap: 8px 18px; }
 .kv dt { color: var(--muted-foreground); }
@@ -236,7 +237,10 @@ function call(name, ...args) {
 }
 
 let state = { running: true, servers: [], loginItemOn: false, loginItemShown: false, versions: {}, language: 'system', lang: 'en', theme: 'system' };
-let ai = null, pane = 'servers', adding = false, editing = null, menuFor = null, err = '';
+// adding is the daemon a new server goes to ('' this machine's, else a remote's target), null when not adding;
+// editing and menuFor hold a server's key.
+let ai = null, pane = 'servers', adding = null, editing = null, menuFor = null, err = '';
+const key = (r, n) => (r ? 'r:' + r + '|' : '') + n;
 
 function applyAppearance() {
   lang = I18N[state.lang] ? state.lang : 'en';
@@ -288,8 +292,8 @@ function renderStatus() {
 
 function badge(dot, key) { return `<span class="badge"><span class="dot ${dot}"></span>${esc(t(key))}</span>`; }
 
-function serverCard(s) {
-  if (editing === s.name) return editCard(s);
+function serverCard(s, r = '') {
+  if (editing === key(r, s.name)) return editCard(s, r);
   const b = s.busy ? badge('busy', 's.badge.signingIn') : s.ended ? badge('warn', 's.badge.ended')
     : s.signedIn ? (s.ending ? badge('warn', 's.badge.ending') : badge('ok', 's.badge.signedIn')) : badge('', 's.badge.signedOut');
   const body = s.signedIn || s.ended ? `
@@ -303,23 +307,24 @@ function serverCard(s) {
     : s.ended ? (s.tokenEndsAt ? t('s.hint.endedUntil', { time: until }) : t('s.hint.ended'))
     : s.signedIn ? t('s.hint.left', { left: s.left }) : t('s.hint.signedOut');
   const primary = s.busy ? `<button class="btn" disabled>${esc(t('s.btn.waiting'))}</button>`
-    : `<button class="btn ${s.signedIn && !s.ending ? '' : 'primary'}" data-act="signin" data-s="${esc(s.name)}">${esc(t(s.signedIn || s.ended ? 's.btn.signInAgain' : 's.btn.signIn'))}</button>`;
-  const menu = menuFor === s.name ? `<div class="menu-pop">
-      ${s.signedIn || s.ended ? `<button data-act="signout" data-s="${esc(s.name)}">${esc(t('s.btn.signOut'))}</button>` : ''}
-      <button data-act="edit" data-s="${esc(s.name)}">${esc(t('s.btn.changeAddress'))}</button>
-      <button class="danger" data-act="remove" data-s="${esc(s.name)}">${esc(t('s.btn.remove'))}</button></div>` : '';
+    : `<button class="btn ${s.signedIn && !s.ending ? '' : 'primary'}" data-act="signin" data-s="${esc(s.name)}" data-r="${esc(r)}">${esc(t(s.signedIn || s.ended ? 's.btn.signInAgain' : 's.btn.signIn'))}</button>`;
+  const at = `data-s="${esc(s.name)}" data-r="${esc(r)}"`;
+  const menu = menuFor === key(r, s.name) ? `<div class="menu-pop">
+      ${s.signedIn || s.ended ? `<button data-act="signout" ${at}>${esc(t('s.btn.signOut'))}</button>` : ''}
+      <button data-act="edit" ${at}>${esc(t('s.btn.changeAddress'))}</button>
+      <button class="danger" data-act="remove" ${at}>${esc(t('s.btn.remove'))}</button></div>` : '';
   return `<div class="card">
     <div class="card-body">
       <div class="row"><span class="avatar">${SHIELD}</span><div class="grow"><div class="title">${esc(s.name)}</div><div class="sub mono">${esc(s.url)}</div>${s.version ? `<div class="sub">${esc(t('s.server.version', { version: s.version }))}</div>` : ''}</div>${b}</div>
       ${body}
     </div>
     <div class="card-foot"><span class="hint">${esc(hint)}</span>
-      <span class="menu"><button class="btn ghost" data-act="menu" data-s="${esc(s.name)}" aria-label="${esc(t('s.btn.more'))}">${MORE}</button>${menu}</span>${primary}</div>
+      <span class="menu"><button class="btn ghost" data-act="menu" ${at} aria-label="${esc(t('s.btn.more'))}">${MORE}</button>${menu}</span>${primary}</div>
   </div>`;
 }
 
-function editCard(s) {
-  return `<form class="card" id="form">
+function editCard(s, r = '') {
+  return `<form class="card" id="form" data-r="${esc(r)}">
     <div class="card-body">
       <div class="row"><span class="avatar">${SHIELD}</span><div class="grow"><div class="title">${esc(s ? t('s.form.changeTitle', { name: s.name }) : t('s.form.addTitle'))}</div><div class="sub">${esc(t(s ? 's.form.changeDesc' : 's.form.addDesc'))}</div></div></div>
       ${s ? '' : `<div class="field"><label for="name">${esc(t('s.form.name'))}</label><input id="name" class="mono" placeholder="acme" autocomplete="off" spellcheck="false"><small>${esc(t('s.form.nameHint'))}</small></div>`}
@@ -337,12 +342,17 @@ function emptyState(titleKey, bodyKey, button) {
 
 function paneHead(title, desc) { return `<header><h1>${esc(t(title))}</h1><p>${esc(t(desc))}</p></header>`; }
 
+function serverList(servers, r) {
+  const add = adding === r ? editCard(null, r) : `<button class="add" data-act="add" data-r="${esc(r)}">${PLUS}${esc(t(servers.length ? 's.btn.addAnother' : 's.btn.add'))}</button>`;
+  return servers.map(s => serverCard(s, r)).join('') + add;
+}
+
 function serversPane() {
-  const list = state.servers.map(serverCard).join('');
-  const empty = !state.servers.length && !adding && state.running ? emptyState('s.empty.title', 's.empty.body', 'add') : '';
-  const add = adding ? editCard(null) : state.servers.length ? `<button class="add" data-act="add">${PLUS}${esc(t('s.btn.addAnother'))}</button>` : '';
+  const empty = !state.servers.length && adding === null && state.running ? emptyState('s.empty.title', 's.empty.body', 'add') : '';
+  const local = empty || (state.running ? serverList(state.servers, '') : '');
+  const remotes = (state.remotes || []).filter(r => r.servers).map(r => `<h2 class="group">${esc(t('s.remote.servers', { remote: r.target }))}</h2>${serverList(r.servers, r.target)}`).join('');
   const stopped = !state.running ? `<div class="card"><div class="card-body"><div class="row"><div class="grow"><div class="title">${esc(t('s.stopped.title'))}</div><div class="sub">${esc(t('s.stopped.body'))}</div></div><button class="btn primary" data-act="start">${esc(t('s.btn.start'))}</button></div></div></div>` : '';
-  return `<section class="pane">${paneHead('s.servers.title', 's.servers.desc')}${stopped}${list}${empty}${add}${state.running ? remotesCard() : ''}</section>`;
+  return `<section class="pane">${paneHead('s.servers.title', 's.servers.desc')}${stopped}${local}${remotes}${state.running ? remotesCard() : ''}</section>`;
 }
 
 const REMOTE_DOT = { connected: 'ok', connecting: 'busy', 'no-daemon': 'warn', 'no-pmon': 'warn', down: 'warn' };
@@ -429,7 +439,7 @@ function render() {
   if (keep && document.getElementById(keep)) document.getElementById(keep).focus();
 }
 
-function go(p) { pane = p; adding = false; editing = null; menuFor = null; err = ''; render(); if (p === 'ai') refreshAI(); if (p === 'general') refreshTerm(); }
+function go(p) { pane = p; adding = null; editing = null; menuFor = null; err = ''; render(); if (p === 'ai') refreshAI(); if (p === 'general') refreshTerm(); }
 $('#nav').addEventListener('click', e => { const b = e.target.closest('button'); if (b) go(b.dataset.pane); });
 
 document.addEventListener('change', async e => {
@@ -439,15 +449,16 @@ document.addEventListener('change', async e => {
 document.addEventListener('click', async e => {
   const b = e.target.closest('[data-act]');
   if (!b) { if (menuFor) { menuFor = null; render(); } return; }
-  const s = b.dataset.s;
+  const s = b.dataset.s, r = b.dataset.r || '';
+  const servers = r ? ((state.remotes || []).find(x => x.target === r) || {}).servers || [] : state.servers;
   switch (b.dataset.act) {
-    case 'add': adding = true; editing = null; err = ''; render(); $('#form')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); $('#name')?.focus({ preventScroll: true }); break;
-    case 'cancel': adding = false; editing = null; err = ''; render(); break;
-    case 'menu': menuFor = menuFor === s ? null : s; render(); break;
-    case 'edit': menuFor = null; editing = s; err = ''; render.last = null; render(); $('#url').value = (state.servers.find(x => x.name === s) || {}).url || ''; $('#url')?.focus(); break;
-    case 'signin': await act(call('signIn', s)); break;
-    case 'signout': menuFor = null; await act(call('signOut', s), t('s.toast.signedOut', { name: s })); break;
-    case 'remove': menuFor = null; await act(call('removeServer', s), t('s.toast.removed', { name: s })); break;
+    case 'add': adding = r; editing = null; err = ''; render(); $('#form')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); $('#name')?.focus({ preventScroll: true }); break;
+    case 'cancel': adding = null; editing = null; err = ''; render(); break;
+    case 'menu': menuFor = menuFor === key(r, s) ? null : key(r, s); render(); break;
+    case 'edit': menuFor = null; adding = null; editing = key(r, s); err = ''; render.last = null; render(); $('#url').value = (servers.find(x => x.name === s) || {}).url || ''; $('#url')?.focus(); break;
+    case 'signin': await act(call('signIn', s, r)); break;
+    case 'signout': menuFor = null; await act(call('signOut', s, r), t('s.toast.signedOut', { name: s })); break;
+    case 'remove': menuFor = null; await act(call('removeServer', s, r), t('s.toast.removed', { name: s })); break;
     case 'addremote': { const v = ($('#remoteTarget')?.value || '').trim(); if (!v) break; await act(call('addRemote', v), t('s.toast.remoteAdded', { remote: v })); const i = $('#remoteTarget'); if (i) i.value = ''; break; }
     case 'removeremote': await act(call('removeRemote', s), t('s.toast.remoteRemoved', { remote: s })); break;
     case 'start': await act(call('start')); break;
@@ -474,26 +485,27 @@ document.addEventListener('click', async e => {
 
 document.addEventListener('submit', async e => {
   e.preventDefault();
-  const name = editing ?? $('#name').value.trim().toLowerCase();
+  const r = e.target.dataset.r || '';
+  const name = editing ? editing.slice(key(r, '').length) : $('#name').value.trim().toLowerCase();
   const url = $('#url').value.trim().replace(/\/+$/, '');
   if (!name) { err = t('s.form.errName'); return render(); }
   if (!/^https:\/\//.test(url) && !/^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/.test(url)) { err = t('s.form.errUrl'); return render(); }
-  const e2 = await call('setServer', name, url);
-  if (e2) { err = e2; return render(); }
-  const wasAdding = adding;
-  adding = false; editing = null; err = '';
+  const e2 = await call('setServer', name, url, r);
+  if (e2 && !e2.warn) { err = e2; return render(); }
+  const wasAdding = adding !== null;
+  adding = null; editing = null; err = '';
   await refresh();
-  toast(t(wasAdding ? 's.toast.added' : 's.toast.updated', { name }));
+  toast(e2 ? e2.warn : t(wasAdding ? 's.toast.added' : 's.toast.updated', { name }));
 });
 
 document.addEventListener('keydown', e => {
   if (e.metaKey && ['1', '2', '3', '4'].includes(e.key)) { e.preventDefault(); go(PANES[+e.key - 1]); }
-  if (e.key === 'Escape' && (adding || editing || menuFor)) { adding = false; editing = null; menuFor = null; err = ''; render(); }
+  if (e.key === 'Escape' && (adding !== null || editing || menuFor)) { adding = null; editing = null; menuFor = null; err = ''; render(); }
 });
 
 // ---- demo backend, used only when the page is opened outside the app ----
 const demoState = {
-  running: true, loginItemOn: true, loginItemShown: true, remotes: [{ target: 'devbox', state: 'connected' }, { target: 'dana@build.example', state: 'down', error: 'ssh: connect to host build.example port 22: Connection refused' }], uninstallShown: true, language: 'system', lang: (navigator.language || 'en').startsWith('ko') ? 'ko' : 'en', theme: 'system',
+  running: true, loginItemOn: true, loginItemShown: true, remotes: [{ target: 'devbox', state: 'connected', servers: [{ name: 'acme', url: 'https://pm.acme.example', version: '0.1.31', signedIn: true, account: 'dana@acme.example', endsAt: 'Today 19:05', left: '9h 37m left', datasources: 12 }] }, { target: 'dana@build.example', state: 'down', error: 'ssh: connect to host build.example port 22: Connection refused' }], uninstallShown: true, language: 'system', lang: (navigator.language || 'en').startsWith('ko') ? 'ko' : 'en', theme: 'system',
   versions: { app: '0.1.8', pmon: '0.1.8', daemon: '0.1.8' }, updates: { shown: true, auto: true, forced: false },
   servers: [
     { name: 'acme', url: 'https://pm.acme.example', version: '0.1.31', signedIn: true, account: 'dana@acme.example', endsAt: 'Today 18:40', left: '9h 12m left', datasources: 12 },
@@ -507,15 +519,16 @@ const demoAI = [
 ];
 async function demo(name, args) {
   await new Promise(r => setTimeout(r, name === 'aiState' ? 500 : 120));
-  const find = n => demoState.servers.find(s => s.name === n);
+  const list = r => r ? demoState.remotes.find(x => x.target === r).servers : demoState.servers;
+  const find = (n, r) => list(r).find(s => s.name === n);
   switch (name) {
     case 'state': return JSON.parse(JSON.stringify(demoState));
     case 'aiState': return JSON.parse(JSON.stringify(demoAI));
     case 'terminalState': return { shown: true, allUsers: true, mode: 'me', link: '~/.local/bin/pmon', found: '~/.local/bin/pmon' };
-    case 'setServer': { const [n, u] = args; const s = find(n); if (s) { s.url = u; s.signedIn = false; } else demoState.servers.push({ name: n, url: u, signedIn: false, datasources: 0 }); return ''; }
-    case 'removeServer': demoState.servers = demoState.servers.filter(s => s.name !== args[0]); return '';
-    case 'signIn': { const s = find(args[0]); Object.assign(s, { signedIn: true, ended: false, ending: false, account: 'dana@acme.example', endsAt: 'Tomorrow 09:40', left: '12h left', datasources: s.datasources || 7 }); return ''; }
-    case 'signOut': find(args[0]).signedIn = false; return '';
+    case 'setServer': { const [n, u, r] = args; const s = find(n, r); if (s) { s.url = u; s.signedIn = false; } else list(r).push({ name: n, url: u, signedIn: false, datasources: 0 }); return ''; }
+    case 'removeServer': { const l = list(args[1]); l.splice(l.findIndex(s => s.name === args[0]), 1); return ''; }
+    case 'signIn': { const s = find(args[0], args[1]); Object.assign(s, { signedIn: true, ended: false, ending: false, account: 'dana@acme.example', endsAt: 'Tomorrow 09:40', left: '12h left', datasources: s.datasources || 7 }); return ''; }
+    case 'signOut': find(args[0], args[1]).signedIn = false; return '';
     case 'setOpenAtLogin': demoState.loginItemOn = args[0]; return '';
     case 'setAutoUpdates': demoState.updates.auto = args[0]; return '';
     case 'setLanguage': demoState.language = args[0]; demoState.lang = args[0] === 'system' ? ((navigator.language || 'en').startsWith('ko') ? 'ko' : 'en') : args[0]; return '';
@@ -525,7 +538,7 @@ async function demo(name, args) {
   }
 }
 
-window.pmOpenAdd = () => { go('servers'); adding = true; render(); $('#form')?.scrollIntoView({ block: 'nearest' }); $('#name')?.focus({ preventScroll: true }); };
+window.pmOpenAdd = () => { go('servers'); adding = ''; render(); $('#form')?.scrollIntoView({ block: 'nearest' }); $('#name')?.focus({ preventScroll: true }); };
 refresh().then(() => { if (window.pmStartWithAdd) window.pmOpenAdd(); });
 refreshAI();
 </script>

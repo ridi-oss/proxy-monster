@@ -246,6 +246,7 @@
   "menu.remoteNoPmon": "{remote} — pmon을 찾을 수 없음",
   "menu.remoteNotRunning": "{remote} — 실행 중이 아님",
   "menu.notForwarded": "아직 포워딩되지 않음",
+  "s.remote.servers": "{remote}의 서버",
   "s.remote.title": "원격 컴퓨터",
   "s.remote.desc": "SSH로 다른 Mac 또는 Linux 컴퓨터의 pmon 데몬을 사용합니다. 여기에서 로그인하고, 이 컴퓨터에서 그 컴퓨터의 데이터소스에 연결합니다.",
   "s.remote.placeholder": "SSH 대상 (예: devbox, dana@devbox)",

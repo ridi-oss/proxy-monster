@@ -212,7 +212,9 @@ type Decision struct {
 	// the proxy strips this statement's target-DB error/notice messages down to code + severity. See
 	// docs/diagnostic-redaction.md.
 	SanitizeDiagnostics bool
-	CheckTargetSyntax   bool
+	// ForwardTargetError: send the client TargetError (redacted) and run nothing.
+	ForwardTargetError bool
+	TargetError        *TargetError
 	// ResultFingerprint is the decision's authorization requirements (the analyzer's result-read grants). The
 	// proxy does not interpret them; it only echoes them back on a RunDecision so an execute-under-R run can
 	// freeze them with the stored result (the control plane's result-view drift gate).
@@ -295,8 +297,16 @@ func ParseEnfActionName(s string) pb.EnfAction {
 
 // DecisionOutcome is the result of a Decide call: Ok(decision) or an Err message (fail closed).
 type DecisionOutcome struct {
-	Decision *Decision
-	Err      string // non-empty == the control-plane call failed / was unreachable; caller fails closed
+	Decision    *Decision
+	Err         string // non-empty == the control-plane call failed / was unreachable; caller fails closed
+	TargetError *TargetError
+}
+
+// TargetError is the target's answer to preparing a statement: its error code and the protocol's own
+// error message, which the protocol forwards as-is.
+type TargetError struct {
+	Code    string
+	Message any
 }
 
 // IsErr reports whether the Decide call failed.
@@ -325,6 +335,8 @@ type DecideRequest struct {
 	// RunCommands executes one before-decide round on the held target connection; the dialect's command
 	// runner interprets each ProxyCommand arm and may extend Session with what it fetched.
 	RunCommands func([]*pb.ProxyCommand, *SessionObservation) error
+	// CheckTargetError prepares sql on the target without executing it; nil means the statement prepared.
+	CheckTargetError func(sql string) (*TargetError, error)
 }
 
 // Decider performs the per-query control-plane decision. It is injected so the engine is unit-testable;
@@ -531,6 +543,7 @@ type AuthzInput struct {
 	ProbeSession     func() (SessionObservation, error)
 	ProbeTempColumns func() ([]TempColumn, error)
 	RunCommands      func([]*pb.ProxyCommand, *SessionObservation) error
+	CheckTargetError func(sql string) (*TargetError, error)
 }
 
 // Authorize gathers namespace context (cached unless dirty), gathers session-temp columns when the
@@ -563,13 +576,14 @@ func (e *QueryEngine) Authorize(in AuthzInput) Verdict {
 	}
 
 	out := e.decider.Decide(DecideRequest{
-		Session:      e.session.Clone(),
-		Token:        in.Token,
-		SQL:          in.SQL,
-		ClientAddr:   in.ClientAddr,
-		TempColumns:  temps,
-		ConnectionID: in.ConnectionID,
-		RunCommands:  in.RunCommands,
+		Session:          e.session.Clone(),
+		Token:            in.Token,
+		SQL:              in.SQL,
+		ClientAddr:       in.ClientAddr,
+		TempColumns:      temps,
+		ConnectionID:     in.ConnectionID,
+		RunCommands:      in.RunCommands,
+		CheckTargetError: in.CheckTargetError,
 	})
 	if out.IsErr() {
 		return Fail{Message: out.Err}
@@ -577,6 +591,14 @@ func (e *QueryEngine) Authorize(in AuthzInput) Verdict {
 	// Per-decision, NOT latched: an ALLOW whose leak set is fully readable relays raw even right after a
 	// MASK (docs/diagnostic-redaction.md).
 	e.sanitizeDiag = out.Decision.SanitizeDiagnostics
+	if out.Decision.ForwardTargetError {
+		if out.TargetError == nil {
+			return Fail{Message: "control plane asked to forward a target error the proxy did not observe"}
+		}
+		// A Deny, so a path that does not forward target errors still refuses the statement.
+		out.Decision.TargetError = out.TargetError
+		return Deny{Decision: out.Decision}
+	}
 	switch out.Decision.Action {
 	case "ALLOW":
 		return Proceed{Decision: out.Decision, RewrittenSQL: out.Decision.RewrittenSQL}

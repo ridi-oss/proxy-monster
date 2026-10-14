@@ -100,6 +100,12 @@ class EnginesTest {
         }
     }
 
+    @Test fun `only engines whose proxy can prepare without running ask for a target error check`() {
+        assertTrue(Engine.MYSQL.checksTargetErrors)
+        assertTrue(Engine.POSTGRES.checksTargetErrors)
+        assertFalse(Engine.ATHENA.checksTargetErrors)
+    }
+
     @Test fun `systemSchemas is the concrete enumerable set per engine`() {
         assertEquals(setOf("information_schema", "mysql", "performance_schema", "sys"), Engine.MYSQL.systemSchemas)
         assertEquals(setOf("pg_catalog", "information_schema"), Engine.POSTGRES.systemSchemas)

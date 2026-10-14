@@ -226,7 +226,10 @@ data class DecisionContext(
     val referencedSchemas: Set<com.ridi.oss.proxymonster.grpc.ObjectRef> = emptySet(),
     /** Parsed dotted-identifier candidates used by the catalog-miss retry path. */
     val schemaCandidates: Set<com.ridi.oss.proxymonster.grpc.ObjectRef> = emptySet(),
-    val checkTargetSyntax: Boolean = false,
+    /** An unanalyzable deny that becomes the target's own error when the target rejects the statement. */
+    val checkTargetError: Boolean = false,
+    /** The proxy sends the target's error from its check, redacted, and runs nothing. */
+    val forwardTargetError: Boolean = false,
 )
 
 /**
@@ -623,6 +626,7 @@ fun decideQuery(
     if (authz.authorizeDatasourceActionId(principal, parents, kindAction, ds.name, context, ds.tags) !is AuthzDecision.Allow) {
         val kindName = statementKind.name.removePrefix("STATEMENT_KIND_").lowercase()
         return policyDeny("statement kind '$kindName' is not permitted", roleList, derivedTags)
+            .copy(checkTargetError = !facts.hasStatementExec())
     }
 
     // A resolved statement that touches no column/table/function, changes no catalog, and calls no function
@@ -690,7 +694,7 @@ fun decideQuery(
             ).withCaps(datasourceCaps).let { relay ->
                 if (relaysRows(statementKind)) spentRate(auditStore, principal, ds.name, datasourceCaps)?.let { deny(it) } ?: relay else relay
             }
-            is AuthzDecision.Deny -> deny(reason, catalogMiss = true).copy(checkTargetSyntax = true)
+            is AuthzDecision.Deny -> deny(reason, catalogMiss = true).copy(checkTargetError = true)
         }
     }
 
@@ -1068,6 +1072,17 @@ private fun policyDeny(
  * ordinary policy DENY (SQLSTATE 42501/1142), never a gRPC status, so the client sees the same shape as any
  * other denied statement.
  */
+// Nothing runs: the client gets the target's error for a statement the target would reject anyway.
+internal fun DecisionContext.targetErrorAllow(errorCode: String): DecisionContext = copy(
+    action = EnfAction.ALLOW,
+    denyReason = null,
+    failedStage = null,
+    detail = "unanalyzable; the target rejected it (error $errorCode)",
+    checkTargetError = false,
+    forwardTargetError = true,
+    sanitizeDiagnostics = true,
+)
+
 internal fun wireTaskForbiddenDeny(
     roles: List<String>,
     contextTags: List<String>,

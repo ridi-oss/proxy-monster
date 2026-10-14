@@ -266,6 +266,9 @@ func (s *Server) handleConn(clientConn net.Conn) {
 					ConnectionID: identity.ConnectionID,
 					ProbeSession: func() (engine.SessionObservation, error) { return probeSession(targetDbConn, deprecateEOF) },
 					RunCommands:  refetcher.RunAll,
+					CheckTargetError: func(sql string) (*engine.TargetError, error) {
+						return checkTargetError(targetDbConn, deprecateEOF, sql)
+					},
 				}, refetcher, nil, func(toSend string, masks []*pb.ColumnMask, dec *engine.Decision) (bool, error) {
 					queryPayload := mysqlwire.ComQueryPayload(toSend)
 					if len(queryPayload) >= maxPacketPayload {
@@ -292,12 +295,12 @@ func (s *Server) handleConn(clientConn net.Conn) {
 					return clean, nil
 				})
 				if denied && serveErr == nil {
-					rejected, err := writeDeny(clientConn, targetDbConn, deprecateEOF, seqBase, sql, decision)
+					forwarded, err := writeDeny(clientConn, seqBase, decision, errRedactor(qe))
 					if err != nil {
 						return 0, true, true
 					}
-					if rejected {
-						qe.AwaitCompletion(engine.EmitCompletion(s.client, decision, relayStats, engine.StatusRejected, start))
+					if forwarded {
+						qe.AwaitCompletion(engine.EmitCompletion(s.client, decision, relayStats, engine.StatusError, start))
 					}
 					return lastSeq, stop, false
 				}
@@ -588,6 +591,9 @@ func (s *Server) authorize(
 		ConnectionID: connectionID,
 		ProbeSession: probeSession,
 		RunCommands:  runCommands,
+		CheckTargetError: func(sql string) (*engine.TargetError, error) {
+			return checkTargetError(targetDbConn, deprecateEOF, sql)
+		},
 	})
 	switch v := verdict.(type) {
 	case engine.Fail:
@@ -601,9 +607,9 @@ func (s *Server) authorize(
 		return engine.Proceed{}, false, errors.New("mysqlproxy: authorization failed mechanically")
 	case engine.Deny:
 		start := time.Now()
-		rejected, err := writeDeny(clientConn, targetDbConn, deprecateEOF, seq, sql, v.Decision)
-		if rejected {
-			qe.AwaitCompletion(engine.EmitCompletion(s.client, v.Decision, engine.RelayStats{}, engine.StatusRejected, start))
+		forwarded, err := writeDeny(clientConn, seq, v.Decision, errRedactor(qe))
+		if forwarded {
+			qe.AwaitCompletion(engine.EmitCompletion(s.client, v.Decision, engine.RelayStats{}, engine.StatusError, start))
 		}
 		return engine.Proceed{}, false, err
 	case engine.Proceed:

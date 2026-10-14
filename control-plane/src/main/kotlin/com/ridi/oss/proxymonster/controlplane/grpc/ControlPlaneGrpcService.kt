@@ -90,12 +90,12 @@ private const val TABLE_DETAIL_STREAM_TIMEOUT_MS = 60_000L
 // error instead of a stalled run channel. Bump it on any incompatible wire change. It MUST match the proxy's
 // goproxy cp.ProtocolVersion; the two are separate constants in separate languages kept in lockstep by hand —
 // a server-v* release always ships both at the same value.
-internal const val CONTROL_PROTOCOL_VERSION = 4
+internal const val CONTROL_PROTOCOL_VERSION = 5
 
 // The completion-event terminal statuses the proxy reports: a clean finish, a target DB/relay error carrying
 // partial counts, or a canceled statement. Any other value is rejected fail-closed so a malformed report
 // can't write an uninterpretable outcome into the audit trail.
-private val COMPLETION_STATUSES = setOf("ok", "error", "canceled", "rejected")
+private val COMPLETION_STATUSES = setOf("ok", "error", "canceled")
 
 /**
  * Build the session-temp overlay from a decide request's proxy-supplied [temps], applying BOTH
@@ -262,6 +262,7 @@ class ControlPlaneGrpcService(
             val outcome = decideConnection(
                 core, request.connectionId, id.principal, ds, request.sql, request.searchPathList,
                 clientAddr, request.session, channel, assumeRoles, tempColumns, httpRequesterIp = httpIp,
+                targetCheck = if (request.hasTargetCheck()) request.targetCheck else null,
             ) ?: throw StatusException(Status.NOT_FOUND.withDescription("connection disappeared during Decide"))
         ) {
             is EnforcementOutcome.BeforeDecide -> beforeDecideDecision(outcome.commands)

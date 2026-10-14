@@ -69,8 +69,8 @@ class UnanalyzableGateDbTest {
         // the schema, and every column the analyzer would have masked is relayed in the clear.
         assertTrue(floor.catalogMiss, "the deny carries catalogMiss so decideConnection refetches + retries first")
         assertTrue(permitted.catalogMiss, "the relay carries catalogMiss so refetch-first runs before it stands")
-        assertTrue(floor.checkTargetSyntax, "the floor deny asks the proxy to forward a target syntax error instead")
-        assertFalse(permitted.checkTargetSyntax, "a relay runs the statement, so it never asks for a syntax check")
+        assertTrue(floor.checkTargetError, "the floor deny asks the proxy whether the target rejects the statement")
+        assertFalse(permitted.checkTargetError, "a relay runs the statement, so it never asks for a target error check")
     }
 
     // The cross-schema case the flag exists for, driven through the REAL analyzer rather than a synthetic

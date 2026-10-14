@@ -38,7 +38,7 @@ internal fun DecisionContext.toWireDecision(
             // The diagnostic-redaction decision (docs/diagnostic-redaction.md), computed per
             // decision in decideQuery (Cedar + engine capability + action).
             this.sanitizeDiagnostics = ctx.sanitizeDiagnostics
-            checkTargetSyntax = ctx.checkTargetSyntax
+            forwardTargetError = ctx.forwardTargetError
             // Echoed back on RunDecision so an execute-under-R run freezes it with the stored result and a
             // later view denies authorization drift (decideResultView). The proxy does not read these.
             resultFingerprint.addAll(ctx.resultFingerprint)

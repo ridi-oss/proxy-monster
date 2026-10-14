@@ -28,8 +28,12 @@ message ProxyCommand {
   oneof command {
     Refetch refetch = 1;
     proxymonster.athena.v1.FetchAthenaPreparedDefinition fetch_athena_prepared_definition = 2;
+    CheckTargetError check_target_error = 3;
   }
 }
+// Prepare the statement on the target without executing it, and re-send the request with the outcome in
+// DecisionRequest.target_check.
+message CheckTargetError {}
 message Refetch {
   string schema = 1;          // the schema to conditionally re-introspect
   // The control-plane's currently-held content hash for (connection, schema).
@@ -264,6 +268,12 @@ message DecisionRequest {
   // What the proxy observed on the held target session before this statement; the control plane
   // forwards it unchanged as EngineConfig.session.
   proxymonster.analyzer.v1.SessionObservation session = 14;
+  // The outcome of a check_target_error command; absent until the control plane asks for one.
+  TargetCheck target_check = 15;
+}
+message TargetCheck {
+  // The target's error code (MySQL error number, PostgreSQL SQLSTATE); empty when the statement prepared.
+  string error_code = 1;
 }
 
 // One column of a session-temp table on a connection. Carries no classification — a temp is
@@ -335,7 +345,8 @@ message Verdict {
   int64 max_bytes = 13;
   // The engine-specific companion to rewritten_sql (analyzer.proto Submission); absent = text only.
   proxymonster.analyzer.v1.Submission submission = 14;
-  bool check_target_syntax = 15;
+  // The proxy sends the target's error from check_target_error, redacted, and runs nothing.
+  bool forward_target_error = 15;
 }
 message BeforeDecide {
   repeated ProxyCommand commands = 1;

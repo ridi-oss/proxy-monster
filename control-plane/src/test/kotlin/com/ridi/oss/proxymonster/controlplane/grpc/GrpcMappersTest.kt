@@ -72,10 +72,10 @@ class GrpcMappersTest {
     }
 
     @Test
-    fun `the target syntax check crosses only when the decision asks for it`() {
-        val checked = ctx(EnfAction.DENY, denyReason = "fail-closed").copy(checkTargetSyntax = true).toWireDecision(1, 0, emptyList()).verdict
-        assertTrue(checked.checkTargetSyntax)
-        assertFalse(ctx(EnfAction.DENY, denyReason = "fail-closed").toWireDecision(1, 0, emptyList()).verdict.checkTargetSyntax)
+    fun `the target error forward crosses only when the decision asks for it`() {
+        val forwarded = ctx(EnfAction.ALLOW).copy(forwardTargetError = true).toWireDecision(1, 0, emptyList()).verdict
+        assertTrue(forwarded.forwardTargetError)
+        assertFalse(ctx(EnfAction.ALLOW).toWireDecision(1, 0, emptyList()).verdict.forwardTargetError)
     }
 
     @Test

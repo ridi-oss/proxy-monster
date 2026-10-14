@@ -42,7 +42,7 @@ import (
 // error instead of a stalled run channel. Bump it on any incompatible wire change. It MUST match the
 // control-plane's CONTROL_PROTOCOL_VERSION; the two are separate constants in separate languages kept in
 // lockstep by hand — a server-v* release always ships both at the same value.
-const ProtocolVersion int32 = 4
+const ProtocolVersion int32 = 5
 
 // ErrIncompatibleControlPlane means the control-plane speaks a different wire-protocol version than this
 // proxy — a PERMANENT deploy-skew condition, not a transient failure. boot treats it as fatal (refuse to
@@ -298,7 +298,7 @@ func decisionFromWire(d *pb.WireDecision) ([]*pb.ProxyCommand, *engine.Decision)
 		AfterStatement:      afterStatement,
 		Generation:          v.GetGeneration(),
 		SanitizeDiagnostics: v.GetSanitizeDiagnostics(),
-		CheckTargetSyntax:   action == "DENY" && v.GetCheckTargetSyntax(),
+		ForwardTargetError:  v.GetForwardTargetError(),
 		Submission:          submission,
 		ResultFingerprint:   v.GetResultFingerprint(),
 	}
@@ -330,6 +330,7 @@ func (c *Client) Decide(req engine.DecideRequest) engine.DecisionOutcome {
 		CurrentCatalog: req.Session.CurrentCatalog,
 	}
 
+	var targetErr *engine.TargetError
 	for round := 0; ; round++ {
 		ctx, cancel := context.WithTimeout(context.Background(), rpcDeadline)
 		resp, err := c.stub.Decide(c.outCtx(ctx), wireReq)
@@ -350,12 +351,12 @@ func (c *Client) Decide(req engine.DecideRequest) engine.DecisionOutcome {
 
 		commands, decision := decisionFromWire(resp)
 		if commands == nil {
-			return engine.DecisionOutcome{Decision: decision}
+			return engine.DecisionOutcome{Decision: decision, TargetError: targetErr}
 		}
 		if round >= 3 {
 			return engine.DecisionOutcome{Err: fmt.Sprintf("control plane demanded pre-decision commands %d times", round+1)}
 		}
-		if err := runBeforeDecide(commands, &req, wireReq); err != nil {
+		if err := runBeforeDecide(commands, &req, wireReq, &targetErr); err != nil {
 			return engine.DecisionOutcome{Err: "pre-decision commands failed: " + err.Error()}
 		}
 	}
@@ -364,11 +365,33 @@ func (c *Client) Decide(req engine.DecideRequest) engine.DecisionOutcome {
 // runBeforeDecide executes one before-decide round through the dialect's command runner. A command may
 // extend the session facts the re-sent request carries (a fetched prepared definition), so the runner gets
 // the request's session and the wire request is rebuilt from it.
-func runBeforeDecide(commands []*pb.ProxyCommand, req *engine.DecideRequest, wireReq *pb.DecisionRequest) error {
+func runBeforeDecide(commands []*pb.ProxyCommand, req *engine.DecideRequest, wireReq *pb.DecisionRequest, targetErr **engine.TargetError) error {
+	var run []*pb.ProxyCommand
+	for _, cmd := range commands {
+		if cmd.GetCheckTargetError() == nil {
+			run = append(run, cmd)
+			continue
+		}
+		if req.CheckTargetError == nil {
+			return errors.New("control plane demanded a target error check but no checker is configured")
+		}
+		observed, err := req.CheckTargetError(req.SQL)
+		if err != nil {
+			return err
+		}
+		*targetErr = observed
+		wireReq.TargetCheck = &pb.TargetCheck{}
+		if observed != nil {
+			wireReq.TargetCheck.ErrorCode = observed.Code
+		}
+	}
+	if len(run) == 0 {
+		return nil
+	}
 	if req.RunCommands == nil {
 		return errors.New("control plane demanded pre-decision commands but no runner is configured")
 	}
-	if err := req.RunCommands(commands, &req.Session); err != nil {
+	if err := req.RunCommands(run, &req.Session); err != nil {
 		return err
 	}
 	wireReq.Session = req.Session.Clone().SessionObservation

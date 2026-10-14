@@ -380,8 +380,9 @@ func (s *Server) serveQuery(sess *session, sql string, mode relayMode) (queryRes
 	var relayStats engine.RelayStats
 	relayStatus := engine.StatusError
 	var result queryResult
-	decision, denied, err := engine.ServeStatement(sess.qe,
-		sess.authzInput(sql, sess.token, sess.clientAddr, sess.connectionID, ref.RunAll), ref, nil,
+	in := sess.authzInput(sql, sess.token, sess.clientAddr, sess.connectionID, ref.RunAll)
+	in.CheckTargetError = func(sql string) (*engine.TargetError, error) { return s.checkTargetErrorAndSync(sess, sql) }
+	decision, denied, err := engine.ServeStatement(sess.qe, in, ref, nil,
 		func(toSend string, masks []*pb.ColumnMask, dec *engine.Decision) (bool, error) {
 			sess.targetDb.Send(&pgproto3.Query{String: toSend})
 			if err := sess.targetDb.Flush(); err != nil {
@@ -464,20 +465,13 @@ func (s *Server) serveQuery(sess *session, sql string, mode relayMode) (queryRes
 		}
 		return result, closeRelay(sess, err)
 	}
-	if denied && decision != nil && decision.CheckTargetSyntax {
-		prepareErr, err := s.targetPrepareError(sess, sql)
-		if err != nil {
-			return queryResult{stop: true}, closeRelay(sess, err)
-		}
-		if err := syncTarget(sess); err != nil {
-			return queryResult{stop: true}, closeRelay(sess, err)
-		}
-		if prepareErr != nil && prepareErr.Code == sqlStateSyntaxError {
-			forwardError(sess, prepareErr)
+	if denied && decision != nil && decision.TargetError != nil {
+		if targetErr, ok := decision.TargetError.Message.(*pgproto3.ErrorResponse); ok {
+			forwardError(sess, targetErr)
 			if mode == relayQuery {
 				sess.client.Send(&pgproto3.ReadyForQuery{TxStatus: sess.lastTxStatus})
 			}
-			sess.qe.AwaitCompletion(engine.EmitCompletion(s.client, decision, engine.RelayStats{}, engine.StatusRejected, start))
+			sess.qe.AwaitCompletion(engine.EmitCompletion(s.client, decision, engine.RelayStats{}, engine.StatusError, start))
 			return queryResult{stop: true}, sess.client.Flush()
 		}
 	}

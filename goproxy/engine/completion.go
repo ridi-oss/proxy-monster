@@ -12,7 +12,6 @@ const (
 	StatusOK       = "ok"
 	StatusError    = "error"
 	StatusCanceled = "canceled"
-	StatusRejected = "rejected"
 )
 
 // RelayStats is the running result-volume tally for one statement: the number of data rows that reached

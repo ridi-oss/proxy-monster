@@ -26,6 +26,7 @@ internal object MySqlEngineDefinition : EngineDefinition {
     override val systemSchemas = setOf("information_schema", "mysql", "performance_schema", "sys")
     // MySQL temporary tables are absent from information_schema.COLUMNS.
     override val catalogIsConnectionIndependent = true
+    override val checksTargetErrors = true
 
     override fun catalogName(dbName: String): String = "def"
     override fun defaultSchema(dbName: String): String = dbName

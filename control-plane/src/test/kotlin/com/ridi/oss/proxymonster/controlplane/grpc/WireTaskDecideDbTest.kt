@@ -20,8 +20,10 @@ import com.ridi.oss.proxymonster.controlplane.support.EnforcementFixture
 import com.ridi.oss.proxymonster.controlplane.support.PerConnectionCatalogFixture
 import com.ridi.oss.proxymonster.controlplane.support.requireDocker
 import com.ridi.oss.proxymonster.grpc.EnfAction
+import com.ridi.oss.proxymonster.grpc.TargetCheck
 import com.ridi.oss.proxymonster.grpc.WireDecision
 import com.ridi.oss.proxymonster.grpc.completionReport
+import com.ridi.oss.proxymonster.grpc.targetCheck
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeAll
@@ -29,6 +31,7 @@ import org.junit.jupiter.api.TestInstance
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import kotlin.test.fail
@@ -63,6 +66,7 @@ abstract class WireTaskDecideDbContract {
         opened: OpenConnection,
         sql: String,
         channel: Channel = Channel.WIRE,
+        targetCheck: TargetCheck? = null,
     ): EnforcementOutcome = decideConnection(
         core = fixture.core,
         connectionId = opened.connectionId,
@@ -72,6 +76,7 @@ abstract class WireTaskDecideDbContract {
         searchPath = schemas(),
         clientAddr = "127.0.0.1:54321",
         channel = channel,
+        targetCheck = targetCheck,
     ) ?: fail("connection disappeared during decision")
 
     private fun preChangeWireDecision(sql: String): WireDecision {
@@ -133,6 +138,10 @@ abstract class WireTaskDecideDbContract {
     }.map { fixture.core.accessStore.getRequest(it)!! }
 
     private fun wireTaskForDecision(decisionId: Long) = wireTasks().single { it.sourceDecisionId == decisionId }
+
+    private fun auditRows(): Long = fixture.core.dataSource.connection.use { c ->
+        c.prepareStatement("SELECT count(*) FROM audit_event").use { ps -> ps.executeQuery().use { rs -> rs.next(); rs.getLong(1) } }
+    }
 
     private suspend fun complete(decisionId: Long, status: String) {
         service.reportCompletion(
@@ -252,6 +261,40 @@ abstract class WireTaskDecideDbContract {
         assertEquals(listOf(enforcement.role), task.executeAs)
         assertEquals(0, childCount(task.id))
         assertEquals("FAILED", fixture.core.accessStore.getRequest(task.id)?.status)
+    }
+
+    @Test
+    fun `an unanalyzable deny asks for a target error check and records the target's error as an errored ALLOW`() = runBlocking {
+        val opened = openAndPush()
+        val sql = "select no_such_column from users"
+        val tasksBefore = wireTasks().size
+        val auditBefore = auditRows()
+
+        val ask = assertIs<EnforcementOutcome.BeforeDecide>(decide(opened, sql))
+        assertTrue(ask.commands.single().hasCheckTargetError())
+        assertEquals(tasksBefore, wireTasks().size, "asking for the check creates no task")
+        assertEquals(auditBefore, auditRows(), "asking for the check records nothing")
+
+        val forwarded = assertIs<EnforcementOutcome.Verdict>(decide(opened, sql, targetCheck = targetCheck { errorCode = "1054" }))
+        assertEquals(EnfAction.ALLOW, forwarded.ctx.action)
+        assertTrue(forwarded.ctx.forwardTargetError && forwarded.ctx.sanitizeDiagnostics)
+        assertEquals("unanalyzable; the target rejected it (error 1054)", forwarded.ctx.detail)
+        assertTrue(forwarded.afterStatement.isEmpty())
+        val task = wireTaskForDecision(forwarded.decisionId)
+        assertEquals("APPROVED", task.status)
+        complete(forwarded.decisionId, "error")
+        assertEquals("FAILED", fixture.core.accessStore.getRequest(task.id)?.status)
+
+        val denied = assertIs<EnforcementOutcome.Verdict>(decide(opened, sql, targetCheck = targetCheck {}))
+        assertEquals(EnfAction.DENY, denied.ctx.action)
+        assertFalse(denied.ctx.forwardTargetError)
+        assertEquals("FAILED", wireTaskForDecision(denied.decisionId).status)
+
+        val unparsed = assertIs<EnforcementOutcome.BeforeDecide>(decide(opened, "selec 1"))
+        assertTrue(unparsed.commands.single().hasCheckTargetError())
+        val syntax = assertIs<EnforcementOutcome.Verdict>(decide(opened, "selec 1", targetCheck = targetCheck { errorCode = "1064" }))
+        assertEquals(EnfAction.ALLOW, syntax.ctx.action)
+        assertTrue(syntax.ctx.forwardTargetError)
     }
 
     @Test

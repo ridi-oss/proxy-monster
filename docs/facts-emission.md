@@ -247,13 +247,16 @@ gate:
 3. Permit → relay the original statement verbatim, no rewrite or masks, with a
    recorded reason.
 4. No permit / Cedar error / `INADMISSIBLE` → deny.
-5. A deny from step 4 on an `UNANALYZABLE` statement carries
-   `check_target_syntax`. Before denying, the proxy prepares the statement on
-   the target without running it (MySQL `COM_STMT_PREPARE`, PostgreSQL Parse). A
-   target syntax error (MySQL 1064, SQLSTATE 42601) reaches the client in place
-   of the deny, and the proxy reports a `rejected` completion. Any other prepare
-   error, or a prepare that succeeds, keeps the deny: a prepare resolves names,
-   so forwarding its other errors would disclose which objects exist.
+5. Before recording a deny from step 4 on an `UNANALYZABLE` MySQL or PostgreSQL
+   wire statement, the control plane sends the `check_target_error` command: the
+   proxy prepares the statement on the target without running it (MySQL
+   `COM_STMT_PREPARE`, PostgreSQL Parse) and re-sends the request with the
+   outcome. If the target rejects it, the decision is an ALLOW that runs
+   nothing: the proxy sends the target's error, redacted
+   ([diagnostic-redaction.md](./diagnostic-redaction.md)), and reports an
+   `error` completion. A statement that prepares keeps the deny. The proxy never
+   runs the statement on this path, because a prepare refuses two statements in
+   one string that a query would run.
 
 An unanalyzable statement cannot claim that no sensitive resources were touched,
 so the exception is datasource-wide and explicit — suitable for a permissive

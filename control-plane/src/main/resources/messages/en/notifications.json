@@ -29,6 +29,8 @@
     "force_run_fallback": "{forcedBy} forced {requester}'s request on {datasource} past the scope checks"
   },
   "field": {
+    "approvers": "Approvers: {names}",
+    "ccs": "CC: {names}",
     "role": " as *{role}*",
     "reason": "> {reason}",
     "statement_hidden": "a query",
@@ -37,6 +39,7 @@
     "failure": "> {error}"
   },
   "action": {
+    "review": "Review",
     "approve_and_run": "Approve and run",
     "approve": "Approve",
     "run": "Run",
@@ -58,5 +61,14 @@
     "expired": "The approval expired. The request needs approval again.",
     "run_failed": "Approved, but the run could not be started. Open the request to retry.",
     "request_changed": "This request was changed since this message was sent. Open it to review the new SQL."
+  },
+  "modal": {
+    "title": "Review request",
+    "close": "Close",
+    "summary": "*{requester}* · *{datasource}* as *{role}* · {status}",
+    "no_actions": "You have no actions on this request.",
+    "comment_hint": "Reply in the channel thread to comment.",
+    "forbidden": "You cannot open this request.",
+    "done": "Done. The request is now {status}."
   }
 }

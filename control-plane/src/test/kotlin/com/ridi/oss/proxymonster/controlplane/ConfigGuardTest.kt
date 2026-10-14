@@ -58,6 +58,16 @@ class ConfigGuardTest {
         assertFailsWith<IllegalArgumentException> { Config.fromEnv(envOf("PM_NOTIFY_STATEMENT" to "sometimes")) }
     }
 
+    @Test fun `PM_SLACK_CHANNELS maps tags to channel ids, first match wins, and PM_SLACK_MODE picks channel-only`() {
+        val config = Config.fromEnv(envOf("PM_SLACK_CHANNELS" to "service:manta=C0123ABC, system:production=G0456DEF", "PM_SLACK_MODE" to "channel"))
+        assertEquals(listOf(SlackChannelRoute("service:manta", "C0123ABC"), SlackChannelRoute("system:production", "G0456DEF")), config.slackChannels)
+        assertTrue(config.slackChannelOnly)
+        assertFalse(Config.fromEnv(envOf()).slackChannelOnly, "default mode is both")
+        assertFailsWith<IllegalArgumentException> { Config.fromEnv(envOf("PM_SLACK_CHANNELS" to "service:manta=general")) }
+        assertFailsWith<IllegalArgumentException> { Config.fromEnv(envOf("PM_SLACK_CHANNELS" to "a=C1,a=C2")) }
+        assertFailsWith<IllegalArgumentException> { Config.fromEnv(envOf("PM_SLACK_MODE" to "dm")) }
+    }
+
     @Test fun `PM_QUERY_TIMEOUT is bounded to the proxy's duration-safe ceiling (no ms overflow)`() {
         // The shared CP+proxy maximum: accepted here, rejected one above. Keeps queryExchangeTimeoutMs /
         // the run-stream cap from overflowing Long, and keeps the lockstep contract with goproxy exact.

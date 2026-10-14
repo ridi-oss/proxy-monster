@@ -59,7 +59,7 @@ class SlackSocketModeTest {
         botToken = botToken,
         appToken = appToken,
         principalForEmail = { principalByEmail[it] },
-        onInteraction = { received.send(it); reply },
+        onInteraction = { received.send(it); SlackReply.Ephemeral(reply) },
         api = slack.apiBase,
     )
 

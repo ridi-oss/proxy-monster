@@ -29,6 +29,8 @@
     "force_run_fallback": "{forcedBy} 님이 {datasource}에 대한 {requester} 님의 요청을 강제 실행으로 지정했습니다"
   },
   "field": {
+    "approvers": "승인자: {names}",
+    "ccs": "참조: {names}",
     "role": " (역할: *{role}*)",
     "reason": "> {reason}",
     "statement_hidden": "쿼리",
@@ -37,6 +39,7 @@
     "failure": "> {error}"
   },
   "action": {
+    "review": "검토",
     "approve_and_run": "승인 후 실행",
     "approve": "승인",
     "run": "실행",
@@ -58,5 +61,14 @@
     "expired": "승인이 만료되었습니다. 요청을 다시 승인받아야 합니다.",
     "run_failed": "승인되었지만 실행을 시작하지 못했습니다. 요청을 열어 다시 시도하세요.",
     "request_changed": "이 메시지가 전송된 뒤 요청이 수정되었습니다. 요청을 열어 새 SQL을 확인하세요."
+  },
+  "modal": {
+    "title": "요청 검토",
+    "close": "닫기",
+    "summary": "*{requester}* · *{datasource}* (역할: *{role}*) · {status}",
+    "no_actions": "이 요청에서 할 수 있는 작업이 없습니다.",
+    "comment_hint": "댓글은 채널 스레드에 답글로 남기세요.",
+    "forbidden": "이 요청을 열 수 없습니다.",
+    "done": "처리했습니다. 요청은 이제 {status} 상태입니다."
   }
 }

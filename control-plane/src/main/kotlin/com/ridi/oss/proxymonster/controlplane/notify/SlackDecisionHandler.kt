@@ -22,12 +22,36 @@ class SlackDecisionHandler(
     private val approvals: () -> ApprovalService,
     private val notifications: NotificationService,
     private val defaultLocale: String,
+    private val deepLink: (Long) -> String = { "" },
     private val run: (principal: String, taskId: Long) -> Unit = { principal, taskId ->
         approvals().execute(principal, null, taskId, Channel.SLACK)
     },
 ) {
     private val log = LoggerFactory.getLogger(SlackDecisionHandler::class.java)
     private val catalog = MessageCatalog(NotificationRenderer.DOMAIN)
+    private val reviewView = SlackReviewView(catalog, NotificationRenderer(catalog))
+
+    /** The socket's entry: Review opens a modal, a click inside one redraws it, any other click replies privately. */
+    suspend fun respond(interaction: SlackInteraction): SlackReply {
+        val locale = notifications.localeOf(interaction.principal) ?: defaultLocale
+        if (interaction.actionId == SlackTransport.ACTION_REVIEW) {
+            val view = runCatching {
+                val detail = approvals().detail(interaction.principal, null, interaction.taskId, Channel.SLACK)
+                reviewView.forDetail(detail, interaction.principal, deepLink(interaction.taskId), locale)
+            }.getOrElse { e ->
+                if (e !is TaskServiceException) throw e
+                reviewView.message(catalog.text("modal.forbidden", locale), locale)
+            }
+            return SlackReply.OpenView(view)
+        }
+        val text = handle(interaction)
+        if (interaction.viewId == null) return SlackReply.Ephemeral(text)
+        val outcome = text.ifEmpty {
+            val status = accessStore.getRequest(interaction.taskId)?.status?.lowercase() ?: "—"
+            catalog.text("modal.done", locale, mapOf("status" to status))
+        }
+        return SlackReply.UpdateView(reviewView.message(outcome, locale))
+    }
 
     /** Handle one click. The returned string is shown privately to the clicker; empty means say nothing. */
     suspend fun handle(interaction: SlackInteraction): String {

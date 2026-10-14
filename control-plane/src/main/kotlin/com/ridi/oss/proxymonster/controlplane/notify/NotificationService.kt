@@ -99,7 +99,7 @@ class NotificationService(
                     for (cc in req.ccs) add(cc to NotificationKind.CC)
                 }
             }
-            for (transport in transports) {
+            for (transport in transports.filter { it.serves(req) }) {
                 for ((recipient, kind) in targetsOn(transport, req, targets)) {
                     store.enqueue(c, req.id, event, transport.name, recipient, kind)
                 }
@@ -121,7 +121,7 @@ class NotificationService(
     fun emitCcAdded(c: Connection, req: AccessRequest, cc: String) {
         if (!enabled) return
         runCatching {
-            for (transport in transports.filter { !it.addressesTasks }) {
+            for (transport in transports.filter { !it.addressesTasks && it.serves(req) }) {
                 store.enqueue(c, req.id, NotificationEvent.TASK_CC_ADDED, transport.name, cc, NotificationKind.CC)
             }
         }.onFailure { log.warn("notification emit failed task={} event=task.cc_added", req.id, it) }
@@ -166,10 +166,8 @@ class NotificationService(
                 pullRequest = pullRequest,
             )
             val approvers = recipients.recipientsFor(subject)
-            if (transports.any { !it.addressesTasks }) {
-                RequestParticipants.add(c, taskId, approvers, ParticipantKind.APPROVER)
-            }
-            for (transport in transports) {
+            RequestParticipants.add(c, taskId, approvers, ParticipantKind.APPROVER)
+            for (transport in transports.filter { it.serves(subject) }) {
                 if (transport.addressesTasks) {
                     transport.taskAddress(subject)?.let {
                         store.enqueue(c, taskId, NotificationEvent.TASK_REQUESTED, transport.name, it, NotificationKind.APPROVER)
@@ -296,7 +294,8 @@ class NotificationService(
         // `pending` is the LIVE task state, not merely the request event: a backed-off task.requested that
         // finally delivers after the task was decided must not be the first to surface a flagged statement
         // under FULL. Once the status leaves PENDING, FULL falls back to the hint like every handled message.
-        val pending = row.kind == NotificationKind.APPROVER && row.event in ASKS_FOR_APPROVAL && req.status == "PENDING"
+        val pending = !transport.sharedAudience && row.kind == NotificationKind.APPROVER &&
+            row.event in ASKS_FOR_APPROVAL && req.status == "PENDING"
         val show = row.event != NotificationEvent.TASK_SUBMITTED &&
             discloseStatement(disclosure, pending = pending, cleared = cleared)
         val statement = renderStatement(req.sql, show, transport.statementHardLimit)
@@ -343,7 +342,7 @@ class NotificationService(
             rowCount = meta?.rowCount,
             errorCode = meta?.errorCode,
             deepLink = URLBuilder(webBaseUrl).appendPathSegments("workflows", req.id.toString()).buildString(),
-            actions = actionsFor(row.event, row.kind, req, statement),
+            actions = if (transport.sharedAudience) reviewActions(row.event, req) else actionsFor(row.event, row.kind, req, statement),
             notifiedApprovers = notifiedApprovers,
             source = req.source,
             path = req.pullRequest?.path,
@@ -355,7 +354,15 @@ class NotificationService(
             failedStatement = failedRun?.takeIf { it.meta.status == "FAILED" && !it.sql.isNullOrBlank() }
                 ?.let { FailedStatement(it.meta.ordinal, it.sql!!) },
             forcedBy = req.forceRunBy,
+            approvers = if (transport.sharedAudience) store.approversOf(req.id) else emptyList(),
+            ccs = if (transport.sharedAudience) req.ccs else emptyList(),
         )
+    }
+
+    /** A shared message offers Review, which opens each clicker's own view of what they may do. */
+    private fun reviewActions(event: NotificationEvent, req: AccessRequest): Set<NotificationAction> = buildSet {
+        add(NotificationAction.OPEN)
+        if ((event.isCreation || event.isUpdate) && req.status in setOf("PENDING", "APPROVED")) add(NotificationAction.REVIEW)
     }
 
     /**

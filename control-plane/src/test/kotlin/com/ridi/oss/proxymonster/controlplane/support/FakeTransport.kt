@@ -19,7 +19,14 @@ import java.util.concurrent.atomic.AtomicInteger
 class FakeTransport(
     override val name: String = "fake",
     override val supportsUpdate: Boolean = true,
+    // Set to act as a channel: every request goes to this one address, which everyone there reads.
+    private val channel: String? = null,
 ) : NotificationTransport {
+    override val addressesTasks: Boolean = channel != null
+    override val sharedAudience: Boolean = channel != null
+
+    override fun taskAddress(req: com.ridi.oss.proxymonster.controlplane.AccessRequest): String? = channel
+
     override val statementHardLimit: Int = 0
 
     /** Principal → address; return null to exercise the no-address drop. */
@@ -40,6 +47,8 @@ class FakeTransport(
         // The disclosure outcome and receipt list, so a drain test can see what actually rendered.
         val statement: RenderedStatement = RenderedStatement(null, false),
         val notifiedApprovers: List<String> = emptyList(),
+        val approvers: List<String> = emptyList(),
+        val ccs: List<String> = emptyList(),
     )
     data class Updated(
         val ref: String,
@@ -57,11 +66,14 @@ class FakeTransport(
 
     override suspend fun addressOf(principal: String, email: String?): String? {
         addressCalls.incrementAndGet()
-        return address(principal)
+        return if (channel != null) principal else address(principal)
     }
 
     override suspend fun deliver(to: String, message: NotificationMessage, locale: String): DeliveryResult {
-        delivered += Delivered(to, message.event, message.actions, message.rowCount, message.statement, message.notifiedApprovers)
+        delivered += Delivered(
+            to, message.event, message.actions, message.rowCount, message.statement, message.notifiedApprovers,
+            message.approvers, message.ccs,
+        )
         deliverSignal.trySend(Unit)
         deliverThrows?.let { throw it }
         return deliverResult

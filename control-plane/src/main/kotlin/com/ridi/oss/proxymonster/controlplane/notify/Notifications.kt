@@ -139,7 +139,7 @@ fun discloseStatement(disclosure: StatementDisclosure, pending: Boolean, cleared
     }
 
 /** An action a message may offer. [OPEN] is always available; the others are gated by the request's state. */
-enum class NotificationAction { APPROVE_AND_RUN, APPROVE, RUN, LGTM, UNAPPROVE, DENY, CLOSE, OPEN }
+enum class NotificationAction { APPROVE_AND_RUN, APPROVE, RUN, LGTM, UNAPPROVE, DENY, CLOSE, REVIEW, OPEN }
 
 /**
  * One notification, transport-neutral. Carries message KEYS and their values rather than finished prose, so
@@ -181,6 +181,9 @@ data class NotificationMessage(
     val failedStatement: FailedStatement? = null,
     /** FORCE_RUN only: the admin who forced the run. */
     val forcedBy: String? = null,
+    /** Mentioned on a message everyone in a channel reads: who may approve, and the CCs. */
+    val approvers: List<String> = emptyList(),
+    val ccs: List<String> = emptyList(),
 )
 
 /** [ordinal] is 0-based, as stored on the `query_result` child. */
@@ -218,6 +221,12 @@ interface NotificationTransport {
 
     /** The one address every event of [req] goes to on this transport, or null to address people. */
     fun taskAddress(req: com.ridi.oss.proxymonster.controlplane.AccessRequest): String? = null
+
+    /** True when everyone at the address reads the message, such as a channel, whatever their access. */
+    val sharedAudience: Boolean get() = false
+
+    /** False when [req]'s events skip this transport, such as DMs for a request posted to a channel only. */
+    fun serves(req: com.ridi.oss.proxymonster.controlplane.AccessRequest): Boolean = true
 
     /**
      * This principal's address on this transport, or null when they have none — a null DROPS the row, since no

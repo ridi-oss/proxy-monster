@@ -180,7 +180,7 @@ class SlackNotificationE2eDbTest {
         socket = SlackSocketMode(
             http, "xoxb-e2e", "xapp-e2e",
             principalForEmail = core.userGroupStore::activePrincipalByEmail,
-            onInteraction = { handler.handle(it) },
+            onInteraction = { handler.respond(it) },
             api = slack.apiBase,
         )
     }

@@ -196,6 +196,13 @@ configured per proxy under `PM_TARGET_*`.
   with a warning.)
 - `PM_NOTIFY_LOCALE` — _optional_. Fallback language (`en` · `ko`) for a
   recipient who has not set one in the console. Default `en`.
+- `PM_SLACK_CHANNELS` — _optional_. Posts requests to Slack channels by
+  datasource tag: `tag=channel id`, comma-separated, first match wins (e.g.
+  `service:manta=C0123ABC,system:production=C0789GHI`). Invite the bot to each
+  channel ([docs/notifications.md](./docs/notifications.md#channels)).
+- `PM_SLACK_MODE` — _optional_. `both` (default) posts a matched request to its
+  channel and DMs; `channel` posts it to the channel only. An unmatched request
+  always goes to DMs.
 - `PM_AUTH_DEBUG` / `PM_DEV` / `PM_OAUTH_DEBUG_AUTO_CONSENT` — _dev-only_.
   Defaults: `PM_AUTH_DEBUG=true`, `PM_DEV=false`,
   `PM_OAUTH_DEBUG_AUTO_CONSENT=true`. The CP refuses to boot when debug auth is

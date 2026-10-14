@@ -106,12 +106,21 @@ class SlackSocketModeTest {
     fun `a thread reply is dispatched with its author, and bot posts and top-level messages are not`() = withSocket { _ ->
         slack.pushEnvelope(messageEvent("m-bot", """{"type":"message","channel":"C1","ts":"2.0","thread_ts":"1.0","bot_id":"B1","text":"copy"}"""))
         slack.pushEnvelope(messageEvent("m-top", """{"type":"message","channel":"C1","ts":"3.0","user":"U_CLICKER","text":"hi"}"""))
-        slack.pushEnvelope(messageEvent("m-reply", """{"type":"message","channel":"C1","ts":"4.0","thread_ts":"1.0","user":"U_CLICKER","text":"why?"}"""))
+        slack.pushEnvelope(
+            messageEvent("m-reply", """{"type":"message","channel":"C1","ts":"4.0","thread_ts":"1.0","user":"U_CLICKER","text":"why? <@U_VALID> <@U_GONE|gone>"}"""),
+        )
         slack.pushEnvelope(
             messageEvent("m-edit", """{"type":"message","subtype":"message_changed","channel":"C1","message":{"ts":"4.0","user":"U_CLICKER","text":"why not?"}}"""),
         )
         val reply = withTimeout(5_000) { messages.receive() }
-        assertEquals(SlackThreadMessage(SlackThreadMessage.Kind.NEW, "C1", "4.0", "1.0", "okta|clicker", "U_CLICKER", "why?"), reply)
+        assertEquals(
+            SlackThreadMessage(
+                SlackThreadMessage.Kind.NEW, "C1", "4.0", "1.0", "okta|clicker", "U_CLICKER", "why? <@U_VALID> <@U_GONE|gone>",
+                mentions = listOf("valid@example.com"),
+            ),
+            reply,
+            "a mention of a Slack user with no active user is left out",
+        )
         val edit = withTimeout(5_000) { messages.receive() }
         assertEquals(SlackThreadMessage(SlackThreadMessage.Kind.EDITED, "C1", "4.0", text = "why not?"), edit)
     }

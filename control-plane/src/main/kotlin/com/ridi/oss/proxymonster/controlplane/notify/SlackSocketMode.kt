@@ -46,6 +46,8 @@ data class SlackThreadMessage(
     /** The author's Slack display name, for an author with no principal. */
     val name: String? = null,
     val text: String? = null,
+    /** The active principals the reply @-mentions; Slack users with no active user are left out. */
+    val mentions: List<String> = emptyList(),
 ) {
     enum class Kind { NEW, EDITED, DELETED }
 }
@@ -245,7 +247,10 @@ class SlackSocketMode(
                 val threadTs = event.str("thread_ts")?.takeIf { it != ts } ?: return
                 val user = event.str("user") ?: return
                 val (principal, name) = resolveAuthor(user)
-                SlackThreadMessage(SlackThreadMessage.Kind.NEW, channel, ts, threadTs, principal, name, event.str("text"))
+                val text = event.str("text")
+                val mentioned = MENTION.findAll(text.orEmpty()).map { it.groupValues[1] }.filter { it != user }.distinct().toList()
+                val mentions = mentioned.mapNotNull { runCatching { userInfo(it) }.getOrNull()?.let(::principalOf) }
+                SlackThreadMessage(SlackThreadMessage.Kind.NEW, channel, ts, threadTs, principal, name, text, mentions)
             }
             "message_changed" -> {
                 val edited = event["message"]?.jsonObject ?: return
@@ -320,6 +325,8 @@ class SlackSocketMode(
         minOf(BACKOFF_CAP_MS, BACKOFF_BASE_MS shl minOf(failures, 6))
 
     companion object {
+        // A user mention in message text: <@U123> or <@U123|name>.
+        private val MENTION = Regex("<@([UW][A-Z0-9_]+)(?:\\|[^>]*)?>")
         private const val RECONNECT_DELAY_MS = 1_000L
         private const val BACKOFF_BASE_MS = 2_000L
         private const val BACKOFF_CAP_MS = 120_000L

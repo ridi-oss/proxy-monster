@@ -508,6 +508,9 @@ any bot, its own copies included.
   not on the request.
 - A DM reply is a comment by the DM's owner and needs their `task.comment`.
 - Neither adds a participant, so a reply never grants access.
+- A reply by a participant that @-mentions someone adds them as a CC, under the
+  replier's own `task.cc`. A mention of a Slack user with no active user, or a
+  reply from no active user, adds nobody.
 - Editing or deleting a reply in Slack edits or deletes the comment and every
   copy of it in the other threads.
 

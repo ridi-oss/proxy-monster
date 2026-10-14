@@ -262,6 +262,20 @@ class SlackDecisionHandlerDbTest {
     }
 
     @Test
+    fun `a participant who mentions someone in a thread adds them as a CC, a bystander does not`() = runBlocking {
+        val id = pendingRequest()
+        val store = NotificationStore(fx.dataSource)
+        store.rememberMessage(id, SlackTransport.TRANSPORT_CHANNEL, "C9", NotificationKind.APPROVER, "C9:1.0")
+        val reply = SlackThreadMessage(SlackThreadMessage.Kind.NEW, "C9", "2.0", "1.0", null, "Pat", "ping", listOf(approver))
+        threads.onMessage(reply)
+        assertEquals(emptyList(), fx.accessStore.getRequest(id)!!.ccs, "a reply from no active user adds nobody")
+        threads.onMessage(reply.copy(ts = "2.5", principal = "outsider@example.com"))
+        assertEquals(emptyList(), fx.accessStore.getRequest(id)!!.ccs, "a user denied task.cc adds nobody")
+        threads.onMessage(reply.copy(ts = "3.0", principal = requester, mentions = listOf(approver, requester)))
+        assertEquals(listOf(approver), fx.accessStore.getRequest(id)!!.ccs, "the requester's mention adds the CC; mentioning themselves does nothing")
+    }
+
+    @Test
     fun `a click for a request that does not exist is rejected`() = runBlocking {
         val reply = handler.handle(click(999_999, approver, SlackTransport.ACTION_APPROVE))
         assertTrue(reply.contains("no longer exists"), "got: $reply")

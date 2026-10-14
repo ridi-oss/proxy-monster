@@ -121,18 +121,19 @@ func run(ctx context.Context, cfg config) int {
 	}
 	defer pool.Close()
 
-	edges := front.ParseTrustedEdges(cfg.TrustedProxies)
-	forward := front.NewHTTP(httpUpstream, edges)
-	mux := http.NewServeMux()
-	routes.Register(mux, pool, api.Gate{
-		Sessions:      session.NewResolver(pool, cfg.SessionSecret),
-		EndMismatched: api.KotlinSessionCheck(httpUpstream),
-		Edges:         edges,
-		AuthDebug:     cfg.AuthDebug,
-	}, bridge.New(httpUpstream, internalToken))
+	serve := func(edges front.TrustedEdges) http.Handler {
+		mux := http.NewServeMux()
+		routes.Register(mux, pool, api.Gate{
+			Sessions:      session.NewResolver(pool, cfg.SessionSecret),
+			EndMismatched: api.KotlinSessionCheck(httpUpstream),
+			Edges:         edges,
+			AuthDebug:     cfg.AuthDebug,
+		}, bridge.New(httpUpstream, internalToken))
+		return front.Route(mux, front.NewHTTP(httpUpstream, edges))
+	}
 	httpSrv := &http.Server{
 		Addr:              ":" + strconv.Itoa(cfg.HTTPPort),
-		Handler:           front.Route(mux, forward),
+		Handler:           serve(front.ParseTrustedEdges(cfg.TrustedProxies)),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	grpcSrv := front.NewGRPC(conn)
@@ -148,20 +149,34 @@ func run(ctx context.Context, cfg config) int {
 		slog.Error("cp-go: listening for gRPC: " + err.Error())
 		return shutdownChild(kt)
 	}
-	served := make(chan error, 2)
+	served := make(chan error, 4)
 	go func() { served <- ignoreClosed(httpSrv.Serve(httpLn)) }()
 	go func() { served <- grpcSrv.Serve(grpcLn) }()
 	slog.Info("cp-go: serving", "http", cfg.HTTPPort, "grpc", cfg.GRPCPort, "upstream_http", cfg.ChildHTTPPort, "upstream_grpc", cfg.ChildGRPCPort)
 
+	httpSrvs := []httpServer{httpSrv}
 	if cfg.Tailnet.Enabled() {
-		ts, _, err := tailnet.Join(ctx, cfg.Tailnet)
+		// A tailnet client is never a trusted proxy: its own address is the requester, whatever it sends.
+		handler := serve(front.TrustedEdges{})
+		// Bounded, and cut short if the child exits: a login can wait on approval forever.
+		joinCtx, cancelJoin := context.WithTimeout(ctx, cfg.StartTimeout)
+		go func() {
+			select {
+			case <-exited:
+				cancelJoin()
+			case <-joinCtx.Done():
+			}
+		}()
+		host, closeNode, err := hostTailnet(joinCtx, ctx, cfg.Tailnet, handler, served)
+		cancelJoin()
 		if err != nil {
 			slog.Error("cp-go: " + err.Error())
-			drain(kt, httpSrv, grpcSrv)
+			drain(kt, grpcSrv, httpSrv)
 			return 1
 		}
-		defer ts.Close()
-		slog.Info("cp-go: joined the tailnet", "hostname", cfg.Tailnet.NodeName())
+		defer closeNode()
+		httpSrvs = append(httpSrvs, host)
+		slog.Info("cp-go: serving on the tailnet", "service", cfg.Tailnet.Service, "hostname", cfg.Tailnet.NodeName())
 	}
 
 	code := 0
@@ -178,7 +193,7 @@ func run(ctx context.Context, cfg config) int {
 		slog.Error("cp-go: server stopped", "err", err)
 		code = 1
 	}
-	drain(kt, httpSrv, grpcSrv)
+	drain(kt, grpcSrv, httpSrvs...)
 	return code
 }
 
@@ -190,23 +205,59 @@ const (
 // drain stops accepting new work and lets the child close its own streams (Events, SSE) with the
 // reconnect hints it sends on SIGTERM. Once the child is gone, forwarding gets forwardGrace to relay
 // what the child already wrote before the rest is cut.
-func drain(kt *child.Child, httpSrv *http.Server, grpcSrv *grpc.Server) {
+func drain(kt *child.Child, grpcSrv *grpc.Server, httpSrvs ...httpServer) {
 	grpcDone := make(chan struct{})
 	go func() { grpcSrv.GracefulStop(); close(grpcDone) }()
-	httpDone := make(chan struct{})
-	go func() { _ = httpSrv.Shutdown(context.Background()); close(httpDone) }()
+	dones := []chan struct{}{grpcDone}
+	for _, srv := range httpSrvs {
+		done := make(chan struct{})
+		go func() { _ = srv.Shutdown(context.Background()); close(done) }()
+		dones = append(dones, done)
+	}
 	if kt != nil {
 		kt.Stop(childGrace)
 	}
-	deadline := time.After(forwardGrace)
-	for _, done := range []chan struct{}{grpcDone, httpDone} {
+	grace, cancel := context.WithTimeout(context.Background(), forwardGrace)
+	defer cancel()
+	for _, done := range dones {
 		select {
 		case <-done:
-		case <-deadline:
+		case <-grace.Done():
 		}
 	}
 	grpcSrv.Stop()
-	_ = httpSrv.Close()
+	for _, srv := range httpSrvs {
+		_ = srv.Close()
+	}
+}
+
+// httpServer is what drain stops: the public HTTP server and the tailnet host.
+type httpServer interface {
+	Shutdown(context.Context) error
+	Close() error
+}
+
+// hostTailnet joins the tailnet and serves the console there, with the ACM certificate when one is set,
+// kept fresh daily.
+func hostTailnet(startCtx, ctx context.Context, c tailnet.Config, handler http.Handler, served chan<- error) (*tailnet.Host, func(), error) {
+	var cert *tailnet.Cert
+	if c.CertARN != "" {
+		var err error
+		if cert, err = tailnet.NewCertFromACM(startCtx, c.CertARN); err != nil {
+			return nil, nil, err
+		}
+		go cert.KeepFresh(ctx, 24*time.Hour)
+	}
+	ts, st, err := tailnet.Join(startCtx, c)
+	if err != nil {
+		return nil, nil, err
+	}
+	host, err := tailnet.Serve(ts, st, c.Service, cert, handler, served)
+	if err != nil {
+		_ = ts.Close()
+		return nil, nil, err
+	}
+	return host, func() { _ = ts.Close() }, nil
 }
 
 func shutdownChild(kt *child.Child) int {

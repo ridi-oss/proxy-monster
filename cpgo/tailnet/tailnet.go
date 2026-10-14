@@ -26,6 +26,7 @@ type Config struct {
 	ClientID string   `env:"PM_TAILNET_CLIENT_ID" help:"Federated identity client id for keyless login."`
 	Audience string   `env:"PM_TAILNET_AUDIENCE" help:"Audience of the cloud ID token the federated identity trusts."`
 	AuthKey  string   `env:"PM_TAILNET_AUTH_KEY" help:"Auth key, when not logging in by federated identity."`
+	CertARN  string   `env:"PM_TAILNET_CERT_ARN" help:"Exportable ACM certificate to serve the console with. Empty uses Tailscale's certificate for the tailnet name."`
 }
 
 // Enabled reports whether cp-go should join the tailnet.

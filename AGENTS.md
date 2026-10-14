@@ -117,6 +117,32 @@ Key docs:
 - Web console (`web/`): a SQL editor plus admin for datasources, policies,
   access, and audit, in Next.js.
 
+## New control-plane code: Go first
+
+The control plane is moving to Go slice by slice
+([docs/cp-go-migration.md](./docs/cp-go-migration.md)). New control-plane code
+goes in `cpgo/`, not `control-plane/`, unless it only extends a Kotlin path that
+has not moved yet. Kotlin that stays is the smallest change that keeps a
+not-yet-moved path working.
+
+When Kotlin must call Go, use gRPC with a proto contract, never hand-written
+JSON DTOs on both sides:
+
+- One service per slice (e.g. `GitHubSource`), in its own file under
+  `proto/src/main/proto/`. The generated types are the data classes on both
+  sides.
+- cp-go serves it on a loopback gRPC listener it starts before the Kotlin child,
+  and passes the address to the child. The per-boot `PM_CP_INTERNAL_TOKEN`
+  travels in gRPC metadata.
+- Forward whole operations, which Go runs in its own transaction. A single row
+  written inside a Kotlin transaction (a `request_event`, say) stays a Kotlin
+  insert until that call site moves; an RPC there would split the transaction.
+- A service exists only while its slice is half-moved: delete it when the Kotlin
+  caller moves to Go, and list it in `docs/cp-go-migration.md` until then.
+
+Go calling Kotlin stays on the existing `/internal/*` HTTP bridge
+(`cpgo/bridge`), which only shrinks.
+
 ## Control-plane HTTP API
 
 There is no API reference and no OpenAPI spec. The routes are the surface and

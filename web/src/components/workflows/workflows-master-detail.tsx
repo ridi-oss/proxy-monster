@@ -131,7 +131,7 @@ function DetailPanel({
     }
 
     return (
-      <div data-workflow-detail-kind="QUERY">
+      <div data-workflow-detail-kind="QUERY" className="flex min-h-0 flex-1 flex-col">
         <ApprovalDetail id={selectedId} />
       </div>
     )

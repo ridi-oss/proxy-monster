@@ -67,23 +67,23 @@ func TestPreferencesManageServers(t *testing.T) {
 	if st := p.state(); st.Running || len(st.Servers) != 0 {
 		t.Fatalf("before anything: %+v", st)
 	}
-	if err := p.setServer("acme", "https://pm.acme.example"); err != "" {
+	if err := p.setServer("", "acme", "https://pm.acme.example"); err != "" {
 		t.Fatalf("add: %s", err)
 	}
 	st := p.state()
 	if !st.Running || len(st.Servers) != 1 || st.Servers[0].Name != "acme" || st.Servers[0].SignedIn {
 		t.Fatalf("after add: %+v", st)
 	}
-	if err := p.setServer("acme", "https://pm2.acme.example"); err != "" {
+	if err := p.setServer("", "acme", "https://pm2.acme.example"); err != "" {
 		t.Fatalf("change address: %s", err)
 	}
 	if got := p.state().Servers[0].URL; !strings.Contains(got, "pm2.acme.example") {
 		t.Errorf("address after change = %q", got)
 	}
-	if err := p.setServer("Not Valid", "https://x.example"); !strings.Contains(fmt.Sprint(err), "invalid server name") {
+	if err := p.setServer("", "Not Valid", "https://x.example"); !strings.Contains(fmt.Sprint(err), "invalid server name") {
 		t.Errorf("an invalid name was not refused with the daemon's reason: %q", err)
 	}
-	if err := p.removeServer("acme"); err != "" {
+	if err := p.removeServer("", "acme"); err != "" {
 		t.Fatalf("remove: %s", err)
 	}
 	if st := p.state(); len(st.Servers) != 0 {
@@ -133,10 +133,10 @@ func TestADeclinedRemoveReportsCanceled(t *testing.T) {
 	confirm = func(string, string, string) bool { return false }
 	t.Cleanup(func() { confirm = confirmDialog })
 	p := &prefs{ctx: context.Background(), signingIn: map[string]bool{}, changed: func() {}}
-	if e := p.setServer("acme", "https://pm.acme.example"); e != "" {
+	if e := p.setServer("", "acme", "https://pm.acme.example"); e != "" {
 		t.Fatal(e)
 	}
-	if got := p.removeServer("acme"); got != nil {
+	if got := p.removeServer("", "acme"); got != nil {
 		t.Fatalf("a declined remove returned %#v, want nil", got)
 	}
 	if len(p.state().Servers) != 1 {

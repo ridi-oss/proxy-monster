@@ -246,6 +246,7 @@
   "menu.remoteNoPmon": "{remote} — pmon not found",
   "menu.remoteNotRunning": "{remote} — not running",
   "menu.notForwarded": "not forwarded yet",
+  "s.remote.servers": "Servers on {remote}",
   "s.remote.title": "Remote machines",
   "s.remote.desc": "Use the pmon daemon on another Mac or Linux machine over SSH: sign in here, and connect to its datasources from this machine.",
   "s.remote.placeholder": "SSH target, such as devbox or dana@devbox",

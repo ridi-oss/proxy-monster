@@ -113,6 +113,11 @@ func (a *app) remoteClient(target string) (*control.Client, error) {
 	a.mu.Lock()
 	s := a.status
 	a.mu.Unlock()
+	return remoteClientIn(s, target)
+}
+
+// remoteClientIn is remoteClient for the remotes of status s.
+func remoteClientIn(s *control.Status, target string) (*control.Client, error) {
 	if s != nil {
 		for _, r := range s.Remotes {
 			if r.Target == target && r.Socket != "" {

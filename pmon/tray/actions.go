@@ -236,16 +236,7 @@ func (a *app) confirmDroppingConns(kind, server string) bool { return confirmDro
 
 // confirmDropOn is confirmDrop for the daemon behind client, such as a remote one.
 func confirmDropOn(ctx context.Context, client *control.Client, kind, server string) bool {
-	s, err := client.Status(ctx)
-	if err != nil {
-		return true
-	}
-	n := 0
-	for _, ds := range s.Datasources {
-		if ds.Server == server {
-			n += ds.LiveConns
-		}
-	}
+	n := liveConnsOn(ctx, client, server)
 	if n == 0 {
 		return true
 	}
@@ -254,11 +245,11 @@ func confirmDropOn(ctx context.Context, client *control.Client, kind, server str
 
 // confirmDrop's kind is "signOut", "restart", "quit", "update" or "remove"; it picks the dialog's title and button.
 func confirmDrop(ctx context.Context, kind, server string) bool {
-	n := liveConns(ctx, server)
-	if n == 0 {
+	client, err := control.Connect(ctx)
+	if err != nil {
 		return true
 	}
-	return confirm(T("confirm."+kind, "name", server), Tn("confirm.conns", n), T("confirm."+kind+"Button"))
+	return confirmDropOn(ctx, client, kind, server)
 }
 
 // liveConns counts open database connections on one server, or with server empty on all of them. A daemon that
@@ -268,6 +259,11 @@ func liveConns(ctx context.Context, server string) int {
 	if err != nil {
 		return 0
 	}
+	return liveConnsOn(ctx, client, server)
+}
+
+// liveConnsOn is liveConns for the daemon behind client.
+func liveConnsOn(ctx context.Context, client *control.Client, server string) int {
 	s, err := client.Status(ctx)
 	if err != nil {
 		return 0

@@ -59,11 +59,13 @@ type prefsState struct {
 	Remotes        []prefsRemote `json:"remotes"`
 }
 
-// prefsRemote is one remote machine whose daemon this machine's daemon reaches over SSH.
+// prefsRemote is one remote machine whose daemon this machine's daemon reaches over SSH. Servers is that
+// daemon's servers, nil while it is not connected.
 type prefsRemote struct {
-	Target string              `json:"target"`
-	State  control.RemoteState `json:"state"`
-	Error  string              `json:"error,omitempty"`
+	Target  string              `json:"target"`
+	State   control.RemoteState `json:"state"`
+	Error   string              `json:"error,omitempty"`
+	Servers []prefsServer       `json:"servers"`
 }
 
 // prefsUpdates is the Updates setting; Shown is false in a build without an updater.
@@ -96,6 +98,7 @@ type prefs struct {
 	aiMu sync.Mutex
 }
 
+// busy and setBusy take a server's key: its name, after keyPrefix for a remote's.
 func (p *prefs) busy(name string) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -129,14 +132,39 @@ func (p *prefs) state() prefsState {
 	}
 	st.Running = true
 	st.defaultServer = s.DefaultServer
-	for _, r := range s.Remotes {
-		st.Remotes = append(st.Remotes, prefsRemote{Target: r.Target, State: r.State, Error: r.Error})
-	}
 	st.Versions.Daemon = s.Version
+	st.Servers = p.serverRows(s, "")
+	for _, r := range s.Remotes {
+		row := prefsRemote{Target: r.Target, State: r.State, Error: r.Error}
+		if r.State == control.RemoteConnected && r.Socket != "" {
+			row.Servers = p.remoteRows(r)
+		}
+		st.Remotes = append(st.Remotes, row)
+	}
+	return st
+}
+
+// remoteRows reads a connected remote's server cards, nil when its daemon does not answer in time: a stalled SSH
+// link must not hold up this machine's cards.
+func (p *prefs) remoteRows(r control.RemoteInfo) []prefsServer {
+	ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
+	defer cancel()
+	client := control.NewRemoteClient(r)
+	defer client.CloseIdle()
+	s, err := client.Status(ctx)
+	if err != nil {
+		return nil
+	}
+	return p.serverRows(s, r.Target)
+}
+
+// serverRows are the server cards of one daemon's status: this machine's with remote empty, else a remote's.
+func (p *prefs) serverRows(s *control.Status, remote string) []prefsServer {
+	rows := []prefsServer{}
 	now := time.Now()
 	for _, srv := range s.Servers {
 		row := prefsServer{Name: srv.Name, URL: srv.ControlPlane, Version: srv.ServerVersion, Account: srv.Principal,
-			Ended: signInEnded(srv, now), Busy: p.busy(srv.Name)}
+			Ended: signInEnded(srv, now), Busy: p.busy(keyPrefix(remote) + srv.Name)}
 		row.SignedIn = srv.LoggedIn && !row.Ended
 		if end, ok := signInEnd(srv); ok && srv.LoggedIn {
 			row.EndsAt = clockLabel(end, now)
@@ -151,10 +179,10 @@ func (p *prefs) state() prefsState {
 				row.Datasources++
 			}
 		}
-		st.Servers = append(st.Servers, row)
+		rows = append(rows, row)
 	}
-	sort.Slice(st.Servers, func(i, j int) bool { return st.Servers[i].Name < st.Servers[j].Name })
-	return st
+	sort.Slice(rows, func(i, j int) bool { return rows[i].Name < rows[j].Name })
+	return rows
 }
 
 // clockLabel names a time the way the window shows it: "Today 14:16", "Tomorrow 09:40", or a date.
@@ -256,6 +284,26 @@ func (p *prefs) handlers() map[string]func(args []json.RawMessage) (any, error) 
 		}
 		return v, json.Unmarshal(args[i], &v)
 	}
+	// remoteArg is the optional argument naming the remote a server call goes to; absent, this machine's.
+	remoteArg := func(args []json.RawMessage, i int) (string, error) {
+		if i >= len(args) {
+			return "", nil
+		}
+		return str(args, i)
+	}
+	onServer := func(f func(remote, name string) any) func([]json.RawMessage) (any, error) {
+		return func(args []json.RawMessage) (any, error) {
+			name, err := str(args, 0)
+			if err != nil {
+				return nil, err
+			}
+			remote, err := remoteArg(args, 1)
+			if err != nil {
+				return nil, err
+			}
+			return f(remote, name), nil
+		}
+	}
 	one := func(f func(string) any) func([]json.RawMessage) (any, error) {
 		return func(args []json.RawMessage) (any, error) {
 			a, err := str(args, 0)
@@ -270,9 +318,9 @@ func (p *prefs) handlers() map[string]func(args []json.RawMessage) (any, error) 
 		"aiState":      func([]json.RawMessage) (any, error) { return p.aiState(), nil },
 		"start":        func([]json.RawMessage) (any, error) { return p.start(), nil },
 		"restart":      func([]json.RawMessage) (any, error) { return p.restart(), nil },
-		"signIn":       one(func(n string) any { return p.signIn(n) }),
-		"signOut":      one(p.signOut),
-		"removeServer": one(p.removeServer),
+		"signIn":       onServer(func(r, n string) any { return p.signIn(r, n) }),
+		"signOut":      onServer(p.signOut),
+		"removeServer": onServer(p.removeServer),
 		"addRemote":    one(func(t string) any { return p.addRemote(t) }),
 		"removeRemote": one(func(t string) any { return p.removeRemote(t) }),
 		"openLink":     one(func(u string) any { return p.openLink(u) }),
@@ -287,7 +335,11 @@ func (p *prefs) handlers() map[string]func(args []json.RawMessage) (any, error) 
 			if err != nil {
 				return nil, err
 			}
-			return p.setServer(name, url), nil
+			remote, err := remoteArg(args, 2)
+			if err != nil {
+				return nil, err
+			}
+			return p.setServer(remote, name, url), nil
 		},
 		"setOpenAtLogin": func(args []json.RawMessage) (any, error) {
 			var on bool
@@ -343,9 +395,26 @@ type warning struct {
 // notEnded is the warning for a login the server could not end, which stays valid until it expires.
 func notEnded(server string) any { return warning{T("n.signedOutLocalBody", "server", server)} }
 
+// client is the daemon a server call goes to: this machine's, started first when start is set, or a connected
+// remote's.
+func (p *prefs) client(remote string, start bool) (*control.Client, error) {
+	if remote == "" && start {
+		return control.EnsureDaemon(p.ctx)
+	}
+	local, err := control.Connect(p.ctx)
+	if err != nil || remote == "" {
+		return local, err
+	}
+	s, err := local.Status(p.ctx)
+	if err != nil {
+		return nil, err
+	}
+	return remoteClientIn(s, remote)
+}
+
 // setServer adds a server, or changes an existing one's address (which signs it out).
-func (p *prefs) setServer(name, url string) any {
-	client, err := control.EnsureDaemon(p.ctx)
+func (p *prefs) setServer(remote, name, url string) any {
+	client, err := p.client(remote, true)
 	if err != nil {
 		return errText(err)
 	}
@@ -356,13 +425,13 @@ func (p *prefs) setServer(name, url string) any {
 	return errText(err)
 }
 
-func (p *prefs) removeServer(name string) any {
-	client, err := control.Connect(p.ctx)
+func (p *prefs) removeServer(remote, name string) any {
+	client, err := p.client(remote, false)
 	if err != nil {
 		return errText(err)
 	}
 	body := T("confirm.removeBody")
-	if n := liveConns(p.ctx, name); n > 0 {
+	if n := liveConnsOn(p.ctx, client, name); n > 0 {
 		body += "\n" + Tn("confirm.conns", n)
 	}
 	if !confirm(T("confirm.remove", "name", name), body, T("confirm.removeButton")) {
@@ -376,18 +445,19 @@ func (p *prefs) removeServer(name string) any {
 }
 
 // signIn starts the browser sign-in and returns at once; the window follows it through state().
-func (p *prefs) signIn(name string) string {
-	if p.busy(name) {
+func (p *prefs) signIn(remote, name string) string {
+	key := keyPrefix(remote) + name
+	if p.busy(key) {
 		return ""
 	}
-	client, err := control.EnsureDaemon(p.ctx)
+	client, err := p.client(remote, true)
 	if err != nil {
 		return errText(err)
 	}
-	p.setBusy(name, true)
+	p.setBusy(key, true)
 	go func() {
 		err := signInFlow(p.ctx, client, name)
-		p.setBusy(name, false)
+		p.setBusy(key, false)
 		if err != nil && !errors.Is(err, context.Canceled) {
 			notify(T("n.signInFailed"), err.Error())
 		}
@@ -395,12 +465,12 @@ func (p *prefs) signIn(name string) string {
 	return ""
 }
 
-func (p *prefs) signOut(name string) any {
-	client, err := control.Connect(p.ctx)
+func (p *prefs) signOut(remote, name string) any {
+	client, err := p.client(remote, false)
 	if err != nil {
 		return errText(err)
 	}
-	if !confirmDrop(p.ctx, "signOut", name) {
+	if !confirmDropOn(p.ctx, client, "signOut", name) {
 		return nil
 	}
 	notEndedOn, err := client.Logout(p.ctx, control.LogoutRequest{Server: name})

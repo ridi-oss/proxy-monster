@@ -1,5 +1,49 @@
 # Changelog
 
+## [0.1.33](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.32...server-v0.1.33) (2026-10-14)
+
+
+### Features
+
+* **control-plane:** ask the proxy to check target syntax before an unanalyzable deny ([7934ca1](https://github.com/ridi-oss/proxy-monster/commit/7934ca1b69a8f8206af389482da45baba2882576))
+* **control-plane:** copy declared id_token claims onto the Cedar User ([a96ca9e](https://github.com/ridi-oss/proxy-monster/commit/a96ca9e9c510e5eb7a6283cb59c5d0bbacbcda84))
+* **cpgo:** join the tailnet with tsnet ([fd91878](https://github.com/ridi-oss/proxy-monster/commit/fd9187873145d6d0bf710921a3ee7bf879f62682))
+* **cpgo:** send the console's web paths to web when PM_WEB_URL is set ([0435678](https://github.com/ridi-oss/proxy-monster/commit/043567816d654606fb3c77606b0a574c8d0a4154))
+* **cpgo:** serve the console on the tailnet ([bec822c](https://github.com/ridi-oss/proxy-monster/commit/bec822c10db2da574f8b4975926644d147caf7b3))
+* **goproxy:** accept relayed clients on an optional PROXY protocol port ([610f750](https://github.com/ridi-oss/proxy-monster/commit/610f750a93272050652000c3f5227cea6ac9991b))
+* **goproxy:** forward a target syntax error in place of an unanalyzable deny ([eb83951](https://github.com/ridi-oss/proxy-monster/commit/eb83951ddab61b31119e79582f696a582c9f98e6))
+* **pmon:** reach a remote daemon without pmon on the remote's PATH ([346c862](https://github.com/ridi-oss/proxy-monster/commit/346c86295115b5907e4be021254ac446d864481a))
+* **proto:** add Verdict.check_target_syntax ([d8b0433](https://github.com/ridi-oss/proxy-monster/commit/d8b04339c6ddb38cf421c57a29f6e3a5fc534ff7))
+* record a target-rejected unanalyzable statement as an errored ALLOW ([0f3ff43](https://github.com/ridi-oss/proxy-monster/commit/0f3ff43b2b3dd42acdb9334ead97393251057357))
+* **tray:** manage remotes in Settings, and notify when one drops ([5e95341](https://github.com/ridi-oss/proxy-monster/commit/5e95341ab0f18c049fb6940433194a575781d590))
+
+
+### Bug Fixes
+
+* **analyzer:** relay a sourceless SELECT whose column cannot be resolved ([aadcd72](https://github.com/ridi-oss/proxy-monster/commit/aadcd72872e829f1f71c85b32d9c1f04482c5276))
+* **control-plane:** raise the container heap cap and exit on OOM ([b697438](https://github.com/ridi-oss/proxy-monster/commit/b697438c436fe6328d14662a87872f3f63f549d9))
+* **goproxy:** keep the OK packet's info field length-prefixed for MySQL clients ([b9976a4](https://github.com/ridi-oss/proxy-monster/commit/b9976a41ba5d876dce7a51744c992c5be55e9a80))
+* **goproxy:** send a target syntax error unredacted ([4f49ad6](https://github.com/ridi-oss/proxy-monster/commit/4f49ad67cc23baad7ee5069a9f947501764a9cf7))
+* **pmon:** read a stopped default daemon beside others as not running ([f84d9d4](https://github.com/ridi-oss/proxy-monster/commit/f84d9d428c7d193cc382917378dddc9cd6d3f764))
+
+
+### Reverts
+
+* **analyzer:** drop the sourceless SELECT relay rule ([e837677](https://github.com/ridi-oss/proxy-monster/commit/e8376779a21c3835d5facdfe798ee3f37f775e19))
+
+
+### Build & Dependencies
+
+* **control-plane:** set JVM defaults through JDK_JAVA_OPTIONS ([ddaa4e0](https://github.com/ridi-oss/proxy-monster/commit/ddaa4e063cb67220f6f9e7fc14f4f459dddc69cb))
+
+
+### Documentation
+
+* describe the target syntax check on an unanalyzable deny ([cb54104](https://github.com/ridi-oss/proxy-monster/commit/cb54104f5f306e243746fe48bd9c7b0209c13792))
+* **pmon:** remotes and --remote ([bebc6f2](https://github.com/ridi-oss/proxy-monster/commit/bebc6f264ae24cee136266f66a39161b1284084b))
+* put the console on a tailnet with cp-go ([8db4e5b](https://github.com/ridi-oss/proxy-monster/commit/8db4e5bdb2985b741ea2b94ac81c256db4438f57))
+* state what a target syntax error can carry ([892a06a](https://github.com/ridi-oss/proxy-monster/commit/892a06ad356927c479e094b7d042d3aecf9d4a2b))
+
 ## [0.1.32](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.31...server-v0.1.32) (2026-10-13)
 
 

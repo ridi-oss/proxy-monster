@@ -132,18 +132,18 @@ class ApprovalLifecycleDbTest {
         val cc = "cc@example.com"
         core.userGroupStore.createUser(AppUserInput(principal = cc), core.tokenStore, core.accessStore, PrincipalSessionStore(dataSource, null))
         assertFailsWith<TaskServiceException> { approvals.detail(cc, null, id) }
-        assertFailsWith<TaskServiceException> { approvals.setCc(outsider, null, actor(outsider), id, cc, add = true) }
+        assertFailsWith<TaskServiceException> { approvals.threads.setCc(outsider, null, actor(outsider), id, cc, add = true) }
 
-        approvals.setCc(requester, null, actor(requester), id, cc, add = true)
+        approvals.threads.setCc(requester, null, actor(requester), id, cc, add = true)
         val asCc = approvals.detail(cc, null, id)
         assertTrue(asCc.canComment && asCc.canCc)
         assertFalse(asCc.canExecute, "a CC cannot run it")
-        approvals.comment(cc, null, actor(cc), id, "looks fine to me")
-        approvals.comment(cc, null, actor(cc), id, null, lgtm = true)
+        approvals.threads.comment(cc, null, actor(cc), id, "looks fine to me")
+        approvals.threads.comment(cc, null, actor(cc), id, null, lgtm = true)
         assertEquals("APPROVED", status(id), "an LGTM never changes the status")
-        assertFailsWith<TaskServiceException> { approvals.comment(outsider, null, actor(outsider), id, "hi") }
+        assertFailsWith<TaskServiceException> { approvals.threads.comment(outsider, null, actor(outsider), id, "hi") }
 
-        approvals.setCc(adminB, null, actor(adminB), id, cc, add = false)
+        approvals.threads.setCc(adminB, null, actor(adminB), id, cc, add = false)
         assertFailsWith<TaskServiceException> { approvals.detail(cc, null, id) }
 
         val kinds = approvals.detail(requester, null, id).timeline.map { it.kind }

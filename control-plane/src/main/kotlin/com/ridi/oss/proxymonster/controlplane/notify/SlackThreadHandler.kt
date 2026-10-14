@@ -5,6 +5,7 @@ import com.ridi.oss.proxymonster.controlplane.ApprovalService
 import com.ridi.oss.proxymonster.controlplane.Channel
 import com.ridi.oss.proxymonster.controlplane.RequestEventKind
 import com.ridi.oss.proxymonster.controlplane.RequestEvents
+import com.ridi.oss.proxymonster.controlplane.RequestThreads
 import com.ridi.oss.proxymonster.controlplane.inTx
 import com.ridi.oss.proxymonster.controlplane.management.AuditActor
 import org.slf4j.LoggerFactory
@@ -42,7 +43,7 @@ class SlackThreadHandler(
         }
         val principal = m.principal ?: return
         runCatching {
-            approvals().comment(
+            approvals().threads.comment(
                 principal, null, AuditActor(principal, channel = ORIGIN), thread.taskId, text,
                 channel = Channel.SLACK, sourceThread = thread.externalRef, slackRef = ref,
             )
@@ -52,6 +53,6 @@ class SlackThreadHandler(
     private companion object {
         val TRANSPORTS = setOf(SlackTransport.TRANSPORT, SlackTransport.TRANSPORT_CHANNEL)
         val ORIGIN = Channel.SLACK.contextValue
-        const val COMMENT_MAX_CHARS = ApprovalService.COMMENT_MAX_CHARS
+        const val COMMENT_MAX_CHARS = RequestThreads.COMMENT_MAX_CHARS
     }
 }

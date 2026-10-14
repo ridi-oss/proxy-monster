@@ -87,10 +87,14 @@ export function useWorkflowRequests(): {
   }, [identity?.principal, queryInvolved.data, roleLookup.data])
 
   // Others' requests the caller approved, ran, or was notified about.
-  const involvedRequests = useMemo(
-    () => (queryInvolved.data ?? []).filter((request) => request.principal !== identity?.principal),
-    [identity?.principal, queryInvolved.data],
-  )
+  // A role or rate-reset row shows only while the task.read-filtered access list still has it; its detail renders
+  // from the row, while a query's detail is fetched with a live check.
+  const involvedRequests = useMemo(() => {
+    const readable = new Set((roleLookup.data ?? []).map((request) => request.id))
+    return (queryInvolved.data ?? []).filter(
+      (request) => request.principal !== identity?.principal && (request.kind === 'QUERY' || readable.has(request.id)),
+    )
+  }, [identity?.principal, queryInvolved.data, roleLookup.data])
 
   const lists = useMemo<Record<WorkflowTab, WorkflowRequestEntry[]>>(() => {
     const byId = new Map<number, WorkflowRequestEntry>()

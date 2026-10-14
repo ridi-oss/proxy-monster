@@ -12,6 +12,7 @@ import {
   getApproval,
   getApprovalInbox,
   getInvolvedApprovals,
+  getRequestThread,
   getAuthConfig,
   getCatalog,
   getCedarPolicies,
@@ -47,6 +48,7 @@ const KEYS = {
   approval: (id: number) => ['approval', id] as const,
   approvalInbox: 'approval-inbox',
   involvedApprovals: 'approvals-involved',
+  requestThread: (id: number) => ['request-thread', id] as const,
   roles: 'roles',
   users: 'users',
   groups: 'groups',
@@ -124,6 +126,10 @@ export function useApproval(id: number | null, opts?: SWRConfiguration) {
 
 export function useApprovalInbox(opts?: SWRConfiguration) {
   return useSWR(KEYS.approvalInbox, getApprovalInbox, opts)
+}
+
+export function useRequestThread(id: number, opts?: SWRConfiguration) {
+  return useSWR(KEYS.requestThread(id), () => getRequestThread(id), opts)
 }
 
 export function useInvolvedApprovals(opts?: SWRConfiguration) {

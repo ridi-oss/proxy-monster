@@ -89,19 +89,24 @@ task exists but no rows.
    (`QueryResultStore.purgeExpired`, swept with `RESULT_PURGE_INTERVAL_MS` = 15
    min).
 
-Each request has a timeline (`request_event`), returned with
-`GET /api/approvals/{id}`: its state changes plus comments, LGTMs, and CC
-changes. `POST .../comments` adds a comment or, with `lgtm`, an LGTM, gated by
-`task.comment`; an LGTM is shown but never approves. A CC is added with
-`POST .../ccs` and removed with `DELETE .../ccs/{principal}`, gated by
-`task.cc`. CCs are `request_participant` rows of kind `cc`, read by Cedar as
+Every workflow request — a query approval, a role request, or a rate reset — has
+a thread, served by `RequestThreads` under kind-neutral routes.
+`GET /api/requests/{id}/thread` returns the timeline (`request_event`: state
+changes plus comments, LGTMs, and CC changes) and what the caller may do.
+`POST /api/requests/{id}/comments` adds a comment or, with `lgtm`, an LGTM,
+gated by `task.comment`; an LGTM is shown but never approves. A CC is added with
+`POST /api/requests/{id}/ccs` and removed with
+`DELETE /api/requests/{id}/ccs/{principal}`, gated by `task.cc`.
+`POST /api/requests/{id}/close` ends a request that has not started
+(`task.cancel`): a pending one of any kind, or an approved query that has not
+run. CCs are `request_participant` rows of kind `cc`, read by Cedar as
 `resource.ccs`: the seeded `system:task-cc-parties` lets the requester and CCs
 read, comment, and manage CCs, and `system:admin` gets the same. A CC gets a
 Slack DM with an LGTM button.
 
-`GET /api/approvals/involved` lists the caller's own requests and those they
-took part in, from `request_participant`. That table only drives the list; a row
-can outlive its holder's access, and opening the request is a live `task.read`.
+`GET /api/requests/involved` lists the caller's own requests and those they took
+part in, from `request_participant`. That table only drives the list; a row can
+outlive its holder's access, and opening the request is a live `task.read`.
 Another person's statement is listed only when it carries no protected literal.
 
 A new request must carry R — the create route rejects a null `roleId`

@@ -76,9 +76,9 @@ class SlackDecisionHandler(
                 SlackTransport.ACTION_DENY ->
                     service.reject(principal, null, actor, req.id, SLACK_REJECT_REASON, Channel.SLACK)
                 SlackTransport.ACTION_UNAPPROVE -> service.unapprove(principal, null, actor, req.id, Channel.SLACK)
-                SlackTransport.ACTION_CLOSE -> service.cancel(principal, null, actor, req.id, Channel.SLACK)
+                SlackTransport.ACTION_CLOSE -> service.threads.close(principal, null, actor, req.id, Channel.SLACK)
                 SlackTransport.ACTION_RUN -> run(principal, req.id)
-                SlackTransport.ACTION_LGTM -> service.comment(principal, null, actor, req.id, null, lgtm = true, Channel.SLACK)
+                SlackTransport.ACTION_LGTM -> service.threads.comment(principal, null, actor, req.id, null, lgtm = true, Channel.SLACK)
                 else -> return ""
             }
         }

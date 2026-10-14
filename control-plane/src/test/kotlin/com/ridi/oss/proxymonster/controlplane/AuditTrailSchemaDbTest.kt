@@ -103,8 +103,8 @@ class AuditTrailSchemaDbTest {
         dataSource.connection.use { connection ->
             connection.prepareStatement(
                 "INSERT INTO access_request " +
-                    "(principal, kind, datasource_id, status, reason, source_decision_id) " +
-                    "VALUES ('requester', 'QUERY', ?, 'PENDING', 'need it', ?) RETURNING id",
+                    "(principal, kind, datasource_id, status, reason, source_decision_id, creator_kind) " +
+                    "VALUES ('requester', 'QUERY', ?, 'PENDING', 'need it', ?, 'WORKFLOW') RETURNING id",
             ).use { statement ->
                 statement.setLong(1, datasourceId)
                 statement.setLong(2, sourceDecisionId)

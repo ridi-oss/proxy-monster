@@ -29,7 +29,7 @@ data class RequestEvent(
     val deleted: Boolean = false,
 )
 
-/** A query request's timeline. Only human workflow requests get one; editor and wire tasks are skipped. */
+/** A workflow request's timeline. The editor's and the wire proxy's own task rows get none. */
 object RequestEvents {
     fun record(
         c: Connection,
@@ -44,7 +44,8 @@ object RequestEvents {
     ): RequestEvent? =
         c.prepareStatement(
             """INSERT INTO request_event (request_id, kind, actor, body, revision, origin, source_thread, slack_ref)
-               SELECT id, ?, ?, ?, revision, ?, ?, ? FROM access_request WHERE id = ? AND creator_kind = 'WORKFLOW'
+               SELECT id, ?, ?, ?, revision, ?, ?, ? FROM access_request
+               WHERE id = ? AND creator_kind = 'WORKFLOW'
                ON CONFLICT (slack_ref) WHERE slack_ref IS NOT NULL DO NOTHING
                RETURNING $COLUMNS""",
         ).use { ps ->
@@ -56,7 +57,11 @@ object RequestEvents {
             ps.setString(6, slackRef)
             ps.setLong(7, requestId)
             ps.executeQuery().use { rs -> if (rs.next()) rs.toEvent() else null }
-        }?.also { if (actor != null && kind in DECISIONS) RequestParticipants.add(c, requestId, listOf(actor), ParticipantKind.APPROVER) }
+        }?.also {
+            if (actor != null && kind in DECISIONS && !actor.startsWith(SYSTEM_PREFIX)) {
+                RequestParticipants.add(c, requestId, listOf(actor), ParticipantKind.APPROVER)
+            }
+        }
 
     /** Entries of [requestId] after [afterId], each with the thread it came from, for posting into threads. */
     fun after(c: Connection, requestId: Long, afterId: Long): List<Pair<RequestEvent, String?>> =
@@ -114,6 +119,9 @@ object RequestEvents {
             }
         }
     }
+
+    // A system actor, such as an automatic reviewer, is never listed as a participant.
+    private const val SYSTEM_PREFIX = "system:"
 
     // Acting on a request makes the actor a participant; commenting does not.
     private val DECISIONS = setOf(

@@ -4,8 +4,9 @@ import { useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { toast } from 'sonner'
 import { X } from 'lucide-react'
-import { addApprovalCc, commentOnApproval, removeApprovalCc } from '@/lib/api/client'
-import type { QueryRequestDetail, RequestEvent } from '@/lib/api/types'
+import { addApprovalCc, closeRequest, commentOnApproval, removeApprovalCc } from '@/lib/api/client'
+import type { AccessRequest, RequestEvent } from '@/lib/api/types'
+import { useRequestThread } from '@/lib/hooks'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
@@ -49,25 +50,27 @@ function EventLine({ event, onRequest }: { event: RequestEvent; onRequest: boole
   )
 }
 
-/** A request's comments, LGTMs, CCs, and state changes, oldest first. */
-export function ApprovalTimeline({
-  id,
-  detail,
+/** A request's comments, LGTMs, CCs, and state changes, oldest first. Works for every request kind. */
+export function RequestTimeline({
+  request,
   principal,
   onChanged,
 }: {
-  id: number
-  detail: QueryRequestDetail
+  request: AccessRequest
   principal?: string
-  onChanged: () => void
+  onChanged?: () => void
 }) {
   const t = useTranslations('Workflows')
+  const id = request.id
+  const { data: thread, mutate } = useRequestThread(id, { refreshInterval: 15_000 })
   const [body, setBody] = useState('')
   const [cc, setCc] = useState('')
   const [busy, setBusy] = useState<'comment' | 'lgtm' | 'cc' | null>(null)
-  const ccs = detail.request.ccs ?? []
-  const isRequester = detail.request.principal === principal
-  const members = new Set([detail.request.principal, ...(detail.participants ?? []), ...ccs])
+  if (!thread) return null
+  const ccs = thread.ccs
+  const isRequester = request.principal === principal
+  const members = new Set([request.principal, ...thread.participants, ...ccs])
+  // Only a Slack channel reply can come from someone not on the request; every other comment passed task.comment.
   const onRequest = (actor?: string | null) => actor == null || members.has(actor)
 
   const run = async (kind: 'comment' | 'lgtm' | 'cc', action: () => Promise<unknown>, after: () => void) => {
@@ -75,7 +78,8 @@ export function ApprovalTimeline({
     try {
       await action()
       after()
-      onChanged()
+      await mutate()
+      onChanged?.()
     } catch (err) {
       toast.error(errorText(err, t('timeline.failed')))
     } finally {
@@ -92,7 +96,7 @@ export function ApprovalTimeline({
           {ccs.map((p) => (
             <span key={p} className="bg-muted inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-mono text-xs">
               {p}
-              {detail.canCc && (
+              {thread.canCc && (
                 <button
                   type="button"
                   aria-label={t('timeline.removeCc', { principal: p })}
@@ -105,7 +109,7 @@ export function ApprovalTimeline({
             </span>
           ))}
         </div>
-        {detail.canCc && (
+        {thread.canCc && (
           <form
             className="flex max-w-md gap-2"
             onSubmit={(e) => {
@@ -130,13 +134,13 @@ export function ApprovalTimeline({
       <div className="space-y-2">
         <p className="text-muted-foreground text-[10px] font-semibold tracking-widest uppercase">{t('timeline.heading')}</p>
         <ol className="space-y-3">
-          {(detail.timeline ?? []).map((event) => (
-            <EventLine key={event.id} event={event} onRequest={onRequest(event.actor)} />
+          {thread.timeline.map((event) => (
+            <EventLine key={event.id} event={event} onRequest={event.origin !== 'slack' || onRequest(event.actor)} />
           ))}
         </ol>
       </div>
 
-      {detail.canComment && (
+      {thread.canComment && (
         <div className="space-y-2">
           <Textarea
             id="approval-comment"
@@ -168,5 +172,34 @@ export function ApprovalTimeline({
         </div>
       )}
     </div>
+  )
+}
+
+/** Closes a request that has not started, for whoever Cedar lets do so. Renders nothing otherwise. */
+export function CloseRequestButton({ request, onClosed }: { request: AccessRequest; onClosed?: () => void }) {
+  const t = useTranslations('Workflows')
+  const { data: thread, mutate } = useRequestThread(request.id)
+  const [busy, setBusy] = useState(false)
+  if (!thread?.canClose) return null
+  return (
+    <Button
+      variant="outline"
+      disabled={busy}
+      onClick={async () => {
+        setBusy(true)
+        try {
+          await closeRequest(request.id)
+          toast.success(t('approvalDetail.closedToast'))
+          await mutate()
+          onClosed?.()
+        } catch (err) {
+          toast.error(errorText(err, t('approvalDetail.closeFailed')))
+        } finally {
+          setBusy(false)
+        }
+      }}
+    >
+      {busy ? t('actions.closing') : t('actions.close')}
+    </Button>
   )
 }

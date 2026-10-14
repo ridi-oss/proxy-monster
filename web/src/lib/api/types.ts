@@ -410,6 +410,19 @@ export interface RequestEvent {
   deleted?: boolean
 }
 
+/** A request's thread and what the caller may do on it. Shared by every request kind. */
+export interface RequestThread {
+  requestId: number
+  ccs: string[]
+  /** Approvers who were notified or acted, and CCs. */
+  participants: string[]
+  timeline: RequestEvent[]
+  canComment: boolean
+  canCc: boolean
+  canClose: boolean
+  canDecide: boolean
+}
+
 /** The pull request a GitHub request came from. */
 export interface PullRequestRef {
   /** `owner/name` of the pull request's repository. */
@@ -514,11 +527,6 @@ export interface QueryRequestDetail {
   canUnapprove?: boolean
   /** Close a request that has not run; canCancel stops a running one. */
   canClose?: boolean
-  canComment?: boolean
-  canCc?: boolean
-  timeline?: RequestEvent[]
-  /** Approvers who were notified or acted, and CCs. */
-  participants?: string[]
   result?: QueryResultMeta | null
   /** Every statement of the batch, in run order. One entry for a single-statement request. */
   statements?: QueryResultMeta[]

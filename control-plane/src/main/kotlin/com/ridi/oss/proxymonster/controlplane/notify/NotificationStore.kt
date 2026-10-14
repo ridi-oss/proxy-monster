@@ -1,9 +1,20 @@
 package com.ridi.oss.proxymonster.controlplane.notify
 
+import com.ridi.oss.proxymonster.controlplane.RequestEvents
 import java.sql.Connection
 import java.sql.Timestamp
 import java.time.Instant
 import javax.sql.DataSource
+
+/** A delivered message that later timeline entries are posted into as replies. */
+data class MessageThread(
+    val taskId: Long,
+    val transport: String,
+    val recipient: String,
+    val externalRef: String,
+    val lastEventId: Long,
+    val kind: NotificationKind = NotificationKind.APPROVER,
+)
 
 /** One queued delivery, as the drainer sees it. */
 data class OutboxRow(
@@ -208,6 +219,62 @@ class NotificationStore(private val dataSource: DataSource) {
             }
         }
 
+    /** Threads on [transports] with timeline entries past their cursor. */
+    fun threadsBehind(transports: Set<String>): List<MessageThread> = dataSource.connection.use { c ->
+        c.prepareStatement(
+            """SELECT m.task_id, m.transport, m.recipient, m.external_ref, m.last_event_id, m.kind FROM notification_message m
+               WHERE m.transport = ANY (?) AND EXISTS (
+                   SELECT 1 FROM request_event e WHERE e.request_id = m.task_id AND e.id > m.last_event_id)
+               ORDER BY m.task_id, m.id""",
+        ).use { ps ->
+            ps.setArray(1, c.createArrayOf("text", transports.toTypedArray()))
+            ps.executeQuery().use { rs ->
+                val out = ArrayList<MessageThread>()
+                while (rs.next()) {
+                    out += MessageThread(
+                        rs.getLong(1), rs.getString(2), rs.getString(3), rs.getString(4), rs.getLong(5),
+                        NotificationKind.fromWire(rs.getString(6)),
+                    )
+                }
+                out
+            }
+        }
+    }
+
+    /** The thread whose first message is [externalRef], on one of [transports]. */
+    fun threadAt(externalRef: String, transports: Set<String>): MessageThread? = dataSource.connection.use { c ->
+        c.prepareStatement(
+            """SELECT task_id, transport, recipient, external_ref, last_event_id FROM notification_message
+               WHERE external_ref = ? AND transport = ANY (?) LIMIT 1""",
+        ).use { ps ->
+            ps.setString(1, externalRef)
+            ps.setArray(2, c.createArrayOf("text", transports.toTypedArray()))
+            ps.executeQuery().use { rs ->
+                if (rs.next()) MessageThread(rs.getLong(1), rs.getString(2), rs.getString(3), rs.getString(4), rs.getLong(5)) else null
+            }
+        }
+    }
+
+    fun eventsAfter(taskId: Long, afterId: Long) = dataSource.connection.use { RequestEvents.after(it, taskId, afterId) }
+
+    fun advanceThread(thread: MessageThread, eventId: Long) {
+        dataSource.connection.use { c ->
+            c.prepareStatement(
+                "UPDATE notification_message SET last_event_id = ? WHERE external_ref = ? AND transport = ? AND last_event_id < ?",
+            ).use { ps ->
+                ps.setLong(1, eventId)
+                ps.setString(2, thread.externalRef)
+                ps.setString(3, thread.transport)
+                ps.setLong(4, eventId)
+                ps.executeUpdate()
+            }
+        }
+    }
+
+    fun addPost(eventId: Long, externalRef: String) = dataSource.connection.use { RequestEvents.addPost(it, eventId, externalRef) }
+
+    fun postsOf(eventId: Long): List<String> = dataSource.connection.use { RequestEvents.postsOf(it, eventId) }
+
     /** Who may approve [taskId], as recorded when it was filed, without its requester. */
     fun approversOf(taskId: Long): List<String> = dataSource.connection.use { c ->
         c.prepareStatement(
@@ -226,8 +293,8 @@ class NotificationStore(private val dataSource: DataSource) {
     fun rememberMessage(taskId: Long, transport: String, recipient: String, kind: NotificationKind, externalRef: String) {
         dataSource.connection.use { c ->
             c.prepareStatement(
-                """INSERT INTO notification_message (task_id, transport, recipient, kind, external_ref)
-                   VALUES (?, ?, ?, ?, ?)
+                """INSERT INTO notification_message (task_id, transport, recipient, kind, external_ref, last_event_id)
+                   VALUES (?, ?, ?, ?, ?, (SELECT coalesce(max(id), 0) FROM request_event WHERE request_id = ?))
                    ON CONFLICT (task_id, transport, recipient, kind)
                    DO UPDATE SET external_ref = EXCLUDED.external_ref, updated_at = now()""",
             ).use { ps ->
@@ -236,6 +303,7 @@ class NotificationStore(private val dataSource: DataSource) {
                 ps.setString(3, recipient)
                 ps.setString(4, kind.wire)
                 ps.setString(5, externalRef)
+                ps.setLong(6, taskId)
                 ps.executeUpdate()
             }
         }

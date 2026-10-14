@@ -283,6 +283,9 @@
       "cancelled": "The run was canceled.",
       "cc_added": "added {body} as a CC",
       "cc_removed": "removed {body} from the CCs"
-    }
+    },
+    "notOnRequest": "not on this request",
+    "edited": "edited",
+    "deleted": "Comment deleted."
   }
 }

@@ -7,6 +7,8 @@ import com.ridi.oss.proxymonster.controlplane.DecryptedResult
 import com.ridi.oss.proxymonster.controlplane.ParticipantKind
 import com.ridi.oss.proxymonster.controlplane.QueryResultStore
 import com.ridi.oss.proxymonster.controlplane.RequestEdit
+import com.ridi.oss.proxymonster.controlplane.RequestEventKind
+import com.ridi.oss.proxymonster.controlplane.RequestEvents
 import com.ridi.oss.proxymonster.controlplane.RequestParticipants
 import com.ridi.oss.proxymonster.controlplane.ResultCrypto
 import com.ridi.oss.proxymonster.controlplane.management.AuditActor
@@ -289,6 +291,56 @@ class NotificationServiceDbTest {
         assertNull(posted.statement.text, "a channel never gets the full-disclosure statement of a flagged request")
         assertEquals(listOf("sam@x"), posted.approvers)
         assertEquals(listOf("cc@x"), posted.ccs)
+    }
+
+    @Test
+    fun `a comment is posted into every other thread, never back into the one it came from, and edits follow`() = runBlocking {
+        val threads = FakeTransport(name = "threads", supportsReplies = true)
+        val svc = NotificationService(
+            store = store,
+            recipients = RecipientResolver(fx.authz, fx.roleResolver) { emptyList() },
+            transports = listOf(threads),
+            accessStore = fx.accessStore,
+            queryResultStore = null,
+            webBaseUrl = "https://console.example",
+            disclosure = StatementDisclosure.AUTO,
+            defaultLocale = "en",
+        )
+        val task = newTask().id
+        fx.dataSource.connection.use { c -> store.enqueue(c, task, NotificationEvent.TASK_REQUESTED, "threads", "sam@x", NotificationKind.APPROVER) }
+        fx.dataSource.connection.use { c -> store.enqueue(c, task, NotificationEvent.TASK_SUBMITTED, "threads", "req@example.com", NotificationKind.REQUESTER) }
+        svc.drainOnce()
+        assertTrue(threads.replies.isEmpty(), "the request itself is not replayed into a new thread")
+
+        val samThread = "thread:addr:sam@x:task.requested"
+        val reqThread = "thread:addr:req@example.com:task.submitted"
+        val comment = fx.dataSource.connection.use { c ->
+            RequestEvents.record(c, task, RequestEventKind.COMMENT, "sam@x", "slack", "why the join?", samThread, "D1:9.9")
+        }!!
+        svc.drainOnce()
+        assertEquals(listOf(reqThread to "*sam@x*: why the join?"), threads.replies)
+
+        val edited = fx.dataSource.connection.use { c -> RequestEvents.editBySlackRef(c, "D1:9.9", "why this join?") }!!
+        assertEquals(comment.id, edited.id)
+        svc.propagate(edited)
+        assertEquals(listOf<Pair<String, String?>>("$reqThread/reply1" to "*sam@x*: why this join?"), threads.replyEdits.toList())
+
+        svc.drainOnce()
+        assertEquals(1, threads.replies.size, "a drained entry is not posted twice")
+
+        // A CC who is removed stops getting new entries in their thread.
+        fx.dataSource.connection.use { c ->
+            RequestParticipants.add(c, task, listOf("cc@x"), ParticipantKind.CC)
+            store.enqueue(c, task, NotificationEvent.TASK_CC_ADDED, "threads", "cc@x", NotificationKind.CC)
+        }
+        svc.drainOnce()
+        fx.dataSource.connection.use { c ->
+            RequestParticipants.remove(c, task, "cc@x", ParticipantKind.CC)
+            RequestEvents.record(c, task, RequestEventKind.COMMENT, "sam@x", "console", "after removal")
+        }
+        svc.drainOnce()
+        assertTrue(threads.replies.none { (ref, text) -> "cc@x" in ref && "after removal" in text }, "got: ${threads.replies}")
+        assertTrue(threads.replies.any { (ref, text) -> ref == samThread && "after removal" in text })
     }
 
     @Test

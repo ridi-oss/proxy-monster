@@ -76,6 +76,7 @@ fun Application.installNotifications(
             accessStore, approvals, notifications, config.notifyLocale,
             deepLink = { id -> URLBuilder(config.webBaseUrl).appendPathSegments("workflows", id.toString()).buildString() },
         )
+        val threads = SlackThreadHandler(NotificationStore(dataSource), accessStore, approvals, notifications)
         val identity = UserGroupStore(dataSource)
         launch {
             SlackSocketMode(
@@ -84,6 +85,7 @@ fun Application.installNotifications(
                 config.slackAppToken,
                 principalForEmail = identity::activePrincipalByEmail,
                 onInteraction = { handler.respond(it) },
+                onMessage = { threads.onMessage(it) },
             ).run()
         }
     }

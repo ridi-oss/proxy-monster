@@ -5,6 +5,8 @@ import com.ridi.oss.proxymonster.controlplane.AccessStore
 import com.ridi.oss.proxymonster.controlplane.ParticipantKind
 import com.ridi.oss.proxymonster.controlplane.PullRequestRef
 import com.ridi.oss.proxymonster.controlplane.QueryResultStore
+import com.ridi.oss.proxymonster.controlplane.RequestEventKind
+import com.ridi.oss.proxymonster.controlplane.RequestEvent
 import com.ridi.oss.proxymonster.controlplane.RequestParticipants
 import io.ktor.http.URLBuilder
 import io.ktor.http.appendPathSegments
@@ -31,6 +33,7 @@ class NotificationService(
     private val webBaseUrl: String,
     private val disclosure: StatementDisclosure,
     private val defaultLocale: String,
+    private val renderer: NotificationRenderer = NotificationRenderer(),
 ) {
     private val log = LoggerFactory.getLogger(NotificationService::class.java)
 
@@ -215,7 +218,45 @@ class NotificationService(
                     retryOrGiveUp(row, "unhandled: ${it.message}")
                 }
         }
+        runCatching { drainThreads() }.onFailure { log.warn("thread replies failed", it) }
         return rows.size
+    }
+
+    /**
+     * Post each thread's new timeline entries into it as replies, in order. A thread never gets back the
+     * comment written in it, nor the request itself, which its first message already is. A transient failure
+     * leaves the cursor where it is, so the rest of that thread waits for the next drain.
+     */
+    private suspend fun drainThreads() {
+        val replying = transports.filter { it.supportsReplies }.associateBy { it.name }
+        if (replying.isEmpty()) return
+        for (thread in store.threadsBehind(replying.keys)) {
+            val transport = replying.getValue(thread.transport)
+            // A removed CC's thread stops getting new entries; the cursor still moves so it is not retried.
+            val removed = thread.kind == NotificationKind.CC &&
+                accessStore.getRequest(thread.taskId)?.ccs?.contains(thread.recipient) != true
+            val locale = store.localeOf(thread.recipient) ?: defaultLocale
+            for ((event, sourceThread) in store.eventsAfter(thread.taskId, thread.lastEventId)) {
+                if (!removed && event.kind != RequestEventKind.REQUESTED.wire && sourceThread != thread.externalRef && !event.deleted) {
+                    when (val r = transport.reply(thread.externalRef, renderer.threadLine(event, locale))) {
+                        is DeliveryResult.Sent -> store.addPost(event.id, r.externalRef)
+                        is DeliveryResult.Retry -> break
+                        is DeliveryResult.Drop -> log.warn("thread reply dropped task={} event={}: {}", thread.taskId, event.id, r.reason)
+                    }
+                }
+                store.advanceThread(thread, event.id)
+            }
+        }
+    }
+
+    /** Carry an edited or deleted comment to every copy of it posted into other threads. */
+    suspend fun propagate(event: RequestEvent) {
+        val transport = transports.firstOrNull { it.supportsReplies } ?: return
+        for (ref in store.postsOf(event.id)) {
+            val text = if (event.deleted) null else renderer.threadLine(event, defaultLocale)
+            val result = runCatching { transport.editReply(ref, text) }.getOrElse { DeliveryResult.Retry(it.message ?: "") }
+            if (result !is DeliveryResult.Sent) log.warn("thread reply edit failed event={} ref={}: {}", event.id, ref, result)
+        }
     }
 
     private suspend fun deliver(row: OutboxRow) {

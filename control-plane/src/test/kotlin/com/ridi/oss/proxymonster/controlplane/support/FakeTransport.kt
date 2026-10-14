@@ -21,7 +21,23 @@ class FakeTransport(
     override val supportsUpdate: Boolean = true,
     // Set to act as a channel: every request goes to this one address, which everyone there reads.
     private val channel: String? = null,
+    // Threads: each delivery gets its own ref, and replies into it are recorded.
+    override val supportsReplies: Boolean = false,
 ) : NotificationTransport {
+    /** (thread ref, text) for each reply posted into a thread, and (reply ref, new text or null) for each edit. */
+    val replies: MutableList<Pair<String, String>> = Collections.synchronizedList(mutableListOf())
+    val replyEdits: MutableList<Pair<String, String?>> = Collections.synchronizedList(mutableListOf())
+
+    override suspend fun reply(threadRef: String, text: String): DeliveryResult {
+        replies += threadRef to text
+        return DeliveryResult.Sent("$threadRef/reply${replies.size}")
+    }
+
+    override suspend fun editReply(replyRef: String, text: String?): DeliveryResult {
+        replyEdits += replyRef to text
+        return DeliveryResult.Sent(replyRef)
+    }
+
     override val addressesTasks: Boolean = channel != null
     override val sharedAudience: Boolean = channel != null
 
@@ -76,6 +92,7 @@ class FakeTransport(
         )
         deliverSignal.trySend(Unit)
         deliverThrows?.let { throw it }
+        if (supportsReplies) return DeliveryResult.Sent("thread:$to:${message.event.wire}")
         return deliverResult
     }
 

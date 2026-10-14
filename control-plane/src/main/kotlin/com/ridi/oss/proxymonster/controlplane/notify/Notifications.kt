@@ -239,4 +239,13 @@ interface NotificationTransport {
 
     /** Edit a previously delivered message in place. Only called when [supportsUpdate]. */
     suspend fun update(externalRef: String, message: NotificationMessage, locale: String): DeliveryResult
+
+    /** True when a delivered message is a thread that later timeline entries are posted into. */
+    val supportsReplies: Boolean get() = false
+
+    /** Post [text] into the thread of [threadRef]; a Sent result carries the reply's own ref. */
+    suspend fun reply(threadRef: String, text: String): DeliveryResult = DeliveryResult.Drop("no threads")
+
+    /** Replace a posted reply's text, or remove it when [text] is null. */
+    suspend fun editReply(replyRef: String, text: String?): DeliveryResult = DeliveryResult.Drop("no threads")
 }

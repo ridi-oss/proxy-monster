@@ -138,6 +138,8 @@ fun discoverRoles(
     val canComment: Boolean = false,
     val canCc: Boolean = false,
     val timeline: List<RequestEvent> = emptyList(),
+    // Approvers who were notified or acted, and CCs. A comment by anyone else is marked as such.
+    val participants: List<String> = emptyList(),
     // The active statement's execution metadata. Rows remain behind the result endpoint.
     val result: QueryResultMeta? = null,
     // Every statement, in run order, with its own status.

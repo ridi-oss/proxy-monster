@@ -14,7 +14,7 @@ function errorText(err: unknown, fallback: string): string {
   return err instanceof Error ? err.message : fallback
 }
 
-function EventLine({ event }: { event: RequestEvent }) {
+function EventLine({ event, onRequest }: { event: RequestEvent; onRequest: boolean }) {
   const t = useTranslations('Workflows')
   const when = new Date(event.createdAt).toLocaleString()
   if (event.kind === 'comment' || event.kind === 'lgtm') {
@@ -29,8 +29,14 @@ function EventLine({ event }: { event: RequestEvent }) {
           )}
           <span>· {when}</span>
           {event.origin === 'slack' && <span>· {t('timeline.viaSlack')}</span>}
+          {!onRequest && <span>· {t('timeline.notOnRequest')}</span>}
+          {event.editedAt && !event.deleted && <span>· {t('timeline.edited')}</span>}
         </div>
-        {event.body && <p className="text-sm whitespace-pre-wrap break-words">{event.body}</p>}
+        {event.deleted ? (
+          <p className="text-muted-foreground text-sm italic">{t('timeline.deleted')}</p>
+        ) : (
+          event.body && <p className="text-sm whitespace-pre-wrap break-words">{event.body}</p>
+        )}
       </li>
     )
   }
@@ -61,6 +67,8 @@ export function ApprovalTimeline({
   const [busy, setBusy] = useState<'comment' | 'lgtm' | 'cc' | null>(null)
   const ccs = detail.request.ccs ?? []
   const isRequester = detail.request.principal === principal
+  const members = new Set([detail.request.principal, ...(detail.participants ?? []), ...ccs])
+  const onRequest = (actor?: string | null) => actor == null || members.has(actor)
 
   const run = async (kind: 'comment' | 'lgtm' | 'cc', action: () => Promise<unknown>, after: () => void) => {
     setBusy(kind)
@@ -123,7 +131,7 @@ export function ApprovalTimeline({
         <p className="text-muted-foreground text-[10px] font-semibold tracking-widest uppercase">{t('timeline.heading')}</p>
         <ol className="space-y-3">
           {(detail.timeline ?? []).map((event) => (
-            <EventLine key={event.id} event={event} />
+            <EventLine key={event.id} event={event} onRequest={onRequest(event.actor)} />
           ))}
         </ol>
       </div>

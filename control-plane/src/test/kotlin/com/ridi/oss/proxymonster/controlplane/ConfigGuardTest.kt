@@ -1,6 +1,5 @@
 package com.ridi.oss.proxymonster.controlplane
 
-import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -452,47 +451,30 @@ class ConfigGuardTest {
         }
     }
 
-    @Test fun `PM_GITHUB_ settings enable the GitHub source only when complete`() {
-        val pem = "-----BEGIN RSA PRIVATE KEY-----\nAAAA\n-----END RSA PRIVATE KEY-----\n"
+    @Test fun `PM_CP_GO_GRPC_ADDR names cp-go's bridge, and the GitHub source needs it`() {
+        val bridge = arrayOf("PM_CP_GO_GRPC_ADDR" to "127.0.0.1:18092", "PM_CP_INTERNAL_TOKEN" to "tok")
+        assertNull(Config.fromEnv(envOf()).cpGoBridge)
+        assertEquals(CpGoBridgeConfig("127.0.0.1:18092", "tok"), Config.fromEnv(envOf(*bridge)).cpGoBridge)
+        assertFalse(Config.fromEnv(envOf(*bridge)).cpGoBridge.toString().contains("tok)"))
+        assertFailsWith<IllegalArgumentException> { Config.fromEnv(envOf("PM_CP_GO_GRPC_ADDR" to "127.0.0.1:1")) }
+
         assertNull(Config.fromEnv(envOf()).github)
-        assertNull(Config.fromEnv(envOf("PM_GITHUB_APP_ID" to " ", "PM_GITHUB_APP_PRIVATE_KEY" to "")).github)
+        assertNull(Config.fromEnv(envOf("PM_GITHUB_APP_ID" to " ", *bridge)).github)
         assertEquals(
             GitHubConfig(
-                appId = "123",
-                privateKeyPem = pem,
                 apiUrl = "https://api.github.com",
                 identity = listOf(GitHubIdentityResolver.EXTERNAL_IDENTITY, GitHubIdentityResolver.VERIFIED_EMAIL),
             ),
-            Config.fromEnv(envOf("PM_GITHUB_APP_ID" to "123", "PM_GITHUB_APP_PRIVATE_KEY" to pem)).github,
+            Config.fromEnv(envOf("PM_GITHUB_APP_ID" to "123", *bridge)).github,
         )
-        val keyFile = Files.createTempFile("github-app", ".pem")
-        try {
-            Files.writeString(keyFile, pem)
-            assertEquals(
-                pem,
-                Config.fromEnv(envOf("PM_GITHUB_APP_ID" to "123", "PM_GITHUB_APP_PRIVATE_KEY_FILE" to keyFile.toString()))
-                    .github?.privateKeyPem,
-            )
-            assertFailsWith<IllegalArgumentException> {
-                Config.fromEnv(
-                    envOf(
-                        "PM_GITHUB_APP_ID" to "123",
-                        "PM_GITHUB_APP_PRIVATE_KEY" to pem,
-                        "PM_GITHUB_APP_PRIVATE_KEY_FILE" to keyFile.toString(),
-                    ),
-                )
-            }
-        } finally {
-            Files.deleteIfExists(keyFile)
-        }
-        assertFailsWith<IllegalArgumentException> { Config.fromEnv(envOf("PM_GITHUB_APP_ID" to "123")) }
-        assertFailsWith<IllegalArgumentException> { Config.fromEnv(envOf("PM_GITHUB_APP_PRIVATE_KEY" to pem)) }
-        assertFalse(Config.fromEnv(envOf("PM_GITHUB_APP_ID" to "123", "PM_GITHUB_APP_PRIVATE_KEY" to pem)).toString().contains("AAAA"))
+        assertFailsWith<IllegalArgumentException> { Config.fromEnv(envOf("PM_GITHUB_APP_ID" to "123", "PM_CP_INTERNAL_TOKEN" to "tok")) }
     }
 
     @Test fun `PM_GITHUB_API_URL and PM_GITHUB_IDENTITY are normalized and validated`() {
         fun github(vararg extra: Pair<String, String>) =
-            Config.fromEnv(envOf("PM_GITHUB_APP_ID" to "123", "PM_GITHUB_APP_PRIVATE_KEY" to "pem", *extra)).github!!
+            Config.fromEnv(
+                envOf("PM_GITHUB_APP_ID" to "123", "PM_CP_GO_GRPC_ADDR" to "127.0.0.1:1", "PM_CP_INTERNAL_TOKEN" to "tok", *extra),
+            ).github!!
         assertEquals("https://git.example.com/api/v3", github("PM_GITHUB_API_URL" to " https://git.example.com/api/v3/ ").apiUrl)
         assertEquals(
             listOf(GitHubIdentityResolver.COMMIT_EMAIL, GitHubIdentityResolver.EXTERNAL_IDENTITY),

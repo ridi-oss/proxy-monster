@@ -3,8 +3,6 @@ package com.ridi.oss.proxymonster.controlplane
 import com.ridi.oss.proxymonster.auth.clampTtlSeconds
 import com.ridi.oss.proxymonster.controlplane.authz.UserAttribute
 import java.net.URI
-import java.nio.file.Files
-import java.nio.file.Path
 
 typealias OidcGroupMapping = com.ridi.oss.proxymonster.auth.OidcGroupMapping
 
@@ -17,14 +15,15 @@ enum class GitHubIdentityResolver(val key: String) {
     COMMIT_EMAIL("commit-email"),
 }
 
-/** A GitHub App the SQL-from-GitHub source acts as; [identity] is the ordered user-to-principal resolver list. */
+/** The SQL-from-GitHub source, whose GitHub App cp-go holds; [identity] is the ordered user-to-principal resolver list. */
 data class GitHubConfig(
-    val appId: String,
-    val privateKeyPem: String,
     val apiUrl: String,
     val identity: List<GitHubIdentityResolver>,
-) {
-    override fun toString(): String = "GitHubConfig(appId=$appId, privateKeyPem=***, apiUrl=$apiUrl, identity=$identity)"
+)
+
+/** cp-go's loopback gRPC server for the Go services Kotlin calls, at [address], authenticated with [token]. */
+data class CpGoBridgeConfig(val address: String, val token: String) {
+    override fun toString(): String = "CpGoBridgeConfig(address=$address, token=***)"
 }
 
 /**
@@ -144,6 +143,8 @@ data class Config(
     val ciOidcIssuers: List<CiOidcIssuer> = emptyList(),
     // Null when PM_GITHUB_APP_ID is unset: the GitHub source is off.
     val github: GitHubConfig? = null,
+    // Null when PM_CP_GO_GRPC_ADDR is unset: the control plane runs without cp-go.
+    val cpGoBridge: CpGoBridgeConfig? = null,
 ) {
     init {
         require(webSessionSlideSeconds < webSessionIdleSeconds) {
@@ -301,18 +302,19 @@ data class Config(
                 "PM_INSTANCE_DESCRIPTION must be one line of at most $MAX_INSTANCE_DESCRIPTION characters"
             }
 
+            val cpGoBridge = env("PM_CP_GO_GRPC_ADDR")?.trim()?.takeIf { it.isNotBlank() }?.let { address ->
+                CpGoBridgeConfig(
+                    address,
+                    requireNotNull(env("PM_CP_INTERNAL_TOKEN")?.takeIf { it.isNotEmpty() }) {
+                        "PM_CP_GO_GRPC_ADDR needs PM_CP_INTERNAL_TOKEN, which cp-go sets for the control plane it starts"
+                    },
+                )
+            }
             val github = run {
-                val appId = env("PM_GITHUB_APP_ID")?.trim()?.takeIf { it.isNotBlank() }
-                val keyPem = env("PM_GITHUB_APP_PRIVATE_KEY")?.takeIf { it.isNotBlank() }
-                val keyFile = env("PM_GITHUB_APP_PRIVATE_KEY_FILE")?.trim()?.takeIf { it.isNotBlank() }
-                require(keyPem == null || keyFile == null) {
-                    "set only one of PM_GITHUB_APP_PRIVATE_KEY and PM_GITHUB_APP_PRIVATE_KEY_FILE"
+                env("PM_GITHUB_APP_ID")?.takeIf { it.isNotBlank() } ?: return@run null
+                requireNotNull(cpGoBridge) {
+                    "PM_GITHUB_APP_ID needs PM_CP_GO_GRPC_ADDR, which cp-go sets for the control plane it starts"
                 }
-                val hasKey = keyPem != null || keyFile != null
-                require((appId != null) == hasKey) {
-                    "PM_GITHUB_APP_ID and PM_GITHUB_APP_PRIVATE_KEY (or PM_GITHUB_APP_PRIVATE_KEY_FILE) must be set together"
-                }
-                if (appId == null) return@run null
                 val validIdentity = GitHubIdentityResolver.entries.joinToString(", ") { it.key }
                 val identity = (env("PM_GITHUB_IDENTITY")?.takeIf { it.isNotBlank() } ?: "external-identity,verified-email")
                     .split(',').map { it.trim() }.filter { it.isNotEmpty() }
@@ -325,8 +327,6 @@ data class Config(
                     "PM_GITHUB_IDENTITY must list distinct values from: $validIdentity"
                 }
                 GitHubConfig(
-                    appId = appId,
-                    privateKeyPem = keyPem ?: Files.readString(Path.of(keyFile!!)),
                     apiUrl = (env("PM_GITHUB_API_URL")?.trim()?.takeIf { it.isNotBlank() } ?: "https://api.github.com")
                         .trimEnd('/'),
                     identity = identity,
@@ -385,6 +385,7 @@ data class Config(
                 instanceDescription = instanceDescription,
                 ciOidcIssuers = parseCiOidcIssuers(env, env("PM_CI_OIDC_AUDIENCE")?.trim()?.ifEmpty { null } ?: mcpIssuer),
                 github = github,
+                cpGoBridge = cpGoBridge,
             )
         }
 

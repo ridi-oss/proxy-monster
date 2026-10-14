@@ -25,14 +25,14 @@ import com.ridi.oss.proxymonster.controlplane.source.Repo
 import com.ridi.oss.proxymonster.controlplane.source.Review
 import com.ridi.oss.proxymonster.controlplane.source.ReviewState
 import com.ridi.oss.proxymonster.controlplane.source.SourceUser
-import com.ridi.oss.proxymonster.controlplane.support.FakeGitHub
+import com.ridi.oss.proxymonster.controlplane.support.FakeCpGo
 import com.ridi.oss.proxymonster.controlplane.support.FakeSourceAdapter
 import com.ridi.oss.proxymonster.controlplane.support.FakeTransport
-import com.ridi.oss.proxymonster.controlplane.support.GitHubFixtures
+import com.ridi.oss.proxymonster.controlplane.support.cpGoPullRequest
+import com.ridi.oss.proxymonster.cpgo.readPullRequestsResponse
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.controlplane.support.testLoginRoute
-import com.ridi.oss.proxymonster.controlplane.support.json
 import com.ridi.oss.proxymonster.controlplane.support.webSessionCookie
 import com.ridi.oss.proxymonster.controlplane.support.withFakeProxy
 import com.ridi.oss.proxymonster.grpc.ControlPlaneGrpcKt
@@ -75,7 +75,6 @@ import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
-import java.time.Clock
 import java.time.Instant
 import java.util.Collections
 import java.util.concurrent.TimeUnit
@@ -949,10 +948,12 @@ class GitHubSourceFlowDbTest {
         open(n)
         val req = file(n, schema(), listOf("db/r.sql" to "create table r (id int)")).single()
         update(n) { it.copy(reviews = listOf(approval(bobUser, id = "${seq.incrementAndGet()}")), autoMerge = AutoMerge(carolUser, Instant.now())) }
-        val github = FakeGitHub(Clock.systemUTC())
-        github.graphql({ json(GitHubFixtures.prResponse(GitHubFixtures.pullRequestJson(adapter.pulls.getValue(repo to n).copy(checks = null)))) })
+        val wire = cpGoPullRequest(adapter.pulls.getValue(repo to n).copy(checks = null))
         val runs = openedSchemas.size
-        withProxy { flow.evaluate(repo, n, github.adapter().readPullRequests(repo, listOf(n))[n]) }
+        FakeCpGo().use { cpGo ->
+            cpGo.readPullRequests = { readPullRequestsResponse { pullRequests.put(n, wire) } }
+            withProxy { flow.evaluate(repo, n, cpGo.adapter().readPullRequests(repo, listOf(n))[n]) }
+        }
         assertEquals("APPROVED", status(req.id))
         assertEquals(runs, openedSchemas.size)
         assertEquals("Waiting for other checks", lastCheck(n).title)

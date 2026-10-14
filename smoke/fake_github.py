@@ -82,15 +82,16 @@ class FakeGitHub:
         return f"{header}.{payload}.{b64url(sig)}"
 
     # ---- GitHub's answers ----------------------------------------------------------------------------
+    # Only the fields the control plane asks for: its GraphQL client rejects any other.
     def _pr_node(self, pr):
         user = lambda u: {"login": u[0], "databaseId": u[1]} if u else None
         rollup = {"contexts": {"pageInfo": {"hasNextPage": False}, "nodes": [
             {"__typename": "CheckRun", "name": c, "status": "COMPLETED", "conclusion": "SUCCESS", "isRequired": True}
             for c in pr["checks"]]}}
         return {
-            "number": pr["number"], "state": pr["state"], "merged": pr["merged"], "mergedAt": pr["mergedAt"],
+            "state": pr["state"], "merged": pr["merged"], "mergedAt": pr["mergedAt"],
             "mergeCommit": {"oid": pr["mergeCommit"]} if pr["mergeCommit"] else None,
-            "headRefOid": pr["head"], "baseRefName": pr["base"], "url": f"https://github.example/pull/{pr['number']}",
+            "headRefOid": pr["head"], "baseRefName": pr["base"],
             "author": user(pr["author"]),
             "autoMergeRequest": {"enabledAt": pr["autoMerge"][2], "enabledBy": user(pr["autoMerge"][:2])} if pr["autoMerge"] else None,
             "reviews": {"pageInfo": {"hasNextPage": False}, "nodes": pr["reviews"]},

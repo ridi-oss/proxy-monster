@@ -347,8 +347,8 @@ func timeLeft(d time.Duration) string {
 	}
 }
 
-// iconFor is the menu-bar icon's state: whether anything in use needs attention. A server never signed in to,
-// or signed out of on purpose, does not count; a downloaded update shows only when nothing else does.
+// iconFor is the menu-bar icon's state: whether pmon is usable now, counting this machine's servers and those of
+// every connected remote. A working sign-in outranks an ended one; a server never signed in to does not count.
 func iconFor(s *control.Status, v view) iconState {
 	if len(v.signingIn) > 0 {
 		return iconBusy
@@ -362,15 +362,16 @@ func iconFor(s *control.Status, v view) iconState {
 			}
 		}
 		for _, srv := range servers {
-			if signInEnded(srv, v.now) {
-				return iconEnded
-			}
-			if !srv.LoggedIn {
-				continue
-			}
-			if end, ok := signInEnd(srv); ok && end.Sub(v.now) < endingSoon {
-				state = iconExpiring
-			} else if state == iconIdle {
+			switch {
+			case !srv.LoggedIn:
+			case signInEnded(srv, v.now):
+				if state == iconIdle {
+					state = iconEnded
+				}
+			default:
+				if end, ok := signInEnd(srv); ok && end.Sub(v.now) < endingSoon {
+					return iconExpiring
+				}
 				state = iconSignedIn
 			}
 		}

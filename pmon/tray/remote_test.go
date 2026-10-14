@@ -3,6 +3,7 @@ package main
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ridi-oss/proxy-monster/pmon/control"
 )
@@ -60,12 +61,14 @@ func TestConnectedRemoteServersUseForwardedPorts(t *testing.T) {
 }
 
 func TestIconCountsRemoteServers(t *testing.T) {
-	remote := &control.Status{Servers: []control.ServerInfo{{Name: "acme", LoggedIn: true, ReauthRequired: true}}}
-	v := view{now: now, remotes: map[string]*control.Status{"devbox": remote}}
-	if got := iconFor(withRemote(control.RemoteConnected), v); got != iconEnded {
-		t.Errorf("icon %v, want ended from the remote", got)
+	local := withRemote(control.RemoteConnected)
+	local.Servers = []control.ServerInfo{{Name: "acme", LoggedIn: true, ReauthRequired: true}}
+	v := view{now: now, remotes: map[string]*control.Status{"devbox": {Servers: []control.ServerInfo{signedIn("acme", 9*time.Hour)}}}}
+	if got := iconFor(local, v); got != iconSignedIn {
+		t.Errorf("icon %v, want signed in from the remote", got)
 	}
-	if got := iconFor(withRemote(control.RemoteDown), v); got != iconSignedIn {
+	local.Remotes[0].State = control.RemoteDown
+	if got := iconFor(local, v); got != iconEnded {
 		t.Errorf("icon %v: a remote that is down has no servers to count", got)
 	}
 }

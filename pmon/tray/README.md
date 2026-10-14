@@ -129,9 +129,10 @@ daemon running the menu says so and offers **Start**; it never shows a stale
 last-known state.
 
 The menu-bar icon is a monochrome template image; its state is a shape on the
-shield: plain when signed in, a clock when a sign-in ends within 30 minutes, a
-slash when a server is signed out, dots while a browser sign-in is open, faded
-when nothing is running.
+shield, counting this machine's servers and every connected remote's: dots while
+a browser sign-in is open, a clock when a sign-in ends within 30 minutes, plain
+while any sign-in works, a slash when none works and one has ended, faded when
+nothing is signed in or running. An arrow marks a downloaded update.
 
 - **Sign In…** opens the server's sign-in page in the browser with the code
   filled in, starting the daemon first if none is running. A notification 30

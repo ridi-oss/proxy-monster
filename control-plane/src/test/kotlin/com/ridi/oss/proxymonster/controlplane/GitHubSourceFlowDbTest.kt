@@ -143,7 +143,7 @@ class GitHubSourceFlowDbTest {
         core.cedarPolicyStore.create(
             CedarPolicyInput(
                 name = "github-test-approvers",
-                cedarSrc = """permit(principal, action in [Action::"task.approve", Action::"task.read"], resource)
+                cedarSrc = """permit(principal, action in [Action::"task.approve", Action::"task.run", Action::"task.read"], resource)
                     when { principal == User::"$bob" || principal == User::"$alice" };""",
             ),
             updatedBy = null,

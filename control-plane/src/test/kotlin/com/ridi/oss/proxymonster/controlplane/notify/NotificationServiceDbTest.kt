@@ -261,6 +261,24 @@ class NotificationServiceDbTest {
     }
 
     @Test
+    fun `an approved request offers unapprove and deny to approvers and close to the requester`() = runBlocking {
+        val task = newTask().id
+        fx.dataSource.connection.use { c ->
+            c.prepareStatement("UPDATE access_request SET status = 'APPROVED', decided_by = 'sam@x', approved_at = now() WHERE id = ?")
+                .use { ps -> ps.setLong(1, task); ps.executeUpdate() }
+        }
+        enqueue(task, NotificationEvent.TASK_DECIDED, "sam@x")
+        enqueue(task, NotificationEvent.TASK_DECIDED, "req@example.com", NotificationKind.REQUESTER)
+        svc.drainOnce()
+
+        val byRecipient = transport.delivered.filter { it.event == NotificationEvent.TASK_DECIDED }.associateBy { it.to }
+        val open = NotificationAction.OPEN
+        // No result store here, so Run is not offered to anyone.
+        assertEquals(setOf(open, NotificationAction.UNAPPROVE, NotificationAction.DENY), byRecipient.getValue("addr:sam@x").actions)
+        assertEquals(setOf(open, NotificationAction.CLOSE), byRecipient.getValue("addr:req@example.com").actions)
+    }
+
+    @Test
     fun `every edit redraws the message with the new SQL and its approve buttons`() = runBlocking {
         val task = newTask().id
         enqueue(task, NotificationEvent.TASK_REQUESTED, "sam@x")
@@ -277,7 +295,11 @@ class NotificationServiceDbTest {
         val edits = transport.updated.filter { it.event == NotificationEvent.TASK_EDITED && it.ref == "ref-fake" }
         assertEquals(listOf("SELECT 2", "SELECT 3"), edits.map { it.statement.text }.distinct())
         assertEquals(listOf(2, 3), edits.map { it.revision }.distinct())
-        assertTrue(edits.all { NotificationAction.DENY in it.actions }, "a pending edit offers the decision again")
+        // The requester's own receipt is redrawn too, with Close instead of the decision.
+        assertTrue(
+            listOf(2, 3).all { rev -> edits.any { it.revision == rev && NotificationAction.DENY in it.actions } },
+            "a pending edit offers the decision again",
+        )
     }
 
     @Test

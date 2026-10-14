@@ -81,10 +81,10 @@ class ElevationContextRouteAuthzDbTest {
         principal, action == Action::"context.tag::trusted-network", resource
     ) when { context has requester_ip && context.requester_ip.isInRange(ip("100.100.0.0/16")) };"""
 
-    // A TASK_APPROVE permit gated ONLY on the derived tag — the consuming end of the two-pass. The
+    // A TASK_APPROVE + TASK_RUN permit gated ONLY on the derived tag — the consuming end of the two-pass. The
     // approver holds Role::"reviewer"; without the derived tag (no requester_ip / no datasource) it cannot fire.
     private val tagGatedApprovePermit = """permit(
-        principal in Role::"reviewer", action == Action::"task.approve", resource
+        principal in Role::"reviewer", action in [Action::"task.approve", Action::"task.run"], resource
     ) when { context has tags && context.tags.contains("trusted-network") };"""
 
     @BeforeAll
@@ -354,7 +354,7 @@ class ElevationContextRouteAuthzDbTest {
             HttpStatusCode.Forbidden, denied.status,
             "no requester_ip -> no trusted-network tag -> execute-under-R authority denied (defense in depth)",
         )
-        assertEquals("approval.not_approver", denied.body<ApiError>().code)
+        assertEquals("approval.not_runner", denied.body<ApiError>().code)
     }
 
     @Test

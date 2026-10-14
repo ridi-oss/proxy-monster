@@ -1,6 +1,12 @@
 package com.ridi.oss.proxymonster.controlplane.notify
 
 import com.ridi.oss.proxymonster.controlplane.AccessRequest
+import com.ridi.oss.proxymonster.controlplane.Config
+import com.ridi.oss.proxymonster.controlplane.ApprovalService
+import com.ridi.oss.proxymonster.controlplane.ControlPlaneCore
+import com.ridi.oss.proxymonster.controlplane.RunExecService
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import com.ridi.oss.proxymonster.controlplane.RequestEdit
 import com.ridi.oss.proxymonster.controlplane.RoleAssignmentInput
 import com.ridi.oss.proxymonster.controlplane.management.AuditActor
@@ -54,18 +60,20 @@ class SlackDecisionHandlerDbTest {
             disclosure = StatementDisclosure.FULL,
             defaultLocale = "en",
         )
-        handler = SlackDecisionHandler(
-            accessStore = fx.accessStore,
-            datasourceStore = fx.datasourceStore,
-            authz = fx.authz,
-            auditRecorder = ManagementAuditRecorder(fx.auditStore),
-            notifications = notifications,
-            defaultLocale = "en",
-            onApproved = { req ->
-                if (onApprovedThrows) throw RuntimeException("run failed")
-                approvedRuns += req
-            },
+        val approvals = ApprovalService(
+            Config(
+                httpPort = 0, dbUrl = "", dbUser = "", dbPassword = "", authDebug = false, secretToken = null,
+                sessionSecret = "slack-decision-test-secret", oidc = null, resultKey = null, scimToken = null,
+                sessionWindowSeconds = 3_600, idpRecheckIntervalSeconds = 600, devMarker = false,
+            ),
+            fx.accessStore, fx.auditStore, fx.datasourceStore, fx.policyStore, fx.userGroupStore,
+            null, fx.roleResolver, fx.authz, RunExecService(ControlPlaneCore(fx.dataSource)),
+            CoroutineScope(Dispatchers.Unconfined), notifications = notifications,
         )
+        handler = SlackDecisionHandler(fx.accessStore, { approvals }, notifications, "en") { _, taskId ->
+            if (onApprovedThrows) throw RuntimeException("run failed")
+            approvedRuns += fx.accessStore.getRequest(taskId)!!
+        }
     }
 
     private fun pendingRequest(): Long = fx.accessStore.createQueryRequest(

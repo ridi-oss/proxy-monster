@@ -37,10 +37,11 @@ enum class AuthzAction(val cedarId: String) {
     TASK_APPROVE("task.approve"),
     // Task lifecycle actions replace code-side group-membership / ownership gates. TASK_REQUEST is
     // Datasource-scoped; TASK_READ gates metadata; TASK_ASSUME gates result data; GRANT_REVOKE acts on an
-    // AccessGrant. Executing under R remains the same R-scoped TASK_APPROVE authority.
+    // AccessGrant. TASK_RUN gates running an approved request under R.
     TASK_REQUEST("task.request"),
     TASK_READ("task.read"),
     TASK_ASSUME("task.assume"),
+    TASK_RUN("task.run"),
     TASK_CANCEL("task.cancel"),
     TASK_DELETE("task.delete"),
     TASK_FORCE_RUN("task.force_run"),

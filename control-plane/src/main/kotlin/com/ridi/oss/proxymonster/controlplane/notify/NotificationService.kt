@@ -285,7 +285,7 @@ class NotificationService(
         // `pending` is the LIVE task state, not merely the request event: a backed-off task.requested that
         // finally delivers after the task was decided must not be the first to surface a flagged statement
         // under FULL. Once the status leaves PENDING, FULL falls back to the hint like every handled message.
-        val pending = (row.event == NotificationEvent.TASK_REQUESTED || row.event == NotificationEvent.TASK_EDITED) && req.status == "PENDING"
+        val pending = row.event in ASKS_FOR_APPROVAL && req.status == "PENDING"
         val show = row.event != NotificationEvent.TASK_SUBMITTED &&
             discloseStatement(disclosure, pending = pending, cleared = cleared)
         val statement = renderStatement(req.sql, show, transport.statementHardLimit)
@@ -332,7 +332,7 @@ class NotificationService(
             rowCount = meta?.rowCount,
             errorCode = meta?.errorCode,
             deepLink = URLBuilder(webBaseUrl).appendPathSegments("workflows", req.id.toString()).buildString(),
-            actions = actionsFor(row.event, req, statement),
+            actions = actionsFor(row.event, row.kind, req, statement),
             notifiedApprovers = notifiedApprovers,
             source = req.source,
             path = req.pullRequest?.path,
@@ -348,29 +348,41 @@ class NotificationService(
     }
 
     /**
-     * What the recipient may do from the message.
+     * What the recipient may do from the message, from the request's live status and which side of it they are.
+     * Every click is re-authorized, so this only decides what is worth offering.
      *
-     * `[open]` is always there. `[approve and run]` is offered ONLY while the task is still pending AND the
-     * message carries the WHOLE statement — approving is vouching for a specific statement, and a truncated
-     * one is worse than none, since the elided tail is exactly where a dangerous predicate would sit. The
-     * test is what was rendered, never which mode the operator configured. `[deny]` needs no such gate:
-     * refusing something you have not fully read is always safe.
+     * Approving needs the WHOLE statement in the message: approving vouches for a specific statement, and the
+     * elided tail of a truncated one is exactly where a dangerous predicate would sit. Deny and close need no
+     * such gate. A pull request's merge runs its request, so it never offers Run.
      */
     private fun actionsFor(
         event: NotificationEvent,
+        kind: NotificationKind,
         req: AccessRequest,
         statement: RenderedStatement,
     ): Set<NotificationAction> = buildSet {
         add(NotificationAction.OPEN)
-        if ((event == NotificationEvent.TASK_REQUESTED || event == NotificationEvent.TASK_EDITED) && req.status == "PENDING") {
-            add(NotificationAction.DENY)
-            // Approve-and-run also RUNS the query, which needs result storage — without it the click would
-            // approve but never start the run, so the button is not offered when it cannot be honored.
-            // A pull request's merge starts its run, so its request is approved without running.
-            if (req.fromPullRequest) {
-                if (statement.complete) add(NotificationAction.APPROVE)
-            } else if (statement.complete && queryResultStore != null) {
-                add(NotificationAction.APPROVE_AND_RUN)
+        if (!event.isCreation && !event.isUpdate) return@buildSet
+        val runnable = !req.fromPullRequest && queryResultStore != null
+        val approver = kind == NotificationKind.APPROVER
+        when (req.status) {
+            "PENDING" -> if (approver) {
+                add(NotificationAction.DENY)
+                if (statement.complete) {
+                    add(NotificationAction.APPROVE)
+                    if (runnable) add(NotificationAction.APPROVE_AND_RUN)
+                }
+            } else if (!req.fromPullRequest) {
+                add(NotificationAction.CLOSE)
+            }
+            "APPROVED" -> if (!req.fromPullRequest) {
+                if (runnable) add(NotificationAction.RUN)
+                if (approver) {
+                    add(NotificationAction.UNAPPROVE)
+                    add(NotificationAction.DENY)
+                } else {
+                    add(NotificationAction.CLOSE)
+                }
             }
         }
     }

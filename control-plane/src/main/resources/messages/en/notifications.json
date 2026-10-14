@@ -4,9 +4,11 @@
     "requested_fallback": "{requester} wants to run a query on {datasource}",
     "edited": "*{requester}* changed their request and wants to run {statement} on *{datasource}*{role}{reason}{statementNote}",
     "edited_fallback": "{requester} changed their request on {datasource}",
+    "reopened": "*{requester}*'s request to run {statement} on *{datasource}*{role} needs approval again.{reason}{statementNote}",
+    "reopened_fallback": "{requester}'s request on {datasource} needs approval again",
     "submitted": "Your request to run a query on *{datasource}*{role} is pending approval.{notified}",
     "submitted_fallback": "Your request on {datasource} is pending approval",
-    "decided_approved": "*{requester}*'s request to run {statement} on *{datasource}* was approved by *{decidedBy}* and is running.{statementNote}",
+    "decided_approved": "*{requester}*'s request to run {statement} on *{datasource}* was approved by *{decidedBy}*.{statementNote}",
     "decided_approved_github": "*{requester}*'s request to run {statement} on *{datasource}* was approved by *{decidedBy}*. Enable auto-merge on the pull request to run and merge it.{statementNote}",
     "decided_approved_github_automerge": "*{requester}*'s request to run {statement} on *{datasource}* was approved by *{decidedBy}* and runs when the pull request is ready to merge.{statementNote}",
     "decided_rejected": "*{requester}*'s request to run {statement} on *{datasource}* was denied by *{decidedBy}*.{statementNote}",
@@ -35,6 +37,9 @@
   "action": {
     "approve_and_run": "Approve and run",
     "approve": "Approve",
+    "run": "Run",
+    "unapprove": "Unapprove",
+    "close": "Close request",
     "deny": "Deny",
     "open": "Open request"
   },
@@ -43,6 +48,9 @@
     "already_status": "Already {status} — nothing to do.",
     "already_done": "This request was already decided — nothing to do.",
     "not_authorized": "You are not authorized to decide this request.",
+    "not_runner": "You are not authorized to run this request.",
+    "not_closer": "You are not authorized to close this request.",
+    "expired": "The approval expired. The request needs approval again.",
     "run_failed": "Approved, but the run could not be started. Open the request to retry.",
     "request_changed": "This request was changed since this message was sent. Open it to review the new SQL."
   }

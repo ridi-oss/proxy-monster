@@ -17,6 +17,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
+import java.time.Instant
 
 /**
  * The query-approval workflow shared by the REST approval routes and the MCP approval tools: create, decide,
@@ -62,19 +63,24 @@ class ApprovalService(
      * The channel is WORKFLOW_VIEWER, never `editor` or `wire`: those carry the self-approve permits that
      * suit a machine task under the caller's own roles, while a human approval elevates to R.
      */
-    fun mayDecide(principal: String, requesterIp: String?, action: AuthzAction, req: AccessRequest): Boolean =
-        authorizeOnViewer(principal, requesterIp, action, req)
+    fun mayDecide(
+        principal: String,
+        requesterIp: String?,
+        action: AuthzAction,
+        req: AccessRequest,
+        channel: Channel = Channel.WORKFLOW_VIEWER,
+    ): Boolean = authorize(principal, requesterIp, action, req, channel)
 
     /** Result rows require Cedar authority to assume the task's R. No authDebug bypass: data confidentiality. */
     fun mayReadResult(principal: String, requesterIp: String?, req: AccessRequest): Boolean =
-        authorizeOnViewer(principal, requesterIp, AuthzAction.TASK_ASSUME, req)
+        authorize(principal, requesterIp, AuthzAction.TASK_ASSUME, req, Channel.WORKFLOW_VIEWER)
 
-    private fun authorizeOnViewer(principal: String, requesterIp: String?, action: AuthzAction, req: AccessRequest): Boolean {
+    private fun authorize(principal: String, requesterIp: String?, action: AuthzAction, req: AccessRequest, channel: Channel): Boolean {
         val decision = authz.authorizeWithContext(
             principal,
             action,
             req.toApprovalResource(),
-            AuthzContext(requesterIp = requesterIp, channel = Channel.WORKFLOW_VIEWER.contextValue),
+            AuthzContext(requesterIp = requesterIp, channel = channel.contextValue),
             req.datasourceName,
             req.datasourceId?.let(datasourceStore::getIncludingDeleted)?.tags.orEmpty(),
         )
@@ -408,15 +414,21 @@ class ApprovalService(
             if (mayReadRows) meta else meta.copy(rowCount = null, columns = emptyList())
         val visibleMeta = queryResultStore?.meta(id)?.let(::visible)
         val visibleStatements = queryResultStore?.statements(id).orEmpty().map(::visible)
-        // Mirrors execute's gates: only the approver of record gets a Run affordance.
-        val canExecute = queryResultStore != null && isApprover && req.status == "APPROVED" && req.decidedBy == principal &&
-            !req.fromPullRequest
-        val canCancel = req.status == "EXECUTING" && mayDecide(principal, requesterIp, AuthzAction.TASK_CANCEL, req)
+        val approved = req.status == "APPROVED" && !req.fromPullRequest
+        val canExecute = queryResultStore != null && approved && !req.approvalExpired() &&
+            mayDecide(principal, requesterIp, AuthzAction.TASK_RUN, req)
+        val mayCancel = mayDecide(principal, requesterIp, AuthzAction.TASK_CANCEL, req)
+        val canCancel = req.status == "EXECUTING" && mayCancel
         val canForceRun = req.fromPullRequest && req.status in FORCEABLE && !req.forceRun &&
             mayDecide(principal, requesterIp, AuthzAction.TASK_FORCE_RUN, req)
         return QueryRequestDetail(
             req,
             canDecide = req.status == "PENDING" && isApprover,
+            canApproveAndRun = req.status == "PENDING" && isApprover && !req.fromPullRequest && queryResultStore != null &&
+                mayDecide(principal, requesterIp, AuthzAction.TASK_RUN, req),
+            canReject = req.status in EDITABLE && isApprover,
+            canUnapprove = approved && isApprover,
+            canClose = req.status in EDITABLE && !req.fromPullRequest && mayCancel,
             result = visibleMeta,
             statements = visibleStatements,
             canExecute = canExecute,
@@ -442,10 +454,17 @@ class ApprovalService(
     }
 
     /** Approve [revision] of a request: the version the approver read. A later edit refuses it. */
-    fun approve(principal: String, requesterIp: String?, actor: AuditActor, id: Long, revision: Int): AccessRequest {
+    fun approve(
+        principal: String,
+        requesterIp: String?,
+        actor: AuditActor,
+        id: Long,
+        revision: Int,
+        channel: Channel = Channel.WORKFLOW_VIEWER,
+    ): AccessRequest {
         val req = workflowRequest(id)
         if (req.status != "PENDING") throw alreadyDecided()
-        if (!mayDecide(principal, requesterIp, AuthzAction.TASK_APPROVE, req)) throw notApprover()
+        if (!mayDecide(principal, requesterIp, AuthzAction.TASK_APPROVE, req, channel)) throw notApprover()
         if (req.revision != revision) throw requestChanged()
         val updated = accessStore.decideQueryRequest(
             id, approved = true, rejectionReason = null, decidedBy = principal,
@@ -461,12 +480,19 @@ class ApprovalService(
         return updated
     }
 
-    fun reject(principal: String, requesterIp: String?, actor: AuditActor, id: Long, reason: String): AccessRequest {
+    fun reject(
+        principal: String,
+        requesterIp: String?,
+        actor: AuditActor,
+        id: Long,
+        reason: String,
+        channel: Channel = Channel.WORKFLOW_VIEWER,
+    ): AccessRequest {
         if (reason.isBlank()) throw fieldRequired("reason")
         val req = workflowRequest(id)
-        if (req.status != "PENDING") throw alreadyDecided()
+        if (req.status !in EDITABLE) throw alreadyDecided()
         // Reject is the same task.approve decision as approve.
-        if (!mayDecide(principal, requesterIp, AuthzAction.TASK_APPROVE, req)) throw notApprover()
+        if (!mayDecide(principal, requesterIp, AuthzAction.TASK_APPROVE, req, channel)) throw notApprover()
         val updated = accessStore.decideQueryRequest(
             id, approved = false, rejectionReason = reason.trim(), decidedBy = principal,
             actor = actor, recorder = recorder, revision = req.revision,
@@ -484,6 +510,34 @@ class ApprovalService(
      * Replace the SQL (and optionally the title or reason) of the caller's own PENDING or APPROVED request. It
      * goes back to PENDING under a new revision, so an earlier approval no longer counts.
      */
+    /** Return an APPROVED request to PENDING. The same task.approve decision as approving it. */
+    fun unapprove(
+        principal: String,
+        requesterIp: String?,
+        actor: AuditActor,
+        id: Long,
+        channel: Channel = Channel.WORKFLOW_VIEWER,
+    ): AccessRequest {
+        val req = workflowRequest(id)
+        if (!mayDecide(principal, requesterIp, AuthzAction.TASK_APPROVE, req, channel)) throw notApprover()
+        if (req.status != "APPROVED" || req.fromPullRequest) throw notApproved()
+        if (!reopen(id, actor, "unapproved by $principal")) throw notApproved()
+        log.info("query approval unapproved request={} by={}", id, principal)
+        return workflowRequest(id)
+    }
+
+    /** Return every console request approved more than [APPROVAL_TTL] ago and not yet run to PENDING. */
+    fun expireApprovals() {
+        for (id in accessStore.expiredApprovals()) {
+            if (reopen(id, SYSTEM_ACTOR, "approval expired")) log.info("query approval expired request={}", id)
+        }
+    }
+
+    private fun reopen(id: Long, actor: AuditActor, detail: String): Boolean =
+        accessStore.reopenQueryRequest(id, actor, recorder, detail) { c, r ->
+            notifications?.emit(c, NotificationEvent.TASK_REOPENED, r)
+        }.also { if (it) notifications?.wake() }
+
     fun edit(principal: String, requesterIp: String?, actor: AuditActor, id: Long, input: EditQueryRequestInput): AccessRequest {
         val req = workflowRequest(id)
         if (req.principal != principal) throw TaskServiceException(HttpStatusCode.Forbidden, ApiError("approval.edit_forbidden"))
@@ -534,14 +588,30 @@ class ApprovalService(
         return edited
     }
 
-    suspend fun cancel(principal: String, requesterIp: String?, id: Long): AccessRequest {
+    /** Close a request that has not run, or stop one that is running. */
+    suspend fun cancel(
+        principal: String,
+        requesterIp: String?,
+        actor: AuditActor,
+        id: Long,
+        channel: Channel = Channel.WORKFLOW_VIEWER,
+    ): AccessRequest {
         val req = workflowRequest(id)
-        if (!mayDecide(principal, requesterIp, AuthzAction.TASK_CANCEL, req)) {
+        if (!mayDecide(principal, requesterIp, AuthzAction.TASK_CANCEL, req, channel)) {
             throw TaskServiceException(HttpStatusCode.Forbidden, ApiError("approval.cancel_forbidden"))
         }
         when (req.status) {
             "EXECUTED", "FAILED", "CANCELLED" -> return req
             "EXECUTING" -> Unit
+            in EDITABLE -> {
+                if (req.fromPullRequest) throw TaskServiceException(HttpStatusCode.Conflict, ApiError("approval.not_cancelable"))
+                accessStore.closeQueryRequest(id, actor, recorder) { c, closed ->
+                    notifications?.emit(c, NotificationEvent.TASK_CANCELLED, closed)
+                } ?: throw TaskServiceException(HttpStatusCode.Conflict, ApiError("approval.not_cancelable"))
+                notifications?.wake()
+                log.info("query approval closed request={} by={}", id, principal)
+                return workflowRequest(id)
+            }
             else -> throw TaskServiceException(HttpStatusCode.Conflict, ApiError("approval.not_cancelable"))
         }
         val store = queryResultStore ?: throw resultStorageNotConfigured()
@@ -561,19 +631,22 @@ class ApprovalService(
     }
 
     /** Claim the approved task and launch its run under R. The returned [Job] completes at its terminal state. */
-    fun execute(executor: String, requesterIp: String?, id: Long): Pair<ExecuteQueryRequestResponse, Job> {
+    fun execute(
+        executor: String,
+        requesterIp: String?,
+        id: Long,
+        channel: Channel = Channel.WORKFLOW_VIEWER,
+    ): Pair<ExecuteQueryRequestResponse, Job> {
         val req = workflowRequest(id)
-        // Authorize BEFORE disclosing task state, so the 409s below are never a state oracle for a non-approver.
-        if (!mayDecide(executor, requesterIp, AuthzAction.TASK_APPROVE, req)) throw notApprover()
+        // Authorize BEFORE disclosing task state, so the 409s below are never a state oracle for a non-runner.
+        if (!mayDecide(executor, requesterIp, AuthzAction.TASK_RUN, req, channel)) {
+            throw TaskServiceException(HttpStatusCode.Forbidden, ApiError("approval.not_runner"))
+        }
         // The merge trigger runs it, so the run and the merge stay one outcome.
         if (req.fromPullRequest) throw TaskServiceException(HttpStatusCode.Conflict, ApiError("approval.github_runs_on_merge"))
         if (req.status in setOf("EXECUTING", "EXECUTED", "FAILED", "CANCELLED")) throw alreadyExecuted()
-        if (req.status != "APPROVED") throw TaskServiceException(HttpStatusCode.Conflict, ApiError("approval.not_approved"))
-        // The approver of record executes, so the run's identity always falls inside the task.assume permit.
-        // No authDebug bypass: this is an identity invariant.
-        if (req.decidedBy != executor) {
-            throw TaskServiceException(HttpStatusCode.Forbidden, ApiError("approval.not_the_approver"))
-        }
+        if (req.status != "APPROVED") throw notApproved()
+        if (req.approvalExpired()) throw TaskServiceException(HttpStatusCode.Conflict, ApiError("approval.expired"))
         val store = queryResultStore ?: throw resultStorageNotConfigured()
         val ds = req.datasourceId?.let(datasourceStore::get)
             ?: throw TaskServiceException(HttpStatusCode.Conflict, notFoundError("datasource"))
@@ -718,9 +791,15 @@ class ApprovalService(
 
     private fun notApprover() = TaskServiceException(HttpStatusCode.Forbidden, ApiError("approval.not_approver"))
 
+    private fun notApproved() = TaskServiceException(HttpStatusCode.Conflict, ApiError("approval.not_approved"))
+
+    private fun AccessRequest.approvalExpired(): Boolean =
+        !fromPullRequest && approvedAt?.let { Instant.parse(it).isBefore(Instant.now().minus(APPROVAL_TTL)) } == true
+
     private companion object {
         const val REQUEST = "query approval request"
         const val INVOLVED_LIMIT = 200
+        val SYSTEM_ACTOR = AuditActor("system", channel = "system")
         val EDITABLE = setOf("PENDING", "APPROVED")
         val FORCEABLE = setOf("PENDING", "APPROVED")
     }

@@ -24,7 +24,11 @@
     "saving": "Saving…",
     "save": "Save",
     "forceRun": "Force run",
-    "forcingRun": "Forcing…"
+    "forcingRun": "Forcing…",
+    "unapprove": "Unapprove",
+    "unapproving": "Unapproving…",
+    "close": "Close request",
+    "closing": "Closing…"
   },
   "fields": {
     "requester": "Requester",
@@ -172,7 +176,7 @@
   "approvalDetail": {
     "loading": "Loading approval request…",
     "noRows": "No rows.",
-    "approverExecution": "Approver execution",
+    "approverExecution": "Execution",
     "queryApprovalFallbackTitle": "Query approval #{id}",
     "submittedToast": "Execution submitted.",
     "runFailed": "run failed",
@@ -180,12 +184,12 @@
     "cancelFailed": "cancel failed",
     "rejectedToast": "Query approval rejected",
     "rejectFailed": "reject failed",
-    "approvedExecuteUnderR": "Approved — an approver may submit it under the requested role.",
+    "approvedExecuteUnderR": "Approved — the requester or an approver can run it under the requested role within a day.",
     "approvedGithub": "Approved — it runs when the pull request is ready to merge.",
     "runUnderRole": "Run the approved query under the requested role. Progress and results update automatically.",
     "runStatus": "{status} · {rows, plural, one {# row} other {# rows}} · expires {expires}",
     "failedCode": "Execution failed: {code}",
-    "awaitingApprover": "Awaiting an approver to run this query.",
+    "awaitingApprover": "Waiting for the requester or an approver to run this query.",
     "rejectTitle": "Reject query approval",
     "rejectDescription": "Reject this query approval request from {principal}.",
     "rejectPlaceholder": "Explain why this query should not be approved.",
@@ -203,7 +207,11 @@
     "revision": "Revision {revision}",
     "forceRunToast": "Forced past the scope checks; it runs when the pull request is ready to merge.",
     "forceRunFailed": "Could not force the run.",
-    "forcedBy": "Forced past the scope's freshness and one-PR-at-a-time checks by {admin}."
+    "forcedBy": "Forced past the scope's freshness and one-PR-at-a-time checks by {admin}.",
+    "unapprovedToast": "Approval withdrawn.",
+    "unapproveFailed": "unapprove failed",
+    "closedToast": "Request closed.",
+    "closeFailed": "close failed"
   },
   "approveDialog": {
     "approveFailed": "approve failed",
@@ -212,9 +220,10 @@
     "title": "Approve & run query request",
     "descriptionWithPrincipal": "Approve {principal}'s query request and run it under the requested role.",
     "descriptionFallback": "Approve this query request and run it under the requested role.",
-    "executeUnderRNote": "Once approved, an approver runs the query under the requested role and releases the result — the requester never sees more than that role would.",
+    "executeUnderRNote": "The query runs under the requested role — the requester never sees more than that role would.",
     "titleGithub": "Approve query request",
-    "approvedToast": "Approved {principal}'s request."
+    "approvedToast": "Approved {principal}'s request.",
+    "descriptionApproveOnly": "Approve {principal}'s query request. The requester or an approver can then run it within a day."
   },
   "tokenDialog": {
     "generateFailed": "Generate failed",

@@ -34,6 +34,7 @@ type config struct {
 	HTTPPort       int            `env:"PM_HTTP_PORT" default:"8080" help:"Public HTTP port."`
 	GRPCPort       int            `env:"PM_GRPC_PORT" default:"9090" help:"Public gRPC port."`
 	TrustedProxies []string       `env:"PM_TRUSTED_PROXIES" sep:"," help:"Peers whose X-Forwarded-* headers are honored."`
+	WebURL         string         `env:"PM_WEB_URL" help:"Web console cp-go forwards non-control-plane paths to, e.g. http://web:3000. Empty serves only the control plane's paths."`
 	Child          string         `env:"PM_CP_CHILD" default:"/app/bin/control-plane" help:"Kotlin control plane start script."`
 	ChildHTTPPort  int            `env:"PM_CP_CHILD_HTTP_PORT" default:"18090" help:"Loopback HTTP port of the Kotlin control plane."`
 	ChildGRPCPort  int            `env:"PM_CP_CHILD_GRPC_PORT" default:"18091" help:"Loopback gRPC port of the Kotlin control plane."`
@@ -77,6 +78,15 @@ func run(ctx context.Context, cfg config) int {
 	if err := cfg.Tailnet.Validate(); err != nil {
 		slog.Error("cp-go: " + err.Error())
 		return 1
+	}
+	var web *url.URL
+	if cfg.WebURL != "" {
+		u, err := url.Parse(cfg.WebURL)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			slog.Error(fmt.Sprintf("cp-go: PM_WEB_URL must be an http(s) URL, got %q", cfg.WebURL))
+			return 1
+		}
+		web = u
 	}
 	var kt *child.Child
 	var exited <-chan struct{}
@@ -129,7 +139,11 @@ func run(ctx context.Context, cfg config) int {
 			Edges:         edges,
 			AuthDebug:     cfg.AuthDebug,
 		}, bridge.New(httpUpstream, internalToken))
-		return front.Route(mux, front.NewHTTP(httpUpstream, edges))
+		h := front.Route(mux, front.NewHTTP(httpUpstream, edges))
+		if web != nil {
+			h = front.Split(h, front.NewHTTP(web, edges))
+		}
+		return h
 	}
 	httpSrv := &http.Server{
 		Addr:              ":" + strconv.Itoa(cfg.HTTPPort),

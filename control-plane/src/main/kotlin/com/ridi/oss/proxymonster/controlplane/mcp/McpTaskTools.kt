@@ -152,7 +152,7 @@ internal class McpTaskTools(
             "get_approval_result" -> structured(
                 approvals.result(p, ip, args.requiredLong("id"), args.int("statement"), page(args)),
             )
-            "cancel_approval" -> structured(approvals.cancel(p, ip, args.requiredLong("id")))
+            "cancel_approval" -> structured(approvals.cancel(p, ip, actor(ctx), args.requiredLong("id")))
             "force_run_approval" -> structured(approvals.forceRun(p, ip, actor(ctx), args.requiredLong("id")))
             "get_pmon_guide" -> structured(
                 pmonGuide(config, core.datasourceStore.list().filter { mayConnect(core.authz, core.roleResolver, p, ip, it) }.map { it.name }),

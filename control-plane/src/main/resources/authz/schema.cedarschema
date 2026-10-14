@@ -204,6 +204,14 @@ action "task.cancel", "task.delete"
     context: RequestContext,
   };
 
+// Runs an APPROVED request under its role R.
+action "task.run"
+  appliesTo {
+    principal: [User, Role],
+    resource: [Request],
+    context: RequestContext,
+  };
+
 // Runs a GitHub request past its scope's freshness and one-PR-at-a-time checks.
 action "task.force_run"
   appliesTo {

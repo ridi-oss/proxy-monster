@@ -166,23 +166,18 @@ class SlackTransport(
                 put("type", "plain_text")
                 put("text", renderer.actionLabel(action, locale))
             }
+            if (action == NotificationAction.OPEN) {
+                put("url", message.deepLink)
+                return@buildJsonObject
+            }
+            put("action_id", ACTION_IDS.getValue(action))
+            put("value", "${message.taskId}:${message.revision}")
             when (action) {
-                NotificationAction.OPEN -> put("url", message.deepLink)
-                NotificationAction.APPROVE_AND_RUN -> {
-                    put("action_id", ACTION_APPROVE)
-                    put("value", "${message.taskId}:${message.revision}")
-                    put("style", "primary")
-                }
-                NotificationAction.APPROVE -> {
-                    put("action_id", ACTION_APPROVE_ONLY)
-                    put("value", "${message.taskId}:${message.revision}")
-                    put("style", "primary")
-                }
-                NotificationAction.DENY -> {
-                    put("action_id", ACTION_DENY)
-                    put("value", "${message.taskId}:${message.revision}")
-                    put("style", "danger")
-                }
+                NotificationAction.APPROVE_AND_RUN, NotificationAction.RUN -> put("style", "primary")
+                NotificationAction.APPROVE ->
+                    if (NotificationAction.APPROVE_AND_RUN !in message.actions) put("style", "primary")
+                NotificationAction.DENY -> put("style", "danger")
+                else -> Unit
             }
         }
 
@@ -267,6 +262,18 @@ class SlackTransport(
         const val ACTION_APPROVE = "pm_approve_and_run"
         const val ACTION_APPROVE_ONLY = "pm_approve"
         const val ACTION_DENY = "pm_deny"
+        const val ACTION_RUN = "pm_run"
+        const val ACTION_UNAPPROVE = "pm_unapprove"
+        const val ACTION_CLOSE = "pm_close"
+
+        val ACTION_IDS = mapOf(
+            NotificationAction.APPROVE_AND_RUN to ACTION_APPROVE,
+            NotificationAction.APPROVE to ACTION_APPROVE_ONLY,
+            NotificationAction.RUN to ACTION_RUN,
+            NotificationAction.UNAPPROVE to ACTION_UNAPPROVE,
+            NotificationAction.DENY to ACTION_DENY,
+            NotificationAction.CLOSE to ACTION_CLOSE,
+        )
 
         private val APPROVALS = setOf(NotificationAction.APPROVE_AND_RUN, NotificationAction.APPROVE)
 

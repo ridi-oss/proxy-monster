@@ -4,11 +4,18 @@ import { useEffect, useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { mutate as globalMutate } from 'swr'
 import { toast } from 'sonner'
-import { cancelApproval, editApproval, executeApproval, forceRunApproval, rejectApproval } from '@/lib/api/client'
+import {
+  cancelApproval,
+  editApproval,
+  executeApproval,
+  forceRunApproval,
+  rejectApproval,
+  unapproveApproval,
+} from '@/lib/api/client'
 import { onTaskEvent, subscribeTaskEvents } from '@/lib/api/task-events'
 import { swrKeys, useApproval } from '@/lib/hooks'
 import type { AccessRequest } from '@/lib/api/types'
-import { approveLabelKey, runsOnMerge } from '@/lib/approvals'
+import { runsOnMerge } from '@/lib/approvals'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -74,13 +81,13 @@ function Pill({ value, styles }: { value?: string | null; styles: Record<string,
 export function ApprovalDetail({ id }: { id: number }) {
   const t = useTranslations('Workflows')
   const { data, error, isLoading } = useApproval(id, { refreshInterval: 15000 })
-  const [busy, setBusy] = useState<'reject' | 'run' | 'cancel' | 'edit' | 'forceRun' | null>(null)
+  const [busy, setBusy] = useState<'reject' | 'run' | 'cancel' | 'close' | 'unapprove' | 'edit' | 'forceRun' | null>(null)
   const [editOpen, setEditOpen] = useState(false)
   const [editSql, setEditSql] = useState('')
   const [editReason, setEditReason] = useState('')
   const [editError, setEditError] = useState<string | null>(null)
   // The request as it was when the approver opened the dialog; a poll that brings a newer revision must not change it.
-  const [approving, setApproving] = useState<AccessRequest | null>(null)
+  const [approving, setApproving] = useState<{ request: AccessRequest; run: boolean } | null>(null)
   const [rejectOpen, setRejectOpen] = useState(false)
   const [rejectReason, setRejectReason] = useState('')
   const [rejectError, setRejectError] = useState<string | null>(null)
@@ -148,6 +155,32 @@ export function ApprovalDetail({ id }: { id: number }) {
       refresh()
     } catch (err) {
       toast.error(err instanceof Error ? err.message : t('approvalDetail.cancelFailed'))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const handleUnapprove = async () => {
+    setBusy('unapprove')
+    try {
+      await unapproveApproval(id)
+      toast.success(t('approvalDetail.unapprovedToast'))
+      refresh()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : t('approvalDetail.unapproveFailed'))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const handleClose = async () => {
+    setBusy('close')
+    try {
+      await cancelApproval(id)
+      toast.success(t('approvalDetail.closedToast'))
+      refresh()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : t('approvalDetail.closeFailed'))
     } finally {
       setBusy(null)
     }
@@ -236,28 +269,52 @@ export function ApprovalDetail({ id }: { id: number }) {
                 )}
               </div>
             </div>
-            {data.canEdit && (
-              <Button variant="outline" onClick={openEdit} disabled={busy !== null}>
-                {t('actions.edit')}
-              </Button>
-            )}
-            {canDecide && (
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="outline"
-                  onClick={() => setRejectOpen(true)}
-                  disabled={busy !== null}
-                  className="border-red-500/30 text-red-500 hover:bg-red-500/10 hover:text-red-500"
-                >
-                  {t('actions.reject')}
-                </Button>
-                <Button
-                  onClick={() => setApproving(request)}
-                  disabled={busy !== null}
-                  className="bg-emerald-600 text-white hover:bg-emerald-700"
-                >
-                  {t(approveLabelKey(request))}
-                </Button>
+            {(data.canEdit || canDecide || data.canReject || data.canUnapprove || data.canClose) && (
+              <div className="flex flex-wrap items-center gap-2">
+                {data.canEdit && (
+                  <Button variant="outline" onClick={openEdit} disabled={busy !== null}>
+                    {t('actions.edit')}
+                  </Button>
+                )}
+                {data.canClose && (
+                  <Button variant="outline" onClick={handleClose} disabled={busy !== null}>
+                    {busy === 'close' ? t('actions.closing') : t('actions.close')}
+                  </Button>
+                )}
+                {data.canUnapprove && (
+                  <Button variant="outline" onClick={handleUnapprove} disabled={busy !== null}>
+                    {busy === 'unapprove' ? t('actions.unapproving') : t('actions.unapprove')}
+                  </Button>
+                )}
+                {data.canReject && (
+                  <Button
+                    variant="outline"
+                    onClick={() => setRejectOpen(true)}
+                    disabled={busy !== null}
+                    className="border-red-500/30 text-red-500 hover:bg-red-500/10 hover:text-red-500"
+                  >
+                    {t('actions.reject')}
+                  </Button>
+                )}
+                {canDecide && (
+                  <Button
+                    variant={data.canApproveAndRun ? 'outline' : 'default'}
+                    onClick={() => setApproving({ request, run: false })}
+                    disabled={busy !== null}
+                    className={data.canApproveAndRun ? undefined : 'bg-emerald-600 text-white hover:bg-emerald-700'}
+                  >
+                    {t('actions.approve')}
+                  </Button>
+                )}
+                {data.canApproveAndRun && (
+                  <Button
+                    onClick={() => setApproving({ request, run: true })}
+                    disabled={busy !== null}
+                    className="bg-emerald-600 text-white hover:bg-emerald-700"
+                  >
+                    {t('actions.approveAndRun')}
+                  </Button>
+                )}
               </div>
             )}
           </div>
@@ -417,8 +474,9 @@ export function ApprovalDetail({ id }: { id: number }) {
       </ResizablePanelGroup>
 
       <ApproveQueryDialog
-        key={approving ? approving.id : 'closed'}
-        request={approving}
+        key={approving ? `${approving.request.id}:${approving.run}` : 'closed'}
+        request={approving?.request ?? null}
+        run={approving?.run ?? false}
         onClose={() => setApproving(null)}
         onApproved={refresh}
       />

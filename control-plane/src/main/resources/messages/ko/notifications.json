@@ -4,9 +4,11 @@
     "requested_fallback": "{requester} 님이 {datasource}에서 쿼리 실행을 요청했습니다",
     "edited": "*{requester}* 님이 요청을 수정해 *{datasource}*에서 {statement} 실행을 요청했습니다{role}{reason}{statementNote}",
     "edited_fallback": "{requester} 님이 {datasource}에 대한 요청을 수정했습니다",
+    "reopened": "*{datasource}*에서 {statement}를 실행하려는 *{requester}* 님의 요청{role}을 다시 승인해야 합니다.{reason}{statementNote}",
+    "reopened_fallback": "{datasource}에 대한 {requester} 님의 요청을 다시 승인해야 합니다",
     "submitted": "*{datasource}*에서 쿼리를 실행하려는 요청이 승인 대기 중입니다{role}.{notified}",
     "submitted_fallback": "{datasource}에 대한 요청이 승인 대기 중입니다",
-    "decided_approved": "*{datasource}*에서 {statement}를 실행하려는 *{requester}* 님의 요청을 *{decidedBy}* 님이 승인했고 실행 중입니다.{statementNote}",
+    "decided_approved": "*{datasource}*에서 {statement}를 실행하려는 *{requester}* 님의 요청을 *{decidedBy}* 님이 승인했습니다.{statementNote}",
     "decided_approved_github": "*{datasource}*에서 {statement}를 실행하려는 *{requester}* 님의 요청을 *{decidedBy}* 님이 승인했습니다. 풀 리퀘스트에서 자동 머지를 켜면 실행 후 머지됩니다.{statementNote}",
     "decided_approved_github_automerge": "*{datasource}*에서 {statement}를 실행하려는 *{requester}* 님의 요청을 *{decidedBy}* 님이 승인했습니다. 풀 리퀘스트를 머지할 준비가 되면 실행됩니다.{statementNote}",
     "decided_rejected": "*{datasource}*에서 {statement}를 실행하려는 *{requester}* 님의 요청을 *{decidedBy}* 님이 거부했습니다.{statementNote}",
@@ -35,6 +37,9 @@
   "action": {
     "approve_and_run": "승인 후 실행",
     "approve": "승인",
+    "run": "실행",
+    "unapprove": "승인 취소",
+    "close": "요청 닫기",
     "deny": "거부",
     "open": "요청 열기"
   },
@@ -43,6 +48,9 @@
     "already_status": "이미 {status} 상태입니다 — 처리할 것이 없습니다.",
     "already_done": "이미 처리된 요청입니다.",
     "not_authorized": "이 요청을 처리할 권한이 없습니다.",
+    "not_runner": "이 요청을 실행할 권한이 없습니다.",
+    "not_closer": "이 요청을 닫을 권한이 없습니다.",
+    "expired": "승인이 만료되었습니다. 요청을 다시 승인받아야 합니다.",
     "run_failed": "승인되었지만 실행을 시작하지 못했습니다. 요청을 열어 다시 시도하세요.",
     "request_changed": "이 메시지가 전송된 뒤 요청이 수정되었습니다. 요청을 열어 새 SQL을 확인하세요."
   }

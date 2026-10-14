@@ -14,6 +14,9 @@ class NotificationRenderer(private val catalog: MessageCatalog = MessageCatalog(
         when (action) {
             NotificationAction.APPROVE_AND_RUN -> "action.approve_and_run"
             NotificationAction.APPROVE -> "action.approve"
+            NotificationAction.RUN -> "action.run"
+            NotificationAction.UNAPPROVE -> "action.unapprove"
+            NotificationAction.CLOSE -> "action.close"
             NotificationAction.DENY -> "action.deny"
             NotificationAction.OPEN -> "action.open"
         },
@@ -35,7 +38,7 @@ class NotificationRenderer(private val catalog: MessageCatalog = MessageCatalog(
         // plus their own sub-template, or empty — the same shape as `role`, so the template owns the whole
         // layout (line breaks and field order) rather than code assembling it piece by piece.
         val reason = m.reason
-            ?.takeIf { it.isNotBlank() && (m.event == NotificationEvent.TASK_REQUESTED || m.event == NotificationEvent.TASK_EDITED) }
+            ?.takeIf { it.isNotBlank() && m.event in ASKS_FOR_APPROVAL }
             // `field.reason` renders as a Slack blockquote (`> …`); carry the quote onto every wrapped line so a
             // multi-line reason stays inside it. A blockquote is per line, so — unlike italic — it never glues a
             // formatting mark onto a bare URL and corrupts the link.
@@ -106,6 +109,7 @@ class NotificationRenderer(private val catalog: MessageCatalog = MessageCatalog(
             else -> "task.decided_approved_github"
         }
         NotificationEvent.TASK_EDITED -> "task.edited"
+        NotificationEvent.TASK_REOPENED -> "task.reopened"
         NotificationEvent.TASK_EXECUTED -> "task.executed"
         NotificationEvent.TASK_FAILED -> "task.failed"
         NotificationEvent.TASK_CANCELLED -> "task.cancelled"

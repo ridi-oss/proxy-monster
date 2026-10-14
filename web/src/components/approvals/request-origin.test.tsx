@@ -4,7 +4,7 @@ import { expect, it } from 'vitest'
 import en from '../../../messages/en/workflows.json'
 import ko from '../../../messages/ko/workflows.json'
 import type { AccessRequest } from '@/lib/api/types'
-import { approveLabelKey, runsOnMerge } from '@/lib/approvals'
+import { runsOnMerge } from '@/lib/approvals'
 import { RequestOrigin } from './request-origin'
 
 const base: AccessRequest = {
@@ -73,8 +73,4 @@ it('approves a GitHub request without running it', () => {
   expect(runsOnMerge({})).toBe(false)
   expect(runsOnMerge(undefined)).toBe(false)
   expect(runsOnMerge(null)).toBe(false)
-  expect(approveLabelKey(github)).toBe('actions.approve')
-  expect(approveLabelKey({ source: 'console' })).toBe('actions.approveAndRun')
-  expect(approveLabelKey({ source: 'mcp' })).toBe('actions.approveAndRun')
-  expect(approveLabelKey(null)).toBe('actions.approveAndRun')
 })

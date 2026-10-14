@@ -187,7 +187,7 @@ class McpQueryToolsDbTest {
         val policy = core.cedarPolicyStore.create(
             CedarPolicyInput(
                 "mcp-approver-${seq.incrementAndGet()}",
-                """permit(principal == User::"$approver", action in [Action::"task.approve", Action::"task.read"], resource);""",
+                """permit(principal == User::"$approver", action in [Action::"task.approve", Action::"task.run", Action::"task.read"], resource);""",
             ),
             "test",
         )
@@ -279,7 +279,7 @@ class McpQueryToolsDbTest {
         val policy = core.cedarPolicyStore.create(
             CedarPolicyInput(
                 "mcp-github-approver-${seq.incrementAndGet()}",
-                """permit(principal == User::"$approver", action in [Action::"task.approve", Action::"task.read"], resource);""",
+                """permit(principal == User::"$approver", action in [Action::"task.approve", Action::"task.run", Action::"task.read"], resource);""",
             ),
             "test",
         )
@@ -311,7 +311,7 @@ class McpQueryToolsDbTest {
         val policy = core.cedarPolicyStore.create(
             CedarPolicyInput(
                 "mcp-force-approver-${seq.incrementAndGet()}",
-                """permit(principal == User::"$approver", action in [Action::"task.approve", Action::"task.read"], resource);""",
+                """permit(principal == User::"$approver", action in [Action::"task.approve", Action::"task.run", Action::"task.read"], resource);""",
             ),
             "test",
         )
@@ -586,7 +586,7 @@ class McpQueryToolsDbTest {
             val policy = core.cedarPolicyStore.create(
                 CedarPolicyInput(
                     "mcp-channel-approver-${seq.incrementAndGet()}",
-                    """permit(principal == User::"$approver", action in [Action::"task.approve", Action::"task.read", Action::"task.assume", Action::"task.cancel"], resource) when { context has channel && context.channel == "$channel" };""",
+                    """permit(principal == User::"$approver", action in [Action::"task.approve", Action::"task.run", Action::"task.read", Action::"task.assume", Action::"task.cancel"], resource) when { context has channel && context.channel == "$channel" };""",
                 ),
                 "test",
             )

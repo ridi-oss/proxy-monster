@@ -646,6 +646,10 @@ export function executeApproval(id: number): Promise<ExecuteQueryRequestResponse
 }
 
 /** Cancel an executing approved task. */
+export function unapproveApproval(id: number): Promise<AccessRequest> {
+  return request<AccessRequest>(`/api/approvals/${id}/unapprove`, { method: 'POST' })
+}
+
 export function cancelApproval(id: number): Promise<AccessRequest> {
   return request<AccessRequest>(`/api/approvals/${id}/cancel`, { method: 'POST' })
 }

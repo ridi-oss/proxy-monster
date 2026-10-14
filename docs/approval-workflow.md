@@ -67,13 +67,19 @@ task exists but no rows.
    refused with `409 approval.request_changed` once the request has moved past
    it, so no one approves SQL they did not see. Slack buttons carry the revision
    too; an edit redraws the approvers' messages with the new SQL.
-4. Execute. After approval, the approver of record runs the query under role R
-   at the `workflow-executor` channel (`POST /api/approvals/{id}/execute`,
-   returns `202` with `decision: EXECUTING`; completion is polled). The proxy
-   stores R's execution-enforced result encrypted on the `query_result` child.
-   Gated by `task.approve`; an execute-once CAS (`APPROVED → EXECUTING` via
-   `AccessStore.claimExecution`) rejects a second `/execute` with
-   `409 approval.already_executed`.
+4. Execute. After approval, whoever `task.run` allows runs the query under role
+   R at the `workflow-executor` channel (`POST /api/approvals/{id}/execute`,
+   returns `202` with `decision: EXECUTING`; completion is polled). The seeded
+   policies allow the requester and every `system:admin`. The proxy stores R's
+   execution-enforced result encrypted on the `query_result` child. An
+   execute-once CAS (`APPROVED → EXECUTING` via `AccessStore.claimExecution`)
+   rejects a second `/execute` with `409 approval.already_executed`. An approval
+   lasts 24 hours (`APPROVAL_TTL`): the claim refuses an older one with
+   `409 approval.expired`, and a one-minute sweep returns it to PENDING. GitHub
+   requests are exempt; their merge runs them. Before the run, any approver can
+   unapprove (`POST .../unapprove`, back to PENDING) or reject, and
+   `task.cancel` closes a PENDING or APPROVED request (`POST .../cancel`, ends
+   CANCELLED).
 5. View. `GET /api/approvals/{id}/result` first authorizes `task.assume` — may
    the viewer act as R for this task. An allowed viewer sees every column masked
    or unmasked by R's own grants, re-decided live at the `workflow-viewer`

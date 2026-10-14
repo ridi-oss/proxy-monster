@@ -26,6 +26,7 @@ import java.sql.Connection
 import java.sql.PreparedStatement
 import java.sql.ResultSet
 import java.sql.Timestamp
+import java.time.Duration
 import java.time.Instant
 import javax.sql.DataSource
 
@@ -193,6 +194,9 @@ private fun compareBytes(a: String, b: String): Int =
 // ---- Store -------------------------------------------------------------------------------
 
 class DuplicatePendingQueryRequestException : RuntimeException("a pending query request already exists for this decision")
+
+/** An approval not run within this long returns the request to PENDING. */
+val APPROVAL_TTL: Duration = Duration.ofHours(24)
 
 class AccessStore(internal val dataSource: DataSource) {
     private val json = Json
@@ -552,7 +556,8 @@ class AccessStore(internal val dataSource: DataSource) {
         return c.prepareStatement(
             """UPDATE access_request
                SET status = ?, decided_by = ?, decided_at = ?, approved_at = ?, rejection_reason = ?, approved_review_id = ?
-               WHERE id = ? AND kind = 'QUERY' AND status = 'PENDING' AND revision = ?""",
+               WHERE id = ? AND kind = 'QUERY' AND revision = ?
+                 AND (status = 'PENDING' OR (status = 'APPROVED' AND ? = 'REJECTED'))""",
         ).use { ps ->
             ps.setString(1, if (approved) "APPROVED" else "REJECTED")
             ps.setString(2, decidedBy)
@@ -562,6 +567,7 @@ class AccessStore(internal val dataSource: DataSource) {
             ps.setString(6, if (approved) reviewId else null)
             ps.setLong(7, id)
             ps.setInt(8, revision)
+            ps.setString(9, if (approved) "APPROVED" else "REJECTED")
             ps.executeUpdate() > 0
         }.also { if (it) RequestParticipants.add(c, id, listOf(decidedBy), ParticipantKind.APPROVER) }
     }
@@ -719,10 +725,13 @@ class AccessStore(internal val dataSource: DataSource) {
         }
         if (scope != null) checkOrdering(id, scope, c)
         return c.prepareStatement(
-            "UPDATE access_request SET status = 'EXECUTING', executing_at = ? WHERE id = ? AND kind = 'QUERY' AND status = 'APPROVED'",
+            """UPDATE access_request SET status = 'EXECUTING', executing_at = ?
+               WHERE id = ? AND kind = 'QUERY' AND status = 'APPROVED' AND $APPROVAL_LIVE""",
         ).use { ps ->
-            ps.setTimestamp(1, Timestamp.from(Instant.now()))
+            val now = Instant.now()
+            ps.setTimestamp(1, Timestamp.from(now))
             ps.setLong(2, id)
+            ps.setTimestamp(3, Timestamp.from(now.minus(APPROVAL_TTL)))
             ps.executeUpdate() > 0
         }
     }
@@ -825,7 +834,13 @@ class AccessStore(internal val dataSource: DataSource) {
     }
 
     /** Return an approved, not-started request to PENDING, recording a [TASK_APPROVE][AuthzAction.TASK_APPROVE] event. */
-    fun reopenQueryRequest(id: Long, actor: AuditActor, recorder: ManagementAuditRecorder, detail: String): Boolean =
+    fun reopenQueryRequest(
+        id: Long,
+        actor: AuditActor,
+        recorder: ManagementAuditRecorder,
+        detail: String,
+        onReopened: ((Connection, AccessRequest) -> Unit)? = null,
+    ): Boolean =
         dataSource.inTx { c ->
             val won = c.prepareStatement(
                 """UPDATE access_request SET status = 'PENDING', decided_by = NULL, decided_at = NULL, approved_at = NULL,
@@ -840,9 +855,40 @@ class AccessStore(internal val dataSource: DataSource) {
                     c, actor, AuthzAction.TASK_APPROVE, auditEntity("AccessRequest", id.toString()),
                     "withdraw the approval of query request #$id ($detail)",
                 )
+                onReopened?.let { hook -> getRequest(id, c)?.let { hook(c, it) } }
             }
             won
         }
+
+    /** Ids of console requests approved longer than [APPROVAL_TTL] ago and not yet started. */
+    fun expiredApprovals(): List<Long> = dataSource.connection.use { c ->
+        c.prepareStatement(
+            """SELECT id FROM access_request
+               WHERE kind = 'QUERY' AND creator_kind = 'WORKFLOW' AND status = 'APPROVED' AND source <> 'github'
+                 AND NOT $APPROVAL_LIVE""",
+        ).use { ps ->
+            ps.setTimestamp(1, Timestamp.from(Instant.now().minus(APPROVAL_TTL)))
+            ps.executeQuery().use { rs -> val o = ArrayList<Long>(); while (rs.next()) o += rs.getLong(1); o }
+        }
+    }
+
+    /** End a PENDING or APPROVED request as CANCELLED, recording a [TASK_CANCEL][AuthzAction.TASK_CANCEL] event. */
+    fun closeQueryRequest(
+        id: Long,
+        actor: AuditActor,
+        recorder: ManagementAuditRecorder,
+        onClosed: ((Connection, AccessRequest) -> Unit)? = null,
+    ): AccessRequest? = dataSource.inTx { c ->
+        val won = c.prepareStatement(
+            "UPDATE access_request SET status = 'CANCELLED' WHERE id = ? AND kind = 'QUERY' AND status IN ('PENDING', 'APPROVED')",
+        ).use { ps ->
+            ps.setLong(1, id)
+            ps.executeUpdate() > 0
+        }
+        if (!won) return@inTx null
+        recorder.record(c, actor, AuthzAction.TASK_CANCEL, auditEntity("AccessRequest", id.toString()), "close query request #$id")
+        getRequest(id, c)?.also { onClosed?.invoke(c, it) }
+    }
 
     /**
      * Mark a GitHub request, PENDING or APPROVED, to run past its scope's checks, recording a
@@ -1363,6 +1409,8 @@ class AccessStore(internal val dataSource: DataSource) {
     )
 
     private companion object {
+        // A pull request's approval lasts until its merge runs it. Binds the oldest approved_at still live.
+        const val APPROVAL_LIVE = "(source = 'github' OR approved_at IS NULL OR approved_at > ?)"
         const val REQ_SELECT =
             """SELECT ar.id, ar.principal, ar.role_id, r.name AS role_name, ar.datasource_id, d.name AS datasource_name,
                       ar.reason, ar.requested_duration_sec, ar.status, ar.decided_by, ar.decided_at, ar.rejection_reason, ar.created_at,

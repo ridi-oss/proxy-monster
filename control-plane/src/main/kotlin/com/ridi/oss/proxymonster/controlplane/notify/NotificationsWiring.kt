@@ -1,18 +1,12 @@
 package com.ridi.oss.proxymonster.controlplane.notify
 
 import com.ridi.oss.proxymonster.controlplane.AccessStore
-import com.ridi.oss.proxymonster.controlplane.AuditStore
+import com.ridi.oss.proxymonster.controlplane.ApprovalService
 import com.ridi.oss.proxymonster.controlplane.Config
-import com.ridi.oss.proxymonster.controlplane.DatasourceStore
-import com.ridi.oss.proxymonster.controlplane.PolicyStore
 import com.ridi.oss.proxymonster.controlplane.QueryResultStore
 import com.ridi.oss.proxymonster.controlplane.RoleResolver
-import com.ridi.oss.proxymonster.controlplane.RunExecService
-import com.ridi.oss.proxymonster.controlplane.TaskCompletionHub
 import com.ridi.oss.proxymonster.controlplane.UserGroupStore
 import com.ridi.oss.proxymonster.controlplane.authz.Authz
-import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
-import com.ridi.oss.proxymonster.controlplane.runApprovedTask
 import com.ridi.oss.proxymonster.controlplane.source.SourceAdapter
 import io.ktor.server.application.Application
 import kotlinx.coroutines.launch
@@ -33,12 +27,8 @@ fun Application.installNotifications(
     authz: Authz,
     roleResolver: RoleResolver,
     accessStore: AccessStore,
-    datasourceStore: DatasourceStore,
-    policyStore: PolicyStore,
     queryResultStore: QueryResultStore?,
-    auditStore: AuditStore,
-    runExecService: RunExecService,
-    taskCompletionHub: TaskCompletionHub,
+    approvals: () -> ApprovalService,
     sourceAdapter: SourceAdapter? = null,
 ): NotificationService? {
     val slackHttp = if (config.slackBotToken != null && config.slackAppToken != null) slackHttpClient() else null
@@ -65,51 +55,9 @@ fun Application.installNotifications(
     launch { notifications.runDrainLoop(Duration.ofMillis(DRAIN_INTERVAL_MS)) }
 
     // Slack Socket Mode: an OUTBOUND WebSocket carrying clicks back, so no inbound ingress performs a
-    // privileged action. Approving from Slack also RUNS the query, through the same claim + run the console
-    // route uses — the claim is the execute-once CAS, so a console /execute racing this loses cleanly.
+    // privileged action. Each click goes through the same ApprovalService the console routes use.
     if (slackHttp != null && config.slackBotToken != null && config.slackAppToken != null) {
-        val handler = SlackDecisionHandler(
-            accessStore = accessStore,
-            datasourceStore = datasourceStore,
-            authz = authz,
-            auditRecorder = ManagementAuditRecorder(auditStore),
-            notifications = notifications,
-            defaultLocale = config.notifyLocale,
-            onApproved = { approved ->
-                val ds = approved.datasourceId?.let(datasourceStore::get)
-                val sql = approved.sql
-                // Filter to LIVE roles, same as the console /execute pre-flight (Approvals.kt), so a role
-                // soft-deleted between approval and click refuses BEFORE the claim — matching the console's
-                // clean refusal instead of claiming, running, and driving the task to a terminal FAILED.
-                val executeAs = policyStore.liveRoleNames(approved.executeAs).toSet()
-                // The button offered a run; if by click time it cannot start (result storage unconfigured, the
-                // datasource soft-deleted, or every execute-as role gone), throw so the clicker is told
-                // "approved, but the run could not be started" rather than silently seeing a "running" message.
-                require(queryResultStore != null && ds != null && sql != null && executeAs.isNotEmpty()) {
-                    "cannot run task ${approved.id}: results=${queryResultStore != null} ds=${ds != null} " +
-                        "sql=${sql != null} roles=${executeAs.size}"
-                }
-                // The execute-once CAS. A LOST claim means another executor already started it — not a failure.
-                val claimed = queryResultStore.claimAndStartRun(approved.id, approved.decidedBy ?: approved.principal) { c ->
-                    accessStore.claimExecution(approved.id, c)
-                } != null
-                if (claimed) {
-                    launch {
-                        runApprovedTask(
-                            id = approved.id,
-                            executor = approved.decidedBy ?: approved.principal,
-                            ds = ds, executeAs = executeAs,
-                            requesterIp = null, // a Slack click carries no attested address
-                            requesterPrincipal = approved.principal, req = approved,
-                            config = config, accessStore = accessStore, store = queryResultStore,
-                            auditStore = auditStore, runExecService = runExecService,
-                            taskCompletionHub = taskCompletionHub, notifications = notifications,
-                            log = environment.log,
-                        )
-                    }
-                }
-            },
-        )
+        val handler = SlackDecisionHandler(accessStore, approvals, notifications, config.notifyLocale)
         val identity = UserGroupStore(dataSource)
         launch {
             SlackSocketMode(

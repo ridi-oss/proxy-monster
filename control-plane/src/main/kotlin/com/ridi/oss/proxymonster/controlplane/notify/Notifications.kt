@@ -16,6 +16,8 @@ enum class NotificationEvent(val wire: String) {
     TASK_DECIDED("task.decided"),
     /** The requester replaced the SQL: the request is pending again, under a new revision. */
     TASK_EDITED("task.edited"),
+    /** An approval was withdrawn or expired: the request is pending again. */
+    TASK_REOPENED("task.reopened"),
     TASK_EXECUTED("task.executed"),
     TASK_FAILED("task.failed"),
     TASK_CANCELLED("task.cancelled"),
@@ -48,6 +50,9 @@ enum class NotificationEvent(val wire: String) {
         }
     }
 }
+
+/** The events whose message asks the approvers to decide. */
+val ASKS_FOR_APPROVAL = setOf(NotificationEvent.TASK_REQUESTED, NotificationEvent.TASK_EDITED, NotificationEvent.TASK_REOPENED)
 
 /**
  * Which side of a request a message serves. One person can hold both for the same task — a requester whom
@@ -130,9 +135,8 @@ fun discloseStatement(disclosure: StatementDisclosure, pending: Boolean, cleared
         StatementDisclosure.FULL -> pending || cleared
     }
 
-/** An action a message may offer. [OPEN] is always available; the others are gated. [APPROVE] approves without
- *  running, for a request whose run is started elsewhere (a pull request's merge). */
-enum class NotificationAction { APPROVE_AND_RUN, APPROVE, DENY, OPEN }
+/** An action a message may offer. [OPEN] is always available; the others are gated by the request's state. */
+enum class NotificationAction { APPROVE_AND_RUN, APPROVE, RUN, UNAPPROVE, DENY, CLOSE, OPEN }
 
 /**
  * One notification, transport-neutral. Carries message KEYS and their values rather than finished prose, so

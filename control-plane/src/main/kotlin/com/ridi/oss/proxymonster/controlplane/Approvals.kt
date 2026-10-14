@@ -124,6 +124,12 @@ fun discoverRoles(
 @Serializable data class QueryRequestDetail(
     val request: AccessRequest,
     val canDecide: Boolean,
+    // Approving and running in one step needs both task.approve and task.run.
+    val canApproveAndRun: Boolean = false,
+    val canReject: Boolean = false,
+    val canUnapprove: Boolean = false,
+    // Closing a request that has not run; [canCancel] stops a running one.
+    val canClose: Boolean = false,
     // The active statement's execution metadata. Rows remain behind the result endpoint.
     val result: QueryResultMeta? = null,
     // Every statement, in run order, with its own status.
@@ -510,11 +516,21 @@ fun Route.approvalRoutes(
         }
     }
 
+    post("/api/approvals/{id}/unapprove") {
+        val principal = call.requireApi() ?: return@post
+        val id = call.idParam() ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
+        try {
+            call.respond(service.unapprove(principal, call.httpRequesterIp(config), call.auditActor(config), id))
+        } catch (e: TaskServiceException) {
+            call.respondServiceError(e)
+        }
+    }
+
     post("/api/approvals/{id}/cancel") {
         val principal = call.requireApi() ?: return@post
         val id = call.idParam() ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
         try {
-            call.respond(service.cancel(principal, call.httpRequesterIp(config), id))
+            call.respond(service.cancel(principal, call.httpRequesterIp(config), call.auditActor(config), id))
         } catch (e: TaskServiceException) {
             call.respondServiceError(e)
         }

@@ -1,6 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane.notify
 
-import com.ridi.oss.proxymonster.controlplane.AccessRequest
+import com.ridi.oss.proxymonster.controlplane.ApprovalService
 import com.ridi.oss.proxymonster.controlplane.AppUserInput
 import com.ridi.oss.proxymonster.controlplane.AuditEvent
 import com.ridi.oss.proxymonster.controlplane.Decision
@@ -18,8 +18,6 @@ import com.ridi.oss.proxymonster.controlplane.approvalRoutes
 import com.ridi.oss.proxymonster.controlplane.grpc.CONTROL_PROTOCOL_VERSION
 import com.ridi.oss.proxymonster.controlplane.grpc.ControlPlaneGrpcService
 import com.ridi.oss.proxymonster.controlplane.grpc.GrpcServer
-import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
-import com.ridi.oss.proxymonster.controlplane.runApprovedTask
 import com.ridi.oss.proxymonster.controlplane.support.EnforcementFixture
 import com.ridi.oss.proxymonster.controlplane.support.MockSlack
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
@@ -174,15 +172,11 @@ class SlackNotificationE2eDbTest {
             disclosure = StatementDisclosure.AUTO,
             defaultLocale = "en",
         )
-        val handler = SlackDecisionHandler(
-            accessStore = core.accessStore,
-            datasourceStore = core.datasourceStore,
-            authz = core.authz,
-            auditRecorder = ManagementAuditRecorder(core.auditStore),
-            notifications = svc,
-            defaultLocale = "en",
-            onApproved = { approved -> realRun(approved) },
+        val approvals = ApprovalService(
+            config, core.accessStore, core.auditStore, core.datasourceStore, core.policyStore, core.userGroupStore,
+            resultStore, core.roleResolver, core.authz, runExecService, runScope, notifications = svc,
         )
+        val handler = SlackDecisionHandler(core.accessStore, { approvals }, svc, "en")
         socket = SlackSocketMode(
             http, "xoxb-e2e", "xapp-e2e",
             principalForEmail = core.userGroupStore::activePrincipalByEmail,
@@ -198,28 +192,6 @@ class SlackNotificationE2eDbTest {
         server.shutdown()
         http.close()
         slack.close()
-    }
-
-    /** The production approve-and-run path (NotificationsWiring.onApproved), verbatim: claim, then run. */
-    private suspend fun realRun(approved: AccessRequest) {
-        val ds = approved.datasourceId?.let(core.datasourceStore::get)
-        val sql = approved.sql
-        val executeAs = core.policyStore.liveRoleNames(approved.executeAs).toSet()
-        require(ds != null && sql != null && executeAs.isNotEmpty()) { "cannot run task ${approved.id}" }
-        val claimed = resultStore.claimAndStartRun(approved.id, approved.decidedBy ?: approved.principal) { c ->
-            core.accessStore.claimExecution(approved.id, c)
-        } != null
-        if (claimed) {
-            runScope.launch {
-                runApprovedTask(
-                    id = approved.id, executor = approved.decidedBy ?: approved.principal,
-                    ds = ds, executeAs = executeAs, requesterIp = null,
-                    requesterPrincipal = approved.principal, req = approved, config = config,
-                    accessStore = core.accessStore, store = resultStore, auditStore = core.auditStore,
-                    runExecService = runExecService, taskCompletionHub = null, notifications = svc, log = log,
-                )
-            }
-        }
     }
 
     /** The compose route plus a client already signed in as [requester]. */

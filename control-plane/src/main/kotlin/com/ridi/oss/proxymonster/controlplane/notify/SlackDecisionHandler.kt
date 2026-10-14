@@ -1,44 +1,30 @@
 package com.ridi.oss.proxymonster.controlplane.notify
 
-import com.ridi.oss.proxymonster.controlplane.AccessRequest
-import com.ridi.oss.proxymonster.controlplane.toApprovalResource
 import com.ridi.oss.proxymonster.controlplane.AccessStore
+import com.ridi.oss.proxymonster.controlplane.ApprovalService
 import com.ridi.oss.proxymonster.controlplane.Channel
-import com.ridi.oss.proxymonster.controlplane.Datasource
-import com.ridi.oss.proxymonster.controlplane.DatasourceStore
-import com.ridi.oss.proxymonster.controlplane.authz.Authz
-import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
-import com.ridi.oss.proxymonster.controlplane.authz.AuthzContext
-import com.ridi.oss.proxymonster.controlplane.authz.AuthzDecision
-import com.ridi.oss.proxymonster.controlplane.authz.authorizeWithContext
+import com.ridi.oss.proxymonster.controlplane.TaskServiceException
 import com.ridi.oss.proxymonster.controlplane.i18n.MessageCatalog
 import com.ridi.oss.proxymonster.controlplane.management.AuditActor
-import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
 import org.slf4j.LoggerFactory
 
 /**
- * Turns a Slack button click into a task decision (docs/notifications.md, "Approving from Slack").
+ * Turns a Slack button click into a task action (docs/notifications.md, "Approving from Slack").
  *
- * This is an ADAPTER, not a second lifecycle: authorization is the same `task.approve` Cedar decision the
- * HTTP route makes, and the transition goes through the same [AccessStore.decideQueryRequest] CAS — so two
- * people tapping at once resolve exactly as two console users would, and the loser is told what actually
- * happened.
- *
- * A click is a weaker assertion than a console session — no OIDC session, no attested address — so it is made
- * visible to policy rather than hidden behind a flag: it decides on [Channel.SLACK], which an operator can
- * scope or forbid per datasource or role. `requester_ip` is absent, so any policy conditioning on it denies,
- * matching how the system already treats an unknown attribute.
+ * This is an ADAPTER, not a second lifecycle: every click goes through [ApprovalService], the same Cedar
+ * decisions and CAS transitions the console makes, on [Channel.SLACK]. A click carries no OIDC session and no
+ * attested address, so it is visible to policy as its own channel, and `requester_ip` is absent.
  *
  * Replies are ephemeral and carry no result data — an outcome, never rows.
  */
 class SlackDecisionHandler(
     private val accessStore: AccessStore,
-    private val datasourceStore: DatasourceStore,
-    private val authz: Authz,
-    private val auditRecorder: ManagementAuditRecorder,
+    private val approvals: () -> ApprovalService,
     private val notifications: NotificationService,
     private val defaultLocale: String,
-    private val onApproved: suspend (AccessRequest) -> Unit,
+    private val run: (principal: String, taskId: Long) -> Unit = { principal, taskId ->
+        approvals().execute(principal, null, taskId, Channel.SLACK)
+    },
 ) {
     private val log = LoggerFactory.getLogger(SlackDecisionHandler::class.java)
     private val catalog = MessageCatalog(NotificationRenderer.DOMAIN)
@@ -53,68 +39,46 @@ class SlackDecisionHandler(
         if (req == null || req.kind != "QUERY" || req.creatorKind != "WORKFLOW") {
             return reply("request_gone")
         }
-        if (req.status != "PENDING") {
-            // Someone else won the race, or it was decided in the console. Say what actually happened rather
-            // than reporting a failure — the message itself is rewritten by the decision's own notification.
-            return catalog.text("reply.already_status", locale, mapOf("status" to req.status.lowercase()))
-        }
-
-        val ds = req.datasourceId?.let(datasourceStore::getIncludingDeleted)
-        if (!mayDecide(interaction.principal, req, ds)) {
-            return reply("not_authorized")
-        }
-
-        val approve = interaction.actionId != SlackTransport.ACTION_DENY
-        // A decision is about the SQL the message showed, so a click from before an edit decides nothing.
+        // An action is about the SQL the message showed, so a click from before an edit does nothing.
         if (req.revision != interaction.revision) return reply("request_changed")
-        val actor = AuditActor(
-            principal = interaction.principal,
-            clientAddr = null,
-            channel = Channel.SLACK.contextValue,
-        )
-        val updated = accessStore.decideQueryRequest(
-            interaction.taskId,
-            approved = approve,
-            rejectionReason = if (approve) null else SLACK_REJECT_REASON,
-            decidedBy = interaction.principal,
-            actor = actor,
-            recorder = auditRecorder,
-            onDecided = { c, decided -> notifications.emit(c, NotificationEvent.TASK_DECIDED, decided) },
-            revision = req.revision,
-        ) ?: return reply(if (accessStore.getRequest(interaction.taskId)?.status == "PENDING") "request_changed" else "already_done")
-        // The decide committed; deliver the "decided/running" message edit now rather than on the next poll.
-        // This is what removes the buttons the user just clicked, so a slow update never invites a re-click.
-        notifications.wake()
 
-        log.info(
-            "query approval {} from slack request={} requester={} decider={}",
-            if (approve) "approved" else "rejected", req.id, req.principal, interaction.principal,
-        )
+        val principal = interaction.principal
+        val actor = AuditActor(principal = principal, clientAddr = null, channel = Channel.SLACK.contextValue)
+        val service = approvals()
+        val outcome = runCatching {
+            when (interaction.actionId) {
+                SlackTransport.ACTION_APPROVE, SlackTransport.ACTION_APPROVE_ONLY ->
+                    service.approve(principal, null, actor, req.id, req.revision, Channel.SLACK)
+                SlackTransport.ACTION_DENY ->
+                    service.reject(principal, null, actor, req.id, SLACK_REJECT_REASON, Channel.SLACK)
+                SlackTransport.ACTION_UNAPPROVE -> service.unapprove(principal, null, actor, req.id, Channel.SLACK)
+                SlackTransport.ACTION_CLOSE -> service.cancel(principal, null, actor, req.id, Channel.SLACK)
+                SlackTransport.ACTION_RUN -> run(principal, req.id)
+                else -> return ""
+            }
+        }
+        outcome.exceptionOrNull()?.let { e ->
+            if (e !is TaskServiceException) throw e
+            return when (e.error.code) {
+                "approval.not_approver" -> reply("not_authorized")
+                "approval.not_runner" -> reply("not_runner")
+                "approval.cancel_forbidden" -> reply("not_closer")
+                "approval.request_changed" -> reply("request_changed")
+                "approval.expired" -> reply("expired")
+                else -> accessStore.getRequest(req.id)
+                    ?.let { catalog.text("reply.already_status", locale, mapOf("status" to it.status.lowercase())) }
+                    ?: reply("request_gone")
+            }
+        }
+        log.info("slack {} request={} requester={} by={}", interaction.actionId, req.id, req.principal, principal)
+
         // A pull request's merge runs its request; an approve-only click never runs.
-        if (!approve || interaction.actionId != SlackTransport.ACTION_APPROVE || req.fromPullRequest) return ""
-
-        // Approving from Slack also runs it: whoever approves is the one who must execute, so offering
-        // approve-without-run here would strand the task waiting for a console visit.
-        return runCatching { onApproved(updated); "" }
+        if (interaction.actionId != SlackTransport.ACTION_APPROVE || req.fromPullRequest) return ""
+        return runCatching { run(principal, req.id); "" }
             .getOrElse { t ->
                 log.warn("slack-approved execution failed request={}", req.id, t)
                 reply("run_failed")
             }
-    }
-
-    private fun mayDecide(principal: String, req: AccessRequest, ds: Datasource?): Boolean {
-        val decision = authz.authorizeWithContext(
-            principal,
-            AuthzAction.TASK_APPROVE,
-            req.toApprovalResource(),
-            // No attested address: a Slack click carries none, so a policy requiring one denies. That is the
-            // same fail-closed posture the system takes for any unknown attribute, and the reason `slack` is
-            // its own channel rather than a flag.
-            AuthzContext(channel = Channel.SLACK.contextValue),
-            req.datasourceName,
-            ds?.tags.orEmpty(),
-        )
-        return decision !is AuthzDecision.Deny
     }
 
     companion object {

@@ -24,7 +24,11 @@
     "saving": "저장 중…",
     "save": "저장",
     "forceRun": "강제 실행",
-    "forcingRun": "지정 중…"
+    "forcingRun": "지정 중…",
+    "unapprove": "승인 취소",
+    "unapproving": "승인 취소 중…",
+    "close": "요청 닫기",
+    "closing": "닫는 중…"
   },
   "fields": {
     "requester": "요청자",
@@ -172,7 +176,7 @@
   "approvalDetail": {
     "loading": "승인 요청을 불러오는 중…",
     "noRows": "행이 없습니다.",
-    "approverExecution": "승인자 실행",
+    "approverExecution": "실행",
     "queryApprovalFallbackTitle": "쿼리 승인 #{id}",
     "submittedToast": "실행을 제출했습니다.",
     "runFailed": "실행에 실패했습니다",
@@ -180,12 +184,12 @@
     "cancelFailed": "취소에 실패했습니다",
     "rejectedToast": "쿼리 승인이 반려되었습니다",
     "rejectFailed": "반려에 실패했습니다",
-    "approvedExecuteUnderR": "승인됨 — 승인자가 요청된 역할로 실행을 제출할 수 있습니다.",
+    "approvedExecuteUnderR": "승인됨 — 요청자나 승인자가 하루 안에 요청된 역할로 실행할 수 있습니다.",
     "approvedGithub": "승인됨 — 풀 리퀘스트를 머지할 준비가 되면 실행됩니다.",
     "runUnderRole": "승인된 쿼리를 요청된 역할로 실행합니다. 진행 상태와 결과는 자동으로 갱신됩니다.",
     "runStatus": "{status} · {rows, plural, other {#개 행}} · 만료 {expires}",
     "failedCode": "실행 실패: {code}",
-    "awaitingApprover": "승인자가 이 쿼리를 실행하기를 기다리는 중입니다.",
+    "awaitingApprover": "요청자나 승인자가 이 쿼리를 실행하기를 기다리는 중입니다.",
     "rejectTitle": "쿼리 승인 반려",
     "rejectDescription": "{principal}의 이 쿼리 승인 요청을 반려합니다.",
     "rejectPlaceholder": "이 쿼리를 승인하면 안 되는 이유를 설명하세요.",
@@ -203,7 +207,11 @@
     "revision": "수정본 {revision}",
     "forceRunToast": "스코프 확인을 건너뛰도록 지정했습니다. 풀 리퀘스트를 머지할 준비가 되면 실행됩니다.",
     "forceRunFailed": "강제 실행을 지정하지 못했습니다.",
-    "forcedBy": "{admin} 님이 스코프의 브랜치 최신 여부 확인과 한 번에 한 PR만 실행하는 규칙을 건너뛰도록 지정했습니다."
+    "forcedBy": "{admin} 님이 스코프의 브랜치 최신 여부 확인과 한 번에 한 PR만 실행하는 규칙을 건너뛰도록 지정했습니다.",
+    "unapprovedToast": "승인을 취소했습니다.",
+    "unapproveFailed": "승인 취소에 실패했습니다",
+    "closedToast": "요청을 닫았습니다.",
+    "closeFailed": "요청을 닫지 못했습니다"
   },
   "approveDialog": {
     "approveFailed": "승인에 실패했습니다",
@@ -212,9 +220,10 @@
     "title": "쿼리 요청 승인 후 실행",
     "descriptionWithPrincipal": "{principal}님의 쿼리 요청을 승인하고 요청된 역할로 실행합니다.",
     "descriptionFallback": "이 쿼리 요청을 승인하고 요청된 역할로 실행합니다.",
-    "executeUnderRNote": "승인되면 승인자가 요청된 역할로 쿼리를 실행하고 결과를 공개합니다. 요청자는 해당 역할이 볼 수 있는 범위 이상을 볼 수 없습니다.",
+    "executeUnderRNote": "쿼리는 요청된 역할로 실행됩니다. 요청자는 해당 역할이 볼 수 있는 범위 이상을 볼 수 없습니다.",
     "titleGithub": "쿼리 요청 승인",
-    "approvedToast": "{principal}님의 요청을 승인했습니다."
+    "approvedToast": "{principal}님의 요청을 승인했습니다.",
+    "descriptionApproveOnly": "{principal}님의 쿼리 요청을 승인합니다. 이후 하루 안에 요청자나 승인자가 실행할 수 있습니다."
   },
   "tokenDialog": {
     "generateFailed": "생성에 실패했습니다",

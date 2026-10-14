@@ -77,6 +77,9 @@ import kotlin.time.Duration.Companion.seconds
 /** How often the background sweep deletes expired result rows. */
 private const val RESULT_PURGE_INTERVAL_MS = 15 * 60 * 1000L
 
+/** How often approvals older than [APPROVAL_TTL] are returned to PENDING. A run past it is refused regardless. */
+private const val APPROVAL_EXPIRY_INTERVAL_MS = 60 * 1000L
+
 /** An editor session idle longer than this is reaped (its proxy stream + target-DB connection freed).
  *  Swept on the same timer as RESULT_PURGE_INTERVAL_MS. */
 private const val EDITOR_SESSION_MAX_IDLE_MS = 30 * 60 * 1000L
@@ -405,9 +408,9 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
             },
         )
     }
+    lateinit var approvalService: ApprovalService
     val notifications = installNotifications(
-        config, dataSource, authz, roleResolver, accessStore, datasourceStore, policyStore,
-        queryResultStore, store, runExecService, taskCompletionHub, sourceAdapter,
+        config, dataSource, authz, roleResolver, accessStore, queryResultStore, { approvalService }, sourceAdapter,
     )
 
     // OIDC (docs/auth-model.md): provider-agnostic via discovery, so any OIDC IdP works. `discovery`/
@@ -605,11 +608,18 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
         roleResolver, authz, runExecService, this@module, core.systemClassification, taskCompletionHub,
         core.auditStore,
     )
-    val approvalService = ApprovalService(
+    approvalService = ApprovalService(
         config, accessStore, store, datasourceStore, policyStore, userGroupStore, queryResultStore,
         roleResolver, authz, runExecService, this@module, core.systemClassification, taskCompletionHub,
         notifications,
     )
+    launch {
+        while (true) {
+            delay(APPROVAL_EXPIRY_INTERVAL_MS)
+            runCatching { approvalService.expireApprovals() }
+                .onFailure { environment.log.warn("approval expiry sweep failed", it) }
+        }
+    }
     val githubFlow = sourceAdapter?.let { adapter ->
         GitHubSourceFlow(
             adapter, approvalService, accessStore, datasourceStore, policyStore, authz, notifications,

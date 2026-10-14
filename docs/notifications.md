@@ -16,7 +16,7 @@ approve it, so each gets a Slack DM:
 
 > **alice** wants to run `SELECT ssn, name FROM users WHERE order_id = 8842` on
 > **acme-mysql** as **pii-reader** _investigating a billing dispute_
-> `[approve and run]` `[deny]` `[open request]`
+> `[approve and run]` `[approve]` `[deny]` `[open request]`
 
 Bob taps **deny**. His message and Carol's both become:
 
@@ -24,9 +24,10 @@ Bob taps **deny**. His message and Carol's both become:
 > **acme-mysql** was denied by **bob** `[open request]`
 
 Had Bob tapped **approve and run**, the query runs and the message becomes
-"approved by bob, running", then updates again to "finished, 3 rows" or
-"failed". The rows themselves never appear in Slack — Alice reads them in the
-console.
+"approved by bob", then updates again to "finished, 3 rows" or "failed". Had he
+tapped **approve**, the messages become "approved by bob" with `[run]`; Alice's
+own receipt gets `[run]` too, since the requester may run an approved request.
+The rows themselves never appear in Slack — Alice reads them in the console.
 
 Alice's statement is short, so Bob sees all of it and can approve from the DM.
 Had any of it been elided — too long for Slack, or withheld because it carried a
@@ -54,7 +55,8 @@ touching the workflow.
 | `task.submitted`                               | a request is filed               | the requester — their own receipt (plus the approver message above, if they may also approve) |
 | `task.decided`                                 | approved or rejected             | the requester, and everyone told above                                                        |
 | `task.edited`                                  | the requester edits              | the requester, and everyone told above; it shows the new SQL and asks for approval again      |
-| `task.executed` `task.failed` `task.cancelled` | the run ends                     | the requester and the approver                                                                |
+| `task.reopened`                                | unapproved, or 24 hours unrun    | the requester, and everyone told above; it asks for approval again                            |
+| `task.executed` `task.failed` `task.cancelled` | the run ends, or it is closed    | the requester and the approver                                                                |
 | `task.force_run`                               | an admin forces a GitHub request | everyone who may approve it and its parties, fresh; and the PR                                |
 
 Anyone told about a request is told how it ended. That is what stops a stale
@@ -435,17 +437,21 @@ Slack.
 
 ### The buttons
 
-**approve and run** does both steps, because whoever approves is the one who
-must execute. It is offered only when the message shows the full statement (see
-[above](#never-approve-what-you-cannot-see)). **deny** rejects, and is offered
-whatever the message shows. **open request** links to the console and is always
-there, even when the other two are policy-disabled.
+The buttons follow the request's live state and which side of it the recipient
+is on.
 
-Both go through the same code the HTTP routes use. Today approve, reject, and
-execute live inside the route handlers; they move into an `ApprovalService`, and
-the routes become one caller of it while Slack becomes another. **This is a real
-refactor of `Approvals.kt`, not an incidental one** — it is the part of this
-design most worth reviewing before building.
+| State    | Approver                       | Requester          |
+| -------- | ------------------------------ | ------------------ |
+| PENDING  | approve and run, approve, deny | close request      |
+| APPROVED | run, unapprove, deny           | run, close request |
+
+**approve and run** and **approve** are offered only when the message shows the
+full statement (see [above](#never-approve-what-you-cannot-see)). A GitHub
+request offers approve, never run: its merge runs it. **open request** links to
+the console and is always there. Each click is re-authorized by the same
+`ApprovalService` call the console makes (`task.approve`, `task.run`,
+`task.cancel`), on the `slack` channel. An expired or withdrawn approval sends
+`task.reopened`, which redraws the messages as pending again.
 
 Two people tapping approve at once resolve exactly as two console users do — one
 wins the same compare-and-swap, and the loser's message is rewritten to show

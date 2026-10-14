@@ -120,6 +120,7 @@
       "taskAssume": "작업의 실행 역할을 맡아 저장된 결과 데이터 조회",
       "taskCancel": "작업 취소",
       "taskDelete": "작업 삭제",
+      "taskRun": "승인된 쿼리 요청 실행",
       "grantRevoke": "접근 권한 부여 철회",
       "resultReadUnmasked": "접근한 컬럼의 평문 조회",
       "resultReadMasked": "마스킹된 값 (컬럼의 마스크 함수 또는 안전한 기본값)",

@@ -493,6 +493,11 @@ export interface QueryResultMeta {
 export interface QueryRequestDetail {
   request: AccessRequest
   canDecide: boolean
+  canApproveAndRun?: boolean
+  canReject?: boolean
+  canUnapprove?: boolean
+  /** Close a request that has not run; canCancel stops a running one. */
+  canClose?: boolean
   result?: QueryResultMeta | null
   /** Every statement of the batch, in run order. One entry for a single-statement request. */
   statements?: QueryResultMeta[]

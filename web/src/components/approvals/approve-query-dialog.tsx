@@ -7,7 +7,7 @@ import { toast } from 'sonner'
 import { approveApproval, executeApproval, ApiError } from '@/lib/api/client'
 import type { AccessRequest } from '@/lib/api/types'
 import { swrKeys } from '@/lib/hooks'
-import { approveLabelKey, runsOnMerge } from '@/lib/approvals'
+import { runsOnMerge } from '@/lib/approvals'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -34,17 +34,20 @@ function errorMessage(err: unknown, t: Translator): string {
 
 export function ApproveQueryDialog({
   request,
+  run,
   onClose,
   onApproved,
 }: {
   request: AccessRequest | null
+  run: boolean
   onClose: () => void
   onApproved?: () => void
 }) {
   const t = useTranslations('Workflows')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const approveOnly = runsOnMerge(request)
+  const fromGithub = runsOnMerge(request)
+  const approveOnly = fromGithub || !run
 
   const handleOpenChange = (open: boolean) => {
     if (!open && !busy) onClose()
@@ -89,11 +92,13 @@ export function ApproveQueryDialog({
         <DialogHeader>
           <DialogTitle>{t(approveOnly ? 'approveDialog.titleGithub' : 'approveDialog.title')}</DialogTitle>
           <DialogDescription>
-            {approveOnly
+            {fromGithub
               ? t('approvalDetail.approvedGithub')
-              : request
-                ? t('approveDialog.descriptionWithPrincipal', { principal: request.principal })
-                : t('approveDialog.descriptionFallback')}
+              : approveOnly
+                ? t('approveDialog.descriptionApproveOnly', { principal: request?.principal ?? '' })
+                : request
+                  ? t('approveDialog.descriptionWithPrincipal', { principal: request.principal })
+                  : t('approveDialog.descriptionFallback')}
           </DialogDescription>
         </DialogHeader>
 
@@ -103,7 +108,7 @@ export function ApproveQueryDialog({
           </div>
         )}
 
-        {!approveOnly && (
+        {!fromGithub && (
           <p className="text-muted-foreground text-sm">{t('approveDialog.executeUnderRNote')}</p>
         )}
 
@@ -118,7 +123,7 @@ export function ApproveQueryDialog({
           >
             {busy
               ? t(approveOnly ? 'actions.approving' : 'actions.approvingAndRunning')
-              : t(approveLabelKey(request))}
+              : t(approveOnly ? 'actions.approve' : 'actions.approveAndRun')}
           </Button>
         </DialogFooter>
       </DialogContent>

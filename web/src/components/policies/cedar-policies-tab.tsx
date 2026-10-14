@@ -84,6 +84,7 @@ const ACTION_REFERENCE: { resource: string; actions: { name: string; noteKey: st
     resource: 'Request (in Datasource, in Role)',
     actions: [
       { name: 'task.approve', noteKey: 'taskApprove' },
+      { name: 'task.run', noteKey: 'taskRun' },
       { name: 'task.read', noteKey: 'taskRead' },
       { name: 'task.assume', noteKey: 'taskAssume' },
       { name: 'task.cancel', noteKey: 'taskCancel' },

@@ -113,6 +113,49 @@ configured per proxy under `PM_TARGET_*`.
   `proxy_set_header X-Forwarded-Proto $scheme` (or the equivalent), not a
   pass-through of the request header.
 
+- `PM_WEB_URL` — _optional_. The web console, e.g. `http://web:3000`. When set,
+  `cp-go` serves `/api/`, `/auth/`, `/oauth/`, `/mcp`, and `/.well-known/oauth-`
+  itself and forwards every other path there, on every port it serves HTTP on,
+  so a load balancer can send it everything. Unset (default), `cp-go` serves
+  only those paths and the load balancer routes the rest to web.
+
+- `PM_TAILNET_*` — _optional_. Put the console on a tailnet: `cp-go` joins it as
+  a node and serves the console on ports 443 and 80, with no separate Tailscale
+  task or TLS edge. It is on when a login is set; unset (default) keeps `cp-go`
+  off the tailnet, and the HTTP and gRPC ports work the same either way.
+  - `PM_TAILNET_CLIENT_ID` and `PM_TAILNET_AUDIENCE` — log in without a stored
+    key, through a Tailscale federated identity that trusts the cloud ID token
+    `cp-go` obtains (on ECS, from STS `GetWebIdentityToken`, so the task role
+    needs that permission for the audience). Or set `PM_TAILNET_AUTH_KEY`. The
+    node keeps its state in memory and is ephemeral, so each start logs in
+    again. If the tailnet requires device approval, set the client id as
+    `<id>?ephemeral=true&preauthorized=true`; otherwise the node waits for
+    approval until `PM_CP_START_TIMEOUT` and `cp-go` exits.
+  - `PM_TAILNET_TAGS` — the node's tags, e.g. `tag:console`. Required to host a
+    Service or to log in by federated identity.
+  - `PM_TAILNET_SERVICE` — a
+    [Tailscale Service](https://tailscale.com/kb/1552/tailscale-services) to
+    host, e.g. `svc:console`; the tailnet policy must define it and auto-approve
+    it for the node's tag. Unset, `cp-go` serves on the node's own name. A
+    Service keeps its name and address across deploys; a node's name does not
+    always, since a new node can get a `-1` suffix until the old ephemeral node
+    is removed.
+  - `PM_TAILNET_CERT_ARN` — an ACM certificate for the console's hostname,
+    issued with export enabled; the task role needs `acm:ExportCertificate` on
+    it. `cp-go` exports it at start and daily, so a renewal is served without a
+    restart. Point the hostname's DNS at the Service's or the node's address.
+    Unset, Tailscale's certificate for the tailnet name
+    (`<service>.<tailnet>.ts.net`, or the node's) is used: HTTPS must be enabled
+    for the tailnet, the name appears in public certificate logs, and the
+    console's public URL settings must use that name.
+  - `PM_TAILNET_HOSTNAME` — the node's name. Default `pmon-<instance name>`, the
+    name the MCP server is installed under (`PM_INSTANCE_NAME`).
+
+  Port 80 redirects to https on a name the certificate covers. The tailnet
+  client's own address is the requester IP, and any `X-Forwarded-For` the client
+  sends is ignored: on a Service `cp-go` takes the address from the PROXY v2
+  header Tailscale adds, and on the node it is the connection's own.
+
 - `PM_WEB_SESSION_ABSOLUTE` / `_IDLE` / `_SLIDE` / `_IDLE_WARN_LEAD` /
   `_ABSOLUTE_WARN_LEAD` / `_HEARTBEAT` — _optional_. Two-clock console session
   timings. Defaults: `2h` · `15m` · `2m` · `1m` · `5m` · `90s`.

@@ -180,6 +180,13 @@ return `403 mcp.invalid_host` and SCIM return `403`, while the console's own
 origin whatever the topology: the OAuth issuer is derived from it and is
 deliberately never inferred from request headers.
 
+On a tailnet, `cp-go` can be the edge itself (`PM_TAILNET_*` in
+[INSTALL.md](./INSTALL.md)): it serves the console on a Tailscale Service or on
+its own node, with the console certificate or Tailscale's, and takes the
+requester IP from the client's tailnet address. With `PM_WEB_URL` set it also
+forwards the web paths to the console. No load balancer or `PM_TRUSTED_PROXIES`
+entry is involved on that path.
+
 ## Ports and protocols
 
 <!-- prettier-ignore -->

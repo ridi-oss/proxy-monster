@@ -409,9 +409,10 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
         )
     }
     lateinit var approvalService: ApprovalService
+    lateinit var accessService: AccessService
     val notifications = installNotifications(
         config, dataSource, authz, roleResolver, accessStore, datasourceStore, queryResultStore, { approvalService },
-        sourceAdapter,
+        { accessService }, sourceAdapter,
     )
 
     // OIDC (docs/auth-model.md): provider-agnostic via discovery, so any OIDC IdP works. `discovery`/
@@ -631,7 +632,7 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
     val auditService = AuditService(authz, store)
     val tokenService = TokenService(tokenStore, userGroupStore, authz, core.authAudit)
     val workloadTokenService = WorkloadTokenService(config, tokenStore, core.authAudit)
-    val accessService = AccessService(accessStore, datasourceStore, store, roleResolver, authz, managementAudit)
+    accessService = AccessService(accessStore, datasourceStore, store, roleResolver, authz, managementAudit, notifications)
     installMcp(
         config, core, datasourceManagement, policyManagement, identityManagement, editorTaskService, approvalService,
         access = accessService, audit = auditService, queryHistory = queryHistoryStore, tokens = tokenService,

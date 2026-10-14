@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane.notify
 
+import com.ridi.oss.proxymonster.controlplane.AccessService
 import com.ridi.oss.proxymonster.controlplane.AccessStore
 import com.ridi.oss.proxymonster.controlplane.ApprovalService
 import com.ridi.oss.proxymonster.controlplane.Config
@@ -33,6 +34,7 @@ fun Application.installNotifications(
     datasourceStore: DatasourceStore,
     queryResultStore: QueryResultStore?,
     approvals: () -> ApprovalService,
+    access: () -> AccessService,
     sourceAdapter: SourceAdapter? = null,
 ): NotificationService? {
     val slackHttp = if (config.slackBotToken != null && config.slackAppToken != null) slackHttpClient() else null
@@ -73,7 +75,7 @@ fun Application.installNotifications(
     // privileged action. Each click goes through the same ApprovalService the console routes use.
     if (slackHttp != null && config.slackBotToken != null && config.slackAppToken != null) {
         val handler = SlackDecisionHandler(
-            accessStore, approvals, notifications, config.notifyLocale,
+            accessStore, approvals, access, notifications, config.notifyLocale,
             deepLink = { id -> URLBuilder(config.webBaseUrl).appendPathSegments("workflows", id.toString()).buildString() },
         )
         val threads = SlackThreadHandler(NotificationStore(dataSource), accessStore, approvals, notifications)

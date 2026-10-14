@@ -1,9 +1,12 @@
 package com.ridi.oss.proxymonster.controlplane.notify
 
+import com.ridi.oss.proxymonster.controlplane.AccessService
 import com.ridi.oss.proxymonster.controlplane.AccessStore
 import com.ridi.oss.proxymonster.controlplane.ApprovalService
 import com.ridi.oss.proxymonster.controlplane.Channel
 import com.ridi.oss.proxymonster.controlplane.TaskServiceException
+import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
+import com.ridi.oss.proxymonster.controlplane.isWorkflowRequest
 import com.ridi.oss.proxymonster.controlplane.i18n.MessageCatalog
 import com.ridi.oss.proxymonster.controlplane.management.AuditActor
 import org.slf4j.LoggerFactory
@@ -20,6 +23,7 @@ import org.slf4j.LoggerFactory
 class SlackDecisionHandler(
     private val accessStore: AccessStore,
     private val approvals: () -> ApprovalService,
+    private val access: () -> AccessService,
     private val notifications: NotificationService,
     private val defaultLocale: String,
     private val deepLink: (Long) -> String = { "" },
@@ -36,8 +40,7 @@ class SlackDecisionHandler(
         val locale = notifications.localeOf(interaction.principal) ?: defaultLocale
         if (interaction.actionId == SlackTransport.ACTION_REVIEW) {
             val view = runCatching {
-                val detail = approvals().detail(interaction.principal, null, interaction.taskId, Channel.SLACK)
-                reviewView.forDetail(detail, interaction.principal, deepLink(interaction.taskId), locale)
+                reviewView.forDetail(review(interaction.principal, interaction.taskId), interaction.principal, deepLink(interaction.taskId), locale)
             }.getOrElse { e ->
                 if (e !is TaskServiceException) throw e
                 reviewView.message(catalog.text("modal.forbidden", locale), locale)
@@ -53,6 +56,19 @@ class SlackDecisionHandler(
         return SlackReply.UpdateView(reviewView.message(outcome, locale))
     }
 
+    private fun review(principal: String, id: Long): ReviewModel {
+        val threads = approvals().threads
+        val req = threads.request(id)
+        if (req.kind == "QUERY") return ReviewModel(approvals().detail(principal, null, id, Channel.SLACK))
+        val thread = threads.thread(principal, null, id, Channel.SLACK)
+        return ReviewModel(
+            req,
+            canDecide = req.status == "PENDING" && threads.may(principal, null, AuthzAction.TASK_APPROVE, req, Channel.SLACK),
+            canClose = thread.canClose,
+            canComment = thread.canComment,
+        )
+    }
+
     /** Handle one click. The returned string is shown privately to the clicker; empty means say nothing. */
     suspend fun handle(interaction: SlackInteraction): String {
         // Ephemeral replies render in the CLICKER's own saved language, like the notifications themselves.
@@ -60,7 +76,7 @@ class SlackDecisionHandler(
         fun reply(key: String) = catalog.text("reply.$key", locale)
 
         val req = accessStore.getRequest(interaction.taskId)
-        if (req == null || req.kind != "QUERY" || req.creatorKind != "WORKFLOW") {
+        if (req == null || !req.isWorkflowRequest) {
             return reply("request_gone")
         }
         // An action is about the SQL the message showed, so a click from before an edit does nothing.
@@ -69,14 +85,30 @@ class SlackDecisionHandler(
         val principal = interaction.principal
         val actor = AuditActor(principal = principal, clientAddr = null, channel = Channel.SLACK.contextValue)
         val service = approvals()
+        val decision = interaction.actionId in setOf(SlackTransport.ACTION_APPROVE_ONLY, SlackTransport.ACTION_DENY)
+        if (req.kind != "QUERY" && decision && req.status != "PENDING") {
+            return catalog.text("reply.already_status", locale, mapOf("status" to req.status.lowercase()))
+        }
         val outcome = runCatching {
-            when (interaction.actionId) {
+            // Approving a role or rate reset is the whole action; there is nothing to run.
+            if (req.kind != "QUERY" && decision) {
+                if (interaction.actionId == SlackTransport.ACTION_DENY) {
+                    access().reject(principal, null, actor, req.id, SLACK_REJECT_REASON, Channel.SLACK)
+                } else {
+                    access().approve(principal, null, actor, req.id, null, Channel.SLACK)
+                }
+            } else when (interaction.actionId) {
                 SlackTransport.ACTION_APPROVE, SlackTransport.ACTION_APPROVE_ONLY ->
                     service.approve(principal, null, actor, req.id, req.revision, Channel.SLACK)
                 SlackTransport.ACTION_DENY ->
                     service.reject(principal, null, actor, req.id, SLACK_REJECT_REASON, Channel.SLACK)
                 SlackTransport.ACTION_UNAPPROVE -> service.unapprove(principal, null, actor, req.id, Channel.SLACK)
-                SlackTransport.ACTION_CLOSE -> service.threads.close(principal, null, actor, req.id, Channel.SLACK)
+                // On a query this also stops a run already started from the same message.
+                SlackTransport.ACTION_CLOSE -> if (req.kind == "QUERY") {
+                    service.cancel(principal, null, actor, req.id, Channel.SLACK)
+                } else {
+                    service.threads.close(principal, null, actor, req.id, Channel.SLACK)
+                }
                 SlackTransport.ACTION_RUN -> run(principal, req.id)
                 SlackTransport.ACTION_LGTM -> service.threads.comment(principal, null, actor, req.id, null, lgtm = true, Channel.SLACK)
                 else -> return ""

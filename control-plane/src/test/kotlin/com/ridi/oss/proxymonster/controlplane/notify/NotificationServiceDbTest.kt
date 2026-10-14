@@ -344,6 +344,57 @@ class NotificationServiceDbTest {
     }
 
     @Test
+    fun `role and rate-reset requests are announced and decided through AccessService, with role text`() = runBlocking {
+        val approver = "role-approver@example.com"
+        val roles = fx.policyStore.listRoles().associateBy { it.name }
+        fx.policyStore.createAssignment(com.ridi.oss.proxymonster.controlplane.RoleAssignmentInput(approver, roles.getValue("system:admin").id))
+        val recorder = ManagementAuditRecorder(fx.auditStore)
+        val access = com.ridi.oss.proxymonster.controlplane.AccessService(
+            fx.accessStore, fx.datasourceStore, fx.auditStore, fx.roleResolver, fx.authz, recorder, svc,
+        )
+        val actor = AuditActor("req@example.com", channel = "console")
+        val role = fx.policyStore.createRole(com.ridi.oss.proxymonster.controlplane.RoleInput("notify-role-${System.nanoTime()}"))
+        val req = access.createRequest(
+            "req@example.com", null, actor,
+            com.ridi.oss.proxymonster.controlplane.AccessRequestInput(roleId = role.id, reason = "on call", requestedDurationSec = 1800),
+        )
+        val reset = access.requestRateReset("req@example.com", actor, com.ridi.oss.proxymonster.controlplane.RateResetRequestInput("ran out"))
+        assertEquals("PENDING", statusOf(req.id, NotificationEvent.TASK_SUBMITTED, "req@example.com"))
+        assertEquals("PENDING", statusOf(reset.id, NotificationEvent.TASK_SUBMITTED, "req@example.com"))
+        enqueue(req.id, NotificationEvent.TASK_REQUESTED, "sam@x")
+        svc.drainOnce()
+
+        val delivered = transport.delivered.filter { it.event in setOf(NotificationEvent.TASK_REQUESTED, NotificationEvent.TASK_SUBMITTED) }
+        val open = NotificationAction.OPEN
+        assertEquals(setOf(open, NotificationAction.APPROVE, NotificationAction.DENY), delivered.single { it.to == "addr:sam@x" }.actions)
+        assertTrue(delivered.filter { it.to == "addr:req@example.com" }.all { it.actions == setOf(open, NotificationAction.CLOSE) })
+
+        access.approve(approver, null, AuditActor(approver, channel = "console"), req.id, null)
+        access.reject(approver, null, AuditActor(approver, channel = "console"), reset.id, "not now")
+        assertEquals("PENDING", statusOf(req.id, NotificationEvent.TASK_DECIDED, "req@example.com"))
+        assertEquals("PENDING", statusOf(reset.id, NotificationEvent.TASK_DECIDED, "req@example.com"))
+
+        val text = NotificationRenderer().summary(
+            NotificationMessage(
+                event = NotificationEvent.TASK_REQUESTED, taskId = req.id, revision = 1, requester = "req@example.com",
+                datasource = "", roleName = role.name, reason = null, statement = RenderedStatement(null, false),
+                deepLink = "x", actions = emptySet(), requestKind = "ROLE", durationSec = 1800,
+            ),
+            "en",
+        )
+        assertEquals("*req@example.com* asks for the *${role.name}* role on *any datasource* for 30 minutes.", text)
+        val resetText = NotificationRenderer().summary(
+            NotificationMessage(
+                event = NotificationEvent.TASK_REQUESTED, taskId = reset.id, revision = 1, requester = "req@example.com",
+                datasource = "", roleName = null, reason = null, statement = RenderedStatement(null, false),
+                deepLink = "x", actions = emptySet(), requestKind = "RATE_RESET", spentRate = "10000 rows / 1h",
+            ),
+            "en",
+        )
+        assertEquals("*req@example.com* asks to reset their spent result rates.\nSpent rate: 10000 rows / 1h", resetText)
+    }
+
+    @Test
     fun `an approved request offers unapprove and deny to approvers and close to the requester`() = runBlocking {
         val task = newTask().id
         fx.dataSource.connection.use { c ->

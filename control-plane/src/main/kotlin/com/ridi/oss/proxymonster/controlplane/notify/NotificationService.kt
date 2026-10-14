@@ -154,20 +154,28 @@ class NotificationService(
         pullRequest: PullRequestRef? = null,
     ) {
         if (!enabled) return
+        val subject = AccessRequest(
+            id = taskId,
+            principal = requester,
+            datasourceId = ds.id,
+            datasourceName = ds.name,
+            roleName = roleName,
+            requestedDurationSec = 0,
+            status = "PENDING",
+            createdAt = "",
+            revision = 1,
+            source = source,
+            pullRequest = pullRequest,
+        )
+        emitRequested(c, subject)
+    }
+
+    /** Queue the "needs approval" messages and the requester's receipt for a request just filed. */
+    fun emitRequested(c: Connection, subject: AccessRequest) {
+        if (!enabled) return
+        val taskId = subject.id
+        val requester = subject.principal
         runCatching {
-            val subject = AccessRequest(
-                id = taskId,
-                principal = requester,
-                datasourceId = ds.id,
-                datasourceName = ds.name,
-                roleName = roleName,
-                requestedDurationSec = 0,
-                status = "PENDING",
-                createdAt = "",
-                revision = 1,
-                source = source,
-                pullRequest = pullRequest,
-            )
             val approvers = recipients.recipientsFor(subject)
             RequestParticipants.add(c, taskId, approvers, ParticipantKind.APPROVER)
             for (transport in transports.filter { it.serves(subject) }) {
@@ -185,6 +193,14 @@ class NotificationService(
                 store.enqueue(c, taskId, NotificationEvent.TASK_SUBMITTED, transport.name, requester, NotificationKind.REQUESTER)
             }
         }.onFailure { log.warn("notification emit failed task={} event=task.requested", taskId, it) }
+    }
+
+    /** [emitRequested] on its own transaction, for a request whose creation could not take the notification along. */
+    fun emitRequestedEvent(req: AccessRequest) {
+        if (!enabled) return
+        runCatching { store.inTransaction { c -> emitRequested(c, req) } }
+            .onFailure { log.warn("notification emit failed task={} event=task.requested", req.id, it) }
+        wake()
     }
 
     /**
@@ -370,7 +386,10 @@ class NotificationService(
             taskId = req.id,
             revision = req.revision,
             requester = req.principal,
-            datasource = req.datasourceName ?: "—",
+            datasource = req.datasourceName ?: if (req.kind == "QUERY") "—" else "",
+            requestKind = req.kind,
+            durationSec = req.requestedDurationSec,
+            spentRate = req.denyReason.takeIf { req.kind == "RATE_RESET" },
             roleName = req.roleName,
             reason = req.reason,
             statement = statement,
@@ -426,6 +445,13 @@ class NotificationService(
         val approver = kind == NotificationKind.APPROVER
         if (kind == NotificationKind.CC) {
             if (req.status == "PENDING" || req.status == "APPROVED") add(NotificationAction.LGTM)
+            return@buildSet
+        }
+        // A role or rate-reset request has no statement and nothing to run: approving it is the whole action.
+        if (req.kind != "QUERY") {
+            if (req.status == "PENDING") {
+                if (approver) addAll(listOf(NotificationAction.APPROVE, NotificationAction.DENY)) else add(NotificationAction.CLOSE)
+            }
             return@buildSet
         }
         when (req.status) {

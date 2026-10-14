@@ -59,7 +59,7 @@ class NotificationRenderer(private val catalog: MessageCatalog = MessageCatalog(
             ?.takeIf { it.isNotBlank() && m.event == NotificationEvent.TASK_FAILED }
             ?.let { "\n" + catalog.text("field.failure", locale, mapOf("error" to escapeMrkdwn(it.take(REASON_MAX_CHARS)))) }
             ?: ""
-        val statementNote = if (m.event != NotificationEvent.TASK_SUBMITTED && (m.statement.text == null || !m.statement.complete)) {
+        val statementNote = if (m.requestKind == "QUERY" && m.event != NotificationEvent.TASK_SUBMITTED && (m.statement.text == null || !m.statement.complete)) {
             "\n" + catalog.text("field.statement_hidden_note", locale)
         } else {
             ""
@@ -73,12 +73,15 @@ class NotificationRenderer(private val catalog: MessageCatalog = MessageCatalog(
                 // otherwise raw mrkdwn beside the real Approve button, able to forge a mention, emphasis, or a
                 // link ("Security reviewed — approve below" + <https://evil|Open>).
                 "requester" to m.requester,
-                "datasource" to escapeMrkdwn(m.datasource),
+                "datasource" to escapeMrkdwn(m.datasource.ifEmpty { catalog.text("field.any_datasource", locale) }),
                 "statement" to statement,
+                "duration" to duration(m.durationSec, locale),
+                "spentRate" to (m.spentRate?.let { "\n" + catalog.text("field.spent_rate", locale, mapOf("rate" to escapeMrkdwn(it))) } ?: ""),
                 "decidedBy" to (m.decidedBy ?: "—"),
                 "forcedBy" to (m.forcedBy ?: "—"),
                 "rowCount" to (m.rowCount?.toString() ?: "—"),
                 "role" to (m.roleName?.let { catalog.text("field.role", locale, mapOf("role" to escapeMrkdwn(it))) } ?: ""),
+                "roleName" to escapeMrkdwn(m.roleName ?: "—"),
                 "reason" to reason,
                 "notified" to notified,
                 "statementNote" to statementNote,
@@ -114,17 +117,38 @@ class NotificationRenderer(private val catalog: MessageCatalog = MessageCatalog(
     fun fallbackText(m: NotificationMessage, locale: String): String = catalog.text(
         // Keyed on the EVENT: approve and reject share one fallback line, so the body key (which splits them)
         // would ask for a `task.decided_approved_fallback` that does not exist.
-        "task.${m.event.name.removePrefix("TASK_").lowercase()}_fallback",
+        "${prefix(m)}.${m.event.name.removePrefix("TASK_").lowercase()}_fallback",
         locale,
         mapOf(
             "requester" to m.requester,
-            "datasource" to m.datasource,
+            "datasource" to m.datasource.ifEmpty { catalog.text("field.any_datasource", locale) },
             "decidedBy" to (m.decidedBy ?: "—"),
             "forcedBy" to (m.forcedBy ?: "—"),
+            "role" to (m.roleName ?: "—"),
         ),
     )
 
-    private fun bodyKey(m: NotificationMessage): String = when (m.event) {
+    private fun prefix(m: NotificationMessage) = when (m.requestKind) {
+        "ROLE" -> "role"
+        "RATE_RESET" -> "rate_reset"
+        else -> "task"
+    }
+
+    fun duration(seconds: Long, locale: String): String =
+        if (seconds % 3600 == 0L) {
+            catalog.text("field.duration_hours", locale, mapOf("n" to "${seconds / 3600}"))
+        } else {
+            catalog.text("field.duration_minutes", locale, mapOf("n" to "${seconds / 60}"))
+        }
+
+    private fun bodyKey(m: NotificationMessage): String = if (m.requestKind != "QUERY") {
+        val event = m.event.name.removePrefix("TASK_").lowercase()
+        when {
+            m.event != NotificationEvent.TASK_DECIDED -> "${prefix(m)}.$event"
+            m.approved == true -> "${prefix(m)}.decided_approved"
+            else -> "${prefix(m)}.decided_rejected"
+        }
+    } else when (m.event) {
         NotificationEvent.TASK_REQUESTED -> "task.requested"
         NotificationEvent.TASK_SUBMITTED -> "task.submitted"
         NotificationEvent.TASK_DECIDED -> when {

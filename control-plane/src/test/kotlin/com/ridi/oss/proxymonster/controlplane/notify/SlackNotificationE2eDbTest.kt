@@ -176,7 +176,11 @@ class SlackNotificationE2eDbTest {
             config, core.accessStore, core.auditStore, core.datasourceStore, core.policyStore, core.userGroupStore,
             resultStore, core.roleResolver, core.authz, runExecService, runScope, notifications = svc,
         )
-        val handler = SlackDecisionHandler(core.accessStore, { approvals }, svc, "en")
+        val access = com.ridi.oss.proxymonster.controlplane.AccessService(
+            core.accessStore, core.datasourceStore, core.auditStore, core.roleResolver, core.authz,
+            com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder(core.auditStore), svc,
+        )
+        val handler = SlackDecisionHandler(core.accessStore, { approvals }, { access }, svc, "en")
         socket = SlackSocketMode(
             http, "xoxb-e2e", "xapp-e2e",
             principalForEmail = core.userGroupStore::activePrincipalByEmail,

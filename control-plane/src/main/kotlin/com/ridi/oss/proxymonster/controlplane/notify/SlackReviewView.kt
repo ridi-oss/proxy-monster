@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane.notify
 
+import com.ridi.oss.proxymonster.controlplane.AccessRequest
 import com.ridi.oss.proxymonster.controlplane.QueryRequestDetail
 import com.ridi.oss.proxymonster.controlplane.i18n.MessageCatalog
 import kotlinx.serialization.json.JsonObject
@@ -13,13 +14,30 @@ import kotlinx.serialization.json.putJsonObject
  * The Review modal a channel message opens: private to the person who clicked, so it carries the whole statement
  * they may read and only the buttons Cedar allows them. Its buttons send the same action ids as a DM's.
  */
+/** What the person who opened Review may do, from their own Cedar decisions. */
+internal data class ReviewModel(
+    val request: AccessRequest,
+    val canDecide: Boolean,
+    val canApproveAndRun: Boolean = false,
+    val canExecute: Boolean = false,
+    val canUnapprove: Boolean = false,
+    val canReject: Boolean = false,
+    val canClose: Boolean = false,
+    val canComment: Boolean = false,
+) {
+    constructor(d: QueryRequestDetail) : this(
+        d.request, d.canDecide, d.canApproveAndRun, d.canExecute, d.canUnapprove, d.canReject, d.canClose, d.canComment,
+    )
+}
+
 internal class SlackReviewView(private val catalog: MessageCatalog, private val renderer: NotificationRenderer) {
 
-    fun forDetail(d: QueryRequestDetail, principal: String, deepLink: String, locale: String): JsonObject {
+    fun forDetail(d: ReviewModel, principal: String, deepLink: String, locale: String): JsonObject {
         val req = d.request
+        val query = req.kind == "QUERY"
         // Measured after escaping, which is what Slack counts.
         val sql = escape(req.sql.orEmpty()).replace("```", "``​`")
-        val complete = sql.isNotEmpty() && sql.length <= STATEMENT_LIMIT
+        val complete = !query || (sql.isNotEmpty() && sql.length <= STATEMENT_LIMIT)
         val actions = buildList {
             if (d.canDecide) {
                 if (complete) {
@@ -39,11 +57,19 @@ internal class SlackReviewView(private val catalog: MessageCatalog, private val 
         return view(locale) {
             add(section(catalog.text("modal.summary", locale, mapOf(
                 "requester" to escape(req.principal),
-                "datasource" to escape(req.datasourceName ?: "—"),
+                "datasource" to escape(req.datasourceName ?: if (req.kind == "QUERY") "—" else catalog.text("field.any_datasource", locale)),
                 "role" to escape(req.roleName ?: "—"),
                 "status" to req.status.lowercase(),
             ))))
-            add(section("```" + sql.take(STATEMENT_LIMIT) + "```"))
+            when (req.kind) {
+                "QUERY" -> add(section("```" + sql.take(STATEMENT_LIMIT) + "```"))
+                "ROLE" -> add(section(catalog.text("modal.role", locale, mapOf(
+                    "role" to escape(req.roleName ?: "—"),
+                    "datasource" to escape(req.datasourceName ?: catalog.text("field.any_datasource", locale)),
+                    "duration" to renderer.duration(req.requestedDurationSec, locale),
+                ))))
+                else -> add(section(catalog.text("modal.rate_reset", locale, mapOf("rate" to escape(req.denyReason ?: "—")))))
+            }
             if (!complete) add(context(catalog.text("field.statement_hidden_note", locale)))
             req.reason?.takeIf { it.isNotBlank() }?.let { add(section("> " + escape(it.take(500)).replace("\n", "\n> "))) }
             if (actions.isEmpty()) add(context(catalog.text("modal.no_actions", locale)))

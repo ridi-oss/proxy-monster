@@ -254,10 +254,11 @@ gate:
    outcome. If the target rejects it, the decision is an ALLOW that runs
    nothing: the proxy sends the target's error, redacted
    ([diagnostic-redaction.md](./diagnostic-redaction.md)) unless it is a syntax
-   error, which can echo only the client's own SQL, and reports an `error`
-   completion. A statement that prepares keeps the deny. The proxy never runs
-   the statement on this path, because a prepare refuses two statements in one
-   string that a query would run.
+   error: a prepare runs nothing, so that error holds only client text, fixed
+   text, or object names, and reports an `error` completion. A statement that
+   prepares keeps the deny. The proxy never runs the statement on this path,
+   because a prepare refuses two statements in one string that a query would
+   run.
 
 An unanalyzable statement cannot claim that no sensitive resources were touched,
 so the exception is datasource-wide and explicit — suitable for a permissive

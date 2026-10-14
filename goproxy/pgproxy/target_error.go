@@ -43,8 +43,8 @@ func (s *Server) checkTargetError(sess *session, sql string, parameterOIDs []uin
 
 const sqlStateSyntaxError = "42601"
 
-// forwardTargetError sends the check's error. A syntax error from parsing the client's own text can echo
-// only that text, so it skips redaction.
+// forwardTargetError sends the check's error. Parse runs nothing, so a syntax error holds client text,
+// fixed text, or object names (which redaction keeps anyway) and skips redaction.
 func forwardTargetError(sess *session, msg *pgproto3.ErrorResponse) {
 	if msg.Code == sqlStateSyntaxError {
 		sess.client.Send(msg)

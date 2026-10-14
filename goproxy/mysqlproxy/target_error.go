@@ -54,7 +54,7 @@ func checkTargetError(targetDb io.ReadWriter, deprecateEOF bool, sql string) (*e
 func writeDeny(client io.Writer, seq byte, dec *engine.Decision, redact func([]byte) []byte) (forwarded bool, err error) {
 	if dec != nil && dec.TargetError != nil {
 		if payload, ok := dec.TargetError.Message.([]byte); ok {
-			// A syntax error from preparing the client's own text can echo only that text.
+			// A prepare runs nothing, so its syntax error holds client text, fixed text, or object names.
 			if redact != nil && dec.TargetError.Code != strconv.Itoa(erParseError) {
 				payload = redact(payload)
 			}

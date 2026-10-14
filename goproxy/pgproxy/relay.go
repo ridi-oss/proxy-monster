@@ -467,7 +467,7 @@ func (s *Server) serveQuery(sess *session, sql string, mode relayMode) (queryRes
 	}
 	if denied && decision != nil && decision.TargetError != nil {
 		if targetErr, ok := decision.TargetError.Message.(*pgproto3.ErrorResponse); ok {
-			forwardError(sess, targetErr)
+			forwardTargetError(sess, targetErr)
 			if mode == relayQuery {
 				sess.client.Send(&pgproto3.ReadyForQuery{TxStatus: sess.lastTxStatus})
 			}

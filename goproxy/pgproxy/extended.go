@@ -53,7 +53,7 @@ func (s *Server) renderExtendedVerdict(sess *session, verdict engine.Verdict) (e
 		if verdict.Decision != nil && verdict.Decision.TargetError != nil {
 			if targetErr, ok := verdict.Decision.TargetError.Message.(*pgproto3.ErrorResponse); ok {
 				sess.skipToSync = true
-				forwardError(sess, targetErr)
+				forwardTargetError(sess, targetErr)
 				sess.qe.AwaitCompletion(engine.EmitCompletion(s.client, verdict.Decision, engine.RelayStats{}, engine.StatusError, time.Now()))
 				return engine.Proceed{}, false, sess.client.Flush()
 			}

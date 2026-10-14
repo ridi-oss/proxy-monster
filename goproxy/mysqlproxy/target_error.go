@@ -11,8 +11,11 @@ import (
 	"github.com/ridi-oss/proxy-monster/mysqlwire"
 )
 
-// ER_UNSUPPORTED_PS: the statement can run but cannot be prepared, so the check learns nothing.
-const erUnsupportedPS = 1295
+const (
+	erParseError = 1064
+	// ER_UNSUPPORTED_PS: the statement can run but cannot be prepared, so the check learns nothing.
+	erUnsupportedPS = 1295
+)
 
 // checkTargetError prepares sql on the target without executing it and returns the target's ERR packet.
 func checkTargetError(targetDb io.ReadWriter, deprecateEOF bool, sql string) (*engine.TargetError, error) {
@@ -51,7 +54,8 @@ func checkTargetError(targetDb io.ReadWriter, deprecateEOF bool, sql string) (*e
 func writeDeny(client io.Writer, seq byte, dec *engine.Decision, redact func([]byte) []byte) (forwarded bool, err error) {
 	if dec != nil && dec.TargetError != nil {
 		if payload, ok := dec.TargetError.Message.([]byte); ok {
-			if redact != nil {
+			// A syntax error from preparing the client's own text can echo only that text.
+			if redact != nil && dec.TargetError.Code != strconv.Itoa(erParseError) {
 				payload = redact(payload)
 			}
 			return true, mysqlwire.WritePacket(client, seq+1, payload)

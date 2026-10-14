@@ -41,6 +41,18 @@ func (s *Server) checkTargetError(sess *session, sql string, parameterOIDs []uin
 	}
 }
 
+const sqlStateSyntaxError = "42601"
+
+// forwardTargetError sends the check's error. A syntax error from parsing the client's own text can echo
+// only that text, so it skips redaction.
+func forwardTargetError(sess *session, msg *pgproto3.ErrorResponse) {
+	if msg.Code == sqlStateSyntaxError {
+		sess.client.Send(msg)
+		return
+	}
+	forwardError(sess, msg)
+}
+
 // checkTargetErrorAndSync is checkTargetError for a simple query, which has no client Sync to follow.
 func (s *Server) checkTargetErrorAndSync(sess *session, sql string) (*engine.TargetError, error) {
 	targetErr, err := s.checkTargetError(sess, sql, nil)

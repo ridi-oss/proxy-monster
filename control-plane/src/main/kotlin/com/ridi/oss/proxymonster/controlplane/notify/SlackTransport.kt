@@ -35,6 +35,9 @@ class SlackTransport(
     private val webBaseUrl: String,
     private val renderer: NotificationRenderer,
     private val api: String = "https://slack.com/api",
+    private val channels: SlackChannelRouter? = null,
+    // True for the instance that posts one message per request to its datasource's channel, not DMs.
+    private val toChannel: Boolean = false,
 ) : NotificationTransport {
 
     private val log = LoggerFactory.getLogger(SlackTransport::class.java)
@@ -44,7 +47,17 @@ class SlackTransport(
     // Misses are NOT cached: a principal that gains a Slack account later resolves on its next notification.
     private val userIdCache = java.util.concurrent.ConcurrentHashMap<String, String>()
 
-    override val name = TRANSPORT
+    override val name = if (toChannel) TRANSPORT_CHANNEL else TRANSPORT
+
+    override val addressesTasks = toChannel
+
+    override val sharedAudience = toChannel
+
+    override fun taskAddress(req: com.ridi.oss.proxymonster.controlplane.AccessRequest): String? =
+        if (toChannel) channels?.channelFor(req) else null
+
+    override fun serves(req: com.ridi.oss.proxymonster.controlplane.AccessRequest): Boolean =
+        toChannel || channels == null || !channels.channelOnly || channels.channelFor(req) == null
 
     /** A section block's `text` caps at 3000 characters; the statement shares that block with its label. */
     override val statementHardLimit = 2800
@@ -52,6 +65,7 @@ class SlackTransport(
     override val supportsUpdate = true
 
     override suspend fun addressOf(principal: String, email: String?): String? {
+        if (toChannel) return principal
         // Prefer the CURRENT directory email over an email-shaped principal: a principal can be a stale login
         // address (auth-model.md: principal = email ?? sub), and delivering to a reassigned old address would
         // hand a task to its new owner. The email-shaped principal is only the fallback for a principal that
@@ -96,6 +110,8 @@ class SlackTransport(
             decidedBy = message.decidedBy?.let { mentionFor(it) },
             forcedBy = message.forcedBy?.let { mentionFor(it) },
             notifiedApprovers = message.notifiedApprovers.map { mentionFor(it) },
+            approvers = message.approvers.map { mentionFor(it) },
+            ccs = message.ccs.map { mentionFor(it) },
         )
 
     override suspend fun deliver(to: String, message: NotificationMessage, locale: String): DeliveryResult {
@@ -144,6 +160,16 @@ class SlackTransport(
                 }
             },
         )
+        renderer.audience(message, locale)?.let { line ->
+            add(
+                buildJsonObject {
+                    put("type", "context")
+                    putJsonArray("elements") {
+                        add(buildJsonObject { put("type", "mrkdwn"); put("text", line) })
+                    }
+                },
+            )
+        }
         val actions = if (truncated) message.actions - APPROVALS else message.actions
         if (actions.isNotEmpty()) {
             add(
@@ -259,6 +285,7 @@ class SlackTransport(
 
     companion object {
         const val TRANSPORT = "slack"
+        const val TRANSPORT_CHANNEL = "slack-channel"
         const val ACTION_APPROVE = "pm_approve_and_run"
         const val ACTION_APPROVE_ONLY = "pm_approve"
         const val ACTION_DENY = "pm_deny"
@@ -266,6 +293,7 @@ class SlackTransport(
         const val ACTION_UNAPPROVE = "pm_unapprove"
         const val ACTION_CLOSE = "pm_close"
         const val ACTION_LGTM = "pm_lgtm"
+        const val ACTION_REVIEW = "pm_review"
 
         val ACTION_IDS = mapOf(
             NotificationAction.APPROVE_AND_RUN to ACTION_APPROVE,
@@ -275,6 +303,7 @@ class SlackTransport(
             NotificationAction.DENY to ACTION_DENY,
             NotificationAction.CLOSE to ACTION_CLOSE,
             NotificationAction.LGTM to ACTION_LGTM,
+            NotificationAction.REVIEW to ACTION_REVIEW,
         )
 
         private val APPROVALS = setOf(NotificationAction.APPROVE_AND_RUN, NotificationAction.APPROVE)

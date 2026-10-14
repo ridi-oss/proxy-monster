@@ -4,8 +4,10 @@ import com.ridi.oss.proxymonster.controlplane.AccessRequest
 import com.ridi.oss.proxymonster.controlplane.AuditEvent
 import com.ridi.oss.proxymonster.controlplane.Decision
 import com.ridi.oss.proxymonster.controlplane.DecryptedResult
+import com.ridi.oss.proxymonster.controlplane.ParticipantKind
 import com.ridi.oss.proxymonster.controlplane.QueryResultStore
 import com.ridi.oss.proxymonster.controlplane.RequestEdit
+import com.ridi.oss.proxymonster.controlplane.RequestParticipants
 import com.ridi.oss.proxymonster.controlplane.ResultCrypto
 import com.ridi.oss.proxymonster.controlplane.management.AuditActor
 import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
@@ -258,6 +260,35 @@ class NotificationServiceDbTest {
             svc.drainOnce()
         }
         assertEquals(2, transport.updated.count { it.event == NotificationEvent.TASK_DECIDED })
+    }
+
+    @Test
+    fun `a channel message offers Review, withholds a flagged statement even under full, and names approvers and CCs`() = runBlocking {
+        val channel = FakeTransport(name = "chan", channel = "C123")
+        val shared = NotificationService(
+            store = store,
+            recipients = RecipientResolver(fx.authz, fx.roleResolver) { emptyList() },
+            transports = listOf(transport, channel),
+            accessStore = fx.accessStore,
+            queryResultStore = null,
+            webBaseUrl = "https://console.example",
+            disclosure = StatementDisclosure.FULL,
+            defaultLocale = "en",
+        )
+        val task = newTask().id
+        fx.dataSource.connection.use { c ->
+            RequestParticipants.add(c, task, listOf("sam@x"), ParticipantKind.APPROVER)
+            RequestParticipants.add(c, task, listOf("cc@x"), ParticipantKind.CC)
+            shared.emitRequested(c, task, "req@example.com", fx.datasource, null)
+        }
+        shared.drainOnce()
+
+        val posted = channel.delivered.single()
+        assertEquals("C123", posted.to)
+        assertEquals(setOf(NotificationAction.OPEN, NotificationAction.REVIEW), posted.actions)
+        assertNull(posted.statement.text, "a channel never gets the full-disclosure statement of a flagged request")
+        assertEquals(listOf("sam@x"), posted.approvers)
+        assertEquals(listOf("cc@x"), posted.ccs)
     }
 
     @Test

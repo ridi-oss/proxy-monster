@@ -208,6 +208,16 @@ class NotificationStore(private val dataSource: DataSource) {
             }
         }
 
+    /** Who may approve [taskId], as recorded when it was filed, without its requester. */
+    fun approversOf(taskId: Long): List<String> = dataSource.connection.use { c ->
+        c.prepareStatement(
+            "SELECT principal FROM request_participant WHERE request_id = ? AND kind = 'approver' ORDER BY created_at, principal",
+        ).use { ps ->
+            ps.setLong(1, taskId)
+            ps.executeQuery().use { rs -> val o = ArrayList<String>(); while (rs.next()) o += rs.getString(1); o }
+        }
+    }
+
     /** [recipientsOfRequest] on the store's own connection, for a delivery-time read outside any transaction. */
     fun recipientsOfRequest(taskId: Long): Set<String> =
         dataSource.connection.use { c -> recipientsOfRequest(c, taskId) }

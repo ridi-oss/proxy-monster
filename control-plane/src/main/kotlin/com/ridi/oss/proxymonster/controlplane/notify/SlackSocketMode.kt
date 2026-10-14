@@ -29,7 +29,18 @@ data class SlackInteraction(
     val responseUrl: String?,
     val triggerChannel: String?,
     val triggerTs: String?,
+    /** Present on every click; opening a modal needs it within 3 seconds. */
+    val triggerId: String? = null,
+    /** The modal the click came from, or null for a click on a message. */
+    val viewId: String? = null,
 )
+
+/** What to show the clicker: a private reply, a modal to open, or the new content of the modal they clicked in. */
+sealed interface SlackReply {
+    data class Ephemeral(val text: String) : SlackReply
+    data class OpenView(val view: JsonObject) : SlackReply
+    data class UpdateView(val view: JsonObject) : SlackReply
+}
 
 /**
  * Slack Socket Mode (docs/notifications.md, "How it connects").
@@ -55,7 +66,7 @@ class SlackSocketMode(
     // The inbound identity map: a verified Slack email → the ACTIVE directory principal, or null when there is
     // no active user to speak for it. Injected so the socket layer holds no store handle.
     private val principalForEmail: (email: String) -> String?,
-    private val onInteraction: suspend (SlackInteraction) -> String,
+    private val onInteraction: suspend (SlackInteraction) -> SlackReply,
     private val api: String = "https://slack.com/api",
 ) {
     private val log = LoggerFactory.getLogger(SlackSocketMode::class.java)
@@ -169,9 +180,33 @@ class SlackSocketMode(
                 responseUrl = payload["response_url"]?.jsonPrimitive?.content,
                 triggerChannel = payload["channel"]?.jsonObject?.get("id")?.jsonPrimitive?.content,
                 triggerTs = payload["message"]?.jsonObject?.get("ts")?.jsonPrimitive?.content,
+                triggerId = payload["trigger_id"]?.jsonPrimitive?.content,
+                viewId = payload["view"]?.jsonObject?.get("id")?.jsonPrimitive?.content,
             ),
         )
-        if (reply.isNotEmpty()) respondEphemeral(payload, reply)
+        when (reply) {
+            is SlackReply.Ephemeral -> if (reply.text.isNotEmpty()) respondEphemeral(payload, reply.text)
+            is SlackReply.OpenView -> payload["trigger_id"]?.jsonPrimitive?.content?.let { trigger ->
+                callJson("views.open", buildJsonObject { put("trigger_id", trigger); put("view", reply.view) })
+            }
+            is SlackReply.UpdateView -> payload["view"]?.jsonObject?.get("id")?.jsonPrimitive?.content?.let { viewId ->
+                callJson("views.update", buildJsonObject { put("view_id", viewId); put("view", reply.view) })
+            }
+        }
+    }
+
+    private suspend fun callJson(method: String, body: JsonObject) {
+        runCatching {
+            val response = http.post("$api/$method") {
+                header(HttpHeaders.Authorization, "Bearer $botToken")
+                header(HttpHeaders.ContentType, "application/json; charset=utf-8")
+                setBody(body.toString())
+            }
+            val parsed = json.parseToJsonElement(response.bodyAsText()).jsonObject
+            if (parsed["ok"]?.jsonPrimitive?.content?.toBooleanStrictOrNull() != true) {
+                log.warn("slack {} failed: {}", method, parsed["error"]?.jsonPrimitive?.content)
+            }
+        }.onFailure { log.warn("slack {} threw", method, it) }
     }
 
     /**

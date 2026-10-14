@@ -132,6 +132,10 @@ data class Config(
     val notifyStatement: String = "auto",
     // Fallback language for a recipient who has never set one (app_user.locale).
     val notifyLocale: String = "en",
+    // Datasource tag → Slack channel, first match wins; a request on an unmatched datasource goes to DMs only.
+    val slackChannels: List<SlackChannelRoute> = emptyList(),
+    // True when a request posted to a channel is not also sent as DMs.
+    val slackChannelOnly: Boolean = false,
     // Names this deployment to agents and in the MCP install name `pmon-<instanceName>`.
     val instanceName: String = defaultInstanceName("http://127.0.0.1:8080/mcp"),
     val instanceDescription: String = "",
@@ -283,6 +287,10 @@ data class Config(
             val notifyLocale = (env("PM_NOTIFY_LOCALE") ?: "en").trim().lowercase()
             require(notifyLocale in setOf("en", "ko")) { "PM_NOTIFY_LOCALE must be one of en|ko; got '$notifyLocale'" }
 
+            val slackMode = (env("PM_SLACK_MODE") ?: "both").trim().lowercase()
+            require(slackMode in setOf("both", "channel")) { "PM_SLACK_MODE must be one of both|channel; got '$slackMode'" }
+            val slackChannels = parseSlackChannels(env("PM_SLACK_CHANNELS"))
+
             val instanceName = env("PM_INSTANCE_NAME")?.trim()?.takeIf(String::isNotEmpty)?.also {
                 require(INSTANCE_NAME.matches(it)) {
                     "PM_INSTANCE_NAME must be 1-$MAX_INSTANCE_NAME lowercase letters, digits, or inner hyphens; got '$it'"
@@ -371,6 +379,8 @@ data class Config(
                 slackAppToken = env("PM_SLACK_APP_TOKEN")?.takeIf { it.isNotBlank() },
                 notifyStatement = notifyStatement,
                 notifyLocale = notifyLocale,
+                slackChannels = slackChannels,
+                slackChannelOnly = slackMode == "channel",
                 instanceName = instanceName,
                 instanceDescription = instanceDescription,
                 ciOidcIssuers = parseCiOidcIssuers(env, env("PM_CI_OIDC_AUDIENCE")?.trim()?.ifEmpty { null } ?: mcpIssuer),
@@ -415,6 +425,21 @@ data class Config(
         }
 
         private val CI_ISSUER_NAME = Regex("[a-z0-9][a-z0-9-]*")
+        private val SLACK_CHANNEL_ID = Regex("[CG][A-Z0-9]+")
+
+        // `tag=channel,…`, split on each entry's last `=` since a tag may itself contain `=` but a channel id never does.
+        internal fun parseSlackChannels(raw: String?): List<SlackChannelRoute> {
+            val routes = raw.orEmpty().split(',').map { it.trim() }.filter { it.isNotEmpty() }.map { entry ->
+                val tag = entry.substringBeforeLast('=', "").trim()
+                val channel = entry.substringAfterLast('=', "").trim()
+                require(tag.isNotEmpty() && SLACK_CHANNEL_ID.matches(channel)) {
+                    "PM_SLACK_CHANNELS entry '$entry' must be '<datasource tag>=<Slack channel id>'"
+                }
+                SlackChannelRoute(tag, channel)
+            }
+            require(routes.map { it.tag }.toSet().size == routes.size) { "PM_SLACK_CHANNELS lists a tag twice" }
+            return routes
+        }
 
         // The audience names this control plane, so it is one value for every issuer: its public origin unless
         // PM_CI_OIDC_AUDIENCE overrides it.
@@ -461,3 +486,6 @@ internal fun parseDuration(raw: String): Long = try {
 } catch (e: ArithmeticException) {
     throw IllegalArgumentException("duration is too large: $raw", e)
 }
+
+/** Requests on a datasource carrying [tag] are posted to the Slack channel [channel]. */
+data class SlackChannelRoute(val tag: String, val channel: String)

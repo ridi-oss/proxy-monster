@@ -157,6 +157,35 @@ class SlackDecisionHandlerDbTest {
     }
 
     @Test
+    fun `Review opens a modal with only the buttons the clicker may use`() = runBlocking {
+        val id = pendingRequest()
+        fun actionIds(principal: String): Set<String> {
+            val reply = runBlocking { handler.respond(click(id, principal, SlackTransport.ACTION_REVIEW).copy(triggerId = "T1")) }
+            val view = (reply as SlackReply.OpenView).view.toString()
+            return SlackTransport.ACTION_IDS.values.filter { "\"$it\"" in view }.toSet()
+        }
+        // The seeded system:admin policy also grants task.cancel and task.comment. With no result storage there is
+        // nothing to run, so Approve and run is not offered.
+        assertEquals(
+            setOf(
+                SlackTransport.ACTION_APPROVE_ONLY, SlackTransport.ACTION_DENY, SlackTransport.ACTION_CLOSE,
+                SlackTransport.ACTION_LGTM,
+            ),
+            actionIds(approver),
+        )
+        assertEquals(setOf(SlackTransport.ACTION_CLOSE), actionIds(requester))
+        assertEquals(emptySet(), actionIds(outsider), "someone without task.read gets no buttons")
+    }
+
+    @Test
+    fun `a click inside the modal redraws it with the outcome`() = runBlocking {
+        val id = pendingRequest()
+        val reply = handler.respond(click(id, approver, SlackTransport.ACTION_APPROVE_ONLY).copy(viewId = "V1"))
+        assertTrue(reply is SlackReply.UpdateView && "approved" in reply.view.toString(), "got: $reply")
+        assertEquals("APPROVED", statusOf(id))
+    }
+
+    @Test
     fun `a click for a request that does not exist is rejected`() = runBlocking {
         val reply = handler.handle(click(999_999, approver, SlackTransport.ACTION_APPROVE))
         assertTrue(reply.contains("no longer exists"), "got: $reply")

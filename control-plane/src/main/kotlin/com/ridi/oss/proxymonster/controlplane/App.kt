@@ -410,7 +410,8 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
     }
     lateinit var approvalService: ApprovalService
     val notifications = installNotifications(
-        config, dataSource, authz, roleResolver, accessStore, queryResultStore, { approvalService }, sourceAdapter,
+        config, dataSource, authz, roleResolver, accessStore, datasourceStore, queryResultStore, { approvalService },
+        sourceAdapter,
     )
 
     // OIDC (docs/auth-model.md): provider-agnostic via discovery, so any OIDC IdP works. `discovery`/

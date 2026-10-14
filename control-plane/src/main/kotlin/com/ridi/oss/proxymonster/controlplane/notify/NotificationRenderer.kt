@@ -16,6 +16,7 @@ class NotificationRenderer(private val catalog: MessageCatalog = MessageCatalog(
             NotificationAction.APPROVE -> "action.approve"
             NotificationAction.RUN -> "action.run"
             NotificationAction.LGTM -> "action.lgtm"
+            NotificationAction.REVIEW -> "action.review"
             NotificationAction.UNAPPROVE -> "action.unapprove"
             NotificationAction.CLOSE -> "action.close"
             NotificationAction.DENY -> "action.deny"
@@ -84,6 +85,15 @@ class NotificationRenderer(private val catalog: MessageCatalog = MessageCatalog(
                 "failure" to failure,
             ),
         )
+    }
+
+    /** The line naming who may approve and the CCs, for a message a whole channel reads; null when there are none. */
+    fun audience(m: NotificationMessage, locale: String): String? {
+        val parts = listOfNotNull(
+            m.approvers.takeIf { it.isNotEmpty() }?.let { catalog.text("field.approvers", locale, mapOf("names" to it.joinToString(" "))) },
+            m.ccs.takeIf { it.isNotEmpty() }?.let { catalog.text("field.ccs", locale, mapOf("names" to it.joinToString(" "))) },
+        )
+        return parts.takeIf { it.isNotEmpty() }?.joinToString(" · ")
     }
 
     /** The plain-text line for a client that renders no blocks. Never carries the statement. */

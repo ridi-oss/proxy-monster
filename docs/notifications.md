@@ -465,6 +465,31 @@ Results never reach Slack. A finished run says "3 rows" or "failed", nothing
 more. The rows stay in the console, which is the only place that re-checks who
 may see them.
 
+### Channels
+
+A request can also be posted to a channel. `PM_SLACK_CHANNELS` maps datasource
+tags to channel ids; the first entry whose tag the request's datasource carries
+picks the channel, so a request has at most one channel message. Put specific
+tags first and a broad one such as `system:production` last.
+
+```
+PM_SLACK_MODE=both
+PM_SLACK_CHANNELS=service:manta=C0123ABC,service:ridi=C0456DEF,system:production=C0789GHI
+```
+
+In `both` mode (the default) a matched request goes to the channel and to the
+DMs above. In `channel` mode it goes to the channel only. A request on a
+datasource no entry matches goes to DMs in either mode. The bot must be invited
+to each channel.
+
+Everyone in the channel reads the message, whatever their access, so it never
+carries the `full` statement: `full` acts as `auto` there. It mentions who may
+approve and the CCs, and offers **review** instead of decision buttons. Review
+opens a modal private to the clicker, built from their own Cedar decisions: the
+whole statement when they may read the request, and only the buttons they may
+use. A click inside the modal goes through the same `ApprovalService` call as a
+DM button and redraws the modal with the outcome.
+
 ## Configuration
 
 | Variable              | Default | Meaning                                                                                                                                                                                         |
@@ -473,20 +498,23 @@ may see them.
 | `PM_SLACK_APP_TOKEN`  | unset   | Socket Mode token; unset = no Slack                                                                                                                                                             |
 | `PM_NOTIFY_STATEMENT` | `auto`  | `omit` · `auto` · `full`. `auto` shows a hint-cleared statement; `full` shows it to pending approvers, then hides a flagged one once handled. Legacy `truncated` boots as `auto` with a warning |
 | `PM_NOTIFY_LOCALE`    | `en`    | fallback when the recipient has saved no language                                                                                                                                               |
+| `PM_SLACK_CHANNELS`   | unset   | `tag=channel`, comma-separated; the first tag a datasource carries picks the channel                                                                                                            |
+| `PM_SLACK_MODE`       | `both`  | `both` posts a matched request to its channel and DMs; `channel` posts it to the channel only                                                                                                   |
 
 ## What this exposes
 
 Slack becomes a place where the requester, the datasource, the role, and (unless
-`omit`) part of the query are readable by anyone who can read the DM — and a
-place from which a query can be approved. `ARCHITECTURE.md` gains the outbound
-edge. The workspace is pinned, and the tokens are standing secrets like
-`PM_SCIM_TOKEN`: absent means the feature is off, never degraded.
+`omit`) part of the query are readable by anyone who can read the DM or the
+channel — and a place from which a query can be approved. A channel's members
+are its audience: route a datasource only to a channel whose members may see its
+requests. `ARCHITECTURE.md` gains the outbound edge. The workspace is pinned,
+and the tokens are standing secrets like `PM_SCIM_TOKEN`: absent means the
+feature is off, never degraded.
 
 ## Not covered
 
 - Per-user opt-out. Language is now stored per user; a mute switch is the same
   shape and a natural follow-up.
-- Posting to a channel. Eligibility is per person; a channel cannot express it.
 - Digests and reminders. One event, one message.
 - Multi-replica delivery. The queue assumes one instance, like the rest of the
   system.

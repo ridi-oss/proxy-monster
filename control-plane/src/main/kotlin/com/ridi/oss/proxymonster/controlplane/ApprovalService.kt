@@ -404,11 +404,17 @@ class ApprovalService(
     fun inbox(principal: String, requesterIp: String?): List<AccessRequest> =
         accessStore.listQueryRequests("PENDING", null).filter { mayDecide(principal, requesterIp, AuthzAction.TASK_APPROVE, it) }
 
-    fun detail(principal: String, requesterIp: String?, id: Long): QueryRequestDetail {
+    fun detail(
+        principal: String,
+        requesterIp: String?,
+        id: Long,
+        channel: Channel = Channel.WORKFLOW_VIEWER,
+    ): QueryRequestDetail {
         val req = workflowRequest(id)
-        val isApprover = mayDecide(principal, requesterIp, AuthzAction.TASK_APPROVE, req)
+        fun may(action: AuthzAction) = mayDecide(principal, requesterIp, action, req, channel)
+        val isApprover = may(AuthzAction.TASK_APPROVE)
         // Task metadata is gated by task.read. Saved rows are separate and remain behind task.assume.
-        if (!mayDecide(principal, requesterIp, AuthzAction.TASK_READ, req)) throw serviceNotFound(REQUEST)
+        if (!may(AuthzAction.TASK_READ)) throw serviceNotFound(REQUEST)
         // Row count and column shape are cardinality/existence oracles, so they need task.assume too.
         val mayReadRows = mayReadResult(principal, requesterIp, req)
         fun visible(meta: QueryResultMeta) =
@@ -417,21 +423,21 @@ class ApprovalService(
         val visibleStatements = queryResultStore?.statements(id).orEmpty().map(::visible)
         val approved = req.status == "APPROVED" && !req.fromPullRequest
         val canExecute = queryResultStore != null && approved && !req.approvalExpired() &&
-            mayDecide(principal, requesterIp, AuthzAction.TASK_RUN, req)
-        val mayCancel = mayDecide(principal, requesterIp, AuthzAction.TASK_CANCEL, req)
+            may(AuthzAction.TASK_RUN)
+        val mayCancel = may(AuthzAction.TASK_CANCEL)
         val canCancel = req.status == "EXECUTING" && mayCancel
         val canForceRun = req.fromPullRequest && req.status in FORCEABLE && !req.forceRun &&
-            mayDecide(principal, requesterIp, AuthzAction.TASK_FORCE_RUN, req)
+            may(AuthzAction.TASK_FORCE_RUN)
         return QueryRequestDetail(
             req,
             canDecide = req.status == "PENDING" && isApprover,
             canApproveAndRun = req.status == "PENDING" && isApprover && !req.fromPullRequest && queryResultStore != null &&
-                mayDecide(principal, requesterIp, AuthzAction.TASK_RUN, req),
+                may(AuthzAction.TASK_RUN),
             canReject = req.status in EDITABLE && isApprover,
             canUnapprove = approved && isApprover,
             canClose = req.status in EDITABLE && !req.fromPullRequest && mayCancel,
-            canComment = mayDecide(principal, requesterIp, AuthzAction.TASK_COMMENT, req),
-            canCc = mayDecide(principal, requesterIp, AuthzAction.TASK_CC, req),
+            canComment = may(AuthzAction.TASK_COMMENT),
+            canCc = may(AuthzAction.TASK_CC),
             timeline = RequestEvents.list(accessStore.dataSource, id),
             result = visibleMeta,
             statements = visibleStatements,

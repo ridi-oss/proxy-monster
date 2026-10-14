@@ -3,12 +3,15 @@ package com.ridi.oss.proxymonster.controlplane.notify
 import com.ridi.oss.proxymonster.controlplane.AccessStore
 import com.ridi.oss.proxymonster.controlplane.ApprovalService
 import com.ridi.oss.proxymonster.controlplane.Config
+import com.ridi.oss.proxymonster.controlplane.DatasourceStore
 import com.ridi.oss.proxymonster.controlplane.QueryResultStore
 import com.ridi.oss.proxymonster.controlplane.RoleResolver
 import com.ridi.oss.proxymonster.controlplane.UserGroupStore
 import com.ridi.oss.proxymonster.controlplane.authz.Authz
 import com.ridi.oss.proxymonster.controlplane.source.SourceAdapter
 import io.ktor.server.application.Application
+import io.ktor.http.URLBuilder
+import io.ktor.http.appendPathSegments
 import kotlinx.coroutines.launch
 import java.time.Duration
 import javax.sql.DataSource
@@ -27,6 +30,7 @@ fun Application.installNotifications(
     authz: Authz,
     roleResolver: RoleResolver,
     accessStore: AccessStore,
+    datasourceStore: DatasourceStore,
     queryResultStore: QueryResultStore?,
     approvals: () -> ApprovalService,
     sourceAdapter: SourceAdapter? = null,
@@ -34,7 +38,18 @@ fun Application.installNotifications(
     val slackHttp = if (config.slackBotToken != null && config.slackAppToken != null) slackHttpClient() else null
     val transports = buildList {
         if (slackHttp != null && config.slackBotToken != null) {
-            add(SlackTransport(slackHttp, config.slackBotToken, config.webBaseUrl, NotificationRenderer()))
+            val router = SlackChannelRouter(config.slackChannels, config.slackChannelOnly) { id ->
+                datasourceStore.getIncludingDeleted(id)?.tags.orEmpty()
+            }
+            add(SlackTransport(slackHttp, config.slackBotToken, config.webBaseUrl, NotificationRenderer(), channels = router))
+            if (config.slackChannels.isNotEmpty()) {
+                add(
+                    SlackTransport(
+                        slackHttp, config.slackBotToken, config.webBaseUrl, NotificationRenderer(),
+                        channels = router, toChannel = true,
+                    ),
+                )
+            }
         }
         if (sourceAdapter != null) add(PullRequestCommentTransport(sourceAdapter))
     }
@@ -57,7 +72,10 @@ fun Application.installNotifications(
     // Slack Socket Mode: an OUTBOUND WebSocket carrying clicks back, so no inbound ingress performs a
     // privileged action. Each click goes through the same ApprovalService the console routes use.
     if (slackHttp != null && config.slackBotToken != null && config.slackAppToken != null) {
-        val handler = SlackDecisionHandler(accessStore, approvals, notifications, config.notifyLocale)
+        val handler = SlackDecisionHandler(
+            accessStore, approvals, notifications, config.notifyLocale,
+            deepLink = { id -> URLBuilder(config.webBaseUrl).appendPathSegments("workflows", id.toString()).buildString() },
+        )
         val identity = UserGroupStore(dataSource)
         launch {
             SlackSocketMode(
@@ -65,7 +83,7 @@ fun Application.installNotifications(
                 config.slackBotToken,
                 config.slackAppToken,
                 principalForEmail = identity::activePrincipalByEmail,
-                onInteraction = { handler.handle(it) },
+                onInteraction = { handler.respond(it) },
             ).run()
         }
     }

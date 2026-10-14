@@ -61,7 +61,8 @@ depends = ["up"]
 shell = "bash -c"
 # PM_CP_ATTACH=true skips starting Kotlin, for one you run yourself (e.g. from the IDE) with
 # PM_HTTP_PORT=18090 PM_GRPC_PORT=18091 PM_BIND_HOST=127.0.0.1 PM_TRUSTED_PROXIES=127.0.0.1, and the
-# same PM_CP_INTERNAL_TOKEN in both processes.
+# same PM_CP_INTERNAL_TOKEN in both processes; set PM_CP_GO_GRPC_PORT here and
+# PM_CP_GO_GRPC_ADDR=127.0.0.1:<that port> there for the Go services Kotlin calls.
 run = '''
 set -euo pipefail
 export PM_DB_URL="${PM_DB_URL:-jdbc:postgresql://localhost:5442/proxymonster}"
@@ -187,6 +188,7 @@ run = '''
 set -euo pipefail
 (cd analyzer && buf generate ../proto/src/main/proto --path ../proto/src/main/proto/analyzer.proto --path ../proto/src/main/proto/engine.proto --path ../proto/src/main/proto/athena.proto)
 (cd goproxy && buf generate ../proto/src/main/proto --path ../proto/src/main/proto/controlplane.proto)
+(cd cpgo && buf generate ../proto/src/main/proto --path ../proto/src/main/proto/github_source.proto)
 '''
 
 [tasks.proto-check]
@@ -200,6 +202,8 @@ files=(
   analyzer/probe/pb/athena.pb.go
   goproxy/internal/pb/controlplane.pb.go
   goproxy/internal/pb/controlplane_grpc.pb.go
+  cpgo/gobridge/pb/github_source.pb.go
+  cpgo/gobridge/pb/github_source_grpc.pb.go
 )
 before=$(git hash-object "${files[@]}")
 mise run proto-generate

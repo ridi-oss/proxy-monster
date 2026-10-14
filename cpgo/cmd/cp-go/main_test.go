@@ -38,6 +38,9 @@ func fakeChild() {
 			"bind":    bind,
 			"trusted": os.Getenv("PM_TRUSTED_PROXIES"),
 			"xff":     r.Header.Get("X-Forwarded-For"),
+			"bridge":  os.Getenv("PM_CP_GO_GRPC_ADDR"),
+			"key":     os.Getenv("PM_GITHUB_APP_PRIVATE_KEY"),
+			"token":   os.Getenv("PM_CP_INTERNAL_TOKEN"),
 		})
 	})
 	mux.HandleFunc("/exit", func(http.ResponseWriter, *http.Request) { os.Exit(3) })
@@ -56,6 +59,11 @@ func fakeChild() {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGTERM)
 	<-sig
+	if out := os.Getenv("CPGO_FAKE_CHILD_CALL_ON_TERM"); out != "" {
+		// A draining control plane keeps working for a while; call once cp-go's own shutdown is under way.
+		time.Sleep(500 * time.Millisecond)
+		_ = os.WriteFile(out, []byte(callBridge()), 0o600)
+	}
 	os.Exit(0)
 }
 
@@ -69,7 +77,7 @@ func freePort(t *testing.T) int {
 	return ln.Addr().(*net.TCPAddr).Port
 }
 
-func startFront(t *testing.T) (config, context.CancelFunc, <-chan int) {
+func startFront(t *testing.T, opts ...func(*config)) (config, context.CancelFunc, <-chan int) {
 	t.Helper()
 	t.Setenv("CPGO_FAKE_CHILD", "1")
 	t.Setenv("PM_TRUSTED_PROXIES", "10.9.9.9")
@@ -83,6 +91,9 @@ func startFront(t *testing.T) (config, context.CancelFunc, <-chan int) {
 			StartTimeout: 30 * time.Second,
 			DBURL:        st.JDBCURL, DBUser: st.User, DBPassword: st.Password,
 			SessionSecret: dbtest.Secret,
+		}
+		for _, o := range opts {
+			o(&cfg)
 		}
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan int, 1)

@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -24,6 +25,8 @@ import (
 	"github.com/ridi-oss/proxy-monster/cpgo/bridge"
 	"github.com/ridi-oss/proxy-monster/cpgo/child"
 	"github.com/ridi-oss/proxy-monster/cpgo/front"
+	"github.com/ridi-oss/proxy-monster/cpgo/gobridge"
+	bridgepb "github.com/ridi-oss/proxy-monster/cpgo/gobridge/pb"
 	"github.com/ridi-oss/proxy-monster/cpgo/routes"
 	"github.com/ridi-oss/proxy-monster/cpgo/session"
 	"github.com/ridi-oss/proxy-monster/cpgo/store"
@@ -41,6 +44,8 @@ type config struct {
 	Attach         bool           `env:"PM_CP_ATTACH" help:"Forward to a Kotlin control plane already running on the child ports instead of starting one."`
 	StartTimeout   time.Duration  `env:"PM_CP_START_TIMEOUT" default:"10m" help:"How long to wait for the Kotlin control plane to become healthy."`
 	Tailnet        tailnet.Config `embed:"" prefix:"tailnet-"`
+	GitHub         githubConfig   `embed:"" prefix:"github-"`
+	BridgePort     int            `env:"PM_CP_GO_GRPC_PORT" default:"0" help:"Loopback port the Kotlin control plane calls Go on; 0 picks a free one. Set it, and the child's PM_CP_GO_GRPC_ADDR, with PM_CP_ATTACH."`
 	// Shared with the Kotlin child, which reads them from the environment, so they are never flags.
 	DBURL         string `kong:"-"`
 	DBUser        string `kong:"-"`
@@ -67,6 +72,12 @@ func main() {
 	cfg.SessionSecret = envOr("PM_SESSION_SECRET", "dev-insecure-session-secret-change-me")
 	cfg.AuthDebug = envOr("PM_AUTH_DEBUG", "true") == "true"
 	cfg.InternalToken = os.Getenv("PM_CP_INTERNAL_TOKEN")
+	cfg.GitHub.AppID = strings.TrimSpace(os.Getenv("PM_GITHUB_APP_ID"))
+	// Normalized as the Kotlin control plane normalizes it for its web links.
+	cfg.GitHub.APIURL = strings.TrimSpace(os.Getenv("PM_GITHUB_API_URL"))
+	if cfg.GitHub.APIURL == "" {
+		cfg.GitHub.APIURL = "https://api.github.com"
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	code := run(ctx, cfg)
 	stop()
@@ -98,9 +109,18 @@ func run(ctx context.Context, cfg config) int {
 		}
 		internalToken = rand.Text()
 	}
+	// Before the child starts, so its first call into Go finds the bridge.
+	served := make(chan error, 5)
+	goBridge, err := startBridge(ctx, cfg, internalToken, served)
+	if err != nil {
+		slog.Error("cp-go: " + err.Error())
+		return 1
+	}
+	// Closed after drain has stopped the child, which may still call Go while it drains.
+	defer goBridge.Close()
+	childEnv := append(withoutKeys(os.Environ()), goBridge.Env())
 	if !cfg.Attach {
-		var err error
-		if kt, err = child.Start(cfg.Child, cfg.ChildHTTPPort, cfg.ChildGRPCPort, internalToken); err != nil {
+		if kt, err = child.Start(cfg.Child, cfg.ChildHTTPPort, cfg.ChildGRPCPort, internalToken, childEnv); err != nil {
 			slog.Error("cp-go: " + err.Error())
 			return 1
 		}
@@ -109,7 +129,7 @@ func run(ctx context.Context, cfg config) int {
 
 	httpUpstream := &url.URL{Scheme: "http", Host: loopback(cfg.ChildHTTPPort)}
 	startCtx, cancelStart := context.WithTimeout(ctx, cfg.StartTimeout)
-	err := child.WaitHealthy(startCtx, httpUpstream.String()+"/health", exited)
+	err = child.WaitHealthy(startCtx, httpUpstream.String()+"/health", exited)
 	cancelStart()
 	if err != nil {
 		slog.Error("cp-go: " + err.Error())
@@ -163,7 +183,6 @@ func run(ctx context.Context, cfg config) int {
 		slog.Error("cp-go: listening for gRPC: " + err.Error())
 		return shutdownChild(kt)
 	}
-	served := make(chan error, 4)
 	go func() { served <- ignoreClosed(httpSrv.Serve(httpLn)) }()
 	go func() { served <- grpcSrv.Serve(grpcLn) }()
 	slog.Info("cp-go: serving", "http", cfg.HTTPPort, "grpc", cfg.GRPCPort, "upstream_http", cfg.ChildHTTPPort, "upstream_grpc", cfg.ChildGRPCPort)
@@ -249,6 +268,26 @@ func drain(kt *child.Child, grpcSrv *grpc.Server, httpSrvs ...httpServer) {
 type httpServer interface {
 	Shutdown(context.Context) error
 	Close() error
+}
+
+// startBridge serves the Go services the Kotlin child calls (cpgo/gobridge).
+func startBridge(ctx context.Context, cfg config, token string, served chan<- error) (*gobridge.Server, error) {
+	gh, err := newGitHub(ctx, cfg.GitHub)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.Attach && cfg.BridgePort == 0 && gh != nil {
+		return nil, errors.New("PM_CP_ATTACH with PM_GITHUB_APP_ID needs PM_CP_GO_GRPC_PORT, matching the Kotlin control plane's PM_CP_GO_GRPC_ADDR")
+	}
+	s, err := gobridge.Listen(cfg.BridgePort, token)
+	if err != nil {
+		return nil, err
+	}
+	if gh != nil {
+		bridgepb.RegisterGitHubSourceServer(s.GRPC(), gh)
+	}
+	s.Serve(served)
+	return s, nil
 }
 
 // hostTailnet joins the tailnet and serves the console there, with the ACM certificate when one is set,

@@ -133,7 +133,8 @@ JSON DTOs on both sides:
   sides.
 - cp-go serves it on a loopback gRPC listener it starts before the Kotlin child,
   and passes the address to the child. The per-boot `PM_CP_INTERNAL_TOKEN`
-  travels in gRPC metadata.
+  travels in gRPC metadata. Register the Go side on `cpgo/gobridge`; build the
+  Kotlin stub on `CpGoBridge.channel`.
 - Forward whole operations, which Go runs in its own transaction. A single row
   written inside a Kotlin transaction (a `request_event`, say) stays a Kotlin
   insert until that call site moves; an RPC there would split the transaction.

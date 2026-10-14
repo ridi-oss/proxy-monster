@@ -19,13 +19,13 @@ type Child struct {
 	err  error
 }
 
-// Start launches command with the caller's environment, overriding the ports and bind host so the
-// child listens only on loopback and trusts only cp-go's forwarded headers.
-func Start(command string, httpPort, grpcPort int, internalToken string) (*Child, error) {
+// Start launches command with env, overriding the ports and bind host so the child listens only on
+// loopback and trusts only cp-go's forwarded headers.
+func Start(command string, httpPort, grpcPort int, internalToken string, env []string) (*Child, error) {
 	cmd := exec.Command(command)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(env,
 		"PM_HTTP_PORT="+strconv.Itoa(httpPort),
 		"PM_GRPC_PORT="+strconv.Itoa(grpcPort),
 		"PM_BIND_HOST=127.0.0.1",

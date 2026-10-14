@@ -20,7 +20,7 @@ func TestMain(m *testing.M) {
 
 func TestStopKillsAChildThatIgnoresSIGTERM(t *testing.T) {
 	t.Setenv("CPGO_STUBBORN_CHILD", "1")
-	c, err := Start(os.Args[0], 0, 0, "t")
+	c, err := Start(os.Args[0], 0, 0, "t", os.Environ())
 	if err != nil {
 		t.Fatal(err)
 	}

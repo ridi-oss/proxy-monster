@@ -27,17 +27,19 @@ import (
 	"github.com/ridi-oss/proxy-monster/cpgo/routes"
 	"github.com/ridi-oss/proxy-monster/cpgo/session"
 	"github.com/ridi-oss/proxy-monster/cpgo/store"
+	"github.com/ridi-oss/proxy-monster/cpgo/tailnet"
 )
 
 type config struct {
-	HTTPPort       int           `env:"PM_HTTP_PORT" default:"8080" help:"Public HTTP port."`
-	GRPCPort       int           `env:"PM_GRPC_PORT" default:"9090" help:"Public gRPC port."`
-	TrustedProxies []string      `env:"PM_TRUSTED_PROXIES" sep:"," help:"Peers whose X-Forwarded-* headers are honored."`
-	Child          string        `env:"PM_CP_CHILD" default:"/app/bin/control-plane" help:"Kotlin control plane start script."`
-	ChildHTTPPort  int           `env:"PM_CP_CHILD_HTTP_PORT" default:"18090" help:"Loopback HTTP port of the Kotlin control plane."`
-	ChildGRPCPort  int           `env:"PM_CP_CHILD_GRPC_PORT" default:"18091" help:"Loopback gRPC port of the Kotlin control plane."`
-	Attach         bool          `env:"PM_CP_ATTACH" help:"Forward to a Kotlin control plane already running on the child ports instead of starting one."`
-	StartTimeout   time.Duration `env:"PM_CP_START_TIMEOUT" default:"10m" help:"How long to wait for the Kotlin control plane to become healthy."`
+	HTTPPort       int            `env:"PM_HTTP_PORT" default:"8080" help:"Public HTTP port."`
+	GRPCPort       int            `env:"PM_GRPC_PORT" default:"9090" help:"Public gRPC port."`
+	TrustedProxies []string       `env:"PM_TRUSTED_PROXIES" sep:"," help:"Peers whose X-Forwarded-* headers are honored."`
+	Child          string         `env:"PM_CP_CHILD" default:"/app/bin/control-plane" help:"Kotlin control plane start script."`
+	ChildHTTPPort  int            `env:"PM_CP_CHILD_HTTP_PORT" default:"18090" help:"Loopback HTTP port of the Kotlin control plane."`
+	ChildGRPCPort  int            `env:"PM_CP_CHILD_GRPC_PORT" default:"18091" help:"Loopback gRPC port of the Kotlin control plane."`
+	Attach         bool           `env:"PM_CP_ATTACH" help:"Forward to a Kotlin control plane already running on the child ports instead of starting one."`
+	StartTimeout   time.Duration  `env:"PM_CP_START_TIMEOUT" default:"10m" help:"How long to wait for the Kotlin control plane to become healthy."`
+	Tailnet        tailnet.Config `embed:"" prefix:"tailnet-"`
 	// Shared with the Kotlin child, which reads them from the environment, so they are never flags.
 	DBURL         string `kong:"-"`
 	DBUser        string `kong:"-"`
@@ -72,6 +74,10 @@ func main() {
 
 // run serves until ctx ends or the child exits, and returns the process exit code.
 func run(ctx context.Context, cfg config) int {
+	if err := cfg.Tailnet.Validate(); err != nil {
+		slog.Error("cp-go: " + err.Error())
+		return 1
+	}
 	var kt *child.Child
 	var exited <-chan struct{}
 	internalToken := cfg.InternalToken
@@ -146,6 +152,17 @@ func run(ctx context.Context, cfg config) int {
 	go func() { served <- ignoreClosed(httpSrv.Serve(httpLn)) }()
 	go func() { served <- grpcSrv.Serve(grpcLn) }()
 	slog.Info("cp-go: serving", "http", cfg.HTTPPort, "grpc", cfg.GRPCPort, "upstream_http", cfg.ChildHTTPPort, "upstream_grpc", cfg.ChildGRPCPort)
+
+	if cfg.Tailnet.Enabled() {
+		ts, _, err := tailnet.Join(ctx, cfg.Tailnet)
+		if err != nil {
+			slog.Error("cp-go: " + err.Error())
+			drain(kt, httpSrv, grpcSrv)
+			return 1
+		}
+		defer ts.Close()
+		slog.Info("cp-go: joined the tailnet", "hostname", cfg.Tailnet.NodeName())
+	}
 
 	code := 0
 	select {

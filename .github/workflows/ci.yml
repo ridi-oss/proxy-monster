@@ -262,7 +262,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version-file: pmon/go.mod
+          go-version-file: go.work
       - name: Test
         run: go test ./pmon/... ./mysqlwire/...
 
@@ -276,7 +276,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version-file: pmon/tray/go.mod
+          go-version-file: go.work
       - name: Test
         run: go test ./pmon/tray/...
 

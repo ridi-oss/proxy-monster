@@ -2,8 +2,10 @@ package com.ridi.oss.proxymonster.controlplane.notify
 
 import com.ridi.oss.proxymonster.controlplane.AccessRequest
 import com.ridi.oss.proxymonster.controlplane.AccessStore
+import com.ridi.oss.proxymonster.controlplane.ParticipantKind
 import com.ridi.oss.proxymonster.controlplane.PullRequestRef
 import com.ridi.oss.proxymonster.controlplane.QueryResultStore
+import com.ridi.oss.proxymonster.controlplane.RequestParticipants
 import io.ktor.http.URLBuilder
 import io.ktor.http.appendPathSegments
 import kotlinx.coroutines.TimeoutCancellationException
@@ -153,6 +155,9 @@ class NotificationService(
                 pullRequest = pullRequest,
             )
             val approvers = recipients.recipientsFor(subject)
+            if (transports.any { !it.addressesTasks }) {
+                RequestParticipants.add(c, taskId, approvers, ParticipantKind.APPROVER)
+            }
             for (transport in transports) {
                 if (transport.addressesTasks) {
                     transport.taskAddress(subject)?.let {

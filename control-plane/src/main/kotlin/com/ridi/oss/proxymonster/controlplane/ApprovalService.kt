@@ -384,6 +384,15 @@ class ApprovalService(
     fun listOwn(principal: String, status: String?): List<AccessRequest> =
         accessStore.listQueryRequests(status = status, principal = principal)
 
+    /**
+     * Requests the caller filed or took part in, from the participant list rather than a Cedar check per row.
+     * Another person's statement shows only when it carries no protected literal, as in a Slack channel.
+     */
+    fun involved(principal: String): List<AccessRequest> =
+        accessStore.listInvolvedQueryRequests(principal, INVOLVED_LIMIT).map { req ->
+            if (req.principal == principal || req.statementCarriesProtectedLiteral == false) req else req.copy(sql = null)
+        }
+
     /** Every PENDING request the caller may approve (Cedar task.approve), not a group-membership join. */
     fun inbox(principal: String, requesterIp: String?): List<AccessRequest> =
         accessStore.listQueryRequests("PENDING", null).filter { mayDecide(principal, requesterIp, AuthzAction.TASK_APPROVE, it) }
@@ -711,6 +720,7 @@ class ApprovalService(
 
     private companion object {
         const val REQUEST = "query approval request"
+        const val INVOLVED_LIMIT = 200
         val EDITABLE = setOf("PENDING", "APPROVED")
         val FORCEABLE = setOf("PENDING", "APPROVED")
     }

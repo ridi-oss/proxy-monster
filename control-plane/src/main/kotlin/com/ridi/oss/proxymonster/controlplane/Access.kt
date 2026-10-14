@@ -563,7 +563,7 @@ class AccessStore(internal val dataSource: DataSource) {
             ps.setLong(7, id)
             ps.setInt(8, revision)
             ps.executeUpdate() > 0
-        }
+        }.also { if (it) RequestParticipants.add(c, id, listOf(decidedBy), ParticipantKind.APPROVER) }
     }
 
     /**
@@ -1090,6 +1090,22 @@ class AccessStore(internal val dataSource: DataSource) {
         sql.append(" ORDER BY ar.created_at DESC")
         c.prepareStatement(sql.toString()).use { ps ->
             args.forEachIndexed { i, arg -> ps.setString(i + 1, arg) }
+            ps.executeQuery().use { rs -> val o = ArrayList<AccessRequest>(); while (rs.next()) o += rs.toRequest(); o }
+        }
+    }
+
+    /** Workflow QUERY requests [principal] filed or took part in, newest first, at most [limit]. */
+    fun listInvolvedQueryRequests(principal: String, limit: Int): List<AccessRequest> = dataSource.connection.use { c ->
+        c.prepareStatement(
+            """$REQ_SELECT
+               WHERE ar.kind = 'QUERY' AND ar.creator_kind = 'WORKFLOW'
+                 AND (ar.principal = ? OR EXISTS (
+                      SELECT 1 FROM request_participant p WHERE p.request_id = ar.id AND p.principal = ?))
+               ORDER BY ar.created_at DESC LIMIT ?""",
+        ).use { ps ->
+            ps.setString(1, principal)
+            ps.setString(2, principal)
+            ps.setInt(3, limit)
             ps.executeQuery().use { rs -> val o = ArrayList<AccessRequest>(); while (rs.next()) o += rs.toRequest(); o }
         }
     }

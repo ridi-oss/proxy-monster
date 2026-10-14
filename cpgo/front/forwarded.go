@@ -3,6 +3,7 @@
 package front
 
 import (
+	"context"
 	"log/slog"
 	"net"
 	"net/http"
@@ -67,7 +68,8 @@ var forwardedHeaders = []string{"X-Forwarded-For", "X-Forwarded-Host", "X-Forwar
 
 // setForwarded makes the Kotlin side, which trusts only cp-go, resolve the same client as it would
 // have with the original peer: a trusted edge's headers pass through untouched, and any other peer is
-// named in X-Forwarded-For with its own headers dropped.
+// named in X-Forwarded-For with its own headers dropped. A request a listener received over TLS also names
+// its scheme and host, as an edge would.
 func setForwarded(in, out *http.Request, edges TrustedEdges) {
 	for _, h := range forwardedHeaders {
 		out.Header.Del(h)
@@ -85,6 +87,10 @@ func setForwarded(in, out *http.Request, edges TrustedEdges) {
 	if ok {
 		out.Header.Set("X-Forwarded-For", peer.String())
 	}
+	if in.Context().Value(httpsKey{}) != nil {
+		out.Header.Set("X-Forwarded-Proto", "https")
+		out.Header.Set("X-Forwarded-Host", in.Host)
+	}
 }
 
 func remoteAddr(r *http.Request) (netip.Addr, bool) {
@@ -97,4 +103,14 @@ func remoteAddr(r *http.Request) (netip.Addr, bool) {
 		return netip.Addr{}, false
 	}
 	return a.Unmap().WithZone(""), true
+}
+
+type httpsKey struct{}
+
+// HTTPS marks every request h serves as received over TLS, whether the listener or a proxy in front of it
+// terminated TLS.
+func HTTPS(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), httpsKey{}, true)))
+	})
 }

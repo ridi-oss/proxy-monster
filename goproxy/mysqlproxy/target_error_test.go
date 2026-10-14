@@ -35,15 +35,15 @@ func checkingTargetError(codes *[]string) func(*pb.DecisionRequest) (*pb.WireDec
 	}
 }
 
-func TestTargetErrorIsForwardedRedacted(t *testing.T) {
+func TestTargetErrorIsForwarded(t *testing.T) {
 	h := startBroker(t)
 	var codes []string
 	h.fake.decideFn = checkingTargetError(&codes)
 	conn := h.openDB(t, validToken)
 
 	_, err := conn.Query("SELEC 1")
-	if err == nil || !strings.Contains(err.Error(), "Error 1064 (42000): ER_PARSE_ERROR") {
-		t.Fatalf("Query error = %v, want the target's 1064, redacted", err)
+	if err == nil || !strings.Contains(err.Error(), "Error 1064 (42000): You have an error in your SQL syntax") || !strings.Contains(err.Error(), "near 'SELEC 1'") {
+		t.Fatalf("Query error = %v, want the target's own 1064 message", err)
 	}
 	_, err = conn.Query("SELECT no_such_column FROM people")
 	if err == nil || !strings.Contains(err.Error(), "Error 1054 (42S22): Unknown column 'no_such_column' in 'field list'") {

@@ -34,7 +34,7 @@ func checkingTargetErrorExcept(allowed ...string) func(*pb.DecisionRequest) (*pb
 	}
 }
 
-func TestTargetErrorIsForwardedRedacted(t *testing.T) {
+func TestTargetErrorIsForwarded(t *testing.T) {
 	h := startBroker(t)
 	h.fake.decideFn = checkingTargetErrorExcept("SELECT 1")
 	conn, err := h.connect(t, validToken, true)
@@ -44,7 +44,7 @@ func TestTargetErrorIsForwardedRedacted(t *testing.T) {
 	ctx := context.Background()
 
 	_, err = conn.Exec(ctx, "SELEC 1")
-	assertPgError(t, err, "42601", "syntax_error")
+	assertPgError(t, err, "42601", `syntax error at or near "SELEC"`)
 	_, err = conn.Exec(ctx, "SELECT no_such_column FROM it_pgproxy.people")
 	assertPgError(t, err, "42703", `column "no_such_column" does not exist`)
 	got := h.waitCompletions(t, 2)
@@ -91,7 +91,7 @@ func TestTargetErrorAbortsTheOpenTransaction(t *testing.T) {
 		t.Fatalf("BEGIN: %v", err)
 	}
 	_, err = conn.Exec(ctx, "SELEC 1")
-	assertPgError(t, err, "42601", "syntax_error")
+	assertPgError(t, err, "42601", `syntax error at or near "SELEC"`)
 	_, err = conn.Exec(ctx, "SELECT 1")
 	assertPgError(t, err, "25P02", "")
 	if _, err := conn.Exec(ctx, "ROLLBACK"); err != nil {
@@ -112,7 +112,7 @@ func TestExtendedTargetErrorIsForwarded(t *testing.T) {
 	ctx := context.Background()
 
 	_, err = conn.Prepare(ctx, "stmt_syntax", "SELEC $1")
-	assertPgError(t, err, "42601", "syntax_error")
+	assertPgError(t, err, "42601", `syntax error at or near "SELEC"`)
 	_, err = conn.Prepare(ctx, "stmt_denied", "SELECT name FROM it_pgproxy.people WHERE id = $1")
 	assertPgError(t, err, "42501", "proxy-monster denied: fail-closed")
 	// Untyped, $1 IS NULL cannot be inferred (42P18); the check keeps the client's text OID.

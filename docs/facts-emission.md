@@ -253,10 +253,11 @@ gate:
    `COM_STMT_PREPARE`, PostgreSQL Parse) and re-sends the request with the
    outcome. If the target rejects it, the decision is an ALLOW that runs
    nothing: the proxy sends the target's error, redacted
-   ([diagnostic-redaction.md](./diagnostic-redaction.md)), and reports an
-   `error` completion. A statement that prepares keeps the deny. The proxy never
-   runs the statement on this path, because a prepare refuses two statements in
-   one string that a query would run.
+   ([diagnostic-redaction.md](./diagnostic-redaction.md)) unless it is a syntax
+   error, which can echo only the client's own SQL, and reports an `error`
+   completion. A statement that prepares keeps the deny. The proxy never runs
+   the statement on this path, because a prepare refuses two statements in one
+   string that a query would run.
 
 An unanalyzable statement cannot claim that no sensitive resources were touched,
 so the exception is datasource-wide and explicit — suitable for a permissive

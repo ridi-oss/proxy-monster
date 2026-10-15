@@ -218,7 +218,7 @@ schema; and a redacted column outside a catalog-class relation. Anything
 rejected throws `SystemManifestException`, which aborts startup.
 
 Validation does not check command ids against the analyzer: nothing verifies
-that a manifest command id is one `analyzer/probe/facts.go` can actually emit,
+that a manifest command id is one `analyzer/engines/facts.go` can actually emit,
 or that every emitted id has a manifest entry. `ManifestCommandCoverageDbTest`
 covers the second direction at test time (see [Verification](#verification)).
 

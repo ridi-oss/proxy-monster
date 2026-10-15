@@ -9,7 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgproto3"
-	"github.com/ridi-oss/proxy-monster/analyzer/probe"
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
@@ -294,17 +294,17 @@ func (s *Server) handleQuery(sess *session, sql string) error {
 
 // explicitTransaction reports a batch that opens its own transaction first and commits it last, which runs as
 // PostgreSQL runs it without the proxy's wrapping transaction.
-func explicitTransaction(batch []probe.BatchStatement) bool {
+func explicitTransaction(batch []engines.BatchStatement) bool {
 	return batch[0].Kind == analyzerpb.StatementKind_STATEMENT_KIND_START_TRANSACTION &&
 		batch[len(batch)-1].Kind == analyzerpb.StatementKind_STATEMENT_KIND_COMMIT
 }
 
 // splitBatch cuts a multi-statement simple query into its statements, or nil to serve sql as one.
-func splitBatch(sql string) []probe.BatchStatement {
+func splitBatch(sql string) []engines.BatchStatement {
 	if !strings.Contains(strings.TrimRight(sql, "; \t\r\n"), ";") {
 		return nil
 	}
-	batch, ok := probe.SplitBatch(sql, &analyzerpb.EngineConfig{Engine: analyzerpb.Engine_POSTGRES})
+	batch, ok := engines.SplitBatch(sql, &analyzerpb.EngineConfig{Engine: analyzerpb.Engine_POSTGRES})
 	if !ok || len(batch) < 2 {
 		return nil
 	}
@@ -313,7 +313,7 @@ func splitBatch(sql string) []probe.BatchStatement {
 
 // handleBatch decides each statement right before it runs and answers with one ReadyForQuery. From an idle
 // session the batch runs in the proxy's own transaction, so a deny or error undoes it, as PostgreSQL does.
-func (s *Server) handleBatch(sess *session, batch []probe.BatchStatement, explicit bool) error {
+func (s *Server) handleBatch(sess *session, batch []engines.BatchStatement, explicit bool) error {
 	owned := !explicit && sess.lastTxStatus == 'I'
 	failed := false
 	if owned {

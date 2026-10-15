@@ -146,7 +146,7 @@ The analyzer walks each resolved scope's source map and emits a Table fact only
 when the source resolves to a physical target-DB relation. A CTE, derived table,
 table-valued expression, or alias is not a physical Table; the walk recurses
 into its scope and emits the physical relations it reads. This reuses the
-analyzer's scope resolution (`analyzer/probe/relation.go`) rather than
+analyzer's scope resolution (`analyzer/engines/relation.go`) rather than
 collecting SQL names and subtracting a CTE-name set — that distinction is the
 safety property:
 

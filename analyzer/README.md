@@ -57,7 +57,7 @@ go get -C analyzer github.com/ridi-oss/sqlglot-go@<tag-or-commit>   # then commi
 
 The committed root `go.work` lists only this repo's own modules, so sqlglot-go
 always resolves from that pin — the workspace makes every Go command take
-root-relative paths (`go test ./analyzer/probe/...`) without changing which
+root-relative paths (`go test ./analyzer/engines/...`) without changing which
 version of the dependency is used.
 
 ## Building
@@ -83,7 +83,7 @@ not pin; install it separately.
 ## Testing
 
 ```bash
-go test ./analyzer/probe/...
+go test ./analyzer/engines/...
 ```
 
 - TestProbeGolden — internal-probe regression against `testdata/golden.json`;

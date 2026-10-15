@@ -1,4 +1,4 @@
-// Package engines is the one list of target engines and the static facts every Go module shares.
+// Package engines is the one list of target engines: the facts every Go module shares and each engine's SQL analyzer.
 package engines
 
 import (
@@ -43,6 +43,13 @@ type Engine struct {
 	introspected func(mode CaseMode, rows []*pb.Column) []ColumnName
 	// dialect is the engine's sqlglot dialect: canonical names fold by it and analyzers parse with it. MySQL's follows the CaseMode.
 	dialect func(mode CaseMode) *dialects.Dialect
+	// newAnalyzer builds the per-request analyzer from a statement's EngineConfig: MySQL reads its version
+	// and lower_case_table_names from it.
+	newAnalyzer func(e *Engine, config *pb.EngineConfig) (analyzer, error)
+	// normalizeRules are the lexer rules SqlNormalize applies: MySQL refuses `/*! */`, Postgres folds identifiers.
+	normalizeRules func() normalizeRules
+	// configFailureDialect parses a SHOW while the engine config is incomplete; nil fails it closed.
+	configFailureDialect func() *dialects.Dialect
 }
 
 var (
@@ -54,6 +61,12 @@ var (
 		catalogName:  func(string) CatalogName { return CatalogName{"def"} },
 		introspected: mysqlIntrospected,
 		dialect:      mysqlDialect,
+		newAnalyzer:  newMySQLAnalyzer,
+		normalizeRules: func() normalizeRules {
+			d := dialects.MySQL()
+			return normalizeRules{dialect: d, wordDialect: d, rejectExecutableComments: true}
+		},
+		configFailureDialect: dialects.MySQL,
 	}
 	Postgres = &Engine{
 		WireName: "postgres", Proto: pb.Engine_POSTGRES, DefaultSchemaSettable: true,
@@ -66,6 +79,11 @@ var (
 		catalogName:  func(registeredDbName string) CatalogName { return CatalogName{registeredDbName} },
 		introspected: postgresIntrospected,
 		dialect:      func(CaseMode) *dialects.Dialect { return dialects.Postgres() },
+		newAnalyzer:  newPostgresAnalyzer,
+		normalizeRules: func() normalizeRules {
+			d := dialects.Postgres()
+			return normalizeRules{dialect: d, wordDialect: d, foldIdentifiers: true}
+		},
 	}
 	Athena = &Engine{
 		WireName: "athena", Proto: pb.Engine_ATHENA,
@@ -75,6 +93,10 @@ var (
 		catalogName:  func(registeredDbName string) CatalogName { return CatalogName{athenaName(registeredDbName)} },
 		introspected: athenaIntrospected,
 		dialect:      func(CaseMode) *dialects.Dialect { return dialects.Athena() },
+		newAnalyzer:  newAthenaAnalyzer,
+		normalizeRules: func() normalizeRules {
+			return normalizeRules{dialect: dialects.Athena(), wordDialect: dialects.Trino(), hiveDialect: dialects.Hive(), foldIdentifiers: true}
+		},
 	}
 	// All is every engine, MySQL first.
 	All = []*Engine{MySQL, Postgres, Athena}

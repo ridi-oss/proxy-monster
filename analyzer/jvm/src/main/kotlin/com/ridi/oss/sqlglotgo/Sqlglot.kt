@@ -17,7 +17,7 @@ import java.nio.file.StandardCopyOption
  * `buildNativeLib` Gradle task and bundled on the classpath) is loaded once for the JVM's lifetime.
  *
  * Thread-safe: the Go `AnalyzeStatement` is a pure function of its inputs, and each call here uses
- * its own confined [Arena]. Fail-closed: the Go side (`probe.AnalyzeStatementSafe`) never panics and
+ * its own confined [Arena]. Fail-closed: the Go side (`engines.AnalyzeStatementSafe`) never panics and
  * always returns a validly-encoded StatementFacts, so a malformed query yields `resolved=false` rather
  * than an error.
  *
@@ -89,7 +89,7 @@ object Sqlglot {
      * Raw bytes in, raw bytes out — this binding has no knowledge of the wire schema (mirrors
      * [sqlNormalize]'s byte-exact argument convention, applied to both directions here); the caller
      * (engine's `SqlglotProbe`) owns building/parsing the actual proto messages. Total: the native
-     * side (`probe.AnalyzeStatementSafe`) never panics and always returns a validly-encoded
+     * side (`engines.AnalyzeStatementSafe`) never panics and always returns a validly-encoded
      * StatementFacts, so a malformed request yields a `resolved=false` message rather than an error.
      */
     fun analyzeStatement(requestBytes: ByteArray): ByteArray = callByteBufferHandle(analyzeStatementHandle, requestBytes)

@@ -202,7 +202,7 @@ configured per proxy under `PM_TARGET_*`.
   recipient who has not set one in the console. Default `en`.
 - `PM_SLACK_CHANNELS` — _optional_. Posts requests to Slack channels by
   datasource tag: `tag=channel id`, comma-separated, first match wins (e.g.
-  `service:manta=C0123ABC,system:production=C0789GHI`). Invite the bot to each
+  `service:billing=C0123ABC,system:production=C0789GHI`). Invite the bot to each
   channel ([docs/notifications.md](./docs/notifications.md#channels)).
 - `PM_SLACK_MODE` — _optional_. `both` (default) posts a matched request to its
   channel and DMs; `channel` posts it to the channel only. An unmatched request

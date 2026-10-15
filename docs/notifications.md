@@ -476,7 +476,7 @@ entry.
 
 ```
 PM_SLACK_MODE=both
-PM_SLACK_CHANNELS=service:manta=C0123ABC,service:ridi=C0456DEF,system:production=C0789GHI
+PM_SLACK_CHANNELS=service:billing=C0123ABC,service:search=C0456DEF,system:production=C0789GHI
 ```
 
 In `both` mode (the default) a matched request goes to the channel and to the
@@ -538,7 +538,7 @@ click goes through `AccessService` or `RequestThreads` on the `slack` channel.
 | `PM_SLACK_APP_TOKEN`  | unset   | Socket Mode token; unset = no Slack                                                                                                                                                             |
 | `PM_NOTIFY_STATEMENT` | `auto`  | `omit` · `auto` · `full`. `auto` shows a hint-cleared statement; `full` shows it to pending approvers, then hides a flagged one once handled. Legacy `truncated` boots as `auto` with a warning |
 | `PM_NOTIFY_LOCALE`    | `en`    | fallback when the recipient has saved no language                                                                                                                                               |
-| `PM_SLACK_CHANNELS`   | unset   | `tag=channel`, comma-separated; the first tag a datasource carries picks the channel                                                                                                            |
+| `PM_SLACK_CHANNELS`   | unset   | `tag=channel`, comma-separated; the first entry whose tag the datasource carries picks the channel                                                                                              |
 | `PM_SLACK_MODE`       | `both`  | `both` posts a matched request to its channel and DMs; `channel` posts it to the channel only                                                                                                   |
 
 ## What this exposes

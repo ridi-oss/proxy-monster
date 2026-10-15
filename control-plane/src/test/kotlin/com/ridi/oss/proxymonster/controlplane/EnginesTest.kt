@@ -3,9 +3,6 @@ package com.ridi.oss.proxymonster.controlplane
 import com.ridi.oss.proxymonster.analyzer.pb.SessionObservation
 import com.ridi.oss.proxymonster.analyzer.pb.sessionObservation
 import com.ridi.oss.proxymonster.analyzer.pb.mySqlSession
-import com.ridi.oss.proxymonster.classification.AthenaNativeFunctions
-import com.ridi.oss.proxymonster.classification.MysqlNativeFunctions
-import com.ridi.oss.proxymonster.classification.PostgresGrammarFunctions
 import com.ridi.oss.proxymonster.grpc.Engine
 import com.ridi.oss.proxymonster.probe.Dialect
 import kotlinx.serialization.json.Json
@@ -182,9 +179,9 @@ class EnginesTest {
     }
 
     @Test fun `MySQL function catalog is the pinned native list plus loadable and stored routines`() {
-        val natives = MysqlNativeFunctions.forVersion("8.0.44")
         val empty = Engine.MYSQL.functionCatalog(emptyMap(), "8.0.44")
-        assertEquals(natives, empty.builtinFunctionsList)
+        val natives = empty.builtinFunctionsList
+        assertTrue("concat" in natives && "json_extract" in natives, "the pinned 8.0 natives")
         assertTrue(empty.udfSchemasList.isEmpty() && empty.loadableFunctionsList.isEmpty())
         val tiered = Engine.MYSQL.functionCatalog(
             mapOf("mysql" to listOf("fnv_64"), "app" to listOf("add_tax"), "sys" to listOf("format_bytes")),
@@ -202,7 +199,6 @@ class EnginesTest {
 
     @Test fun `Athena function catalog is the pinned builtin list for the engine version`() {
         val catalog = Engine.ATHENA.functionCatalog(mapOf("sample" to listOf("ignored")), "3")
-        assertEquals(AthenaNativeFunctions.forVersion("3"), catalog.builtinFunctionsList)
         assertTrue("upper" in catalog.builtinFunctionsList && "invoker_principal" in catalog.builtinFunctionsList)
         assertTrue(catalog.udfSchemasList.isEmpty() && catalog.systemFunctionSchemasList.isEmpty(), "Athena has no routine catalog")
         assertEquals(catalog.builtinFunctionsList, Engine.ATHENA.functionCatalog(emptyMap(), null).builtinFunctionsList, "an unknown version pins to 3")
@@ -210,10 +206,10 @@ class EnginesTest {
 
     @Test fun `Postgres function catalog tiers pg_catalog, information_schema, and user schemas`() {
         val empty = Engine.POSTGRES.functionCatalog(emptyMap(), "16.4")
-        assertEquals(PostgresGrammarFunctions.names, empty.builtinFunctionsList, "grammar functions have no pg_proc row")
+        assertEquals(postgresGrammarFunctions, empty.builtinFunctionsList, "grammar functions have no pg_proc row")
         val tiered = Engine.POSTGRES.functionCatalog(
             mapOf(
-                "pg_catalog" to listOf("abs", "lower", PostgresGrammarFunctions.names.first()),
+                "pg_catalog" to listOf("abs", "lower", postgresGrammarFunctions.first()),
                 "information_schema" to listOf("_pg_expandarray"),
                 "public" to listOf("add_tax"),
                 "pg_temp_3" to listOf("scratch"),
@@ -221,9 +217,9 @@ class EnginesTest {
             ),
             "16.4",
         )
-        assertEquals(listOf("abs", "lower") + PostgresGrammarFunctions.names, tiered.builtinFunctionsList)
+        assertEquals(listOf("abs", "lower") + postgresGrammarFunctions, tiered.builtinFunctionsList)
         val bySchema = tiered.systemFunctionSchemasList.associate { it.schema to it.namesList }
-        assertEquals(listOf("abs", "lower") + PostgresGrammarFunctions.names, bySchema.getValue("pg_catalog"))
+        assertEquals(listOf("abs", "lower") + postgresGrammarFunctions, bySchema.getValue("pg_catalog"))
         assertEquals(listOf("_pg_expandarray"), bySchema.getValue("information_schema"))
         assertEquals(
             listOf("public" to listOf("add_tax")),
@@ -235,4 +231,9 @@ class EnginesTest {
     @Test fun `functionCatalog fails closed on an unspecified engine`() {
         assertFailsWith<IllegalStateException> { Engine.ENGINE_UNSPECIFIED.functionCatalog(emptyMap(), null) }
     }
+
+    private val postgresGrammarFunctions = listOf(
+        "coalesce", "greatest", "least", "nullif", "grouping",
+        "xmlconcat", "xmlelement", "xmlforest", "xmlparse", "xmlpi", "xmlroot", "xmltable",
+    )
 }

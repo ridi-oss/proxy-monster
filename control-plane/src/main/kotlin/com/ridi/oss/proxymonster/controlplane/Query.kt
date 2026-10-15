@@ -27,6 +27,8 @@ import com.ridi.oss.proxymonster.classification.BaselineDangerousFunctions
 import com.ridi.oss.proxymonster.grpc.ColumnMask
 import com.ridi.oss.proxymonster.grpc.EnfAction
 import com.ridi.oss.proxymonster.grpc.ProxyCommand
+import com.ridi.oss.proxymonster.grpc.proxyCommand
+import com.ridi.oss.proxymonster.athena.pb.fetchAthenaPreparedDefinition
 import com.ridi.oss.proxymonster.grpc.Engine
 import com.ridi.oss.proxymonster.grpc.ObjectRef
 import com.ridi.oss.proxymonster.grpc.columnMask
@@ -492,7 +494,7 @@ fun decideQuery(
         return structuralDeny(facts.detail.ifBlank { "statement is inadmissible" }, emptyList())
     }
     // The analyzer asked for input only the proxy can fetch: no verdict, run the commands and retry.
-    val beforeDecide = ds.engine.definition.beforeDecideCommands(facts)
+    val beforeDecide = facts.beforeDecideCommands()
     if (beforeDecide.isNotEmpty()) {
         return structuralDeny(facts.detail.ifBlank { "more input is required" }, emptyList()).copy(beforeDecide = beforeDecide)
     }
@@ -1383,8 +1385,10 @@ fun Route.editorSessionRoutes(
         if (schema.isBlank()) {
             return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.field_required", mapOf("fields" to "schema")))
         }
-        val statement = ds.engine.definition.defaultSchemaStatement?.invoke(schema)
-            ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("query.default_schema_unsupported"))
+        if (!ds.engine.definition.defaultSchemaSettable) {
+            return@post call.respond(HttpStatusCode.BadRequest, ApiError("query.default_schema_unsupported"))
+        }
+        val statement = ds.engine.definition.defaultSchemaStatement(schema)
         val requesterIp = call.httpRequesterIp(config)
         try {
             val sub = service.submitOnSession(principal, requesterIp, session.sessionId, statement, 1)
@@ -1423,4 +1427,11 @@ internal fun parseRequesterIp(clientAddr: String?): String? {
         a.count { it == ':' } == 1 -> a.substringBefore(':')            // v4:port
         else -> a                                                       // bare v4/v6 (no port)
     }.takeIf { it.isNotEmpty() }
+}
+
+/** The commands the proxy runs before this statement can be decided: Athena fetches the prepared statement `EXECUTE` names. */
+private fun StatementFacts.beforeDecideCommands(): List<ProxyCommand> {
+    if (!hasAthenaPreparedDefinitionNeed()) return emptyList()
+    val need = athenaPreparedDefinitionNeed
+    return listOf(proxyCommand { fetchAthenaPreparedDefinition = fetchAthenaPreparedDefinition { workgroup = need.workgroup; name = need.name } })
 }

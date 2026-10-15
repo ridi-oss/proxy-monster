@@ -81,10 +81,10 @@ data class Datasource(
     val description: String = "",
 ) {
     /** Whether an editor session on this datasource can set its default schema (POST …/default-schema). */
-    val defaultSchemaSettable: Boolean = engine.definition.defaultSchemaStatement != null
+    val defaultSchemaSettable: Boolean = engine.definition.defaultSchemaSettable
 
     /** Quotes an identifier in classification and other name fields, which are SQL identifier text. */
-    val identifierQuote: String = engine.definition.identifierQuote.toString()
+    val identifierQuote: String = engine.definition.identifierQuote
 
     /**
      * The same row with everything a caller would need to reach the proxy removed — the advertised address

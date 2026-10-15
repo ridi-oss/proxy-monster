@@ -17,7 +17,9 @@ import com.ridi.oss.proxymonster.athena.pb.AthenaResourceObservation
 import com.ridi.oss.proxymonster.athena.pb.NativeAuthorizationPhase
 import com.ridi.oss.proxymonster.athena.pb.athenaContextRef
 import com.ridi.oss.proxymonster.athena.pb.athenaNativeInstructions
-import com.ridi.oss.proxymonster.controlplane.engines.AthenaEngineDefinition
+import com.ridi.oss.proxymonster.analyzer.pb.column
+import com.ridi.oss.proxymonster.grpc.Engine
+import com.ridi.oss.proxymonster.probe.introspectedColumns
 import com.ridi.oss.proxymonster.grpc.EnfAction
 import com.ridi.oss.proxymonster.grpc.RequestAuthorization
 import com.ridi.oss.proxymonster.grpc.Verdict
@@ -31,6 +33,10 @@ internal const val NATIVE_NOT_AUTHORIZED = "native.not_authorized"
 internal const val NATIVE_INVALID_DESCRIPTOR = "native.invalid_descriptor"
 internal const val NATIVE_SCOPE_VIOLATION = "native.scope_violation"
 internal const val NATIVE_CONTEXT_UNAVAILABLE = "native.context_unavailable"
+
+/** [rawName], a literal Athena name (an API field, not SQL text), folded as the analyzer does; null when it cannot be normalized. */
+private fun athenaCanonicalName(rawName: String): String? =
+    introspectedColumns(Engine.ATHENA, null, listOf(column { catalog = rawName }))?.single()?.catalog
 
 private class Deny(val code: String) : RuntimeException(code, null, false, false)
 
@@ -135,7 +141,7 @@ private fun validateSubmissionScope(descriptor: AthenaNativeDescriptor, body: Ob
         if (!requested.isTextual) throw Deny(NATIVE_INVALID_DESCRIPTOR)
         return configured.isNotBlank() && canonical(requested.textValue()) == canonical(configured)
     }
-    val athenaName = { rawName: String -> AthenaEngineDefinition.canonicalName(rawName) ?: throw Deny(NATIVE_INVALID_DESCRIPTOR) }
+    val athenaName = { rawName: String -> athenaCanonicalName(rawName) ?: throw Deny(NATIVE_INVALID_DESCRIPTOR) }
     if (!inScope(body["WorkGroup"], target.defaultWorkgroup)) throw Deny(NATIVE_SCOPE_VIOLATION)
     if (!inScope(ctx?.get("Catalog"), target.defaultCatalog, athenaName)) throw Deny(NATIVE_SCOPE_VIOLATION)
     if (!inScope(ctx?.get("Database"), target.defaultDatabase, athenaName)) throw Deny(NATIVE_SCOPE_VIOLATION)
@@ -253,7 +259,7 @@ internal object AthenaOperations {
     /** [names] joined with `/`, each an Athena name in its canonical spelling. */
     private fun catalogPath(vararg names: String): (ObjectNode) -> String = { body -> names.joinToString("/") { athenaName(body.str(it)) } }
 
-    private fun athenaName(rawName: String): String = AthenaEngineDefinition.canonicalName(rawName) ?: throw invalid()
+    private fun athenaName(rawName: String): String = athenaCanonicalName(rawName) ?: throw invalid()
 
     private fun many(kind: String, ids: (ObjectNode) -> List<String>): (ObjectNode) -> List<Pair<String, String>> = { body -> ids(body).map { kind to it } }
     private fun none(): (ObjectNode) -> List<Pair<String, String>> = { emptyList() }

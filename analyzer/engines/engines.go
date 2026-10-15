@@ -50,6 +50,31 @@ type Engine struct {
 	normalizeRules func() normalizeRules
 	// configFailureDialect parses a SHOW while the engine config is incomplete; nil fails it closed.
 	configFailureDialect func() *dialects.Dialect
+
+	// connectionProperties are the ConnectionInfo keys the engine's proxies may publish: Athena region, workgroup.
+	connectionProperties []string
+	// catalogIsConnectionIndependent: one connection's catalog answers for all; false for Postgres pg_temp_*.
+	catalogIsConnectionIndependent bool
+	// checksTargetErrors: the proxy can prepare a statement on the target without running it.
+	checksTargetErrors bool
+	// needsCaseMode: typed names wait for the target to report MySQL lower_case_table_names.
+	needsCaseMode bool
+	// implicitColumns are on every table beyond the introspected ones: Postgres ctid tid, xmin xid.
+	implicitColumns []*pb.ImplicitColumn
+	// defaultSchemaPrefix starts the statement that sets a session's default schema: MySQL "USE ".
+	defaultSchemaPrefix string
+	// defaultSchema is the schema an unqualified table resolves to: MySQL the registered database, Postgres public.
+	defaultSchema func(registeredDbName string) string
+	// serverVersion reads a comparable version from version(): "8.0.mysql_aurora.3.04.0" -> 8.0, aurora.
+	serverVersion func(raw string) *pb.ServerVersion
+	// manifestSeries is the classification-manifest series of a version: MySQL 8.0.44 -> 8.0, Postgres 16.4 -> 16.
+	manifestSeries func(version string) string
+	// functionCatalog tiers introspected routines into the analyzer's function inventory.
+	functionCatalog func(e *Engine, routines []*pb.SchemaFunctions, version string) *pb.FunctionCatalog
+	// connectionInfoValid reports whether the engine's proxies may publish info.
+	connectionInfoValid func(e *Engine, info *pb.EngineConnectionInfo) bool
+	// analyzerConfig is the EngineConfig for one decision, or for a batch split; nil when a split cannot run yet.
+	analyzerConfig func(e *Engine, ds *pb.EngineDatasource, session *pb.SessionObservation, split bool) (*pb.EngineConfig, error)
 }
 
 var (
@@ -67,6 +92,15 @@ var (
 			return normalizeRules{dialect: d, wordDialect: d, rejectExecutableComments: true}
 		},
 		configFailureDialect: dialects.MySQL,
+
+		catalogIsConnectionIndependent: true, checksTargetErrors: true, needsCaseMode: true,
+		defaultSchemaPrefix: "USE ",
+		defaultSchema:       func(registeredDbName string) string { return registeredDbName },
+		serverVersion:       mysqlServerVersion,
+		manifestSeries:      mysqlManifestSeries,
+		functionCatalog:     mysqlFunctionCatalog,
+		connectionInfoValid: nativeConnectionInfoValid,
+		analyzerConfig:      mysqlAnalyzerConfig,
 	}
 	Postgres = &Engine{
 		WireName: "postgres", Proto: pb.Engine_POSTGRES, DefaultSchemaSettable: true,
@@ -84,6 +118,16 @@ var (
 			d := dialects.Postgres()
 			return normalizeRules{dialect: d, wordDialect: d, foldIdentifiers: true}
 		},
+
+		checksTargetErrors:  true,
+		implicitColumns:     postgresSystemColumns,
+		defaultSchemaPrefix: "SET search_path TO ",
+		defaultSchema:       func(string) string { return "public" },
+		serverVersion:       postgresServerVersion,
+		manifestSeries:      func(version string) string { return strings.SplitN(version, ".", 2)[0] },
+		functionCatalog:     postgresFunctionCatalog,
+		connectionInfoValid: nativeConnectionInfoValid,
+		analyzerConfig:      sessionAnalyzerConfig,
 	}
 	Athena = &Engine{
 		WireName: "athena", Proto: pb.Engine_ATHENA,
@@ -97,6 +141,15 @@ var (
 		normalizeRules: func() normalizeRules {
 			return normalizeRules{dialect: dialects.Athena(), wordDialect: dialects.Trino(), hiveDialect: dialects.Hive(), foldIdentifiers: true}
 		},
+
+		connectionProperties:           []string{"region", "workgroup", "catalog", "database"},
+		catalogIsConnectionIndependent: true,
+		defaultSchema:                  func(registeredDbName string) string { return registeredDbName },
+		serverVersion:                  athenaServerVersion,
+		manifestSeries:                 func(version string) string { return version },
+		functionCatalog:                athenaFunctionCatalog,
+		connectionInfoValid:            athenaConnectionInfoValid,
+		analyzerConfig:                 athenaAnalyzerConfig,
 	}
 	// All is every engine, MySQL first.
 	All = []*Engine{MySQL, Postgres, Athena}

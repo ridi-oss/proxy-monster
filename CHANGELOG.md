@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.1.34](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.33...server-v0.1.34) (2026-10-15)
+
+
+### Features
+
+* a participant's @-mention in a Slack thread adds a CC ([e011ad4](https://github.com/ridi-oss/proxy-monster/commit/e011ad492dcdfab3b893522b7f593dde79708744))
+* comments, CCs, timeline and close for role and rate-reset requests ([1e61bac](https://github.com/ridi-oss/proxy-monster/commit/1e61bac5a097f95314ae020ae73e598c10dc186c))
+* comments, LGTM, CCs and a timeline on query requests ([3f0a14b](https://github.com/ridi-oss/proxy-monster/commit/3f0a14bd5be775634702639144ae442deea7648d))
+* **cpgo:** act as the GitHub App in Go ([7b959a3](https://github.com/ridi-oss/proxy-monster/commit/7b959a3b863a7b746ce0f20de1779c20fa47ae4c))
+* **cpgo:** let Kotlin call Go over a loopback gRPC bridge ([fa6e082](https://github.com/ridi-oss/proxy-monster/commit/fa6e082fa7c1f137a1632ee2f61dabbff2160187))
+* list query requests the caller took part in ([10d5978](https://github.com/ridi-oss/proxy-monster/commit/10d59784bffa179a3be22d2bb2a62cde4697f719))
+* post query requests to Slack channels, with a per-user Review modal ([7e424c1](https://github.com/ridi-oss/proxy-monster/commit/7e424c14b48a4ca6b52140d762f2a06c6d6b0198))
+* separate approve from run, and let the requester run ([ae4b287](https://github.com/ridi-oss/proxy-monster/commit/ae4b28774f8408212f7f919d99f0145364b1dc47))
+* Slack notifications for role and rate-reset requests ([c3c84e8](https://github.com/ridi-oss/proxy-monster/commit/c3c84e8db2f8f9716929e9509b059671f25e9085))
+* Slack thread replies become comments, and the timeline reaches every thread ([f2fe559](https://github.com/ridi-oss/proxy-monster/commit/f2fe559e024f84cfdcb8da73eec34b9e126835ba))
+
+
+### Bug Fixes
+
+* **web:** show a query request that is not in the workflows list ([5e7baf9](https://github.com/ridi-oss/proxy-monster/commit/5e7baf9b401ab61134699658370007428f9d7d40))
+
+
+### Refactoring
+
+* **control-plane:** reach the GitHub App through the Go bridge ([9129579](https://github.com/ridi-oss/proxy-monster/commit/912957999cc0240d085ec10748ec92314b3e1ab9))
+
+
+### Documentation
+
+* write new control-plane code in Go, and reach Go from Kotlin over gRPC ([68ec648](https://github.com/ridi-oss/proxy-monster/commit/68ec648b5b653a812610fca6162b9a4d6b040832))
+
 ## [0.1.33](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.32...server-v0.1.33) (2026-10-14)
 
 

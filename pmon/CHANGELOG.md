@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.14](https://github.com/ridi-oss/proxy-monster/compare/pmon-v0.1.13...pmon-v0.1.14) (2026-10-15)
+
+
+### Features
+
+* **tray:** manage a remote's servers in Settings ([abc294f](https://github.com/ridi-oss/proxy-monster/commit/abc294f91e9031ce7b20183e3f8be7f0fcaa89ae))
+* **tray:** show the icon as signed in while any sign-in works ([077d376](https://github.com/ridi-oss/proxy-monster/commit/077d3767fa3966423cf8f9c2cb3f92249177de1f))
+
 ## [0.1.13](https://github.com/ridi-oss/proxy-monster/compare/pmon-v0.1.12...pmon-v0.1.13) (2026-10-13)
 
 

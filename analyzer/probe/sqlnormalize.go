@@ -42,6 +42,60 @@ var normalizeRulesByWireName = map[string]func() normalizeRules{
 	},
 }
 
+// lexeme is one token of a statement walked with its engine's rules: its raw text, the dialect that
+// classifies it as a word, and the text between it and the previous token.
+type lexeme struct {
+	token       tokens.Token
+	raw, gap    string
+	wordDialect *dialects.Dialect
+}
+
+// lex walks sql's tokens in wireName's engine rules, without trailing semicolons. false means the engine is
+// unknown, sql does not tokenize, a token falls outside it, or (MySQL) it holds an executable comment.
+func lex(sql, wireName string) (normalizeRules, []lexeme, bool) {
+	if !utf8.ValidString(sql) || strings.IndexByte(sql, 0) >= 0 {
+		return normalizeRules{}, nil, false
+	}
+	newRules, known := normalizeRulesByWireName[wireName]
+	if !known {
+		return normalizeRules{}, nil, false
+	}
+	rules := newRules()
+	tokenStream, err := sqlglot.Tokenize(sql, rules.dialect)
+	if err != nil {
+		return rules, nil, false
+	}
+	for len(tokenStream) > 0 && tokenStream[len(tokenStream)-1].TokenType == tokens.SEMICOLON {
+		tokenStream = tokenStream[:len(tokenStream)-1]
+	}
+	runes := []rune(sql)
+	previousEnd := -1
+	out := make([]lexeme, 0, len(tokenStream))
+	wordDialect := rules.wordDialect
+	for _, token := range tokenStream {
+		if rules.hiveDialect != nil && token.TokenType == tokens.HIVE_TOKEN_STREAM {
+			wordDialect = rules.hiveDialect
+			continue
+		}
+		if token.Start < 0 || token.End < token.Start || token.Start <= previousEnd || token.End >= len(runes) {
+			return rules, nil, false
+		}
+		gap := runes[previousEnd+1 : token.Start]
+		if rules.rejectExecutableComments && (containsUnsafeMySQLComment(gap) || token.TokenType == tokens.HINT) {
+			return rules, nil, false
+		}
+		out = append(out, lexeme{token: token, raw: string(runes[token.Start : token.End+1]), gap: string(gap), wordDialect: wordDialect})
+		previousEnd = token.End
+		if rules.hiveDialect != nil && token.TokenType == tokens.SEMICOLON {
+			wordDialect = rules.wordDialect
+		}
+	}
+	if rules.rejectExecutableComments && containsUnsafeMySQLComment(runes[previousEnd+1:]) {
+		return rules, nil, false
+	}
+	return rules, out, true
+}
+
 // SqlNormalize produces a lexer-only canonical form suitable for exact approval matching.
 // It is total and fail-closed so that no panic can cross the native binding boundary.
 func SqlNormalize(sql, dialect string) (normalized string, ok bool) {
@@ -52,42 +106,16 @@ func SqlNormalize(sql, dialect string) (normalized string, ok bool) {
 		}
 	}()
 
-	if !utf8.ValidString(sql) || strings.IndexByte(sql, 0) >= 0 {
+	rules, lexed, ok := lex(sql, dialect)
+	if !ok {
 		return "", false
 	}
-	newRules, known := normalizeRulesByWireName[dialect]
-	if !known {
-		return "", false
-	}
-	rules := newRules()
 	d := rules.dialect
-	tokenStream, err := sqlglot.Tokenize(sql, d)
-	if err != nil {
-		return "", false
-	}
-
-	for len(tokenStream) > 0 && tokenStream[len(tokenStream)-1].TokenType == tokens.SEMICOLON {
-		tokenStream = tokenStream[:len(tokenStream)-1]
-	}
-	runes := []rune(sql)
-	previousEnd := -1
 	previousWasDot := false
-	lexemes := make([]string, 0, len(tokenStream))
-	wordDialect := rules.wordDialect
-	for _, token := range tokenStream {
-		if rules.hiveDialect != nil && token.TokenType == tokens.HIVE_TOKEN_STREAM {
-			wordDialect = rules.hiveDialect
-			continue
-		}
-		if token.Start < 0 || token.End < token.Start || token.Start <= previousEnd || token.End >= len(runes) {
-			return "", false
-		}
-		if rules.rejectExecutableComments && (containsUnsafeMySQLComment(runes[previousEnd+1:token.Start]) || token.TokenType == tokens.HINT) {
-			return "", false
-		}
-
-		raw := string(runes[token.Start : token.End+1])
-		if isWordToken(raw, token.TokenType, wordDialect) {
+	lexemes := make([]string, 0, len(lexed))
+	for _, l := range lexed {
+		raw := l.raw
+		if isWordToken(raw, l.token.TokenType, l.wordDialect) {
 			if rules.foldIdentifiers {
 				raw = d.FoldIdentifierName(raw, false)
 			} else if d.IsReservedKeyword(raw) && !previousWasDot {
@@ -100,14 +128,7 @@ func SqlNormalize(sql, dialect string) (normalized string, ok bool) {
 			}
 		}
 		lexemes = append(lexemes, raw)
-		previousEnd = token.End
-		previousWasDot = token.TokenType == tokens.DOT
-		if rules.hiveDialect != nil && token.TokenType == tokens.SEMICOLON {
-			wordDialect = rules.wordDialect
-		}
-	}
-	if rules.rejectExecutableComments && containsUnsafeMySQLComment(runes[previousEnd+1:]) {
-		return "", false
+		previousWasDot = l.token.TokenType == tokens.DOT
 	}
 
 	if len(lexemes) == 0 {

@@ -3,13 +3,13 @@ package boot
 import (
 	"context"
 	"errors"
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	"log/slog"
 	"sync/atomic"
 	"time"
 
 	"github.com/ridi-oss/proxy-monster/goproxy/config"
 	"github.com/ridi-oss/proxy-monster/goproxy/cp"
-	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
@@ -20,7 +20,7 @@ type datasourceReconciler struct {
 	configClient  *cp.Client
 	cfg           *config.Config
 	targetDb      spi.Db
-	dialect       engine.Dialect
+	engine        *engines.Engine
 	certChain     func() *string
 	registerSlots chan struct{}
 	refreshBatch  atomic.Pointer[refreshBatch]
@@ -31,12 +31,12 @@ type refreshBatch struct {
 	ok   bool
 }
 
-func newDatasourceReconciler(configClient *cp.Client, cfg *config.Config, targetDb spi.Db, dialect engine.Dialect, certChain func() *string, resyncConcurrency int) *datasourceReconciler {
+func newDatasourceReconciler(configClient *cp.Client, cfg *config.Config, targetDb spi.Db, engine *engines.Engine, certChain func() *string, resyncConcurrency int) *datasourceReconciler {
 	return &datasourceReconciler{
 		configClient:  configClient,
 		cfg:           cfg,
 		targetDb:      targetDb,
-		dialect:       dialect,
+		engine:        engine,
 		certChain:     certChain,
 		registerSlots: make(chan struct{}, resyncConcurrency),
 	}
@@ -56,7 +56,7 @@ func (d *datasourceReconciler) tryRegisterAndPushCatalog() error {
 func (d *datasourceReconciler) registerAndPushCatalog() error {
 	for attempt := 0; attempt < bootRegisterAttempts; attempt++ {
 		target := d.targetDb.TargetDb()
-		err := d.configClient.Register(d.dialect.Engine().Proto, target.Host, target.Port, target.Db, d.cfg.DatasourceTags, d.cfg.AdvertiseAddr, d.certChain(), d.cfg.TLSEnabled(), d.targetDb.ConnectionInfo(), &d.cfg.DatasourceDescription)
+		err := d.configClient.Register(d.engine.Proto, target.Host, target.Port, target.Db, d.cfg.DatasourceTags, d.cfg.AdvertiseAddr, d.certChain(), d.cfg.TLSEnabled(), d.targetDb.ConnectionInfo(), &d.cfg.DatasourceDescription)
 		if errors.Is(err, cp.ErrIncompatibleControlPlane) {
 			return err
 		}

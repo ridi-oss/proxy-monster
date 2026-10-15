@@ -14,7 +14,6 @@ import (
 
 type refetchDb struct{}
 
-func (refetchDb) Dialect() Dialect            { return MySQL }
 func (refetchDb) NamespaceProbeSQL() string   { return "namespace" }
 func (refetchDb) SupportsTempOverlay() bool   { return false }
 func (refetchDb) TempColumnsProbeSQL() string { return "" }

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"net"
 	"reflect"
@@ -17,7 +18,6 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/ridi-oss/proxy-monster/goproxy/cp"
-	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/run"
@@ -282,7 +282,7 @@ CREATE TABLE pm_tdetail_plain (
 ) ENGINE=InnoDB;`)
 
 	tableDetailClient, tableDetailFake := tableDetailStartFakeCP(t)
-	tableDetailTarget := mustDb(t, engine.MySQL, tableDetailTargetDb(tableDetailDBTargetDb))
+	tableDetailTarget := mustDb(t, engines.MySQL, tableDetailTargetDb(tableDetailDBTargetDb))
 
 	tableDetailUsersPayload := tableDetailRequireResult(t, tableDetailRun(
 		t, tableDetailClient, tableDetailFake, tableDetailTarget,
@@ -371,7 +371,7 @@ CREATE TABLE pm_tdetail_it.pm_tdetail_plain (
 );`)
 
 	tableDetailClient, tableDetailFake := tableDetailStartFakeCP(t)
-	tableDetailTarget := mustDb(t, engine.Postgres, tableDetailTargetDb(tableDetailDBTargetDb))
+	tableDetailTarget := mustDb(t, engines.Postgres, tableDetailTargetDb(tableDetailDBTargetDb))
 
 	tableDetailUsersPayload := tableDetailRequireResult(t, tableDetailRun(
 		t, tableDetailClient, tableDetailFake, tableDetailTarget,

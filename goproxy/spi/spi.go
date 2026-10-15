@@ -5,7 +5,9 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	"net/netip"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -207,11 +209,11 @@ type Classification struct {
 	MaskFnName *string  `json:"maskFnName"`
 }
 
-// Provider is one dialect's registration: its identity and how to open a Db on a target. The pure per-dialect
-// facts (registration engine, default ports, placeholder, schema resolution) live on engine.Dialect; a new
-// dialect is one Provider implementation plus one registry row.
+// Provider is one engine's registration: its identity and how to open a Db on a target. The engine's own
+// facts (default ports, placeholder, schema resolution) live on *engines.Engine; a new engine is one Provider
+// implementation plus one registry row.
 type Provider interface {
-	Dialect() engine.Dialect
+	Engine() *engines.Engine
 	NewDb(target TargetDb) (Db, error)
 }
 
@@ -236,32 +238,32 @@ type Db interface {
 // Registry resolves the canonical PM_ENGINE name to its Provider. Consumers depend on this interface and
 // receive it from the executable composition root; they never import the concrete dialect wiring package.
 type Registry interface {
-	For(engine.Dialect) (Provider, error)
+	For(*engines.Engine) (Provider, error)
 	Names() []string
 }
 
 type registry struct {
-	providers map[engine.Dialect]Provider
+	providers map[*engines.Engine]Provider
 	names     []string
 }
 
-// NewRegistry constructs an immutable provider registry. Duplicate or invalid dialect rows are rejected.
+// NewRegistry constructs an immutable provider registry. Duplicate rows and rows outside engines.All are rejected.
 func NewRegistry(providers ...Provider) (Registry, error) {
-	registered := make(map[engine.Dialect]Provider, len(providers))
+	registered := make(map[*engines.Engine]Provider, len(providers))
 	names := make([]string, 0, len(providers))
 	for i, provider := range providers {
 		if provider == nil {
 			return nil, fmt.Errorf("spi: provider row %d is nil", i)
 		}
-		dialect := provider.Dialect()
-		if !dialect.Valid() {
-			return nil, fmt.Errorf("spi: provider row %d has an invalid dialect", i)
+		e := provider.Engine()
+		if !slices.Contains(engines.All, e) {
+			return nil, fmt.Errorf("spi: provider row %d has no known engine", i)
 		}
-		if _, exists := registered[dialect]; exists {
-			return nil, fmt.Errorf("spi: duplicate provider for engine %q", dialect.Engine().WireName)
+		if _, exists := registered[e]; exists {
+			return nil, fmt.Errorf("spi: duplicate provider for engine %q", e.WireName)
 		}
-		registered[dialect] = provider
-		names = append(names, dialect.Engine().WireName)
+		registered[e] = provider
+		names = append(names, e.WireName)
 	}
 	sort.Strings(names)
 	return &registry{providers: registered, names: names}, nil
@@ -276,10 +278,10 @@ func MustRegistry(providers ...Provider) Registry {
 	return registry
 }
 
-func (r *registry) For(dialect engine.Dialect) (Provider, error) {
-	provider, ok := r.providers[dialect]
+func (r *registry) For(e *engines.Engine) (Provider, error) {
+	provider, ok := r.providers[e]
 	if !ok {
-		return nil, fmt.Errorf("unsupported engine %q (registered: %s)", dialect.Engine().WireName, strings.Join(r.names, ", "))
+		return nil, fmt.Errorf("unsupported engine (registered: %s)", strings.Join(r.names, ", "))
 	}
 	return provider, nil
 }

@@ -139,7 +139,7 @@ func Run(registry spi.Registry) error {
 		configClient,
 		cfg,
 		targetDb,
-		provider.Dialect(),
+		provider.Engine(),
 		certChain,
 		maxResyncConcurrency,
 	)
@@ -202,7 +202,7 @@ func Run(registry spi.Registry) error {
 	}()
 
 	server := targetDb.NewWireServer(cfg.Listen(), enforcementClient, tlsProvider)
-	slog.Info("starting proxy-monster data plane", "engine", cfg.Engine, "control_plane", cfg.ControlPlaneGrpcTarget)
+	slog.Info("starting proxy-monster data plane", "engine", cfg.EngineName, "control_plane", cfg.ControlPlaneGrpcTarget)
 
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- server.Start() }()

@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"slices"
 	"strconv"
 	"time"
 
@@ -20,37 +19,6 @@ import (
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"google.golang.org/protobuf/proto"
 )
-
-// Dialect is the typed datasource engine: an index into engines.All, so MySQL is the zero value.
-type Dialect int
-
-const (
-	MySQL Dialect = iota
-	Postgres
-	Athena
-)
-
-// unknownEngine is what an unrecognized Dialect reports: no proto engine, so the control plane rejects it.
-var unknownEngine = &engines.Engine{WireName: "unknown"}
-
-// ParseDialect maps a canonical, already-lowercased wire engine string to its Dialect; an unknown one is
-// invalid and an error.
-func ParseDialect(raw string) (Dialect, error) {
-	e, err := engines.Parse(raw)
-	return Dialect(slices.Index(engines.All, e)), err
-}
-
-// Engine is the dialect's shared engine facts.
-func (d Dialect) Engine() *engines.Engine {
-	if !d.Valid() {
-		return unknownEngine
-	}
-	return engines.All[d]
-}
-
-// Valid reports whether this is a recognized engine dialect. Config validation uses it so the raw
-// PM_ENGINE string is parsed to a Dialect exactly once, at the config boundary.
-func (d Dialect) Valid() bool { return d >= 0 && int(d) < len(engines.All) }
 
 // ---- Mechanical masking: render the control plane's chosen masks onto result rows ----
 

@@ -23,6 +23,7 @@ import (
 	// The named mysql import both registers the "mysql" driver (via init()) AND gives us mysql.Config
 	// for safe DSN construction, so no separate blank import is needed.
 	mysqldriver "github.com/go-sql-driver/mysql"
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
@@ -160,9 +161,11 @@ func Run(ctx context.Context, db *sql.DB, dbImpl engine.Db, probe NamespaceProbe
 	// The dialect's own engine.Db owns the fold, so this call site names no dialect. Only the MySQL
 	// namespace probe sets mysqlLowerCaseTableNames (the Postgres probe returns nil), and it carries the
 	// fold mode MySQL's NormalizeColumns is gated by; Postgres ignores the argument.
-	lctnMode := 0
+	var lctnMode engines.CaseMode
 	if catalog.MysqlLowerCaseTableNames != nil {
-		lctnMode = int(catalog.GetMysqlLowerCaseTableNames())
+		if lctnMode, err = engines.ReportedCaseMode(int(catalog.GetMysqlLowerCaseTableNames())); err != nil {
+			return nil, err
+		}
 	}
 	phase = time.Now()
 	columns = dbImpl.NormalizeColumns(lctnMode, columns)
@@ -204,7 +207,7 @@ func Run(ctx context.Context, db *sql.DB, dbImpl engine.Db, probe NamespaceProbe
 
 type schemaNamePair struct{ schema, name string }
 
-func introspectRoutines(conn *sql.Conn, dbImpl engine.Db, lctnMode int) ([]*analyzerpb.SchemaFunctions, error) {
+func introspectRoutines(conn *sql.Conn, dbImpl engine.Db, lctnMode engines.CaseMode) ([]*analyzerpb.SchemaFunctions, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
 	defer cancel()
 	rows, err := conn.QueryContext(ctx, dbImpl.RoutinesSQL())
@@ -230,7 +233,7 @@ func introspectRoutines(conn *sql.Conn, dbImpl engine.Db, lctnMode int) ([]*anal
 
 // foldFunctionSchemas groups (schema, function) pairs by their canonical schema, folding the schema
 // through the dialect's NormalizeColumns and the function name through its FoldFunctionName.
-func foldFunctionSchemas(dbImpl engine.Db, lctnMode int, pairs []schemaNamePair) []*analyzerpb.SchemaFunctions {
+func foldFunctionSchemas(dbImpl engine.Db, lctnMode engines.CaseMode, pairs []schemaNamePair) []*analyzerpb.SchemaFunctions {
 	if len(pairs) == 0 {
 		return nil
 	}
@@ -274,7 +277,7 @@ func groupBySchema(pairs []schemaNamePair) []*analyzerpb.SchemaFunctions {
 // discarding those parts — the fold decision is schema-name-only (verified empirically: stable
 // regardless of the table argument). One call folds the whole list, so a dialect that memoizes
 // per-(schema, table) work does it once here too.
-func normalizeSchemas(dbImpl engine.Db, lctnMode int, schemas []string) []string {
+func normalizeSchemas(dbImpl engine.Db, lctnMode engines.CaseMode, schemas []string) []string {
 	placeholders := make([]*analyzerpb.Column, len(schemas))
 	for i, s := range schemas {
 		placeholders[i] = &analyzerpb.Column{Schema: s, Table: "_", Column: "_"}
@@ -308,7 +311,7 @@ func ProbeMySQLNamespace(ctx context.Context, conn *sql.Conn, targetDb string) (
 	if !matches.Valid || !matches.Bool {
 		return nil, fmt.Errorf("introspect: MySQL current database %q does not match bound database %q", currentDb.String, targetDb)
 	}
-	return &pb.CatalogRequest{DefaultSchemas: []string{currentDb.String}, MysqlLowerCaseTableNames: proto.Int32(int32(lctn)), CurrentCatalog: "def"}, nil
+	return &pb.CatalogRequest{DefaultSchemas: []string{currentDb.String}, MysqlLowerCaseTableNames: proto.Int32(int32(lctn)), CurrentCatalog: engines.MySQL.CatalogName("").String()}, nil
 }
 
 // ReadPostgresCatalog returns current_database(); the catalog every fragment and temp column from this

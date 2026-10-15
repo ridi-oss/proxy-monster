@@ -258,10 +258,10 @@ func NewRegistry(providers ...Provider) (Registry, error) {
 			return nil, fmt.Errorf("spi: provider row %d has an invalid dialect", i)
 		}
 		if _, exists := registered[dialect]; exists {
-			return nil, fmt.Errorf("spi: duplicate provider for engine %q", dialect.WireName())
+			return nil, fmt.Errorf("spi: duplicate provider for engine %q", dialect.Engine().WireName)
 		}
 		registered[dialect] = provider
-		names = append(names, dialect.WireName())
+		names = append(names, dialect.Engine().WireName)
 	}
 	sort.Strings(names)
 	return &registry{providers: registered, names: names}, nil
@@ -279,7 +279,7 @@ func MustRegistry(providers ...Provider) Registry {
 func (r *registry) For(dialect engine.Dialect) (Provider, error) {
 	provider, ok := r.providers[dialect]
 	if !ok {
-		return nil, fmt.Errorf("unsupported engine %q (registered: %s)", dialect.WireName(), strings.Join(r.names, ", "))
+		return nil, fmt.Errorf("unsupported engine %q (registered: %s)", dialect.Engine().WireName, strings.Join(r.names, ", "))
 	}
 	return provider, nil
 }

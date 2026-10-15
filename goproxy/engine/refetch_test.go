@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 )
@@ -37,7 +38,7 @@ func (refetchDb) SchemaRoutinesSQL(schema string) string { return "routines:" + 
 func (refetchDb) LowerCaseTableNamesProbeSQL() string    { return "" }
 func (refetchDb) FoldFunctionName(name string) string    { return name }
 
-func (refetchDb) NormalizeColumns(_ int, columns []*analyzerpb.Column) []*analyzerpb.Column {
+func (refetchDb) NormalizeColumns(_ engines.CaseMode, columns []*analyzerpb.Column) []*analyzerpb.Column {
 	return columns
 }
 
@@ -118,13 +119,13 @@ func TestRefetcherUnconditionalFetch(t *testing.T) {
 // was called with and uppercases every field, an arbitrary but easy-to-assert-on transform.
 type normalizingRefetchDb struct {
 	refetchDb
-	gotMode *int
+	gotMode *engines.CaseMode
 }
 
 func (d *normalizingRefetchDb) LowerCaseTableNamesProbeSQL() string { return "lctn" }
 func (d *normalizingRefetchDb) FoldFunctionName(name string) string { return name }
 
-func (d *normalizingRefetchDb) NormalizeColumns(mode int, columns []*analyzerpb.Column) []*analyzerpb.Column {
+func (d *normalizingRefetchDb) NormalizeColumns(mode engines.CaseMode, columns []*analyzerpb.Column) []*analyzerpb.Column {
 	d.gotMode = &mode
 	out := make([]*analyzerpb.Column, len(columns))
 	for i, c := range columns {
@@ -156,11 +157,34 @@ func TestRefetcherProbesModeAndNormalizesBeforePush(t *testing.T) {
 	if err := r.Run(&pb.Refetch{Schema: "app", Catalog: "def"}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if fakeDb.gotMode == nil || *fakeDb.gotMode != 2 {
+	if fakeDb.gotMode == nil {
+		t.Fatal("NormalizeColumns was not called")
+	}
+	if n, ok := fakeDb.gotMode.LowerCaseTableNames(); !ok || n != 2 {
 		t.Fatalf("NormalizeColumns called with mode %v, want 2 (from the lctn probe)", fakeDb.gotMode)
 	}
 	if len(pushed.Columns) != 1 || pushed.Columns[0].GetSchema() != "APP" || pushed.Columns[0].GetTable() != "T" || pushed.Columns[0].GetColumn() != "C" {
 		t.Fatalf("pushed columns = %+v, want the NormalizeColumns-transformed (uppercased) fragment", pushed.Columns)
+	}
+}
+
+func TestRefetcherFailsWhenTheCaseModeIsUnknown(t *testing.T) {
+	r := Refetcher{
+		Catalog: "def",
+		Db:      &normalizingRefetchDb{},
+		Probe: func(sql string, columns int) ([][]*string, error) {
+			if sql == "lctn" {
+				return nil, errors.New("lost connection")
+			}
+			return fragmentRows("app"), nil
+		},
+		Push: func(*pb.SchemaFragmentPush) (uint64, error) {
+			t.Fatal("a fragment folded under a guessed mode must not be pushed")
+			return 0, nil
+		},
+	}
+	if err := r.Run(&pb.Refetch{Schema: "app", Catalog: "def"}); err == nil || !strings.Contains(err.Error(), "lower_case_table_names") {
+		t.Fatalf("Run error = %v", err)
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
@@ -335,16 +336,17 @@ func execTargetDbSet(conn net.Conn, sql string) error {
 // under — no gap for a mid-session flip to slip a statement past the wrong analyzer mode. The trade-off is
 // that interposing this SELECT resets statement-scoped diagnostics such as ROW_COUNT()/FOUND_ROWS() between
 // client statements — accepted to close the fail-open.
-const mysqlSessionProbeSQL = "SELECT DATABASE(), @@session.character_set_client, @@session.character_set_connection, @@session.character_set_results, @@session.sql_mode"
+const mysqlSessionProbeSQL = "SELECT DATABASE(), @@session.character_set_client, @@session.character_set_connection, @@session.character_set_results, @@session.sql_mode, @@lower_case_table_names"
 
 // interpretSessionProbeRow validates the three charset columns of a mysqlSessionProbeSQL row (failing closed
 // if any left UTF-8) and classifies its sql_mode column (failing closed on any lexer-changing flag the
 // analyzer cannot model — see classifyMySQLSqlMode). It returns the namespace — the current database, or
 // empty when none is selected — and whether the session runs under ANSI_QUOTES (forwarded so the analyzer
-// masks a `"`-quoted column).
+// masks a `"`-quoted column). The database is in its canonical spelling: under lower_case_table_names=2,
+// DATABASE() reports `Goods` as the client wrote it while the catalog keys it `goods`.
 func interpretSessionProbeRow(values []*string) (namespace []string, ansiQuotes bool, err error) {
-	if len(values) != 5 {
-		return nil, false, fmt.Errorf("session probe returned %d columns, want 5", len(values))
+	if len(values) != 6 {
+		return nil, false, fmt.Errorf("session probe returned %d columns, want 6", len(values))
 	}
 	for i := 1; i <= 3; i++ {
 		if values[i] == nil || !isSafeMySQLCharset(*values[i]) {
@@ -361,7 +363,18 @@ func interpretSessionProbeRow(values []*string) (namespace []string, ansiQuotes 
 	if values[0] == nil {
 		return []string{}, ansiQuotes, nil
 	}
-	return mysqlNamespace(*values[0]), ansiQuotes, nil
+	if values[5] == nil {
+		return nil, false, errors.New("session probe returned no lower_case_table_names")
+	}
+	n, err := strconv.Atoi(*values[5])
+	if err != nil {
+		return nil, false, fmt.Errorf("session probe returned invalid lower_case_table_names %q", *values[5])
+	}
+	mode, err := engines.ReportedCaseMode(n)
+	if err != nil {
+		return nil, false, fmt.Errorf("session probe: %w", err)
+	}
+	return mysqlNamespace(engines.MySQL.IntrospectedSchema(mode, &enginepb.Column{Schema: *values[0]}).String()), ansiQuotes, nil
 }
 
 // textResultCollector decodes one COM_QUERY text result for probes and run execution.
@@ -524,7 +537,7 @@ func runInternalQuery(targetDb net.Conn, deprecateEOF bool, sql string, expected
 // its live sql_mode has ANSI_QUOTES active, failing closed on an unsafe charset or a non-modeled
 // lexer-changing sql_mode flag.
 func probeNamespace(targetDb net.Conn, deprecateEOF bool) (namespace []string, ansiQuotes bool, err error) {
-	rows, err := runInternalQuery(targetDb, deprecateEOF, mysqlSessionProbeSQL, 5)
+	rows, err := runInternalQuery(targetDb, deprecateEOF, mysqlSessionProbeSQL, 6)
 	if err != nil {
 		return nil, false, err
 	}
@@ -546,7 +559,7 @@ func probeSession(targetDb net.Conn, deprecateEOF bool) (engine.SessionObservati
 
 func mysqlSession(namespace []string, ansiQuotes bool) engine.SessionObservation {
 	return engine.SessionObservation{
-		CurrentCatalog:     "def",
+		CurrentCatalog:     engines.MySQL.CatalogName("").String(),
 		Namespace:          namespace,
 		SessionObservation: &enginepb.SessionObservation{Engine: &enginepb.SessionObservation_Mysql{Mysql: &enginepb.MySqlSession{AnsiQuotes: ansiQuotes}}},
 	}

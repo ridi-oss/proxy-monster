@@ -50,3 +50,43 @@ func TestMySQLQualifiedPublicSchemaIsLiteral(t *testing.T) {
 		})
 	}
 }
+
+func TestMySQLTableDetailNamesAreCanonical(t *testing.T) {
+	database := dbtest.MySQL(t)
+	seed := dbtest.OpenMySQL(t, "")
+	for _, statement := range []string{
+		"CREATE DATABASE IF NOT EXISTS app",
+		"CREATE TABLE app.Parent (ID INT PRIMARY KEY)",
+		"CREATE TABLE app.Mixed (Email VARCHAR(64), ParentID INT, INDEX by_email (Email), FOREIGN KEY (ParentID) REFERENCES app.Parent (ID))",
+	} {
+		if _, err := seed.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		for _, statement := range []string{"DROP TABLE app.Mixed", "DROP TABLE app.Parent"} {
+			if _, err := seed.Exec(statement); err != nil {
+				t.Error(err)
+			}
+		}
+	})
+	target := openDb(t, engine.MySQL, spi.TargetDb{Host: database.Host, Port: database.Port, Db: "app", User: database.User, Password: database.Password})
+	detail, err := target.ReadTableDetail(context.Background(), &enginepb.ObjectRef{Catalog: "def", Schema: "app", Table: "Mixed"})
+	if err != nil || detail == nil {
+		t.Fatalf("detail: %v %v", detail, err)
+	}
+	if len(detail.Columns) != 2 || detail.Columns[0].Name != "email" || detail.Columns[1].Name != "parentid" {
+		t.Fatalf("columns: %+v", detail.Columns)
+	}
+	if len(detail.ForeignKeys) != 1 || detail.ForeignKeys[0].SourceColumns[0] != "parentid" ||
+		detail.ForeignKeys[0].TargetTable != "Parent" || detail.ForeignKeys[0].TargetColumns[0] != "id" {
+		t.Fatalf("foreign keys: %+v", detail.ForeignKeys)
+	}
+	for _, index := range detail.Indexes {
+		for _, column := range index.Columns {
+			if column.Name != "email" && column.Name != "parentid" {
+				t.Fatalf("index column %q is not canonical", column.Name)
+			}
+		}
+	}
+}

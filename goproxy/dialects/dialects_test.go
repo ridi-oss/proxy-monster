@@ -100,7 +100,7 @@ func TestRegistryIntrospectDelegates(t *testing.T) {
 
 func TestNewWireServerStartsExpectedProtocol(t *testing.T) {
 	for _, dialect := range []engine.Dialect{engine.MySQL, engine.Postgres} {
-		t.Run(dialect.WireName(), func(t *testing.T) {
+		t.Run(dialect.Engine().WireName, func(t *testing.T) {
 			provider, _ := dialects.For(dialect)
 			targetDb, err := provider.NewDb(spi.TargetDb{})
 			if err != nil {

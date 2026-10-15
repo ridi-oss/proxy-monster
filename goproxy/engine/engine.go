@@ -11,143 +11,46 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"strconv"
 	"time"
 
-	// The shared proxymonster.v1.Engine enum (engine.proto) is generated once, into analyzer/probe/pb —
-	// goproxy links analyzer/probe into this same binary in-process (introspect.go, db.go), and two
-	// independently-generated copies of the same .proto file panic the protobuf runtime's global file
-	// registry at init. controlplane.proto's own generated code (goproxy/internal/pb) already resolves
-	// its Engine field to this same package (see goproxy/buf.gen.yaml's Mengine.proto= mapping); this
-	// import is the same resolution for this file's hand-written Dialect.Proto().
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"google.golang.org/protobuf/proto"
 )
 
-// Dialect is the typed datasource engine — the target-DB SQL dialect and the registration identity are the
-// same fact. It is the single home for every "is this MySQL or Postgres?" decision, so nothing else
-// compares an engine string literal. MySQL is the priority engine (iota 0, listed first everywhere).
+// Dialect is the typed datasource engine: an index into engines.All, so MySQL is the zero value.
 type Dialect int
 
 const (
 	MySQL Dialect = iota
 	Postgres
 	Athena
-	// invalidDialect is the fail-closed value ParseDialect returns for an unrecognized engine; both
-	// IsMySQL and IsPostgres report false for it.
-	invalidDialect Dialect = -1
 )
 
-// ParseDialect maps a canonical registration/wire engine string to its Dialect, fail-closed. Callers pass
-// the already-lowercased wire string ("mysql" | "postgres"); the match is case-sensitive to mirror the
-// config boundary (config.Load lowercases PM_ENGINE) — an unrecognized value is an error, never a silent
-// default.
+// unknownEngine is what an unrecognized Dialect reports: no proto engine, so the control plane rejects it.
+var unknownEngine = &engines.Engine{WireName: "unknown"}
+
+// ParseDialect maps a canonical, already-lowercased wire engine string to its Dialect; an unknown one is
+// invalid and an error.
 func ParseDialect(raw string) (Dialect, error) {
-	switch raw {
-	case "mysql":
-		return MySQL, nil
-	case "postgres":
-		return Postgres, nil
-	case "athena":
-		return Athena, nil
-	default:
-		return invalidDialect, fmt.Errorf("unsupported engine %q (expected mysql, postgres, or athena)", raw)
-	}
+	e, err := engines.Parse(raw)
+	return Dialect(slices.Index(engines.All, e)), err
 }
 
-// WireName is the canonical registration/wire string for the dialect ("mysql" | "postgres").
-func (d Dialect) WireName() string {
-	switch d {
-	case MySQL:
-		return "mysql"
-	case Postgres:
-		return "postgres"
-	case Athena:
-		return "athena"
-	default:
-		return fmt.Sprintf("Dialect(%d)", int(d))
+// Engine is the dialect's shared engine facts.
+func (d Dialect) Engine() *engines.Engine {
+	if !d.Valid() {
+		return unknownEngine
 	}
+	return engines.All[d]
 }
 
-// IsMySQL reports whether this is the MySQL dialect.
-//
-// Calling this to branch behavior at a call site is almost always wrong: per-dialect behavior belongs in
-// a method on Dialect (Proto, Placeholder, DefaultProxyPort, …), so adding a future engine means
-// implementing the type's methods, not hunting down scattered call-site branches.
-// Kept only for a genuinely local one-off.
-func (d Dialect) IsMySQL() bool { return d == MySQL }
-
-// IsPostgres reports whether this is the Postgres dialect. See IsMySQL: prefer a method on Dialect over
-// branching on this at a call site.
-func (d Dialect) IsPostgres() bool { return d == Postgres }
-
-// Valid reports whether this is a recognized engine dialect — false only for the fail-closed sentinel
-// ParseDialect returns for unknown input. Config validation uses it so the raw PM_ENGINE string is parsed
-// to a Dialect exactly once (at the config boundary), never re-parsed downstream.
-func (d Dialect) Valid() bool { return d != invalidDialect }
-
-// Proto maps the dialect to its protobuf Engine for the registration RPC, fail-closed: an unrecognized
-// dialect maps to ENGINE_UNSPECIFIED so the control plane rejects it rather than defaulting to a real
-// engine.
-func (d Dialect) Proto() enginepb.Engine {
-	switch d {
-	case MySQL:
-		return enginepb.Engine_MYSQL
-	case Postgres:
-		return enginepb.Engine_POSTGRES
-	case Athena:
-		return enginepb.Engine_ATHENA
-	default:
-		return enginepb.Engine_ENGINE_UNSPECIFIED
-	}
-}
-
-// Placeholder renders the bind-parameter placeholder for the nth (1-based) parameter in this dialect's
-// SQL: MySQL uses positional "?", Postgres uses "$n". It is the single home for the "? vs $n" difference,
-// so no query builder branches on the dialect itself.
-func (d Dialect) Placeholder(n int) string {
-	switch d {
-	case MySQL:
-		return "?"
-	case Postgres:
-		return fmt.Sprintf("$%d", n)
-	default:
-		return "?"
-	}
-}
-
-// DefaultProxyPort is the proxy's default client-facing listen port for this dialect when PM_PROXY_PORT is
-// unset — MySQL 6033, Postgres 6432 (an unrecognized dialect falls back to the MySQL default; boot rejects
-// it before the port is used).
-func (d Dialect) DefaultProxyPort() int {
-	switch d {
-	case MySQL:
-		return 6033
-	case Postgres:
-		return 6432
-	case Athena:
-		return 6443
-	default:
-		return 6033
-	}
-}
-
-// DefaultTargetPort is the proxy's default target DB port for this dialect when PM_TARGET_PORT is unset —
-// MySQL 3307, Postgres 5433 (an unrecognized dialect falls back to the MySQL default; boot rejects it
-// before the port is used).
-func (d Dialect) DefaultTargetPort() int {
-	switch d {
-	case MySQL:
-		return 3307
-	case Postgres:
-		return 5433
-	case Athena:
-		return 443
-	default:
-		return 3307
-	}
-}
+// Valid reports whether this is a recognized engine dialect. Config validation uses it so the raw
+// PM_ENGINE string is parsed to a Dialect exactly once, at the config boundary.
+func (d Dialect) Valid() bool { return d >= 0 && int(d) < len(engines.All) }
 
 // ---- Mechanical masking: render the control plane's chosen masks onto result rows ----
 
@@ -377,18 +280,17 @@ type Db interface {
 	// ignores the mode argument in that case).
 	LowerCaseTableNamesProbeSQL() string
 	// NormalizeColumns folds columns to their canonical spelling per the dialect's own rules — the
-	// analyzer's normalization (analyzer/probe.NormalizeRelation), gated by lowerCaseTableNames for
+	// analyzer's normalization (engines.MySQL.IntrospectedColumns), gated by lowerCaseTableNames for
 	// MySQL, an identity function for Postgres. The refetch path calls this so the schema-fragment pool
 	// pushed to the control plane matches the same canonical spelling introspect's bulk catalog push
 	// uses — no caller decides whether/how to fold.
-	NormalizeColumns(lowerCaseTableNames int, columns []*enginepb.Column) []*enginepb.Column
-	// FoldFunctionName folds an introspected function name the way the analyzer resolves an
-	// unquoted call for this dialect.
+	NormalizeColumns(mode engines.CaseMode, columns []*enginepb.Column) []*enginepb.Column
+	// FoldFunctionName is an introspected function name as the analyzer keys its function inventory.
 	FoldFunctionName(name string) string
 }
 
 // FragmentColumnsFromRows strictly maps seven-column information_schema rows into a canonical schema
-// fragment. Rows are folded via db.NormalizeColumns(lowerCaseTableNames, ...) — the SAME rule
+// fragment. Rows are folded via db.NormalizeColumns(mode, ...) — the SAME rule
 // introspect's bulk catalog push uses — and every row's canonical schema must then equal the requested
 // schema's own canonical form. This is a self-consistency check (every row came back for the schema
 // that was actually asked for), not an authorization boundary, but its strictness now follows the
@@ -397,7 +299,7 @@ type Db interface {
 // (case-insensitive lookup, case-preserving storage), so it's the only one where this tolerates a case
 // difference — Postgres and MySQL modes 0/1 require an exact match, same as before this normalized the
 // comparison at all. The column is the proto Column (enginepb.Column) used AS the data class.
-func FragmentColumnsFromRows(db Db, lowerCaseTableNames int, schema string, rows [][]*string) ([]*enginepb.Column, error) {
+func FragmentColumnsFromRows(db Db, mode engines.CaseMode, schema string, rows [][]*string) ([]*enginepb.Column, error) {
 	raw := make([]*enginepb.Column, 0, len(rows))
 	for i, row := range rows {
 		if len(row) != 7 {
@@ -432,8 +334,8 @@ func FragmentColumnsFromRows(db Db, lowerCaseTableNames int, schema string, rows
 		})
 	}
 
-	canonicalSchema := db.NormalizeColumns(lowerCaseTableNames, []*enginepb.Column{{Schema: schema, Table: "_", Column: "_"}})[0].GetSchema()
-	columns := db.NormalizeColumns(lowerCaseTableNames, raw)
+	canonicalSchema := db.NormalizeColumns(mode, []*enginepb.Column{{Schema: schema, Table: "_", Column: "_"}})[0].GetSchema()
+	columns := db.NormalizeColumns(mode, raw)
 	for i, column := range columns {
 		if column.GetSchema() != canonicalSchema {
 			return nil, fmt.Errorf("fragment row %d schema %q does not match requested schema %q (canonical %q vs %q)",

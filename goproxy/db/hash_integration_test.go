@@ -12,10 +12,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
 	"github.com/ridi-oss/proxy-monster/goproxy/introspect"
+	"github.com/ridi-oss/sqlglot-go/dialects"
 )
 
 const hashTestTimeout = 30 * time.Second
@@ -35,12 +37,15 @@ func TestMySqlSchemaHashIntegration(t *testing.T) {
 	defer conn.Close()
 
 	db := MySqlDb{}
-	lowerCaseTableNames := 0
-	if rows, err := queryStrings(conn, db.LowerCaseTableNamesProbeSQL(), 1); err == nil && len(rows) == 1 && len(rows[0]) == 1 && rows[0][0] != nil {
-		if mode, err := strconv.Atoi(*rows[0][0]); err == nil {
-			lowerCaseTableNames = mode
-		}
+	rows, err := queryStrings(conn, db.LowerCaseTableNamesProbeSQL(), 1)
+	if err != nil || len(rows) != 1 || len(rows[0]) != 1 || rows[0][0] == nil {
+		t.Fatalf("lower_case_table_names probe: %v %v", rows, err)
 	}
+	n, err := strconv.Atoi(*rows[0][0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	mode := caseMode(t, n)
 	quote := func(identifier string) string { return "`" + strings.ReplaceAll(identifier, "`", "``") + "`" }
 	exec := func(statement string) {
 		t.Helper()
@@ -81,7 +86,7 @@ func TestMySqlSchemaHashIntegration(t *testing.T) {
 		if err != nil {
 			t.Fatalf("fragment query for %q: %v", schema, err)
 		}
-		columns, err := engine.FragmentColumnsFromRows(db, lowerCaseTableNames, schema, rows)
+		columns, err := engine.FragmentColumnsFromRows(db, mode, schema, rows)
 		if err != nil {
 			t.Fatalf("FragmentColumnsFromRows(%q): %v", schema, err)
 		}
@@ -310,7 +315,7 @@ func verifyPostgresHashAndFragment(t *testing.T, database *sql.DB, wantCrypto bo
 	if err != nil {
 		t.Fatalf("Postgres fragment query: %v", err)
 	}
-	fragment, err := engine.FragmentColumnsFromRows(db, 0, schema, rows)
+	fragment, err := engine.FragmentColumnsFromRows(db, engines.CaseMode{}, schema, rows)
 	if err != nil {
 		t.Fatalf("Postgres fragment mapping: %v", err)
 	}
@@ -416,4 +421,33 @@ func queryStrings(conn *sql.Conn, statement string, expectedColumns int) ([][]*s
 		return nil, err
 	}
 	return result, nil
+}
+
+func TestMySQLFoldedNameMatchesTheAnalyzerFold(t *testing.T) {
+	conn, err := dbtest.OpenMySQL(t, "").Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	var bmp []rune
+	for r := rune(1); r <= 0xFFFF; r++ {
+		if r < 0xD800 || r > 0xDFFF {
+			bmp = append(bmp, r)
+		}
+	}
+	for _, name := range []string{"App", "\u212Aelvin", "\u0130stanbul", string(bmp)} {
+		literal := fmt.Sprintf("CONVERT(X'%x' USING utf8mb3)", name)
+		rows, err := queryStrings(conn, "SELECT "+mysqlFoldedName(literal), 1)
+		if err != nil || len(rows) != 1 || rows[0][0] == nil {
+			t.Fatalf("%q: %v %v", name, rows, err)
+		}
+		if got, want := *rows[0][0], dialects.MySQLLower(name); got != want {
+			for i, r := range []rune(want) {
+				if g := []rune(got); i >= len(g) || g[i] != r {
+					t.Fatalf("MySQL and the analyzer first disagree at %U", []rune(name)[i])
+				}
+			}
+			t.Errorf("MySQL folds to %d runes, the analyzer to %d", len([]rune(got)), len([]rune(want)))
+		}
+	}
 }

@@ -7,6 +7,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 )
@@ -34,7 +35,7 @@ func (f fakeDb) SchemaRoutinesSQL(string) string                      { return "
 func (f fakeDb) LowerCaseTableNamesProbeSQL() string                  { return "" }
 func (f fakeDb) FoldFunctionName(name string) string                  { return name }
 
-func (f fakeDb) NormalizeColumns(_ int, columns []*analyzerpb.Column) []*analyzerpb.Column {
+func (f fakeDb) NormalizeColumns(_ engines.CaseMode, columns []*analyzerpb.Column) []*analyzerpb.Column {
 	return columns
 }
 
@@ -307,7 +308,7 @@ func TestTempOverlayOnlyWhenProvided(t *testing.T) {
 func TestFragmentColumnsFromRowsStrict(t *testing.T) {
 	str := func(s string) *string { return &s }
 	valid := [][]*string{{str("app"), str("users"), str("id"), str("integer"), str("1"), str("NO"), str("db")}, {str("app"), str("users"), str("email"), str("text"), str("2"), str("YES"), str("db")}}
-	got, err := FragmentColumnsFromRows(fakeDb{}, 0, "app", valid)
+	got, err := FragmentColumnsFromRows(fakeDb{}, engines.CaseMode{}, "app", valid)
 	if err != nil {
 		t.Fatalf("FragmentColumnsFromRows: %v", err)
 	}
@@ -328,7 +329,7 @@ func TestFragmentColumnsFromRowsStrict(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := FragmentColumnsFromRows(fakeDb{}, 0, "app", tc.rows); err == nil {
+			if _, err := FragmentColumnsFromRows(fakeDb{}, engines.CaseMode{}, "app", tc.rows); err == nil {
 				t.Fatal("FragmentColumnsFromRows succeeded, want strict error")
 			}
 		})

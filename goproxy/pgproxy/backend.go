@@ -278,7 +278,8 @@ func sessionFromRows(rows [][]*string) (engine.SessionObservation, error) {
 	}
 	seen := make(map[string]bool, len(observed.ShadowedFunctions))
 	for _, name := range observed.ShadowedFunctions {
-		if name == "" || name != strings.ToLower(name) || seen[name] {
+		// The probe selects only proname = 'unnest'.
+		if name != "unnest" || seen[name] {
 			return engine.SessionObservation{}, fmt.Errorf("namespace probe returned invalid shadowed function %q", name)
 		}
 		seen[name] = true

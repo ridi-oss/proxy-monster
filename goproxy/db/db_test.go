@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 )
@@ -46,7 +47,7 @@ func TestMySqlSchemaHashSQL(t *testing.T) {
 		// The WHERE filter must be mode-aware (CASE WHEN @@lower_case_table_names = 2 THEN LOWER(...)):
 		// a canonical (possibly-folded) schema parameter must still match a live mode-2 server whose
 		// information_schema preserves the original stored case.
-		"CASE WHEN @@lower_case_table_names = 2 THEN LOWER(CAST(TABLE_SCHEMA AS BINARY)) ELSE CAST(TABLE_SCHEMA AS BINARY) END",
+		"CASE WHEN @@lower_case_table_names = 2 THEN CAST(LOWER(CONVERT(TABLE_SCHEMA USING utf8mb3) COLLATE utf8mb3_general_ci) AS BINARY) ELSE CAST(TABLE_SCHEMA AS BINARY) END",
 	} {
 		if !strings.Contains(sql, fragment) {
 			t.Errorf("SchemaHashSQL missing %q:\n%s", fragment, sql)
@@ -69,7 +70,7 @@ func TestMySqlSchemaHashSQL(t *testing.T) {
 		"CAST(TABLE_SCHEMA AS BINARY)",
 		"ORDER BY CAST(TABLE_NAME AS BINARY), ORDINAL_POSITION, CAST(COLUMN_NAME AS BINARY)",
 		"X'" + fmt.Sprintf("%x", []byte(schema)) + "'",
-		"CASE WHEN @@lower_case_table_names = 2 THEN LOWER(CAST(TABLE_SCHEMA AS BINARY)) ELSE CAST(TABLE_SCHEMA AS BINARY) END",
+		"CASE WHEN @@lower_case_table_names = 2 THEN CAST(LOWER(CONVERT(TABLE_SCHEMA USING utf8mb3) COLLATE utf8mb3_general_ci) AS BINARY) ELSE CAST(TABLE_SCHEMA AS BINARY) END",
 	} {
 		if !strings.Contains(columnsSQL, fragment) {
 			t.Errorf("SchemaColumnsSQL missing %q: %s", fragment, columnsSQL)
@@ -90,7 +91,7 @@ func TestMySqlNormalizeColumns(t *testing.T) {
 		{Schema: "AppDB", Table: "UserRows", Column: "CustomerID", DataType: "int", Ordinal: 1, Nullable: true},
 	}
 	// mode 1 (case-insensitive): schema/table fold too, alongside the always-unconditional column fold.
-	out := (MySqlDb{}).NormalizeColumns(1, in)
+	out := (MySqlDb{}).NormalizeColumns(caseMode(t, 1), in)
 	if len(out) != 1 {
 		t.Fatalf("NormalizeColumns returned %d columns, want 1", len(out))
 	}
@@ -107,7 +108,7 @@ func TestMySqlNormalizeColumns(t *testing.T) {
 	}
 
 	// mode 0 (case-sensitive): schema/table stay verbatim; the column still folds unconditionally.
-	out0 := (MySqlDb{}).NormalizeColumns(0, in)
+	out0 := (MySqlDb{}).NormalizeColumns(caseMode(t, 0), in)
 	if out0[0].GetSchema() != "AppDB" || out0[0].GetTable() != "UserRows" || out0[0].GetColumn() != "customerid" {
 		t.Errorf("mode 0: got %s.%s.%s, want AppDB.UserRows.customerid", out0[0].GetSchema(), out0[0].GetTable(), out0[0].GetColumn())
 	}
@@ -120,7 +121,7 @@ func TestMySqlNormalizeColumns(t *testing.T) {
 		{Schema: "AppDB", Table: "UserRows", Column: "EmailAddr", DataType: "varchar", Ordinal: 2, Nullable: true},
 		{Schema: "AppDB", Table: "OrderRows", Column: "OrderID", DataType: "bigint", Ordinal: 1, Nullable: false},
 	}
-	outMulti := (MySqlDb{}).NormalizeColumns(1, multi)
+	outMulti := (MySqlDb{}).NormalizeColumns(caseMode(t, 1), multi)
 	if len(outMulti) != 3 {
 		t.Fatalf("NormalizeColumns returned %d columns, want 3", len(outMulti))
 	}
@@ -140,7 +141,7 @@ func TestMySqlNormalizeColumns(t *testing.T) {
 
 func TestPgNormalizeColumnsIsIdentity(t *testing.T) {
 	in := []*analyzerpb.Column{{Schema: "Sales", Table: "OrderItems", Column: "CustomerID"}}
-	out := (PgDb{}).NormalizeColumns(0, in)
+	out := (PgDb{}).NormalizeColumns(engines.CaseMode{}, in)
 	if len(out) != 1 || out[0] != in[0] {
 		t.Errorf("PgDb.NormalizeColumns must be an identity passthrough, got %+v", out)
 	}
@@ -157,13 +158,13 @@ func TestFragmentColumnsFromRowsModeAwareSchemaCheck(t *testing.T) {
 	}
 
 	t.Run("MySQL mode 0 rejects a case-differing schema (no legitimate divergence)", func(t *testing.T) {
-		if _, err := engine.FragmentColumnsFromRows(MySqlDb{}, 0, "App", row("app")); err == nil {
+		if _, err := engine.FragmentColumnsFromRows(MySqlDb{}, caseMode(t, 0), "App", row("app")); err == nil {
 			t.Fatal("FragmentColumnsFromRows succeeded, want a strict mismatch under mode 0")
 		}
 	})
 
 	t.Run("MySQL mode 2 accepts the live stored spelling diverging in case from the canonical request", func(t *testing.T) {
-		got, err := engine.FragmentColumnsFromRows(MySqlDb{}, 2, "app", row("App"))
+		got, err := engine.FragmentColumnsFromRows(MySqlDb{}, caseMode(t, 2), "app", row("App"))
 		if err != nil {
 			t.Fatalf("FragmentColumnsFromRows: %v", err)
 		}
@@ -173,7 +174,7 @@ func TestFragmentColumnsFromRowsModeAwareSchemaCheck(t *testing.T) {
 	})
 
 	t.Run("Postgres rejects a case-differing schema (Postgres never folds)", func(t *testing.T) {
-		if _, err := engine.FragmentColumnsFromRows(PgDb{}, 0, "Sales", row("sales")); err == nil {
+		if _, err := engine.FragmentColumnsFromRows(PgDb{}, engines.CaseMode{}, "Sales", row("sales")); err == nil {
 			t.Fatal("FragmentColumnsFromRows succeeded, want a strict mismatch on Postgres")
 		}
 	})
@@ -315,16 +316,14 @@ var _ engine.Db = MySqlDb{}
 var _ engine.Db = PgDb{}
 
 func TestFoldFunctionNameMatchesTheResolverFold(t *testing.T) {
-	// MySQL folds with its exact case map; PostgreSQL folds ASCII only, so a non-ASCII upper-case
-	// letter keeps its spelling (strings.ToLower would over-fold it and miss the resolver's lookup).
+	// MySQL routine names are case-insensitive; a Postgres proname is already exact.
 	if got := (MySqlDb{}).FoldFunctionName("AddTax"); got != "addtax" {
 		t.Fatalf("mysql fold = %q, want addtax", got)
 	}
-	if got := (PgDb{}).FoldFunctionName("PG_Read_File"); got != "pg_read_file" {
-		t.Fatalf("postgres fold = %q, want pg_read_file", got)
-	}
-	if got := (PgDb{}).FoldFunctionName("ÄBC"); got != "Äbc" {
-		t.Fatalf("postgres must not fold non-ASCII: got %q, want Äbc", got)
+	for _, name := range []string{"pg_read_file", "GetSSN", "UPPER", "ÄBC"} {
+		if got := (PgDb{}).FoldFunctionName(name); got != name {
+			t.Fatalf("postgres fold = %q, want %q", got, name)
+		}
 	}
 }
 
@@ -347,4 +346,14 @@ func TestRoutinesSQLHoldsLoadablesUnderMysqlSchemaOnly(t *testing.T) {
 	if !strings.Contains(PgDb{}.RoutinesSQL(), "pg_catalog.pg_proc") {
 		t.Fatalf("PG RoutinesSQL = %q, want pg_proc", PgDb{}.RoutinesSQL())
 	}
+}
+
+// caseMode is n as a reported MySQL lower_case_table_names.
+func caseMode(t *testing.T, n int) engines.CaseMode {
+	t.Helper()
+	m, err := engines.ReportedCaseMode(n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return m
 }

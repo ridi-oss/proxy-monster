@@ -67,13 +67,26 @@ func TestSqlModeClassifyUnit(t *testing.T) {
 	// The per-statement probe path (backstop, catches a tracker bypass): ANSI_QUOTES yields ansiQuotes=true
 	// with the namespace; a non-modeled flag fails closed on the 5th column; a safe mode yields false.
 	sp := func(s string) *string { return &s }
-	if ns, aq, err := interpretSessionProbeRow([]*string{sp("db"), sp("utf8mb4"), sp("utf8mb4"), sp("utf8mb4"), sp("STRICT_TRANS_TABLES,ANSI_QUOTES")}); err != nil || !aq || len(ns) != 1 || ns[0] != "db" {
+	if ns, aq, err := interpretSessionProbeRow([]*string{sp("db"), sp("utf8mb4"), sp("utf8mb4"), sp("utf8mb4"), sp("STRICT_TRANS_TABLES,ANSI_QUOTES"), sp("0")}); err != nil || !aq || len(ns) != 1 || ns[0] != "db" {
 		t.Errorf("probe row with ANSI_QUOTES = (%v, %v, %v), want ([db], true, nil)", ns, aq, err)
 	}
-	if _, _, err := interpretSessionProbeRow([]*string{sp("db"), sp("utf8mb4"), sp("utf8mb4"), sp("utf8mb4"), sp("NO_BACKSLASH_ESCAPES")}); !errors.Is(err, errUnsafeSqlMode) {
+	if _, _, err := interpretSessionProbeRow([]*string{sp("db"), sp("utf8mb4"), sp("utf8mb4"), sp("utf8mb4"), sp("NO_BACKSLASH_ESCAPES"), sp("0")}); !errors.Is(err, errUnsafeSqlMode) {
 		t.Errorf("probe row with NO_BACKSLASH_ESCAPES err = %v, want errUnsafeSqlMode", err)
 	}
-	if ns, aq, err := interpretSessionProbeRow([]*string{sp("db"), sp("utf8mb4"), sp("utf8mb4"), sp("utf8mb4"), sp("STRICT_TRANS_TABLES")}); err != nil || aq || len(ns) != 1 || ns[0] != "db" {
+	if ns, aq, err := interpretSessionProbeRow([]*string{sp("db"), sp("utf8mb4"), sp("utf8mb4"), sp("utf8mb4"), sp("STRICT_TRANS_TABLES"), sp("0")}); err != nil || aq || len(ns) != 1 || ns[0] != "db" {
 		t.Errorf("probe row with safe sql_mode = (%v, %v, %v), want ([db], false, nil)", ns, aq, err)
+	}
+}
+
+func TestSessionProbeNamespaceIsCanonical(t *testing.T) {
+	sp := func(s string) *string { return &s }
+	for lctn, want := range map[string]string{"0": "Goods", "1": "goods", "2": "goods"} {
+		ns, _, err := interpretSessionProbeRow([]*string{sp("Goods"), sp("utf8mb4"), sp("utf8mb4"), sp("utf8mb4"), sp(""), sp(lctn)})
+		if err != nil || len(ns) != 1 || ns[0] != want {
+			t.Errorf("lower_case_table_names=%s: %v %v", lctn, ns, err)
+		}
+	}
+	if _, _, err := interpretSessionProbeRow([]*string{sp("Goods"), sp("utf8mb4"), sp("utf8mb4"), sp("utf8mb4"), sp(""), nil}); err == nil {
+		t.Error("a missing case mode was accepted")
 	}
 }

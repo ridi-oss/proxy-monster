@@ -118,6 +118,13 @@ server. Subjects follow
 `feat:`/`fix:`/`perf:` appear in the changelog, `chore:`/`test:`/`ci:` do not,
 and `!` or a `BREAKING CHANGE:` footer drives the major bump.
 
+A `pmon` release also ships the desktop app; its Windows signing and update
+feeds are in [pmon/tray/README.md](./pmon/tray/README.md#releases). Last, bump
+[ridi-oss/homebrew-tap](https://github.com/ridi-oss/homebrew-tap):
+`Formula/pmon.rb` takes the version and the four CLI archives' SHA-256 from the
+release's `checksums.txt`, and `Casks/proxy-monster-desktop.rb` the version and
+the universal zip's. The tap's `main` takes changes only through a pull request.
+
 `mysqlwire`'s tag carries a slash because Go requires that prefix for a module
 outside the repository root. Inside the workspace `go.work` still resolves the
 in-repo modules locally, so an unreleased `mysqlwire` edit reaches `goproxy` and

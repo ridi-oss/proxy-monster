@@ -33,7 +33,7 @@ analyzer/
     *_test.go                golden (hermetic) + parity (vs Python sqlglot) + admission-parity + unit tests
     testdata/golden.json     frozen regression snapshot (internal probe)
     testdata/oracle/         the Python parity oracle (driver.py + probe.py) — test-only
-  cmd/libsqlglot/main.go     C-shared entry: exports AnalyzeStatement / SqlNormalize / FreeCString (cgo confined here)
+  cmd/libsqlglot/main.go     C-shared entry: exports AnalyzeStatement / SplitStatements / SqlNormalize / ParseColumns / IntrospectedColumns / FreeCString (cgo confined here)
   jvm/                       Gradle subproject :analyzer:jvm
     build.gradle.kts         builds cmd/libsqlglot (go build -buildmode=c-shared) + bundles the lib
     src/main/kotlin/…/Sqlglot.kt   the FFM binding: Sqlglot.analyzeStatement(requestBytes) / sqlNormalize(sql, dialect)

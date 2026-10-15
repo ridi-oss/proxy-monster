@@ -11,7 +11,7 @@ import com.ridi.oss.proxymonster.analyzer.pb.StatementFacts
  *
  * [column]'s identity arrives already canonical: goproxy normalizes every catalog column (its bulk
  * introspection push AND the per-connection schema-fragment refetch path both call
- * analyzer/probe.NormalizeRelation directly, in-process) before it ever reaches the control plane. No
+ * analyzer/engines.MySQL.IntrospectedColumns directly, in-process) before it ever reaches the control plane. No
  * normalization decision is made here — this is pure concatenation of already-canonical parts.
  */
 fun columnKey(namespace: Namespace, column: Column): String {

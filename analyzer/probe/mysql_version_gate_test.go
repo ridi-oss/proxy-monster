@@ -164,7 +164,7 @@ func TestCreateEngineIgnoresAnotherEnginesSessionArm(t *testing.T) {
 		MysqlLowerCaseTableNames: proto.Int32(0),
 		Session:                  &pb.SessionObservation{Engine: &pb.SessionObservation_Postgres{Postgres: &pb.PostgresSession{SystemXidVisible: proto.Bool(false), FunctionShadowingObserved: true}}},
 	})
-	if err != nil || eng.WireName() != "mysql" {
+	if _, isMySQL := eng.(*mysqlEngine); err != nil || !isMySQL {
 		t.Fatalf("MySQL engine with a PostgreSQL session arm = %v, %v", eng, err)
 	}
 }

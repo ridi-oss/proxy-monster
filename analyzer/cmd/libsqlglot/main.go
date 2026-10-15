@@ -52,6 +52,29 @@ func SplitStatements(reqBytes *C.char, reqLen C.size_t, outLen *C.size_t) unsafe
 	return C.CBytes(out) // malloc'd; caller frees via FreeCString.
 }
 
+// ParseColumns reads column names a person typed as SQL identifiers in the engine's dialect. Same
+// byte-buffer convention and FreeCString ownership as AnalyzeStatement.
+//
+//export ParseColumns
+func ParseColumns(reqBytes *C.char, reqLen C.size_t, outLen *C.size_t) unsafe.Pointer {
+	return bufferResult(probe.ParseColumnsSafe(analyzeRequestBytesFromC(reqBytes, reqLen)), outLen)
+}
+
+// IntrospectedColumns puts names the engine's own catalog reported in canonical spelling. Same convention.
+//
+//export IntrospectedColumns
+func IntrospectedColumns(reqBytes *C.char, reqLen C.size_t, outLen *C.size_t) unsafe.Pointer {
+	return bufferResult(probe.IntrospectedColumnsSafe(analyzeRequestBytesFromC(reqBytes, reqLen)), outLen)
+}
+
+func bufferResult(out []byte, outLen *C.size_t) unsafe.Pointer {
+	*outLen = C.size_t(len(out))
+	if len(out) == 0 {
+		return nil
+	}
+	return C.CBytes(out) // malloc'd; caller frees via FreeCString.
+}
+
 func analyzeRequestBytesFromC(p *C.char, n C.size_t) []byte {
 	// C.GoBytes takes a C.int length. Reject anything that cannot be represented exactly rather than
 	// narrowing it and reading a different byte sequence.

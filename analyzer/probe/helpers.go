@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"strings"
 
 	exp "github.com/ridi-oss/sqlglot-go/expressions"
 	"github.com/ridi-oss/sqlglot-go/schema"
@@ -107,8 +106,7 @@ func sortStrings(values []string) {
 
 // validateNamespace checks the namespace: catalog and an ordered searchPath are required. Namespace
 // resolution has no engine-specific settings — those live on EngineConfig and are validated by
-// createEngine instead. It returns namespace unchanged — folding the search path's identifiers is
-// optimizer.Qualify's own job (via the dialect passed to it), not this function's.
+// createEngine instead. It returns namespace unchanged: the search path is already canonical.
 func validateNamespace(namespace NamespaceConfig) (NamespaceConfig, error) {
 	if namespace.Catalog == "" {
 		return NamespaceConfig{}, fmt.Errorf("namespace catalog is required")
@@ -122,78 +120,6 @@ func validateNamespace(namespace NamespaceConfig) (NamespaceConfig, error) {
 		}
 	}
 	return namespace, nil
-}
-
-// CanonicalMySQLRelation resolves a MySQL schema/table/column's canonical spelling under a given
-// lower_case_table_names mode — including the information_schema exception (always
-// case-insensitive, regardless of mode) — via the same role-aware Dialect the analyzer's own catalog
-// build and query resolution use (mysqlNormalizationDialect + Dialect.NormalizeIdentifier). It is
-// exported (via cmd/libsqlglot) so the control-plane's PII-classification keys resolve identically to
-// whatever the analyzer treats as canonical.
-//
-// schemaName and table are wired into a throwaway *exp.Table (the Table value itself is discarded)
-// purely so NormalizeIdentifier can read each part's parent to detect relation-level role and the
-// information_schema exception — a detached identifier has no parent, so this AST wiring is what
-// makes the check possible. Catalog is never folded (by either language), so it takes no part here.
-// column folds unconditionally via FoldIdentifierName — a column name's role is never ambiguous,
-// matching probe.go's canonicalColumn.
-func CanonicalMySQLRelation(mysqlLowerCaseTableNames int, schemaName, table, column string) (canonicalSchema, canonicalTable, canonicalColumn string) {
-	d := mysqlNormalizationDialect(mysqlLowerCaseTableNames)
-
-	schemaID := exp.ParseIdentifier(schemaName, d)
-	tableID := exp.ParseIdentifier(table, d)
-	exp.Table(exp.Args{"this": tableID, "schema": schemaID})
-
-	d.NormalizeIdentifier(schemaID)
-	d.NormalizeIdentifier(tableID)
-
-	return schemaID.Name(), tableID.Name(), d.FoldIdentifierName(column, false)
-}
-
-// NormalizeMySQLColumns folds a batch of column identities to their canonical spelling, memoizing the
-// per-(schema, table) work. Semantically identical to calling CanonicalMySQLRelation for each row, but
-// O(distinct tables) sqlglot parses instead of O(columns): within a schema fragment the schema is
-// constant and each table's columns repeat its name, so re-parsing schema+table per column (as the
-// per-row path does) is pure waste — the dominant cost on a wide schema. Column names still fold
-// per row (a cheap name fold, no identifier parse). schemas/tables/columns are parallel, equal-length.
-func NormalizeMySQLColumns(mysqlLowerCaseTableNames int, schemas, tables, columns []string) (outSchemas, outTables, outColumns []string) {
-	n := len(columns)
-	outSchemas = make([]string, n)
-	outTables = make([]string, n)
-	outColumns = make([]string, n)
-	d := mysqlNormalizationDialect(mysqlLowerCaseTableNames)
-	type rel struct{ schema, table string }
-	cache := make(map[rel][2]string)
-	for i := 0; i < n; i++ {
-		key := rel{schemas[i], tables[i]}
-		canon, ok := cache[key]
-		if !ok {
-			schemaID := exp.ParseIdentifier(key.schema, d)
-			tableID := exp.ParseIdentifier(key.table, d)
-			exp.Table(exp.Args{"this": tableID, "schema": schemaID})
-			d.NormalizeIdentifier(schemaID)
-			d.NormalizeIdentifier(tableID)
-			canon = [2]string{schemaID.Name(), tableID.Name()}
-			cache[key] = canon
-		}
-		outSchemas[i] = canon[0]
-		outTables[i] = canon[1]
-		outColumns[i] = d.FoldIdentifierName(columns[i], false)
-	}
-	return outSchemas, outTables, outColumns
-}
-
-// NormalizeRelation resolves schemaName/table/column's canonical spelling for dialect — the single
-// source of truth every direct Go-to-Go caller shares (goproxy calls this in-process: introspect's
-// bulk catalog push and the schema-fragment refetch path both go through it), so no caller ever
-// independently decides whether/how to fold. Postgres (and any other non-MySQL dialect) is an
-// identity function — the catalog's server-resolved spelling already IS canonical — while MySQL
-// delegates to CanonicalMySQLRelation's role-aware fold, gated by mysqlLowerCaseTableNames.
-func NormalizeRelation(dialect string, mysqlLowerCaseTableNames int, schemaName, table, column string) (canonicalSchema, canonicalTable, canonicalColumn string) {
-	if strings.ToLower(dialect) != "mysql" {
-		return schemaName, table, column
-	}
-	return CanonicalMySQLRelation(mysqlLowerCaseTableNames, schemaName, table, column)
 }
 
 type columnID struct {

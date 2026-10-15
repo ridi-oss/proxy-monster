@@ -166,6 +166,23 @@ message SplitResponse {
   repeated string statements = 2;
 }
 
+// Column names to put in the engine's canonical spelling, the one the analyzer keys its catalog on. Only
+// catalog, schema, table and column are read. ParseColumns reads them as SQL identifiers a person typed;
+// IntrospectedColumns as names the engine's own catalog reported.
+message ColumnNamesRequest {
+  proxymonster.v1.Engine engine = 1;
+  // Unset for an engine without one, and for a MySQL datasource whose target has not reported it (refused).
+  optional int32 mysql_lower_case_table_names = 2;
+  repeated Column columns = 3;
+}
+
+// [columns] answers the request's columns in order; [ok] false leaves it empty (unknown engine, a name that
+// is not an identifier).
+message ColumnNamesResponse {
+  bool ok = 1;
+  repeated Column columns = 2;
+}
+
 // ---- response side ----
 
 // One physical target-DB relation the statement scans (docs/facts-emission.md). catalog/schema/table

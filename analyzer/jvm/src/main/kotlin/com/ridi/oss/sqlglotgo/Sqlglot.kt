@@ -28,6 +28,8 @@ object Sqlglot {
     private val linker = Linker.nativeLinker()
     private val analyzeStatementHandle: MethodHandle
     private val splitStatementsHandle: MethodHandle
+    private val parseColumnsHandle: MethodHandle
+    private val introspectedColumnsHandle: MethodHandle
     private val sqlNormalizeHandle: MethodHandle
     private val freeHandle: MethodHandle
 
@@ -56,6 +58,14 @@ object Sqlglot {
                 ValueLayout.JAVA_LONG,
                 ValueLayout.ADDRESS,
             ),
+        )
+        parseColumnsHandle = linker.downcallHandle(
+            lookup.find("ParseColumns").orElseThrow { IllegalStateException("ParseColumns not exported by native lib") },
+            FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS),
+        )
+        introspectedColumnsHandle = linker.downcallHandle(
+            lookup.find("IntrospectedColumns").orElseThrow { IllegalStateException("IntrospectedColumns not exported by native lib") },
+            FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS),
         )
         sqlNormalizeHandle = linker.downcallHandle(
             lookup.find("SqlNormalize").orElseThrow { IllegalStateException("SqlNormalize not exported by native lib") },
@@ -89,6 +99,12 @@ object Sqlglot {
      * marshaled `analyzerv1.SplitResponse` out. Same raw-bytes convention as [analyzeStatement].
      */
     fun splitStatements(requestBytes: ByteArray): ByteArray = callByteBufferHandle(splitStatementsHandle, requestBytes)
+
+    /** A marshaled `analyzerv1.ColumnNamesRequest` in, a marshaled `ColumnNamesResponse` out. */
+    fun parseColumns(requestBytes: ByteArray): ByteArray = callByteBufferHandle(parseColumnsHandle, requestBytes)
+
+    /** Same messages as [parseColumns], for names the engine's own catalog reported. */
+    fun introspectedColumns(requestBytes: ByteArray): ByteArray = callByteBufferHandle(introspectedColumnsHandle, requestBytes)
 
     /**
      * The byte-buffer FFM calling convention [analyzeStatement] follows: one byte buffer in (a

@@ -8,6 +8,7 @@ package probe
 import (
 	"fmt"
 
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/sqlglot-go/optimizer"
 	"github.com/ridi-oss/sqlglot-go/schema"
@@ -116,6 +117,68 @@ func SplitStatementsSafe(reqBytes []byte) (out []byte) {
 
 // The encoded fail-closed SplitResponse, computed once so the failure path never has to marshal.
 var splitFailure = must(proto.Marshal(&pb.SplitResponse{Ok: false}))
+
+// ParseColumnsSafe is engines.ParseColumn over a marshaled ColumnNamesRequest, total like
+// SplitStatementsSafe: any failure is ok=false.
+func ParseColumnsSafe(reqBytes []byte) []byte {
+	return columnNamesSafe(reqBytes, func(e *engines.Engine, mode engines.CaseMode, cols []*pb.Column) ([]engines.ColumnName, error) {
+		out := make([]engines.ColumnName, len(cols))
+		for i, c := range cols {
+			n, err := e.ParseColumn(mode, c.GetCatalog(), c.GetSchema(), c.GetTable(), c.GetColumn())
+			if err != nil {
+				return nil, err
+			}
+			out[i] = n
+		}
+		return out, nil
+	})
+}
+
+// IntrospectedColumnsSafe is engines.IntrospectedColumns over a marshaled ColumnNamesRequest.
+func IntrospectedColumnsSafe(reqBytes []byte) []byte {
+	return columnNamesSafe(reqBytes, func(e *engines.Engine, mode engines.CaseMode, cols []*pb.Column) ([]engines.ColumnName, error) {
+		return e.IntrospectedColumns(mode, cols), nil
+	})
+}
+
+func columnNamesSafe(reqBytes []byte, names func(*engines.Engine, engines.CaseMode, []*pb.Column) ([]engines.ColumnName, error)) (out []byte) {
+	defer func() {
+		if recover() != nil {
+			out = columnNamesFailure
+		}
+	}()
+	var req pb.ColumnNamesRequest
+	if err := proto.Unmarshal(reqBytes, &req); err != nil {
+		return columnNamesFailure
+	}
+	eng, ok := engines.ByProto(req.GetEngine())
+	if !ok {
+		return columnNamesFailure
+	}
+	var mode engines.CaseMode
+	if req.MysqlLowerCaseTableNames != nil {
+		reported, err := engines.ReportedCaseMode(int(req.GetMysqlLowerCaseTableNames()))
+		if err != nil {
+			return columnNamesFailure
+		}
+		mode = reported
+	}
+	canonical, err := names(eng, mode, req.GetColumns())
+	if err != nil {
+		return columnNamesFailure
+	}
+	resp := &pb.ColumnNamesResponse{Ok: true}
+	for _, n := range canonical {
+		resp.Columns = append(resp.Columns, &pb.Column{Catalog: n.Catalog().String(), Schema: n.Schema().String(), Table: n.Table(), Column: n.Column()})
+	}
+	encoded, err := proto.Marshal(resp)
+	if err != nil {
+		return columnNamesFailure
+	}
+	return encoded
+}
+
+var columnNamesFailure = must(proto.Marshal(&pb.ColumnNamesResponse{Ok: false}))
 
 // marshalErrorFallback is a statically-valid encoded fail-closed StatementFacts, computed once so
 // mustFailProto never has to marshal twice on the (essentially unreachable) path where encoding the

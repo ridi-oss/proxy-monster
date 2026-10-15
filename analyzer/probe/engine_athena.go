@@ -2,6 +2,7 @@ package probe
 
 import (
 	"fmt"
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	"strings"
 
 	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
@@ -20,12 +21,12 @@ type athenaEngine struct {
 	scope   *pb.AthenaSqlContext
 }
 
-func newAthenaEngine(config *pb.EngineConfig) (*athenaEngine, error) {
+func newAthenaEngine(config *pb.EngineConfig) (engine, error) {
 	scope := config.GetSession().GetAthena()
 	if scope == nil || strings.TrimSpace(scope.GetWorkgroup()) == "" {
 		return nil, fmt.Errorf("Athena workgroup scope is required")
 	}
-	return &athenaEngine{dialect: dialects.Athena(), scope: scope}, nil
+	return &athenaEngine{dialect: engines.Athena.Dialect(engines.CaseMode{}), scope: scope}, nil
 }
 
 // PrepareStatement binds ExecutionParameters into the statement's `?` placeholders in SQL order so lineage
@@ -88,7 +89,6 @@ func (e *athenaEngine) StampSubmission(facts *pb.StatementFacts) {
 	facts.Submission = &pb.Submission{Engine: &pb.Submission_Athena{Athena: &pb.AthenaSubmission{}}}
 }
 
-func (e *athenaEngine) WireName() string                { return "athena" }
 func (e *athenaEngine) Dialect() *dialects.Dialect      { return e.dialect }
 func (e *athenaEngine) NormalizeCatalogOnBuild() bool   { return true }
 func (e *athenaEngine) AllowsCrossCatalog() bool        { return true }

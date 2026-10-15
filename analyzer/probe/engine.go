@@ -11,6 +11,7 @@ import (
 	"github.com/ridi-oss/sqlglot-go/optimizer"
 	"github.com/ridi-oss/sqlglot-go/schema"
 
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 )
 
@@ -31,8 +32,6 @@ const (
 // sqlglot-go Dialect built from them) is captured at construction, so nothing downstream re-derives
 // it from a namespace or re-parses it from a bare wire-name string.
 type engine interface {
-	// WireName is the canonical lowercase sqlglot-go dialect name ("mysql" | "postgres").
-	WireName() string
 	// Dialect is the single *dialects.Dialect built once from this engine's config — reused for
 	// parsing, catalog normalization, Qualify, and SQL generation alike (sqlglot-go accepts a
 	// *Dialect directly everywhere a dialect argument is taken, MySQLVersion included, so there is
@@ -145,16 +144,48 @@ func createEngine(config *pb.EngineConfig) (engine, error) {
 	if config == nil {
 		return nil, fmt.Errorf("engine config is required")
 	}
-	switch config.GetEngine() {
-	case pb.Engine_MYSQL:
-		return newMySQLEngine(config)
-	case pb.Engine_POSTGRES:
-		return newPostgresEngine(config)
-	case pb.Engine_ATHENA:
-		return newAthenaEngine(config)
-	default:
+	row, ok := probeEngineFor(config)
+	if !ok {
 		return nil, fmt.Errorf("unsupported engine %s", config.GetEngine())
 	}
+	return row.build(config)
+}
+
+// probeEngineFor is the analyzer row for config's engine.
+func probeEngineFor(config *pb.EngineConfig) (probeEngine, bool) {
+	shared, ok := engines.ByProto(config.GetEngine())
+	return probeEngines[shared], ok
+}
+
+type probeEngine struct {
+	build     func(*pb.EngineConfig) (engine, error)
+	normalize func() normalizeRules
+	// configFailureDialect parses a SHOW while the engine config is incomplete; nil fails it closed.
+	configFailureDialect func() *dialects.Dialect
+}
+
+// probeEngines is each shared engine's analyzer implementation and SqlNormalize rules.
+var probeEngines = map[*engines.Engine]probeEngine{
+	engines.MySQL: {
+		build: newMySQLEngine, configFailureDialect: dialects.MySQL,
+		normalize: func() normalizeRules {
+			d := dialects.MySQL()
+			return normalizeRules{dialect: d, wordDialect: d, rejectExecutableComments: true}
+		},
+	},
+	engines.Postgres: {
+		build: newPostgresEngine,
+		normalize: func() normalizeRules {
+			d := dialects.Postgres()
+			return normalizeRules{dialect: d, wordDialect: d, foldIdentifiers: true}
+		},
+	},
+	engines.Athena: {
+		build: newAthenaEngine,
+		normalize: func() normalizeRules {
+			return normalizeRules{dialect: dialects.Athena(), wordDialect: dialects.Trino(), hiveDialect: dialects.Hive(), foldIdentifiers: true}
+		},
+	},
 }
 
 // TODO: split mysqlEngine and postgresEngine into engine_mysql.go / engine_postgres.go — this file should
@@ -163,13 +194,13 @@ type mysqlEngine struct {
 	dialect *dialects.Dialect
 }
 
-func newMySQLEngine(config *pb.EngineConfig) (*mysqlEngine, error) {
+func newMySQLEngine(config *pb.EngineConfig) (engine, error) {
 	if config.MysqlLowerCaseTableNames == nil {
 		return nil, fmt.Errorf("mysqlLowerCaseTableNames is required for mysql")
 	}
-	lowerCaseTableNames := int(config.GetMysqlLowerCaseTableNames())
-	if lowerCaseTableNames < 0 || lowerCaseTableNames > 2 {
-		return nil, fmt.Errorf("mysqlLowerCaseTableNames must be 0, 1, or 2")
+	mode, err := engines.ReportedCaseMode(int(config.GetMysqlLowerCaseTableNames()))
+	if err != nil {
+		return nil, err
 	}
 	versionID := mysqlVersionID(config.GetEngineVersion())
 	if versionID <= 0 {
@@ -182,9 +213,9 @@ func newMySQLEngine(config *pb.EngineConfig) (*mysqlEngine, error) {
 	// (applyMySQLAnsiQuotes — `"` becomes a quoted-identifier delimiter, not a string), which only runs at
 	// resolution time. When the target DB's live sql_mode carries ANSI_QUOTES, the analyzer then reads a
 	// masked column quoted with `"` as the real column and still masks it (instead of the proxy having to
-	// fail the connection closed). mysqlNormalizationDialect only ever sets the strategy, so its
+	// fail the connection closed). engines.MySQL.Dialect only ever sets the strategy, so its
 	// SettingsString round-trips losslessly as the base.
-	settings := mysqlNormalizationDialect(lowerCaseTableNames).SettingsString() +
+	settings := engines.MySQL.Dialect(mode).SettingsString() +
 		fmt.Sprintf(", mysql_version=%d, opaque_functions=true", versionID)
 	if config.GetSession().GetMysql().GetAnsiQuotes() {
 		settings += ", mysql_ansi_quotes=true"
@@ -196,7 +227,6 @@ func newMySQLEngine(config *pb.EngineConfig) (*mysqlEngine, error) {
 	return &mysqlEngine{dialect: dialect}, nil
 }
 
-func (e *mysqlEngine) WireName() string { return "mysql" }
 func (e *mysqlEngine) PrepareStatement(root exp.Expression) (exp.Expression, bool, *pb.StatementFacts, error) {
 	return root, false, nil, nil
 }
@@ -331,21 +361,21 @@ type postgresEngine struct {
 }
 
 func postgresOpaqueDialect() *dialects.Dialect {
-	d, err := dialects.GetOrRaise("postgres, opaque_functions=true")
+	d, err := dialects.GetOrRaise(engines.Postgres.Dialect(engines.CaseMode{}).SettingsString() + ", opaque_functions=true")
 	if err != nil {
 		panic(err)
 	}
 	return d
 }
 
-func newPostgresEngine(config *pb.EngineConfig) (*postgresEngine, error) {
+func newPostgresEngine(config *pb.EngineConfig) (engine, error) {
 	session := config.GetSession().GetPostgres()
 	if !session.GetFunctionShadowingObserved() && len(session.GetShadowedFunctions()) != 0 {
 		return nil, fmt.Errorf("shadowedFunctions requires an observed function-shadowing context")
 	}
 	shadowed := make(map[string]bool, len(session.GetShadowedFunctions()))
 	for _, name := range session.GetShadowedFunctions() {
-		if name == "" || name != strings.ToLower(name) {
+		if name == "" {
 			return nil, fmt.Errorf("shadowedFunctions contains invalid function name %q", name)
 		}
 		if shadowed[name] {
@@ -361,7 +391,6 @@ func newPostgresEngine(config *pb.EngineConfig) (*postgresEngine, error) {
 	}, nil
 }
 
-func (e *postgresEngine) WireName() string { return "postgres" }
 func (e *postgresEngine) PrepareStatement(root exp.Expression) (exp.Expression, bool, *pb.StatementFacts, error) {
 	return root, false, nil, nil
 }
@@ -403,17 +432,13 @@ func (e *postgresEngine) PostgresSystemXIDVisible() bool { return e.systemXIDVis
 
 func (e *postgresEngine) FoldColumn(column string) string { return column }
 
-// PostgreSQL places session-temporary objects in pg_temp (a per-backend alias for the numbered
-// pg_temp_<n> temp schema), so a DDL target there is session-local, not catalog-changing. Read off the
-// already-folded spelling (EmitFacts normalizes the statement's identifiers up front, quote-aware), so
-// an unquoted pg_temp/PG_TEMP matches while a quoted "PG_TEMP" — a distinct case-sensitive user schema —
-// does not. A raw strings.ToLower here would wrongly conflate the two and mis-fold non-ASCII.
+// A DDL target in pg_temp (or a numbered pg_temp_<n>) is session-local, not catalog-changing; a quoted
+// "PG_TEMP" is a distinct user schema.
 func (e *postgresEngine) IsTempSchema(schema exp.Expression) bool {
 	if schema == nil {
 		return false
 	}
-	name := schema.Name()
-	return name == "pg_temp" || strings.HasPrefix(name, "pg_temp_")
+	return engines.Postgres.IsTempSchema(engines.Postgres.ParsedSchema(engines.CaseMode{}, schema))
 }
 
 // pg_catalog is PostgreSQL's system schema: a call qualified by it is a builtin, so it carries no
@@ -424,7 +449,7 @@ func (e *postgresEngine) IsTrustedSystemQualifier(qualifier exp.Expression) bool
 	if qualifier == nil || qualifier.Kind() != exp.KindIdentifier {
 		return false
 	}
-	return qualifier.Name() == "pg_catalog"
+	return engines.Postgres.ParsedSchema(engines.CaseMode{}, qualifier) == engines.Postgres.BuiltinSchema
 }
 
 // PostgreSQL has no relay rewrite: client_encoding is handled on the wire, not by an analyzer rewrite,
@@ -514,24 +539,6 @@ func (e *postgresEngine) DiagnosticLeakKeys(report ProbeResult, qualifySchema sc
 		keys[id.String()+"."+col] = true
 	}
 	return keys
-}
-
-// mysqlNormalizationDialect returns a MySQL *Dialect configured with the identifier-normalization
-// strategy for the server's lower_case_table_names. Under lctn=0 the server is case-sensitive for
-// table/db names but STILL case-insensitive for columns, so the role-aware
-// mysql_case_sensitive_table_names strategy folds every identifier except table/db names; under
-// lctn=1/2 all identifiers are case-insensitive, so mysql_case_insensitive folds them all. Both fold
-// with MySQL's exact utf8mb3_general_ci map (MySQLLower). sqlglot-go's mysql default is CASE_SENSITIVE
-// (a no-op, for upstream faithfulness), so the strategy is set explicitly here. We pass the typed
-// *Dialect straight to Qualify so its normalization and qualification passes share one configuration.
-func mysqlNormalizationDialect(mysqlLowerCaseTableNames int) *dialects.Dialect {
-	d := dialects.MySQL()
-	if mysqlLowerCaseTableNames == 0 {
-		d.NormalizationStrategy = dialects.MySQLCaseSensitiveTableNames
-	} else {
-		d.NormalizationStrategy = dialects.MySQLCaseInsensitive
-	}
-	return d
 }
 
 var mysqlVersionPattern = regexp.MustCompile(`^(\d+)\.(\d+)(?:\.(\d+))?`)

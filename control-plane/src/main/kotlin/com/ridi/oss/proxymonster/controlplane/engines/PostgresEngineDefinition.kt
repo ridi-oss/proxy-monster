@@ -11,18 +11,19 @@ import com.ridi.oss.proxymonster.analyzer.pb.engineConfig
 import com.ridi.oss.proxymonster.controlplane.CatalogColumn
 import com.ridi.oss.proxymonster.controlplane.Datasource
 import com.ridi.oss.proxymonster.controlplane.EngineDefinition
-import com.ridi.oss.proxymonster.controlplane.MetadataRequestAuthorizer
-import com.ridi.oss.proxymonster.controlplane.RequestAuthorizer
+import com.ridi.oss.proxymonster.controlplane.RequestAccess
+import com.ridi.oss.proxymonster.controlplane.metadataRequestAccess
 import com.ridi.oss.proxymonster.controlplane.validateNativeConnectionInfo
 import com.ridi.oss.proxymonster.grpc.ConnectionInfo
 import com.ridi.oss.proxymonster.grpc.Engine
+import com.ridi.oss.proxymonster.grpc.RequestAuthorization
 import com.ridi.oss.proxymonster.probe.Dialect
+import java.time.Instant
 
 internal object PostgresEngineDefinition : EngineDefinition {
     override val engine = Engine.POSTGRES
     override val wireName = "postgres"
     override val dialect = Dialect.POSTGRES
-    override val requestAuthorizer: RequestAuthorizer = MetadataRequestAuthorizer
     override val connectionProperties: Set<String> = emptySet()
     override val systemSchemas = setOf("pg_catalog", "information_schema")
     // pg_temp_* schemas and transactional DDL depend on the connection.
@@ -53,6 +54,9 @@ internal object PostgresEngineDefinition : EngineDefinition {
         val version = postgresVersion.find(raw)?.groupValues?.get(1) ?: numericVersion.find(raw)?.value
         return version to raw.contains("aurora", ignoreCase = true)
     }
+
+    override fun requestAccess(request: RequestAuthorization, datasource: Datasource, principal: String, now: Instant): RequestAccess =
+        metadataRequestAccess(request, datasource)
 
     override fun validateConnectionInfo(info: ConnectionInfo) = validateNativeConnectionInfo(info, connectionProperties)
     override fun manifestSeries(version: String): String = version.substringBefore(".")

@@ -13,28 +13,29 @@ import com.ridi.oss.proxymonster.analyzer.pb.column
 import com.ridi.oss.proxymonster.analyzer.pb.functionCatalog
 import com.ridi.oss.proxymonster.classification.AthenaNativeFunctions
 import com.ridi.oss.proxymonster.controlplane.ApiError
-import com.ridi.oss.proxymonster.controlplane.AthenaRequestAuthorizer
 import com.ridi.oss.proxymonster.controlplane.CatalogColumn
 import com.ridi.oss.proxymonster.controlplane.Datasource
 import com.ridi.oss.proxymonster.controlplane.EngineDefinition
-import com.ridi.oss.proxymonster.controlplane.RequestAuthorizer
+import com.ridi.oss.proxymonster.controlplane.RequestAccess
+import com.ridi.oss.proxymonster.controlplane.athenaRequestAccess
 import com.ridi.oss.proxymonster.controlplane.management.ManagementException
 import com.ridi.oss.proxymonster.grpc.ConnectionInfo
 import com.ridi.oss.proxymonster.grpc.Engine
+import com.ridi.oss.proxymonster.grpc.RequestAuthorization
 import com.ridi.oss.proxymonster.probe.Dialect
 import com.ridi.oss.proxymonster.probe.introspectedColumns
 import java.net.URI
+import java.time.Instant
 
 /**
  * Athena: one datasource is one workgroup + data catalog + default database in one region, all published
  * as ConnectionInfo properties. Catalog names fold to lowercase; there is no session case mode and no
- * per-connection catalog content. Requests arrive as JSON API calls, so the native authorizer decides them.
+ * per-connection catalog content. Requests arrive as JSON API calls, read by [athenaRequestAccess].
  */
 internal object AthenaEngineDefinition : EngineDefinition {
     override val engine = Engine.ATHENA
     override val wireName = "athena"
     override val dialect = Dialect.ATHENA
-    override val requestAuthorizer: RequestAuthorizer = AthenaRequestAuthorizer
     override val connectionProperties = setOf("region", "workgroup", "catalog", "database")
     override val systemSchemas = setOf("information_schema")
     override val catalogIsConnectionIndependent = true
@@ -60,6 +61,9 @@ internal object AthenaEngineDefinition : EngineDefinition {
         this.session = if (session.hasAthena()) session else session.toBuilder()
             .setAthena(athenaSqlContext { workgroup = datasource.connectionInfo?.propertiesMap?.get("workgroup").orEmpty() }).build()
     }
+
+    override fun requestAccess(request: RequestAuthorization, datasource: Datasource, principal: String, now: Instant): RequestAccess =
+        athenaRequestAccess(request, datasource.name, principal, now)
 
     override fun beforeDecideCommands(facts: StatementFacts): List<ProxyCommand> {
         if (!facts.hasAthenaPreparedDefinitionNeed()) return emptyList()

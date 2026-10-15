@@ -10,6 +10,7 @@ import com.ridi.oss.proxymonster.controlplane.engines.PostgresEngineDefinition
 import com.ridi.oss.proxymonster.grpc.ConnectionInfo
 import com.ridi.oss.proxymonster.grpc.Engine
 import com.ridi.oss.proxymonster.grpc.ProxyCommand
+import com.ridi.oss.proxymonster.grpc.RequestAuthorization
 import com.ridi.oss.proxymonster.probe.Dialect
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.descriptors.PrimitiveKind
@@ -17,6 +18,7 @@ import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
 import kotlinx.serialization.descriptors.SerialDescriptor
 import kotlinx.serialization.encoding.Decoder
 import kotlinx.serialization.encoding.Encoder
+import java.time.Instant
 
 /**
  * Everything the control plane knows about one engine. The proto [Engine] stays the domain type; this is
@@ -29,8 +31,6 @@ interface EngineDefinition {
     val wireName: String
     /** The analyzer SQL dialect. */
     val dialect: Dialect
-    /** Decides a metadata request that has no SQL session behind it (a catalog or table-metadata read). */
-    val requestAuthorizer: RequestAuthorizer
     /** The ConnectionInfo property keys this engine's proxies may publish; anything else is refused at register. */
     val connectionProperties: Set<String>
     /** The fixed, enumerable system schemas whose content is identical across every datasource of one version. */
@@ -77,6 +77,8 @@ interface EngineDefinition {
      * and the result are canonical.
      */
     fun implicitColumns(rows: List<CatalogColumn>): List<CatalogColumn>
+    /** What [request], a call without SQL, touches on [datasource] for [principal] at [now]: GetWorkGroup -> workgroup `primary`. */
+    fun requestAccess(request: RequestAuthorization, datasource: Datasource, principal: String, now: Instant): RequestAccess
     /** Refuses a ConnectionInfo this engine's proxies must not publish (see [validateNativeConnectionInfo]). */
     fun validateConnectionInfo(info: ConnectionInfo)
     /** Builds the statement that makes [canonicalSchema][it] a session's default, quoted exactly; null where the engine has none. */

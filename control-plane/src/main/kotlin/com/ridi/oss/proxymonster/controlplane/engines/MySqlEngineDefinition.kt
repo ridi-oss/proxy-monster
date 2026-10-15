@@ -10,18 +10,19 @@ import com.ridi.oss.proxymonster.analyzer.pb.engineConfig
 import com.ridi.oss.proxymonster.controlplane.CatalogColumn
 import com.ridi.oss.proxymonster.controlplane.Datasource
 import com.ridi.oss.proxymonster.controlplane.EngineDefinition
-import com.ridi.oss.proxymonster.controlplane.MetadataRequestAuthorizer
-import com.ridi.oss.proxymonster.controlplane.RequestAuthorizer
+import com.ridi.oss.proxymonster.controlplane.RequestAccess
+import com.ridi.oss.proxymonster.controlplane.metadataRequestAccess
 import com.ridi.oss.proxymonster.controlplane.validateNativeConnectionInfo
 import com.ridi.oss.proxymonster.grpc.ConnectionInfo
 import com.ridi.oss.proxymonster.grpc.Engine
+import com.ridi.oss.proxymonster.grpc.RequestAuthorization
 import com.ridi.oss.proxymonster.probe.Dialect
+import java.time.Instant
 
 internal object MySqlEngineDefinition : EngineDefinition {
     override val engine = Engine.MYSQL
     override val wireName = "mysql"
     override val dialect = Dialect.MYSQL
-    override val requestAuthorizer: RequestAuthorizer = MetadataRequestAuthorizer
     override val connectionProperties: Set<String> = emptySet()
     override val systemSchemas = setOf("information_schema", "mysql", "performance_schema", "sys")
     // MySQL temporary tables are absent from information_schema.COLUMNS.
@@ -60,6 +61,9 @@ internal object MySqlEngineDefinition : EngineDefinition {
         val version = patchVersion.find(base)?.value ?: minorVersion.find(base)?.value
         return version to raw.contains("aurora", ignoreCase = true)
     }
+
+    override fun requestAccess(request: RequestAuthorization, datasource: Datasource, principal: String, now: Instant): RequestAccess =
+        metadataRequestAccess(request, datasource)
 
     override fun validateConnectionInfo(info: ConnectionInfo) = validateNativeConnectionInfo(info, connectionProperties)
     override fun manifestSeries(version: String): String = version.split(".").take(2).joinToString(".")

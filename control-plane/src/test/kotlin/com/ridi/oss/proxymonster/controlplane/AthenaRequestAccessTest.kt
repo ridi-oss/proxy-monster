@@ -24,18 +24,15 @@ import com.ridi.oss.proxymonster.grpc.Engine
 import com.ridi.oss.proxymonster.grpc.RequestAuthorization
 import com.ridi.oss.proxymonster.grpc.Verdict
 import java.lang.reflect.Proxy
-import java.time.Clock
 import java.time.Instant
-import java.time.ZoneOffset
 import javax.sql.DataSource
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
-class AthenaRequestAuthorizerTest {
+class AthenaRequestAccessTest {
     private val datasource = Datasource(1, "lake", Engine.ATHENA, "", 0, "analytics", tags = listOf("production"))
     private val now: Instant = Instant.parse("2026-09-14T00:00:00Z")
-    private val authorizer = AthenaNativeAuthorizer(Clock.fixed(now, ZoneOffset.UTC))
     private val binding: ByteString = ByteString.copyFrom(ByteArray(32) { 7 })
     private val connect = """permit(principal, action == Action::"datasource.connect", resource);"""
     private val invokeAll = """permit(principal, action == Action::"native.invoke", resource);"""
@@ -57,9 +54,9 @@ class AthenaRequestAuthorizerTest {
         assertEquals(RequestAdmission.Denied("native.invalid_descriptor"), admit(descriptor("GetWorkGroup", body = """{"WorkGroup":"a","WorkGroup":"b"}"""), gate))
         assertEquals(RequestAdmission.Denied("native.invalid_descriptor"), admit(descriptor("GetWorkGroup", body = """{"WorkGroup":1}"""), gate))
         val other = RequestAuthorization.newBuilder().setDatasourceName("other").setAthena(descriptor("ListWorkGroups")).build()
-        assertEquals(RequestAdmission.Denied("native.not_authorized"), authorizer.authorize(other, datasource, "alice", UserParents(setOf("reader")), AuthzContext(), gate))
+        assertEquals(RequestAdmission.Denied("native.not_authorized"), gate.authorizeRequest(other, datasource, "alice", UserParents(setOf("reader")), AuthzContext(), now))
         val metadata = catalogRequest()
-        assertEquals(RequestAdmission.Denied("native.not_authorized"), authorizer.authorize(metadata, datasource, "alice", UserParents(setOf("reader")), AuthzContext(), gate))
+        assertEquals(RequestAdmission.Denied("native.not_authorized"), gate.authorizeRequest(metadata, datasource, "alice", UserParents(setOf("reader")), AuthzContext(), now))
     }
 
     @Test
@@ -281,9 +278,18 @@ class AthenaRequestAuthorizerTest {
     }
 
     @Test
-    fun `engine definition routes Athena through the native authorizer`() {
-        assertTrue(AthenaRequestAuthorizer.authorize(catalogRequest(), datasource, "alice", UserParents(setOf("reader")), AuthzContext(), authz(connect)) is RequestAdmission.Denied)
-        assertTrue(AthenaRequestAuthorizer.authorize(request(descriptor("ListWorkGroups")), datasource, "alice", UserParents(setOf("reader")), AuthzContext(), authz(connect, invokeAll)) is RequestAdmission.Allowed)
+    fun `the engine reads the resources and Cedar alone decides them`() {
+        val access = athenaRequestAccess(request(descriptor("GetWorkGroup", body = """{"WorkGroup":"primary"}""")), datasource.name, "alice", now)
+        assertTrue(access is RequestAccess.Native)
+        assertEquals("athena:GetWorkGroup", access.operation)
+        assertEquals(listOf(NativeResourceRef("workgroup", "primary")), access.resources)
+        assertEquals(listOf(NativeResourceRef("datasource", "lake")), (athenaRequestAccess(request(descriptor("ListWorkGroups")), datasource.name, "alice", now) as RequestAccess.Native).resources)
+        val owned = descriptor("ListWorkGroups", phase = RESPONSE) { addObservations(observation("workgroup", "team-a") { owner = "bob" }); addObservations(observation("workgroup", "team-b")) }
+        assertEquals(
+            listOf(NativeResourceRef("datasource", "lake"), NativeResourceRef("workgroup", "team-a", "bob"), NativeResourceRef("workgroup", "team-b")),
+            (athenaRequestAccess(request(owned), datasource.name, "alice", now) as RequestAccess.Native).resources,
+        )
+        assertEquals(RequestAccess.Denied("native.not_authorized"), athenaRequestAccess(catalogRequest(), datasource.name, "alice", now))
     }
 
     private fun admit(
@@ -292,7 +298,7 @@ class AthenaRequestAuthorizerTest {
         ds: Datasource = datasource,
         roles: Set<String> = setOf("reader"),
         context: AuthzContext = AuthzContext(),
-    ): RequestAdmission = authorizer.authorize(request(descriptor), ds, "alice", UserParents(roles), context, gate)
+    ): RequestAdmission = gate.authorizeRequest(request(descriptor), ds, "alice", UserParents(roles), context, now)
 
     private fun request(descriptor: AthenaNativeDescriptor): RequestAuthorization = RequestAuthorization.newBuilder()
         .setDatasourceName(datasource.name)

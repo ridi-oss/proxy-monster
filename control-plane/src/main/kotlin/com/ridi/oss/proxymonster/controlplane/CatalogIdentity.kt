@@ -1,6 +1,10 @@
 package com.ridi.oss.proxymonster.controlplane
 
 import com.ridi.oss.proxymonster.controlplane.management.ManagementException
+import com.ridi.oss.proxymonster.analyzer.pb.column
+import com.ridi.oss.proxymonster.probe.ColumnKey
+import com.ridi.oss.proxymonster.probe.introspectedColumns
+import com.ridi.oss.proxymonster.probe.parseColumn
 import com.ridi.oss.proxymonster.grpc.ObjectRef
 import com.ridi.oss.proxymonster.grpc.objectRef
 
@@ -8,10 +12,37 @@ import com.ridi.oss.proxymonster.grpc.objectRef
 internal val Datasource.effectiveCatalog: String
     get() = currentCatalog ?: engine.catalogName(dbName)
 
-/** The catalog a request names; it must be this datasource's. */
+/** The lower_case_table_names names are folded by; refused while a MySQL target has not reported it. */
+internal fun Datasource.caseMode(): Int? = try {
+    engine.requireCaseMode(mysqlLowerCaseTableNames)
+} catch (_: IllegalArgumentException) {
+    throw ManagementException(ApiError("datasource.case_mode_unknown"))
+}
+
+/** The first stored default schema, not normalized, whose canonical name is not a system schema. */
+internal fun Datasource.firstUserDefaultSchema(): String? {
+    val mode = caseMode()
+    return defaultSchemas.firstOrNull { storedSchema ->
+        val canonicalSchema = introspectedColumns(engine, mode, listOf(column { schema = storedSchema }))?.single()?.schema
+        canonicalSchema != null && !engine.isSystemSchema(canonicalSchema)
+    }
+}
+
+/** [firstUserDefaultSchema] as SQL identifier text, quoted so [columnKey] keeps the target's spelling. */
+internal fun Datasource.defaultSchemaIdentifier(): String? = firstUserDefaultSchema()?.let(engine.definition::quoteIdentifier)
+
+/** A canonical catalog; it must be this datasource's. */
 internal fun Datasource.requireCatalog(catalog: String): String {
     if (catalog.isBlank() || catalog != effectiveCatalog) throw ManagementException(ApiError("datasource.invalid_catalog"))
     return catalog
+}
+
+/** A column a person named, parsed by the engine's dialect; its catalog must be this datasource's. */
+internal fun Datasource.columnKey(catalog: String, schema: String, table: String, column: String): ColumnKey {
+    val key = parseColumn(engine, caseMode(), catalog, schema, table, column)
+        ?: throw ManagementException(ApiError("common.invalid_value", mapOf("field" to "column")))
+    requireCatalog(key.catalog)
+    return key
 }
 
 /** The catalog a catalog push reports; it must be one the engine could actually produce (MySQL: "def"). */

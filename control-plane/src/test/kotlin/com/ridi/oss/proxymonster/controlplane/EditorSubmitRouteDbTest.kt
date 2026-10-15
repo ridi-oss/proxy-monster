@@ -380,6 +380,7 @@ class EditorSubmitRouteDbTest {
     fun `a datasource says whether its sessions can set a default schema`() {
         val json = Json { encodeDefaults = true }
         assertTrue(json.encodeToString(Datasource.serializer(), datasource).contains("\"defaultSchemaSettable\":true"))
+        assertTrue(json.encodeToString(Datasource.serializer(), datasource).contains("\"identifierQuote\":"))
         val athena = datasource.copy(engine = com.ridi.oss.proxymonster.grpc.Engine.ATHENA)
         assertTrue(json.encodeToString(Datasource.serializer(), athena).contains("\"defaultSchemaSettable\":false"))
     }

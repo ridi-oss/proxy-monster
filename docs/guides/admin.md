@@ -86,6 +86,13 @@ tags and, optionally, a mask function. **Export** and **Import** move a
 datasource's classifications as a file. Over MCP, `set_column_classifications`
 writes up to 500 columns of one datasource in one all-or-nothing call.
 
+Over MCP and the API, names are read as in a SQL query: on PostgreSQL, table
+`Users` means `users`. To name a table or column exactly as `browse_catalog`
+lists it, quote it with the datasource's `identifierQuote`: `"Users"` on
+PostgreSQL, `` `Users` `` on MySQL. The console does this for you. A MySQL
+datasource refuses classifications until introspection reports its
+`lower_case_table_names`.
+
 A classification is stored against the datasource, not the catalog, and a
 catalog refresh never removes one. So tag a column before its schema exists: the
 row sits dormant and starts masking the moment the column appears. Tagging after

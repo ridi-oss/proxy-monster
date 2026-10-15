@@ -23,6 +23,7 @@ import com.ridi.oss.proxymonster.controlplane.authz.AuthzContext
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzDecision
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzResource
 import com.ridi.oss.proxymonster.controlplane.authz.authorizeNativeResource
+import com.ridi.oss.proxymonster.controlplane.engines.AthenaEngineDefinition
 import com.ridi.oss.proxymonster.grpc.EnfAction
 import com.ridi.oss.proxymonster.grpc.RequestAuthorization
 import com.ridi.oss.proxymonster.grpc.Verdict
@@ -155,14 +156,15 @@ internal class AthenaNativeAuthorizer(private val clock: Clock = Clock.systemUTC
         body["QueryExecutionContext"]?.let { if (!it.isObject) throw Deny(NATIVE_INVALID_DESCRIPTOR) }
         body["ResultConfiguration"]?.let { if (!it.isObject) throw Deny(NATIVE_INVALID_DESCRIPTOR) }
         val ctx = body["QueryExecutionContext"]
-        fun inScope(value: JsonNode?, configured: String): Boolean {
-            if (value == null) return true
-            if (!value.isTextual) throw Deny(NATIVE_INVALID_DESCRIPTOR)
-            return configured.isNotBlank() && value.textValue().equals(configured, ignoreCase = true)
+        fun inScope(requested: JsonNode?, configured: String, canonical: (String) -> String = { it }): Boolean {
+            if (requested == null) return true
+            if (!requested.isTextual) throw Deny(NATIVE_INVALID_DESCRIPTOR)
+            return configured.isNotBlank() && canonical(requested.textValue()) == canonical(configured)
         }
+        val athenaName = { rawName: String -> AthenaEngineDefinition.canonicalName(rawName) ?: throw Deny(NATIVE_INVALID_DESCRIPTOR) }
         if (!inScope(body["WorkGroup"], target.defaultWorkgroup)) throw Deny(NATIVE_SCOPE_VIOLATION)
-        if (!inScope(ctx?.get("Catalog"), target.defaultCatalog)) throw Deny(NATIVE_SCOPE_VIOLATION)
-        if (!inScope(ctx?.get("Database"), target.defaultDatabase)) throw Deny(NATIVE_SCOPE_VIOLATION)
+        if (!inScope(ctx?.get("Catalog"), target.defaultCatalog, athenaName)) throw Deny(NATIVE_SCOPE_VIOLATION)
+        if (!inScope(ctx?.get("Database"), target.defaultDatabase, athenaName)) throw Deny(NATIVE_SCOPE_VIOLATION)
         // A client-chosen output location is an S3 write through the proxy's role, outside the configured scope.
         if (body["ResultConfiguration"]?.get("OutputLocation") != null) throw Deny(NATIVE_SCOPE_VIOLATION)
         // Result reuse returns an earlier execution's rows under a new id; today's plan cannot vouch for them.
@@ -276,6 +278,12 @@ internal object AthenaOperations {
     private fun invalid() = MalformedNativeBody()
 
     private fun one(kind: String, id: (ObjectNode) -> String): (ObjectNode) -> List<Pair<String, String>> = { listOf(kind to id(it)) }
+
+    /** [names] joined with `/`, each an Athena name in its canonical spelling. */
+    private fun catalogPath(vararg names: String): (ObjectNode) -> String = { body -> names.joinToString("/") { athenaName(body.str(it)) } }
+
+    private fun athenaName(rawName: String): String = AthenaEngineDefinition.canonicalName(rawName) ?: throw invalid()
+
     private fun many(kind: String, ids: (ObjectNode) -> List<String>): (ObjectNode) -> List<Pair<String, String>> = { body -> ids(body).map { kind to it } }
     private fun none(): (ObjectNode) -> List<Pair<String, String>> = { emptyList() }
 
@@ -291,11 +299,11 @@ internal object AthenaOperations {
         AthenaOperation("ListQueryExecutions", Category.HISTORY, none()),
 
         AthenaOperation("ListDataCatalogs", Category.METADATA, none()),
-        AthenaOperation("GetDataCatalog", Category.METADATA, one("data-catalog") { it.str("Name") }),
-        AthenaOperation("ListDatabases", Category.METADATA, one("data-catalog") { it.str("CatalogName") }),
-        AthenaOperation("GetDatabase", Category.METADATA, one("database") { "${it.str("CatalogName")}/${it.str("DatabaseName")}" }),
-        AthenaOperation("ListTableMetadata", Category.METADATA, one("database") { "${it.str("CatalogName")}/${it.str("DatabaseName")}" }),
-        AthenaOperation("GetTableMetadata", Category.METADATA, one("table") { "${it.str("CatalogName")}/${it.str("DatabaseName")}/${it.str("TableName")}" }),
+        AthenaOperation("GetDataCatalog", Category.METADATA, one("data-catalog", catalogPath("Name"))),
+        AthenaOperation("ListDatabases", Category.METADATA, one("data-catalog", catalogPath("CatalogName"))),
+        AthenaOperation("GetDatabase", Category.METADATA, one("database", catalogPath("CatalogName", "DatabaseName"))),
+        AthenaOperation("ListTableMetadata", Category.METADATA, one("database", catalogPath("CatalogName", "DatabaseName"))),
+        AthenaOperation("GetTableMetadata", Category.METADATA, one("table", catalogPath("CatalogName", "DatabaseName", "TableName"))),
         AthenaOperation("ListWorkGroups", Category.METADATA, none()),
         AthenaOperation("GetWorkGroup", Category.METADATA, one("workgroup") { it.str("WorkGroup") }),
         AthenaOperation("GetPreparedStatement", Category.METADATA, one("prepared-statement") { "${it.str("WorkGroup")}/${it.str("StatementName")}" }),
@@ -320,9 +328,9 @@ internal object AthenaOperations {
         AthenaOperation("CreateWorkGroup", Category.NATIVE, one("workgroup") { it.str("Name") }),
         AthenaOperation("UpdateWorkGroup", Category.NATIVE, one("workgroup") { it.str("WorkGroup") }),
         AthenaOperation("DeleteWorkGroup", Category.NATIVE, one("workgroup") { it.str("WorkGroup") }),
-        AthenaOperation("CreateDataCatalog", Category.NATIVE, one("data-catalog") { it.str("Name") }),
-        AthenaOperation("UpdateDataCatalog", Category.NATIVE, one("data-catalog") { it.str("Name") }),
-        AthenaOperation("DeleteDataCatalog", Category.NATIVE, one("data-catalog") { it.str("Name") }),
+        AthenaOperation("CreateDataCatalog", Category.NATIVE, one("data-catalog", catalogPath("Name"))),
+        AthenaOperation("UpdateDataCatalog", Category.NATIVE, one("data-catalog", catalogPath("Name"))),
+        AthenaOperation("DeleteDataCatalog", Category.NATIVE, one("data-catalog", catalogPath("Name"))),
         AthenaOperation("CreateCapacityReservation", Category.NATIVE, one("capacity-reservation") { it.str("Name") }),
         AthenaOperation("UpdateCapacityReservation", Category.NATIVE, one("capacity-reservation") { it.str("Name") }),
         AthenaOperation("CancelCapacityReservation", Category.NATIVE, one("capacity-reservation") { it.str("Name") }),

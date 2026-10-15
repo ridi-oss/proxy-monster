@@ -9,6 +9,7 @@ import com.ridi.oss.proxymonster.athena.pb.fetchAthenaPreparedDefinition
 import com.ridi.oss.proxymonster.analyzer.pb.StatementFacts
 import com.ridi.oss.proxymonster.athena.pb.athenaSqlContext
 import com.ridi.oss.proxymonster.analyzer.pb.engineConfig
+import com.ridi.oss.proxymonster.analyzer.pb.column
 import com.ridi.oss.proxymonster.analyzer.pb.functionCatalog
 import com.ridi.oss.proxymonster.classification.AthenaNativeFunctions
 import com.ridi.oss.proxymonster.controlplane.ApiError
@@ -21,6 +22,7 @@ import com.ridi.oss.proxymonster.controlplane.management.ManagementException
 import com.ridi.oss.proxymonster.grpc.ConnectionInfo
 import com.ridi.oss.proxymonster.grpc.Engine
 import com.ridi.oss.proxymonster.probe.Dialect
+import com.ridi.oss.proxymonster.probe.introspectedColumns
 import java.net.URI
 
 /**
@@ -37,12 +39,18 @@ internal object AthenaEngineDefinition : EngineDefinition {
     override val systemSchemas = setOf("information_schema")
     override val catalogIsConnectionIndependent = true
     override val checksTargetErrors = false
+    override val identifierQuote = '"'
 
-    override fun catalogName(dbName: String): String = dbName.lowercase()
-    override fun defaultSchema(dbName: String): String = dbName
+    // Athena resolves catalog names case-insensitively.
+    override fun catalogName(registeredDbName: String): String =
+        checkNotNull(canonicalName(registeredDbName)) { "Athena name cannot be normalized" }
+
+    /** [rawName], a literal Athena name (an API field, not SQL text), folded as the analyzer does; null when it cannot be normalized. */
+    fun canonicalName(rawName: String): String? = introspectedColumns(Engine.ATHENA, null, listOf(column { catalog = rawName }))?.single()?.catalog
+    override fun defaultSchema(registeredDbName: String): String = registeredDbName
     override fun requireCaseMode(lowerCaseTableNames: Int?): Int? = null
-    override fun isFixedSystemSchema(schema: String): Boolean = schema.lowercase() in systemSchemas
-    override fun isSystemSchema(schema: String): Boolean = isFixedSystemSchema(schema)
+    override fun isFixedSystemSchema(canonicalSchema: String): Boolean = canonicalSchema in systemSchemas
+    override fun isSystemSchema(canonicalSchema: String): Boolean = isFixedSystemSchema(canonicalSchema)
     override fun splitEngineConfig(datasource: Datasource): EngineConfig = analyzerEngineConfig(datasource, SessionObservation.getDefaultInstance())
     override fun analyzerEngineConfig(datasource: Datasource, session: SessionObservation): EngineConfig = engineConfig {
         engine = Engine.ATHENA

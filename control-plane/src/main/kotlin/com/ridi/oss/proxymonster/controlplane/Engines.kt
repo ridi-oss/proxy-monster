@@ -40,17 +40,19 @@ interface EngineDefinition {
     /** True when the proxy can prepare a statement on the target without running it (`check_target_error`). */
     val checksTargetErrors: Boolean
 
-    /** The analyzer catalog segment for a datasource whose registration database is [dbName]. */
-    fun catalogName(dbName: String): String
-    /** The schema an unqualified table resolves to when no per-request schema is given. */
-    fun defaultSchema(dbName: String): String
+    /** The canonical analyzer catalog segment for a datasource registered on [registeredDbName], which is not normalized. */
+    fun catalogName(registeredDbName: String): String
+    /** The schema an unqualified table resolves to when no per-request schema is given; [registeredDbName] and the result are not normalized. */
+    fun defaultSchema(registeredDbName: String): String
     /** Maps the cross-engine "public" selector to [defaultSchema]; any other value is an explicit schema. */
     /** The MySQL lower_case_table_names mode the analyzer needs, or null for an engine without one. */
     fun requireCaseMode(lowerCaseTableNames: Int?): Int?
-    /** [systemSchemas] membership with engine-correct casing; the catalog pool key predicate. */
-    fun isFixedSystemSchema(schema: String): Boolean
+    /** [systemSchemas] membership of [canonicalSchema], compared exactly; the catalog pool key predicate. */
+    fun isFixedSystemSchema(canonicalSchema: String): Boolean
     /** [isFixedSystemSchema] plus the engine's ephemeral per-session schemas (Postgres pg_temp_*, pg_toast). */
-    fun isSystemSchema(schema: String): Boolean
+    fun isSystemSchema(canonicalSchema: String): Boolean
+    /** True when [canonicalSchema] is the engine's session temp schema (Postgres pg_temp, pg_temp_3), compared exactly. */
+    fun isTempSchema(canonicalSchema: String): Boolean = false
     /** The analyzer config for splitting a batch before any session exists; null when introspection has not captured what the dialect needs. */
     fun splitEngineConfig(datasource: Datasource): PbEngineConfig?
     /**
@@ -71,13 +73,19 @@ interface EngineDefinition {
     fun functionCatalog(routines: Map<String, List<String>>, engineVersion: String?): FunctionCatalog
     /**
      * The system columns every table has beyond its introspected ones (PostgreSQL ctid/xmin/…; a real column
-     * of that name wins). They resolve when written, never expand from `*`, and cannot be classified.
+     * of that name wins). They resolve when written, never expand from `*`, and cannot be classified. [rows]
+     * and the result are canonical.
      */
     fun implicitColumns(rows: List<CatalogColumn>): List<CatalogColumn>
     /** Refuses a ConnectionInfo this engine's proxies must not publish (see [validateNativeConnectionInfo]). */
     fun validateConnectionInfo(info: ConnectionInfo)
-    /** Builds the statement that makes a schema a session's default for unqualified names; null where the engine has none. */
-    val defaultSchemaStatement: ((schema: String) -> String)? get() = null
+    /** Builds the statement that makes [canonicalSchema][it] a session's default, quoted exactly; null where the engine has none. */
+    val defaultSchemaStatement: ((canonicalSchema: String) -> String)? get() = null
+    /** The character that quotes an identifier in the engine's SQL; a quote inside the name is doubled. */
+    val identifierQuote: Char
+
+    fun quoteIdentifier(name: String): String =
+        "$identifierQuote${name.replace("$identifierQuote", "$identifierQuote$identifierQuote")}$identifierQuote"
 }
 
 private val engineDefinitions = listOf(MySqlEngineDefinition, PostgresEngineDefinition, AthenaEngineDefinition).associateBy { it.engine }
@@ -94,11 +102,12 @@ val Engine.checksTargetErrors: Boolean get() = definition.checksTargetErrors
 val Engine.isMySql: Boolean get() = this == Engine.MYSQL
 val Engine.isPostgres: Boolean get() = this == Engine.POSTGRES
 
-fun Engine.catalogName(dbName: String): String = definition.catalogName(dbName)
-fun Engine.defaultSchema(dbName: String): String = definition.defaultSchema(dbName)
+fun Engine.catalogName(registeredDbName: String): String = definition.catalogName(registeredDbName)
+fun Engine.defaultSchema(registeredDbName: String): String = definition.defaultSchema(registeredDbName)
 fun Engine.requireCaseMode(lowerCaseTableNames: Int?): Int? = definition.requireCaseMode(lowerCaseTableNames)
-fun Engine.isFixedSystemSchema(schema: String): Boolean = definition.isFixedSystemSchema(schema)
-fun Engine.isSystemSchema(schema: String): Boolean = definition.isSystemSchema(schema)
+fun Engine.isFixedSystemSchema(canonicalSchema: String): Boolean = definition.isFixedSystemSchema(canonicalSchema)
+fun Engine.isSystemSchema(canonicalSchema: String): Boolean = definition.isSystemSchema(canonicalSchema)
+fun Engine.isTempSchema(canonicalSchema: String): Boolean = definition.isTempSchema(canonicalSchema)
 fun Engine.parseServerVersion(raw: String?): Pair<String?, Boolean> = definition.parseServerVersion(raw)
 fun Engine.functionCatalog(routines: Map<String, List<String>>, engineVersion: String?): FunctionCatalog =
     definition.functionCatalog(routines, engineVersion)

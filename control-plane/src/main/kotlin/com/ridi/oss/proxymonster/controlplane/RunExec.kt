@@ -424,7 +424,7 @@ class RunExecService(
 
         val kind = (if (approverExec) TokenKind.APPROVER_EXEC else TokenKind.EDITOR).name
         val opened = core.connectionCatalog.open(
-            Binding(ds.name, principal, kind, ds.effectiveCatalog),
+            Binding(ds.name, principal, kind, ds.effectiveCatalog, ds.engine),
             ds.namespaces((namespaces ?: ds.defaultSchemas) + ds.engine.systemSchemas),
             adoptHeldContent = ds.engine.catalogIsConnectionIndependent,
         )
@@ -524,7 +524,7 @@ class RunExecService(
         val issuedTokenHash = tokenHash(issued.token)
         core.runRequesterIps.put(issuedTokenHash, requesterIp)
         val opened = core.connectionCatalog.open(
-            Binding(ds.name, principal, TokenKind.EDITOR.name, ds.effectiveCatalog),
+            Binding(ds.name, principal, TokenKind.EDITOR.name, ds.effectiveCatalog, ds.engine),
             ds.namespaces(ds.defaultSchemas + ds.engine.systemSchemas),
             adoptHeldContent = ds.engine.catalogIsConnectionIndependent,
         )
@@ -716,7 +716,7 @@ class RunExecService(
     suspend fun openSessionStructure(taskId: Long, principal: String, ds: Datasource): ConnectionStructure? {
         val session = taskSessions[taskId]?.let(openSessions::get)
             ?.takeIf { it.principal == principal && it.datasourceName == ds.name } ?: return null
-        return connectionStructure(core, session.connectionId, Binding(ds.name, principal, TokenKind.EDITOR.name, ds.effectiveCatalog), ds)
+        return connectionStructure(core, session.connectionId, Binding(ds.name, principal, TokenKind.EDITOR.name, ds.effectiveCatalog, ds.engine), ds)
     }
 
     /** Reap sessions idle longer than [maxIdleMs] (called on a timer) — releases the target-DB connection. */

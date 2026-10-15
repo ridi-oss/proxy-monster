@@ -111,16 +111,20 @@ class EnginesTest {
         assertEquals(setOf("pg_catalog", "information_schema"), Engine.POSTGRES.systemSchemas)
     }
 
-    @Test fun `MySQL system schemas match case-insensitively`() {
+    @Test fun `MySQL system schemas match the canonical spelling exactly`() {
         assertTrue(Engine.MYSQL.isSystemSchema("information_schema"))
-        assertTrue(Engine.MYSQL.isSystemSchema("INFORMATION_SCHEMA"))
-        assertTrue(Engine.MYSQL.isSystemSchema("Information_Schema"))
         assertTrue(Engine.MYSQL.isSystemSchema("mysql"))
-        assertTrue(Engine.MYSQL.isSystemSchema("MySQL"))
         assertTrue(Engine.MYSQL.isSystemSchema("performance_schema"))
-        assertTrue(Engine.MYSQL.isSystemSchema("PERFORMANCE_SCHEMA"))
         assertTrue(Engine.MYSQL.isSystemSchema("sys"))
-        assertTrue(Engine.MYSQL.isSystemSchema("SYS"))
+        // Under lower_case_table_names=0 these canonical names are user databases.
+        assertFalse(Engine.MYSQL.isSystemSchema("SYS"))
+        assertFalse(Engine.MYSQL.isSystemSchema("Mysql"))
+        assertFalse(Engine.MYSQL.isSystemSchema("PERFORMANCE_SCHEMA"))
+    }
+
+    @Test fun `Athena system schemas match the canonical spelling exactly`() {
+        assertTrue(Engine.ATHENA.isSystemSchema("information_schema"))
+        assertFalse(Engine.ATHENA.isSystemSchema("Information_Schema"))
     }
 
     @Test fun `MySQL non-system schema does not match`() {
@@ -128,8 +132,7 @@ class EnginesTest {
         assertFalse(Engine.MYSQL.isSystemSchema("acme"))
     }
 
-    @Test fun `Postgres system schemas require exact lowercase spelling, unlike MySQL`() {
-        // The Postgres branch does NOT fold case at all.
+    @Test fun `Postgres system schemas require exact lowercase spelling`() {
         assertTrue(Engine.POSTGRES.isSystemSchema("pg_catalog"))
         assertTrue(Engine.POSTGRES.isSystemSchema("information_schema"))
         assertFalse(Engine.POSTGRES.isSystemSchema("PG_CATALOG"), "the Postgres branch does not fold case")
@@ -148,8 +151,29 @@ class EnginesTest {
 
     @Test fun `isFixedSystemSchema keeps each engine's casing but drops the prefixes`() {
         assertTrue(Engine.POSTGRES.isFixedSystemSchema("pg_catalog"))
-        assertTrue(Engine.MYSQL.isFixedSystemSchema("INFORMATION_SCHEMA"), "MySQL folds")
+        assertFalse(Engine.MYSQL.isFixedSystemSchema("INFORMATION_SCHEMA"), "MySQL matches exactly")
         assertFalse(Engine.POSTGRES.isFixedSystemSchema("PG_CATALOG"), "Postgres matches exactly")
+    }
+
+    @Test fun `Athena catalog names fold like the analyzer`() {
+        assertEquals("awsdatacatalog", Engine.ATHENA.catalogName("AwsDataCatalog"))
+        assertEquals("ix", Engine.ATHENA.catalogName("\u0130X"))
+        assertEquals("σασ", Engine.ATHENA.catalogName("ΣΑΣ"))
+    }
+
+    @Test fun `quoteIdentifier uses the engine quote and doubles an embedded one`() {
+        assertEquals("`a``b`", Engine.MYSQL.definition.quoteIdentifier("a`b"))
+        assertEquals("\"a\"\"b\"", Engine.POSTGRES.definition.quoteIdentifier("a\"b"))
+        assertEquals("\"Users\"", Engine.ATHENA.definition.quoteIdentifier("Users"))
+    }
+
+    @Test fun `isTempSchema is the Postgres session temp schema, exactly`() {
+        assertTrue(Engine.POSTGRES.isTempSchema("pg_temp"))
+        assertTrue(Engine.POSTGRES.isTempSchema("pg_temp_3"))
+        assertFalse(Engine.POSTGRES.isTempSchema("PG_TEMP_3"))
+        assertFalse(Engine.POSTGRES.isTempSchema("pg_tempx"))
+        assertFalse(Engine.MYSQL.isTempSchema("pg_temp_3"))
+        assertFalse(Engine.ATHENA.isTempSchema("pg_temp"))
     }
 
     @Test fun `Postgres non-system schema does not match`() {

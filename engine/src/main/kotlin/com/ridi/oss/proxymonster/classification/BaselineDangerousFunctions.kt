@@ -22,8 +22,8 @@ package com.ridi.oss.proxymonster.classification
  * the baseline is a FLOOR that only ever RAISES (or matches) the manifest classification, never lowers it.
  *
  * It is deliberately NOT a general denylist: a bare name absent here is untouched (an ordinary safe
- * builtin or a user UDF stays UNCLASSIFIED → not marshalled → not forbidden). Matching is a
- * case-insensitive fold, like the classifier, and by BARE name only — sqlglot drops a function's schema
+ * builtin or a user UDF stays UNCLASSIFIED → not marshalled → not forbidden). Matching is exact on the
+ * analyzer's canonical name, like the classifier, and by BARE name only — sqlglot drops a function's schema
  * qualifier at parse time, and over-classifying a same-named user function is safe (fail-closed).
  *
  * See [SystemClassifier.classifyBareFunction] for the per-version path this backstops.
@@ -56,5 +56,5 @@ object BaselineDangerousFunctions {
     )
 
     /** The floor system tag for a bare function [name], or null when it is not a cross-engine dangerous builtin. */
-    fun classify(name: String): SystemTag? = byName[name.lowercase()]
+    fun classify(name: String): SystemTag? = byName[name]
 }

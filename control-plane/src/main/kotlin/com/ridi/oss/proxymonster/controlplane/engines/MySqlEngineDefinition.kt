@@ -28,16 +28,18 @@ internal object MySqlEngineDefinition : EngineDefinition {
     override val catalogIsConnectionIndependent = true
     override val checksTargetErrors = true
 
-    override fun catalogName(dbName: String): String = "def"
-    override fun defaultSchema(dbName: String): String = dbName
+    // MySQL has one catalog, def, whatever the database.
+    override fun catalogName(registeredDbName: String): String = "def"
+    override fun defaultSchema(registeredDbName: String): String = registeredDbName
 
     override fun requireCaseMode(lowerCaseTableNames: Int?): Int = requireNotNull(lowerCaseTableNames) {
         "MySQL lower_case_table_names has not been captured by introspection"
     }
 
-    override fun isFixedSystemSchema(schema: String): Boolean = schema.lowercase() in systemSchemas
-    override fun isSystemSchema(schema: String): Boolean = isFixedSystemSchema(schema)
-    override val defaultSchemaStatement = { schema: String -> "USE `${schema.replace("`", "``")}`" }
+    override fun isFixedSystemSchema(canonicalSchema: String): Boolean = canonicalSchema in systemSchemas
+    override fun isSystemSchema(canonicalSchema: String): Boolean = isFixedSystemSchema(canonicalSchema)
+    override val identifierQuote = '`'
+    override val defaultSchemaStatement = { canonicalSchema: String -> "USE ${quoteIdentifier(canonicalSchema)}" }
 
     override fun splitEngineConfig(datasource: Datasource): EngineConfig? {
         if (datasource.engineVersion.isNullOrBlank() || datasource.mysqlLowerCaseTableNames == null) return null

@@ -84,7 +84,7 @@ class GrpcDecideHandlerDbTest {
     private suspend fun open(token: String, datasource: Datasource = ds): ByteString {
         val resolved = core.tokenStore.resolve(token)!!
         val opened = core.connectionCatalog.open(
-            com.ridi.oss.proxymonster.controlplane.Binding(datasource.name, resolved.principal, resolved.kind, datasource.effectiveCatalog),
+            com.ridi.oss.proxymonster.controlplane.Binding(datasource.name, resolved.principal, resolved.kind, datasource.effectiveCatalog, datasource.engine),
             datasource.namespaces(datasource.defaultSchemas + datasource.engine.systemSchemas),
         )
         val identity = com.ridi.oss.proxymonster.grpc.wireIdentity {

@@ -29,13 +29,16 @@ internal object PostgresEngineDefinition : EngineDefinition {
     override val catalogIsConnectionIndependent = false
     override val checksTargetErrors = true
 
-    override fun catalogName(dbName: String): String = dbName
-    override fun defaultSchema(dbName: String): String = "public"
+    // The database name is a connection parameter libpq matches exactly, not SQL text, so it is already canonical.
+    override fun catalogName(registeredDbName: String): String = registeredDbName
+    override fun defaultSchema(registeredDbName: String): String = "public"
     override fun requireCaseMode(lowerCaseTableNames: Int?): Int? = null
-    override fun isFixedSystemSchema(schema: String): Boolean = schema in systemSchemas
-    override fun isSystemSchema(schema: String): Boolean =
-        isFixedSystemSchema(schema) || schema.startsWith("pg_temp_") || schema.startsWith("pg_toast")
-    override val defaultSchemaStatement = { schema: String -> "SET search_path TO \"${schema.replace("\"", "\"\"")}\"" }
+    override fun isFixedSystemSchema(canonicalSchema: String): Boolean = canonicalSchema in systemSchemas
+    override fun isSystemSchema(canonicalSchema: String): Boolean =
+        isFixedSystemSchema(canonicalSchema) || canonicalSchema.startsWith("pg_temp_") || canonicalSchema.startsWith("pg_toast")
+    override fun isTempSchema(canonicalSchema: String): Boolean = canonicalSchema == "pg_temp" || canonicalSchema.startsWith("pg_temp_")
+    override val identifierQuote = '"'
+    override val defaultSchemaStatement = { canonicalSchema: String -> "SET search_path TO ${quoteIdentifier(canonicalSchema)}" }
 
     override fun splitEngineConfig(datasource: Datasource): EngineConfig = analyzerEngineConfig(datasource, SessionObservation.getDefaultInstance())
 

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/db"
 	"github.com/ridi-oss/proxy-monster/goproxy/dialects/athena"
@@ -29,7 +30,7 @@ type sqlProvider struct {
 	db      engine.Db
 	open    func(spi.TargetDb) (*sql.DB, error)
 	probe   introspect.NamespaceProbe
-	// catalog reads the connection's current catalog; MySQL pins "def", Postgres asks the server.
+	// catalog reads the connection's current catalog; MySQL pins its one catalog, Postgres asks the server.
 	catalog    func(context.Context, *sql.Conn) (string, error)
 	readDetail func(*sql.Conn, string, string) (*spi.TableDetail, error)
 	newServer  func(spi.Listen, spi.TargetDb, spi.EnforcementClient, engine.Db, func() (*tls.Config, error)) spi.WireServer
@@ -119,7 +120,7 @@ var registry = spi.MustRegistry(
 		db:         db.MySqlDb{},
 		open:       introspect.OpenMySQLTarget,
 		probe:      introspect.ProbeMySQLNamespace,
-		catalog:    func(context.Context, *sql.Conn) (string, error) { return "def", nil },
+		catalog:    func(context.Context, *sql.Conn) (string, error) { return engines.MySQL.CatalogName(""), nil },
 		readDetail: readMySQLTableDetail,
 		newServer: func(listen spi.Listen, target spi.TargetDb, client spi.EnforcementClient, db engine.Db, tlsProvider func() (*tls.Config, error)) spi.WireServer {
 			return mysqlproxy.New(listen, target, client, db, tlsProvider)

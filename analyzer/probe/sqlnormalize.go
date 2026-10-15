@@ -5,6 +5,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	"github.com/ridi-oss/sqlglot-go"
 	"github.com/ridi-oss/sqlglot-go/dialects"
 	"github.com/ridi-oss/sqlglot-go/tokens"
@@ -26,22 +27,6 @@ type normalizeRules struct {
 	rejectExecutableComments bool
 }
 
-// normalizeRulesByWireName is the engine registry SqlNormalize consults; a name not here fails closed.
-// Adding an engine means adding its row.
-var normalizeRulesByWireName = map[string]func() normalizeRules{
-	"mysql": func() normalizeRules {
-		d := dialects.MySQL()
-		return normalizeRules{dialect: d, wordDialect: d, rejectExecutableComments: true}
-	},
-	"postgres": func() normalizeRules {
-		d := dialects.Postgres()
-		return normalizeRules{dialect: d, wordDialect: d, foldIdentifiers: true}
-	},
-	"athena": func() normalizeRules {
-		return normalizeRules{dialect: dialects.Athena(), wordDialect: dialects.Trino(), hiveDialect: dialects.Hive(), foldIdentifiers: true}
-	},
-}
-
 // SqlNormalize produces a lexer-only canonical form suitable for exact approval matching.
 // It is total and fail-closed so that no panic can cross the native binding boundary.
 func SqlNormalize(sql, dialect string) (normalized string, ok bool) {
@@ -55,11 +40,11 @@ func SqlNormalize(sql, dialect string) (normalized string, ok bool) {
 	if !utf8.ValidString(sql) || strings.IndexByte(sql, 0) >= 0 {
 		return "", false
 	}
-	newRules, known := normalizeRulesByWireName[dialect]
-	if !known {
+	shared, err := engines.Parse(dialect)
+	if err != nil {
 		return "", false
 	}
-	rules := newRules()
+	rules := probeEngines[shared].normalize()
 	d := rules.dialect
 	tokenStream, err := sqlglot.Tokenize(sql, d)
 	if err != nil {

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	"github.com/ridi-oss/proxy-monster/analyzer/probe"
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
@@ -205,7 +206,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 	refetcher := engine.NewRefetcher(s.db, identity.ConnectionID, generation, func(sql string, expectedColumns int) ([][]*string, error) {
 		return runInternalQuery(targetDbConn, deprecateEOF, sql, expectedColumns)
 	}, s.client.PushSchemaFragment)
-	refetcher.Catalog = "def"
+	refetcher.Catalog = engines.MySQL.CatalogName("")
 	if err := refetcher.RunAll(identity.OnOpen, nil); err != nil {
 		slog.Warn("mysql catalog initialization failed", "error", err)
 		_ = mysqlwire.WritePacket(clientConn, tokenSeq+1, mysqlwire.ErrPacketState(

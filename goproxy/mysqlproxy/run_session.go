@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
@@ -52,7 +53,7 @@ func NewRunSession(ctx context.Context, target spi.TargetDb, db engine.Db, clien
 	s.ref = engine.NewRefetcher(db, s.connectionID, generation, func(sql string, expectedColumns int) ([][]*string, error) {
 		return runInternalQuery(s.conn, true, sql, expectedColumns)
 	}, client.PushSchemaFragment)
-	s.ref.Catalog = "def"
+	s.ref.Catalog = engines.MySQL.CatalogName("")
 	return s, nil
 }
 

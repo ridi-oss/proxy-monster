@@ -1,6 +1,6 @@
 // Package db is the DUMB per-database adapter set: the few facts engine.QueryEngine needs to gather
 // context (namespace probe SQL, temp-overlay support), plus each dialect's NormalizeColumns
-// specialization (analyzer/probe.NormalizeRelation — Go-to-Go, no SQL driver, no cgo). No enforcement
+// specialization (analyzer/probe.NormalizeMySQLColumns — Go-to-Go, no SQL driver, no cgo). No enforcement
 // logic, no state machine.
 package db
 
@@ -59,7 +59,7 @@ func (MySqlDb) NormalizeColumns(lowerCaseTableNames int, columns []*analyzerpb.C
 func (MySqlDb) FoldFunctionName(name string) string { return dialects.MySQLLower(name) }
 
 // mysqlSchemaFilter renders the WHERE-clause comparison for schema (a possibly-canonical spelling —
-// see analyzer/probe.NormalizeRelation) against the live TABLE_SCHEMA. Mode 0 never folds schema names
+// see analyzer/probe.NormalizeMySQLColumns) against the live TABLE_SCHEMA. Mode 0 never folds schema names
 // (canonical == raw) and mode 1 folds AT THE STORAGE LAYER itself (information_schema already reports
 // lowercase), so both compare byte-exact. Mode 2 is the one case canonical (folded) can diverge from
 // the live stored spelling (case preserved in storage, looked up case-insensitively) — MySQL guarantees
@@ -213,7 +213,7 @@ func (PgDb) LowerCaseTableNamesProbeSQL() string { return "" }
 
 // NormalizeColumns is an identity function: Postgres never folds — a quoted-vs-unquoted identifier
 // pair is genuinely two distinct columns, and introspection already reports each one's real, resolved
-// spelling (analyzer/probe.NormalizeRelation's contract for any non-MySQL dialect).
+// spelling.
 func (PgDb) NormalizeColumns(_ int, columns []*analyzerpb.Column) []*analyzerpb.Column {
 	return columns
 }

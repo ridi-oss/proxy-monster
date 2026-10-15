@@ -24,7 +24,7 @@ type tableDetailIndexes struct {
 func tableDetailTableExists(conn *sql.Conn, dialect engine.Dialect, schema, table string) (bool, error) {
 	query := fmt.Sprintf(
 		"SELECT table_schema, table_name FROM information_schema.tables WHERE table_schema = %s AND table_name = %s",
-		dialect.Placeholder(1), dialect.Placeholder(2),
+		dialect.Engine().Placeholder(1), dialect.Engine().Placeholder(2),
 	)
 	found := false
 	err := tableDetailQuery(conn, query, []any{schema, table}, func(rows *sql.Rows) error {

@@ -41,7 +41,8 @@ Modules:
   authorization, the catalog, the per-statement decision, and the admin +
   console API (HTTP and gRPC).
 - `analyzer/` — the Go sqlglot-go lineage probe (`probe/`) and its JVM FFM
-  binding (`jvm/`); emits each statement's required grants.
+  binding (`jvm/`); emits each statement's required grants. `engines/` is the
+  one list of target engines and their static facts, shared by every Go module.
 - `engine/` — shared Kotlin enforcement code the control plane calls: the
   JVM-side wrapper around the sqlglot-go analyzer, system classification (the
   dangerous-function and system-catalog manifests), SQL normalization, and the

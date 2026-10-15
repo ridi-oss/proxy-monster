@@ -23,6 +23,7 @@ import (
 	// The named mysql import both registers the "mysql" driver (via init()) AND gives us mysql.Config
 	// for safe DSN construction, so no separate blank import is needed.
 	mysqldriver "github.com/go-sql-driver/mysql"
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
@@ -308,7 +309,7 @@ func ProbeMySQLNamespace(ctx context.Context, conn *sql.Conn, targetDb string) (
 	if !matches.Valid || !matches.Bool {
 		return nil, fmt.Errorf("introspect: MySQL current database %q does not match bound database %q", currentDb.String, targetDb)
 	}
-	return &pb.CatalogRequest{DefaultSchemas: []string{currentDb.String}, MysqlLowerCaseTableNames: proto.Int32(int32(lctn)), CurrentCatalog: "def"}, nil
+	return &pb.CatalogRequest{DefaultSchemas: []string{currentDb.String}, MysqlLowerCaseTableNames: proto.Int32(int32(lctn)), CurrentCatalog: engines.MySQL.CatalogName("")}, nil
 }
 
 // ReadPostgresCatalog returns current_database(); the catalog every fragment and temp column from this

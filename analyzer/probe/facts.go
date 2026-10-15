@@ -210,10 +210,11 @@ func emitParsedFacts(parsed exp.Expression, eng engine, qualifySchema schema.Sch
 }
 
 func emitConfigFailureUtilityFacts(sql string, engineConfig *pb.EngineConfig) *pb.StatementFacts {
-	if engineConfig == nil || engineConfig.GetEngine() != pb.Engine_MYSQL {
+	row, _ := probeEngineFor(engineConfig)
+	if row.configFailureDialect == nil {
 		return nil
 	}
-	parsed, err := sqlglot.Parse(sql, dialects.MySQL())
+	parsed, err := sqlglot.Parse(sql, row.configFailureDialect())
 	if err != nil {
 		return nil
 	}

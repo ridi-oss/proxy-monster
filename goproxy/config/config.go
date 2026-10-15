@@ -147,12 +147,12 @@ func Load(registry spi.Registry) (*Config, error) {
 
 	proxyPort := parsePort(raw.ProxyPort)
 	if proxyPort == 0 && provider != nil {
-		proxyPort = dialect.DefaultProxyPort()
+		proxyPort = dialect.Engine().DefaultProxyPort
 	}
 
 	targetPort := parsePort(raw.TargetPort)
 	if targetPort == 0 && provider != nil {
-		targetPort = dialect.DefaultTargetPort()
+		targetPort = dialect.Engine().DefaultTargetPort
 	}
 
 	queryTimeout := 600 * time.Second

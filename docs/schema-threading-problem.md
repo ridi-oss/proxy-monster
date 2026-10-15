@@ -133,7 +133,7 @@ Kotlin key construction, and catalog lookup:
 
 The proxy never infers MySQL behavior from its own OS; the target server's
 captured mode decides it. goproxy normalizes every catalog identity at
-introspection (`NormalizeRelation`) before the control plane stores it; key
+introspection (`NormalizeMySQLColumns`) before the control plane stores it; key
 matching concatenates already-canonical parts.
 
 ## Security invariants

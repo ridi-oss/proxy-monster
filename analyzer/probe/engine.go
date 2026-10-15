@@ -11,6 +11,7 @@ import (
 	"github.com/ridi-oss/sqlglot-go/optimizer"
 	"github.com/ridi-oss/sqlglot-go/schema"
 
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 )
 
@@ -31,8 +32,6 @@ const (
 // sqlglot-go Dialect built from them) is captured at construction, so nothing downstream re-derives
 // it from a namespace or re-parses it from a bare wire-name string.
 type engine interface {
-	// WireName is the canonical lowercase sqlglot-go dialect name ("mysql" | "postgres").
-	WireName() string
 	// Dialect is the single *dialects.Dialect built once from this engine's config — reused for
 	// parsing, catalog normalization, Qualify, and SQL generation alike (sqlglot-go accepts a
 	// *Dialect directly everywhere a dialect argument is taken, MySQLVersion included, so there is
@@ -145,16 +144,48 @@ func createEngine(config *pb.EngineConfig) (engine, error) {
 	if config == nil {
 		return nil, fmt.Errorf("engine config is required")
 	}
-	switch config.GetEngine() {
-	case pb.Engine_MYSQL:
-		return newMySQLEngine(config)
-	case pb.Engine_POSTGRES:
-		return newPostgresEngine(config)
-	case pb.Engine_ATHENA:
-		return newAthenaEngine(config)
-	default:
+	row, ok := probeEngineFor(config)
+	if !ok {
 		return nil, fmt.Errorf("unsupported engine %s", config.GetEngine())
 	}
+	return row.build(config)
+}
+
+// probeEngineFor is the analyzer row for config's engine.
+func probeEngineFor(config *pb.EngineConfig) (probeEngine, bool) {
+	shared, ok := engines.ByProto(config.GetEngine())
+	return probeEngines[shared], ok
+}
+
+type probeEngine struct {
+	build     func(*pb.EngineConfig) (engine, error)
+	normalize func() normalizeRules
+	// configFailureDialect parses a SHOW while the engine config is incomplete; nil fails it closed.
+	configFailureDialect func() *dialects.Dialect
+}
+
+// probeEngines is each shared engine's analyzer implementation and SqlNormalize rules.
+var probeEngines = map[*engines.Engine]probeEngine{
+	engines.MySQL: {
+		build: newMySQLEngine, configFailureDialect: dialects.MySQL,
+		normalize: func() normalizeRules {
+			d := dialects.MySQL()
+			return normalizeRules{dialect: d, wordDialect: d, rejectExecutableComments: true}
+		},
+	},
+	engines.Postgres: {
+		build: newPostgresEngine,
+		normalize: func() normalizeRules {
+			d := dialects.Postgres()
+			return normalizeRules{dialect: d, wordDialect: d, foldIdentifiers: true}
+		},
+	},
+	engines.Athena: {
+		build: newAthenaEngine,
+		normalize: func() normalizeRules {
+			return normalizeRules{dialect: dialects.Athena(), wordDialect: dialects.Trino(), hiveDialect: dialects.Hive(), foldIdentifiers: true}
+		},
+	},
 }
 
 // TODO: split mysqlEngine and postgresEngine into engine_mysql.go / engine_postgres.go — this file should
@@ -163,7 +194,7 @@ type mysqlEngine struct {
 	dialect *dialects.Dialect
 }
 
-func newMySQLEngine(config *pb.EngineConfig) (*mysqlEngine, error) {
+func newMySQLEngine(config *pb.EngineConfig) (engine, error) {
 	if config.MysqlLowerCaseTableNames == nil {
 		return nil, fmt.Errorf("mysqlLowerCaseTableNames is required for mysql")
 	}
@@ -196,7 +227,6 @@ func newMySQLEngine(config *pb.EngineConfig) (*mysqlEngine, error) {
 	return &mysqlEngine{dialect: dialect}, nil
 }
 
-func (e *mysqlEngine) WireName() string { return "mysql" }
 func (e *mysqlEngine) PrepareStatement(root exp.Expression) (exp.Expression, bool, *pb.StatementFacts, error) {
 	return root, false, nil, nil
 }
@@ -338,7 +368,7 @@ func postgresOpaqueDialect() *dialects.Dialect {
 	return d
 }
 
-func newPostgresEngine(config *pb.EngineConfig) (*postgresEngine, error) {
+func newPostgresEngine(config *pb.EngineConfig) (engine, error) {
 	session := config.GetSession().GetPostgres()
 	if !session.GetFunctionShadowingObserved() && len(session.GetShadowedFunctions()) != 0 {
 		return nil, fmt.Errorf("shadowedFunctions requires an observed function-shadowing context")
@@ -361,7 +391,6 @@ func newPostgresEngine(config *pb.EngineConfig) (*postgresEngine, error) {
 	}, nil
 }
 
-func (e *postgresEngine) WireName() string { return "postgres" }
 func (e *postgresEngine) PrepareStatement(root exp.Expression) (exp.Expression, bool, *pb.StatementFacts, error) {
 	return root, false, nil, nil
 }
@@ -412,8 +441,7 @@ func (e *postgresEngine) IsTempSchema(schema exp.Expression) bool {
 	if schema == nil {
 		return false
 	}
-	name := schema.Name()
-	return name == "pg_temp" || strings.HasPrefix(name, "pg_temp_")
+	return engines.Postgres.IsTempSchema(schema.Name())
 }
 
 // pg_catalog is PostgreSQL's system schema: a call qualified by it is a builtin, so it carries no
@@ -424,7 +452,7 @@ func (e *postgresEngine) IsTrustedSystemQualifier(qualifier exp.Expression) bool
 	if qualifier == nil || qualifier.Kind() != exp.KindIdentifier {
 		return false
 	}
-	return qualifier.Name() == "pg_catalog"
+	return qualifier.Name() == engines.Postgres.BuiltinSchema
 }
 
 // PostgreSQL has no relay rewrite: client_encoding is handled on the wire, not by an analyzer rewrite,

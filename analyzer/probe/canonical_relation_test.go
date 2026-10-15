@@ -2,8 +2,8 @@ package probe
 
 import "testing"
 
-// CanonicalMySQLRelation is the primitive every direct Go-to-Go caller (goproxy's introspect.go and
-// goproxy/db's schema-fragment refetch path) delegates to via NormalizeRelation — the single place
+// CanonicalMySQLRelation is the per-row form of NormalizeMySQLColumns, which every direct Go-to-Go caller
+// (goproxy's introspect.go and goproxy/db's schema-fragment refetch path) uses — the single place
 // PII-classification-key normalization happens, before a catalog ever reaches the control plane.
 // These tests pin its behavior directly, in isolation from any caller.
 func TestCanonicalMySQLRelationOrdinaryTableUnderMode0StaysCaseSensitive(t *testing.T) {

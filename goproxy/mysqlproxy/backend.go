@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
@@ -546,7 +547,7 @@ func probeSession(targetDb net.Conn, deprecateEOF bool) (engine.SessionObservati
 
 func mysqlSession(namespace []string, ansiQuotes bool) engine.SessionObservation {
 	return engine.SessionObservation{
-		CurrentCatalog:     "def",
+		CurrentCatalog:     engines.MySQL.CatalogName(""),
 		Namespace:          namespace,
 		SessionObservation: &enginepb.SessionObservation{Engine: &enginepb.SessionObservation_Mysql{Mysql: &enginepb.MySqlSession{AnsiQuotes: ansiQuotes}}},
 	}

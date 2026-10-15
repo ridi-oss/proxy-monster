@@ -13,6 +13,7 @@ import (
 	"github.com/ridi-oss/sqlglot-go/optimizer"
 	"github.com/ridi-oss/sqlglot-go/schema"
 
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 )
 
@@ -412,10 +413,10 @@ func (p *prober) markBuiltinFunctionRow(root exp.Expression) {
 
 func postgresCatalogFirstAfterTempSchemas(searchPath []string) bool {
 	for _, schema := range searchPath {
-		if schema == "pg_temp" || strings.HasPrefix(schema, "pg_temp_") {
+		if engines.Postgres.IsTempSchema(schema) {
 			continue
 		}
-		return schema == "pg_catalog"
+		return schema == engines.Postgres.BuiltinSchema
 	}
 	return false
 }

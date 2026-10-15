@@ -52,6 +52,15 @@ COPY docs/guides/usage.md docs/guides/admin.md ./docs/guides/
 
 RUN ./gradlew --no-daemon :control-plane:installDist -x test
 
+# pmon-auto-approver-agent, the auto-approval agent cp-go runs once per review (auto-approver/), as one self-contained binary.
+FROM oven/bun:1.3.14 AS agent
+WORKDIR /workspace/auto-approver
+COPY auto-approver/package.json auto-approver/bun.lock ./
+RUN bun install --frozen-lockfile
+COPY auto-approver/tsconfig.json ./
+COPY auto-approver/src ./src
+RUN bun build --compile src/main.ts --outfile /out/pmon-auto-approver-agent
+
 # cp-go, the front door that owns the public ports and runs the Kotlin control plane as its child.
 FROM go AS cpgo
 WORKDIR /workspace/cpgo
@@ -72,6 +81,7 @@ RUN groupadd --system --gid 10001 pm && useradd --system --uid 10001 --gid pm --
 WORKDIR /app
 COPY --from=build /workspace/control-plane/build/install/control-plane ./
 COPY --from=cpgo /out/cp-go ./bin/cp-go
+COPY --from=agent /out/pmon-auto-approver-agent ./bin/pmon-auto-approver-agent
 RUN chown -R pm:pm /app
 USER pm
 

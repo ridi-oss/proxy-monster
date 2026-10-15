@@ -53,6 +53,9 @@ Modules:
   short-lived token upstream. Its menu-bar app is `pmon/tray/`.
   Connection-string formatters and brokers use its
   [provider SPI](./pmon/AGENTS.md).
+- `auto-approver/` — `pmon-auto-approver-agent`, the TypeScript auto-approval
+  agent cp-go runs once per rate-reset review, compiled with bun into the server
+  image.
 - `sql-action/` — the GitHub Action that files a pull request's SQL files, and
   `pm-ci`, the Go binary it runs
   ([docs/sql-from-github.md](./docs/sql-from-github.md)).

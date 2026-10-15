@@ -27,12 +27,10 @@ func userTypeCast(root exp.Expression, eng engine, namespace NamespaceConfig) st
 			continue
 		}
 		if kind != nil && kind.Kind() == exp.KindDot {
-			qualifier := strings.ToLower(kind.Left().Name())
-			leaf := strings.ToLower(kind.Right().Name())
-			return qualifier + "." + leaf
+			return kind.Left().Name() + "." + kind.Right().Name()
 		}
 		if kind != nil {
-			return strings.ToLower(kind.Name())
+			return kind.Name()
 		}
 		return "user-defined type"
 	}
@@ -210,10 +208,11 @@ func emitParsedFacts(parsed exp.Expression, eng engine, qualifySchema schema.Sch
 }
 
 func emitConfigFailureUtilityFacts(sql string, engineConfig *pb.EngineConfig) *pb.StatementFacts {
-	if engineConfig == nil || engineConfig.GetEngine() != pb.Engine_MYSQL {
+	row, _ := probeEngineFor(engineConfig)
+	if row.configFailureDialect == nil {
 		return nil
 	}
-	parsed, err := sqlglot.Parse(sql, dialects.MySQL())
+	parsed, err := sqlglot.Parse(sql, row.configFailureDialect())
 	if err != nil {
 		return nil
 	}
@@ -738,7 +737,7 @@ func conflictDoesUpdate(root exp.Expression) bool {
 func resolveStandaloneCalls(root exp.Expression, eng engine, namespace NamespaceConfig) (builtins []string, gated bool) {
 	var callNodes []exp.Expression
 	for _, fn := range root.FindAll(exp.KindAnonymous) {
-		if fn.Is(exp.TraitFunc) && !skipCallResolution(fn) {
+		if fn.Is(exp.TraitFunc) && !skipCallResolution(fn, eng) {
 			callNodes = append(callNodes, fn)
 		}
 	}

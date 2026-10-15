@@ -13,6 +13,7 @@ import (
 	"github.com/ridi-oss/sqlglot-go/optimizer"
 	"github.com/ridi-oss/sqlglot-go/schema"
 
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 )
 
@@ -269,7 +270,7 @@ func probeParsed(root exp.Expression, eng engine, qualifySchema schema.Schema, n
 				dialects.DialectType(p.dialect.SettingsString()), p.namespace.SearchPath,
 				p.callReport, nil)
 		}
-		p.qroot = optimizer.Qualify(p.qroot, opts)
+		p.qroot = p.qualify(p.qroot, opts)
 		for node, call := range p.lateCallReport {
 			if _, seen := p.callReport[node]; !seen {
 				p.callReport[node] = call
@@ -378,14 +379,7 @@ func (p *prober) markBuiltinFunctionRow(root exp.Expression) {
 		if function == nil || !function.Is(exp.TraitFunc) || table.Arg("catalog") != nil {
 			continue
 		}
-		name := function.Name()
-		if identifier, ok := function.Arg("this").(exp.Expression); ok {
-			identifier = identifier.Copy()
-			p.dialect.NormalizeIdentifier(identifier)
-			name = identifier.Name()
-		} else {
-			name = strings.ToLower(name)
-		}
+		name := normalizedFunctionName(function, p.engine)
 		schema, _ := table.Arg("schema").(exp.Expression)
 		if schema == nil {
 			if !systemFirst || !p.engine.BareCallIsBuiltin(name) {
@@ -410,12 +404,14 @@ func (p *prober) markBuiltinFunctionRow(root exp.Expression) {
 	}
 }
 
+// searchPath is the session's schemas as the proxy read them from the target.
 func postgresCatalogFirstAfterTempSchemas(searchPath []string) bool {
-	for _, schema := range searchPath {
-		if schema == "pg_temp" || strings.HasPrefix(schema, "pg_temp_") {
+	for _, s := range searchPath {
+		schema := engines.Postgres.IntrospectedSchema(engines.CaseMode{}, &pb.Column{Schema: s})
+		if engines.Postgres.IsTempSchema(schema) {
 			continue
 		}
-		return schema == "pg_catalog"
+		return schema == engines.Postgres.BuiltinSchema
 	}
 	return false
 }
@@ -714,14 +710,40 @@ func (p *prober) qualifyOptions(report map[exp.Expression]optimizer.ResolvedSour
 	opts.Dialect = p.dialect
 	opts.Schema = p.qualifySchema
 	p.engine.ConfigureNamespace(&opts, p.namespace)
+	opts.SearchPath, opts.DefaultSchema, opts.Catalog = p.canonicalNamespace(opts)
 	opts.ResolutionReport = report
 	opts.InferSchema = boolPtr(false)
 	opts.ValidateQualifyColumns = !p.isWrite
-	if p.namespace.EngineCatalog != nil {
-		opts.EngineCatalog = p.namespace.EngineCatalog
-		opts.CallReport = p.lateCallReport
-	}
 	return opts
+}
+
+// canonicalNamespace hands the namespace's canonical names to QualifyTables, which parses each as SQL: unquoted,
+// a Postgres `App` would fold to the different schema `app`.
+func (p *prober) canonicalNamespace(opts optimizer.QualifyOpts) ([]string, exp.IdentifierName, exp.IdentifierName) {
+	literal := func(name exp.IdentifierName) exp.IdentifierName {
+		if s, ok := name.(string); ok && s != "" {
+			return exp.Identifier(exp.Args{"this": s, "quoted": true})
+		}
+		return name
+	}
+	var searchPath []string
+	for _, schema := range opts.SearchPath {
+		quoted, err := sqlglot.Generate(exp.Identifier(exp.Args{"this": schema, "quoted": true}), p.dialect.Name, generator.Options{})
+		if err != nil {
+			panic(err)
+		}
+		searchPath = append(searchPath, quoted)
+	}
+	return searchPath, literal(opts.DefaultSchema), literal(opts.Catalog)
+}
+
+// qualify is optimizer.Qualify with the engine catalog resolved against the namespace's canonical search path.
+func (p *prober) qualify(expression exp.Expression, opts optimizer.QualifyOpts) exp.Expression {
+	expression = optimizer.Qualify(expression, opts)
+	if p.namespace.EngineCatalog != nil {
+		optimizer.ResolveEngineIdentities(expression, p.namespace.EngineCatalog, opts.Dialect, p.namespace.SearchPath, p.lateCallReport, nil)
+	}
+	return expression
 }
 
 // queryIslands returns the outermost query nodes embedded in a non-query statement. Qualifying one
@@ -801,7 +823,7 @@ func (p *prober) qualifyQueryIsland(query exp.Expression, report map[exp.Express
 	opts.ValidateQualifyColumns = false
 	with := nearestAncestorWith(query, p.qroot)
 	if with == nil {
-		optimizer.Qualify(query, opts)
+		p.qualify(query, opts)
 		return
 	}
 
@@ -814,7 +836,7 @@ func (p *prober) qualifyQueryIsland(query exp.Expression, report map[exp.Express
 		"expressions": []exp.Expression{exp.Subquery(exp.Args{"this": query})},
 		"with_":       with.Copy(),
 	})
-	optimizer.Qualify(wrapper, opts)
+	p.qualify(wrapper, opts)
 }
 
 // v0.5.0's compatibility qualification traversal does not visit INSERT scalar-subquery islands and
@@ -1718,15 +1740,15 @@ func (p *prober) lineage() ProbeResult {
 			}
 		}
 		hasOnConflict := len(p.qroot.FindAll(exp.KindOnConflict)) > 0
-		aliasNamesCI := map[string]bool{}
+		aliasNames := map[string]bool{}
 		for _, scope := range p.scopes {
 			for key := range scope.Sources {
-				aliasNamesCI[strings.ToLower(key)] = true
+				aliasNames[key] = true
 			}
 		}
 		if p.writeScope != nil {
 			for key := range p.writeScope.Sources {
-				aliasNamesCI[strings.ToLower(key)] = true
+				aliasNames[key] = true
 			}
 		}
 
@@ -1844,7 +1866,7 @@ func (p *prober) lineage() ProbeResult {
 					}
 				}
 			}
-			if strings.ToLower(c.TableName()) == "excluded" && hasOnConflict && !aliasNamesCI["excluded"] {
+			if c.TableName() == "excluded" && hasOnConflict && !aliasNames["excluded"] {
 				continue
 			}
 			bases, ok := wbase(c.Name(), c.TableName(), c)
@@ -1933,7 +1955,7 @@ func (p *prober) lineage() ProbeResult {
 			}
 		}
 		for _, fn := range p.qroot.FindAll(exp.TraitFunc) {
-			if strings.ToLower(fn.Name()) == "values" {
+			if normalizedFunctionName(fn, p.engine) == "values" {
 				for _, a := range fn.FindAll(exp.KindIdentifier) {
 					bases, ok := wbase(a.Name(), "", nil)
 					if !ok {
@@ -2057,7 +2079,7 @@ func (p *prober) resolveCalls() *ProbeResult {
 		if !fn.Is(exp.TraitFunc) {
 			continue
 		}
-		if skipCallResolution(fn) || p.isGrammarConstructor(fn) {
+		if skipCallResolution(fn, p.engine) || p.isGrammarConstructor(fn) {
 			continue
 		}
 		c, tableQualified := p.resolveTableQualifiedCall(fn)
@@ -2081,8 +2103,8 @@ func (p *prober) resolveCalls() *ProbeResult {
 }
 
 // Parses as a call but is not one: `/*+ MAX_EXECUTION_TIME(1000) */`, and `VALUES(col)` in ON DUPLICATE KEY UPDATE.
-func skipCallResolution(fn exp.Expression) bool {
-	odkuValues := strings.EqualFold(fn.Name(), "values")
+func skipCallResolution(fn exp.Expression, eng engine) bool {
+	odkuValues := normalizedFunctionName(fn, eng) == "values"
 	for parent := fn.Parent(); parent != nil; parent = parent.Parent() {
 		switch parent.Kind() {
 		case exp.KindHint:
@@ -2098,7 +2120,7 @@ func skipCallResolution(fn exp.Expression) bool {
 
 // PostgreSQL `ARRAY(SELECT ...)` is syntax, not a pg_proc function; only that shape is exempt.
 func (p *prober) isGrammarConstructor(fn exp.Expression) bool {
-	if _, pg := p.engine.(*postgresEngine); !pg || !strings.EqualFold(fn.Name(), "array") {
+	if _, pg := p.engine.(*postgresEngine); !pg || normalizedFunctionName(fn, p.engine) != "array" {
 		return false
 	}
 	args := fn.Expressions()
@@ -2113,7 +2135,7 @@ func (p *prober) isGrammarConstructor(fn exp.Expression) bool {
 }
 
 // `FROM sch.fn(...)` keeps its qualifier on the Table node, so the optimizer would see bare `fn` and
-// resolve `FROM attacker.unnest(...)` as the builtin. Quoted parts as written, unquoted parts folded;
+// resolve `FROM attacker.unnest(...)` as the builtin. Each part normalized by the dialect;
 // a 3-part name or a schema.name the inventory lacks is unknown.
 func (p *prober) resolveTableQualifiedCall(fn exp.Expression) (optimizer.ResolvedCall, bool) {
 	table := fn.Parent()
@@ -2129,12 +2151,7 @@ func (p *prober) resolveTableQualifiedCall(fn exp.Expression) (optimizer.Resolve
 		return optimizer.ResolvedCall{}, true
 	}
 	qualifier := p.foldCallComponent(schema, true)
-	name := ""
-	if identifier, ok := fn.Arg("this").(exp.Expression); ok && identifier.Kind() == exp.KindIdentifier {
-		name = p.foldCallComponent(identifier, false)
-	} else {
-		name = strings.ToLower(fn.Name())
-	}
+	name := normalizedFunctionName(fn, p.engine)
 	if qualifier == "" || name == "" || strings.ContainsAny(qualifier+name, `."`) {
 		return optimizer.ResolvedCall{}, true
 	}
@@ -2151,11 +2168,15 @@ func (p *prober) resolveTableQualifiedCall(fn exp.Expression) (optimizer.Resolve
 	return optimizer.ResolvedCall{}, true
 }
 
-func (p *prober) foldCallComponent(identifier exp.Expression, isTable bool) string {
-	if truthy(identifier.Arg("quoted")) {
-		return identifier.Name()
+// foldCallComponent is a call part as the dialect normalizes it, so quoting protects case only where the
+// dialect says so (Postgres yes, Athena no); a qualifier takes a relation's role.
+func (p *prober) foldCallComponent(identifier exp.Expression, qualifier bool) string {
+	id := identifier.Copy()
+	if qualifier {
+		exp.Table(exp.Args{"this": exp.Identifier(exp.Args{"this": "_"}), "schema": id})
 	}
-	return p.dialect.FoldIdentifierName(identifier.Name(), isTable)
+	p.dialect.NormalizeIdentifier(id)
+	return id.Name()
 }
 
 // calledFunctions: bare call names when analysis failed before resolveCalls, so `load_file` in an
@@ -2170,7 +2191,7 @@ func (p *prober) calledFunctions() []string {
 		if fn.Kind() != exp.KindAnonymous {
 			continue
 		}
-		name := strings.ToLower(fn.Name())
+		name := normalizedFunctionName(fn, p.engine)
 		if name == "" || seen[name] {
 			continue
 		}
@@ -2690,7 +2711,7 @@ func (p *prober) redactableTransform(node exp.Expression) bool {
 		if p.callReport[node].Kind != optimizer.CallBuiltin {
 			return false
 		}
-		n := redactAnonFns[strings.ToLower(node.Name())]
+		n := redactAnonFns[normalizedFunctionName(node, p.engine)]
 		if n == 0 {
 			return false
 		}

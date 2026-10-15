@@ -19,7 +19,7 @@ func normalizedFunctionName(function exp.Expression, eng engine) string {
 		eng.Dialect().NormalizeIdentifier(identifier)
 		return identifier.Name()
 	}
-	return strings.ToLower(function.Name())
+	return eng.Dialect().FoldIdentifierName(function.Name(), false)
 }
 
 // nativeOutputLabel is FigureColname for one projection: the label PostgreSQL assigns to an
@@ -114,7 +114,7 @@ func figureLabel(node exp.Expression, query exp.Expression, eng engine, depth in
 		// A DEDICATED function kind canonicalizes its AST name (`char_length` parses to Length,
 		// `position(...)` to StrPosition) but PostgreSQL labels the call by its WRITTEN name, so
 		// read that off the node's source span; no span (a sub-expression) → unknowable.
-		return writtenFunctionLabel(node)
+		return writtenFunctionLabel(node, eng)
 	}
 	// Operators, literals, boolean tests, … — PostgreSQL gives them no name (→ ?column?).
 	return "", 0, true
@@ -123,7 +123,7 @@ func figureLabel(node exp.Expression, query exp.Expression, eng engine, depth in
 // writtenFunctionLabel is the function name as the client wrote it: the leading identifier of the
 // call's parse-time SpanText, folded per PostgreSQL's case rule (unquoted → lowercase, quoted →
 // verbatim).
-func writtenFunctionLabel(node exp.Expression) (string, int, bool) {
+func writtenFunctionLabel(node exp.Expression, eng engine) (string, int, bool) {
 	text, ok := node.SpanText()
 	if !ok {
 		return "", 0, false
@@ -139,7 +139,7 @@ func writtenFunctionLabel(node exp.Expression) (string, int, bool) {
 	if !functionLabelPattern.MatchString(written) {
 		return "", 0, false
 	}
-	return strings.ToLower(written), 2, true
+	return eng.Dialect().FoldIdentifierName(written, false), 2, true
 }
 
 // figureProjectionLabel is the label of one projection inside a derived source: its resname (the

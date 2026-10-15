@@ -22,6 +22,9 @@ protoc-gen-go-grpc = "1.5.1"
 # corepack pin when bumping either.
 node = "24.18.0"
 pnpm = "10.22.0"
+# auto-approver/ (pmon-auto-approver-agent): tests, and the self-contained binary the server image ships. Match the
+# oven/bun image in control-plane/Dockerfile when bumping.
+bun = "1.3.14"
 
 # Tasks. `mise run dev` is the whole local stack; `mise run verify` is the whole verification gate.
 # Each component also has its own task, so you can run one against a stack you started by hand.
@@ -259,6 +262,19 @@ mise run proto-check
 mise run check-image-gomod
 pnpm -C web test:unit
 pnpm -C web build
+mise run verify-auto-approver
+'''
+
+[tasks.verify-auto-approver]
+description = "pmon-auto-approver-agent: install, typecheck, tests, and the compiled binary the image ships"
+shell = "bash -c"
+dir = "{{config_root}}/auto-approver"
+run = '''
+set -euo pipefail
+bun install --frozen-lockfile
+bun run typecheck
+bun test
+bun run build
 '''
 
 [tasks.verify-jvm]

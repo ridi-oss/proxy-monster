@@ -6,6 +6,8 @@
 # Neither build needs these
 web/
 pmon/
+auto-approver/node_modules/
+auto-approver/dist/
 
 # VCS / editor / OS
 .git/

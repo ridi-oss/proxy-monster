@@ -17,12 +17,6 @@ import com.ridi.oss.proxymonster.athena.pb.AthenaResourceObservation
 import com.ridi.oss.proxymonster.athena.pb.NativeAuthorizationPhase
 import com.ridi.oss.proxymonster.athena.pb.athenaContextRef
 import com.ridi.oss.proxymonster.athena.pb.athenaNativeInstructions
-import com.ridi.oss.proxymonster.controlplane.authz.UserParents
-import com.ridi.oss.proxymonster.controlplane.authz.Authz
-import com.ridi.oss.proxymonster.controlplane.authz.AuthzContext
-import com.ridi.oss.proxymonster.controlplane.authz.AuthzDecision
-import com.ridi.oss.proxymonster.controlplane.authz.AuthzResource
-import com.ridi.oss.proxymonster.controlplane.authz.authorizeNativeResource
 import com.ridi.oss.proxymonster.analyzer.pb.TargetSettings
 import com.ridi.oss.proxymonster.analyzer.pb.column
 import com.ridi.oss.proxymonster.grpc.Engine
@@ -30,7 +24,7 @@ import com.ridi.oss.proxymonster.probe.introspectedColumns
 import com.ridi.oss.proxymonster.grpc.EnfAction
 import com.ridi.oss.proxymonster.grpc.RequestAuthorization
 import com.ridi.oss.proxymonster.grpc.Verdict
-import java.time.Clock
+import java.time.Instant
 
 internal const val ATHENA_CACHED_CONTEXT_VERSION = 1
 internal const val ATHENA_BINDING_BYTES = 32
@@ -45,175 +39,152 @@ internal const val NATIVE_CONTEXT_UNAVAILABLE = "native.context_unavailable"
 private fun athenaCanonicalName(rawName: String): String? =
     introspectedColumns(Engine.ATHENA, TargetSettings.getDefaultInstance(), listOf(column { catalog = rawName }))?.single()?.catalog
 
+private class Deny(val code: String) : RuntimeException(code, null, false, false)
+
 /**
- * Decides one Athena API call from the proxy's descriptor. Every operation is classified by [Category]:
- * StartQueryExecution must go through SQL admission (Decide), status/result reads are bound to the caller's
- * own cached execution contexts, metadata reads are released once every observed resource passes
- * native.invoke, history listings are filtered to owned executions, and everything else is a native.invoke
- * decision on its specific resource. An operation not in [AthenaOperations] is denied.
+ * Reads one Athena API call from the proxy's descriptor. Every operation has a [Category]: StartQueryExecution
+ * goes through SQL admission (Decide), status/result reads bind to [principal]'s own cached execution contexts,
+ * metadata reads release once every observed resource passes native.invoke, history listings keep only owned
+ * executions, and everything else is native.invoke on its specific resource. An operation not in [AthenaOperations] is denied.
  */
-internal object AthenaRequestAuthorizer : RequestAuthorizer by AthenaNativeAuthorizer()
+internal fun athenaRequestAccess(request: RequestAuthorization, datasourceName: String, principal: String, now: Instant): RequestAccess = try {
+    if (!request.hasAthena()) throw Deny(NATIVE_NOT_AUTHORIZED)
+    val descriptor = validDescriptor(request.athena)
+    val operation = AthenaOperations.byName[descriptor.operation] ?: throw Deny(NATIVE_NOT_AUTHORIZED)
+    val resources = mutableListOf<NativeResourceRef>()
+    val instructions = athenaInstructions(descriptor, operation, decodeBody(descriptor.body), datasourceName, principal, now, resources)
+    RequestAccess.Native("athena:${descriptor.operation}", resources, NativeInstructions.Athena(instructions))
+} catch (e: Deny) {
+    RequestAccess.Denied(e.code)
+} catch (_: MalformedNativeBody) {
+    RequestAccess.Denied(NATIVE_INVALID_DESCRIPTOR)
+}
 
-internal class AthenaNativeAuthorizer(private val clock: Clock = Clock.systemUTC()) : RequestAuthorizer {
-    private class Deny(val code: String) : RuntimeException(code, null, false, false)
+private fun AthenaResourceObservation.ref() = NativeResourceRef(kind, id, if (hasOwner()) owner else null)
 
-    override fun authorize(
-        request: RequestAuthorization,
-        datasource: Datasource,
-        principal: String,
-        parents: UserParents,
-        context: AuthzContext,
-        authz: Authz,
-    ): RequestAdmission = try {
-        if (request.datasourceName.isBlank() || request.datasourceName != datasource.name || !request.hasAthena()) throw Deny(NATIVE_NOT_AUTHORIZED)
-        val descriptor = validDescriptor(request.athena)
-        val operation = AthenaOperations.byName[descriptor.operation] ?: throw Deny(NATIVE_NOT_AUTHORIZED)
-        val body = decodeBody(descriptor.body)
-        val gate = Gate(datasource, principal, parents, context.copy(tags = emptySet(), stmtKind = null, nativeOperation = null), authz, descriptor)
-        if (!authorizeMetadata(authz, principal, parents, datasource, gate.context)) throw Deny(NATIVE_NOT_AUTHORIZED)
-        RequestAdmission.Allowed(NativeInstructions.Athena(admit(gate, operation, body)))
-    } catch (e: Deny) {
-        RequestAdmission.Denied(e.code)
-    } catch (_: MalformedNativeBody) {
-        RequestAdmission.Denied(NATIVE_INVALID_DESCRIPTOR)
-    }
-
-    private class Gate(
-        val datasource: Datasource,
-        val principal: String,
-        val parents: UserParents,
-        val context: AuthzContext,
-        val authz: Authz,
-        val descriptor: AthenaNativeDescriptor,
-    ) {
-        val cedarOperation = "athena:${descriptor.operation}"
-
-        fun invoke(kind: String, id: String, owner: String? = null) {
-            val resource = AuthzResource.NativeResource(datasource.name, kind, id, owner, datasource.tags)
-            if (authz.authorizeNativeResource(principal, parents, resource, cedarOperation, context) !is AuthzDecision.Allow) throw Deny(NATIVE_NOT_AUTHORIZED)
+/** The instructions for an admitted call; adds to [resources] what native.invoke must allow first. */
+private fun athenaInstructions(
+    descriptor: AthenaNativeDescriptor,
+    operation: AthenaOperation,
+    body: ObjectNode,
+    datasourceName: String,
+    principal: String,
+    now: Instant,
+    resources: MutableList<NativeResourceRef>,
+) = athenaNativeInstructions {
+    val response = descriptor.phase == NativeAuthorizationPhase.NATIVE_AUTHORIZATION_PHASE_RESPONSE
+    when (operation.category) {
+        Category.SQL_SUBMISSION -> {
+            if (response) throw Deny(NATIVE_NOT_AUTHORIZED)
+            validateSubmissionScope(descriptor, body)
+            action = AthenaNativeInstruction.ATHENA_NATIVE_INSTRUCTION_REQUIRE_SQL_ADMISSION
         }
-
-        fun invoke(observation: AthenaResourceObservation) =
-            invoke(observation.kind, observation.id, if (observation.hasOwner()) observation.owner else null)
-    }
-
-    private fun admit(gate: Gate, operation: AthenaOperation, body: ObjectNode) = athenaNativeInstructions {
-        val response = gate.descriptor.phase == NativeAuthorizationPhase.NATIVE_AUTHORIZATION_PHASE_RESPONSE
-        when (operation.category) {
-            Category.SQL_SUBMISSION -> {
-                if (response) throw Deny(NATIVE_NOT_AUTHORIZED)
-                validateSubmissionScope(gate.descriptor, body)
-                action = AthenaNativeInstruction.ATHENA_NATIVE_INSTRUCTION_REQUIRE_SQL_ADMISSION
-            }
-            Category.METADATA, Category.NATIVE -> {
-                operation.resources(body).ifEmpty { listOf("datasource" to gate.datasource.name) }.forEach { (kind, id) -> gate.invoke(kind, id) }
-                gate.descriptor.observationsList.forEach(gate::invoke)
-                action = if (response) AthenaNativeInstruction.ATHENA_NATIVE_INSTRUCTION_RELEASE_METADATA else AthenaNativeInstruction.ATHENA_NATIVE_INSTRUCTION_FORWARD_REQUEST
-            }
-            Category.EXECUTION -> {
-                val ids = operation.resources(body).map { it.second }.distinct()
-                val owned = ownedContexts(gate)
-                val refs = ids.map { id -> owned[id] ?: throw Deny(NATIVE_CONTEXT_UNAVAILABLE) }
-                gate.descriptor.observationsList.forEach { observation ->
-                    if (observation.kind == QUERY_EXECUTION) {
-                        if (observation.id !in owned || observation.id !in ids) throw Deny(NATIVE_CONTEXT_UNAVAILABLE)
-                    } else {
-                        gate.invoke(observation)
-                    }
-                }
-                if (response) {
-                    action = AthenaNativeInstruction.ATHENA_NATIVE_INSTRUCTION_APPLY_ORIGINAL_CONTEXT
-                    refs.forEach { ctx -> contexts.add(athenaContextRef { resourceId = ctx.resourceId; contextId = ctx.contextId }) }
+        Category.METADATA, Category.NATIVE -> {
+            val named = operation.resources(body).map { (kind, id) -> NativeResourceRef(kind, id) }
+            resources += named.ifEmpty { listOf(NativeResourceRef("datasource", datasourceName)) }
+            descriptor.observationsList.mapTo(resources) { it.ref() }
+            action = if (response) AthenaNativeInstruction.ATHENA_NATIVE_INSTRUCTION_RELEASE_METADATA else AthenaNativeInstruction.ATHENA_NATIVE_INSTRUCTION_FORWARD_REQUEST
+        }
+        Category.EXECUTION -> {
+            val ids = operation.resources(body).map { it.second }.distinct()
+            val owned = ownedContexts(descriptor, principal, now)
+            val refs = ids.map { id -> owned[id] ?: throw Deny(NATIVE_CONTEXT_UNAVAILABLE) }
+            descriptor.observationsList.forEach { observation ->
+                if (observation.kind == QUERY_EXECUTION) {
+                    if (observation.id !in owned || observation.id !in ids) throw Deny(NATIVE_CONTEXT_UNAVAILABLE)
                 } else {
-                    action = AthenaNativeInstruction.ATHENA_NATIVE_INSTRUCTION_FORWARD_REQUEST
+                    resources += observation.ref()
                 }
             }
-            Category.HISTORY -> {
-                // A listing shows only the caller's own executions: the proxy keeps the ids referenced here.
-                val owned = ownedContexts(gate)
-                gate.descriptor.observationsList.forEach { observation ->
-                    if (observation.kind == QUERY_EXECUTION) {
-                        owned[observation.id]?.let { ctx -> contexts.add(athenaContextRef { resourceId = ctx.resourceId; contextId = ctx.contextId }) }
-                    } else {
-                        gate.invoke(observation)
-                    }
-                }
-                action = if (response) AthenaNativeInstruction.ATHENA_NATIVE_INSTRUCTION_APPLY_ORIGINAL_CONTEXT else AthenaNativeInstruction.ATHENA_NATIVE_INSTRUCTION_FORWARD_REQUEST
+            if (response) {
+                action = AthenaNativeInstruction.ATHENA_NATIVE_INSTRUCTION_APPLY_ORIGINAL_CONTEXT
+                refs.forEach { ctx -> contexts.add(athenaContextRef { resourceId = ctx.resourceId; contextId = ctx.contextId }) }
+            } else {
+                action = AthenaNativeInstruction.ATHENA_NATIVE_INSTRUCTION_FORWARD_REQUEST
             }
         }
-    }
-
-    // A context counts only when it is the principal's, bound to this descriptor's target, and unexpired.
-    private fun ownedContexts(gate: Gate): Map<String, AthenaCachedContext> {
-        val now = clock.instant()
-        val binding = gate.descriptor.target.targetBinding
-        return gate.descriptor.cachedContextsList.filter { ctx ->
-            ctx.owner == gate.principal && ctx.targetBinding == binding &&
-                (ctx.expiresAt.seconds > now.epochSecond || ctx.expiresAt.seconds == now.epochSecond && ctx.expiresAt.nanos > now.nano)
-        }.associateBy { it.resourceId }
-    }
-
-    private fun validateSubmissionScope(descriptor: AthenaNativeDescriptor, body: ObjectNode) {
-        val target = descriptor.target
-        if (!body.has("QueryString") || !body["QueryString"].isTextual) throw Deny(NATIVE_INVALID_DESCRIPTOR)
-        body["ExecutionParameters"]?.let { params ->
-            if (!params.isArray || params.any { !it.isTextual }) throw Deny(NATIVE_INVALID_DESCRIPTOR)
+        Category.HISTORY -> {
+            // A listing shows only the caller's own executions: the proxy keeps the ids referenced here.
+            val owned = ownedContexts(descriptor, principal, now)
+            descriptor.observationsList.forEach { observation ->
+                if (observation.kind == QUERY_EXECUTION) {
+                    owned[observation.id]?.let { ctx -> contexts.add(athenaContextRef { resourceId = ctx.resourceId; contextId = ctx.contextId }) }
+                } else {
+                    resources += observation.ref()
+                }
+            }
+            action = if (response) AthenaNativeInstruction.ATHENA_NATIVE_INSTRUCTION_APPLY_ORIGINAL_CONTEXT else AthenaNativeInstruction.ATHENA_NATIVE_INSTRUCTION_FORWARD_REQUEST
         }
-        body["WorkGroup"]?.let { if (!it.isTextual) throw Deny(NATIVE_INVALID_DESCRIPTOR) }
-        body["QueryExecutionContext"]?.let { if (!it.isObject) throw Deny(NATIVE_INVALID_DESCRIPTOR) }
-        body["ResultConfiguration"]?.let { if (!it.isObject) throw Deny(NATIVE_INVALID_DESCRIPTOR) }
-        val ctx = body["QueryExecutionContext"]
-        fun inScope(requested: JsonNode?, configured: String, canonical: (String) -> String = { it }): Boolean {
-            if (requested == null) return true
-            if (!requested.isTextual) throw Deny(NATIVE_INVALID_DESCRIPTOR)
-            return configured.isNotBlank() && canonical(requested.textValue()) == canonical(configured)
-        }
-        val athenaName = { rawName: String -> athenaCanonicalName(rawName) ?: throw Deny(NATIVE_INVALID_DESCRIPTOR) }
-        if (!inScope(body["WorkGroup"], target.defaultWorkgroup)) throw Deny(NATIVE_SCOPE_VIOLATION)
-        if (!inScope(ctx?.get("Catalog"), target.defaultCatalog, athenaName)) throw Deny(NATIVE_SCOPE_VIOLATION)
-        if (!inScope(ctx?.get("Database"), target.defaultDatabase, athenaName)) throw Deny(NATIVE_SCOPE_VIOLATION)
-        // A client-chosen output location is an S3 write through the proxy's role, outside the configured scope.
-        if (body["ResultConfiguration"]?.get("OutputLocation") != null) throw Deny(NATIVE_SCOPE_VIOLATION)
-        // Result reuse returns an earlier execution's rows under a new id; today's plan cannot vouch for them.
-        if (body.has("ResultReuseConfiguration")) throw Deny(NATIVE_SCOPE_VIOLATION)
-    }
-
-    private fun validDescriptor(descriptor: AthenaNativeDescriptor): AthenaNativeDescriptor {
-        if (descriptor.service != "athena" || descriptor.operation.isBlank()) throw Deny(NATIVE_NOT_AUTHORIZED)
-        if (descriptor.method != "POST" || descriptor.path != "/" || descriptor.rawQuery.isNotEmpty()) throw Deny(NATIVE_INVALID_DESCRIPTOR)
-        if (descriptor.functionalHeadersList.any { it.name.isBlank() }) throw Deny(NATIVE_INVALID_DESCRIPTOR)
-        if (descriptor.phase != NativeAuthorizationPhase.NATIVE_AUTHORIZATION_PHASE_REQUEST &&
-            descriptor.phase != NativeAuthorizationPhase.NATIVE_AUTHORIZATION_PHASE_RESPONSE
-        ) throw Deny(NATIVE_INVALID_DESCRIPTOR)
-        if (!descriptor.hasTarget() || descriptor.target.targetBinding.size() != ATHENA_BINDING_BYTES) throw Deny(NATIVE_INVALID_DESCRIPTOR)
-        if (descriptor.phase == NativeAuthorizationPhase.NATIVE_AUTHORIZATION_PHASE_REQUEST && descriptor.observationsCount > 0) {
-            throw Deny(NATIVE_INVALID_DESCRIPTOR)
-        }
-        descriptor.observationsList.forEach { observation ->
-            if (observation.source != AthenaObservationSource.ATHENA_OBSERVATION_SOURCE_AWS_RESPONSE ||
-                observation.kind.isBlank() || observation.id.isBlank() || observation.hasOwner() && observation.owner.isBlank()
-            ) throw Deny(NATIVE_INVALID_DESCRIPTOR)
-        }
-        descriptor.cachedContextsList.forEach { if (!it.isWellFormed()) throw Deny(NATIVE_INVALID_DESCRIPTOR) }
-        if (descriptor.cachedContextsList.distinctBy { it.resourceId }.size != descriptor.cachedContextsCount) throw Deny(NATIVE_INVALID_DESCRIPTOR)
-        return descriptor
-    }
-
-    private fun decodeBody(body: ByteString): ObjectNode {
-        val node = try {
-            json.readTree(body.newInput())
-        } catch (_: Exception) {
-            throw Deny(NATIVE_INVALID_DESCRIPTOR)
-        }
-        return node as? ObjectNode ?: throw Deny(NATIVE_INVALID_DESCRIPTOR)
-    }
-
-    private companion object {
-        val json: ObjectMapper = ObjectMapper()
-            .enable(JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
-            .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
     }
 }
+
+// A context counts only when it is the principal's, bound to this descriptor's target, and unexpired.
+private fun ownedContexts(descriptor: AthenaNativeDescriptor, principal: String, now: Instant): Map<String, AthenaCachedContext> {
+    val binding = descriptor.target.targetBinding
+    return descriptor.cachedContextsList.filter { ctx ->
+        ctx.owner == principal && ctx.targetBinding == binding &&
+            (ctx.expiresAt.seconds > now.epochSecond || ctx.expiresAt.seconds == now.epochSecond && ctx.expiresAt.nanos > now.nano)
+    }.associateBy { it.resourceId }
+}
+
+private fun validateSubmissionScope(descriptor: AthenaNativeDescriptor, body: ObjectNode) {
+    val target = descriptor.target
+    if (!body.has("QueryString") || !body["QueryString"].isTextual) throw Deny(NATIVE_INVALID_DESCRIPTOR)
+    body["ExecutionParameters"]?.let { params ->
+        if (!params.isArray || params.any { !it.isTextual }) throw Deny(NATIVE_INVALID_DESCRIPTOR)
+    }
+    body["WorkGroup"]?.let { if (!it.isTextual) throw Deny(NATIVE_INVALID_DESCRIPTOR) }
+    body["QueryExecutionContext"]?.let { if (!it.isObject) throw Deny(NATIVE_INVALID_DESCRIPTOR) }
+    body["ResultConfiguration"]?.let { if (!it.isObject) throw Deny(NATIVE_INVALID_DESCRIPTOR) }
+    val ctx = body["QueryExecutionContext"]
+    fun inScope(requested: JsonNode?, configured: String, canonical: (String) -> String = { it }): Boolean {
+        if (requested == null) return true
+        if (!requested.isTextual) throw Deny(NATIVE_INVALID_DESCRIPTOR)
+        return configured.isNotBlank() && canonical(requested.textValue()) == canonical(configured)
+    }
+    val athenaName = { rawName: String -> athenaCanonicalName(rawName) ?: throw Deny(NATIVE_INVALID_DESCRIPTOR) }
+    if (!inScope(body["WorkGroup"], target.defaultWorkgroup)) throw Deny(NATIVE_SCOPE_VIOLATION)
+    if (!inScope(ctx?.get("Catalog"), target.defaultCatalog, athenaName)) throw Deny(NATIVE_SCOPE_VIOLATION)
+    if (!inScope(ctx?.get("Database"), target.defaultDatabase, athenaName)) throw Deny(NATIVE_SCOPE_VIOLATION)
+    // A client-chosen output location is an S3 write through the proxy's role, outside the configured scope.
+    if (body["ResultConfiguration"]?.get("OutputLocation") != null) throw Deny(NATIVE_SCOPE_VIOLATION)
+    // Result reuse returns an earlier execution's rows under a new id; today's plan cannot vouch for them.
+    if (body.has("ResultReuseConfiguration")) throw Deny(NATIVE_SCOPE_VIOLATION)
+}
+
+private fun validDescriptor(descriptor: AthenaNativeDescriptor): AthenaNativeDescriptor {
+    if (descriptor.service != "athena" || descriptor.operation.isBlank()) throw Deny(NATIVE_NOT_AUTHORIZED)
+    if (descriptor.method != "POST" || descriptor.path != "/" || descriptor.rawQuery.isNotEmpty()) throw Deny(NATIVE_INVALID_DESCRIPTOR)
+    if (descriptor.functionalHeadersList.any { it.name.isBlank() }) throw Deny(NATIVE_INVALID_DESCRIPTOR)
+    if (descriptor.phase != NativeAuthorizationPhase.NATIVE_AUTHORIZATION_PHASE_REQUEST &&
+        descriptor.phase != NativeAuthorizationPhase.NATIVE_AUTHORIZATION_PHASE_RESPONSE
+    ) throw Deny(NATIVE_INVALID_DESCRIPTOR)
+    if (!descriptor.hasTarget() || descriptor.target.targetBinding.size() != ATHENA_BINDING_BYTES) throw Deny(NATIVE_INVALID_DESCRIPTOR)
+    if (descriptor.phase == NativeAuthorizationPhase.NATIVE_AUTHORIZATION_PHASE_REQUEST && descriptor.observationsCount > 0) {
+        throw Deny(NATIVE_INVALID_DESCRIPTOR)
+    }
+    descriptor.observationsList.forEach { observation ->
+        if (observation.source != AthenaObservationSource.ATHENA_OBSERVATION_SOURCE_AWS_RESPONSE ||
+            observation.kind.isBlank() || observation.id.isBlank() || observation.hasOwner() && observation.owner.isBlank()
+        ) throw Deny(NATIVE_INVALID_DESCRIPTOR)
+    }
+    descriptor.cachedContextsList.forEach { if (!it.isWellFormed()) throw Deny(NATIVE_INVALID_DESCRIPTOR) }
+    if (descriptor.cachedContextsList.distinctBy { it.resourceId }.size != descriptor.cachedContextsCount) throw Deny(NATIVE_INVALID_DESCRIPTOR)
+    return descriptor
+}
+
+private fun decodeBody(body: ByteString): ObjectNode {
+    val node = try {
+        json.readTree(body.newInput())
+    } catch (_: Exception) {
+        throw Deny(NATIVE_INVALID_DESCRIPTOR)
+    }
+    return node as? ObjectNode ?: throw Deny(NATIVE_INVALID_DESCRIPTOR)
+}
+
+private val json: ObjectMapper = ObjectMapper()
+    .enable(JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
+    .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
 
 internal fun AthenaCachedContext.isWellFormed(): Boolean {
     if (version != ATHENA_CACHED_CONTEXT_VERSION || contextId.isBlank() || resourceId.isBlank() || owner.isBlank()) return false

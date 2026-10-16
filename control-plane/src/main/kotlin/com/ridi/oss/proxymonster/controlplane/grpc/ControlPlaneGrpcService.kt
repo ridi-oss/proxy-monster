@@ -32,8 +32,8 @@ import com.ridi.oss.proxymonster.controlplane.decideConnection
 import com.ridi.oss.proxymonster.controlplane.inTx
 import com.ridi.oss.proxymonster.controlplane.systemSchemas
 import com.ridi.oss.proxymonster.controlplane.resolveRequestIdentity
-import com.ridi.oss.proxymonster.controlplane.authorizeBounded
 import com.ridi.oss.proxymonster.controlplane.RequestAdmission
+import com.ridi.oss.proxymonster.controlplane.authorizeRequest
 import com.ridi.oss.proxymonster.controlplane.deniedAdmission
 import com.ridi.oss.proxymonster.grpc.RequestAuthorization
 import com.ridi.oss.proxymonster.grpc.RequestAuthorizationResult
@@ -196,7 +196,7 @@ class ControlPlaneGrpcService(
             ?: throw StatusException(Status.NOT_FOUND.withDescription("unknown datasource"))
         val parents = resolved.effectiveParents
         val admission = try {
-            ds.engine.definition.requestAuthorizer.authorizeBounded(request, ds, resolved.identity.principal, parents, resolved.context, core.authz)
+            core.authz.authorizeRequest(request, ds, resolved.identity.principal, parents, resolved.context)
         } catch (_: ManagementException) {
             request.deniedAdmission()
         }

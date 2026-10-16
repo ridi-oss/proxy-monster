@@ -35,6 +35,8 @@ type Backend interface {
 	AddRemote(req RemoteRequest) error
 	// RemoveRemote closes a remote's connection and forgets it.
 	RemoveRemote(req RemoteRequest) error
+	// ReconnectRemote makes a remote that is not connected try again now.
+	ReconnectRemote(req RemoteRequest) error
 	// StartRemote starts the pmon daemon on a connected remote and returns once it answers.
 	StartRemote(ctx context.Context, req RemoteRequest) error
 	// Reload forces an immediate rediscovery.
@@ -99,6 +101,7 @@ func Listen(backend Backend) (*Server, error) {
 	mux.HandleFunc(PathServerRename, s.handleServerRename)
 	mux.HandleFunc(PathRemoteAdd, s.remoteHandler(s.backend.AddRemote))
 	mux.HandleFunc(PathRemoteRemove, s.remoteHandler(s.backend.RemoveRemote))
+	mux.HandleFunc(PathRemoteReconnect, s.remoteHandler(s.backend.ReconnectRemote))
 	mux.HandleFunc(PathRemoteStart, func(w http.ResponseWriter, r *http.Request) {
 		s.remoteHandler(func(req RemoteRequest) error { return s.backend.StartRemote(r.Context(), req) })(w, r)
 	})

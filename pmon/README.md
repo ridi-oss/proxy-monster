@@ -134,7 +134,7 @@ and notifies you when a connected remote drops.
 | `pmon show [server] <ds>` | One datasource's local connection string |
 | `pmon mcp [server]` | Local stdio MCP server relaying to the server's `/mcp` over the pmon login |
 | `pmon status` | Daemon state: every server's login, expiry, and scopes, brokered datasources, live connections |
-| `pmon remote add <ssh-target>` / `remove <ssh-target>` / `list` | Manage remotes, whose daemons this one reaches over SSH |
+| `pmon remote add <ssh-target>` / `remove <ssh-target>` / `reconnect <ssh-target>` / `list` | Manage remotes, whose daemons this one reaches over SSH |
 | `pmon --remote <ssh-target> <command>` | Run a command against a remote's daemon (also `PMON_REMOTE`) |
 | `pmon start` / `stop` / `restart` | Daemon lifecycle (`-f` / `--force` on `stop` and `restart` skips the live-connection prompt) |
 | `pmon --version` | The release this binary was built from |

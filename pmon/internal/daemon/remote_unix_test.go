@@ -39,6 +39,9 @@ func TestFakeSSH(t *testing.T) {
 	switch {
 	case slices.Contains(args, "-M"):
 		log(fmt.Sprintf("master %d", os.Getpid()))
+		if _, err := os.Stat(os.Getenv("FAKE_SSH_PENDING")); err == nil {
+			time.Sleep(time.Hour) // waiting on a key approval
+		}
 		_ = os.WriteFile(ctl, nil, 0o600)
 		time.Sleep(time.Hour)
 	case slices.Contains(args, "check"):
@@ -172,6 +175,70 @@ func TestRemoteTunnelLifecycle(t *testing.T) {
 		if alive(pid) {
 			t.Errorf("ssh %d outlived the daemon", pid)
 		}
+	}
+}
+
+// Reconnect replaces an ssh still waiting to sign in rather than leaving it until a deadline.
+func TestReconnectReplacesAPendingSSH(t *testing.T) {
+	isolate(t)
+	logPath := filepath.Join(t.TempDir(), "ssh.log")
+	pending := filepath.Join(t.TempDir(), "pending")
+	if err := os.WriteFile(pending, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FAKE_SSH_LOG", logPath)
+	t.Setenv("FAKE_SSH_PENDING", pending)
+	t.Setenv("FAKE_REMOTE_SOCK", fakeRemoteDaemon(t))
+	restore, every := sshCommand, remoteCheckEvery
+	t.Cleanup(func() { sshCommand, remoteCheckEvery = restore, every })
+	remoteCheckEvery = 100 * time.Millisecond
+	sshCommand = func(ctx context.Context, args ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, os.Args[0], append([]string{"-test.run=^TestFakeSSH$", "--"}, args...)...)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	d := New("test", providers.Builtins())
+	d.ctx = ctx
+	t.Cleanup(func() { cancel(); d.stopRemotes() })
+	masters := func() int {
+		b, _ := os.ReadFile(logPath)
+		return strings.Count(string(b), "master ")
+	}
+	waitFor := func(what string, ok func() bool) {
+		t.Helper()
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			if ok() {
+				return
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		t.Fatalf("never %s: masters %d, %+v", what, masters(), d.Status().Remotes)
+	}
+
+	if err := d.AddRemote(control.RemoteRequest{Target: "devbox"}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor("started ssh", func() bool { return masters() == 1 })
+	time.Sleep(300 * time.Millisecond)
+	if s := d.Status().Remotes[0].State; s != control.RemoteConnecting {
+		t.Fatalf("state %s while ssh waits, want connecting", s)
+	}
+	_ = os.Remove(pending)
+	if err := d.ReconnectRemote(control.RemoteRequest{Target: "devbox"}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor("connected on a second ssh", func() bool {
+		rs := d.Status().Remotes
+		return masters() == 2 && rs[0].State == control.RemoteConnected
+	})
+	b, _ := os.ReadFile(logPath)
+	var first int
+	fmt.Sscanf(string(b), "master %d", &first)
+	if first == 0 || syscall.Kill(first, 0) == nil {
+		t.Errorf("the replaced ssh %d is still running", first)
+	}
+	if err := d.ReconnectRemote(control.RemoteRequest{Target: "nope"}); err == nil {
+		t.Error("reconnect of an unknown remote succeeded")
 	}
 }
 

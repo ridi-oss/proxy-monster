@@ -332,6 +332,7 @@ internal fun analyzerAndCatalogIndex(
     val effectiveCatalog = (catalog.columns + tempColumns).let { it + ds.engine.implicitColumns(it) }
     val snapshot = catalogSnapshot {
         functions = catalog.functions
+        unprovedRelations += catalog.unprovedRelations
         columns += effectiveCatalog.map { col ->
             column {
                 this.catalog = col.catalog

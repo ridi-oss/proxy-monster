@@ -27,6 +27,7 @@ class PerConnectionCatalogStateTest {
         unchanged: Boolean = false,
         columnName: String = "id",
         routines: List<String> = emptyList(),
+        unprovedTables: List<String> = emptyList(),
     ) = schemaFragmentPush {
         connectionId = opened.connectionId
         datasourceName = ds.name
@@ -37,6 +38,7 @@ class PerConnectionCatalogStateTest {
         backendGeneration = generation
         if (!unchanged) {
             this.routines.addAll(routines)
+            this.unprovedTables.addAll(unprovedTables)
             columns.add(column {
                 catalog = ds.effectiveCatalog
                 this.schema = schema; table = "users"; column = columnName
@@ -436,6 +438,20 @@ class PerConnectionCatalogStateTest {
         )
         check(result is CatalogMutationResult.Applied) { "openPushSystem rejected: $result" }
         return opened
+    }
+
+    @Test
+    fun `held unproved tables surface as relations and are part of the fragment content`() = runBlocking {
+        val registry = ConnectionCatalogRegistry()
+        val first = registry.open(Binding(ds.name, "first", "USER", ds.effectiveCatalog), listOf(namespace("def", "app")))
+        registry.applyPush(push(first, "app", "h1", unprovedTables = listOf("user_view")), ds)
+        assertEquals(
+            listOf(tableRef(ds.effectiveCatalog, "app", "user_view")),
+            registry.heldUnprovedRelations(registry.find(first.connectionId)!!),
+        )
+        val second = registry.open(Binding(ds.name, "second", "USER", ds.effectiveCatalog), listOf(namespace("def", "app")))
+        assertTrue(registry.applyPush(push(second, "app", "h1"), ds) is CatalogMutationResult.Rejected)
+        Unit
     }
 
     @Test

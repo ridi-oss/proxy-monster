@@ -109,6 +109,7 @@ data class DatasourceInput(
 data class Catalog(
     val columns: List<CatalogColumn>,
     val functions: FunctionCatalog,
+    val unprovedRelations: List<ObjectRef> = emptyList(),
 )
 
 @Serializable
@@ -476,6 +477,7 @@ class DatasourceStore(internal val dataSource: DataSource) {
             val ds = checkNotNull(get(id, c)) { "datasource $id disappeared before catalog push" }
             val measuredCatalog = ds.measuredCatalog(currentCatalog)
             catalog.columnsList.forEach { require(it.catalog == measuredCatalog) { "column ${it.schema}.${it.table}.${it.column} names catalog '${it.catalog}', not the measured '$measuredCatalog'" } }
+            catalog.unprovedRelationsList.forEach { require(it.catalog == measuredCatalog) { "relation ${it.schema}.${it.table} names catalog '${it.catalog}', not the measured '$measuredCatalog'" } }
             c.prepareStatement(
                 """UPDATE datasource
                    SET catalog = ?, default_schemas = ?::jsonb, mysql_lower_case_table_names = ?, engine_version = ?,
@@ -611,11 +613,17 @@ class DatasourceStore(internal val dataSource: DataSource) {
     }
 
     /** The catalog for one held connection: its own structural [columns] and [functions], the live classifications. */
-    fun connectionCatalog(id: Long, columns: List<CatalogColumn>, functions: FunctionCatalog): Catalog {
+    fun connectionCatalog(
+        id: Long,
+        columns: List<CatalogColumn>,
+        functions: FunctionCatalog,
+        unprovedRelations: List<ObjectRef> = emptyList(),
+    ): Catalog {
         val classifications = classificationsFor(id)
         return Catalog(
             columns.map { row -> row.copy(classification = classifications[columnRef(row.catalog, row.schema, row.table, row.column)]) },
             functions,
+            unprovedRelations,
         )
     }
 
@@ -650,6 +658,7 @@ class DatasourceStore(internal val dataSource: DataSource) {
                 columns(snapshot, currentCatalog, classifications),
                 engine?.functionCatalog(snapshot.routinesList.associate { it.schema to it.namesList }, engineVersion)
                     ?: FunctionCatalog.getDefaultInstance(),
+                snapshot.unprovedRelationsList,
             )
         }
     }

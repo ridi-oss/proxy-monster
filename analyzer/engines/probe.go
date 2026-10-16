@@ -93,6 +93,8 @@ type NamespaceConfig struct {
 	SearchPath []string `json:"searchPath"`
 	// Nil = no inventory pushed; every call is then unknown.
 	EngineCatalog *optimizer.EngineCatalog `json:"-"`
+	// Folded to lower case; a statement naming one is inadmissible.
+	UnprovedRelations map[tableID]bool `json:"-"`
 }
 
 type tableID struct {

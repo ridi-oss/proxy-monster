@@ -34,7 +34,7 @@ func TestWriteJSONMatchesKotlinBytes(t *testing.T) {
 
 func TestErrorParamsKeepOrderWithoutEscaping(t *testing.T) {
 	w := httptest.NewRecorder()
-	WriteErrorParams(w, http.StatusBadRequest, "common.already_exists", Params{{"resource", "role"}, {"name", "R&D <x>"}})
+	WriteError(w, CodeAlreadyExists, "resource", "role", "name", "R&D <x>")
 	if got := w.Body.String(); got != `{"code":"common.already_exists","params":{"resource":"role","name":"R&D <x>"}}` {
 		t.Fatalf("body %q", got)
 	}

@@ -65,18 +65,43 @@ func jsonString(s string) []byte {
 	return bytes.TrimSuffix(b.Bytes(), []byte("\n"))
 }
 
-// WriteError writes an ApiError; params holds at most one key, use WriteErrorParams for more.
-func WriteError(w http.ResponseWriter, status int, code string, params map[string]string) {
-	var p Params
-	for k, v := range params {
-		p = append(p, [2]string{k, v})
-	}
-	WriteErrorParams(w, status, code, p)
+// Code is an ApiError code, the message key the web looks up, with the status it always answers.
+type Code struct {
+	key    string
+	status int
 }
 
-// WriteErrorParams writes an ApiError with params in the given order.
-func WriteErrorParams(w http.ResponseWriter, status int, code string, params Params) {
-	WriteJSON(w, status, Error{Code: code, Params: params})
+var (
+	CodeFallback              = Code{"common.fallback", http.StatusInternalServerError}
+	CodeUnauthenticated       = Code{"common.unauthenticated", http.StatusUnauthorized}
+	CodeForbidden             = Code{"common.forbidden", http.StatusForbidden}
+	CodeNotFound              = Code{"common.not_found", http.StatusNotFound}
+	CodeBadID                 = Code{"common.bad_id", http.StatusBadRequest}
+	CodeInvalidValue          = Code{"common.invalid_value", http.StatusBadRequest}
+	CodeFieldRequired         = Code{"common.field_required", http.StatusBadRequest}
+	CodeAlreadyExists         = Code{"common.already_exists", http.StatusBadRequest}
+	CodeRoleSystemImmutable   = Code{"role.system_immutable", http.StatusConflict}
+	CodePolicySystemImmutable = Code{"policy.system_immutable", http.StatusConflict}
+	CodePolicyReservedName    = Code{"policy.reserved_name", http.StatusBadRequest}
+)
+
+// WriteError writes an ApiError; kv is its params as alternating keys and values, kept in that order.
+func WriteError(w http.ResponseWriter, c Code, kv ...string) { writeError(w, c, pairs(kv)) }
+
+func writeError(w http.ResponseWriter, c Code, p Params) {
+	WriteJSON(w, c.status, Error{Code: c.key, Params: p})
+}
+
+// pairs reads alternating keys and values; an odd count is a programming error.
+func pairs(kv []string) Params {
+	if len(kv)%2 != 0 {
+		panic("api: error params need a value for every key")
+	}
+	p := make(Params, 0, len(kv)/2)
+	for i := 0; i < len(kv); i += 2 {
+		p = append(p, [2]string{kv[i], kv[i+1]})
+	}
+	return p
 }
 
 type caller struct{ principal, requesterIP string }
@@ -133,7 +158,7 @@ func (g Gate) RequireAPIOrBearer(next http.HandlerFunc) http.HandlerFunc {
 		}
 		if err != nil {
 			slog.Error("api: resolving session", "err", err)
-			WriteError(w, http.StatusInternalServerError, "common.fallback", nil)
+			WriteError(w, CodeFallback)
 			return
 		}
 		if s != nil {
@@ -144,12 +169,12 @@ func (g Gate) RequireAPIOrBearer(next http.HandlerFunc) http.HandlerFunc {
 		if token, ok := bearer(r); ok {
 			if principal, err = g.Sessions.WirePrincipal(r.Context(), token); err != nil {
 				slog.Error("api: resolving wire token", "err", err)
-				WriteError(w, http.StatusInternalServerError, "common.fallback", nil)
+				WriteError(w, CodeFallback)
 				return
 			}
 		}
 		if principal == "" {
-			WriteError(w, http.StatusUnauthorized, "common.unauthenticated", nil)
+			WriteError(w, CodeUnauthenticated)
 			return
 		}
 		c := caller{principal, front.RequesterIP(r, g.Edges)}
@@ -184,9 +209,9 @@ func (g Gate) RequireAdmin(action string, next http.HandlerFunc) http.HandlerFun
 		switch {
 		case err != nil:
 			slog.Error("api: authorizing", "action", action, "err", err)
-			WriteError(w, http.StatusInternalServerError, "common.fallback", nil)
+			WriteError(w, CodeFallback)
 		case !ok:
-			WriteError(w, http.StatusForbidden, "common.forbidden", map[string]string{"detail": reason})
+			WriteError(w, CodeForbidden, "detail", reason)
 		default:
 			next(w, r)
 		}
@@ -220,12 +245,12 @@ func (g Gate) RequireAPI(next http.HandlerFunc) http.HandlerFunc {
 		switch {
 		case errors.Is(err, session.ErrDeviceMismatch):
 			g.EndMismatched(r)
-			WriteError(w, http.StatusUnauthorized, "common.unauthenticated", nil)
+			WriteError(w, CodeUnauthenticated)
 		case err != nil:
 			slog.Error("api: resolving session", "err", err)
-			WriteError(w, http.StatusInternalServerError, "common.fallback", nil)
+			WriteError(w, CodeFallback)
 		case s == nil:
-			WriteError(w, http.StatusUnauthorized, "common.unauthenticated", nil)
+			WriteError(w, CodeUnauthenticated)
 		default:
 			next(w, r.WithContext(context.WithValue(r.Context(), callerKey{}, g.sessionCaller(r, s))))
 		}

@@ -7,6 +7,7 @@ import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.PRINCI
 import com.ridi.oss.proxymonster.controlplane.auditedValue
 import com.ridi.oss.proxymonster.controlplane.AttachedTableDetail
 import com.ridi.oss.proxymonster.controlplane.completionEvent
+import com.ridi.oss.proxymonster.controlplane.isTempSchema
 import com.ridi.oss.proxymonster.controlplane.CatalogColumn
 import com.ridi.oss.proxymonster.controlplane.FragmentColumn
 import com.ridi.oss.proxymonster.controlplane.Binding
@@ -105,16 +106,16 @@ private val COMPLETION_STATUSES = setOf("ok", "error", "canceled")
  *    holds the target-DB connection whose temps these are). A wire / approver-exec decision carrying
  *    temp_columns is a buggy or compromised proxy: drop them all rather than grant the unmask on a channel
  *    that was never analyzed for it (the native-wire/one-shot proxies never send temps).
- *  - **pg_temp\* filter** — a temp overlay entry names a schema read unmasked, so it must be an actual
- *    session-temp namespace. Drop anything whose schema isn't `pg_temp*`, so a proxy cannot unmask a real
- *    table (e.g. `public.users`) by mislabeling it a temp. Postgres reserves the `pg_` prefix, so no real
- *    schema is ever named `pg_temp*`.
+ *  - **temp-schema filter** — a temp overlay entry names a schema read unmasked, so it must be an actual
+ *    session-temp namespace. Drop anything whose schema isn't exactly the engine's temp schema
+ *    ([Engine.isTempSchema]), so a proxy cannot unmask a real table (e.g. `public.users`, a MySQL database
+ *    `pg_temp_1`, a quoted Postgres `"PG_TEMP"`) by mislabeling it a temp.
  * Every entry's catalog is the connection's; [decide] refuses a request that says otherwise.
  */
-internal fun editorTempOverlay(channel: Channel, temps: List<TempColumn>): List<CatalogColumn> {
+internal fun editorTempOverlay(channel: Channel, engine: Engine, temps: List<TempColumn>): List<CatalogColumn> {
     if (channel != Channel.EDITOR || temps.isEmpty()) return emptyList()
     return temps
-        .filter { it.schema.startsWith("pg_temp") }
+        .filter { engine.isTempSchema(it.schema) }
         .map { t ->
             CatalogColumn(
                 catalog = t.catalog, schema = t.schema, table = t.table, column = t.column,
@@ -179,7 +180,7 @@ class ControlPlaneGrpcService(
         val ds = core.datasourceStore.getByName(request.datasourceName)
             ?: throw StatusException(Status.NOT_FOUND.withDescription("unknown datasource '${request.datasourceName}'"))
         val opened = core.connectionCatalog.open(
-            Binding(ds.name, id.principal, id.kind, ds.effectiveCatalog),
+            Binding(ds.name, id.principal, id.kind, ds.effectiveCatalog, ds.engine),
             ds.namespaces(ds.defaultSchemas + ds.engine.systemSchemas),
             adoptHeldContent = ds.engine.catalogIsConnectionIndependent,
         )
@@ -238,13 +239,13 @@ class ControlPlaneGrpcService(
         val channel = resolved.channel
         val assumeRoles = resolved.providedRoles
         // The connection's session/temp columns, overlaid onto the base catalog. Both trust
-        // gates (EDITOR-channel-only + pg_temp* filter) live in [editorTempOverlay] so they're unit-testable.
-        val tempColumns = editorTempOverlay(channel, request.tempColumnsList)
+        // gates (EDITOR-channel-only + temp-schema filter) live in [editorTempOverlay] so they're unit-testable.
+        val tempColumns = editorTempOverlay(channel, ds.engine, request.tempColumnsList)
         val httpIp = resolved.httpRequesterIp
         if (request.connectionId.size() != 16) {
             throw StatusException(Status.INVALID_ARGUMENT.withDescription("connection_id must be exactly 16 bytes"))
         }
-        val binding = Binding(ds.name, id.principal, id.kind, ds.effectiveCatalog)
+        val binding = Binding(ds.name, id.principal, id.kind, ds.effectiveCatalog, ds.engine)
         val connection = core.connectionCatalog.find(request.connectionId)
         if (connection == null) {
             val recovered = core.connectionCatalog.recover(

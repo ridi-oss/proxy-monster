@@ -101,7 +101,7 @@ class DatasourceWriteRoutesDbTest {
     /** Seeds the in-memory catalog a proxy push leaves for [name], so a delete has something to drop. */
     private suspend fun seedConnectionCatalog(name: String) {
         val ds = core.datasourceStore.getByName(name)!!
-        val opened = core.connectionCatalog.open(Binding(name, "dw-principal", "USER", ds.effectiveCatalog), ds.namespaces(listOf("app")))
+        val opened = core.connectionCatalog.open(Binding(name, "dw-principal", "USER", ds.effectiveCatalog, ds.engine), ds.namespaces(listOf("app")))
         core.connectionCatalog.applyPush(
             schemaFragmentPush {
                 connectionId = opened.connectionId

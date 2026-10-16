@@ -40,8 +40,8 @@ class SystemClassificationServiceTest {
         val auroraMysql = "8.0.mysql_aurora.3.04.0 (aurora 3.04.0)"
         // Before the fix this returned null (regex grabbed 3.04.0 → no manifest) → classification inert.
         assertEquals("system:critical", svc.tagForTable(Engine.MYSQL, auroraMysql, "def", "mysql", "user"))
-        assertEquals("system:data-leak", svc.tagForTable(Engine.MYSQL, auroraMysql, "def", "information_schema", "COLUMN_STATISTICS"))
-        assertEquals("system:catalog", svc.tagForTable(Engine.MYSQL, auroraMysql, "def", "information_schema", "TABLES"))
+        assertEquals("system:data-leak", svc.tagForTable(Engine.MYSQL, auroraMysql, "def", "information_schema", "column_statistics"))
+        assertEquals("system:catalog", svc.tagForTable(Engine.MYSQL, auroraMysql, "def", "information_schema", "tables"))
     }
 
     // Value-bearing MySQL system tables were absent from the manifest, so they defaulted to system:catalog and
@@ -59,8 +59,8 @@ class SystemClassificationServiceTest {
             "system:data-leak" to tag("performance_schema", "user_variables_by_thread"),
             "system:data-leak" to tag("performance_schema", "session_connect_attrs"),
             "system:data-leak" to tag("performance_schema", "table_io_waits_summary_by_table"),
-            "system:data-leak" to tag("information_schema", "INNODB_FT_INDEX_CACHE"),
-            "system:data-leak" to tag("information_schema", "ROLE_TABLE_GRANTS"),
+            "system:data-leak" to tag("information_schema", "innodb_ft_index_cache"),
+            "system:data-leak" to tag("information_schema", "role_table_grants"),
             "system:data-leak" to tag("sys", "x\$schema_table_statistics"),
             // activity — live/session/monitoring (relaxed on dev); replication topology demoted here.
             "system:activity" to tag("performance_schema", "accounts"),
@@ -71,7 +71,7 @@ class SystemClassificationServiceTest {
             "system:activity" to tag("sys", "host_summary_by_file_io"),
             "system:activity" to tag("sys", "x\$io_global_by_file_by_bytes"),
             // structural definitions / config knobs / reference stay browsable.
-            "system:catalog" to tag("information_schema", "TABLES"),
+            "system:catalog" to tag("information_schema", "tables"),
             "system:catalog" to tag("performance_schema", "setup_instruments"),
             "system:catalog" to tag("sys", "version"),
         )
@@ -133,7 +133,7 @@ class SystemClassificationServiceTest {
         assertEquals("system:critical", svc.tagForTable(Engine.POSTGRES, null, "acme", "pg_catalog", "pg_authid"))
         assertEquals("system:critical", svc.tagForTable(Engine.MYSQL, null, "def", "mysql", "user"))
         // An explicit data-leak stays data-leak (kept so its own forbid + the system:development relaxation apply).
-        assertEquals("system:data-leak", svc.tagForTable(Engine.MYSQL, null, "def", "information_schema", "COLUMN_STATISTICS"))
+        assertEquals("system:data-leak", svc.tagForTable(Engine.MYSQL, null, "def", "information_schema", "column_statistics"))
         // A catalog-default table (structural, no explicit dangerous rule) is closed as critical, not catalog.
         assertEquals("system:critical", svc.tagForTable(Engine.POSTGRES, null, "acme", "pg_catalog", "pg_class"))
         assertEquals(
@@ -176,8 +176,8 @@ class SystemClassificationServiceTest {
         assertEquals("system:data-leak", tag("dblink_get_result"))
         assertEquals("system:data-leak", tag("get_raw_page"))
         assertEquals("system:data-leak", tag("heap_page_items")) // heap_page_ family
-        // Case-insensitive (PG folds unquoted identifiers).
-        assertEquals("system:critical", tag("PG_TERMINATE_BACKEND"))
+        // The analyzer folds an unquoted call; a canonical "PG_TERMINATE_BACKEND" is a quoted user function.
+        assertNull(tag("PG_TERMINATE_BACKEND"))
         // Safe builtins / unclassified user functions → null (never marshalled, never denied).
         assertNull(tag("now"))
         assertNull(tag("current_setting"))

@@ -345,7 +345,7 @@ abstract class WireTaskDecideDbContract {
     @Test
     fun `stale catalog before-decide creates no wire task`() = runBlocking {
         val opened = fixture.core.connectionCatalog.open(
-            Binding(fixture.datasource.name, principal, "USER", fixture.datasource.effectiveCatalog),
+            Binding(fixture.datasource.name, principal, "USER", fixture.datasource.effectiveCatalog, fixture.datasource.engine),
             emptyList(),
         )
         val before = wireTasks().size

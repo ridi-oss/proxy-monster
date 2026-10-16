@@ -136,8 +136,19 @@ class UserAttributeAuthorizationDbTest {
 
     private fun principal() = "attr-${UUID.randomUUID()}@example.com"
 
+    // OIDC login is served by cp-go; this stores what its provisioning writes.
     private fun login(principal: String, vararg claims: Pair<String, Any?>): String {
-        core.userGroupStore.provisionFromOidc(principal, principal, emptyList(), attributes = declared.fromClaims(claims.toMap()))
+        database.connection.use { c ->
+            c.prepareStatement(
+                """INSERT INTO app_user (principal, email, attributes) VALUES (?, ?, ?::jsonb)
+                   ON CONFLICT (principal) DO UPDATE SET attributes = EXCLUDED.attributes""",
+            ).use { ps ->
+                ps.setString(1, principal)
+                ps.setString(2, principal)
+                ps.setString(3, declared.fromClaims(claims.toMap()).toString())
+                ps.executeUpdate()
+            }
+        }
         return principal
     }
 

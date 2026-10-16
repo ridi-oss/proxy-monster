@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -54,6 +56,25 @@ type DBTX interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
+func RandomToken(n int) string {
+	b := make([]byte, n)
+	_, _ = rand.Read(b)
+	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+func Truncate(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n])
+	}
+	return s
+}
+
+// Found is Ktor's respondRedirect: a 302 with a Location and no body.
+func Found(w http.ResponseWriter, location string) {
+	w.Header().Set("Location", location)
+	w.WriteHeader(http.StatusFound)
 }
 
 // WriteRows answers with every row as a JSON array, [] when there are none.

@@ -9,12 +9,7 @@ val ktorVersion = "3.5.2"
 val testcontainersVersion = "1.21.4"
 
 dependencies {
-    implementation("io.ktor:ktor-client-core:$ktorVersion")
-    implementation("io.ktor:ktor-client-cio:$ktorVersion")
-    implementation("io.ktor:ktor-client-content-negotiation:$ktorVersion")
     implementation("io.ktor:ktor-serialization-kotlinx-json:$ktorVersion")
-    implementation("com.nimbusds:nimbus-jose-jwt:10.9.1")
-    implementation("org.slf4j:slf4j-api:2.0.18")
     implementation("org.postgresql:postgresql:42.7.13")
 
     testImplementation(kotlin("test"))

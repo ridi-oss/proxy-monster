@@ -21,7 +21,7 @@ func TestDiagnosticLeakColumns(t *testing.T) {
 		t.Fatalf("build pg schema: %v", err)
 	}
 	pgNs := NamespaceConfig{Catalog: "acme", SearchPath: []string{"public"}}
-	pg := &pb.EngineConfig{Engine: pb.Engine_POSTGRES, EngineVersion: "16.0"}
+	pg := &pb.EngineConfig{Engine: pb.Engine_POSTGRES, Datasource: &pb.EngineDatasource{EngineVersion: "16.0"}}
 
 	mysqlCols := []*pb.Column{
 		pbColumn("app", "users", "id", "BIGINT"),
@@ -33,7 +33,7 @@ func TestDiagnosticLeakColumns(t *testing.T) {
 		t.Fatalf("build mysql schema: %v", err)
 	}
 	mysqlNs := NamespaceConfig{Catalog: "def", SearchPath: []string{"app"}}
-	mysql := &pb.EngineConfig{Engine: pb.Engine_MYSQL, EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(1)}
+	mysql := &pb.EngineConfig{Engine: pb.Engine_MYSQL, Datasource: &pb.EngineDatasource{EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(1)}}
 
 	t.Run("postgres write leaks the whole target row", func(t *testing.T) {
 		facts := EmitFacts("UPDATE users SET id = 1 WHERE id = 5", pg, pgMapping, nil, pgNs)

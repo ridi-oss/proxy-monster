@@ -264,7 +264,7 @@ func TestMySQLPlaceholderResolvesAndTracesColumns(t *testing.T) {
 
 	result := analyzeProbe(t, &pb.AnalyzeRequest{
 		Sql:          "SELECT ssn FROM users WHERE id = ?",
-		EngineConfig: &pb.EngineConfig{Engine: pb.Engine_MYSQL, EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(1)},
+		EngineConfig: &pb.EngineConfig{Engine: pb.Engine_MYSQL, Datasource: &pb.EngineDatasource{EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(1)}},
 		Namespace:    ns, Catalog: snapshot(cols),
 	})
 	requireResolvedKeys(t, result, "def.app.users.ssn", "def.app.users.id")
@@ -288,7 +288,7 @@ func TestCTEColNames(t *testing.T) {
 func TestMysqlNaturalJoinExpandsWithPhysicalLineage(t *testing.T) {
 	result := analyzeProbe(t, &pb.AnalyzeRequest{
 		Sql:          "SELECT * FROM a NATURAL JOIN b",
-		EngineConfig: &pb.EngineConfig{Engine: pb.Engine_MYSQL, EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(1)},
+		EngineConfig: &pb.EngineConfig{Engine: pb.Engine_MYSQL, Datasource: &pb.EngineDatasource{EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(1)}},
 		Namespace:    &pb.Namespace{Catalog: "def", SearchPath: []string{"app"}},
 		Catalog: snapshot([]*pb.Column{
 			pbColumn("app", "a", "id", "BIGINT"),
@@ -338,7 +338,7 @@ func TestMysqlNaturalRightJoinStarOrderCommonRightLeft(t *testing.T) {
 	} {
 		result := analyzeProbe(t, &pb.AnalyzeRequest{
 			Sql:          tc.sql,
-			EngineConfig: &pb.EngineConfig{Engine: pb.Engine_MYSQL, EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(1)},
+			EngineConfig: &pb.EngineConfig{Engine: pb.Engine_MYSQL, Datasource: &pb.EngineDatasource{EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(1)}},
 			Namespace:    &pb.Namespace{Catalog: "def", SearchPath: []string{"app"}},
 			Catalog:      snapshot(catalog),
 		})
@@ -360,7 +360,7 @@ func TestMysqlNaturalRightJoinStarOrderCommonRightLeft(t *testing.T) {
 func TestMysqlNaturalJoinFoldsColumnCase(t *testing.T) {
 	result := analyzeProbe(t, &pb.AnalyzeRequest{
 		Sql:          "SELECT * FROM u1 NATURAL JOIN u2",
-		EngineConfig: &pb.EngineConfig{Engine: pb.Engine_MYSQL, EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(1)},
+		EngineConfig: &pb.EngineConfig{Engine: pb.Engine_MYSQL, Datasource: &pb.EngineDatasource{EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(1)}},
 		Namespace:    &pb.Namespace{Catalog: "def", SearchPath: []string{"app"}},
 		Catalog: snapshot([]*pb.Column{
 			pbColumn("app", "u1", "ID", "BIGINT"),
@@ -392,7 +392,7 @@ func TestMysqlNaturalJoinFoldsColumnCase(t *testing.T) {
 func TestMysqlNaturalJoinWithoutCommonColumns(t *testing.T) {
 	result := analyzeProbe(t, &pb.AnalyzeRequest{
 		Sql:          "SELECT * FROM n1 NATURAL JOIN n2",
-		EngineConfig: &pb.EngineConfig{Engine: pb.Engine_MYSQL, EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(1)},
+		EngineConfig: &pb.EngineConfig{Engine: pb.Engine_MYSQL, Datasource: &pb.EngineDatasource{EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(1)}},
 		Namespace:    &pb.Namespace{Catalog: "def", SearchPath: []string{"app"}},
 		Catalog: snapshot([]*pb.Column{
 			pbColumn("app", "n1", "p", "BIGINT"),
@@ -436,7 +436,7 @@ func TestMysqlUsingAndNaturalStarOrderEdgeCases(t *testing.T) {
 	} {
 		result := analyzeProbe(t, &pb.AnalyzeRequest{
 			Sql:          tc.sql,
-			EngineConfig: &pb.EngineConfig{Engine: pb.Engine_MYSQL, EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(1)},
+			EngineConfig: &pb.EngineConfig{Engine: pb.Engine_MYSQL, Datasource: &pb.EngineDatasource{EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(1)}},
 			Namespace:    &pb.Namespace{Catalog: "def", SearchPath: []string{"app"}},
 			Catalog:      snapshot(catalog),
 		})
@@ -479,7 +479,7 @@ func TestNaturalJoinFailClosedShapes(t *testing.T) {
 	} {
 		result := analyzeProbe(t, &pb.AnalyzeRequest{
 			Sql:          tc.sql,
-			EngineConfig: &pb.EngineConfig{Engine: pb.Engine_MYSQL, EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(1)},
+			EngineConfig: &pb.EngineConfig{Engine: pb.Engine_MYSQL, Datasource: &pb.EngineDatasource{EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(1)}},
 			Namespace:    &pb.Namespace{Catalog: "def", SearchPath: []string{"app"}},
 			Catalog:      snapshot(catalog),
 		})

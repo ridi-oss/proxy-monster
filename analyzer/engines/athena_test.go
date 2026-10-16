@@ -137,7 +137,7 @@ func TestAthenaCrossCatalogRewrite(t *testing.T) {
 		t.Fatalf("lost source catalog: %s", facts)
 	}
 	for _, config := range []*pb.EngineConfig{
-		{Engine: pb.Engine_MYSQL, EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(0)},
+		{Engine: pb.Engine_MYSQL, Datasource: &pb.EngineDatasource{EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(0)}},
 		{Engine: pb.Engine_POSTGRES},
 	} {
 		request.EngineConfig = config
@@ -214,7 +214,7 @@ func TestAthenaParameterFailures(t *testing.T) {
 }
 
 func TestAthenaExecuteSyntax(t *testing.T) {
-	eng, err := newAthenaAnalyzer(&pb.EngineConfig{Engine: pb.Engine_ATHENA, Session: &pb.SessionObservation{Engine: &pb.SessionObservation_Athena{Athena: &pb.AthenaSqlContext{Workgroup: "sample"}}}})
+	sess, err := newAthenaSession(datasourceFor(t, Athena, 0), &pb.SessionObservation{Engine: &pb.SessionObservation_Athena{Athena: &pb.AthenaSqlContext{Workgroup: "sample"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,11 +229,11 @@ func TestAthenaExecuteSyntax(t *testing.T) {
 		{"EXECUTE lookup_user USING CAST('1' AS BIGINT), (1 + 2)", "lookup_user", 2},
 		{"EXECUTE lookup_user USING 'quoted '' value', 'question ? mark'", "lookup_user", 2},
 	} {
-		root, err := singleStatement(tc.sql, eng)
+		root, err := singleStatement(tc.sql, sess)
 		if err != nil {
 			t.Fatalf("%s: %v", tc.sql, err)
 		}
-		name, parameters, err := athenaExecute(root, eng)
+		name, parameters, err := athenaExecute(root, sess)
 		if err != nil || name != tc.name || len(parameters) != tc.count {
 			t.Fatalf("%s: name=%q parameters=%v error=%v", tc.sql, name, parameters, err)
 		}
@@ -243,11 +243,11 @@ func TestAthenaExecuteSyntax(t *testing.T) {
 		"EXECUTE lookup_user USING 1 FROM users", "EXECUTE lookup_user USING (SELECT email FROM users)",
 		"EXECUTE lookup_user USING ?", "EXECUTE lookup_user USING email",
 	} {
-		root, err := singleStatement(sql, eng)
+		root, err := singleStatement(sql, sess)
 		if err != nil {
 			continue
 		}
-		if _, _, err := athenaExecute(root, eng); err == nil {
+		if _, _, err := athenaExecute(root, sess); err == nil {
 			t.Fatalf("unproven EXECUTE syntax accepted: %s", sql)
 		}
 	}

@@ -55,7 +55,7 @@ func TestNewlyParseableConservation(t *testing.T) {
 		t.Run(tc.id, func(t *testing.T) {
 			engineConfig := &pb.EngineConfig{Engine: pb.Engine_POSTGRES}
 			if tc.dialect == "mysql" {
-				engineConfig = &pb.EngineConfig{Engine: pb.Engine_MYSQL, EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(0)}
+				engineConfig = &pb.EngineConfig{Engine: pb.Engine_MYSQL, Datasource: &pb.EngineDatasource{EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(0)}}
 			}
 			res := analyzeProbe(t, &pb.AnalyzeRequest{Sql: tc.sql, EngineConfig: engineConfig, Namespace: tc.ns, Catalog: snapshot(tc.catalog)})
 			caught := !res.Resolved // unresolved = fail-closed = safe

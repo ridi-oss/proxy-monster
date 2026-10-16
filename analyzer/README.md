@@ -26,7 +26,7 @@ compile-time mismatch, not a silent runtime one.
 analyzer/
   go.mod                     Go module github.com/ridi-oss/proxy-monster/analyzer;
                              pins github.com/ridi-oss/sqlglot-go v0.22.0
-  engines/                   the analyzer (package engines)
+  engines/                   each target engine: its facts, canonical names, and analyzer (package engines)
     mysql.go, postgres.go,   one file per engine holds all of its engine-specific code;
     athena.go                every other file is shared by all engines
     facts.go                 EmitFacts: classify the statement + emit statement_exec + result-read grants
@@ -35,7 +35,7 @@ analyzer/
     testdata/golden.json     frozen regression snapshot (internal probe)
     testdata/oracle/         the Python parity oracle (driver.py + probe.py) — test-only
   probe/pb/                  generated Go bindings for analyzer.proto, engine.proto, athena.proto
-  cmd/libsqlglot/main.go     C-shared entry: exports AnalyzeStatement / SqlNormalize / FreeCString (cgo confined here)
+  cmd/libsqlglot/main.go     C-shared entry: exports AnalyzeStatement / SplitStatements / SqlNormalize / ParseColumns / IntrospectedColumns / FreeCString (cgo confined here)
   jvm/                       Gradle subproject :analyzer:jvm
     build.gradle.kts         builds cmd/libsqlglot (go build -buildmode=c-shared) + bundles the lib
     src/main/kotlin/…/Sqlglot.kt   the FFM binding: Sqlglot.analyzeStatement(requestBytes) / sqlNormalize(sql, dialect)
@@ -102,6 +102,16 @@ The real end-to-end verdict coverage is the Kotlin `GateSqlglotRegressionTest`
 in `:control-plane`, which drives this probe through the FFM binding on a large
 SQL corpus.
 
+## Engine, datasource, session
+
+An engine is known at three levels, and each has its own sqlglot dialect:
+
+| Level      | Go type                       | Built from                                                                             | Its dialect                                                                 |
+| ---------- | ----------------------------- | -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| Engine     | `*engines.Engine`             | nothing                                                                                | parses before any datasource is known (a MySQL `SHOW` before introspection) |
+| Datasource | `engines.Datasource`          | `EngineDatasource`: what the target reported (version, MySQL `lower_case_table_names`) | folds canonical names                                                       |
+| Session    | `session` (one per statement) | the datasource plus `SessionObservation` (MySQL `ansi_quotes`, the Athena workgroup)   | parses the statement                                                        |
+
 ## API & contract
 
 The boundary is one protobuf call in, one out (see
@@ -113,7 +123,7 @@ val facts: StatementFacts = SqlglotProbe.analyze(
     sql,
     namespace,     // catalog + ordered search_path
     catalog,       // CatalogSnapshot: flat Column rows (schema.table.column + type) under the namespace catalog
-    engineConfig,  // engine identity + version + MySQL lower_case_table_names
+    engineConfig,  // engine + EngineDatasource + SessionObservation
 )
 ```
 

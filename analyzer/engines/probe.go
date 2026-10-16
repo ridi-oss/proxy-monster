@@ -2,6 +2,7 @@ package engines
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -105,7 +106,7 @@ func (id tableID) String() string {
 }
 
 type prober struct {
-	engine    analyzer
+	session   session
 	namespace NamespaceConfig
 
 	root         exp.Expression // the parsed statement, untouched
@@ -159,7 +160,7 @@ type naturalStarColumn struct {
 }
 
 func Probe(sql string, engineConfig *pb.EngineConfig, sch, implicit *schema.Mapping, namespace NamespaceConfig) ProbeResult {
-	eng, err := createAnalyzer(engineConfig)
+	sess, err := openSession(engineConfig)
 	if err != nil {
 		return failResult("VALIDATE", err.Error())
 	}
@@ -170,14 +171,14 @@ func Probe(sql string, engineConfig *pb.EngineConfig, sch, implicit *schema.Mapp
 	if err := detectRenderCollisions(sch); err != nil {
 		return failResult("VALIDATE", err.Error())
 	}
-	qualifySchema, err := newQualifySchema(sch, implicit, eng)
+	qualifySchema, err := newQualifySchema(sch, implicit, sess)
 	if err != nil {
 		return failResult("VALIDATE", err.Error())
 	}
 	var parsed []exp.Expression
 	if fail := runStage("PARSE", func() {
 		var parseErr error
-		parsed, parseErr = sqlglot.Parse(sql, eng.Dialect())
+		parsed, parseErr = sqlglot.Parse(sql, sess.Dialect())
 		if parseErr != nil {
 			panic(parseErr)
 		}
@@ -190,20 +191,20 @@ func Probe(sql string, engineConfig *pb.EngineConfig, sch, implicit *schema.Mapp
 	}
 	root := stmts[0]
 	if !hasSyntheticAlias(root) {
-		if err := stampNativeOutputLabels(root, eng); err != nil {
+		if err := stampNativeOutputLabels(root, sess); err != nil {
 			return failResult("VALIDATE", err.Error())
 		}
 	}
-	return probeParsed(root, eng, qualifySchema, validatedNamespace)
+	return probeParsed(root, sess, qualifySchema, validatedNamespace)
 }
 
-func probeParsed(root exp.Expression, eng analyzer, qualifySchema schema.Schema, namespace NamespaceConfig) (out ProbeResult) {
+func probeParsed(root exp.Expression, sess session, qualifySchema schema.Schema, namespace NamespaceConfig) (out ProbeResult) {
 	p := &prober{
-		engine:            eng,
+		session:           sess,
 		namespace:         namespace,
 		root:              root,
 		qualifySchema:     qualifySchema,
-		dialect:           eng.Dialect(),
+		dialect:           sess.Dialect(),
 		references:        map[string]map[string]bool{},
 		opaqueSelects:     map[exp.Expression]bool{},
 		physicalTables:    map[exp.Expression]tableID{},
@@ -361,7 +362,7 @@ func (p *prober) rejectImplicitShadowingAliases(root exp.Expression) {
 			continue
 		}
 		for _, alias := range aliases {
-			if implicit[p.engine.FoldColumn(alias)] {
+			if implicit[p.session.Datasource().foldColumn(alias)] {
 				panic(fmt.Errorf("table alias column %q shadows an implicit system column", alias))
 			}
 		}
@@ -372,7 +373,7 @@ func (p *prober) rejectImplicitShadowingAliases(root exp.Expression) {
 // -> [name, version, ...]. Only when the call must be the builtin: pg_catalog-qualified, or bare with
 // pg_catalog first on search_path and no user `unnest` observed on the session.
 func (p *prober) markBuiltinFunctionRow(root exp.Expression) {
-	systemFirst := p.engine.SystemSchemaFirst(p.namespace.SearchPath)
+	systemFirst := p.session.SystemSchemaFirst(p.namespace.SearchPath)
 	for _, table := range root.FindAll(exp.KindTable) {
 		function := table.This()
 		if function == nil || !function.Is(exp.TraitFunc) || table.Arg("catalog") != nil {
@@ -388,24 +389,24 @@ func (p *prober) markBuiltinFunctionRow(root exp.Expression) {
 		}
 		schema, _ := table.Arg("schema").(exp.Expression)
 		if schema == nil {
-			if !systemFirst || !p.engine.BareCallIsBuiltin(name) {
+			if !systemFirst || !p.session.BareCallIsBuiltin(name) {
 				continue
 			}
-		} else if !p.engine.IsTrustedSystemQualifier(schema) {
+		} else if !p.session.Datasource().isBuiltinQualifier(schema) {
 			continue
 		}
-		columns := p.engine.BuiltinFunctionRow(name)
+		columns := p.session.Datasource().builtinFunctionRows[name]
 		if len(columns) == 0 || (name == "unnest" && len(function.Expressions()) != 1) {
 			continue
 		}
 		setImplicitRelationColumns(table, columns)
 	}
-	if !systemFirst || !p.engine.BareCallIsBuiltin("unnest") {
+	if !systemFirst || !p.session.BareCallIsBuiltin("unnest") {
 		return
 	}
 	for _, unnest := range root.FindAll(exp.KindUnnest) {
 		if len(unnest.Expressions()) == 1 {
-			setImplicitRelationColumns(unnest, p.engine.BuiltinFunctionRow("unnest"))
+			setImplicitRelationColumns(unnest, p.session.Datasource().builtinFunctionRows["unnest"])
 		}
 	}
 }
@@ -489,7 +490,7 @@ func (p *prober) expandNaturalJoins(root exp.Expression) {
 			}
 
 			mergeLeft, mergeRight := group, right
-			if side == "RIGHT" && p.engine.RightJoinStarOrder() == starOrderCommonRightLeft {
+			if side == "RIGHT" && p.session.Datasource().rightJoinStarOrder == starOrderCommonRightLeft {
 				mergeLeft, mergeRight = right, group
 			}
 			using := p.joinUsingColumns(join)
@@ -500,7 +501,7 @@ func (p *prober) expandNaturalJoins(root exp.Expression) {
 					panic(fmt.Errorf("NATURAL JOIN with an ON/USING clause is invalid on the target"))
 				}
 				var err error
-				using, err = naturalCommonColumns(mergeLeft, mergeRight, p.engine.FoldColumn)
+				using, err = naturalCommonColumns(mergeLeft, mergeRight, p.session.Datasource().foldColumn)
 				if err != nil {
 					panic(err)
 				}
@@ -533,9 +534,9 @@ func (p *prober) expandNaturalJoins(root exp.Expression) {
 					panic(fmt.Errorf("NATURAL/USING join after an outer merging join — the merged key needs COALESCE semantics"))
 				}
 				for _, name := range using {
-					folded := p.engine.FoldColumn(name)
+					folded := p.session.Datasource().foldColumn(name)
 					for _, column := range prefix {
-						if p.engine.FoldColumn(column.name) == folded {
+						if p.session.Datasource().foldColumn(column.name) == folded {
 							panic(fmt.Errorf("NATURAL/USING key %q also names a column outside the joined tables", name))
 						}
 					}
@@ -549,7 +550,7 @@ func (p *prober) expandNaturalJoins(root exp.Expression) {
 				group = append(append([]naturalStarColumn{}, mergeLeft...), mergeRight...)
 				continue
 			}
-			merged, err := mergeUsingColumns(mergeLeft, mergeRight, using, p.engine.FoldColumn)
+			merged, err := mergeUsingColumns(mergeLeft, mergeRight, using, p.session.Datasource().foldColumn)
 			if err != nil {
 				panic(err)
 			}
@@ -703,7 +704,7 @@ func (p *prober) qualifyOptions(report map[exp.Expression]optimizer.ResolvedSour
 	opts := optimizer.DefaultQualifyOpts()
 	opts.Dialect = p.dialect
 	opts.Schema = p.qualifySchema
-	p.engine.ConfigureNamespace(&opts, p.namespace)
+	p.session.ConfigureNamespace(&opts, p.namespace)
 	opts.ResolutionReport = report
 	opts.InferSchema = boolPtr(false)
 	opts.ValidateQualifyColumns = !p.isWrite
@@ -859,7 +860,7 @@ func (p *prober) consumeResolutionReport(report map[exp.Expression]optimizer.Res
 			catalog := resolved.Catalog
 			if catalog == "" {
 				catalog = p.namespace.Catalog
-			} else if catalog != p.namespace.Catalog && !p.engine.AllowsCrossCatalog() {
+			} else if catalog != p.namespace.Catalog && !p.session.Datasource().allowsCrossCatalog {
 				return fmt.Errorf("foreign catalog %q", resolved.Catalog)
 			}
 			if resolved.Schema == "" || resolved.Table == "" {
@@ -897,7 +898,7 @@ func (p *prober) resolvedTableID(table exp.Expression) (tableID, bool) {
 // ambiguous the way a table/schema name's is) and checks it against table, which is already fully
 // qualified — HasColumn is called with normalize=false so it doesn't refold what's already canonical.
 func (p *prober) canonicalColumn(table exp.Expression, column string) (string, bool) {
-	column = p.engine.FoldColumn(column)
+	column = p.session.Datasource().foldColumn(column)
 	ok, err := p.qualifySchema.HasColumn(table, column, p.dialect, boolPtr(false))
 	if err != nil || !ok {
 		return "", false
@@ -1155,14 +1156,14 @@ func firstNonNil(values ...any) any {
 // lose the NormalizationStrategy this query was actually qualified under (Generate resolves any
 // non-*Dialect value via dialects.GetOrRaise, which builds a fresh DEFAULT dialect on every call), so
 // a lower_case_table_names=1/2 table could regenerate with the wrong identifier casing.
-func generateExecutableSQL(root exp.Expression, eng analyzer) (string, error) {
+func generateExecutableSQL(root exp.Expression, sess session) (string, error) {
 	executable := root.Copy()
-	if !eng.PreservesCatalogQualifier() {
+	if !sess.Datasource().preservesCatalogQualifier {
 		for _, table := range executable.FindAll(exp.KindTable) {
 			table.Set("catalog", nil)
 		}
 	}
-	return sqlglot.Generate(executable, eng.Dialect(), generator.Options{})
+	return sqlglot.Generate(executable, sess.Dialect(), generator.Options{})
 }
 
 func (p *prober) buildScopes() {
@@ -1563,11 +1564,11 @@ func (p *prober) lineage() ProbeResult {
 			// wrote a `_col_N` alias anywhere: client labels are then indistinguishable.
 			if hasSyntheticAlias(p.qroot) && !hasSyntheticAlias(p.root) {
 				restored := p.qroot.Copy()
-				if restoreRelayOutputLabels(restored, p.engine) {
+				if restoreRelayOutputLabels(restored, p.session) {
 					relayRoot = restored
 				}
 			}
-			s, err := generateExecutableSQL(relayRoot, p.engine)
+			s, err := generateExecutableSQL(relayRoot, p.session)
 			if err != nil {
 				panic(err)
 			}
@@ -2055,7 +2056,7 @@ func (p *prober) resolveCalls() *ProbeResult {
 			c = p.callReport[fn]
 		}
 		if c.Kind == optimizer.CallUnknown {
-			fr := failResult("VALIDATE", "unresolved function call: "+normalizedFunctionName(fn, p.engine))
+			fr := failResult("VALIDATE", "unresolved function call: "+normalizedFunctionName(fn, p.session))
 			return &fr
 		}
 		switch c.Kind {
@@ -2086,9 +2087,9 @@ func skipCallResolution(fn exp.Expression) bool {
 	return false
 }
 
-// PostgreSQL `ARRAY(SELECT ...)` is syntax, not a pg_proc function; only that shape is exempt.
+// A syntax call over one subquery, Postgres `ARRAY(SELECT ...)`, is not a function call; only that shape is exempt.
 func (p *prober) isGrammarConstructor(fn exp.Expression) bool {
-	if _, pg := p.engine.(*postgresAnalyzer); !pg || !strings.EqualFold(fn.Name(), "array") {
+	if !slices.Contains(p.session.Datasource().syntaxCalls, strings.ToLower(fn.Name())) {
 		return false
 	}
 	args := fn.Expressions()

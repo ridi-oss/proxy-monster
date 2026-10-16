@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.analyzer.pb.engineDatasource
 import com.ridi.oss.proxymonster.analyzer.pb.catalogSnapshot
 import com.ridi.oss.proxymonster.analyzer.pb.column
 import com.ridi.oss.proxymonster.analyzer.pb.engineConfig as pbEngineConfig
@@ -13,7 +14,10 @@ import kotlin.test.assertIs
 
 class SchemaKeyWiringTest {
     private val postgresEngineConfig = pbEngineConfig { engine = Engine.POSTGRES }
-    private val mysqlEngineConfig = pbEngineConfig { engine = Engine.MYSQL; engineVersion = "8.0.46"; mysqlLowerCaseTableNames = 1 }
+    private val mysqlEngineConfig = pbEngineConfig {
+        engine = Engine.MYSQL
+        datasource = engineDatasource { engineVersion = "8.0.46"; mysqlLowerCaseTableNames = 1 }
+    }
 
     private fun catalogColumn(
         catalog: String = "acme",

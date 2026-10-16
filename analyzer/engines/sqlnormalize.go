@@ -26,22 +26,6 @@ type normalizeRules struct {
 	rejectExecutableComments bool
 }
 
-// normalizeRulesByWireName is the engine registry SqlNormalize consults; a name not here fails closed.
-// Adding an engine means adding its row.
-var normalizeRulesByWireName = map[string]func() normalizeRules{
-	"mysql": func() normalizeRules {
-		d := dialects.MySQL()
-		return normalizeRules{dialect: d, wordDialect: d, rejectExecutableComments: true}
-	},
-	"postgres": func() normalizeRules {
-		d := dialects.Postgres()
-		return normalizeRules{dialect: d, wordDialect: d, foldIdentifiers: true}
-	},
-	"athena": func() normalizeRules {
-		return normalizeRules{dialect: dialects.Athena(), wordDialect: dialects.Trino(), hiveDialect: dialects.Hive(), foldIdentifiers: true}
-	},
-}
-
 // lexeme is one token of a statement walked with its engine's rules: its raw text, the dialect that
 // classifies it as a word, and the text between it and the previous token.
 type lexeme struct {
@@ -56,11 +40,11 @@ func lex(sql, wireName string) (normalizeRules, []lexeme, bool) {
 	if !utf8.ValidString(sql) || strings.IndexByte(sql, 0) >= 0 {
 		return normalizeRules{}, nil, false
 	}
-	newRules, known := normalizeRulesByWireName[wireName]
-	if !known {
+	e, err := Parse(wireName)
+	if err != nil {
 		return normalizeRules{}, nil, false
 	}
-	rules := newRules()
+	rules := e.normalizeRules()
 	tokenStream, err := sqlglot.Tokenize(sql, rules.dialect)
 	if err != nil {
 		return rules, nil, false

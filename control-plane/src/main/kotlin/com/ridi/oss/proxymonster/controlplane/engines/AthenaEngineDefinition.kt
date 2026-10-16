@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane.engines
 
+import com.ridi.oss.proxymonster.analyzer.pb.engineDatasource
 import com.ridi.oss.proxymonster.analyzer.pb.EngineConfig
 import com.ridi.oss.proxymonster.analyzer.pb.FunctionCatalog
 import com.ridi.oss.proxymonster.analyzer.pb.SessionObservation
@@ -46,7 +47,7 @@ internal object AthenaEngineDefinition : EngineDefinition {
     override fun splitEngineConfig(datasource: Datasource): EngineConfig = analyzerEngineConfig(datasource, SessionObservation.getDefaultInstance())
     override fun analyzerEngineConfig(datasource: Datasource, session: SessionObservation): EngineConfig = engineConfig {
         engine = Engine.ATHENA
-        engineVersion = datasource.engineVersion.orEmpty()
+        this.datasource = engineDatasource { engineVersion = datasource.engineVersion.orEmpty() }
         // A decision that carries no request (an editor run, a stored-result view) runs in the datasource's
         // registered workgroup with no parameters.
         this.session = if (session.hasAthena()) session else session.toBuilder()

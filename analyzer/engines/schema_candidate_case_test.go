@@ -31,9 +31,8 @@ func TestSchemaQualifierCandidatesFoldToTheStoredSpelling(t *testing.T) {
 		facts := EmitFacts(
 			"SELECT id FROM GOODS_STORE.orders",
 			&pb.EngineConfig{
-				Engine:                   pb.Engine_MYSQL,
-				EngineVersion:            "8.0.44",
-				MysqlLowerCaseTableNames: proto.Int32(tc.lowerCaseTableNames),
+				Engine:     pb.Engine_MYSQL,
+				Datasource: &pb.EngineDatasource{EngineVersion: "8.0.44", MysqlLowerCaseTableNames: proto.Int32(tc.lowerCaseTableNames)},
 			},
 			mapping,
 			nil,
@@ -60,7 +59,7 @@ func TestSchemaQualifierCandidatesIncludeFunctionQualifiers(t *testing.T) {
 	}
 	facts := EmitFacts(
 		"SELECT app.get_ssn()",
-		&pb.EngineConfig{Engine: pb.Engine_POSTGRES, EngineVersion: "16.4"},
+		&pb.EngineConfig{Engine: pb.Engine_POSTGRES, Datasource: &pb.EngineDatasource{EngineVersion: "16.4"}},
 		mapping,
 		nil,
 		NamespaceConfig{Catalog: "db", SearchPath: []string{"pg_catalog", "public"}, EngineCatalog: engineCatalogFromProto(&pb.FunctionCatalog{}, nil)},
@@ -88,7 +87,7 @@ func TestNamespaceCandidatesPreserveQuotedParts(t *testing.T) {
 		{`SELECT id FROM OTHER_SCHEMA.users`, "current", "other_schema"},
 	} {
 		t.Run(tc.sql, func(t *testing.T) {
-			facts := EmitFacts(tc.sql, &pb.EngineConfig{Engine: pb.Engine_POSTGRES, EngineVersion: "16.3"}, mapping, nil,
+			facts := EmitFacts(tc.sql, &pb.EngineConfig{Engine: pb.Engine_POSTGRES, Datasource: &pb.EngineDatasource{EngineVersion: "16.3"}}, mapping, nil,
 				NamespaceConfig{Catalog: "current", SearchPath: []string{"public"}})
 			got := facts.GetNamespaceQualifierCandidates()
 			if len(got) != 1 || got[0].Catalog != tc.catalog || got[0].Schema != tc.schema {

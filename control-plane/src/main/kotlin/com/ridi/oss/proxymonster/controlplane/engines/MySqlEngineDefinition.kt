@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane.engines
 
+import com.ridi.oss.proxymonster.analyzer.pb.engineDatasource
 import com.ridi.oss.proxymonster.analyzer.pb.EngineConfig
 import com.ridi.oss.proxymonster.analyzer.pb.FunctionCatalog
 import com.ridi.oss.proxymonster.analyzer.pb.functionCatalog
@@ -46,8 +47,10 @@ internal object MySqlEngineDefinition : EngineDefinition {
 
     override fun analyzerEngineConfig(datasource: Datasource, session: SessionObservation): EngineConfig = engineConfig {
         engine = this@MySqlEngineDefinition.engine
-        engineVersion = datasource.engineVersion ?: ""
-        mysqlLowerCaseTableNames = requireCaseMode(datasource.mysqlLowerCaseTableNames)
+        this.datasource = engineDatasource {
+            engineVersion = datasource.engineVersion ?: ""
+            mysqlLowerCaseTableNames = requireCaseMode(datasource.mysqlLowerCaseTableNames)
+        }
         this.session = session
     }
 

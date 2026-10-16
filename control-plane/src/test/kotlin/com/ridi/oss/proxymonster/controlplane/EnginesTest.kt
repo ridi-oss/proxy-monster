@@ -74,10 +74,10 @@ class EnginesTest {
         val postgres = mysql.copy(engine = Engine.POSTGRES, engineVersion = "17.9", mysqlLowerCaseTableNames = null)
         val mysqlConfig = mysql.engine.definition.analyzerEngineConfig(mysql, sessionObservation { this.mysql = mySqlSession { ansiQuotes = true } })
         assertEquals(Engine.MYSQL, mysqlConfig.engine)
-        assertEquals("8.0.44", mysqlConfig.engineVersion)
-        assertEquals(1, mysqlConfig.mysqlLowerCaseTableNames)
+        assertEquals("8.0.44", mysqlConfig.datasource.engineVersion)
+        assertEquals(1, mysqlConfig.datasource.mysqlLowerCaseTableNames)
         assertTrue(mysqlConfig.session.mysql.ansiQuotes)
-        assertEquals("8.0", mysql.engine.definition.manifestSeries(mysqlConfig.engineVersion))
+        assertEquals("8.0", mysql.engine.definition.manifestSeries(mysqlConfig.datasource.engineVersion))
         assertFalse(mysql.splitEngineConfig()!!.session.mysql.ansiQuotes)
         assertNull(mysql.copy(engineVersion = null).splitEngineConfig())
         assertNull(mysql.copy(mysqlLowerCaseTableNames = null).splitEngineConfig())
@@ -86,10 +86,10 @@ class EnginesTest {
         }
         val postgresConfig = postgres.splitEngineConfig()!!
         assertEquals(Engine.POSTGRES, postgresConfig.engine)
-        assertEquals("17.9", postgresConfig.engineVersion)
-        assertFalse(postgresConfig.hasMysqlLowerCaseTableNames())
-        assertEquals("17", postgres.engine.definition.manifestSeries(postgresConfig.engineVersion))
-        assertEquals("", postgres.copy(engineVersion = null).splitEngineConfig()!!.engineVersion)
+        assertEquals("17.9", postgresConfig.datasource.engineVersion)
+        assertFalse(postgresConfig.datasource.hasMysqlLowerCaseTableNames())
+        assertEquals("17", postgres.engine.definition.manifestSeries(postgresConfig.datasource.engineVersion))
+        assertEquals("", postgres.copy(engineVersion = null).splitEngineConfig()!!.datasource.engineVersion)
     }
 
     @Test fun `unregistered engines have no metadata or version fallback`() {

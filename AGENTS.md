@@ -40,8 +40,9 @@ Modules:
 - `control-plane/` — Kotlin control plane: identity and roles, Cedar
   authorization, the catalog, the per-statement decision, and the admin +
   console API (HTTP and gRPC).
-- `analyzer/` — the Go sqlglot-go lineage probe (`probe/`) and its JVM FFM
-  binding (`jvm/`); emits each statement's required grants.
+- `analyzer/` — `engines/` is the one list of target engines: each engine's
+  facts, canonical names, and sqlglot-go lineage analyzer, which emits each
+  statement's required grants. `jvm/` is its JVM FFM binding.
 - `engine/` — shared Kotlin enforcement code the control plane calls: the
   JVM-side wrapper around the sqlglot-go analyzer, system classification (the
   dangerous-function and system-catalog manifests), SQL normalization, and the

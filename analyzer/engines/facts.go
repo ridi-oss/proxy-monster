@@ -2,6 +2,7 @@ package engines
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -17,13 +18,13 @@ import (
 
 // userTypeCast returns the first type that may run user code (`1::public.evil_domain` runs the domain's
 // CHECK), or "". sqlglot marks every type it does not know as DTypeUserDefined; IsSafeTypeReference exempts.
-func userTypeCast(root exp.Expression, eng analyzer, namespace NamespaceConfig) string {
+func userTypeCast(root exp.Expression, sess session, namespace NamespaceConfig) string {
 	for _, dt := range root.FindAll(exp.KindDataType) {
 		if dt.Arg("this") != exp.DTypeUserDefined {
 			continue
 		}
 		kind, _ := dt.Arg("kind").(exp.Expression)
-		if eng.IsSafeTypeReference(dt, kind, namespace) {
+		if sess.IsSafeTypeReference(dt, kind, namespace) {
 			continue
 		}
 		if kind != nil && kind.Kind() == exp.KindDot {
@@ -40,7 +41,7 @@ func userTypeCast(root exp.Expression, eng analyzer, namespace NamespaceConfig) 
 }
 
 func EmitFacts(sql string, engineConfig *pb.EngineConfig, sch, implicit *schema.Mapping, namespace NamespaceConfig) *pb.StatementFacts {
-	eng, err := createAnalyzer(engineConfig)
+	sess, err := openSession(engineConfig)
 	if err != nil {
 		if utility := emitConfigFailureUtilityFacts(sql, engineConfig); utility != nil {
 			return utility
@@ -54,12 +55,12 @@ func EmitFacts(sql string, engineConfig *pb.EngineConfig, sch, implicit *schema.
 	if err := detectRenderCollisions(sch); err != nil {
 		return unanalyzableFacts("VALIDATE", err.Error())
 	}
-	qualifySchema, err := newQualifySchema(sch, implicit, eng)
+	qualifySchema, err := newQualifySchema(sch, implicit, sess)
 	if err != nil {
 		return unanalyzableFacts("VALIDATE", err.Error())
 	}
 
-	if emptyStatement(sql, eng) {
+	if emptyStatement(sql, sess) {
 		// A statement with no statements — "" / ";" / comment-only. Authorized as stmt.kind.empty
 		// under stmt.cat.session, then relayed so the target answers natively (PostgreSQL
 		// EmptyQueryResponse, MySQL ER_EMPTY_QUERY for blank, OK for comment-only).
@@ -71,7 +72,7 @@ func EmitFacts(sql string, engineConfig *pb.EngineConfig, sch, implicit *schema.
 	var parsed []exp.Expression
 	if fail := runStage("PARSE", func() {
 		var parseErr error
-		parsed, parseErr = sqlglot.Parse(sql, eng.Dialect())
+		parsed, parseErr = sqlglot.Parse(sql, sess.Dialect())
 		if parseErr != nil {
 			panic(parseErr)
 		}
@@ -82,14 +83,14 @@ func EmitFacts(sql string, engineConfig *pb.EngineConfig, sch, implicit *schema.
 	if len(stmts) != 1 {
 		return inadmissibleFacts("PARSE", fmt.Sprintf("expected 1 statement, got %d", len(stmts)))
 	}
-	root, regenerate, stop, err := eng.PrepareStatement(stmts[0])
+	root, regenerate, stop, err := sess.PrepareStatement(stmts[0])
 	if err != nil {
 		return unanalyzableFacts("VALIDATE", err.Error())
 	}
 	if stop != nil {
 		return stop
 	}
-	facts := emitParsedFacts(root, eng, qualifySchema, validatedNamespace)
+	facts := emitParsedFacts(root, sess, qualifySchema, validatedNamespace)
 	if !facts.GetResolved() {
 		return facts
 	}
@@ -97,28 +98,28 @@ func EmitFacts(sql string, engineConfig *pb.EngineConfig, sch, implicit *schema.
 	// The engine may still edit it (Athena's LIMIT cap), so the final text is regenerated from the tree.
 	submission := root
 	if facts.RewrittenSql != nil {
-		if submission, err = singleStatement(facts.GetRewrittenSql(), eng); err != nil {
+		if submission, err = singleStatement(facts.GetRewrittenSql(), sess); err != nil {
 			return unanalyzableFacts("LINEAGE", err.Error())
 		}
 		regenerate = true
 	}
-	if eng.FinishSubmission(submission) {
+	if sess.FinishSubmission(submission) {
 		regenerate = true
 	}
 	if regenerate {
-		text, err := sqlglot.Generate(submission, eng.Dialect(), generator.Options{})
+		text, err := sqlglot.Generate(submission, sess.Dialect(), generator.Options{})
 		if err != nil {
 			return unanalyzableFacts("LINEAGE", err.Error())
 		}
 		facts.RewrittenSql = &text
-		eng.StampSubmission(facts)
+		sess.StampSubmission(facts)
 	}
 	return facts
 }
 
 // singleStatement parses sql as exactly one statement.
-func singleStatement(sql string, eng analyzer) (exp.Expression, error) {
-	parsed, err := sqlglot.Parse(sql, eng.Dialect())
+func singleStatement(sql string, sess session) (exp.Expression, error) {
+	parsed, err := sqlglot.Parse(sql, sess.Dialect())
 	if err != nil {
 		return nil, err
 	}
@@ -129,7 +130,7 @@ func singleStatement(sql string, eng analyzer) (exp.Expression, error) {
 	return statements[0], nil
 }
 
-func emitParsedFacts(parsed exp.Expression, eng analyzer, qualifySchema schema.Schema, validatedNamespace NamespaceConfig) *pb.StatementFacts {
+func emitParsedFacts(parsed exp.Expression, sess session, qualifySchema schema.Schema, validatedNamespace NamespaceConfig) *pb.StatementFacts {
 	// Peel a whole-statement parenthesized wrapper: `(SELECT 1)` parses to a Subquery whose `this` is the
 	// real statement. Classification/lineage must run on the inner statement, not fail closed on the
 	// wrapper (a wrapped SELECT is ordinary chatter, a wrapped write is still a write).
@@ -138,14 +139,14 @@ func emitParsedFacts(parsed exp.Expression, eng analyzer, qualifySchema schema.S
 	// runs only in VALIDATE — so the paths that never reach it, or that reach it and fail, were each
 	// left to fold by hand. Quote-aware, so a quoted identifier keeps its case: `"PG_CATALOG"` stays a
 	// distinct user schema from `pg_catalog`, and `"MySchema".fn` from `myschema.fn`.
-	root := optimizer.NormalizeIdentifiers(unwrapSubquery(parsed), eng.Dialect())
+	root := optimizer.NormalizeIdentifiers(unwrapSubquery(parsed), sess.Dialect())
 	originalRoot := root
 	if !hasSyntheticAlias(root) {
 		// A duplicate-label error is the target DB's own rejection (MySQL ER_DUP_FIELDNAME, a
 		// referenced PostgreSQL ambiguity) — the statement would never run there.
-		if err := stampNativeOutputLabels(root, eng); err != nil {
+		if err := stampNativeOutputLabels(root, sess); err != nil {
 			facts := inadmissibleFacts("VALIDATE", err.Error())
-			facts.StatementExec = executeGrant(statementKind(originalRoot, eng))
+			facts.StatementExec = executeGrant(statementKind(originalRoot, sess))
 			return facts
 		}
 	}
@@ -155,13 +156,13 @@ func emitParsedFacts(parsed exp.Expression, eng analyzer, qualifySchema schema.S
 	var facts *pb.StatementFacts
 	switch root.Kind() {
 	case exp.KindDescribe:
-		facts = emitDescribeFacts(root, eng, qualifySchema, validatedNamespace)
+		facts = emitDescribeFacts(root, sess, qualifySchema, validatedNamespace)
 	case exp.KindShow:
-		facts = emitShowFacts(root, eng, validatedNamespace)
+		facts = emitShowFacts(root, sess, validatedNamespace)
 	case exp.KindSet:
-		facts = emitSetFacts(root, eng, validatedNamespace)
+		facts = emitSetFacts(root, sess, validatedNamespace)
 	case exp.KindCommand:
-		facts = emitCommandFacts(root, eng)
+		facts = emitCommandFacts(root, sess)
 	case exp.KindTransaction, exp.KindCommit, exp.KindRollback, exp.KindSavepoint, exp.KindUse, exp.KindReset:
 		// PostgreSQL `RESET <guc>` / `RESET ALL` (sqlglot-go v0.16 models it as a dedicated Reset node) only
 		// restores a session variable to its default — a de-escalation, never a privilege gain — so it is a
@@ -169,9 +170,9 @@ func emitParsedFacts(parsed exp.Expression, eng analyzer, qualifySchema schema.S
 		// Command and is denied there; it never reaches this Reset-node case.)
 		facts = passthroughFacts()
 	case exp.KindAnalyze:
-		facts = emitAnalyzeFacts(root, eng, qualifySchema, validatedNamespace)
+		facts = emitAnalyzeFacts(root, sess, qualifySchema, validatedNamespace)
 	case exp.KindAlter, exp.KindDrop, exp.KindTruncateTable, exp.KindComment:
-		facts = ddlFacts(root, eng)
+		facts = ddlFacts(root, sess)
 	case exp.KindCreate:
 		// A CREATE that reads columns (CREATE TABLE AS SELECT, CREATE VIEW) has lineage to trace and goes
 		// down the lineage path. One that reads none — CREATE INDEX, a bare CREATE TABLE with a column
@@ -183,13 +184,13 @@ func emitParsedFacts(parsed exp.Expression, eng analyzer, qualifySchema schema.S
 		// either would otherwise be read as body-less and emit NO column grants — the same statement
 		// enforced differently for a pair of parentheses, which is the copy-PII-into-a-new-table path.
 		if createReadsColumns(root) {
-			facts = emitLineageFacts(root, eng, qualifySchema, validatedNamespace, false)
+			facts = emitLineageFacts(root, sess, qualifySchema, validatedNamespace, false)
 		} else {
-			facts = ddlFacts(root, eng)
+			facts = ddlFacts(root, sess)
 		}
 	default:
 		if isKnownRoot(root) {
-			facts = emitLineageFacts(root, eng, qualifySchema, validatedNamespace, false)
+			facts = emitLineageFacts(root, sess, qualifySchema, validatedNamespace, false)
 		} else {
 			facts = unanalyzableFacts("PARSE", fmt.Sprintf("unsupported root %s", exp.ClassName(root.Kind())))
 		}
@@ -199,21 +200,22 @@ func emitParsedFacts(parsed exp.Expression, eng analyzer, qualifySchema schema.S
 	// rewritten_sql: the data plane relays it while authorization and audit keep the client's original. A
 	// lineage-driven rewrite (the `*`-expansion) already set on an analyzed statement takes precedence.
 	if facts.RewrittenSql == nil {
-		if rewrite := eng.RewriteStatement(root); rewrite != "" {
+		if rewrite := sess.RewriteStatement(root); rewrite != "" {
 			facts.RewrittenSql = &rewrite
 		}
 	}
-	facts.StatementExec = executeGrant(statementKind(originalRoot, eng))
+	facts.StatementExec = executeGrant(statementKind(originalRoot, sess))
 	facts.SchemaQualifierCandidates = candidates
 	facts.NamespaceQualifierCandidates = namespaces
 	return facts
 }
 
 func emitConfigFailureUtilityFacts(sql string, engineConfig *pb.EngineConfig) *pb.StatementFacts {
-	if engineConfig == nil || engineConfig.GetEngine() != pb.Engine_MYSQL {
+	e, ok := ByProto(engineConfig.GetEngine())
+	if !ok || !e.showsWithoutSession {
 		return nil
 	}
-	parsed, err := sqlglot.Parse(sql, dialects.MySQL())
+	parsed, err := sqlglot.Parse(sql, e.Dialect())
 	if err != nil {
 		return nil
 	}
@@ -231,11 +233,11 @@ func emitConfigFailureUtilityFacts(sql string, engineConfig *pb.EngineConfig) *p
 	return facts
 }
 
-func emitLineageFacts(root exp.Expression, eng analyzer, qualifySchema schema.Schema, namespace NamespaceConfig, explain bool) *pb.StatementFacts {
-	if userTypeCast(root, eng, namespace) != "" {
+func emitLineageFacts(root exp.Expression, sess session, qualifySchema schema.Schema, namespace NamespaceConfig, explain bool) *pb.StatementFacts {
+	if userTypeCast(root, sess, namespace) != "" {
 		return criticalUtilityFacts(cmdUserTypeCast)
 	}
-	report := probeParsed(root, eng, qualifySchema, namespace)
+	report := probeParsed(root, sess, qualifySchema, namespace)
 	facts := factsFromProbe(report)
 	// The execute grant (the statement kind) is attached centrally in EmitFacts, for resolved and
 	// unresolved statements alike; here we only add the column/table RESULT_READ grants below.
@@ -323,7 +325,7 @@ func emitLineageFacts(root exp.Expression, eng analyzer, qualifySchema schema.Sc
 			MaskedDisposition: pb.MaskedDisposition_MASKED_DISPOSITION_DENY_STATEMENT,
 		})
 	}
-	facts.CatalogChanging = root.Kind() == exp.KindCreate && !isTemporaryDDL(root, eng)
+	facts.CatalogChanging = root.Kind() == exp.KindCreate && !isTemporaryDDL(root, sess)
 	if root.Kind() == exp.KindSelect && root.Arg("into") != nil {
 		facts.CatalogChanging = true
 	}
@@ -335,7 +337,7 @@ func emitLineageFacts(root exp.Expression, eng analyzer, qualifySchema schema.Sc
 	} else {
 		facts.OutputColumns = outputColumnNames(report)
 	}
-	facts.DiagnosticLeakColumns = diagnosticLeakColumns(report, eng, qualifySchema)
+	facts.DiagnosticLeakColumns = diagnosticLeakColumns(report, sess, qualifySchema)
 	if !explain {
 		for _, rc := range report.Returned {
 			column, ok := columnRefFromKey(rc.Column)
@@ -350,8 +352,8 @@ func emitLineageFacts(root exp.Expression, eng analyzer, qualifySchema schema.Sc
 
 // diagnosticLeakColumns converts the engine's leak-key set to sorted column refs, so the
 // control-plane's frozen-facts comparison never churns on order.
-func diagnosticLeakColumns(report ProbeResult, eng analyzer, qualifySchema schema.Schema) []*pb.ObjectRef {
-	keys := eng.DiagnosticLeakKeys(report, qualifySchema)
+func diagnosticLeakColumns(report ProbeResult, sess session, qualifySchema schema.Schema) []*pb.ObjectRef {
+	keys := sess.DiagnosticLeakKeys(report, qualifySchema)
 	sorted := make([]string, 0, len(keys))
 	for key := range keys {
 		sorted = append(sorted, key)
@@ -375,7 +377,7 @@ func diagnosticLeakColumns(report ProbeResult, eng analyzer, qualifySchema schem
 // refetches off that flag, and a session-local temp is invisible to other connections. The `TEMPORARY`
 // keyword (a `temporary` arg on Drop / a TemporaryProperty on Create) is a structural, engine-agnostic
 // signal; the temp-SCHEMA convention (PostgreSQL's pg_temp) is engine-specific and deferred to the engine.
-func isTemporaryDDL(root exp.Expression, eng analyzer) bool {
+func isTemporaryDDL(root exp.Expression, sess session) bool {
 	if truthy(root.Arg("temporary")) {
 		return true
 	}
@@ -384,7 +386,7 @@ func isTemporaryDDL(root exp.Expression, eng analyzer) bool {
 	}
 	for _, table := range root.FindAll(exp.KindTable) {
 		schema, _ := table.Arg("schema").(exp.Expression)
-		if eng.IsTempSchema(schema) {
+		if sess.Datasource().isTempSchemaID(schema) {
 			return true
 		}
 	}
@@ -422,11 +424,11 @@ func isTableShorthandDescribe(root exp.Expression) bool {
 	return strings.EqualFold(kind, "TABLE") || strings.EqualFold(kind, "EXPLAIN")
 }
 
-func emitDescribeFacts(root exp.Expression, eng analyzer, qualifySchema schema.Schema, namespace NamespaceConfig) *pb.StatementFacts {
+func emitDescribeFacts(root exp.Expression, sess session, qualifySchema schema.Schema, namespace NamespaceConfig) *pb.StatementFacts {
 	this := root.This()
 	if isTableShorthandDescribe(root) {
 		selectRoot := exp.Select(exp.Args{"expressions": []exp.Expression{exp.Star(nil)}, "from_": exp.From(exp.Args{"this": this.Copy()})})
-		return emitLineageFacts(selectRoot, eng, qualifySchema, namespace, true)
+		return emitLineageFacts(selectRoot, sess, qualifySchema, namespace, true)
 	}
 	if this != nil && this.Kind() == exp.KindTable {
 		return passthroughFacts()
@@ -436,7 +438,7 @@ func emitDescribeFacts(root exp.Expression, eng analyzer, qualifySchema schema.S
 	// an executing EXPLAIN ANALYZE) is decided centrally by describeKind; here we only trace the inner
 	// query's lineage.
 	if inner := unwrapSubquery(this); isKnownRoot(inner) {
-		return emitLineageFacts(inner, eng, qualifySchema, namespace, true)
+		return emitLineageFacts(inner, sess, qualifySchema, namespace, true)
 	}
 	return unanalyzableFacts("PARSE", "DESCRIBE target is not a table or analyzable statement")
 }
@@ -470,7 +472,7 @@ func explainInnerIsPlanOnlyRead(inner exp.Expression) bool {
 // the result-read gate. The single-table target is exact: a multi-table `ANALYZE TABLE t1, t2` leaves the
 // list tail unconsumed and the parser degrades the whole statement to Command, which never reaches here.
 // The statement-kind exec grant is attached centrally in EmitFacts, so the kind gate applies regardless.
-func emitAnalyzeFacts(root exp.Expression, eng analyzer, qualifySchema schema.Schema, namespace NamespaceConfig) *pb.StatementFacts {
+func emitAnalyzeFacts(root exp.Expression, sess session, qualifySchema schema.Schema, namespace NamespaceConfig) *pb.StatementFacts {
 	this := root.This()
 	kind := ""
 	if k := root.Arg("kind"); k != nil {
@@ -481,21 +483,21 @@ func emitAnalyzeFacts(root exp.Expression, eng analyzer, qualifySchema schema.Sc
 	// stay a benign passthrough — still exec-gated by the statement kind.
 	if (kind == "TABLE" || kind == "") && this != nil && this.Kind() == exp.KindTable {
 		selectRoot := exp.Select(exp.Args{"expressions": []exp.Expression{exp.Star(nil)}, "from_": exp.From(exp.Args{"this": this.Copy()})})
-		return emitLineageFacts(selectRoot, eng, qualifySchema, namespace, true)
+		return emitLineageFacts(selectRoot, sess, qualifySchema, namespace, true)
 	}
 	return passthroughFacts()
 }
 
-func emitShowFacts(root exp.Expression, eng analyzer, namespace NamespaceConfig) *pb.StatementFacts {
-	if unsafeExpression(root.Arg("where"), eng, namespace) || unsafeExpression(root.Arg("query"), eng, namespace) {
+func emitShowFacts(root exp.Expression, sess session, namespace NamespaceConfig) *pb.StatementFacts {
+	if unsafeExpression(root.Arg("where"), sess, namespace) || unsafeExpression(root.Arg("query"), sess, namespace) {
 		return criticalUtilityFacts(cmdShowSubquery)
 	}
-	if userTypeCast(root, eng, namespace) != "" {
+	if userTypeCast(root, sess, namespace) != "" {
 		return criticalUtilityFacts(cmdUserTypeCast)
 	}
 	facts := passthroughFacts()
-	facts.Functions, _ = resolveStandaloneCalls(root, eng, namespace)
-	command := eng.ShowUtilityCommand(root)
+	facts.Functions, _ = resolveStandaloneCalls(root, sess, namespace)
+	command := sess.ShowUtilityCommand(root)
 	if command != "" {
 		facts.ResultReads = append(facts.ResultReads, utilityGrant(command))
 	}
@@ -589,21 +591,21 @@ func sessionIdentitySetCommand(root exp.Expression) string {
 // time — a literal or a bareword keyword — and never one that changes the lexer.
 var lexerModeGucs = stringSet("sql_mode", "standard_conforming_strings")
 
-func emitSetFacts(root exp.Expression, eng analyzer, namespace NamespaceConfig) *pb.StatementFacts {
+func emitSetFacts(root exp.Expression, sess session, namespace NamespaceConfig) *pb.StatementFacts {
 	if command := sessionIdentitySetCommand(root); command != "" {
 		return sessionUtilityFacts(command)
 	}
-	if unsafeExpression(root, eng, namespace) {
+	if unsafeExpression(root, sess, namespace) {
 		return sessionUtilityFacts(cmdSetSubquery)
 	}
-	if userTypeCast(root, eng, namespace) != "" {
+	if userTypeCast(root, sess, namespace) != "" {
 		return sessionUtilityFacts(cmdUserTypeCast)
 	}
 	if command := lexerModeUtilityCommand(root); command != "" {
 		return sessionUtilityFacts(command)
 	}
 	facts := passthroughFacts()
-	facts.Functions, _ = resolveStandaloneCalls(root, eng, namespace)
+	facts.Functions, _ = resolveStandaloneCalls(root, sess, namespace)
 	for _, command := range setUtilityCommands(root) {
 		facts.ResultReads = append(facts.ResultReads, utilityGrant(command))
 	}
@@ -681,7 +683,7 @@ func setModeLiteralValue(rhs exp.Expression, variable string) (string, bool) {
 	}
 }
 
-func emitCommandFacts(root exp.Expression, eng analyzer) *pb.StatementFacts {
+func emitCommandFacts(root exp.Expression, sess session) *pb.StatementFacts {
 	command := strings.ToUpper(strings.TrimSpace(fmt.Sprint(root.Arg("this"))))
 	switch command {
 	case "SET":
@@ -699,15 +701,15 @@ func emitCommandFacts(root exp.Expression, eng analyzer) *pb.StatementFacts {
 	case "RESET":
 		// The structured Reset node never reaches here; a RESET degraded to Command is an unusual
 		// spelling the engine may still vouch for as pure de-escalation.
-		if eng.CommandPassthrough(command) {
+		if slices.Contains(sess.Datasource().passthroughCommands, command) {
 			return passthroughFacts()
 		}
-		return inadmissibleFacts("VALIDATE", "RESET is not allowed on MySQL")
+		return inadmissibleFacts("VALIDATE", "RESET is not allowed on this engine")
 	case "SHOW":
 		// The data-bearing SHOWs parse as structured Show/Reset nodes and are handled in
 		// emitShowFacts; a SHOW that still degrades to Command is a form sqlglot-go did not model,
 		// relayable only where the engine vouches it carries no table data.
-		if eng.CommandPassthrough(command) {
+		if slices.Contains(sess.Datasource().passthroughCommands, command) {
 			return passthroughFacts()
 		}
 		return unanalyzableFacts("PARSE", "unsupported SHOW command")
@@ -735,7 +737,7 @@ func conflictDoesUpdate(root exp.Expression) bool {
 
 // resolveStandaloneCalls resolves calls in SET/SHOW, which never reach Qualify: builtin identities
 // ("pg_catalog.current_setting") for facts.functions, gated=true on any user or unknown call.
-func resolveStandaloneCalls(root exp.Expression, eng analyzer, namespace NamespaceConfig) (builtins []string, gated bool) {
+func resolveStandaloneCalls(root exp.Expression, sess session, namespace NamespaceConfig) (builtins []string, gated bool) {
 	var callNodes []exp.Expression
 	for _, fn := range root.FindAll(exp.KindAnonymous) {
 		if fn.Is(exp.TraitFunc) && !skipCallResolution(fn) {
@@ -750,7 +752,7 @@ func resolveStandaloneCalls(root exp.Expression, eng analyzer, namespace Namespa
 	}
 	calls := map[exp.Expression]optimizer.ResolvedCall{}
 	optimizer.ResolveEngineIdentities(root, namespace.EngineCatalog,
-		dialects.DialectType(eng.Dialect().SettingsString()), namespace.SearchPath, calls, nil)
+		dialects.DialectType(sess.Dialect().SettingsString()), namespace.SearchPath, calls, nil)
 	set := map[string]bool{}
 	for _, fn := range callNodes {
 		c := calls[fn]
@@ -762,7 +764,7 @@ func resolveStandaloneCalls(root exp.Expression, eng analyzer, namespace Namespa
 	return sortedStringSet(set), false
 }
 
-func unsafeExpression(value any, eng analyzer, namespace NamespaceConfig) bool {
+func unsafeExpression(value any, sess session, namespace NamespaceConfig) bool {
 	var expressions []exp.Expression
 	switch v := value.(type) {
 	case exp.Expression:
@@ -779,7 +781,7 @@ func unsafeExpression(value any, eng analyzer, namespace NamespaceConfig) bool {
 		if len(expression.FindAll(exp.KindSelect)) > 0 || len(expression.FindAll(exp.TraitSetOperation)) > 0 {
 			return true
 		}
-		if _, gated := resolveStandaloneCalls(expression, eng, namespace); gated {
+		if _, gated := resolveStandaloneCalls(expression, sess, namespace); gated {
 			return true
 		}
 	}
@@ -917,8 +919,8 @@ func utilityGrant(command string) *pb.RequireResultReadGrant {
 // emptyStatement reports whether sql tokenizes to nothing but statement separators — the wire
 // protocols' "empty query". A tokenizer error (an unterminated comment) is NOT empty: it goes down
 // the ordinary parse path and fails closed there.
-func emptyStatement(sql string, eng analyzer) bool {
-	toks, err := sqlglot.Tokenize(sql, eng.Dialect())
+func emptyStatement(sql string, sess session) bool {
+	toks, err := sqlglot.Tokenize(sql, sess.Dialect())
 	if err != nil {
 		return false
 	}
@@ -963,7 +965,7 @@ func unanalyzableFacts(stage, detail string) *pb.StatementFacts {
 // would route it through the exception.unanalyzable gate — a grant that relays statements UNMASKED and ships
 // scoped to system:development only — so a statement whose safety is trivially provable would be
 // authorized only by the escape hatch built for statements nobody can prove safe, and denied elsewhere.
-func ddlFacts(root exp.Expression, eng analyzer) *pb.StatementFacts {
+func ddlFacts(root exp.Expression, sess session) *pb.StatementFacts {
 	return &pb.StatementFacts{
 		Resolved:     true,
 		FailureClass: pb.FailureClass_FAILURE_CLASS_UNSPECIFIED,
@@ -972,7 +974,7 @@ func ddlFacts(root exp.Expression, eng analyzer) *pb.StatementFacts {
 		// accounts/roles, not the column catalog the proxy re-measures for masking, so it is not
 		// catalog-changing either — it relays as a no-column passthrough, which keeps a statement result
 		// like CREATE USER … IDENTIFIED BY RANDOM PASSWORD viewable rather than dropped for column mismatch.
-		CatalogChanging: !isTemporaryDDL(root, eng) && !isAccountObjectDDL(root),
+		CatalogChanging: !isTemporaryDDL(root, sess) && !isAccountObjectDDL(root),
 	}
 }
 

@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane.engines
 
+import com.ridi.oss.proxymonster.analyzer.pb.engineDatasource
 import com.ridi.oss.proxymonster.analyzer.pb.EngineConfig
 import com.ridi.oss.proxymonster.analyzer.pb.FunctionCatalog
 import com.ridi.oss.proxymonster.analyzer.pb.functionCatalog
@@ -41,7 +42,7 @@ internal object PostgresEngineDefinition : EngineDefinition {
 
     override fun analyzerEngineConfig(datasource: Datasource, session: SessionObservation): EngineConfig = engineConfig {
         engine = this@PostgresEngineDefinition.engine
-        engineVersion = datasource.engineVersion ?: ""
+        this.datasource = engineDatasource { engineVersion = datasource.engineVersion ?: "" }
         this.session = session
     }
 

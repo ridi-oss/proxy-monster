@@ -117,6 +117,64 @@ func SplitStatementsSafe(reqBytes []byte) (out []byte) {
 // The encoded fail-closed SplitResponse, computed once so the failure path never has to marshal.
 var splitFailure = must(proto.Marshal(&pb.SplitResponse{Ok: false}))
 
+// ParseColumnsSafe is ParseColumn over a marshaled ColumnNamesRequest, total like
+// SplitStatementsSafe: any failure is ok=false.
+func ParseColumnsSafe(reqBytes []byte) []byte {
+	return columnNamesSafe(reqBytes, func(t Datasource, cols []*pb.Column) ([]ColumnName, error) {
+		out := make([]ColumnName, len(cols))
+		for i, c := range cols {
+			n, err := t.ParseColumn(c.GetCatalog(), c.GetSchema(), c.GetTable(), c.GetColumn())
+			if err != nil {
+				return nil, err
+			}
+			out[i] = n
+		}
+		return out, nil
+	})
+}
+
+// IntrospectedColumnsSafe is IntrospectedColumns over a marshaled ColumnNamesRequest.
+func IntrospectedColumnsSafe(reqBytes []byte) []byte {
+	return columnNamesSafe(reqBytes, func(t Datasource, cols []*pb.Column) ([]ColumnName, error) {
+		return t.IntrospectedColumns(cols), nil
+	})
+}
+
+func columnNamesSafe(reqBytes []byte, names func(Datasource, []*pb.Column) ([]ColumnName, error)) (out []byte) {
+	defer func() {
+		if recover() != nil {
+			out = columnNamesFailure
+		}
+	}()
+	var req pb.ColumnNamesRequest
+	if err := proto.Unmarshal(reqBytes, &req); err != nil {
+		return columnNamesFailure
+	}
+	eng, ok := ByProto(req.GetEngine())
+	if !ok {
+		return columnNamesFailure
+	}
+	target, err := eng.Datasource(req.GetDatasource())
+	if err != nil {
+		return columnNamesFailure
+	}
+	canonical, err := names(target, req.GetColumns())
+	if err != nil {
+		return columnNamesFailure
+	}
+	resp := &pb.ColumnNamesResponse{Ok: true}
+	for _, n := range canonical {
+		resp.Columns = append(resp.Columns, &pb.Column{Catalog: n.Catalog().String(), Schema: n.Schema().String(), Table: n.Table(), Column: n.Column()})
+	}
+	encoded, err := proto.Marshal(resp)
+	if err != nil {
+		return columnNamesFailure
+	}
+	return encoded
+}
+
+var columnNamesFailure = must(proto.Marshal(&pb.ColumnNamesResponse{Ok: false}))
+
 // marshalErrorFallback is a statically-valid encoded fail-closed StatementFacts, computed once so
 // mustFailProto never has to marshal twice on the (essentially unreachable) path where encoding the
 // real failure result itself errors — proto.Marshal on a well-formed message practically never

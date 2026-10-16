@@ -13,14 +13,13 @@ import (
 // what the proxy reported at introspection.
 func mysqlSplitConfig() *pb.EngineConfig {
 	return &pb.EngineConfig{
-		Engine:                   pb.Engine_MYSQL,
-		EngineVersion:            "8.0.46",
-		MysqlLowerCaseTableNames: proto.Int32(1),
+		Engine:     pb.Engine_MYSQL,
+		Datasource: &pb.EngineDatasource{EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(1)},
 	}
 }
 
 func postgresSplitConfig() *pb.EngineConfig {
-	return &pb.EngineConfig{Engine: pb.Engine_POSTGRES, EngineVersion: "16.0"}
+	return &pb.EngineConfig{Engine: pb.Engine_POSTGRES, Datasource: &pb.EngineDatasource{EngineVersion: "16.0"}}
 }
 
 func TestSplitStatements(t *testing.T) {
@@ -80,10 +79,10 @@ func TestSplitStatementsFailsClosed(t *testing.T) {
 	}{
 		{"unset engine", "SELECT 1", &pb.EngineConfig{}},
 		{"nil config", "SELECT 1", nil},
-		// createAnalyzer requires both for MySQL; splitting under a partial config would use a dialect the
+		// openSession requires both for MySQL; splitting under a partial config would use a dialect the
 		// target does not, so it fails closed exactly as analysis does.
-		{"mysql without version", "SELECT 1", &pb.EngineConfig{Engine: pb.Engine_MYSQL, MysqlLowerCaseTableNames: proto.Int32(1)}},
-		{"mysql without lower_case_table_names", "SELECT 1", &pb.EngineConfig{Engine: pb.Engine_MYSQL, EngineVersion: "8.0.46"}},
+		{"mysql without version", "SELECT 1", &pb.EngineConfig{Engine: pb.Engine_MYSQL, Datasource: &pb.EngineDatasource{MysqlLowerCaseTableNames: proto.Int32(1)}}},
+		{"mysql without lower_case_table_names", "SELECT 1", &pb.EngineConfig{Engine: pb.Engine_MYSQL, Datasource: &pb.EngineDatasource{EngineVersion: "8.0.46"}}},
 		{"embedded NUL", "SELECT 1\x00; SELECT 2", mysqlSplitConfig()},
 		{"invalid utf8", "SELECT '\xff\xfe'", mysqlSplitConfig()},
 		{"empty", "", mysqlSplitConfig()},
@@ -355,10 +354,9 @@ func TestSplitStatementsKeepsMysqlExecutableComment(t *testing.T) {
 func TestSplitStatementsHonorsAnsiQuotes(t *testing.T) {
 	const sql = `SELECT "a\" FROM t; DROP TABLE users; -- "`
 	ansi := &pb.EngineConfig{
-		Engine:                   pb.Engine_MYSQL,
-		EngineVersion:            "8.0.46",
-		MysqlLowerCaseTableNames: proto.Int32(1),
-		Session:                  &pb.SessionObservation{Engine: &pb.SessionObservation_Mysql{Mysql: &pb.MySqlSession{AnsiQuotes: true}}},
+		Engine:     pb.Engine_MYSQL,
+		Datasource: &pb.EngineDatasource{EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(1)},
+		Session:    &pb.SessionObservation{Engine: &pb.SessionObservation_Mysql{Mysql: &pb.MySqlSession{AnsiQuotes: true}}},
 	}
 	got, ok := SplitStatements(sql, ansi)
 	if !ok {

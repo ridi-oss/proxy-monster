@@ -48,11 +48,11 @@ func SplitBatch(sql string, config *pb.EngineConfig) (statements []BatchStatemen
 
 	// The dialect decides where a statement ends: under ANSI_QUOTES `SELECT "a;b"` is two statements,
 	// and one otherwise — so split with exactly the config the target and the analyzer use.
-	eng, err := createAnalyzer(config)
+	sess, err := openSession(config)
 	if err != nil {
 		return nil, false
 	}
-	d := eng.Dialect()
+	d := sess.Dialect()
 	// Parsed, not scanned for `;` — a `;` inside `'a;b'` or a BEGIN…END body ends nothing.
 	parsed, err := sqlglot.Parse(sql, d)
 	if err != nil {
@@ -73,7 +73,7 @@ func SplitBatch(sql string, config *pb.EngineConfig) (statements []BatchStatemen
 			return nil, false
 		}
 		if trimmed := strings.TrimSpace(text); trimmed != "" {
-			out = append(out, BatchStatement{SQL: trimmed, Kind: statementKind(statement, eng), MayControlTransaction: mayControlTransaction(statement, eng), AfterEmpty: afterEmpty})
+			out = append(out, BatchStatement{SQL: trimmed, Kind: statementKind(statement, sess), MayControlTransaction: mayControlTransaction(statement, sess), AfterEmpty: afterEmpty})
 			afterEmpty = false
 		}
 	}
@@ -85,8 +85,8 @@ func SplitBatch(sql string, config *pb.EngineConfig) (statements []BatchStatemen
 	return out, true
 }
 
-func mayControlTransaction(root exp.Expression, eng analyzer) bool {
-	kind := statementKind(root, eng)
+func mayControlTransaction(root exp.Expression, sess session) bool {
+	kind := statementKind(root, sess)
 	if kind != pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN {
 		return transactionControlKinds[kind]
 	}

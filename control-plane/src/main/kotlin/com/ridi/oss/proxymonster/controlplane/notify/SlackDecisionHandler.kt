@@ -90,7 +90,7 @@ class SlackDecisionHandler(
             return catalog.text("reply.already_status", locale, mapOf("status" to req.status.lowercase()))
         }
         val outcome = runCatching {
-            // Approving a role or rate reset is the whole action; there is nothing to run.
+            // Approving a role is the whole action; there is nothing to run.
             if (req.kind != "QUERY" && decision) {
                 if (interaction.actionId == SlackTransport.ACTION_DENY) {
                     access().reject(principal, null, actor, req.id, SLACK_REJECT_REASON, Channel.SLACK)

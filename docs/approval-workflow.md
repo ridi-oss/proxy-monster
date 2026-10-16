@@ -89,8 +89,8 @@ task exists but no rows.
    (`QueryResultStore.purgeExpired`, swept with `RESULT_PURGE_INTERVAL_MS` = 15
    min).
 
-Every workflow request — a query approval, a role request, or a rate reset — has
-a thread, served by `RequestThreads` under kind-neutral routes.
+Every workflow request — a query approval or a role request — has a thread,
+served by `RequestThreads` under kind-neutral routes.
 `GET /api/requests/{id}/thread` returns the timeline (`request_event`: state
 changes plus comments, LGTMs, and CC changes) and what the caller may do.
 `POST /api/requests/{id}/comments` adds a comment or, with `lgtm`, an LGTM,

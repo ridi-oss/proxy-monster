@@ -61,7 +61,7 @@ class RequestThreads(
         req.datasourceId?.let(datasourceStore::getIncludingDeleted)?.tags.orEmpty(),
     ) !is AuthzDecision.Deny
 
-    /** A workflow request: a query approval, a role request, or a rate reset. */
+    /** A workflow request: a query approval or a role request (or a past rate reset). */
     fun request(id: Long): AccessRequest = accessStore.getRequest(id)?.takeIf { it.isWorkflowRequest } ?: throw serviceNotFound(REQUEST)
 
     fun thread(principal: String, requesterIp: String?, id: Long, channel: Channel = Channel.WORKFLOW_VIEWER): RequestThread {

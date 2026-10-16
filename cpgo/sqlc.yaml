@@ -49,6 +49,7 @@ sql:
       - ../control-plane/src/main/resources/db/migration/V44__request_timeline.sql
       - ../control-plane/src/main/resources/db/migration/V45__slack_threads.sql
       - ../control-plane/src/main/resources/db/migration/V46__request_timeline_all_kinds.sql
+      - ../control-plane/src/main/resources/db/migration/V47__remove_rate_reset.sql
     queries: store/queries
     gen:
       go:

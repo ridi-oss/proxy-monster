@@ -471,8 +471,7 @@ A request can also be posted to a channel. `PM_SLACK_CHANNELS` maps datasource
 tags to channel ids; the first entry whose tag the request's datasource carries
 picks the channel, so a request has at most one channel message. Put specific
 tags first and a broad one such as `system:production` last. A request on no
-datasource — a rate reset, or a role on every datasource — goes to the first
-entry.
+datasource — a role on every datasource — goes to the first entry.
 
 ```
 PM_SLACK_MODE=both
@@ -522,13 +521,13 @@ The Slack app needs, on top of `chat:write`, `im:write`, `users:read`, and
 scopes, and the `message.channels`, `message.groups`, and `message.im` event
 subscriptions, delivered over Socket Mode.
 
-### Role and rate-reset requests
+### Role requests
 
 They get the same messages, threads, and Review modal as a query request, with
 their own text and no statement. Approvers get **approve** and **deny** (there
-is nothing to run: approving grants the role, or resets the rates); the
-requester gets **close request** while it is pending; a CC gets **LGTM**. A
-click goes through `AccessService` or `RequestThreads` on the `slack` channel.
+is nothing to run: approving grants the role); the requester gets **close
+request** while it is pending; a CC gets **LGTM**. A click goes through
+`AccessService` or `RequestThreads` on the `slack` channel.
 
 ## Configuration
 

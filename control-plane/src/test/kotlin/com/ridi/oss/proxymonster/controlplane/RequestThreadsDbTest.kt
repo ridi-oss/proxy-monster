@@ -14,7 +14,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
-/** Comments, CCs, the timeline and close work on role and rate-reset requests as on query requests. */
+/** Comments, CCs, the timeline and close work on role requests as on query requests. */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class RequestThreadsDbTest {
     private lateinit var dataSource: DataSource
@@ -77,13 +77,13 @@ class RequestThreadsDbTest {
     }
 
     @Test
-    fun `an approved rate reset records the approver, and a system actor is not listed as a participant`() {
-        val id = access.requestRateReset(requester, actor(requester), RateResetRequestInput("ran out")).id
+    fun `an approved role request records the approver, and a system actor is not listed as a participant`() {
+        val id = roleRequest()
         assertEquals("APPROVED", access.approve(admin, null, actor(admin), id, null).status)
         assertEquals(listOf("requested", "approved"), kinds(id))
         assertEquals(listOf(admin), dataSource.connection.use { RequestParticipants.list(it, id) })
 
-        val other = access.requestRateReset(requester, actor(requester), RateResetRequestInput("again")).id
+        val other = roleRequest()
         dataSource.connection.use { c ->
             RequestEvents.record(c, other, RequestEventKind.REJECTED, "system:auto-approver:agent", "system", "too often")
         }

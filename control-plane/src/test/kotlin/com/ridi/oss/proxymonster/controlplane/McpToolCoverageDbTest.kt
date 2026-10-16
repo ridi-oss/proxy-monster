@@ -209,8 +209,6 @@ class McpToolCoverageDbTest {
         on("delete_role") { client.ok(adm, "delete_role", args("name" to "cov-role")) }
         on("deprovision_user") { client.ok(adm, "deprovision_user", args("principal" to "cov-user@example.com")) }
         on("delete_mask_fn") { client.ok(adm, "delete_mask_fn", args("name" to "cov-mask")) }
-        on("reset_principal_rate") { client.ok(adm, "reset_principal_rate", args("principal" to requester, "reason" to "coverage")) }
-        on("get_principal_rate") { client.ok(adm, "get_principal_rate", args("principal" to requester)) }
 
         // Queries and query approvals.
         on("list_connectable_datasources") { client.ok(req, "list_connectable_datasources") }
@@ -278,7 +276,7 @@ class McpToolCoverageDbTest {
             client.ok(adm, "unapprove_approval", args("id" to approved))
         }
 
-        // JIT access, rates, audit, permissions and tokens.
+        // JIT access, audit, permissions and tokens.
         on("get_my_permissions") { client.ok(req, "get_my_permissions") }
         on("get_pmon_guide") { client.ok(req, "get_pmon_guide") }
         on("get_usage_guide") { client.ok(req, "get_usage_guide") }
@@ -295,7 +293,6 @@ class McpToolCoverageDbTest {
             }
         }
         on("revoke_access_grant") { client.ok(req, "revoke_access_grant", args("id" to grantId)) }
-        on("reset_my_rate") { client.ok(req, "reset_my_rate", args("reason" to "coverage")) }
         on("list_audit") { client.ok(req, "list_audit") }
         on("get_audit_event") { client.ok(req, "get_audit_event", args("id" to ownAudit)) }
         on("mint_token") { client.ok(req, "mint_token", args("name" to "coverage")).also { tokenId = it.id() } }

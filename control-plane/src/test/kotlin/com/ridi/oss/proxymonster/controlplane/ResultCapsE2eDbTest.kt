@@ -80,9 +80,8 @@ import com.ridi.oss.proxymonster.controlplane.support.CpGoStack
 
 /**
  * Every result-cap path through the control plane's real surfaces (docs/result-caps.md): the shipped
- * policies, the gRPC Decide the wire proxy calls, the editor run channel, the workflow execute + view, the
- * rate-reset request and admin routes, and policy-save validation. MySQL target; a fake proxy over gRPC
- * answers the run channel.
+ * policies, the gRPC Decide the wire proxy calls, the editor run channel, the workflow execute + view, and
+ * policy-save validation. MySQL target; a fake proxy over gRPC answers the run channel.
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class ResultCapsE2eDbTest {
@@ -350,9 +349,9 @@ class ResultCapsE2eDbTest {
         }
     }
 
-    // Wire: the shipped caps per shape, then a spent rate, then the admin reset route clears it.
+    // Wire: the shipped caps per shape, then a spent rate.
     @Test
-    fun `wire Decide stamps the shipped caps and an admin reset lifts a spent rate`() = testApplication {
+    fun `wire Decide stamps the shipped caps and denies a spent rate`() = testApplication {
         wire()
         val principal = "wire-rate@example.com"
         fx.userGroupStore.createUser(AppUserInput(principal = principal), fx.tokenStore, fx.accessStore, fx.daemonSessionStore)
@@ -370,86 +369,6 @@ class ResultCapsE2eDbTest {
         val denied = wire.decide("select id from users")
         assertEquals(WireEnfAction.DENY, denied.decision)
         assertEquals("$RATE_SPENT_DENY 100MB/1h spent", denied.denyReason)
-
-        val adminClient = login(admin)
-        assertEquals(HttpStatusCode.NoContent, adminClient.get("/api/access/principals/$principal/rate-reset").status, "never reset yet")
-        val blank = adminClient.post("/api/access/principals/$principal/rate-reset") {
-            contentType(ContentType.Application.Json); setBody(RateResetInput(" "))
-        }
-        assertEquals(HttpStatusCode.BadRequest, blank.status)
-        val reset = adminClient.post("/api/access/principals/$principal/rate-reset") {
-            contentType(ContentType.Application.Json); setBody(RateResetInput("false positive"))
-        }
-        assertEquals(HttpStatusCode.OK, reset.status, reset.bodyAsText())
-        assertEquals(admin, reset.body<RateReset>().resetBy)
-        assertEquals("false positive", adminClient.get("/api/access/principals/$principal/rate-reset").body<RateReset>().reason)
-
-        val lifted = wire.decide("select id from users")
-        assertEquals(WireEnfAction.ALLOW, lifted.decision, lifted.denyReason)
-        assertEquals(5000L, lifted.maxRows, "a reset leaves the statement cap alone")
-        assertNotNull(core.auditStore.recent(50).firstOrNull { it.kind == "admin" && it.principal == admin && "reset spent result rates" in it.statement })
-
-        // Only an admin resets directly.
-        val analystClient = login(analyst)
-        assertEquals(HttpStatusCode.Forbidden, analystClient.post("/api/access/principals/$principal/rate-reset") {
-            contentType(ContentType.Application.Json); setBody(RateResetInput("please"))
-        }.status)
-        assertEquals(HttpStatusCode.Forbidden, analystClient.get("/api/access/principals/$principal/rate-reset").status)
-    }
-
-    // Workflow: the user files a RATE_RESET request, an approver approves it, the rate is clear again.
-    @Test
-    fun `a RATE_RESET request approved on the workflow surface clears the requester's rate`() = testApplication {
-        wire()
-        val principal = "quota@example.com"
-        fx.userGroupStore.createUser(AppUserInput(principal = principal), fx.tokenStore, fx.accessStore, fx.daemonSessionStore)
-        fx.policyStore.createAssignment(RoleAssignmentInput(principal, analystRoleId))
-        val wire = WireClient(principal)
-        completion(principal, 10_000)
-        assertEquals("$RATE_SPENT_DENY 10000/1h spent", wire.decide("select id from users").denyReason)
-
-        val user = console(principal)
-        assertEquals(HttpStatusCode.BadRequest, user.post("/api/access-requests/rate-reset") {
-            contentType(ContentType.Application.Json); setBody(RateResetRequestInput("", denyReason = "rate 10000/1h spent"))
-        }.status)
-        val created = user.post("/api/access-requests/rate-reset") {
-            contentType(ContentType.Application.Json); setBody(RateResetRequestInput("monthly export re-run", denyReason = "rate 10000/1h spent"))
-        }
-        assertEquals(HttpStatusCode.Created, created.status, created.bodyAsText())
-        val request = created.body<AccessRequest>()
-        assertEquals("RATE_RESET", request.kind)
-        assertEquals("PENDING", request.status)
-        assertEquals("rate 10000/1h spent", request.denyReason)
-        assertTrue(user.get("/api/access-requests").body<List<AccessRequest>>().any { it.id == request.id }, "the requester sees their own row")
-        assertNull(core.auditStore.lastRateReset(principal))
-
-        // The requester cannot approve their own request; an unrelated non-approver cannot either.
-        assertEquals(HttpStatusCode.Forbidden, user.post("/api/access-requests/${request.id}/approve").status)
-        assertEquals(HttpStatusCode.Forbidden, login(analyst).post("/api/access-requests/${request.id}/approve").status)
-        assertEquals("$RATE_SPENT_DENY 10000/1h spent", wire.decide("select id from users").denyReason)
-
-        val approverClient = console(approver)
-        assertTrue(approverClient.get("/api/access-requests?status=PENDING").body<List<AccessRequest>>().any { it.id == request.id })
-        val approved = approverClient.post("/api/access-requests/${request.id}/approve")
-        assertEquals(HttpStatusCode.OK, approved.status, approved.bodyAsText())
-        assertEquals("APPROVED", approved.body<AccessRequest>().status)
-        assertEquals(approver, core.auditStore.lastRateReset(principal)?.resetBy)
-        val lifted = wire.decide("select id from users")
-        assertEquals(WireEnfAction.ALLOW, lifted.decision, lifted.denyReason)
-
-        // Volume after the reset counts again, and a rejected request resets nothing.
-        completion(principal, 10_000, ageSeconds = 0)
-        assertEquals("$RATE_SPENT_DENY 10000/1h spent", wire.decide("select id from users").denyReason)
-        val second = user.post("/api/access-requests/rate-reset") {
-            contentType(ContentType.Application.Json); setBody(RateResetRequestInput("again"))
-        }.body<AccessRequest>()
-        val rejected = approverClient.post("/api/access-requests/${second.id}/reject") {
-            contentType(ContentType.Application.Json); setBody(RejectInput("wait for the window"))
-        }
-        assertEquals(HttpStatusCode.OK, rejected.status, rejected.bodyAsText())
-        assertEquals("REJECTED", rejected.body<AccessRequest>().status)
-        assertEquals(approver, core.auditStore.lastRateReset(principal)?.resetBy, "the earlier marker is the only one")
-        assertEquals("$RATE_SPENT_DENY 10000/1h spent", wire.decide("select id from users").denyReason)
     }
 
     // Workflow: an approved query executed under the exporter role runs uncapped and unrated; the requester

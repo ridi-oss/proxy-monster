@@ -45,8 +45,6 @@ import type {
   QueryRequest,
   QueryResponse,
   QueryResultView,
-  RateReset,
-  RateResetRequestInput,
   RefreshResult,
   RequestEvent,
   RequestThread,
@@ -535,29 +533,6 @@ export function createAccessRequest(input: AccessRequestInput): Promise<AccessRe
     method: 'POST',
     body: JSON.stringify(input),
   })
-}
-
-export function createRateResetRequest(input: RateResetRequestInput): Promise<AccessRequest> {
-  return request<AccessRequest>('/api/access-requests/rate-reset', {
-    method: 'POST',
-    body: JSON.stringify(input),
-  })
-}
-
-export function resetPrincipalRate(principal: string, reason: string): Promise<RateReset> {
-  return request<RateReset>(`/api/access/principals/${encodeURIComponent(principal)}/rate-reset`, {
-    method: 'POST',
-    body: JSON.stringify({ reason }),
-  })
-}
-
-export async function getPrincipalRateReset(principal: string): Promise<RateReset | null> {
-  const res = await fetch(`${API_BASE}/api/access/principals/${encodeURIComponent(principal)}/rate-reset`, {
-    credentials: 'include',
-  })
-  if (res.status === 204) return null
-  if (!res.ok) throw new Error(await res.text())
-  return (await res.json()) as RateReset
 }
 
 export function approveAccessRequest(id: number, durationSec?: number): Promise<AccessRequest> {

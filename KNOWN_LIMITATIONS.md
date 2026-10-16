@@ -189,8 +189,11 @@ captured on the connection's own held target-DB connection (design:
   completion covers the accepted submission only.
 - 🟡 Glue views are not queryable through the proxy. The catalog scan leaves out
   every relation that is not an `EXTERNAL_TABLE` or `MANAGED_TABLE` (a view, an
-  unknown table type) and logs one warning per scan with the count and a sample
-  of names. A statement naming a skipped relation is unanalyzable and denies.
+  unknown table type) and logs one warning per scan with the count by type and a
+  sample of names. A statement naming a skipped relation is unanalyzable, so it
+  denies unless `exception.unanalyzable` permits it. Where that exception is
+  permitted (the `system:development` preset, or an explicit grant), the
+  statement relays unmasked and a view over masked columns returns them raw.
 
 ## Wire-cert distribution (direct clients and `pmon`)
 

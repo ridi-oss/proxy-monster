@@ -330,9 +330,11 @@ Fixes for gaps documented in
   it needs owner binding for session ids, the way query executions are bound.
 - Report result volume for forwarded `GetQueryResults` pages; the completion
   event records the accepted submission only.
-- Make Glue views queryable: the catalog scan skips them, so a statement naming
-  one denies. Querying a view needs its definition resolved to base-table
-  lineage, not its declared columns.
+- Represent a skipped Glue view as an unproved relation in the catalog snapshot,
+  so a statement naming one fails as inadmissible and denies even where
+  `exception.unanalyzable` is permitted.
+- Make Glue views queryable: querying a view needs its definition resolved to
+  base-table lineage, not its declared columns.
 
 ## Data plane
 

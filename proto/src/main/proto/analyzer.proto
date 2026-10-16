@@ -91,12 +91,14 @@ message EngineConfig {
     "postgres_function_shadowing_observed", "postgres_system_xid_visible";
 }
 
-// What the engine reads from a target, as the target reported it.
+// What the engine reads from a target: what the target reported, and its ConnectionInfo properties.
 message TargetSettings {
   // A clean major.minor[.patch]; MySQL fails closed without one.
   string engine_version = 1;
   // MySQL's server-level lower_case_table_names (0..2); required for MySQL, unset for the others.
   optional int32 mysql_lower_case_table_names = 2;
+  // ConnectionInfo properties: Athena "workgroup".
+  map<string, string> properties = 3;
 }
 
 // Per-statement facts from the proxy that change how the analyzer parses or resolves a statement: what

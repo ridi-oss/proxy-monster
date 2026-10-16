@@ -67,6 +67,14 @@ func IntrospectedColumns(reqBytes *C.char, reqLen C.size_t, outLen *C.size_t) un
 	return bufferResult(engines.IntrospectedColumnsSafe(analyzeRequestBytesFromC(reqBytes, reqLen)), outLen)
 }
 
+// EngineCall runs one control-plane call into an engine's definition. Same byte-buffer convention and
+// FreeCString ownership as AnalyzeStatement; engines.EngineCallSafe never panics.
+//
+//export EngineCall
+func EngineCall(reqBytes *C.char, reqLen C.size_t, outLen *C.size_t) unsafe.Pointer {
+	return bufferResult(engines.EngineCallSafe(analyzeRequestBytesFromC(reqBytes, reqLen)), outLen)
+}
+
 func bufferResult(out []byte, outLen *C.size_t) unsafe.Pointer {
 	*outLen = C.size_t(len(out))
 	if len(out) == 0 {

@@ -1,6 +1,5 @@
 package com.ridi.oss.proxymonster.controlplane
 
-import com.ridi.oss.proxymonster.controlplane.management.ManagementException
 import com.ridi.oss.proxymonster.grpc.ConnectionInfo
 import com.ridi.oss.proxymonster.grpc.Engine
 import com.ridi.oss.proxymonster.grpc.connectionInfo
@@ -18,7 +17,6 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import java.net.URI
 
 /** JSON shape of the stored/served connection metadata: {"endpoint": string, "properties": {string: string}}. */
 object ConnectionInfoSerializer : KSerializer<ConnectionInfo> {
@@ -47,21 +45,3 @@ object ConnectionInfoSerializer : KSerializer<ConnectionInfo> {
 internal fun Engine.validateConnectionInfo(info: ConnectionInfo?) {
     if (info != null) definition.validateConnectionInfo(info)
 }
-
-/**
- * For a wire-protocol engine the endpoint is a bare host:port or empty, and only [allowedProperties] may
- * appear, so a proxy cannot publish a credential or a URL through this nonsecret field.
- */
-internal fun validateNativeConnectionInfo(info: ConnectionInfo, allowedProperties: Set<String>) {
-    if (info.propertiesMap.keys.any { it !in allowedProperties }) invalidConnectionInfo()
-    if (info.endpoint.isEmpty()) {
-        if (info.propertiesCount != 0) invalidConnectionInfo()
-        return
-    }
-    val uri = runCatching { URI("tcp://${info.endpoint}") }.getOrNull() ?: invalidConnectionInfo()
-    if (uri.host.isNullOrBlank() || uri.port !in 1..65535 || uri.userInfo != null ||
-        !uri.path.isNullOrEmpty() || uri.query != null || uri.fragment != null
-    ) invalidConnectionInfo()
-}
-
-private fun invalidConnectionInfo(): Nothing = throw ManagementException(ApiError("datasource.invalid_connection_info"))

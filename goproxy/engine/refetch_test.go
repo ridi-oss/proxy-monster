@@ -114,7 +114,7 @@ func TestRefetcherUnconditionalFetch(t *testing.T) {
 }
 
 // normalizingRefetchDb proves Run wires the mode probe into NormalizeColumns (not that folding itself
-// is correct — that's covered by analyzer/probe's and goproxy/db's own tests). It records the mode it
+// is correct — that's covered by analyzer/engines's and goproxy/db's own tests). It records the mode it
 // was called with and uppercases every field, an arbitrary but easy-to-assert-on transform.
 type normalizingRefetchDb struct {
 	refetchDb

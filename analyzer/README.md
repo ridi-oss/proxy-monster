@@ -26,13 +26,13 @@ compile-time mismatch, not a silent runtime one.
 analyzer/
   go.mod                     Go module github.com/ridi-oss/proxy-monster/analyzer;
                              pins github.com/ridi-oss/sqlglot-go v0.22.0
-  probe/                     the analyzer (package probe)
+  engines/                   the analyzer (package engines)
     facts.go                 EmitFacts: classify the statement + emit statement_exec + result-read grants
     probe.go, helpers.go     internal column lineage + reference bucketing + SELECT * expansion
-    pb/analyzer.pb.go        generated Go bindings for analyzer.proto
     *_test.go                golden (hermetic) + parity (vs Python sqlglot) + admission-parity + unit tests
     testdata/golden.json     frozen regression snapshot (internal probe)
     testdata/oracle/         the Python parity oracle (driver.py + probe.py) — test-only
+  probe/pb/                  generated Go bindings for analyzer.proto, engine.proto, athena.proto
   cmd/libsqlglot/main.go     C-shared entry: exports AnalyzeStatement / SqlNormalize / FreeCString (cgo confined here)
   jvm/                       Gradle subproject :analyzer:jvm
     build.gradle.kts         builds cmd/libsqlglot (go build -buildmode=c-shared) + bundles the lib
@@ -57,7 +57,7 @@ go get -C analyzer github.com/ridi-oss/sqlglot-go@<tag-or-commit>   # then commi
 
 The committed root `go.work` lists only this repo's own modules, so sqlglot-go
 always resolves from that pin — the workspace makes every Go command take
-root-relative paths (`go test ./analyzer/probe/...`) without changing which
+root-relative paths (`go test ./analyzer/engines/...`) without changing which
 version of the dependency is used.
 
 ## Building
@@ -83,7 +83,7 @@ not pin; install it separately.
 ## Testing
 
 ```bash
-go test ./analyzer/probe/...
+go test ./analyzer/engines/...
 ```
 
 - TestProbeGolden — internal-probe regression against `testdata/golden.json`;

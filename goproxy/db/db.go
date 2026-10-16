@@ -1,6 +1,6 @@
 // Package db is the DUMB per-database adapter set: the few facts engine.QueryEngine needs to gather
 // context (namespace probe SQL, temp-overlay support), plus each dialect's NormalizeColumns
-// specialization (analyzer/probe.NormalizeRelation — Go-to-Go, no SQL driver, no cgo). No enforcement
+// specialization (analyzer/engines.NormalizeRelation — Go-to-Go, no SQL driver, no cgo). No enforcement
 // logic, no state machine.
 package db
 
@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/ridi-oss/proxy-monster/analyzer/probe"
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/sqlglot-go/dialects"
 	"google.golang.org/protobuf/proto"
@@ -30,11 +30,11 @@ func (MySqlDb) HashSetupColumns() int       { return 0 }
 // LowerCaseTableNamesProbeSQL yields the connection's live lower_case_table_names mode.
 func (MySqlDb) LowerCaseTableNamesProbeSQL() string { return "SELECT @@lower_case_table_names" }
 
-// NormalizeColumns folds each column to analyzer/probe's canonical MySQL spelling — the SAME
+// NormalizeColumns folds each column to analyzer/engines's canonical MySQL spelling — the SAME
 // normalization introspect's bulk catalog push uses, so the schema-fragment pool this feeds
 // (goproxy/engine.Refetcher) and the persisted catalog never disagree on spelling.
 //
-// Folds through probe.NormalizeMySQLColumns, which memoizes the per-(schema, table) identifier parse.
+// Folds through engines.NormalizeMySQLColumns, which memoizes the per-(schema, table) identifier parse.
 // A schema fragment repeats one schema and each table name once per column, so the per-row path
 // re-parsed the same two identifiers thousands of times: ~13s of CPU on a 4,390-column schema, enough
 // to push a catalog refetch past the control plane's run-open deadline and fail every query on the
@@ -46,7 +46,7 @@ func (MySqlDb) NormalizeColumns(lowerCaseTableNames int, columns []*analyzerpb.C
 	for i, c := range columns {
 		schemas[i], tables[i], names[i] = c.GetSchema(), c.GetTable(), c.GetColumn()
 	}
-	outSchemas, outTables, outColumns := probe.NormalizeMySQLColumns(lowerCaseTableNames, schemas, tables, names)
+	outSchemas, outTables, outColumns := engines.NormalizeMySQLColumns(lowerCaseTableNames, schemas, tables, names)
 	out := make([]*analyzerpb.Column, len(columns))
 	for i, c := range columns {
 		out[i] = proto.Clone(c).(*analyzerpb.Column)
@@ -59,7 +59,7 @@ func (MySqlDb) NormalizeColumns(lowerCaseTableNames int, columns []*analyzerpb.C
 func (MySqlDb) FoldFunctionName(name string) string { return dialects.MySQLLower(name) }
 
 // mysqlSchemaFilter renders the WHERE-clause comparison for schema (a possibly-canonical spelling —
-// see analyzer/probe.NormalizeRelation) against the live TABLE_SCHEMA. Mode 0 never folds schema names
+// see analyzer/engines.NormalizeRelation) against the live TABLE_SCHEMA. Mode 0 never folds schema names
 // (canonical == raw) and mode 1 folds AT THE STORAGE LAYER itself (information_schema already reports
 // lowercase), so both compare byte-exact. Mode 2 is the one case canonical (folded) can diverge from
 // the live stored spelling (case preserved in storage, looked up case-insensitively) — MySQL guarantees
@@ -213,7 +213,7 @@ func (PgDb) LowerCaseTableNamesProbeSQL() string { return "" }
 
 // NormalizeColumns is an identity function: Postgres never folds — a quoted-vs-unquoted identifier
 // pair is genuinely two distinct columns, and introspection already reports each one's real, resolved
-// spelling (analyzer/probe.NormalizeRelation's contract for any non-MySQL dialect).
+// spelling (analyzer/engines.NormalizeRelation's contract for any non-MySQL dialect).
 func (PgDb) NormalizeColumns(_ int, columns []*analyzerpb.Column) []*analyzerpb.Column {
 	return columns
 }

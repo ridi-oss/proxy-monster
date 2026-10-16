@@ -161,6 +161,24 @@ class PolicyWriteRoutesDbTest {
     }
 
     @Test
+    fun `cap and boost annotations`() = testApplication {
+        val t = Transcript(clients(admin).single())
+        for (src in listOf(
+            """@boost("2") permit(principal in Role::"analyst", action == Action::"result.cap", resource);""",
+            """@boost(" 1.5 ") @cap("100MB/1h") permit(principal in Role::"analyst", action == Action::"result.cap", resource);""",
+            """@boost("1") permit(principal in Role::"analyst", action == Action::"result.cap", resource);""",
+            """@boost("1.") permit(principal in Role::"analyst", action == Action::"result.cap", resource);""",
+            """@boost("x2") @cap("5M") permit(principal in Role::"analyst", action == Action::"result.cap", resource);""",
+            """@boost("2") permit(principal in Role::"analyst", action == Action::"audit.read", resource);""",
+            """@cap("5") permit(principal in Role::"analyst", action == Action::"audit.read", resource);""",
+            """@cap("10/1x") permit(principal, action == Action::"result.cap", resource);""",
+        )) {
+            t.send("POST", "/api/policies/validate", """{"cedarSrc":"${src.replace("\"", "\\\"")}"}""")
+        }
+        assertEquals(EXPECTED_ANNOTATIONS.trim(), t.text())
+    }
+
+    @Test
     fun `a write changes the next decision`() = testApplication {
         val (adminClient, viewerClient) = clients(admin, viewer)
         val t = Transcript(adminClient)
@@ -244,6 +262,16 @@ admin.policies Policy::"{new}" | create policy 'pw-off'
 POST /api/policies/validate -> 200 {"valid":true,"errors":[]}
 POST /api/policies/validate -> 200 {"valid":false,"errors":["failed to parse policy with id `candidate` from string: unexpected token `cedar`"]}
 POST /api/policies/validate -> 200 {"valid":false,"errors":["for policy `candidate`, unrecognized action `Action::\"no.such.action\"`","for policy `candidate`, unable to find an applicable action given the policy scope constraints"]}
+"""
+        const val EXPECTED_ANNOTATIONS = """
+POST /api/policies/validate -> 200 {"valid":true,"errors":[]}
+POST /api/policies/validate -> 200 {"valid":true,"errors":[]}
+POST /api/policies/validate -> 200 {"valid":false,"errors":["@boost must be a number greater than 1, got \"1\""]}
+POST /api/policies/validate -> 200 {"valid":false,"errors":["@boost must be a number greater than 1, got \"1.\""]}
+POST /api/policies/validate -> 200 {"valid":false,"errors":["@boost must be a number greater than 1, got \"x2\""]}
+POST /api/policies/validate -> 200 {"valid":false,"errors":["a @cap or @boost annotation belongs on an Action::\"result.cap\" policy"]}
+POST /api/policies/validate -> 200 {"valid":false,"errors":["a @cap or @boost annotation belongs on an Action::\"result.cap\" policy"]}
+POST /api/policies/validate -> 200 {"valid":false,"errors":["@cap rate window must be <n>m, <n>h, or <n>d, got \"1x\""]}
 """
         const val EXPECTED_DECISIONS = """
 GET /api/me/permissions -> 200 {"isAdmin":false,"canReadAllAudit":false,"canApprove":false}

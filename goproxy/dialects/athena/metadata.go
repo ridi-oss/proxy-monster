@@ -21,7 +21,7 @@ func (t *target) catalogIdentity() string { return strings.ToLower(t.config.cata
 // skippedSampleSize bounds the relation names one skip log lists; a catalog can hold hundreds of views.
 const skippedSampleSize = 10
 
-type skippedRelation struct{ name, kind string }
+type skippedRelation struct{ schema, table, kind string }
 
 // Introspect scans the configured catalog's Glue metadata, leaving out relations that are not tables.
 func (t *target) Introspect(ctx context.Context) (*pb.CatalogRequest, error) {
@@ -50,7 +50,8 @@ func (t *target) Introspect(ctx context.Context) (*pb.CatalogRequest, error) {
 	logSkippedRelations(slog.Default(), slog.LevelWarn, skipped)
 	return &pb.CatalogRequest{
 		CurrentCatalog: t.catalogIdentity(), DefaultSchemas: []string{t.config.database},
-		Catalog: &enginepb.CatalogSnapshot{Columns: columns}, EngineVersion: version,
+		Catalog:       &enginepb.CatalogSnapshot{Columns: columns, UnprovedRelations: unprovedRelations(t.catalogIdentity(), skipped)},
+		EngineVersion: version,
 	}, nil
 }
 
@@ -81,7 +82,7 @@ func (t *target) readColumns(ctx context.Context, catalog, database string) ([]*
 			}
 			seen[name] = true
 			if kind := aws.ToString(table.TableType); kind != "EXTERNAL_TABLE" && kind != "MANAGED_TABLE" {
-				skipped = append(skipped, skippedRelation{name: database + "." + name, kind: kind})
+				skipped = append(skipped, skippedRelation{schema: database, table: name, kind: kind})
 				continue
 			}
 			tableColumns, err := metadataColumns(table)
@@ -112,11 +113,27 @@ func logSkippedRelations(logger *slog.Logger, level slog.Level, skipped []skippe
 		}
 		types[kind]++
 		if len(sample) < skippedSampleSize {
-			sample = append(sample, relation.name)
+			sample = append(sample, relation.schema+"."+relation.table)
 		}
 	}
-	logger.Log(context.Background(), level, "athena: catalog skipped relations that are not tables; statements naming them are unanalyzable",
+	logger.Log(context.Background(), level, "athena: catalog skipped relations that are not tables; statements naming them are denied",
 		"count", len(skipped), "types", types, "sample", sample)
+}
+
+func unprovedRelations(catalog string, skipped []skippedRelation) []*enginepb.ObjectRef {
+	relations := make([]*enginepb.ObjectRef, 0, len(skipped))
+	for _, relation := range skipped {
+		relations = append(relations, &enginepb.ObjectRef{Catalog: catalog, Schema: relation.schema, Table: relation.table})
+	}
+	return relations
+}
+
+func unprovedTables(skipped []skippedRelation) []string {
+	tables := make([]string, 0, len(skipped))
+	for _, relation := range skipped {
+		tables = append(tables, relation.table)
+	}
+	return tables
 }
 
 func metadataColumns(table types.TableMetadata) ([]types.Column, error) {

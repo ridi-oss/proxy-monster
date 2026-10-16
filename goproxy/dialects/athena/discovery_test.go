@@ -11,6 +11,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 )
 
 func TestCatalogDiscoveryCrawlsOnlyTheConfiguredCatalog(t *testing.T) {
@@ -92,7 +94,7 @@ func TestCatalogSkipsViewsAndUnknownTypesWithoutFlatteningTheirColumns(t *testin
 	if !slices.Equal(tables, []string{"base.email", "managed.id"}) {
 		t.Fatalf("catalog holds columns of an unproved relation: %v", tables)
 	}
-	if !slices.Equal(skipped, []skippedRelation{{"example.view", "VIRTUAL_VIEW"}, {"example.unknown", ""}}) {
+	if !slices.Equal(skipped, []skippedRelation{{"example", "view", "VIRTUAL_VIEW"}, {"example", "unknown", ""}}) {
 		t.Fatalf("skipped relations not reported: %v", skipped)
 	}
 }
@@ -119,7 +121,7 @@ func TestSkippedRelationLogIsOneBoundedLineCountedByType(t *testing.T) {
 	logger := slog.New(slog.NewJSONHandler(&logs, nil))
 	skipped := make([]skippedRelation, skippedSampleSize*3)
 	for i := range skipped {
-		skipped[i] = skippedRelation{name: fmt.Sprintf("example.view_%d", i), kind: "VIRTUAL_VIEW"}
+		skipped[i] = skippedRelation{schema: "example", table: fmt.Sprintf("view_%d", i), kind: "VIRTUAL_VIEW"}
 	}
 	skipped[len(skipped)-1].kind = ""
 	logSkippedRelations(logger, slog.LevelWarn, skipped)
@@ -140,7 +142,7 @@ func TestSkippedRelationLogIsOneBoundedLineCountedByType(t *testing.T) {
 	}
 	want := make([]string, skippedSampleSize)
 	for i := range want {
-		want[i] = skipped[i].name
+		want[i] = skipped[i].schema + "." + skipped[i].table
 	}
 	if entry.Level != "WARN" || entry.Count != len(skipped) || !slices.Equal(entry.Sample, want) {
 		t.Fatalf("log is not a bounded sample: %+v", entry)
@@ -160,5 +162,56 @@ func TestConnectionMetadataUsesHTTPSWithoutExposingAWSProfile(t *testing.T) {
 	}
 	if _, ok := info.Properties["profile"]; ok {
 		t.Fatal("credential profile leaked into connection metadata")
+	}
+}
+
+func TestSkippedViewsTravelAsUnprovedRelations(t *testing.T) {
+	lists := map[string]string{
+		"example": `{"TableMetadataList":[{"Name":"events","TableType":"EXTERNAL_TABLE","Columns":[{"Name":"email","Type":"string"}]},{"Name":"recent","TableType":"VIRTUAL_VIEW"}]}`,
+		"plain":   `{"TableMetadataList":[{"Name":"events","TableType":"EXTERNAL_TABLE","Columns":[{"Name":"email","Type":"string"}]}]}`,
+	}
+	target := testTarget(t, func(w http.ResponseWriter, request *http.Request) {
+		var input map[string]string
+		if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
+			t.Error(err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/x-amz-json-1.1")
+		switch request.Header.Get("X-Amz-Target") {
+		case "AmazonAthena.GetWorkGroup":
+			_, _ = io.WriteString(w, `{"WorkGroup":{}}`)
+		case "AmazonAthena.ListDatabases":
+			_, _ = io.WriteString(w, `{"DatabaseList":[{"Name":"example"}]}`)
+		default:
+			_, _ = io.WriteString(w, lists[input["DatabaseName"]])
+		}
+	})
+	catalog, err := target.Introspect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	relations := catalog.Catalog.GetUnprovedRelations()
+	if len(relations) != 1 || relations[0].GetCatalog() != "awsdatacatalog" || relations[0].GetSchema() != "example" || relations[0].GetTable() != "recent" {
+		t.Fatalf("view is not an unproved relation: %v", relations)
+	}
+
+	var pushes []*pb.SchemaFragmentPush
+	refetcher, err := target.newRefetcher([]byte("connection"), func(push *pb.SchemaFragmentPush) (uint64, error) {
+		pushes = append(pushes, push)
+		return 1, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, schema := range []string{"example", "plain"} {
+		if err := refetcher.run(&pb.Refetch{Schema: schema, Catalog: "awsdatacatalog"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !slices.Equal(pushes[0].GetUnprovedTables(), []string{"recent"}) || len(pushes[1].GetUnprovedTables()) != 0 {
+		t.Fatalf("fragments do not carry unproved tables: %v / %v", pushes[0].GetUnprovedTables(), pushes[1].GetUnprovedTables())
+	}
+	if bytes.Equal(pushes[0].GetContentHash(), pushes[1].GetContentHash()) {
+		t.Fatal("the content hash does not cover unproved tables")
 	}
 }

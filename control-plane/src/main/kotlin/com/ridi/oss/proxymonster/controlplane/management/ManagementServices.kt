@@ -18,8 +18,8 @@ import com.ridi.oss.proxymonster.controlplane.TestResult
 import com.ridi.oss.proxymonster.controlplane.engineFromWireOrNull
 import com.ridi.oss.proxymonster.controlplane.isSystemSchema
 import com.ridi.oss.proxymonster.controlplane.wireName
-import com.ridi.oss.proxymonster.controlplane.columnRef
-import com.ridi.oss.proxymonster.controlplane.requireCatalog
+import com.ridi.oss.proxymonster.controlplane.columnKey
+import com.ridi.oss.proxymonster.probe.ColumnKey
 import com.ridi.oss.proxymonster.controlplane.DatasourceStore
 import com.ridi.oss.proxymonster.controlplane.GroupMemberEntry
 import com.ridi.oss.proxymonster.controlplane.GroupRoleEntry
@@ -48,7 +48,6 @@ import com.ridi.oss.proxymonster.controlplane.authz.SystemPolicyImmutableExcepti
 import com.ridi.oss.proxymonster.controlplane.authz.extractContextTagNames
 import com.ridi.oss.proxymonster.controlplane.advisoryLockPrincipal
 import com.ridi.oss.proxymonster.controlplane.inTx
-import com.ridi.oss.proxymonster.grpc.ObjectRef
 import com.ridi.oss.proxymonster.probe.Classification
 import com.ridi.oss.proxymonster.probe.TableDetail
 import kotlinx.serialization.Serializable
@@ -224,7 +223,7 @@ class DatasourceManagementService(
         required("table", table)
         required("column", column)
         val datasource = store.get(datasourceId, connection) ?: notFound("datasource")
-        if (schema == null && store.defaultSchema(datasource.id, connection) == null) {
+        if (schema == null && store.defaultSchemaIdentifier(datasource.id, connection) == null) {
             throw ManagementException(ApiError("datasource.schema_required"))
         }
         DatasourceStore.requireWritableTags(tags)
@@ -247,7 +246,7 @@ class DatasourceManagementService(
         required("table", table)
         required("column", column)
         val datasource = datasource(datasourceName, connection)
-        if (schema == null && store.defaultSchema(datasource.id, connection) == null) {
+        if (schema == null && store.defaultSchemaIdentifier(datasource.id, connection) == null) {
             throw ManagementException(ApiError("datasource.schema_required"))
         }
         DatasourceStore.requireWritableTags(tags)
@@ -281,8 +280,8 @@ class DatasourceManagementService(
             )
         }
         val datasource = datasource(datasourceName, connection)
-        val defaultSchema = store.defaultSchema(datasource.id, connection)
-        val seen = HashSet<ObjectRef>(columns.size)
+        val defaultSchema = store.defaultSchemaIdentifier(datasource.id, connection)
+        val seen = HashSet<ColumnKey>(columns.size)
         // Resolve every entry to the identity it will actually be written under, so the duplicate check
         // and the write agree — dedup on the submitted schema would let an explicit "public" and an
         // omitted one both through and silently apply whichever ran last.
@@ -292,22 +291,22 @@ class DatasourceManagementService(
             val schema = input.schema?.takeIf(String::isNotBlank) ?: defaultSchema
                 ?: throw ManagementException(ApiError("datasource.schema_required"))
             DatasourceStore.requireWritableTags(input.tags)
-            val catalog = datasource.requireCatalog(input.catalog)
-            if (!seen.add(columnRef(catalog, schema, input.table, input.column))) {
+            val key = datasource.columnKey(input.catalog, schema, input.table, input.column)
+            if (!seen.add(key)) {
                 throw ManagementException(
                     ApiError(
                         "datasource.duplicate_column",
-                        mapOf("column" to "$schema.${input.table}.${input.column}"),
+                        mapOf("column" to "${key.schema}.${key.table}.${key.column}"),
                     ),
                 )
             }
-            ClassificationInput(schema, input.table, input.column, input.tags, input.maskFnId, catalog)
+            key to input
         }
         // Written in a canonical order, not the caller's: each upsert row-locks its classification, so
         // two overlapping batches submitted in opposite orders would deadlock and one would die with an
         // internal error. A total order over the key means concurrent batches queue instead.
-        val written = resolved.sortedWith(compareBy({ it.catalog }, { it.schema }, { it.table }, { it.column }))
-            .map { input -> store.upsertClassification(datasource.id, input, connection) }
+        val written = resolved.sortedWith(compareBy({ it.first.catalog }, { it.first.schema }, { it.first.table }, { it.first.column }))
+            .map { (key, input) -> store.upsertClassification(datasource.id, key, input.tags, input.maskFnId, connection) }
         recordDatasource(
             connection, actor, datasource.name,
             "tag ${written.size} columns of '${datasource.name}' [${written.joinToString(", ") { it.path() }}]",
@@ -326,9 +325,9 @@ class DatasourceManagementService(
         required("table", table)
         required("column", column)
         val datasource = store.get(datasourceId, connection) ?: notFound("datasource")
-        val resolvedSchema = schema ?: store.defaultSchema(datasource.id, connection)
+        val resolvedSchema = schema ?: store.defaultSchemaIdentifier(datasource.id, connection)
             ?: throw ManagementException(ApiError("datasource.schema_required"))
-        clearResolved(datasource.name, datasource.id, resolvedSchema, table, column, actor, connection, datasource.requireCatalog(catalog))
+        clearResolved(datasource.name, datasource.id, datasource.columnKey(catalog, resolvedSchema, table, column), actor, connection)
     }
 
     fun clearColumnClassification(
@@ -343,24 +342,18 @@ class DatasourceManagementService(
         required("table", table)
         required("column", column)
         val datasource = datasource(datasourceName, connection)
-        val resolvedSchema = schema ?: store.defaultSchema(datasource.id, connection)
+        val resolvedSchema = schema ?: store.defaultSchemaIdentifier(datasource.id, connection)
             ?: throw ManagementException(ApiError("datasource.schema_required"))
-        return clearResolved(datasource.name, datasource.id, resolvedSchema, table, column, actor, connection, datasource.requireCatalog(catalog))
+        return clearResolved(datasource.name, datasource.id, datasource.columnKey(catalog, resolvedSchema, table, column), actor, connection)
     }
 
-    private fun clearResolved(
-        datasourceName: String,
-        datasourceId: Long,
-        schema: String,
-        table: String,
-        column: String,
-        actor: AuditActor,
-        c: Connection,
-        catalog: String,
-    ): DeleteResult {
-        val result = DeleteResult(store.deleteClassification(datasourceId, schema, table, column, c, catalog))
+    private fun clearResolved(datasourceName: String, datasourceId: Long, key: ColumnKey, actor: AuditActor, c: Connection): DeleteResult {
+        val result = DeleteResult(store.deleteClassification(datasourceId, key, c))
         if (result.deleted) {
-            recordColumn(c, actor, datasourceName, schema, table, column, "clear tags on $datasourceName.$schema.$table.$column")
+            recordColumn(
+                c, actor, datasourceName, key.schema, key.table, key.column,
+                "clear tags on $datasourceName.${key.schema}.${key.table}.${key.column}",
+            )
         }
         return result
     }

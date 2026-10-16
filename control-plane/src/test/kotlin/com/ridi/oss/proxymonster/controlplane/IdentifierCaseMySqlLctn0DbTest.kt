@@ -22,7 +22,6 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import org.junit.jupiter.api.BeforeAll
-import org.junit.jupiter.api.Disabled
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
 import kotlin.test.assertEquals
@@ -60,7 +59,6 @@ class IdentifierCaseMySqlLctn0DbTest {
     }
 
     @Test
-    @Disabled("pending-name-fix: classification column Email is stored as typed and never attaches to Users.email")
     fun `classifying Users_Email masks only the Users table`() = classifyUsersOnly("Email")
 
     @Test

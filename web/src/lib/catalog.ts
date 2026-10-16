@@ -14,6 +14,26 @@ export function schemaKey(catalog: string, schema: string): string {
   return JSON.stringify([catalog, schema]);
 }
 
+/** A browsed name as SQL identifier text, so the server keeps its exact spelling: Users -> "Users". */
+export function quoteIdentifier(datasource: Pick<Datasource, 'identifierQuote'>, name: string): string {
+  const q = datasource.identifierQuote;
+  return q + name.split(q).join(q + q) + q;
+}
+
+/** A browsed column as the classification API's identifier text. */
+export function classificationTarget(
+  datasource: Pick<Datasource, 'identifierQuote'>,
+  column: { catalog: string; schema?: string; table: string; column: string },
+) {
+  const quote = (name: string) => quoteIdentifier(datasource, name);
+  return {
+    catalog: quote(column.catalog),
+    schema: column.schema ? quote(column.schema) : undefined,
+    table: quote(column.table),
+    column: quote(column.column),
+  };
+}
+
 export function currentCatalog(datasource: Datasource | undefined): string | null {
   if (!datasource) return null;
   if (datasource.currentCatalog != null) return datasource.currentCatalog;

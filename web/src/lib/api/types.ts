@@ -131,6 +131,8 @@ export interface Datasource {
   advertiseWireTls?: boolean;
   /** Whether an editor session on it can set its default schema (Athena cannot). */
   defaultSchemaSettable?: boolean;
+  /** The engine's identifier quote. Classification names are SQL identifier text, so a browsed name is sent quoted. */
+  identifierQuote: string;
 }
 
 /**

@@ -66,6 +66,7 @@
   "datasource": {
     "table_introspection_failed": "Table introspection failed: {detail}",
     "schema_required": "A schema is required until the datasource is introspected (which captures a default schema).",
+    "case_mode_unknown": "Column names can't be resolved until the datasource is introspected (which reports lower_case_table_names).",
     "reserved_tag": "The tag \"{tag}\" is reserved for system classification and can't be set on a column.",
     "batch_too_large": "A batch may carry at most {max} columns.",
     "duplicate_column": "The column \"{column}\" appears more than once in this batch.",

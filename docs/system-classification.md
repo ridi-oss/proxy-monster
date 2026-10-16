@@ -239,11 +239,12 @@ matching keeps review diffs and overlap validation understandable.
 ### Identifier matching
 
 The classifier receives an already schema-resolved `(catalog, schema, object)`
-identity and compares it case-insensitively — an ASCII lower-case fold on both
-sides. System schemas and their objects are conventionally lower-case, and
-matching is scoped to the manifest's own schemas, so folding cannot catch a user
-object. Manifests may therefore store the canonical server spelling
-(`information_schema.USER_PRIVILEGES`) and still match a lower-cased identity.
+identity in the analyzer's canonical spelling and compares it exactly: under
+MySQL `lower_case_table_names=0` a database `SYS` is a user database, and a
+quoted Postgres function `"PG_READ_FILE"` is a user function, so folding either
+would give it the system tags. Manifest entries are lower-cased once at load, so
+a manifest may store the server spelling (`information_schema.USER_PRIVILEGES`)
+and still match the canonical identity.
 
 - A PostgreSQL manifest uses `catalog: "*"`, which matches any catalog:
   PostgreSQL system schemas are repeated inside each database and a query cannot

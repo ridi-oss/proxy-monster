@@ -52,6 +52,8 @@ class EngineDefinition internal constructor(
     fun isFixedSystemSchema(canonicalSchema: String): Boolean = go.schemaKind(canonicalSchema).fixedSystem
     /** [isFixedSystemSchema] plus the engine's ephemeral per-session schemas (Postgres pg_temp_*, pg_toast). */
     fun isSystemSchema(canonicalSchema: String): Boolean = go.schemaKind(canonicalSchema).system
+    /** True when [canonicalSchema] is the engine's session temp schema (Postgres pg_temp, pg_temp_3), compared exactly. */
+    fun isTempSchema(canonicalSchema: String): Boolean = go.schemaKind(canonicalSchema).temp
     /** The analyzer config for one statement decision, with the per-statement facts the proxy sent. */
     fun analyzerEngineConfig(datasource: Datasource, session: SessionObservation): PbEngineConfig =
         go.analyzerConfig(datasource.engineDatasource(), session)
@@ -118,6 +120,7 @@ fun Engine.catalogName(registeredDbName: String): String = definition.catalogNam
 fun Engine.defaultSchema(registeredDbName: String): String = definition.defaultSchema(registeredDbName)
 fun Engine.isFixedSystemSchema(canonicalSchema: String): Boolean = definition.isFixedSystemSchema(canonicalSchema)
 fun Engine.isSystemSchema(canonicalSchema: String): Boolean = definition.isSystemSchema(canonicalSchema)
+fun Engine.isTempSchema(canonicalSchema: String): Boolean = definition.isTempSchema(canonicalSchema)
 fun Engine.parseServerVersion(raw: String?): Pair<String?, Boolean> = definition.parseServerVersion(raw)
 fun Engine.functionCatalog(routines: Map<String, List<String>>, engineVersion: String?): FunctionCatalog =
     definition.functionCatalog(routines, engineVersion)

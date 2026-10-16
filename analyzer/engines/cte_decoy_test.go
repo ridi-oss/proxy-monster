@@ -49,7 +49,7 @@ func TestCteShadowsPhysicalDecoyMustDeny(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			res := analyzeProbe(t, &pb.AnalyzeRequest{
 				Sql:          tc.sql,
-				EngineConfig: &pb.EngineConfig{Engine: pb.Engine_MYSQL, EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(0)},
+				EngineConfig: &pb.EngineConfig{Engine: pb.Engine_MYSQL, Datasource: &pb.EngineDatasource{EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(0)}},
 				Namespace:    ns, Catalog: snapshot(cols),
 			})
 			caught := !res.Resolved

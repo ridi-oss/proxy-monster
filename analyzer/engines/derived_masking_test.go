@@ -28,7 +28,7 @@ func TestDerivedProjectionFacts(t *testing.T) {
 	}{
 		{
 			name: "mysql",
-			ec:   &pb.EngineConfig{Engine: pb.Engine_MYSQL, EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(1)},
+			ec:   &pb.EngineConfig{Engine: pb.Engine_MYSQL, Datasource: &pb.EngineDatasource{EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(1)}},
 			ns:   &pb.Namespace{Catalog: "def", SearchPath: []string{"app"}},
 			cols: []*pb.Column{
 				pbColumn("app", "users", "id", "BIGINT"),
@@ -179,7 +179,7 @@ func TestRedactableWhitelistGate(t *testing.T) {
 		ec             *pb.EngineConfig
 		ns             *pb.Namespace
 	}{
-		{"mysql", "def", "app", &pb.EngineConfig{Engine: pb.Engine_MYSQL, EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(1)}, &pb.Namespace{Catalog: "def", SearchPath: []string{"app"}}},
+		{"mysql", "def", "app", &pb.EngineConfig{Engine: pb.Engine_MYSQL, Datasource: &pb.EngineDatasource{EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(1)}}, &pb.Namespace{Catalog: "def", SearchPath: []string{"app"}}},
 		{"postgres", "acme", "public", &pb.EngineConfig{Engine: pb.Engine_POSTGRES}, &pb.Namespace{Catalog: "acme", SearchPath: []string{"public"}}},
 	} {
 		t.Run(e.name, func(t *testing.T) {

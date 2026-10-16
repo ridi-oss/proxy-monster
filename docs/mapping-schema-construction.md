@@ -123,8 +123,9 @@ Two rules the construction must hold:
   matching follows `@@lower_case_table_names` — mode `0` preserves
   case-sensitive identity, modes `1` and `2` compare through lowercase keys.
   goproxy normalizes catalog identities at introspection via
-  `NormalizeRelation`; the same canonical parts feed mapping construction,
-  analyzer output keys, and Kotlin catalog-key matching — not one lookup site.
+  `engines.MySQL.IntrospectedColumns`; the same canonical parts feed mapping
+  construction, analyzer output keys, and Kotlin catalog-key matching — not one
+  lookup site.
 
 ## Engine specifics
 

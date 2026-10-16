@@ -13,29 +13,61 @@ import (
 	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 )
 
-type postgresAnalyzer struct {
+var Postgres = &Engine{
+	WireName: "postgres", Proto: pb.Engine_POSTGRES, DefaultSchemaSettable: true,
+	DefaultProxyPort: 6432, DefaultTargetPort: 5433, IdentifierQuote: `"`, numberedPlaceholders: true,
+	BuiltinSchema:         SchemaName{"pg_catalog"},
+	systemSchemas:         schemas("pg_catalog", "information_schema"),
+	tempSchema:            SchemaName{"pg_temp"},
+	sessionSchemaPrefixes: schemas("pg_temp_", "pg_toast"),
+	// The database name is a connection parameter libpq matches exactly, not SQL text, so it is not folded.
+	catalogName:  func(registeredDbName string) CatalogName { return CatalogName{registeredDbName} },
+	introspected: postgresIntrospected,
+	dialect:      dialects.Postgres,
+	newSession:   newPostgresSession,
+	normalizeRules: func() normalizeRules {
+		d := dialects.Postgres()
+		return normalizeRules{dialect: d, wordDialect: d, foldIdentifiers: true}
+	},
+	foldColumn: func(name string) string { return name },
+	builtinFunctionRows: map[string][]string{
+		"pg_available_extension_versions": {"name", "version", "superuser", "trusted", "relocatable", "schema", "requires", "comment"},
+		"unnest":                          {"unnest"},
+	},
+	// RESET restores defaults; an unmodeled SHOW reads a GUC, not table data.
+	passthroughCommands: []string{"RESET", "SHOW"},
+	syntaxCalls:         []string{"array"},
+}
+
+// postgresIntrospected keeps catalog rows as they are: pg_catalog already holds the exact names.
+func postgresIntrospected(_ *dialects.Dialect, rows []*pb.Column) []ColumnName {
+	out := make([]ColumnName, len(rows))
+	for i, row := range rows {
+		out[i] = ColumnName{CatalogName{row.GetCatalog()}, SchemaName{row.GetSchema()}, row.GetTable(), row.GetColumn()}
+	}
+	return out
+}
+
+type postgresSession struct {
+	datasource                Datasource
 	dialect                   *dialects.Dialect
 	shadowedFunctions         map[string]bool
 	functionShadowingObserved bool
 	systemXIDVisible          bool
 }
 
-func postgresOpaqueDialect() *dialects.Dialect {
-	d, err := dialects.GetOrRaise("postgres, opaque_functions=true")
+func newPostgresSession(ds Datasource, observed *pb.SessionObservation) (session, error) {
+	d, err := dialects.GetOrRaise(ds.Dialect().SettingsString() + ", opaque_functions=true")
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
-	return d
-}
-
-func newPostgresAnalyzer(config *pb.EngineConfig) (*postgresAnalyzer, error) {
-	session := config.GetSession().GetPostgres()
+	session := observed.GetPostgres()
 	if !session.GetFunctionShadowingObserved() && len(session.GetShadowedFunctions()) != 0 {
 		return nil, fmt.Errorf("shadowedFunctions requires an observed function-shadowing context")
 	}
 	shadowed := make(map[string]bool, len(session.GetShadowedFunctions()))
 	for _, name := range session.GetShadowedFunctions() {
-		if name == "" || name != strings.ToLower(name) {
+		if name == "" {
 			return nil, fmt.Errorf("shadowedFunctions contains invalid function name %q", name)
 		}
 		if shadowed[name] {
@@ -43,117 +75,59 @@ func newPostgresAnalyzer(config *pb.EngineConfig) (*postgresAnalyzer, error) {
 		}
 		shadowed[name] = true
 	}
-	return &postgresAnalyzer{
-		dialect:                   postgresOpaqueDialect(),
+	return &postgresSession{
+		datasource:                ds,
+		dialect:                   d,
 		shadowedFunctions:         shadowed,
 		functionShadowingObserved: session.GetFunctionShadowingObserved(),
 		systemXIDVisible:          session.GetSystemXidVisible(),
 	}, nil
 }
 
-func (e *postgresAnalyzer) WireName() string { return "postgres" }
-
-func (e *postgresAnalyzer) PrepareStatement(root exp.Expression) (exp.Expression, bool, *pb.StatementFacts, error) {
+func (e *postgresSession) PrepareStatement(root exp.Expression) (exp.Expression, bool, *pb.StatementFacts, error) {
 	return root, false, nil, nil
 }
 
-func (e *postgresAnalyzer) FinishSubmission(exp.Expression) bool { return false }
+func (e *postgresSession) FinishSubmission(exp.Expression) bool { return false }
 
-func (e *postgresAnalyzer) StampSubmission(*pb.StatementFacts) {}
+func (e *postgresSession) StampSubmission(*pb.StatementFacts) {}
 
-func (e *postgresAnalyzer) Dialect() *dialects.Dialect { return e.dialect }
+func (e *postgresSession) Datasource() Datasource { return e.datasource }
 
-// PostgreSQL does not fold the introspected catalog: quoted and unquoted names can identify distinct
-// real columns, while query-side qualification already preserves quoted names and folds unquoted ones.
-func (e *postgresAnalyzer) NormalizeCatalogOnBuild() bool { return false }
+func (e *postgresSession) Dialect() *dialects.Dialect { return e.dialect }
 
-func (e *postgresAnalyzer) AllowsCrossCatalog() bool { return false }
-
-func (e *postgresAnalyzer) PreservesCatalogQualifier() bool { return false }
-
-func (e *postgresAnalyzer) ConfigureNamespace(opts *optimizer.QualifyOpts, namespace NamespaceConfig) {
+func (e *postgresSession) ConfigureNamespace(opts *optimizer.QualifyOpts, namespace NamespaceConfig) {
 	opts.SearchPath = namespace.SearchPath
-}
-
-func (e *postgresAnalyzer) BuiltinFunctionRow(name string) []string {
-	switch name {
-	case "pg_available_extension_versions":
-		return []string{"name", "version", "superuser", "trusted", "relocatable", "schema", "requires", "comment"}
-	case "unnest":
-		return []string{"unnest"}
-	default:
-		return nil
-	}
 }
 
 // A zero-argument builtin has one signature, so the earliest schema wins and pg_catalog first settles
 // it. unnest is polymorphic: trusted only when the session's namespace probe ran and listed no user unnest.
-func (e *postgresAnalyzer) BareCallIsBuiltin(name string) bool {
+func (e *postgresSession) BareCallIsBuiltin(name string) bool {
 	if name != "unnest" {
 		return true
 	}
 	return e.functionShadowingObserved && !e.shadowedFunctions[name]
 }
 
-func (e *postgresAnalyzer) PostgresSystemXIDVisible() bool { return e.systemXIDVisible }
-
-func (e *postgresAnalyzer) FoldColumn(column string) string { return column }
-
-// PostgreSQL places session-temporary objects in pg_temp (a per-backend alias for the numbered
-// pg_temp_<n> temp schema), so a DDL target there is session-local, not catalog-changing. Read off the
-// already-folded spelling (EmitFacts normalizes the statement's identifiers up front, quote-aware), so
-// an unquoted pg_temp/PG_TEMP matches while a quoted "PG_TEMP" — a distinct case-sensitive user schema —
-// does not. A raw strings.ToLower here would wrongly conflate the two and mis-fold non-ASCII.
-func (e *postgresAnalyzer) IsTempSchema(schema exp.Expression) bool {
-	if schema == nil {
-		return false
-	}
-	name := schema.Name()
-	return name == "pg_temp" || strings.HasPrefix(name, "pg_temp_")
-}
-
-// pg_catalog is PostgreSQL's system schema: a call qualified by it is a builtin, so it carries no
-// unclassified Function grant. Only a single bare identifier qualifies — a quoted "PG_CATALOG" keeps its
-// case and is a DISTINCT user schema PostgreSQL's case-sensitive `pg_` reservation allows to exist, so a
-// user function there must not inherit a builtin's pass.
-func (e *postgresAnalyzer) IsTrustedSystemQualifier(qualifier exp.Expression) bool {
-	if qualifier == nil || qualifier.Kind() != exp.KindIdentifier {
-		return false
-	}
-	return qualifier.Name() == "pg_catalog"
-}
-
 // PostgreSQL has no relay rewrite: client_encoding is handled on the wire, not by an analyzer rewrite,
 // so there is nothing to rewrite here.
-func (e *postgresAnalyzer) RewriteStatement(exp.Expression) string { return "" }
+func (e *postgresSession) RewriteStatement(exp.Expression) string { return "" }
 
-// A statement that degrades to an unstructured Command on PostgreSQL can only be a benign
-// session/config form: RESET restores defaults (de-escalation), an unmodeled SHOW is a read-only
-// GUC read (no table data). Everything else stays fail-closed at the caller.
-func (e *postgresAnalyzer) CommandPassthrough(command string) bool {
-	return command == "RESET" || command == "SHOW"
-}
-
-func (e *postgresAnalyzer) ShowUtilityCommand(root exp.Expression) string {
+func (e *postgresSession) ShowUtilityCommand(root exp.Expression) string {
 	return showUtilityCommand(root)
 }
 
-// PostgreSQL allows duplicate OUTPUT labels; only a reference to one is ambiguous.
-func (e *postgresAnalyzer) RejectsDuplicateDerivedOutputLabels() bool { return false }
-
-func (e *postgresAnalyzer) RightJoinStarOrder() starOrder { return starOrderCommonLeftRight }
-
-func (e *postgresAnalyzer) SystemSchemaFirst(searchPath []string) bool {
+func (e *postgresSession) SystemSchemaFirst(searchPath []string) bool {
 	return postgresCatalogFirstAfterTempSchemas(searchPath)
 }
 
-func (e *postgresAnalyzer) IsSafeTypeReference(dt, kind exp.Expression, namespace NamespaceConfig) bool {
+func (e *postgresSession) IsSafeTypeReference(dt, kind exp.Expression, namespace NamespaceConfig) bool {
 	return e.isSafeXIDType(dt, kind, namespace)
 }
 
 // `'1'::pg_catalog.xid` is safe. Bare `'1'::xid` is safe only when pg_catalog is first on search_path
 // (after pg_temp) and the proxy saw pg_catalog.xid visible, so no user type can shadow it. `xid(4)` never.
-func (e *postgresAnalyzer) isSafeXIDType(dt, kind exp.Expression, namespace NamespaceConfig) bool {
+func (e *postgresSession) isSafeXIDType(dt, kind exp.Expression, namespace NamespaceConfig) bool {
 	if kind == nil || len(dt.Expressions()) != 0 {
 		return false
 	}
@@ -174,21 +148,21 @@ func (e *postgresAnalyzer) isSafeXIDType(dt, kind exp.Expression, namespace Name
 		return false
 	}
 	if qualifier != nil {
-		return e.IsTrustedSystemQualifier(qualifier)
+		return e.datasource.isBuiltinQualifier(qualifier)
 	}
-	return e.PostgresSystemXIDVisible() && postgresCatalogFirstAfterTempSchemas(namespace.SearchPath)
+	return e.systemXIDVisible && postgresCatalogFirstAfterTempSchemas(namespace.SearchPath)
 }
 
 // PostgreSQL names an unaliased projection per parse_target.c FigureColname; a call is labeled by
 // its WRITTEN function name, read from the projection's parse-time SpanText.
-func (e *postgresAnalyzer) NativeOutputLabel(projection, query exp.Expression) (string, bool) {
+func (e *postgresSession) NativeOutputLabel(projection, query exp.Expression) (string, bool) {
 	return nativeOutputLabel(projection, query, e, 0)
 }
 
 // PostgreSQL adds a failed write's WHOLE target row to the template: `INSERT INTO users (id) …` can fail
 // with `DETAIL: Failing row contains (1, 010-1234-5678, …)` — columns the statement never named. If the
 // row cannot be enumerated, an unresolvable sentinel key emits so the control-plane fails closed.
-func (e *postgresAnalyzer) DiagnosticLeakKeys(report ProbeResult, qualifySchema schema.Schema) map[string]bool {
+func (e *postgresSession) DiagnosticLeakKeys(report ProbeResult, qualifySchema schema.Schema) map[string]bool {
 	keys := referencedColumnKeys(report)
 	if !report.IsWrite || report.WriteTarget == nil {
 		return keys
@@ -223,8 +197,8 @@ func (e *postgresAnalyzer) DiagnosticLeakKeys(report ProbeResult, qualifySchema 
 // unaliased output, with the no-name fallback applied. query is the SELECT the projection belongs
 // to, for resolving references to its derived sources. ok=false means the label is unknowable —
 // the caller must not stamp.
-func nativeOutputLabel(node exp.Expression, query exp.Expression, eng analyzer, depth int) (string, bool) {
-	name, strength, ok := figureLabel(node, query, eng, depth)
+func nativeOutputLabel(node exp.Expression, query exp.Expression, sess session, depth int) (string, bool) {
+	name, strength, ok := figureLabel(node, query, sess, depth)
 	if !ok {
 		return "", false
 	}
@@ -237,7 +211,7 @@ func nativeOutputLabel(node exp.Expression, query exp.Expression, eng analyzer, 
 // figureLabel mirrors PostgreSQL's FigureColnameInternal: (label, strength, resolvable) where
 // strength 0 = no name (caller falls back to ?column?), 1 = weak (a cast may override it),
 // 2 = strong.
-func figureLabel(node exp.Expression, query exp.Expression, eng analyzer, depth int) (string, int, bool) {
+func figureLabel(node exp.Expression, query exp.Expression, sess session, depth int) (string, int, bool) {
 	if node == nil || depth > 20 {
 		return "", 0, false
 	}
@@ -248,7 +222,7 @@ func figureLabel(node exp.Expression, query exp.Expression, eng analyzer, depth 
 		// synthetic, so resolve through to the defining expression.
 		if table := node.TableName(); table != "" && syntheticLabelPattern.MatchString(node.Name()) {
 			if inner, innerSelect := derivedSourceProjection(query, table, node.Name()); inner != nil {
-				return figureProjectionLabel(inner, innerSelect, eng, depth+1)
+				return figureProjectionLabel(inner, innerSelect, sess, depth+1)
 			}
 			return "", 0, false
 		}
@@ -262,12 +236,12 @@ func figureLabel(node exp.Expression, query exp.Expression, eng analyzer, depth 
 		}
 		return "", 0, false
 	case exp.KindParen, exp.KindCollate:
-		return figureLabel(node.This(), query, eng, depth+1)
+		return figureLabel(node.This(), query, sess, depth+1)
 	case exp.KindBracket:
 		// Indirection keeps the base expression's label: `(array[1,2])[1]` is `array`.
-		return figureLabel(node.This(), query, eng, depth+1)
+		return figureLabel(node.This(), query, sess, depth+1)
 	case exp.KindCast, exp.KindTryCast:
-		name, strength, ok := figureLabel(node.This(), query, eng, depth+1)
+		name, strength, ok := figureLabel(node.This(), query, sess, depth+1)
 		if ok && strength == 2 {
 			return name, 2, true
 		}
@@ -277,15 +251,15 @@ func figureLabel(node exp.Expression, query exp.Expression, eng analyzer, depth 
 		return name, strength, ok
 	case exp.KindCase:
 		if defresult, ok := node.Arg("default").(exp.Expression); ok && defresult != nil {
-			if name, strength, ok := figureLabel(defresult, query, eng, depth+1); ok && strength == 2 {
+			if name, strength, ok := figureLabel(defresult, query, sess, depth+1); ok && strength == 2 {
 				return name, 2, true
 			}
 		}
 		return "case", 1, true
 	case exp.KindSubquery:
-		return subqueryLabel(node, eng, depth)
+		return subqueryLabel(node, sess, depth)
 	case exp.KindWindow, exp.KindFilter:
-		return figureLabel(node.This(), query, eng, depth+1)
+		return figureLabel(node.This(), query, sess, depth+1)
 	case exp.KindAtTimeZone:
 		return "timezone", 2, true
 	case exp.KindTrim:
@@ -302,7 +276,7 @@ func figureLabel(node exp.Expression, query exp.Expression, eng analyzer, depth 
 	}
 	if node.Kind() == exp.KindAnonymous {
 		// An Anonymous call keeps the client's spelling as its AST name — safe without a span.
-		if name := normalizedFunctionName(node, eng); name != "" {
+		if name := normalizedFunctionName(node, sess); name != "" {
 			return name, 2, true
 		}
 		return "", 0, false
@@ -341,7 +315,7 @@ func writtenFunctionLabel(node exp.Expression) (string, int, bool) {
 
 // figureProjectionLabel is the label of one projection inside a derived source: its resname (the
 // explicit alias when real) or FigureColname of its expression.
-func figureProjectionLabel(projection exp.Expression, query exp.Expression, eng analyzer, depth int) (string, int, bool) {
+func figureProjectionLabel(projection exp.Expression, query exp.Expression, sess session, depth int) (string, int, bool) {
 	if projection == nil || depth > 20 {
 		return "", 0, false
 	}
@@ -349,13 +323,13 @@ func figureProjectionLabel(projection exp.Expression, query exp.Expression, eng 
 		if alias := projection.Alias(); alias != "" && !syntheticLabelPattern.MatchString(alias) {
 			return alias, 2, true
 		}
-		return figureLabel(projection.This(), query, eng, depth+1)
+		return figureLabel(projection.This(), query, sess, depth+1)
 	}
-	return figureLabel(projection, query, eng, depth+1)
+	return figureLabel(projection, query, sess, depth+1)
 }
 
 // subqueryLabel is a scalar subquery's label: its single output column's resname.
-func subqueryLabel(subquery exp.Expression, eng analyzer, depth int) (string, int, bool) {
+func subqueryLabel(subquery exp.Expression, sess session, depth int) (string, int, bool) {
 	sel := leftmostSelect(subquery.This())
 	if sel == nil {
 		return "", 0, false
@@ -364,7 +338,7 @@ func subqueryLabel(subquery exp.Expression, eng analyzer, depth int) (string, in
 	if len(projections) != 1 {
 		return "", 0, false
 	}
-	name, strength, ok := figureProjectionLabel(projections[0], sel, eng, depth+1)
+	name, strength, ok := figureProjectionLabel(projections[0], sel, sess, depth+1)
 	if !ok || strength == 0 || name == "" {
 		return "", 0, ok
 	}

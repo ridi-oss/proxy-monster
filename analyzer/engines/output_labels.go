@@ -39,7 +39,7 @@ func hasSyntheticAlias(root exp.Expression) bool {
 // references it through the source alias. A SELECT whose list contains a star is never stamped —
 // the star hides labels this pass cannot count. A label the engine cannot compute is left to
 // Qualify (its synthetic name may then surface; restoreRelayOutputLabels repairs display labels).
-func stampNativeOutputLabels(root exp.Expression, eng analyzer) error {
+func stampNativeOutputLabels(root exp.Expression, sess session) error {
 	derived := derivedBodySelects(root)
 	for _, sel := range root.FindAll(exp.KindSelect) {
 		projections := sel.Selects()
@@ -61,15 +61,15 @@ func stampNativeOutputLabels(root exp.Expression, eng analyzer) error {
 		for _, projection := range projections {
 			if projection.Kind() == exp.KindAlias || projection.Kind() == exp.KindColumn || projectionIsStar(projection) {
 				if name := projection.AliasOrName(); name != "" {
-					inUse[eng.FoldColumn(name)] = append(inUse[eng.FoldColumn(name)], name)
+					inUse[sess.Datasource().foldColumn(name)] = append(inUse[sess.Datasource().foldColumn(name)], name)
 				}
 				continue
 			}
-			label, ok := eng.NativeOutputLabel(projection, sel)
+			label, ok := sess.NativeOutputLabel(projection, sel)
 			if !ok || label == "" {
 				continue
 			}
-			inUse[eng.FoldColumn(label)] = append(inUse[eng.FoldColumn(label)], label)
+			inUse[sess.Datasource().foldColumn(label)] = append(inUse[sess.Datasource().foldColumn(label)], label)
 			stamps = append(stamps, stamp{projection, label})
 		}
 
@@ -78,11 +78,11 @@ func stampNativeOutputLabels(root exp.Expression, eng analyzer) error {
 				if len(names) < 2 {
 					continue
 				}
-				if eng.RejectsDuplicateDerivedOutputLabels() {
+				if sess.Datasource().rejectsDuplicateDerivedOutputLabels {
 					return fmt.Errorf("duplicate column name '%s' in derived table", names[0])
 				}
 				// Real PostgreSQL rejects only a reference to the duplicated label.
-				if alias != "" && referencesLabel(root, sel, alias, folded, eng) {
+				if alias != "" && referencesLabel(root, sel, alias, folded, sess) {
 					return fmt.Errorf("column reference %q is ambiguous", names[0])
 				}
 			}
@@ -93,7 +93,7 @@ func stampNativeOutputLabels(root exp.Expression, eng analyzer) error {
 
 		stamped := map[exp.Expression]string{}
 		for _, s := range stamps {
-			if len(inUse[eng.FoldColumn(s.label)]) > 1 {
+			if len(inUse[sess.Datasource().foldColumn(s.label)]) > 1 {
 				continue
 			}
 			stamped[s.projection] = s.label
@@ -134,7 +134,7 @@ func derivedBodySelects(root exp.Expression) map[exp.Expression]string {
 
 // referencesLabel reports whether any column outside body references alias.label (folded per the
 // engine). Alias shadowing in unrelated scopes can over-match — that only fails closed.
-func referencesLabel(root, body exp.Expression, alias, foldedLabel string, eng analyzer) bool {
+func referencesLabel(root, body exp.Expression, alias, foldedLabel string, sess session) bool {
 	inBody := map[exp.Expression]bool{}
 	for _, node := range body.Walk(true) {
 		inBody[node] = true
@@ -143,7 +143,7 @@ func referencesLabel(root, body exp.Expression, alias, foldedLabel string, eng a
 		if inBody[column] {
 			continue
 		}
-		if eng.FoldColumn(column.TableName()) == eng.FoldColumn(alias) && eng.FoldColumn(column.Name()) == foldedLabel {
+		if sess.Datasource().foldColumn(column.TableName()) == sess.Datasource().foldColumn(alias) && sess.Datasource().foldColumn(column.Name()) == foldedLabel {
 			return true
 		}
 	}
@@ -155,7 +155,7 @@ func referencesLabel(root, body exp.Expression, alias, foldedLabel string, eng a
 // stampNativeOutputLabels had to skip (a PG duplicate is legal as OUTPUT: two `?column?`s). A
 // set-operation root restores its leftmost branch, the label-bearing one. Only the top-level
 // alias is touched; a label something still references is left alone.
-func restoreRelayOutputLabels(root exp.Expression, eng analyzer) bool {
+func restoreRelayOutputLabels(root exp.Expression, sess session) bool {
 	sel := leftmostSelect(root)
 	if sel == nil {
 		return false
@@ -175,7 +175,7 @@ func restoreRelayOutputLabels(root exp.Expression, eng analyzer) bool {
 		if projection.Kind() == exp.KindAlias {
 			expression = projection.This()
 		}
-		native, ok := eng.NativeOutputLabel(expression, sel)
+		native, ok := sess.NativeOutputLabel(expression, sel)
 		if !ok || native == "" {
 			continue
 		}
@@ -192,10 +192,10 @@ func projectionIsStar(projection exp.Expression) bool {
 
 // normalizedFunctionName is a call's name folded through the dialect's quote-aware
 // NormalizeIdentifier — an unquoted spelling lowercases, a quoted one keeps its case.
-func normalizedFunctionName(function exp.Expression, eng analyzer) string {
+func normalizedFunctionName(function exp.Expression, sess session) string {
 	if identifier, ok := function.Arg("this").(exp.Expression); ok && identifier.Kind() == exp.KindIdentifier {
 		identifier = identifier.Copy()
-		eng.Dialect().NormalizeIdentifier(identifier)
+		sess.Dialect().NormalizeIdentifier(identifier)
 		return identifier.Name()
 	}
 	return strings.ToLower(function.Name())

@@ -17,8 +17,7 @@ func TestAnalyzeStatementDecodesCatalogAndNamespace(t *testing.T) {
 		return &pb.AnalyzeRequest{
 			Sql: "SELECT id FROM users",
 			EngineConfig: &pb.EngineConfig{
-				Engine: pb.Engine_MYSQL, EngineVersion: "8.0.44",
-				MysqlLowerCaseTableNames: proto.Int32(0),
+				Engine: pb.Engine_MYSQL, Datasource: &pb.EngineDatasource{EngineVersion: "8.0.44", MysqlLowerCaseTableNames: proto.Int32(0)},
 			},
 			Namespace: &pb.Namespace{Catalog: "def", SearchPath: []string{"acme"}},
 			Catalog: snapshot([]*pb.Column{
@@ -57,8 +56,7 @@ func TestAnalyzeStatementDecodesCatalogAndNamespace(t *testing.T) {
 func TestAnalyzeStatementSafeIsTotal(t *testing.T) {
 	catalog := []*pb.Column{pbColumn("acme", "users", "id", "BIGINT")}
 	engine := &pb.EngineConfig{
-		Engine: pb.Engine_MYSQL, EngineVersion: "8.0.44",
-		MysqlLowerCaseTableNames: proto.Int32(0),
+		Engine: pb.Engine_MYSQL, Datasource: &pb.EngineDatasource{EngineVersion: "8.0.44", MysqlLowerCaseTableNames: proto.Int32(0)},
 	}
 	namespace := &pb.Namespace{Catalog: "def", SearchPath: []string{"acme"}}
 

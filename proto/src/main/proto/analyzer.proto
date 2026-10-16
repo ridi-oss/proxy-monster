@@ -78,26 +78,25 @@ message Namespace {
   reserved "mysql_version_id";
 }
 
-// Every engine-specific analysis setting, grouped so the analyzer builds its sqlglot-go Dialect once
-// from one input. [engine] reuses proxymonster.v1.Engine (controlplane.proto) — the same enum the
-// proxy registers with — rather than a second, parallel MySQL/Postgres type. The caller (control-plane)
-// forwards this as-is from what the proxy already reported at introspection time; it does not
-// re-derive or re-parse any of these values itself.
+// Every engine-specific analysis setting: the engine, what its datasource reported, and what the proxy
+// observed on the session. The analyzer builds its sqlglot-go Dialect once from it.
 message EngineConfig {
   proxymonster.v1.Engine engine = 1;
-  // The target server's version as a clean major.minor[.patch] string. Required and validated for
-  // MySQL: analysis fails closed at VALIDATE without a parseable version. PostgreSQL carries the
-  // value for the wire contract but does not currently use it during analysis.
-  string engine_version = 2;
-  // MySQL's server-level lower_case_table_names setting (0..2), required for MySQL. Absent for
-  // PostgreSQL, which has no equivalent setting.
-  optional int32 mysql_lower_case_table_names = 3;
-  reserved 4 to 7;
-  reserved "mysql_ansi_quotes", "postgres_shadowed_functions", "postgres_function_shadowing_observed",
-    "postgres_system_xid_visible";
+  EngineDatasource datasource = 9;
   // What the proxy observed on the target session right before this statement. Forwarded by the
   // control plane exactly as the proxy sent it on DecisionRequest.session.
   SessionObservation session = 8;
+  reserved 2 to 7;
+  reserved "engine_version", "mysql_lower_case_table_names", "mysql_ansi_quotes", "postgres_shadowed_functions",
+    "postgres_function_shadowing_observed", "postgres_system_xid_visible";
+}
+
+// What the engine reads from a registered datasource, as its target reported it at introspection.
+message EngineDatasource {
+  // A clean major.minor[.patch]; MySQL fails closed without one.
+  string engine_version = 1;
+  // MySQL's server-level lower_case_table_names (0..2); required for MySQL, unset for the others.
+  optional int32 mysql_lower_case_table_names = 2;
 }
 
 // Per-statement facts from the proxy that change how the analyzer parses or resolves a statement: what
@@ -164,6 +163,24 @@ message SplitRequest {
 message SplitResponse {
   bool ok = 1;
   repeated string statements = 2;
+}
+
+// Column names to put in the engine's canonical spelling, the one the analyzer keys its catalog on. Only
+// catalog, schema, table and column are read. ParseColumns reads them as SQL identifiers a person typed;
+// IntrospectedColumns as names the engine's own catalog reported.
+message ColumnNamesRequest {
+  proxymonster.v1.Engine engine = 1;
+  reserved 2;
+  reserved "mysql_lower_case_table_names";
+  EngineDatasource datasource = 4;
+  repeated Column columns = 3;
+}
+
+// [columns] answers the request's columns in order; [ok] false leaves it empty (unknown engine, a name that
+// is not an identifier).
+message ColumnNamesResponse {
+  bool ok = 1;
+  repeated Column columns = 2;
 }
 
 // ---- response side ----

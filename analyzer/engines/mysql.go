@@ -14,19 +14,89 @@ import (
 	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 )
 
-type mysqlAnalyzer struct {
-	dialect *dialects.Dialect
+var MySQL = &Engine{
+	WireName: "mysql", Proto: pb.Engine_MYSQL, DefaultSchemaSettable: true,
+	DefaultProxyPort: 6033, DefaultTargetPort: 3307, IdentifierQuote: "`",
+	systemSchemas: schemas("information_schema", "mysql", "performance_schema", "sys"),
+	// MySQL has one catalog, def, whatever the database.
+	catalogName:       func(string) CatalogName { return CatalogName{"def"} },
+	introspected:      mysqlIntrospected,
+	dialect:           dialects.MySQL,
+	datasourceDialect: mysqlDialect,
+	newSession:        newMySQLSession,
+	normalizeRules: func() normalizeRules {
+		d := dialects.MySQL()
+		return normalizeRules{dialect: d, wordDialect: d, rejectExecutableComments: true}
+	},
+	showsWithoutSession:                 true,
+	foldColumn:                          mysqlColumn,
+	normalizeCatalogOnBuild:             true,
+	rejectsDuplicateDerivedOutputLabels: true,
+	rightJoinStarOrder:                  starOrderCommonRightLeft,
 }
 
-func newMySQLAnalyzer(config *pb.EngineConfig) (*mysqlAnalyzer, error) {
-	if config.MysqlLowerCaseTableNames == nil {
-		return nil, fmt.Errorf("mysqlLowerCaseTableNames is required for mysql")
+// mysqlDialect folds identifiers as lower_case_table_names does, with MySQL's utf8mb3_general_ci map: under 0
+// table and database names keep their case and everything else folds; under 1 and 2 everything folds. Guessing an
+// unreported value would key names the analyzer never matches.
+func mysqlDialect(reported *pb.EngineDatasource) (*dialects.Dialect, error) {
+	if reported == nil || reported.MysqlLowerCaseTableNames == nil {
+		return nil, fmt.Errorf("lower_case_table_names is required for mysql")
 	}
-	lowerCaseTableNames := int(config.GetMysqlLowerCaseTableNames())
-	if lowerCaseTableNames < 0 || lowerCaseTableNames > 2 {
-		return nil, fmt.Errorf("mysqlLowerCaseTableNames must be 0, 1, or 2")
+	n := reported.GetMysqlLowerCaseTableNames()
+	if n < 0 || n > 2 {
+		return nil, fmt.Errorf("lower_case_table_names must be 0, 1 or 2, not %d", n)
 	}
-	versionID := mysqlVersionID(config.GetEngineVersion())
+	d := dialects.MySQL()
+	if n == 0 {
+		d.NormalizationStrategy = dialects.MySQLCaseSensitiveTableNames
+	} else {
+		d.NormalizationStrategy = dialects.MySQLCaseInsensitive
+	}
+	return d, nil
+}
+
+// mysqlColumn folds a column name: MySQL compares columns case-insensitively whatever lower_case_table_names is.
+func mysqlColumn(name string) string { return mysqlColumnDialect.FoldIdentifierName(name, false) }
+
+var mysqlColumnDialect = func() *dialects.Dialect {
+	one := int32(1)
+	d, _ := mysqlDialect(&pb.EngineDatasource{MysqlLowerCaseTableNames: &one})
+	return d
+}()
+
+// mysqlIntrospected folds catalog rows by lower_case_table_names: under 0, App.Users.ID -> App.Users.id; under
+// 1 or 2, app.users.id. Each distinct (schema, table) is folded once.
+func mysqlIntrospected(d *dialects.Dialect, rows []*pb.Column) []ColumnName {
+	type relation struct{ schema, table string }
+	relations := make(map[relation]relation)
+	out := make([]ColumnName, len(rows))
+	for i, row := range rows {
+		key := relation{row.GetSchema(), row.GetTable()}
+		canonical, ok := relations[key]
+		if !ok {
+			// NormalizeIdentifier reads each identifier's parent to tell a table or schema name from a column.
+			schemaID := exp.Identifier(exp.Args{"this": key.schema, "quoted": false})
+			tableID := exp.Identifier(exp.Args{"this": key.table, "quoted": false})
+			exp.Table(exp.Args{"this": tableID, "schema": schemaID})
+			d.NormalizeIdentifier(schemaID)
+			d.NormalizeIdentifier(tableID)
+			canonical = relation{schemaID.Name(), tableID.Name()}
+			relations[key] = canonical
+		}
+		out[i] = ColumnName{CatalogName{row.GetCatalog()}, SchemaName{canonical.schema}, canonical.table, mysqlColumn(row.GetColumn())}
+	}
+	return out
+}
+
+type mysqlSession struct {
+	datasource Datasource
+	dialect    *dialects.Dialect
+}
+
+func (e *mysqlSession) Datasource() Datasource { return e.datasource }
+
+func newMySQLSession(ds Datasource, observed *pb.SessionObservation) (session, error) {
+	versionID := mysqlVersionID(ds.version)
 	if versionID <= 0 {
 		return nil, fmt.Errorf("engine version is required for mysql")
 	}
@@ -37,67 +107,40 @@ func newMySQLAnalyzer(config *pb.EngineConfig) (*mysqlAnalyzer, error) {
 	// (applyMySQLAnsiQuotes — `"` becomes a quoted-identifier delimiter, not a string), which only runs at
 	// resolution time. When the target DB's live sql_mode carries ANSI_QUOTES, the analyzer then reads a
 	// masked column quoted with `"` as the real column and still masks it (instead of the proxy having to
-	// fail the connection closed). mysqlNormalizationDialect only ever sets the strategy, so its
+	// fail the connection closed). ds.Dialect only ever sets the strategy, so its
 	// SettingsString round-trips losslessly as the base.
-	settings := mysqlNormalizationDialect(lowerCaseTableNames).SettingsString() +
+	settings := ds.Dialect().SettingsString() +
 		fmt.Sprintf(", mysql_version=%d, opaque_functions=true", versionID)
-	if config.GetSession().GetMysql().GetAnsiQuotes() {
+	if observed.GetMysql().GetAnsiQuotes() {
 		settings += ", mysql_ansi_quotes=true"
 	}
 	dialect, err := dialects.GetOrRaise(settings)
 	if err != nil {
 		return nil, fmt.Errorf("build mysql dialect: %w", err)
 	}
-	return &mysqlAnalyzer{dialect: dialect}, nil
+	return &mysqlSession{datasource: ds, dialect: dialect}, nil
 }
 
-func (e *mysqlAnalyzer) WireName() string { return "mysql" }
-
-func (e *mysqlAnalyzer) PrepareStatement(root exp.Expression) (exp.Expression, bool, *pb.StatementFacts, error) {
+func (e *mysqlSession) PrepareStatement(root exp.Expression) (exp.Expression, bool, *pb.StatementFacts, error) {
 	return root, false, nil, nil
 }
 
-func (e *mysqlAnalyzer) FinishSubmission(exp.Expression) bool { return false }
+func (e *mysqlSession) FinishSubmission(exp.Expression) bool { return false }
 
-func (e *mysqlAnalyzer) StampSubmission(*pb.StatementFacts) {}
+func (e *mysqlSession) StampSubmission(*pb.StatementFacts) {}
 
-func (e *mysqlAnalyzer) Dialect() *dialects.Dialect { return e.dialect }
+func (e *mysqlSession) Dialect() *dialects.Dialect { return e.dialect }
 
-// MySQL's catalog needs build-time folding: columns are always case-insensitive, while relation
-// spelling follows lower_case_table_names and the information_schema exception.
-func (e *mysqlAnalyzer) NormalizeCatalogOnBuild() bool { return true }
-
-func (e *mysqlAnalyzer) AllowsCrossCatalog() bool { return false }
-
-func (e *mysqlAnalyzer) PreservesCatalogQualifier() bool { return false }
-
-func (e *mysqlAnalyzer) ConfigureNamespace(opts *optimizer.QualifyOpts, namespace NamespaceConfig) {
+func (e *mysqlSession) ConfigureNamespace(opts *optimizer.QualifyOpts, namespace NamespaceConfig) {
 	opts.SearchPath = namespace.SearchPath
 }
 
-func (e *mysqlAnalyzer) BuiltinFunctionRow(string) []string { return nil }
-
-func (e *mysqlAnalyzer) BareCallIsBuiltin(string) bool { return false }
-
-func (e *mysqlAnalyzer) PostgresSystemXIDVisible() bool { return false }
-
-func (e *mysqlAnalyzer) FoldColumn(column string) string {
-	return e.dialect.FoldIdentifierName(column, false)
-}
-
-// MySQL has no temp-schema convention — temporary tables are marked by the TEMPORARY keyword (a
-// temporary arg / TemporaryProperty on the DDL), which isTemporaryDDL detects directly off the tree.
-func (e *mysqlAnalyzer) IsTempSchema(exp.Expression) bool { return false }
-
-// MySQL has no trusted system-schema qualifier: its system databases (mysql, information_schema,
-// performance_schema, sys) are access-controlled resources the system-classification manifest covers,
-// not a blanket pass for calls made under them.
-func (e *mysqlAnalyzer) IsTrustedSystemQualifier(exp.Expression) bool { return false }
+func (e *mysqlSession) BareCallIsBuiltin(string) bool { return false }
 
 // MySQL labels an unaliased computed projection with its verbatim source text (`1 +    1` keeps
 // its exact spacing; verified against MySQL 8.0), truncated to 255 runes as the server does for
 // implicit labels. Fails closed on an unstamped node (only parse-time projections carry text).
-func (e *mysqlAnalyzer) NativeOutputLabel(projection, _ exp.Expression) (string, bool) {
+func (e *mysqlSession) NativeOutputLabel(projection, _ exp.Expression) (string, bool) {
 	text, ok := projection.SpanText()
 	if !ok {
 		return "", false
@@ -114,7 +157,7 @@ func (e *mysqlAnalyzer) NativeOutputLabel(projection, _ exp.Expression) (string,
 // form is rewritten; a compound SET, GLOBAL/PERSIST scope, a same-named user variable, a qualified or
 // bogus-scoped target, or any non-NULL value is left untouched (and still fails closed at the wire session
 // invariant). Recognition is on the parsed AST, so every spelling MySQL accepts reduces to the same check.
-func (e *mysqlAnalyzer) RewriteStatement(root exp.Expression) string {
+func (e *mysqlSession) RewriteStatement(root exp.Expression) string {
 	if root.Kind() != exp.KindSet {
 		return ""
 	}
@@ -165,27 +208,18 @@ func (e *mysqlAnalyzer) RewriteStatement(root exp.Expression) string {
 
 // MySQL diagnostics echo only the operated value (`Truncated incorrect INTEGER value: '010-…'`) —
 // always an already-referenced column — and never dump unreferenced ones, so the template is the whole set.
-func (e *mysqlAnalyzer) DiagnosticLeakKeys(report ProbeResult, _ schema.Schema) map[string]bool {
+func (e *mysqlSession) DiagnosticLeakKeys(report ProbeResult, _ schema.Schema) map[string]bool {
 	return referencedColumnKeys(report)
 }
 
-// A statement that degrades to an unstructured Command is one the analyzer cannot vouch for on
-// MySQL (an unrecognized SHOW carries data; RESET MASTER/REPLICA is a privileged admin op).
-func (e *mysqlAnalyzer) CommandPassthrough(string) bool { return false }
-
-func (e *mysqlAnalyzer) ShowUtilityCommand(root exp.Expression) string {
+func (e *mysqlSession) ShowUtilityCommand(root exp.Expression) string {
 	return showUtilityCommand(root)
 }
 
-// MySQL rejects a derived-table/CTE body with duplicated output labels: ER_DUP_FIELDNAME.
-func (e *mysqlAnalyzer) RejectsDuplicateDerivedOutputLabels() bool { return true }
-
-func (e *mysqlAnalyzer) RightJoinStarOrder() starOrder { return starOrderCommonRightLeft }
-
 // MySQL has no search path; a bare name never resolves in a system schema.
-func (e *mysqlAnalyzer) SystemSchemaFirst([]string) bool { return false }
+func (e *mysqlSession) SystemSchemaFirst([]string) bool { return false }
 
-func (e *mysqlAnalyzer) IsSafeTypeReference(exp.Expression, exp.Expression, NamespaceConfig) bool {
+func (e *mysqlSession) IsSafeTypeReference(exp.Expression, exp.Expression, NamespaceConfig) bool {
 	return false
 }
 

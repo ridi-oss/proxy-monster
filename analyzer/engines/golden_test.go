@@ -37,7 +37,7 @@ func parityEngineConfig(t *testing.T, dialect string) *pb.EngineConfig {
 	t.Helper()
 	switch dialect {
 	case "mysql":
-		return &pb.EngineConfig{Engine: pb.Engine_MYSQL, EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(1)}
+		return &pb.EngineConfig{Engine: pb.Engine_MYSQL, Datasource: &pb.EngineDatasource{EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(1)}}
 	case "postgres":
 		return &pb.EngineConfig{Engine: pb.Engine_POSTGRES}
 	default:

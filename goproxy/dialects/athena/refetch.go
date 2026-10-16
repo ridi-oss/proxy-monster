@@ -98,7 +98,8 @@ func (r *refetcher) run(command *pb.Refetch) error {
 // fragmentColumns lists one database's columns; a database Glue does not know is an empty fragment, so a
 // statement naming it resolves fail-closed instead of erroring the connection.
 func (t *target) fragmentColumns(ctx context.Context, catalog, database string) ([]*enginepb.Column, error) {
-	columns, err := t.readColumns(ctx, catalog, database)
+	columns, skipped, err := t.readColumns(ctx, catalog, database)
+	warnSkippedRelations(skipped)
 	var metadata *types.MetadataException
 	if errors.As(err, &metadata) && strings.Contains(strings.ToLower(aws.ToString(metadata.Message)), "not found") {
 		return []*enginepb.Column{}, nil

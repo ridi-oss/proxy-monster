@@ -1,10 +1,15 @@
 package athena
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
+	"slices"
+	"strings"
 	"testing"
 )
 
@@ -61,20 +66,80 @@ func TestRepeatedMetadataTokenFailsInsteadOfReturningPartialCatalog(t *testing.T
 		w.Header().Set("Content-Type", "application/x-amz-json-1.1")
 		_, _ = io.WriteString(w, `{"TableMetadataList":[],"NextToken":"repeated"}`)
 	})
-	columns, err := target.readColumns(context.Background(), "external", "archive")
+	columns, _, err := target.readColumns(context.Background(), "external", "archive")
 	if err == nil || columns != nil || calls != 2 {
 		t.Fatalf("repeated token accepted: columns %v, err %v, calls %d", columns, err, calls)
 	}
 }
 
-func TestCatalogCannotSilentlyFlattenOrOmitUnresolvedViews(t *testing.T) {
-	target := testTarget(t, func(w http.ResponseWriter, request *http.Request) {
+func metadataTarget(t *testing.T, list string) *target {
+	return testTarget(t, func(w http.ResponseWriter, request *http.Request) {
 		w.Header().Set("Content-Type", "application/x-amz-json-1.1")
-		_, _ = io.WriteString(w, `{"TableMetadataList":[{"Name":"base","TableType":"EXTERNAL_TABLE","Columns":[{"Name":"email","Type":"string"}]},{"Name":"view","TableType":"VIRTUAL_VIEW","Columns":[{"Name":"aliased_secret","Type":"string"}]},{"Name":"unknown","Columns":[{"Name":"value","Type":"string"}]}]}`)
+		_, _ = io.WriteString(w, list)
 	})
-	columns, err := target.readColumns(context.Background(), "AwsDataCatalog", "example")
-	if err == nil || columns != nil {
-		t.Fatalf("unproved relation was flattened or silently omitted: %v, %v", columns, err)
+}
+
+func TestCatalogSkipsViewsAndUnknownTypesWithoutFlatteningTheirColumns(t *testing.T) {
+	target := metadataTarget(t, `{"TableMetadataList":[{"Name":"base","TableType":"EXTERNAL_TABLE","Columns":[{"Name":"email","Type":"string"}]},{"Name":"view","TableType":"VIRTUAL_VIEW","Columns":[{"Name":"aliased_secret","Type":"string"}]},{"Name":"unknown","Columns":[{"Name":"value","Type":"string"}]},{"Name":"managed","TableType":"MANAGED_TABLE","Columns":[{"Name":"id","Type":"int"}]}]}`)
+	columns, skipped, err := target.readColumns(context.Background(), "AwsDataCatalog", "example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tables := []string{}
+	for _, column := range columns {
+		tables = append(tables, column.Table+"."+column.Column)
+	}
+	if !slices.Equal(tables, []string{"base.email", "managed.id"}) {
+		t.Fatalf("catalog holds columns of an unproved relation: %v", tables)
+	}
+	if !slices.Equal(skipped, []string{"example.view", "example.unknown"}) {
+		t.Fatalf("skipped relations not reported: %v", skipped)
+	}
+}
+
+func TestCatalogStillRejectsMissingOrDuplicateRelationNames(t *testing.T) {
+	for name, list := range map[string]string{
+		"empty table name":      `{"TableMetadataList":[{"Name":"","TableType":"EXTERNAL_TABLE","Columns":[{"Name":"email","Type":"string"}]}]}`,
+		"empty view name":       `{"TableMetadataList":[{"Name":"","TableType":"VIRTUAL_VIEW"}]}`,
+		"duplicate table":       `{"TableMetadataList":[{"Name":"base","TableType":"EXTERNAL_TABLE","Columns":[{"Name":"email","Type":"string"}]},{"Name":"base","TableType":"EXTERNAL_TABLE","Columns":[{"Name":"email","Type":"string"}]}]}`,
+		"view shadows table":    `{"TableMetadataList":[{"Name":"base","TableType":"EXTERNAL_TABLE","Columns":[{"Name":"email","Type":"string"}]},{"Name":"base","TableType":"VIRTUAL_VIEW"}]}`,
+		"duplicate column name": `{"TableMetadataList":[{"Name":"base","TableType":"EXTERNAL_TABLE","Columns":[{"Name":"email","Type":"string"}],"PartitionKeys":[{"Name":"email","Type":"string"}]}]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			columns, skipped, err := metadataTarget(t, list).readColumns(context.Background(), "AwsDataCatalog", "example")
+			if err == nil || columns != nil || skipped != nil {
+				t.Fatalf("invalid metadata accepted: %v, %v, %v", columns, skipped, err)
+			}
+		})
+	}
+}
+
+func TestSkippedRelationWarningIsOneBoundedLine(t *testing.T) {
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	skipped := make([]string, skippedSampleSize*3)
+	for i := range skipped {
+		skipped[i] = fmt.Sprintf("example.view_%d", i)
+	}
+	warnSkippedRelations(skipped)
+	warnSkippedRelations(nil)
+
+	lines := strings.Split(strings.TrimSpace(logs.String()), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("want one warning, got %d: %s", len(lines), logs.String())
+	}
+	var entry struct {
+		Count  int      `json:"count"`
+		Sample []string `json:"sample"`
+	}
+	if err := json.Unmarshal([]byte(lines[0]), &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry.Count != len(skipped) || !slices.Equal(entry.Sample, skipped[:skippedSampleSize]) {
+		t.Fatalf("warning is not a bounded sample: %+v", entry)
 	}
 }
 

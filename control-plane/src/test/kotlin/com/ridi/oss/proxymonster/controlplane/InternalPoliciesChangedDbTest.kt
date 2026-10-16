@@ -78,7 +78,7 @@ class InternalPoliciesChangedDbTest {
     }
 
     private fun ApplicationTestBuilder.app(token: String? = TOKEN): HttpClient {
-        application { routing { internalPoliciesChangedRoute(token, cedarPolicyStore::markCommittedMutation) } }
+        application { routing { internalSignalRoutes(token, cedarPolicyStore::markCommittedMutation) } }
         return createClient { expectSuccess = false }
     }
 

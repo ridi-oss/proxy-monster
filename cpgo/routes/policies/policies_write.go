@@ -12,33 +12,6 @@ import (
 	"github.com/ridi-oss/proxy-monster/cpgo/store/db"
 )
 
-// mutate runs change in one transaction with its audit rows, then afterCommit, then answers status with its
-// result, or returns the error.
-func (p policies) mutate(w http.ResponseWriter, r *http.Request, status int, change func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error), afterCommit ...func(context.Context) error) error {
-	ctx := r.Context()
-	actor := audit.Actor{Principal: api.Principal(ctx), ClientAddr: api.RequesterIP(ctx), Channel: "console"}
-	var out any
-	err := pgx.BeginFunc(ctx, p.pool, func(tx pgx.Tx) error {
-		var err error
-		out, err = change(ctx, tx, actor)
-		return err
-	})
-	for _, f := range afterCommit {
-		if err == nil {
-			err = api.Notify(ctx, f)
-		}
-	}
-	switch {
-	case err != nil:
-		return err
-	case out == nil:
-		w.WriteHeader(status)
-	default:
-		api.WriteJSON(w, status, out)
-	}
-	return nil
-}
-
 type roleInput struct {
 	Name        string  `json:"name"`
 	Description *string `json:"description"`
@@ -67,7 +40,7 @@ func systemRoleGuard(ctx context.Context, tx pgx.Tx, id int64) error {
 func (p policies) createRole(w http.ResponseWriter, r *http.Request) error {
 	var in roleInput
 	decodeErr := api.DecodeBody(r, &in)
-	return p.mutate(w, r, http.StatusCreated, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error) {
+	return api.Mutate(p.pool, w, r, http.StatusCreated, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error) {
 		if decodeErr != nil {
 			return nil, decodeErr
 		}
@@ -86,7 +59,7 @@ func (p policies) createRole(w http.ResponseWriter, r *http.Request) error {
 func (p policies) updateRole(w http.ResponseWriter, r *http.Request, id int64) error {
 	var in roleInput
 	decodeErr := api.DecodeBody(r, &in)
-	return p.mutate(w, r, http.StatusOK, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error) {
+	return api.Mutate(p.pool, w, r, http.StatusOK, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error) {
 		if decodeErr != nil {
 			return nil, decodeErr
 		}
@@ -112,7 +85,7 @@ func (p policies) updateRole(w http.ResponseWriter, r *http.Request, id int64) e
 }
 
 func (p policies) deleteRole(w http.ResponseWriter, r *http.Request, id int64) error {
-	return p.mutate(w, r, http.StatusNoContent, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error) {
+	return api.Mutate(p.pool, w, r, http.StatusNoContent, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error) {
 		current, err := getRole(ctx, tx, id)
 		if err != nil {
 			return nil, err
@@ -134,7 +107,7 @@ func (p policies) assignRole(w http.ResponseWriter, r *http.Request) error {
 		RoleID    int64  `json:"roleId"`
 	}
 	decodeErr := api.DecodeBody(r, &in)
-	return p.mutate(w, r, http.StatusCreated, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error) {
+	return api.Mutate(p.pool, w, r, http.StatusCreated, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error) {
 		if decodeErr != nil {
 			return nil, decodeErr
 		}
@@ -164,7 +137,7 @@ func (p policies) assignRole(w http.ResponseWriter, r *http.Request) error {
 }
 
 func (p policies) unassignRole(w http.ResponseWriter, r *http.Request, id int64) error {
-	return p.mutate(w, r, http.StatusNoContent, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error) {
+	return api.Mutate(p.pool, w, r, http.StatusNoContent, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error) {
 		q := db.New(tx)
 		a, err := q.RoleAssignment(ctx, id)
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -199,7 +172,7 @@ func getMaskFn(ctx context.Context, tx pgx.Tx, id int64) (*maskFn, error) {
 func (p policies) createMaskFn(w http.ResponseWriter, r *http.Request) error {
 	var in maskFnInput
 	decodeErr := api.DecodeBody(r, &in)
-	return p.mutate(w, r, http.StatusCreated, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error) {
+	return api.Mutate(p.pool, w, r, http.StatusCreated, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error) {
 		if decodeErr != nil {
 			return nil, decodeErr
 		}
@@ -221,7 +194,7 @@ func (p policies) createMaskFn(w http.ResponseWriter, r *http.Request) error {
 func (p policies) updateMaskFn(w http.ResponseWriter, r *http.Request, id int64) error {
 	var in maskFnInput
 	decodeErr := api.DecodeBody(r, &in)
-	return p.mutate(w, r, http.StatusOK, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error) {
+	return api.Mutate(p.pool, w, r, http.StatusOK, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error) {
 		if decodeErr != nil {
 			return nil, decodeErr
 		}
@@ -247,7 +220,7 @@ func (p policies) updateMaskFn(w http.ResponseWriter, r *http.Request, id int64)
 }
 
 func (p policies) deleteMaskFn(w http.ResponseWriter, r *http.Request, id int64) error {
-	return p.mutate(w, r, http.StatusNoContent, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error) {
+	return api.Mutate(p.pool, w, r, http.StatusNoContent, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error) {
 		current, err := getMaskFn(ctx, tx, id)
 		if err != nil {
 			return nil, err

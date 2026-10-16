@@ -127,7 +127,9 @@ class ElevationContextRouteAuthzDbTest {
             sessionWindowSeconds = 3600, idpRecheckIntervalSeconds = 600, devMarker = true,
             trustedProxies = setOf("localhost"),
         )
-        cpGo = CpGoStack(config, core, database) { routing { testLoginRoute(PrincipalSessionStore(dataSource, null), config) } }
+        cpGo = CpGoStack(config, core, database, extraEnv = mapOf("PM_TRUSTED_PROXIES" to "127.0.0.1")) {
+            routing { testLoginRoute(PrincipalSessionStore(dataSource, null), config) }
+        }
     }
 
     @AfterAll
@@ -167,7 +169,6 @@ class ElevationContextRouteAuthzDbTest {
                 )
                 call.respond(HttpStatusCode.NoContent)
             }
-            accessRoutes(config, core.accessStore, core.authz, core.datasourceStore, core.roleResolver, ManagementAuditRecorder(core.auditStore))
             datasourceRoutes(config, core.authz, core.roleResolver, core.datasourceStore, core.proxyEventsHub, TableDetailService(core), core.tokenStore, core.userGroupStore)
             approvalRoutes(
                 config, core.accessStore, core.auditStore, core.datasourceStore, core.policyStore,
@@ -209,7 +210,7 @@ class ElevationContextRouteAuthzDbTest {
 
     @Test
     fun `ROLE access-request approve fires the tag-gated permit only through a trusted edge (Access-kt wiring)`() = testApplication {
-        val client = wire()
+        val client = cpGo.client()
         client.post("/test/session/$approver")
 
         // No trusted XFF -> requester_ip absent -> tag not derived -> the tag-gated approve permit cannot fire.
@@ -262,7 +263,7 @@ class ElevationContextRouteAuthzDbTest {
 
     @Test
     fun `approve routes write a kind=admin audit event through the wiring`() = testApplication {
-        val client = wire()
+        val client = cpGo.client()
         client.post("/test/session/$approver")
 
         // ROLE approve through the real route writes one kind="admin" event; count is scoped to this
@@ -418,7 +419,7 @@ class ElevationContextRouteAuthzDbTest {
 
     @Test
     fun `ROLE request creation against a datasource is gated by workflow-request`() = testApplication {
-        val client = wire()
+        val client = cpGo.client()
         client.post("/test/session/$requester")
         val body = """{"roleId": $targetRoleId, "datasourceId": ${datasource.id}, "reason": "need it"}"""
 

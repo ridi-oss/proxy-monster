@@ -87,17 +87,17 @@ fun mcpTestConfig(resultKey: ByteArray? = null) = Config(
 )
 
 /** Mints real MCP access tokens through the OAuth store, as the consent flow would. */
-class McpTokens(dataSource: DataSource) {
+class McpTokens(dataSource: DataSource, private val resource: String = MCP_TEST_RESOURCE) {
     private val oauth = OAuthAuthorizationStore(dataSource)
 
     fun token(principal: String, scopes: Set<String>): String {
-        val consent = oauth.rememberConsent(principal, CLIENT_ID, MCP_TEST_RESOURCE, scopes)
+        val consent = oauth.rememberConsent(principal, CLIENT_ID, resource, scopes)
         val code = oauth.createAuthorizationCode(
-            AuthorizationCodeInput(CLIENT_ID, principal, REDIRECT_URI, MCP_TEST_RESOURCE, scopes, CHALLENGE, consentId = consent.id),
+            AuthorizationCodeInput(CLIENT_ID, principal, REDIRECT_URI, resource, scopes, CHALLENGE, consentId = consent.id),
         )
         return assertNotNull(
             oauth.consumeAuthorizationCode(
-                ConsumeAuthorizationCodeInput(code, CLIENT_ID, REDIRECT_URI, MCP_TEST_RESOURCE, VERIFIER, 600, 3_600),
+                ConsumeAuthorizationCodeInput(code, CLIENT_ID, REDIRECT_URI, resource, VERIFIER, 600, 3_600),
             ),
         ).accessToken
     }

@@ -83,6 +83,9 @@ var (
 	CodeRoleSystemImmutable   = Code{"role.system_immutable", http.StatusConflict}
 	CodePolicySystemImmutable = Code{"policy.system_immutable", http.StatusConflict}
 	CodePolicyReservedName    = Code{"policy.reserved_name", http.StatusBadRequest}
+	CodeNotApprover           = Code{"approval.not_approver", http.StatusForbidden}
+	CodeRequestNotPermitted   = Code{"approval.request_not_permitted", http.StatusForbidden}
+	CodeUseQueryApproval      = Code{"approval.use_query_approval_endpoint", http.StatusBadRequest}
 )
 
 // WriteError writes an ApiError; kv is its params as alternating keys and values, kept in that order.
@@ -124,6 +127,8 @@ func RequesterIP(ctx context.Context) string {
 type Authorizer interface {
 	Authorize(ctx context.Context, principal, action string, resource bridge.Resource, requesterIP string) (bool, string, error)
 	AuthorizeEach(ctx context.Context, principal, action string, resources []bridge.Resource, requesterIP string) ([]bool, error)
+	AuthorizeIn(ctx context.Context, principal, action string, resource bridge.Resource, requesterIP string, s bridge.Scope) (bool, string, error)
+	MayRequest(ctx context.Context, principal string, datasourceID int64, requesterIP string) (bool, error)
 	MayConnect(ctx context.Context, principal string, datasourceIDs []int64, requesterIP string) ([]bool, error)
 	Validate(ctx context.Context, cedarSrc string) ([]string, error)
 }
@@ -132,6 +137,8 @@ type Authorizer interface {
 type Kotlin interface {
 	// PoliciesChanged: a committed policy write; Kotlin's query path rebuilds its cached policy set.
 	PoliciesChanged(ctx context.Context) error
+	// RequestNotified: a committed write opened or decided the request; send its notification.
+	RequestNotified(ctx context.Context, id int64, event string) error
 }
 
 // Gate authenticates console requests for Go routes.
@@ -240,17 +247,24 @@ func KotlinSessionCheck(upstream *url.URL) func(*http.Request) {
 
 // RequireAPI is Kotlin's requireApi: a live web session, or 401 common.unauthenticated.
 func (g Gate) RequireAPI(next http.HandlerFunc) http.HandlerFunc {
+	return g.RequireAPIElse(func(w http.ResponseWriter, _ *http.Request) {
+		WriteError(w, CodeUnauthenticated)
+	}, next)
+}
+
+// RequireAPIElse is RequireAPI with the answer to a request without a live session left to unauthenticated.
+func (g Gate) RequireAPIElse(unauthenticated, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		s, err := g.Sessions.Resolve(r.Context(), r)
 		switch {
 		case errors.Is(err, session.ErrDeviceMismatch):
 			g.EndMismatched(r)
-			WriteError(w, CodeUnauthenticated)
+			unauthenticated(w, r)
 		case err != nil:
 			slog.Error("api: resolving session", "err", err)
 			WriteError(w, CodeFallback)
 		case s == nil:
-			WriteError(w, CodeUnauthenticated)
+			unauthenticated(w, r)
 		default:
 			next(w, r.WithContext(context.WithValue(r.Context(), callerKey{}, g.sessionCaller(r, s))))
 		}

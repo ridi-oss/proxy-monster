@@ -187,7 +187,6 @@ class ResultCapsE2eDbTest {
                     config, core.accessStore, core.auditStore, core.datasourceStore, core.policyStore,
                     core.userGroupStore, resultStore, core.roleResolver, core.authz, runExecService,
                 )
-                accessRoutes(config, core.accessStore, core.authz, core.datasourceStore, core.roleResolver, ManagementAuditRecorder(core.auditStore))
                 cedarPolicyRoutes(config, core.authz, core.cedarPolicyStore)
             }
         }

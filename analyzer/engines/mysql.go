@@ -3,6 +3,7 @@ package engines
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -33,6 +34,15 @@ var MySQL = &Engine{
 	normalizeCatalogOnBuild:             true,
 	rejectsDuplicateDerivedOutputLabels: true,
 	rightJoinStarOrder:                  starOrderCommonRightLeft,
+
+	catalogIsConnectionIndependent: true, checksTargetErrors: true,
+	defaultSchemaPrefix: "USE ",
+	defaultSchema:       func(registeredDbName string) string { return registeredDbName },
+	serverVersion:       mysqlServerVersion,
+	manifestSeries:      mysqlManifestSeries,
+	functionCatalog:     mysqlFunctionCatalog,
+	connectionInfoValid: nativeConnectionInfoValid,
+	analyzerConfig:      sessionAnalyzerConfig,
 }
 
 // mysqlDialect folds identifiers as lower_case_table_names does, with MySQL's utf8mb3_general_ci map: under 0
@@ -248,4 +258,59 @@ func mysqlVersionID(version string) int {
 func containsUnsafeMySQLComment(gap []rune) bool {
 	text := string(gap)
 	return strings.Contains(text, "/*!") || strings.Contains(text, "/*+")
+}
+
+var mysqlNatives = map[string][]string{"8.0": nativeFunctions("mysql", "8.0"), "8.4": nativeFunctions("mysql", "8.4")}
+
+var mysqlMinorVersion = regexp.MustCompile(`(\d+)\.(\d+)`)
+
+// mysqlNativeFunctions are the builtins of the nearest pinned series: 8.4+ -> 8.4, anything else -> 8.0.
+func mysqlNativeFunctions(version string) []string {
+	m := mysqlMinorVersion.FindStringSubmatch(version)
+	if m == nil {
+		return mysqlNatives["8.0"]
+	}
+	major, _ := strconv.Atoi(m[1])
+	minor, _ := strconv.Atoi(m[2])
+	if major == 8 && minor >= 4 {
+		return mysqlNatives["8.4"]
+	}
+	return mysqlNatives["8.0"]
+}
+
+// {"mysql": [fnv_64], "app": [add_tax]} -> builtins = pinned natives, loadables = [fnv_64], udf app = [add_tax].
+func mysqlFunctionCatalog(_ *Engine, routines []*pb.SchemaFunctions, version string) *pb.FunctionCatalog {
+	catalog := &pb.FunctionCatalog{BuiltinFunctions: slices.Clone(mysqlNativeFunctions(version))}
+	for _, r := range routines {
+		if r.GetSchema() == "mysql" {
+			catalog.LoadableFunctions = append(catalog.LoadableFunctions, r.GetNames()...)
+		} else {
+			catalog.UdfSchemas = append(catalog.UdfSchemas, &pb.SchemaFunctions{Schema: r.GetSchema(), Names: r.GetNames()})
+		}
+	}
+	return catalog
+}
+
+var patchVersion = regexp.MustCompile(`\d+\.\d+\.\d+`)
+
+var minorVersion = regexp.MustCompile(`\d+\.\d+`)
+
+// 8.0.mysql_aurora.3.04.0 identifies MySQL 8.0, not Aurora 3.04.0.
+func mysqlServerVersion(raw string) *pb.ServerVersion {
+	if strings.TrimSpace(raw) == "" {
+		return &pb.ServerVersion{}
+	}
+	base, _, _ := strings.Cut(raw, "mysql_aurora")
+	base, _, _ = strings.Cut(base, "(aurora")
+	version := patchVersion.FindString(base)
+	if version == "" {
+		version = minorVersion.FindString(base)
+	}
+	return &pb.ServerVersion{Version: nonEmpty(version), Aurora: isAurora(raw)}
+}
+
+// 8.0.44 -> 8.0.
+func mysqlManifestSeries(version string) string {
+	parts := strings.Split(version, ".")
+	return strings.Join(parts[:min(2, len(parts))], ".")
 }

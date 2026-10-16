@@ -96,6 +96,29 @@ type Engine struct {
 	passthroughCommands []string
 	// syntaxCalls are call-shaped syntax over one subquery, lowercase: Postgres ARRAY(SELECT ...) is no pg_proc function.
 	syntaxCalls []string
+
+	// connectionProperties are the ConnectionInfo keys the engine's proxies may publish: Athena region, workgroup.
+	connectionProperties []string
+	// catalogIsConnectionIndependent: one connection's catalog answers for all; false for Postgres pg_temp_*.
+	catalogIsConnectionIndependent bool
+	// checksTargetErrors: the proxy can prepare a statement on the target without running it.
+	checksTargetErrors bool
+	// implicitColumns are on every table beyond the introspected ones: Postgres ctid tid, xmin xid.
+	implicitColumns []*pb.ImplicitColumn
+	// defaultSchemaPrefix starts the statement that sets a session's default schema: MySQL "USE ".
+	defaultSchemaPrefix string
+	// defaultSchema is the schema an unqualified table resolves to: MySQL the registered database, Postgres public.
+	defaultSchema func(registeredDbName string) string
+	// serverVersion reads a comparable version from version(): "8.0.mysql_aurora.3.04.0" -> 8.0, aurora.
+	serverVersion func(raw string) *pb.ServerVersion
+	// manifestSeries is the classification-manifest series of a version: MySQL 8.0.44 -> 8.0, Postgres 16.4 -> 16.
+	manifestSeries func(version string) string
+	// functionCatalog tiers introspected routines into the analyzer's function inventory.
+	functionCatalog func(e *Engine, routines []*pb.SchemaFunctions, version string) *pb.FunctionCatalog
+	// connectionInfoValid reports whether the engine's proxies may publish info.
+	connectionInfoValid func(e *Engine, info *pb.EngineConnectionInfo) bool
+	// analyzerConfig is the EngineConfig for one decision or a batch split.
+	analyzerConfig func(e *Engine, ds *pb.EngineDatasource, session *pb.SessionObservation) *pb.EngineConfig
 }
 
 var (

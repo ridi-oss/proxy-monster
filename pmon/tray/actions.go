@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 
 	"fyne.io/systray"
 
@@ -31,6 +32,8 @@ func (a *app) run(act action) {
 		notify(T("n.copied"), T("n.copiedBody", "label", act.label))
 	case opStart:
 		a.doStart(act.remote)
+	case opReconnect:
+		a.doReconnect(act.remote)
 	case opRestart:
 		a.doRestart()
 	case opLoginItem:
@@ -141,6 +144,18 @@ func (a *app) doSignOut(remote, server string) {
 		notify(T("n.signedOutLocal"), T("n.signedOutLocalBody", "server", server))
 	}
 	a.refreshFor(remote, client)
+}
+
+// doReconnect comes to the front first: 1Password counts the daemon's ssh as this app's.
+func (a *app) doReconnect(remote string) {
+	activateSelf()
+	client, err := control.Connect(a.ctx)
+	if err == nil {
+		err = client.ReconnectRemote(a.ctx, remote)
+	}
+	if err != nil {
+		notify(T("n.reconnectFailed", "remote", remote), err.Error())
+	}
 }
 
 func (a *app) doStart(remote string) {
@@ -325,6 +340,10 @@ func (a *app) openPreferences(add bool) {
 				checkForUpdates()
 			case "uninstall":
 				go a.uninstall()
+			default:
+				if target, ok := strings.CutPrefix(lines.Text(), "reconnect "); ok {
+					go a.doReconnect(target)
+				}
 			}
 		}
 		_ = cmd.Wait()

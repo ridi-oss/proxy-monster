@@ -26,6 +26,12 @@ func TestRemoteStatesInTheMenu(t *testing.T) {
 			t.Errorf("%s: %+v, want %q", state, e, want)
 		}
 	}
+	for _, state := range []control.RemoteState{control.RemoteConnecting, control.RemoteDown} {
+		e := find(buildMenu(withRemote(state), view{now: now}), "remote:devbox#reconnect")
+		if e == nil || e.act == nil || e.act.op != opReconnect || e.act.remote != "devbox" {
+			t.Errorf("%s reconnect = %+v", state, e)
+		}
+	}
 	start := find(buildMenu(withRemote(control.RemoteNoDaemon), view{now: now}), "remote:devbox#start")
 	if start == nil || start.act == nil || start.act.op != opStart || start.act.remote != "devbox" {
 		t.Errorf("no-daemon start = %+v", start)

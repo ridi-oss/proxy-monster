@@ -143,3 +143,21 @@ func TestADeclinedRemoveReportsCanceled(t *testing.T) {
 		t.Fatal("a declined remove removed the server")
 	}
 }
+
+// Settings hands a reconnect to the menu-bar process, one line per call, and refuses a target that could add a line.
+func TestSettingsReconnectGoesToTheMenuBar(t *testing.T) {
+	var out strings.Builder
+	restore, restoreYield := toMenuBar, yieldTo
+	toMenuBar, yieldTo = &out, func(int) {}
+	t.Cleanup(func() { toMenuBar, yieldTo = restore, restoreYield })
+	p := &prefs{ctx: context.Background(), signingIn: map[string]bool{}, changed: func() {}}
+	if e := p.reconnect("dana@devbox"); e != "" {
+		t.Fatal(e)
+	}
+	if e := p.reconnect("devbox\nuninstall"); e == "" {
+		t.Error("a target with a newline was sent")
+	}
+	if out.String() != "reconnect dana@devbox\n" {
+		t.Errorf("sent %q", out.String())
+	}
+}

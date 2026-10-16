@@ -2,6 +2,7 @@
 #import <Foundation/Foundation.h>
 #import <ServiceManagement/ServiceManagement.h>
 #import <UserNotifications/UserNotifications.h>
+#include <unistd.h>
 
 #include "native_darwin.h"
 
@@ -100,6 +101,28 @@ bool pm_pref_bool(const char *key) {
 
 void pm_set_pref_bool(const char *key, bool value) {
   [[NSUserDefaults standardUserDefaults] setBool:value forKey:[NSString stringWithUTF8String:key]];
+}
+
+void pm_activate_self(void) {
+  dispatch_async(dispatch_get_main_queue(), ^{
+    if (@available(macOS 14.0, *)) {
+      [NSApp activate];
+    } else {
+      [NSApp activateIgnoringOtherApps:YES];
+    }
+  });
+}
+
+void pm_yield_to(int pid) {
+  if (@available(macOS 14.0, *)) {
+    dispatch_sync(dispatch_get_main_queue(), ^{
+      [NSApp yieldActivationToApplication:[NSRunningApplication runningApplicationWithProcessIdentifier:pid]];
+    });
+  }
+}
+
+bool pm_is_frontmost(void) {
+  return [NSWorkspace sharedWorkspace].frontmostApplication.processIdentifier == getpid();
 }
 
 void pm_activate_pid(int pid) {

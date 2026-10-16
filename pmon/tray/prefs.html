@@ -357,7 +357,7 @@ function serversPane() {
 
 const REMOTE_DOT = { connected: 'ok', connecting: 'busy', 'no-daemon': 'warn', 'no-pmon': 'warn', down: 'warn' };
 function remotesCard() {
-  const rows = (state.remotes || []).map(r => `<div class="row"><div class="grow"><div class="mono" style="font-weight:500">${esc(r.target)}</div>${r.error ? `<div class="sub">${esc(r.error)}</div>` : ''}</div>${badge(REMOTE_DOT[r.state] || '', 's.remote.state.' + r.state)}<button class="btn ghost" data-act="removeremote" data-s="${esc(r.target)}">${esc(t('s.btn.removeRemote'))}</button></div>`).join('');
+  const rows = (state.remotes || []).map(r => `<div class="row"><div class="grow"><div class="mono" style="font-weight:500">${esc(r.target)}</div>${r.error ? `<div class="sub">${esc(r.error)}</div>` : ''}</div>${badge(REMOTE_DOT[r.state] || '', 's.remote.state.' + r.state)}${r.state === 'down' || r.state === 'connecting' ? `<button class="btn" data-act="reconnectremote" data-s="${esc(r.target)}">${esc(t('s.btn.reconnectRemote'))}</button>` : ''}<button class="btn ghost" data-act="removeremote" data-s="${esc(r.target)}">${esc(t('s.btn.removeRemote'))}</button></div>`).join('');
   return `<div class="card"><div class="card-body"><div class="row"><div class="grow"><div class="title">${esc(t('s.remote.title'))}</div><div class="sub">${esc(t('s.remote.desc'))}</div></div></div>${rows ? `<div class="list">${rows}</div>` : ''}
     <div class="row"><div class="field grow"><input id="remoteTarget" class="mono" placeholder="${esc(t('s.remote.placeholder'))}" autocomplete="off" spellcheck="false" aria-label="${esc(t('s.remote.placeholder'))}"></div><button class="btn" data-act="addremote">${esc(t('s.btn.addRemote'))}</button></div></div>
     <div class="card-foot"><span class="hint">${esc(t('s.remote.hint'))}</span></div></div>`;
@@ -460,6 +460,7 @@ document.addEventListener('click', async e => {
     case 'signout': menuFor = null; await act(call('signOut', s, r), t('s.toast.signedOut', { name: s })); break;
     case 'remove': menuFor = null; await act(call('removeServer', s, r), t('s.toast.removed', { name: s })); break;
     case 'addremote': { const v = ($('#remoteTarget')?.value || '').trim(); if (!v) break; await act(call('addRemote', v), t('s.toast.remoteAdded', { remote: v })); const i = $('#remoteTarget'); if (i) i.value = ''; break; }
+    case 'reconnectremote': await act(call('reconnectRemote', s)); break;
     case 'removeremote': await act(call('removeRemote', s), t('s.toast.remoteRemoved', { remote: s })); break;
     case 'start': await act(call('start')); break;
     case 'restart': await act(call('restart')); refreshAI(); break;

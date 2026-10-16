@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -71,11 +72,11 @@ func (r *refetcher) run(command *pb.Refetch) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), metadataTimeout)
 	defer cancel()
-	columns, err := r.target.fragmentColumns(ctx, r.target.config.catalog, command.GetSchema())
+	columns, unproved, err := r.target.fragmentColumns(ctx, r.target.config.catalog, command.GetSchema())
 	if err != nil {
 		return fmt.Errorf("introspecting schema %q: %w", command.GetSchema(), err)
 	}
-	hash, err := fragmentHash(columns)
+	hash, err := fragmentHash(columns, unproved)
 	if err != nil {
 		return err
 	}
@@ -90,34 +91,36 @@ func (r *refetcher) run(command *pb.Refetch) error {
 		push.Unchanged = true
 	} else {
 		push.Columns = columns
+		push.UnprovedTables = unproved
 	}
 	_, err = r.push(push)
 	return err
 }
 
-// fragmentColumns lists one database's columns; a database Glue does not know is an empty fragment, so a
-// statement naming it resolves fail-closed instead of erroring the connection.
-func (t *target) fragmentColumns(ctx context.Context, catalog, database string) ([]*enginepb.Column, error) {
-	columns, err := t.readColumns(ctx, catalog, database)
+// fragmentColumns lists one database's columns and its unproved table names; a database Glue does not know is
+// an empty fragment, so a statement naming it resolves fail-closed instead of erroring the connection.
+func (t *target) fragmentColumns(ctx context.Context, catalog, database string) ([]*enginepb.Column, []string, error) {
+	columns, skipped, err := t.readColumns(ctx, catalog, database)
+	logSkippedRelations(slog.Default(), slog.LevelDebug, skipped)
 	var metadata *types.MetadataException
 	if errors.As(err, &metadata) && strings.Contains(strings.ToLower(aws.ToString(metadata.Message)), "not found") {
-		return []*enginepb.Column{}, nil
+		return []*enginepb.Column{}, []string{}, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if columns == nil {
 		columns = []*enginepb.Column{}
 	}
-	return columns, nil
+	return columns, unprovedTables(skipped), nil
 }
 
-func fragmentHash(columns []*enginepb.Column) ([]byte, error) {
+func fragmentHash(columns []*enginepb.Column, unproved []string) ([]byte, error) {
 	rows := make([][]any, 0, len(columns))
 	for _, column := range columns {
 		rows = append(rows, []any{column.GetCatalog(), column.GetSchema(), column.GetTable(), column.GetColumn(), column.GetDataType(), column.GetOrdinal(), column.GetNullable()})
 	}
-	data, err := json.Marshal(rows)
+	data, err := json.Marshal([]any{rows, append([]string{}, unproved...)})
 	if err != nil {
 		return nil, err
 	}

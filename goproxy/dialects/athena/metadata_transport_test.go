@@ -21,7 +21,7 @@ func TestNullTableParametersDoNotBreakMetadataReads(t *testing.T) {
 			w.WriteHeader(http.StatusBadRequest)
 		}
 	})
-	columns, err := target.readColumns(context.Background(), "AwsDataCatalog", "example")
+	columns, _, err := target.readColumns(context.Background(), "AwsDataCatalog", "example")
 	if err != nil || len(columns) != 1 {
 		t.Fatalf("null parameter broke the listing: %v %v", columns, err)
 	}

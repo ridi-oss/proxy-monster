@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -17,8 +18,12 @@ import (
 // catalogIdentity is the catalog name the control plane and analyzer key on; Athena folds catalog names.
 func (t *target) catalogIdentity() string { return strings.ToLower(t.config.catalog) }
 
-// ReadCatalog scans every database of the configured catalog through Glue table metadata. A relation the
-// catalog cannot prove (a view, an unknown table type) fails the scan rather than being flattened or dropped.
+// skippedSampleSize bounds the relation names one skip log lists; a catalog can hold hundreds of views.
+const skippedSampleSize = 10
+
+type skippedRelation struct{ schema, table, kind string }
+
+// Introspect scans the configured catalog's Glue metadata, leaving out relations that are not tables.
 func (t *target) Introspect(ctx context.Context) (*pb.CatalogRequest, error) {
 	group, err := t.api.GetWorkGroup(ctx, &awsa.GetWorkGroupInput{WorkGroup: aws.String(t.config.workgroup)})
 	if err != nil {
@@ -33,49 +38,56 @@ func (t *target) Introspect(ctx context.Context) (*pb.CatalogRequest, error) {
 		return nil, err
 	}
 	columns := []*enginepb.Column{}
+	var skipped []skippedRelation
 	for _, database := range databases {
-		fragment, err := t.readColumns(ctx, t.config.catalog, database)
+		fragment, unproved, err := t.readColumns(ctx, t.config.catalog, database)
 		if err != nil {
 			return nil, err
 		}
 		columns = append(columns, fragment...)
+		skipped = append(skipped, unproved...)
 	}
+	logSkippedRelations(slog.Default(), slog.LevelWarn, skipped)
 	return &pb.CatalogRequest{
 		CurrentCatalog: t.catalogIdentity(), DefaultSchemas: []string{t.config.database},
-		Catalog: &enginepb.CatalogSnapshot{Columns: columns}, EngineVersion: version,
+		Catalog:       &enginepb.CatalogSnapshot{Columns: columns, UnprovedRelations: unprovedRelations(t.catalogIdentity(), skipped)},
+		EngineVersion: version,
 	}, nil
 }
 
-func (t *target) readColumns(ctx context.Context, catalog, database string) ([]*enginepb.Column, error) {
+// readColumns lists the columns of one database's tables and the relations it left out.
+func (t *target) readColumns(ctx context.Context, catalog, database string) ([]*enginepb.Column, []skippedRelation, error) {
 	if catalog == "" || database == "" {
-		return nil, errors.New("athena: namespace is incomplete")
+		return nil, nil, errors.New("athena: namespace is incomplete")
 	}
 	pages := awsa.NewListTableMetadataPaginator(t.api, &awsa.ListTableMetadataInput{
 		CatalogName: aws.String(catalog), DatabaseName: aws.String(database), WorkGroup: aws.String(t.config.workgroup),
 	})
 	var columns []*enginepb.Column
+	var skipped []skippedRelation
 	seen := make(map[string]bool)
 	tokens := make(map[string]bool)
 	for pages.HasMorePages() {
 		page, err := pages.NextPage(ctx)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if err := checkMetadataToken(page.NextToken, tokens); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		for _, table := range page.TableMetadataList {
 			name := aws.ToString(table.Name)
 			if name == "" || seen[name] {
-				return nil, errors.New("athena: missing or duplicate table metadata")
+				return nil, nil, errors.New("athena: missing or duplicate table metadata")
 			}
 			seen[name] = true
 			if kind := aws.ToString(table.TableType); kind != "EXTERNAL_TABLE" && kind != "MANAGED_TABLE" {
-				return nil, fmt.Errorf("athena: catalog cannot represent unproved relation %q of type %q", name, kind)
+				skipped = append(skipped, skippedRelation{schema: database, table: name, kind: kind})
+				continue
 			}
 			tableColumns, err := metadataColumns(table)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			for i, column := range tableColumns {
 				columns = append(columns, &enginepb.Column{
@@ -85,7 +97,43 @@ func (t *target) readColumns(ctx context.Context, catalog, database string) ([]*
 			}
 		}
 	}
-	return columns, nil
+	return columns, skipped, nil
+}
+
+func logSkippedRelations(logger *slog.Logger, level slog.Level, skipped []skippedRelation) {
+	if len(skipped) == 0 {
+		return
+	}
+	types := make(map[string]int)
+	sample := make([]string, 0, min(len(skipped), skippedSampleSize))
+	for _, relation := range skipped {
+		kind := relation.kind
+		if kind == "" {
+			kind = "(none)"
+		}
+		types[kind]++
+		if len(sample) < skippedSampleSize {
+			sample = append(sample, relation.schema+"."+relation.table)
+		}
+	}
+	logger.Log(context.Background(), level, "athena: catalog skipped relations that are not tables; statements naming them are denied",
+		"count", len(skipped), "types", types, "sample", sample)
+}
+
+func unprovedRelations(catalog string, skipped []skippedRelation) []*enginepb.ObjectRef {
+	relations := make([]*enginepb.ObjectRef, 0, len(skipped))
+	for _, relation := range skipped {
+		relations = append(relations, &enginepb.ObjectRef{Catalog: catalog, Schema: relation.schema, Table: relation.table})
+	}
+	return relations
+}
+
+func unprovedTables(skipped []skippedRelation) []string {
+	tables := make([]string, 0, len(skipped))
+	for _, relation := range skipped {
+		tables = append(tables, relation.table)
+	}
+	return tables
 }
 
 func metadataColumns(table types.TableMetadata) ([]types.Column, error) {

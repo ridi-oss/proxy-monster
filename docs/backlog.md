@@ -330,8 +330,8 @@ Fixes for gaps documented in
   it needs owner binding for session ids, the way query executions are bound.
 - Report result volume for forwarded `GetQueryResults` pages; the completion
   event records the accepted submission only.
-- Represent a Glue view as an unproved relation instead of refusing the whole
-  catalog scan.
+- Make Glue views queryable: querying a view needs its definition resolved to
+  base-table lineage, not its declared columns.
 
 ## Data plane
 

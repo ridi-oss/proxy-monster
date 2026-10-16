@@ -15,8 +15,15 @@ const mysql: Datasource = {
   dbName: 'app',
   tags: [],
   defaultSchemas: ['app'],
+  identifierQuote: '`',
 };
-const postgres: Datasource = { ...mysql, engine: 'postgres', port: 5432, defaultSchemas: ['public'] };
+const postgres: Datasource = {
+  ...mysql,
+  engine: 'postgres',
+  port: 5432,
+  defaultSchemas: ['public'],
+  identifierQuote: '"',
+};
 
 function column(catalog: string, schema = 'public', table = 'users', name = 'id'): CatalogColumn {
   return { catalog, schema, table, column: name, dataType: 'int', sqlType: 'int', ordinal: 1, nullable: false };

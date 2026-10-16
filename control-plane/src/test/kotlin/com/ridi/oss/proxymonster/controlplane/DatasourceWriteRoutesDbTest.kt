@@ -189,15 +189,15 @@ class DatasourceWriteRoutesDbTest {
 }
 
 private const val EXPECTED = """
-POST /api/datasources -> 201 {"id":{a},"name":"dw-a","engine":"mysql","host":"db","port":3306,"dbName":"app","tags":[],"defaultSchemas":[],"advertiseWireTls":false,"description":"","defaultSchemaSettable":true}
-POST /api/datasources -> 201 {"id":{b},"name":"dw-b","engine":"postgres","host":"","port":0,"dbName":"","tags":[],"defaultSchemas":[],"advertiseWireTls":false,"description":"","defaultSchemaSettable":true}
+POST /api/datasources -> 201 {"id":{a},"name":"dw-a","engine":"mysql","host":"db","port":3306,"dbName":"app","tags":[],"defaultSchemas":[],"advertiseWireTls":false,"description":"","defaultSchemaSettable":true,"identifierQuote":"`"}
+POST /api/datasources -> 201 {"id":{b},"name":"dw-b","engine":"postgres","host":"","port":0,"dbName":"","tags":[],"defaultSchemas":[],"advertiseWireTls":false,"description":"","defaultSchemaSettable":true,"identifierQuote":"\""}
 POST /api/datasources -> 500 {"code":"common.fallback","params":{}}
 POST /api/datasources -> 400 {"code":"common.field_required","params":{"fields":"name"}}
 POST /api/datasources -> 400 {"code":"datasource.invalid_engine","params":{"engine":"oracle"}}
 POST /api/datasources -> 500 {"code":"common.fallback","params":{}}
 POST /api/datasources -> 500 {"code":"common.fallback","params":{}}
-PUT /api/datasources/{a} -> 200 {"id":{a},"name":"dw-a2","engine":"mysql","host":"db2","port":3307,"dbName":"app","tags":[],"defaultSchemas":[],"advertiseWireTls":false,"description":"","defaultSchemaSettable":true}
-PUT /api/datasources/{a} -> 200 {"id":{a},"name":"dw-a2","engine":"mysql","host":"db2","port":3307,"dbName":"other","tags":[],"defaultSchemas":[],"advertiseWireTls":false,"description":"","defaultSchemaSettable":true}
+PUT /api/datasources/{a} -> 200 {"id":{a},"name":"dw-a2","engine":"mysql","host":"db2","port":3307,"dbName":"app","tags":[],"defaultSchemas":[],"advertiseWireTls":false,"description":"","defaultSchemaSettable":true,"identifierQuote":"`"}
+PUT /api/datasources/{a} -> 200 {"id":{a},"name":"dw-a2","engine":"mysql","host":"db2","port":3307,"dbName":"other","tags":[],"defaultSchemas":[],"advertiseWireTls":false,"description":"","defaultSchemaSettable":true,"identifierQuote":"`"}
 PUT /api/datasources/{a} -> 409 {"code":"datasource.engine_immutable","params":{}}
 PUT /api/datasources/{a} -> 500 {"code":"common.fallback","params":{}}
 PUT /api/datasources/{a} -> 400 {"code":"common.field_required","params":{"fields":"name"}}
@@ -210,7 +210,7 @@ DELETE /api/datasources/{a} -> 204
 DELETE /api/datasources/{a} -> 404 {"code":"common.not_found","params":{"resource":"datasource"}}
 DELETE /api/datasources/999999 -> 404 {"code":"common.not_found","params":{"resource":"datasource"}}
 DELETE /api/datasources/abc -> 400 {"code":"common.bad_id","params":{}}
-POST /api/datasources -> 201 {"id":{reused},"name":"dw-a2","engine":"mysql","host":"","port":0,"dbName":"","tags":[],"defaultSchemas":[],"advertiseWireTls":false,"description":"","defaultSchemaSettable":true}
+POST /api/datasources -> 201 {"id":{reused},"name":"dw-a2","engine":"mysql","host":"","port":0,"dbName":"","tags":[],"defaultSchemas":[],"advertiseWireTls":false,"description":"","defaultSchemaSettable":true,"identifierQuote":"`"}
 catalog after rename: true def ["app"]
 catalog after db change: false - []
 connection catalog before delete: true, after: false

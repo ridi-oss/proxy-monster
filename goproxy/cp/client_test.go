@@ -20,8 +20,7 @@ import (
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 
-	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
-	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 )
 
 func wireVerdict(v *pb.Verdict) *pb.WireDecision {
@@ -60,7 +59,7 @@ func TestDecisionFromWire(t *testing.T) {
 	})
 
 	t.Run("before decide passes every command arm through opaquely", func(t *testing.T) {
-		fetch := &pb.ProxyCommand{Command: &pb.ProxyCommand_FetchAthenaPreparedDefinition{FetchAthenaPreparedDefinition: &enginepb.FetchAthenaPreparedDefinition{Workgroup: "wg", Name: "stmt"}}}
+		fetch := &pb.ProxyCommand{Command: &pb.ProxyCommand_FetchAthenaPreparedDefinition{FetchAthenaPreparedDefinition: &pb.FetchAthenaPreparedDefinition{Workgroup: "wg", Name: "stmt"}}}
 		commands, decision := decisionFromWire(wireBefore(refetch("app", nil), fetch))
 		if decision != nil || len(commands) != 2 || !proto.Equal(commands[1], fetch) {
 			t.Fatalf("commands = %+v decision = %+v", commands, decision)
@@ -74,15 +73,15 @@ func TestDecisionFromWire(t *testing.T) {
 	})
 
 	t.Run("the submission rides rewritten sql", func(t *testing.T) {
-		_, got := decisionFromWire(wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW, RewrittenSql: proto.String("SELECT 1"), Submission: &enginepb.Submission{Engine: &enginepb.Submission_Athena{Athena: &enginepb.AthenaSubmission{ExecutionParameters: []string{"'x'"}}}}}))
+		_, got := decisionFromWire(wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW, RewrittenSql: proto.String("SELECT 1"), Submission: &pb.Submission{Engine: &pb.Submission_Athena{Athena: &pb.AthenaSubmission{ExecutionParameters: []string{"'x'"}}}}}))
 		if got.Action != "ALLOW" || got.RewrittenSQL == nil || *got.RewrittenSQL != "SELECT 1" || got.Submission.GetAthena() == nil || len(got.Submission.GetAthena().ExecutionParameters) != 1 {
 			t.Fatalf("submission not mapped: %+v", got)
 		}
-		_, got = decisionFromWire(wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW, RewrittenSql: proto.String("SELECT 1"), Submission: &enginepb.Submission{Engine: &enginepb.Submission_Athena{Athena: &enginepb.AthenaSubmission{}}}}))
+		_, got = decisionFromWire(wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW, RewrittenSql: proto.String("SELECT 1"), Submission: &pb.Submission{Engine: &pb.Submission_Athena{Athena: &pb.AthenaSubmission{}}}}))
 		if got.Action != "ALLOW" || got.Submission.GetAthena() == nil || len(got.Submission.GetAthena().ExecutionParameters) != 0 {
 			t.Fatalf("empty parameter list lost its presence: %+v", got)
 		}
-		_, got = decisionFromWire(wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW, Submission: &enginepb.Submission{Engine: &enginepb.Submission_Athena{Athena: &enginepb.AthenaSubmission{}}}}))
+		_, got = decisionFromWire(wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW, Submission: &pb.Submission{Engine: &pb.Submission_Athena{Athena: &pb.AthenaSubmission{}}}}))
 		if got.Action != "DENY" {
 			t.Fatalf("parameters without rewritten sql accepted: %+v", got)
 		}
@@ -101,7 +100,7 @@ func TestDecisionFromWire(t *testing.T) {
 			Masks:               []*pb.ColumnMask{{Column: "c", MaskFn: "mask", Kind: "FIXED", Ordinal: proto.Int32(2)}},
 			AfterStatement:      []*pb.ProxyCommand{refetch("app", []byte("hash"))},
 			Generation:          9,
-			ResultFingerprint:   []*enginepb.RequireResultReadGrant{{Resource: &enginepb.RequireResultReadGrant_Function{Function: &enginepb.FunctionResource{Name: "now"}}}},
+			ResultFingerprint:   []*pb.RequireResultReadGrant{{Resource: &pb.RequireResultReadGrant_Function{Function: &pb.FunctionResource{Name: "now"}}}},
 		}))
 		if commands != nil {
 			t.Fatalf("commands = %+v, want nil", commands)
@@ -118,7 +117,7 @@ func TestDecisionFromWire(t *testing.T) {
 			UnmaskablePermitted: true,
 			AfterStatement:      []*pb.ProxyCommand{refetch("app", []byte("hash"))},
 			Generation:          9,
-			ResultFingerprint:   []*enginepb.RequireResultReadGrant{{Resource: &enginepb.RequireResultReadGrant_Function{Function: &enginepb.FunctionResource{Name: "now"}}}},
+			ResultFingerprint:   []*pb.RequireResultReadGrant{{Resource: &pb.RequireResultReadGrant_Function{Function: &pb.FunctionResource{Name: "now"}}}},
 		}
 		if !commandsEqual(got.AfterStatement, want.AfterStatement) {
 			t.Fatalf("after-statement = %+v, want %+v", got.AfterStatement, want.AfterStatement)
@@ -233,7 +232,7 @@ func TestValidateTokenAndDecideUnreachable(t *testing.T) {
 func TestRegisterUnspecifiedEngineRejectedBeforeRPC(t *testing.T) {
 	fake := &fakeControlPlane{}
 	c := startFakeControlPlane(t, fake)
-	if err := c.Register(enginepb.Engine_ENGINE_UNSPECIFIED, "localhost", 1234, "db", nil, "", nil, false, nil, nil); err == nil || !strings.Contains(err.Error(), "unspecified engine") {
+	if err := c.Register(pb.Engine_ENGINE_UNSPECIFIED, "localhost", 1234, "db", nil, "", nil, false, nil, nil); err == nil || !strings.Contains(err.Error(), "unspecified engine") {
 		t.Fatalf("Register error = %v, want local unspecified-engine error", err)
 	}
 	fake.mu.Lock()
@@ -443,7 +442,7 @@ func TestDecideMapsRequestAndRetriesBeforeDecide(t *testing.T) {
 	request := engine.DecideRequest{
 		Session: engine.SessionObservation{
 			Namespace: []string{"public", "app"},
-			SessionObservation: &enginepb.SessionObservation{Engine: &enginepb.SessionObservation_Postgres{Postgres: &enginepb.PostgresSession{
+			SessionObservation: &pb.SessionObservation{Engine: &pb.SessionObservation_Postgres{Postgres: &pb.PostgresSession{
 				ShadowedFunctions: []string{"unnest"}, FunctionShadowingObserved: true, SystemXidVisible: proto.Bool(true),
 			}}},
 		},
@@ -537,7 +536,7 @@ func TestDecideOmitsUnobservedPostgresTypeVisibility(t *testing.T) {
 	out := c.Decide(engine.DecideRequest{
 		Session: engine.SessionObservation{
 			Namespace:          []string{"public"},
-			SessionObservation: &enginepb.SessionObservation{Engine: &enginepb.SessionObservation_Postgres{Postgres: &enginepb.PostgresSession{FunctionShadowingObserved: true}}},
+			SessionObservation: &pb.SessionObservation{Engine: &pb.SessionObservation_Postgres{Postgres: &pb.PostgresSession{FunctionShadowingObserved: true}}},
 		},
 		Token:        "raw-token",
 		SQL:          "SELECT 1",
@@ -592,22 +591,22 @@ func TestDecideBeforeDecideFailures(t *testing.T) {
 func TestPushCatalogPreservesFunctions(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
-		functions *enginepb.FunctionCatalog
+		functions *pb.FunctionCatalog
 	}{
 		{"absent", nil},
-		{"observed empty", &enginepb.FunctionCatalog{}},
-		{"observed names", &enginepb.FunctionCatalog{
+		{"observed empty", &pb.FunctionCatalog{}},
+		{"observed names", &pb.FunctionCatalog{
 			BuiltinFunctions:      []string{"abs"},
-			SystemFunctionSchemas: []*enginepb.SchemaFunctions{{Schema: "pg_catalog", Names: []string{"abs"}}},
-			UdfSchemas:            []*enginepb.SchemaFunctions{{Schema: "app", Names: []string{"lookup"}}},
+			SystemFunctionSchemas: []*pb.SchemaFunctions{{Schema: "pg_catalog", Names: []string{"abs"}}},
+			UdfSchemas:            []*pb.SchemaFunctions{{Schema: "app", Names: []string{"lookup"}}},
 			LoadableFunctions:     []string{"plugin_fn"},
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fake := &fakeControlPlane{}
 			client := startFakeControlPlane(t, fake)
-			catalog := &pb.CatalogRequest{Catalog: &enginepb.CatalogSnapshot{
-				Columns:   []*enginepb.Column{{Schema: "app", Table: "users", Column: "ssn"}},
+			catalog := &pb.CatalogRequest{Catalog: &pb.CatalogSnapshot{
+				Columns:   []*pb.Column{{Schema: "app", Table: "users", Column: "ssn"}},
 				Functions: tc.functions,
 			}}
 			if err := client.PushCatalog(catalog); err != nil {
@@ -630,17 +629,17 @@ func TestRegisterAndPushCatalog(t *testing.T) {
 	fake := &fakeControlPlane{}
 	c := startFakeControlPlane(t, fake)
 	chain := "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
-	if err := c.Register(enginepb.Engine_MYSQL, "target DB", 3306, "app", []string{"tag"}, "127.0.0.1:6033", &chain, true, nil, nil); err != nil {
+	if err := c.Register(pb.Engine_MYSQL, "target DB", 3306, "app", []string{"tag"}, "127.0.0.1:6033", &chain, true, nil, nil); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	catalog := &pb.CatalogRequest{Catalog: &enginepb.CatalogSnapshot{Columns: []*enginepb.Column{{Schema: "s", Table: "t", Column: "c"}}}}
+	catalog := &pb.CatalogRequest{Catalog: &pb.CatalogSnapshot{Columns: []*pb.Column{{Schema: "s", Table: "t", Column: "c"}}}}
 	if err := c.PushCatalog(catalog); err != nil {
 		t.Fatalf("PushCatalog: %v", err)
 	}
 	fake.mu.Lock()
 	register, catalogReq := fake.lastRegisterReq, fake.lastCatalog
 	fake.mu.Unlock()
-	if register.GetEngine() != enginepb.Engine_MYSQL || register.GetName() != "ds-1" {
+	if register.GetEngine() != pb.Engine_MYSQL || register.GetName() != "ds-1" {
 		t.Fatalf("RegisterRequest = %+v", register)
 	}
 	// The proxy must announce its wire-protocol version so the control plane can turn away a skewed rollout.
@@ -675,7 +674,7 @@ func TestRegisterRejectsIncompatibleControlPlaneVersion(t *testing.T) {
 	bad := ProtocolVersion + 1
 	fake := &fakeControlPlane{registerRespVersion: &bad}
 	c := startFakeControlPlane(t, fake)
-	err := c.Register(enginepb.Engine_MYSQL, "target DB", 3306, "app", nil, "", nil, false, nil, nil)
+	err := c.Register(pb.Engine_MYSQL, "target DB", 3306, "app", nil, "", nil, false, nil, nil)
 	if !errors.Is(err, ErrIncompatibleControlPlane) {
 		t.Fatalf("Register against a version-skewed control plane must return ErrIncompatibleControlPlane: %v", err)
 	}
@@ -692,7 +691,7 @@ func TestRegisterTreatsControlPlaneRejectionAsIncompatible(t *testing.T) {
 		"proxy wire-protocol version 1 is incompatible with this control-plane's version 2 — deploy the proxy and control-plane from the same server-v* release",
 	)}
 	c := startFakeControlPlane(t, fake)
-	err := c.Register(enginepb.Engine_MYSQL, "target DB", 3306, "app", nil, "", nil, false, nil, nil)
+	err := c.Register(pb.Engine_MYSQL, "target DB", 3306, "app", nil, "", nil, false, nil, nil)
 	if !errors.Is(err, ErrIncompatibleControlPlane) {
 		t.Fatalf("a control-plane version rejection must surface as ErrIncompatibleControlPlane: %v", err)
 	}
@@ -707,7 +706,7 @@ func TestPushSchemaFragmentAndCloseConnection(t *testing.T) {
 		Schema:            "app",
 		ContentHash:       []byte("hash"),
 		Unchanged:         false,
-		Columns:           []*enginepb.Column{{Schema: "app", Table: "t", Column: "c", DataType: "text", Ordinal: 2, Nullable: true}},
+		Columns:           []*pb.Column{{Schema: "app", Table: "t", Column: "c", DataType: "text", Ordinal: 2, Nullable: true}},
 		BackendGeneration: 7,
 	})
 	if err != nil || generation != 11 {
@@ -746,7 +745,7 @@ func TestStreamEventsDispatchesMappedRunOpen(t *testing.T) {
 	var refreshes int
 	var openedRun spi.RunOpen
 	var table []string
-	err := c.StreamEvents(func() { refreshes++ }, func(open spi.RunOpen) { openedRun = open }, func(sessionID string, ref *enginepb.ObjectRef) {
+	err := c.StreamEvents(func() { refreshes++ }, func(open spi.RunOpen) { openedRun = open }, func(sessionID string, ref *pb.ObjectRef) {
 		table = []string{sessionID, ref.GetCatalog(), ref.GetSchema(), ref.GetTable()}
 	})
 	if err == nil {
@@ -772,7 +771,7 @@ func TestStreamEventsDispatchesMalformedRunOpen(t *testing.T) {
 	}}}}}
 	c := startFakeControlPlane(t, fake)
 	var openedRun spi.RunOpen
-	_ = c.StreamEvents(func() {}, func(open spi.RunOpen) { openedRun = open }, func(string, *enginepb.ObjectRef) {})
+	_ = c.StreamEvents(func() {}, func(open spi.RunOpen) { openedRun = open }, func(string, *pb.ObjectRef) {})
 	if openedRun.SessionID != "bad" || openedRun.MapErr == nil {
 		t.Fatalf("malformed run open was not dispatched with MapErr: %+v", openedRun)
 	}
@@ -785,7 +784,7 @@ func TestStreamEventsReturnsErrDrainingOnDrainSignal(t *testing.T) {
 		{Kind: &pb.ControlEvent_Draining{Draining: &pb.Draining{}}},
 	}}
 	c := startFakeControlPlane(t, fake)
-	err := c.StreamEvents(func() {}, func(spi.RunOpen) {}, func(string, *enginepb.ObjectRef) {})
+	err := c.StreamEvents(func() {}, func(spi.RunOpen) {}, func(string, *pb.ObjectRef) {})
 	if !errors.Is(err, errDraining) {
 		t.Fatalf("StreamEvents err = %v, want errDraining", err)
 	}
@@ -843,7 +842,7 @@ func TestEventsLoopReconnectsFastOnDrain(t *testing.T) {
 			streamMaxAge:      time.Minute, // long enough that only the drain path paces this test
 			reconnect:         backoff,
 			rotationReconnect: eventsRotationReconnect,
-		}, func() {}, func() {}, func(spi.RunOpen) {}, func(string, *enginepb.ObjectRef) {})
+		}, func() {}, func() {}, func(spi.RunOpen) {}, func(string, *pb.ObjectRef) {})
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -976,7 +975,7 @@ func TestRunEventsLoopExitsOnEventsVersionRejection(t *testing.T) {
 			streamMaxAge:      time.Minute,
 			reconnect:         10 * time.Millisecond,
 			rotationReconnect: eventsRotationReconnect,
-		}, func() {}, func() {}, func(spi.RunOpen) {}, func(string, *enginepb.ObjectRef) {})
+		}, func() {}, func() {}, func(spi.RunOpen) {}, func(string, *pb.ObjectRef) {})
 	}()
 	select {
 	case err := <-errCh:
@@ -1001,7 +1000,7 @@ func TestStreamEventsEndsAtItsMaxAge(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	start := time.Now()
-	err := c.streamEvents(ctx, 300*time.Millisecond, func() {}, func(spi.RunOpen) {}, func(string, *enginepb.ObjectRef) {})
+	err := c.streamEvents(ctx, 300*time.Millisecond, func() {}, func(spi.RunOpen) {}, func(string, *pb.ObjectRef) {})
 	elapsed := time.Since(start)
 
 	if err == nil {
@@ -1031,7 +1030,7 @@ func TestEventsLoopReopensAfterMaxAge(t *testing.T) {
 			streamMaxAge:      150 * time.Millisecond,
 			reconnect:         10 * time.Millisecond,
 			rotationReconnect: 10 * time.Millisecond,
-		}, func() {}, func() {}, func(spi.RunOpen) {}, func(string, *enginepb.ObjectRef) {})
+		}, func() {}, func() {}, func(spi.RunOpen) {}, func(string, *pb.ObjectRef) {})
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -1070,7 +1069,7 @@ func TestEventsLoopRotationGapStaysBoundedAcrossPeriods(t *testing.T) {
 		loopDone := make(chan struct{})
 		go func() {
 			defer close(loopDone)
-			c.runEventsLoop(ctx, timings, func() {}, func() {}, func(spi.RunOpen) {}, func(string, *enginepb.ObjectRef) {})
+			c.runEventsLoop(ctx, timings, func() {}, func() {}, func(spi.RunOpen) {}, func(string, *pb.ObjectRef) {})
 		}()
 		defer func() {
 			cancel()
@@ -1148,7 +1147,7 @@ func TestEventsLoopBacksOffOnServerDeadlineExceeded(t *testing.T) {
 			streamMaxAge:      time.Minute, // long, so only the server's status ends the stream
 			reconnect:         backoff,
 			rotationReconnect: 10 * time.Millisecond,
-		}, func() {}, func() {}, func(spi.RunOpen) {}, func(string, *enginepb.ObjectRef) {})
+		}, func() {}, func() {}, func(spi.RunOpen) {}, func(string, *pb.ObjectRef) {})
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -1181,7 +1180,7 @@ func TestEventsLoopReopensWithoutWaitingForResync(t *testing.T) {
 			streamMaxAge:      150 * time.Millisecond,
 			reconnect:         10 * time.Millisecond,
 			rotationReconnect: 10 * time.Millisecond,
-		}, resync, func() {}, func(spi.RunOpen) {}, func(string, *enginepb.ObjectRef) {})
+		}, resync, func() {}, func(spi.RunOpen) {}, func(string, *pb.ObjectRef) {})
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -1254,7 +1253,7 @@ func TestEventsLoopWaitsTheBackoffBetweenReopens(t *testing.T) {
 			streamMaxAge:      time.Minute, // long enough that only the backoff paces this test
 			reconnect:         backoff,
 			rotationReconnect: eventsRotationReconnect,
-		}, func() {}, func() {}, func(spi.RunOpen) {}, func(string, *enginepb.ObjectRef) {})
+		}, func() {}, func() {}, func(spi.RunOpen) {}, func(string, *pb.ObjectRef) {})
 	}()
 	t.Cleanup(func() {
 		cancel()

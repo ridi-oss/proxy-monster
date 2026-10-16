@@ -9,8 +9,8 @@ import (
 	"testing"
 
 	"github.com/go-sql-driver/mysql"
+	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
-	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 )
 
 func seedCapRows(t *testing.T) {

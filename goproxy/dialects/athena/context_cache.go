@@ -12,8 +12,7 @@ import (
 	"time"
 
 	"github.com/gofrs/flock"
-	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
-	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/tidwall/buntdb"
 	"google.golang.org/protobuf/proto"
 )
@@ -90,7 +89,7 @@ func OpenContextCache(path string, capacity int) (*EnforcementContextCache, erro
 	return cache, nil
 }
 
-func (c *EnforcementContextCache) Lookup(datasource, resourceID, owner string, targetBinding []byte) (*enginepb.AthenaCachedContext, error) {
+func (c *EnforcementContextCache) Lookup(datasource, resourceID, owner string, targetBinding []byte) (*pb.AthenaCachedContext, error) {
 	record, err := c.Find(datasource, resourceID)
 	if err != nil {
 		return nil, err
@@ -103,7 +102,7 @@ func (c *EnforcementContextCache) Lookup(datasource, resourceID, owner string, t
 
 // Find returns the unexpired context for a resource without an owner check; the control plane decides
 // whether the caller owns it.
-func (c *EnforcementContextCache) Find(datasource, resourceID string) (*enginepb.AthenaCachedContext, error) {
+func (c *EnforcementContextCache) Find(datasource, resourceID string) (*pb.AthenaCachedContext, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.failure != nil {
@@ -116,7 +115,7 @@ func (c *EnforcementContextCache) Find(datasource, resourceID string) (*enginepb
 	if err != nil {
 		return nil, err
 	}
-	var record *enginepb.AthenaCachedContext
+	var record *pb.AthenaCachedContext
 	err = c.db.View(func(tx *buntdb.Tx) error {
 		value, err := tx.Get(key)
 		if errors.Is(err, buntdb.ErrNotFound) {
@@ -137,7 +136,7 @@ func (c *EnforcementContextCache) Find(datasource, resourceID string) (*enginepb
 	return record, nil
 }
 
-func (c *EnforcementContextCache) Associate(datasource string, record *enginepb.AthenaCachedContext) error {
+func (c *EnforcementContextCache) Associate(datasource string, record *pb.AthenaCachedContext) error {
 	data, err := proto.MarshalOptions{Deterministic: true}.Marshal(record)
 	if err != nil {
 		return err
@@ -233,7 +232,7 @@ func (c *EnforcementContextCache) Associate(datasource string, record *enginepb.
 
 // Rebind records the result shape a context was first read under. Only the metadata digest may change,
 // only from empty, and only over the exact bytes the caller read; anything else conflicts.
-func (c *EnforcementContextCache) Rebind(datasource string, previous, next *enginepb.AthenaCachedContext) error {
+func (c *EnforcementContextCache) Rebind(datasource string, previous, next *pb.AthenaCachedContext) error {
 	before, err := proto.MarshalOptions{Deterministic: true}.Marshal(previous)
 	if err != nil {
 		return err
@@ -246,7 +245,7 @@ func (c *EnforcementContextCache) Rebind(datasource string, previous, next *engi
 	if err != nil {
 		return err
 	}
-	unchanged := proto.Clone(decoded).(*enginepb.AthenaCachedContext)
+	unchanged := proto.Clone(decoded).(*pb.AthenaCachedContext)
 	unchanged.MetadataDigest = previous.GetMetadataDigest()
 	if len(previous.GetMetadataDigest()) != 0 || len(decoded.MetadataDigest) != 32 || !proto.Equal(unchanged, previous) {
 		return ErrContextConflict
@@ -322,11 +321,11 @@ func contextKey(datasource, resourceID string) (string, error) {
 	return "context:" + base64.RawURLEncoding.EncodeToString([]byte(datasource)) + ":" + base64.RawURLEncoding.EncodeToString([]byte(resourceID)), nil
 }
 
-func decodeContext(data []byte) (*enginepb.AthenaCachedContext, error) {
+func decodeContext(data []byte) (*pb.AthenaCachedContext, error) {
 	if len(data) == 0 || len(data) > maxContextBytes {
 		return nil, ErrContextCorrupt
 	}
-	var record enginepb.AthenaCachedContext
+	var record pb.AthenaCachedContext
 	if err := proto.Unmarshal(data, &record); err != nil {
 		return nil, ErrContextCorrupt
 	}

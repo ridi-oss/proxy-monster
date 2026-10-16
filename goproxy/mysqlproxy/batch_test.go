@@ -11,7 +11,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/mysqlwire"
 )
 

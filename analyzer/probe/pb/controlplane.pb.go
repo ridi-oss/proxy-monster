@@ -8,10 +8,9 @@
 // Single source of truth for both sides' generated bindings. Internal, trusted
 // service-to-service surface only — the web UI keeps talking HTTP/JSON to control-plane.
 
-package proxymonsterv1
+package pb
 
 import (
-	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	emptypb "google.golang.org/protobuf/types/known/emptypb"
@@ -139,7 +138,7 @@ func (x *ProxyCommand) GetRefetch() *Refetch {
 	return nil
 }
 
-func (x *ProxyCommand) GetFetchAthenaPreparedDefinition() *pb.FetchAthenaPreparedDefinition {
+func (x *ProxyCommand) GetFetchAthenaPreparedDefinition() *FetchAthenaPreparedDefinition {
 	if x, ok := x.GetCommand().(*ProxyCommand_FetchAthenaPreparedDefinition); ok {
 		return x.FetchAthenaPreparedDefinition
 	}
@@ -162,7 +161,7 @@ type ProxyCommand_Refetch struct {
 }
 
 type ProxyCommand_FetchAthenaPreparedDefinition struct {
-	FetchAthenaPreparedDefinition *pb.FetchAthenaPreparedDefinition `protobuf:"bytes,2,opt,name=fetch_athena_prepared_definition,json=fetchAthenaPreparedDefinition,proto3,oneof"`
+	FetchAthenaPreparedDefinition *FetchAthenaPreparedDefinition `protobuf:"bytes,2,opt,name=fetch_athena_prepared_definition,json=fetchAthenaPreparedDefinition,proto3,oneof"`
 }
 
 type ProxyCommand_CheckTargetError struct {
@@ -365,13 +364,13 @@ type RegisterRequest struct {
 	sizeCache     protoimpl.SizeCache
 	unknownFields protoimpl.UnknownFields
 
-	Name          string    `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"` // stable identity; Cedar's Datasource::"<name>"; upsert key
-	Engine        pb.Engine `protobuf:"varint,2,opt,name=engine,proto3,enum=proxymonster.v1.Engine" json:"engine,omitempty"`
-	Host          string    `protobuf:"bytes,3,opt,name=host,proto3" json:"host,omitempty"`                                        // advisory only (admin UI / triage)
-	Port          int32     `protobuf:"varint,4,opt,name=port,proto3" json:"port,omitempty"`                                       // advisory only
-	DbName        string    `protobuf:"bytes,5,opt,name=db_name,json=dbName,proto3" json:"db_name,omitempty"`                      // advisory only
-	Tags          []string  `protobuf:"bytes,6,rep,name=tags,proto3" json:"tags,omitempty"`                                        // optional free-form; posture tags system:development/system:production; empty => production floor via deny-by-default (policy-store.md)
-	AdvertiseAddr string    `protobuf:"bytes,7,opt,name=advertise_addr,json=advertiseAddr,proto3" json:"advertise_addr,omitempty"` // client-facing host:port a wire client dials to reach THIS datasource's proxy (not the upstream host/port above); empty when the proxy isn't told its reachable address. Surfaced by GET /api/datasources so a client (pmon) can open a local broker per datasource.
+	Name          string   `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"` // stable identity; Cedar's Datasource::"<name>"; upsert key
+	Engine        Engine   `protobuf:"varint,2,opt,name=engine,proto3,enum=proxymonster.v1.Engine" json:"engine,omitempty"`
+	Host          string   `protobuf:"bytes,3,opt,name=host,proto3" json:"host,omitempty"`                                        // advisory only (admin UI / triage)
+	Port          int32    `protobuf:"varint,4,opt,name=port,proto3" json:"port,omitempty"`                                       // advisory only
+	DbName        string   `protobuf:"bytes,5,opt,name=db_name,json=dbName,proto3" json:"db_name,omitempty"`                      // advisory only
+	Tags          []string `protobuf:"bytes,6,rep,name=tags,proto3" json:"tags,omitempty"`                                        // optional free-form; posture tags system:development/system:production; empty => production floor via deny-by-default (policy-store.md)
+	AdvertiseAddr string   `protobuf:"bytes,7,opt,name=advertise_addr,json=advertiseAddr,proto3" json:"advertise_addr,omitempty"` // client-facing host:port a wire client dials to reach THIS datasource's proxy (not the upstream host/port above); empty when the proxy isn't told its reachable address. Surfaced by GET /api/datasources so a client (pmon) can open a local broker per datasource.
 	// The certificate CHAIN a client should trust to reach this proxy: PEM, leaf first, followed by any
 	// intermediates and the root. A self-signed cert is the one-element case. Every client verifies against
 	// this the ordinary way -- pmon as its root pool, psql/mysql/DataGrip as sslrootcert / --ssl-ca with
@@ -441,11 +440,11 @@ func (x *RegisterRequest) GetName() string {
 	return ""
 }
 
-func (x *RegisterRequest) GetEngine() pb.Engine {
+func (x *RegisterRequest) GetEngine() Engine {
 	if x != nil {
 		return x.Engine
 	}
-	return pb.Engine(0)
+	return Engine_ENGINE_UNSPECIFIED
 }
 
 func (x *RegisterRequest) GetHost() string {
@@ -635,7 +634,7 @@ type ReadCatalog struct {
 	sizeCache     protoimpl.SizeCache
 	unknownFields protoimpl.UnknownFields
 
-	Namespace *pb.ObjectRef `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	Namespace *ObjectRef `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
 }
 
 func (x *ReadCatalog) Reset() {
@@ -668,7 +667,7 @@ func (*ReadCatalog) Descriptor() ([]byte, []int) {
 	return file_controlplane_proto_rawDescGZIP(), []int{7}
 }
 
-func (x *ReadCatalog) GetNamespace() *pb.ObjectRef {
+func (x *ReadCatalog) GetNamespace() *ObjectRef {
 	if x != nil {
 		return x.Namespace
 	}
@@ -681,7 +680,7 @@ type ReadTableMetadata struct {
 	sizeCache     protoimpl.SizeCache
 	unknownFields protoimpl.UnknownFields
 
-	Table *pb.ObjectRef `protobuf:"bytes,1,opt,name=table,proto3" json:"table,omitempty"`
+	Table *ObjectRef `protobuf:"bytes,1,opt,name=table,proto3" json:"table,omitempty"`
 }
 
 func (x *ReadTableMetadata) Reset() {
@@ -714,7 +713,7 @@ func (*ReadTableMetadata) Descriptor() ([]byte, []int) {
 	return file_controlplane_proto_rawDescGZIP(), []int{8}
 }
 
-func (x *ReadTableMetadata) GetTable() *pb.ObjectRef {
+func (x *ReadTableMetadata) GetTable() *ObjectRef {
 	if x != nil {
 		return x.Table
 	}
@@ -813,7 +812,7 @@ func (x *RequestAuthorization) GetReadTableMetadata() *ReadTableMetadata {
 	return nil
 }
 
-func (x *RequestAuthorization) GetAthena() *pb.AthenaNativeDescriptor {
+func (x *RequestAuthorization) GetAthena() *AthenaNativeDescriptor {
 	if x, ok := x.GetOperation().(*RequestAuthorization_Athena); ok {
 		return x.Athena
 	}
@@ -835,7 +834,7 @@ type RequestAuthorization_ReadTableMetadata struct {
 type RequestAuthorization_Athena struct {
 	// A provider-native API call, described by that engine's own message; the engine's request authorizer
 	// decides it. An arm the datasource's engine does not own is denied.
-	Athena *pb.AthenaNativeDescriptor `protobuf:"bytes,6,opt,name=athena,proto3,oneof"`
+	Athena *AthenaNativeDescriptor `protobuf:"bytes,6,opt,name=athena,proto3,oneof"`
 }
 
 func (*RequestAuthorization_ReadCatalog) isRequestAuthorization_Operation() {}
@@ -929,7 +928,7 @@ func (m *RequestAuthorizationResult) GetInstructions() isRequestAuthorizationRes
 	return nil
 }
 
-func (x *RequestAuthorizationResult) GetAthena() *pb.AthenaNativeInstructions {
+func (x *RequestAuthorizationResult) GetAthena() *AthenaNativeInstructions {
 	if x, ok := x.GetInstructions().(*RequestAuthorizationResult_Athena); ok {
 		return x.Athena
 	}
@@ -941,7 +940,7 @@ type isRequestAuthorizationResult_Instructions interface {
 }
 
 type RequestAuthorizationResult_Athena struct {
-	Athena *pb.AthenaNativeInstructions `protobuf:"bytes,5,opt,name=athena,proto3,oneof"`
+	Athena *AthenaNativeInstructions `protobuf:"bytes,5,opt,name=athena,proto3,oneof"`
 }
 
 func (*RequestAuthorizationResult_Athena) isRequestAuthorizationResult_Instructions() {}
@@ -960,8 +959,8 @@ type CatalogRequest struct {
 	// dials the target), yet system-classification (docs/system-classification.md) resolves its manifest by
 	// the datasource's major engine version + Aurora-ness — so the proxy, the only side with a live
 	// connection, supplies it. Raw string; the control-plane owns parsing the major + Aurora marker.
-	EngineVersion string              `protobuf:"bytes,5,opt,name=engine_version,json=engineVersion,proto3" json:"engine_version,omitempty"`
-	Catalog       *pb.CatalogSnapshot `protobuf:"bytes,6,opt,name=catalog,proto3" json:"catalog,omitempty"` // proxy fills columns + routines; the control plane fills functions
+	EngineVersion string           `protobuf:"bytes,5,opt,name=engine_version,json=engineVersion,proto3" json:"engine_version,omitempty"`
+	Catalog       *CatalogSnapshot `protobuf:"bytes,6,opt,name=catalog,proto3" json:"catalog,omitempty"` // proxy fills columns + routines; the control plane fills functions
 	// The catalog identity the target measured (MySQL `def`, PostgreSQL current_database(), Athena the
 	// configured data catalog); every snapshot column names it.
 	CurrentCatalog string `protobuf:"bytes,7,opt,name=current_catalog,json=currentCatalog,proto3" json:"current_catalog,omitempty"`
@@ -1025,7 +1024,7 @@ func (x *CatalogRequest) GetEngineVersion() string {
 	return ""
 }
 
-func (x *CatalogRequest) GetCatalog() *pb.CatalogSnapshot {
+func (x *CatalogRequest) GetCatalog() *CatalogSnapshot {
 	if x != nil {
 		return x.Catalog
 	}
@@ -1221,12 +1220,12 @@ type SchemaFragmentPush struct {
 	sizeCache     protoimpl.SizeCache
 	unknownFields protoimpl.UnknownFields
 
-	ConnectionId   []byte       `protobuf:"bytes,1,opt,name=connection_id,json=connectionId,proto3" json:"connection_id,omitempty"`
-	DatasourceName string       `protobuf:"bytes,2,opt,name=datasource_name,json=datasourceName,proto3" json:"datasource_name,omitempty"`
-	Schema         string       `protobuf:"bytes,3,opt,name=schema,proto3" json:"schema,omitempty"`
-	ContentHash    []byte       `protobuf:"bytes,4,opt,name=content_hash,json=contentHash,proto3" json:"content_hash,omitempty"` // the live DB-side hash the proxy just measured for this schema
-	Unchanged      bool         `protobuf:"varint,5,opt,name=unchanged,proto3" json:"unchanged,omitempty"`                       // true = live hash matched the REFETCH hash; columns omitted (no-op ack)
-	Columns        []*pb.Column `protobuf:"bytes,6,rep,name=columns,proto3" json:"columns,omitempty"`                            // the same Column as PushCatalog
+	ConnectionId   []byte    `protobuf:"bytes,1,opt,name=connection_id,json=connectionId,proto3" json:"connection_id,omitempty"`
+	DatasourceName string    `protobuf:"bytes,2,opt,name=datasource_name,json=datasourceName,proto3" json:"datasource_name,omitempty"`
+	Schema         string    `protobuf:"bytes,3,opt,name=schema,proto3" json:"schema,omitempty"`
+	ContentHash    []byte    `protobuf:"bytes,4,opt,name=content_hash,json=contentHash,proto3" json:"content_hash,omitempty"` // the live DB-side hash the proxy just measured for this schema
+	Unchanged      bool      `protobuf:"varint,5,opt,name=unchanged,proto3" json:"unchanged,omitempty"`                       // true = live hash matched the REFETCH hash; columns omitted (no-op ack)
+	Columns        []*Column `protobuf:"bytes,6,rep,name=columns,proto3" json:"columns,omitempty"`                            // the same Column as PushCatalog
 	// The catalog the fragment was measured in; every column names it, and a column naming another
 	// catalog is refused.
 	Catalog           string `protobuf:"bytes,9,opt,name=catalog,proto3" json:"catalog,omitempty"`
@@ -1300,7 +1299,7 @@ func (x *SchemaFragmentPush) GetUnchanged() bool {
 	return false
 }
 
-func (x *SchemaFragmentPush) GetColumns() []*pb.Column {
+func (x *SchemaFragmentPush) GetColumns() []*Column {
 	if x != nil {
 		return x.Columns
 	}
@@ -1484,7 +1483,7 @@ type DecisionRequest struct {
 	CurrentCatalog string `protobuf:"bytes,12,opt,name=current_catalog,json=currentCatalog,proto3" json:"current_catalog,omitempty"`
 	// What the proxy observed on the held target session before this statement; the control plane
 	// forwards it unchanged as EngineConfig.session.
-	Session *pb.SessionObservation `protobuf:"bytes,14,opt,name=session,proto3" json:"session,omitempty"`
+	Session *SessionObservation `protobuf:"bytes,14,opt,name=session,proto3" json:"session,omitempty"`
 	// The outcome of a check_target_error command; absent until the control plane asks for one.
 	TargetCheck *TargetCheck `protobuf:"bytes,15,opt,name=target_check,json=targetCheck,proto3" json:"target_check,omitempty"`
 }
@@ -1575,7 +1574,7 @@ func (x *DecisionRequest) GetCurrentCatalog() string {
 	return ""
 }
 
-func (x *DecisionRequest) GetSession() *pb.SessionObservation {
+func (x *DecisionRequest) GetSession() *SessionObservation {
 	if x != nil {
 		return x.Session
 	}
@@ -1913,13 +1912,13 @@ type Verdict struct {
 	// them — like decision_id, it echoes them back on RunDecision purely so an execute-under-R run freezes
 	// them with the stored result and a later view can deny authorization drift (the control-plane result-view
 	// gate). Empty for a decision that needs no result-read grants.
-	ResultFingerprint []*pb.RequireResultReadGrant `protobuf:"bytes,11,rep,name=result_fingerprint,json=resultFingerprint,proto3" json:"result_fingerprint,omitempty"`
+	ResultFingerprint []*RequireResultReadGrant `protobuf:"bytes,11,rep,name=result_fingerprint,json=resultFingerprint,proto3" json:"result_fingerprint,omitempty"`
 	// The result caps this statement's result.cap policies annotate (docs/result-caps.md), resolved by the
 	// control plane: 0 = uncapped, which only a result.cap forbid produces. Set explicitly on every verdict.
 	MaxRows  int64 `protobuf:"varint,12,opt,name=max_rows,json=maxRows,proto3" json:"max_rows,omitempty"`
 	MaxBytes int64 `protobuf:"varint,13,opt,name=max_bytes,json=maxBytes,proto3" json:"max_bytes,omitempty"`
 	// The engine-specific companion to rewritten_sql (analyzer.proto Submission); absent = text only.
-	Submission *pb.Submission `protobuf:"bytes,14,opt,name=submission,proto3" json:"submission,omitempty"`
+	Submission *Submission `protobuf:"bytes,14,opt,name=submission,proto3" json:"submission,omitempty"`
 	// The proxy sends the target's error from check_target_error, redacted, and runs nothing.
 	ForwardTargetError bool `protobuf:"varint,15,opt,name=forward_target_error,json=forwardTargetError,proto3" json:"forward_target_error,omitempty"`
 }
@@ -2024,7 +2023,7 @@ func (x *Verdict) GetSanitizeDiagnostics() bool {
 	return false
 }
 
-func (x *Verdict) GetResultFingerprint() []*pb.RequireResultReadGrant {
+func (x *Verdict) GetResultFingerprint() []*RequireResultReadGrant {
 	if x != nil {
 		return x.ResultFingerprint
 	}
@@ -2045,7 +2044,7 @@ func (x *Verdict) GetMaxBytes() int64 {
 	return 0
 }
 
-func (x *Verdict) GetSubmission() *pb.Submission {
+func (x *Verdict) GetSubmission() *Submission {
 	if x != nil {
 		return x.Submission
 	}
@@ -2836,7 +2835,7 @@ type RunServing struct {
 
 	// The held session's effective namespace (PostgreSQL current_schemas(true), MySQL [DATABASE()] or empty).
 	// Absent when the proxy could not read it.
-	Namespace *pb.Namespace `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	Namespace *Namespace `protobuf:"bytes,1,opt,name=namespace,proto3" json:"namespace,omitempty"`
 }
 
 func (x *RunServing) Reset() {
@@ -2869,7 +2868,7 @@ func (*RunServing) Descriptor() ([]byte, []int) {
 	return file_controlplane_proto_rawDescGZIP(), []int{36}
 }
 
-func (x *RunServing) GetNamespace() *pb.Namespace {
+func (x *RunServing) GetNamespace() *Namespace {
 	if x != nil {
 		return x.Namespace
 	}
@@ -3017,7 +3016,7 @@ type RunDecision struct {
 	// The decision's authorization requirements (the analyzer's result-read grants), forwarded from
 	// Verdict.result_fingerprint. An execute-under-R run freezes them with the stored result so a later view
 	// denies authorization drift.
-	ResultFingerprint []*pb.RequireResultReadGrant `protobuf:"bytes,6,rep,name=result_fingerprint,json=resultFingerprint,proto3" json:"result_fingerprint,omitempty"`
+	ResultFingerprint []*RequireResultReadGrant `protobuf:"bytes,6,rep,name=result_fingerprint,json=resultFingerprint,proto3" json:"result_fingerprint,omitempty"`
 	// Verdict.sanitize_diagnostics echoed back, so the caller returns the failure form the decision
 	// dictated: redacted when set, raw otherwise.
 	SanitizeDiagnostics bool `protobuf:"varint,7,opt,name=sanitize_diagnostics,json=sanitizeDiagnostics,proto3" json:"sanitize_diagnostics,omitempty"`
@@ -3092,7 +3091,7 @@ func (x *RunDecision) GetEffectiveRoles() []string {
 	return nil
 }
 
-func (x *RunDecision) GetResultFingerprint() []*pb.RequireResultReadGrant {
+func (x *RunDecision) GetResultFingerprint() []*RequireResultReadGrant {
 	if x != nil {
 		return x.ResultFingerprint
 	}
@@ -3282,7 +3281,7 @@ type RunDone struct {
 	TruncatedByCap bool `protobuf:"varint,2,opt,name=truncated_by_cap,json=truncatedByCap,proto3" json:"truncated_by_cap,omitempty"`
 	// Same as RunServing.namespace, but read after the statement, so it reflects a SET search_path / USE the
 	// statement ran.
-	Namespace *pb.Namespace `protobuf:"bytes,3,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	Namespace *Namespace `protobuf:"bytes,3,opt,name=namespace,proto3" json:"namespace,omitempty"`
 }
 
 func (x *RunDone) Reset() {
@@ -3329,7 +3328,7 @@ func (x *RunDone) GetTruncatedByCap() bool {
 	return false
 }
 
-func (x *RunDone) GetNamespace() *pb.Namespace {
+func (x *RunDone) GetNamespace() *Namespace {
 	if x != nil {
 		return x.Namespace
 	}
@@ -4335,10 +4334,19 @@ var file_controlplane_proto_rawDesc = []byte{
 	0x12, 0x21, 0x2e, 0x70, 0x72, 0x6f, 0x78, 0x79, 0x6d, 0x6f, 0x6e, 0x73, 0x74, 0x65, 0x72, 0x2e,
 	0x76, 0x31, 0x2e, 0x43, 0x6f, 0x6d, 0x70, 0x6c, 0x65, 0x74, 0x69, 0x6f, 0x6e, 0x52, 0x65, 0x70,
 	0x6f, 0x72, 0x74, 0x1a, 0x16, 0x2e, 0x67, 0x6f, 0x6f, 0x67, 0x6c, 0x65, 0x2e, 0x70, 0x72, 0x6f,
-	0x74, 0x6f, 0x62, 0x75, 0x66, 0x2e, 0x45, 0x6d, 0x70, 0x74, 0x79, 0x42, 0x22, 0x0a, 0x1e, 0x63,
-	0x6f, 0x6d, 0x2e, 0x72, 0x69, 0x64, 0x69, 0x2e, 0x6f, 0x73, 0x73, 0x2e, 0x70, 0x72, 0x6f, 0x78,
-	0x79, 0x6d, 0x6f, 0x6e, 0x73, 0x74, 0x65, 0x72, 0x2e, 0x67, 0x72, 0x70, 0x63, 0x50, 0x01, 0x62,
-	0x06, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x33,
+	0x74, 0x6f, 0x62, 0x75, 0x66, 0x2e, 0x45, 0x6d, 0x70, 0x74, 0x79, 0x42, 0xba, 0x01, 0x0a, 0x13,
+	0x63, 0x6f, 0x6d, 0x2e, 0x70, 0x72, 0x6f, 0x78, 0x79, 0x6d, 0x6f, 0x6e, 0x73, 0x74, 0x65, 0x72,
+	0x2e, 0x76, 0x31, 0x42, 0x11, 0x43, 0x6f, 0x6e, 0x74, 0x72, 0x6f, 0x6c, 0x70, 0x6c, 0x61, 0x6e,
+	0x65, 0x50, 0x72, 0x6f, 0x74, 0x6f, 0x50, 0x01, 0x5a, 0x33, 0x67, 0x69, 0x74, 0x68, 0x75, 0x62,
+	0x2e, 0x63, 0x6f, 0x6d, 0x2f, 0x72, 0x69, 0x64, 0x69, 0x2d, 0x6f, 0x73, 0x73, 0x2f, 0x70, 0x72,
+	0x6f, 0x78, 0x79, 0x2d, 0x6d, 0x6f, 0x6e, 0x73, 0x74, 0x65, 0x72, 0x2f, 0x61, 0x6e, 0x61, 0x6c,
+	0x79, 0x7a, 0x65, 0x72, 0x2f, 0x70, 0x72, 0x6f, 0x62, 0x65, 0x2f, 0x70, 0x62, 0xa2, 0x02, 0x03,
+	0x50, 0x58, 0x58, 0xaa, 0x02, 0x0f, 0x50, 0x72, 0x6f, 0x78, 0x79, 0x6d, 0x6f, 0x6e, 0x73, 0x74,
+	0x65, 0x72, 0x2e, 0x56, 0x31, 0xca, 0x02, 0x0f, 0x50, 0x72, 0x6f, 0x78, 0x79, 0x6d, 0x6f, 0x6e,
+	0x73, 0x74, 0x65, 0x72, 0x5c, 0x56, 0x31, 0xe2, 0x02, 0x1b, 0x50, 0x72, 0x6f, 0x78, 0x79, 0x6d,
+	0x6f, 0x6e, 0x73, 0x74, 0x65, 0x72, 0x5c, 0x56, 0x31, 0x5c, 0x47, 0x50, 0x42, 0x4d, 0x65, 0x74,
+	0x61, 0x64, 0x61, 0x74, 0x61, 0xea, 0x02, 0x10, 0x50, 0x72, 0x6f, 0x78, 0x79, 0x6d, 0x6f, 0x6e,
+	0x73, 0x74, 0x65, 0x72, 0x3a, 0x3a, 0x56, 0x31, 0x62, 0x06, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x33,
 }
 
 var (
@@ -4356,72 +4364,72 @@ func file_controlplane_proto_rawDescGZIP() []byte {
 var file_controlplane_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
 var file_controlplane_proto_msgTypes = make([]protoimpl.MessageInfo, 53)
 var file_controlplane_proto_goTypes = []any{
-	(EnfAction)(0),                           // 0: proxymonster.v1.EnfAction
-	(*ProxyCommand)(nil),                     // 1: proxymonster.v1.ProxyCommand
-	(*CheckTargetError)(nil),                 // 2: proxymonster.v1.CheckTargetError
-	(*Refetch)(nil),                          // 3: proxymonster.v1.Refetch
-	(*CompletionReport)(nil),                 // 4: proxymonster.v1.CompletionReport
-	(*RegisterRequest)(nil),                  // 5: proxymonster.v1.RegisterRequest
-	(*RegisterResponse)(nil),                 // 6: proxymonster.v1.RegisterResponse
-	(*ConnectionInfo)(nil),                   // 7: proxymonster.v1.ConnectionInfo
-	(*ReadCatalog)(nil),                      // 8: proxymonster.v1.ReadCatalog
-	(*ReadTableMetadata)(nil),                // 9: proxymonster.v1.ReadTableMetadata
-	(*RequestAuthorization)(nil),             // 10: proxymonster.v1.RequestAuthorization
-	(*RequestAuthorizationResult)(nil),       // 11: proxymonster.v1.RequestAuthorizationResult
-	(*CatalogRequest)(nil),                   // 12: proxymonster.v1.CatalogRequest
-	(*CatalogResponse)(nil),                  // 13: proxymonster.v1.CatalogResponse
-	(*ValidateTokenRequest)(nil),             // 14: proxymonster.v1.ValidateTokenRequest
-	(*WireIdentity)(nil),                     // 15: proxymonster.v1.WireIdentity
-	(*SchemaFragmentPush)(nil),               // 16: proxymonster.v1.SchemaFragmentPush
-	(*SchemaFragmentAck)(nil),                // 17: proxymonster.v1.SchemaFragmentAck
-	(*CloseConnectionRequest)(nil),           // 18: proxymonster.v1.CloseConnectionRequest
-	(*CloseConnectionResponse)(nil),          // 19: proxymonster.v1.CloseConnectionResponse
-	(*DecisionRequest)(nil),                  // 20: proxymonster.v1.DecisionRequest
-	(*TargetCheck)(nil),                      // 21: proxymonster.v1.TargetCheck
-	(*TempColumn)(nil),                       // 22: proxymonster.v1.TempColumn
-	(*ColumnMask)(nil),                       // 23: proxymonster.v1.ColumnMask
-	(*WireDecision)(nil),                     // 24: proxymonster.v1.WireDecision
-	(*Verdict)(nil),                          // 25: proxymonster.v1.Verdict
-	(*BeforeDecide)(nil),                     // 26: proxymonster.v1.BeforeDecide
-	(*EventsRequest)(nil),                    // 27: proxymonster.v1.EventsRequest
-	(*ControlEvent)(nil),                     // 28: proxymonster.v1.ControlEvent
-	(*RefreshCatalog)(nil),                   // 29: proxymonster.v1.RefreshCatalog
-	(*Draining)(nil),                         // 30: proxymonster.v1.Draining
-	(*OpenRunChannel)(nil),                   // 31: proxymonster.v1.OpenRunChannel
-	(*OpenTableDetailChannel)(nil),           // 32: proxymonster.v1.OpenTableDetailChannel
-	(*ProxyRunMsg)(nil),                      // 33: proxymonster.v1.ProxyRunMsg
-	(*ControlRunMsg)(nil),                    // 34: proxymonster.v1.ControlRunMsg
-	(*RunReady)(nil),                         // 35: proxymonster.v1.RunReady
-	(*RunProgress)(nil),                      // 36: proxymonster.v1.RunProgress
-	(*RunServing)(nil),                       // 37: proxymonster.v1.RunServing
-	(*RunQuery)(nil),                         // 38: proxymonster.v1.RunQuery
-	(*RunClose)(nil),                         // 39: proxymonster.v1.RunClose
-	(*RunCancel)(nil),                        // 40: proxymonster.v1.RunCancel
-	(*RunDecision)(nil),                      // 41: proxymonster.v1.RunDecision
-	(*RunResultRows)(nil),                    // 42: proxymonster.v1.RunResultRows
-	(*RunRow)(nil),                           // 43: proxymonster.v1.RunRow
-	(*RunValue)(nil),                         // 44: proxymonster.v1.RunValue
-	(*RunDone)(nil),                          // 45: proxymonster.v1.RunDone
-	(*RunError)(nil),                         // 46: proxymonster.v1.RunError
-	(*ProxyTableDetailMsg)(nil),              // 47: proxymonster.v1.ProxyTableDetailMsg
-	(*ControlTableDetailMsg)(nil),            // 48: proxymonster.v1.ControlTableDetailMsg
-	(*TableDetailReady)(nil),                 // 49: proxymonster.v1.TableDetailReady
-	(*TableDetailResult)(nil),                // 50: proxymonster.v1.TableDetailResult
-	(*TableDetailError)(nil),                 // 51: proxymonster.v1.TableDetailError
-	(*TableDetailClose)(nil),                 // 52: proxymonster.v1.TableDetailClose
-	nil,                                      // 53: proxymonster.v1.ConnectionInfo.PropertiesEntry
-	(*pb.FetchAthenaPreparedDefinition)(nil), // 54: proxymonster.athena.v1.FetchAthenaPreparedDefinition
-	(pb.Engine)(0),                           // 55: proxymonster.v1.Engine
-	(*pb.ObjectRef)(nil),                     // 56: proxymonster.v1.ObjectRef
-	(*pb.AthenaNativeDescriptor)(nil),        // 57: proxymonster.athena.v1.AthenaNativeDescriptor
-	(*pb.AthenaNativeInstructions)(nil),      // 58: proxymonster.athena.v1.AthenaNativeInstructions
-	(*pb.CatalogSnapshot)(nil),               // 59: proxymonster.analyzer.v1.CatalogSnapshot
-	(*pb.Column)(nil),                        // 60: proxymonster.analyzer.v1.Column
-	(*pb.SessionObservation)(nil),            // 61: proxymonster.analyzer.v1.SessionObservation
-	(*pb.RequireResultReadGrant)(nil),        // 62: proxymonster.analyzer.v1.RequireResultReadGrant
-	(*pb.Submission)(nil),                    // 63: proxymonster.analyzer.v1.Submission
-	(*pb.Namespace)(nil),                     // 64: proxymonster.analyzer.v1.Namespace
-	(*emptypb.Empty)(nil),                    // 65: google.protobuf.Empty
+	(EnfAction)(0),                        // 0: proxymonster.v1.EnfAction
+	(*ProxyCommand)(nil),                  // 1: proxymonster.v1.ProxyCommand
+	(*CheckTargetError)(nil),              // 2: proxymonster.v1.CheckTargetError
+	(*Refetch)(nil),                       // 3: proxymonster.v1.Refetch
+	(*CompletionReport)(nil),              // 4: proxymonster.v1.CompletionReport
+	(*RegisterRequest)(nil),               // 5: proxymonster.v1.RegisterRequest
+	(*RegisterResponse)(nil),              // 6: proxymonster.v1.RegisterResponse
+	(*ConnectionInfo)(nil),                // 7: proxymonster.v1.ConnectionInfo
+	(*ReadCatalog)(nil),                   // 8: proxymonster.v1.ReadCatalog
+	(*ReadTableMetadata)(nil),             // 9: proxymonster.v1.ReadTableMetadata
+	(*RequestAuthorization)(nil),          // 10: proxymonster.v1.RequestAuthorization
+	(*RequestAuthorizationResult)(nil),    // 11: proxymonster.v1.RequestAuthorizationResult
+	(*CatalogRequest)(nil),                // 12: proxymonster.v1.CatalogRequest
+	(*CatalogResponse)(nil),               // 13: proxymonster.v1.CatalogResponse
+	(*ValidateTokenRequest)(nil),          // 14: proxymonster.v1.ValidateTokenRequest
+	(*WireIdentity)(nil),                  // 15: proxymonster.v1.WireIdentity
+	(*SchemaFragmentPush)(nil),            // 16: proxymonster.v1.SchemaFragmentPush
+	(*SchemaFragmentAck)(nil),             // 17: proxymonster.v1.SchemaFragmentAck
+	(*CloseConnectionRequest)(nil),        // 18: proxymonster.v1.CloseConnectionRequest
+	(*CloseConnectionResponse)(nil),       // 19: proxymonster.v1.CloseConnectionResponse
+	(*DecisionRequest)(nil),               // 20: proxymonster.v1.DecisionRequest
+	(*TargetCheck)(nil),                   // 21: proxymonster.v1.TargetCheck
+	(*TempColumn)(nil),                    // 22: proxymonster.v1.TempColumn
+	(*ColumnMask)(nil),                    // 23: proxymonster.v1.ColumnMask
+	(*WireDecision)(nil),                  // 24: proxymonster.v1.WireDecision
+	(*Verdict)(nil),                       // 25: proxymonster.v1.Verdict
+	(*BeforeDecide)(nil),                  // 26: proxymonster.v1.BeforeDecide
+	(*EventsRequest)(nil),                 // 27: proxymonster.v1.EventsRequest
+	(*ControlEvent)(nil),                  // 28: proxymonster.v1.ControlEvent
+	(*RefreshCatalog)(nil),                // 29: proxymonster.v1.RefreshCatalog
+	(*Draining)(nil),                      // 30: proxymonster.v1.Draining
+	(*OpenRunChannel)(nil),                // 31: proxymonster.v1.OpenRunChannel
+	(*OpenTableDetailChannel)(nil),        // 32: proxymonster.v1.OpenTableDetailChannel
+	(*ProxyRunMsg)(nil),                   // 33: proxymonster.v1.ProxyRunMsg
+	(*ControlRunMsg)(nil),                 // 34: proxymonster.v1.ControlRunMsg
+	(*RunReady)(nil),                      // 35: proxymonster.v1.RunReady
+	(*RunProgress)(nil),                   // 36: proxymonster.v1.RunProgress
+	(*RunServing)(nil),                    // 37: proxymonster.v1.RunServing
+	(*RunQuery)(nil),                      // 38: proxymonster.v1.RunQuery
+	(*RunClose)(nil),                      // 39: proxymonster.v1.RunClose
+	(*RunCancel)(nil),                     // 40: proxymonster.v1.RunCancel
+	(*RunDecision)(nil),                   // 41: proxymonster.v1.RunDecision
+	(*RunResultRows)(nil),                 // 42: proxymonster.v1.RunResultRows
+	(*RunRow)(nil),                        // 43: proxymonster.v1.RunRow
+	(*RunValue)(nil),                      // 44: proxymonster.v1.RunValue
+	(*RunDone)(nil),                       // 45: proxymonster.v1.RunDone
+	(*RunError)(nil),                      // 46: proxymonster.v1.RunError
+	(*ProxyTableDetailMsg)(nil),           // 47: proxymonster.v1.ProxyTableDetailMsg
+	(*ControlTableDetailMsg)(nil),         // 48: proxymonster.v1.ControlTableDetailMsg
+	(*TableDetailReady)(nil),              // 49: proxymonster.v1.TableDetailReady
+	(*TableDetailResult)(nil),             // 50: proxymonster.v1.TableDetailResult
+	(*TableDetailError)(nil),              // 51: proxymonster.v1.TableDetailError
+	(*TableDetailClose)(nil),              // 52: proxymonster.v1.TableDetailClose
+	nil,                                   // 53: proxymonster.v1.ConnectionInfo.PropertiesEntry
+	(*FetchAthenaPreparedDefinition)(nil), // 54: proxymonster.athena.v1.FetchAthenaPreparedDefinition
+	(Engine)(0),                           // 55: proxymonster.v1.Engine
+	(*ObjectRef)(nil),                     // 56: proxymonster.v1.ObjectRef
+	(*AthenaNativeDescriptor)(nil),        // 57: proxymonster.athena.v1.AthenaNativeDescriptor
+	(*AthenaNativeInstructions)(nil),      // 58: proxymonster.athena.v1.AthenaNativeInstructions
+	(*CatalogSnapshot)(nil),               // 59: proxymonster.analyzer.v1.CatalogSnapshot
+	(*Column)(nil),                        // 60: proxymonster.analyzer.v1.Column
+	(*SessionObservation)(nil),            // 61: proxymonster.analyzer.v1.SessionObservation
+	(*RequireResultReadGrant)(nil),        // 62: proxymonster.analyzer.v1.RequireResultReadGrant
+	(*Submission)(nil),                    // 63: proxymonster.analyzer.v1.Submission
+	(*Namespace)(nil),                     // 64: proxymonster.analyzer.v1.Namespace
+	(*emptypb.Empty)(nil),                 // 65: google.protobuf.Empty
 }
 var file_controlplane_proto_depIdxs = []int32{
 	3,  // 0: proxymonster.v1.ProxyCommand.refetch:type_name -> proxymonster.v1.Refetch
@@ -4509,6 +4517,9 @@ func file_controlplane_proto_init() {
 	if File_controlplane_proto != nil {
 		return
 	}
+	file_engine_proto_init()
+	file_analyzer_proto_init()
+	file_athena_proto_init()
 	file_controlplane_proto_msgTypes[0].OneofWrappers = []any{
 		(*ProxyCommand_Refetch)(nil),
 		(*ProxyCommand_FetchAthenaPreparedDefinition)(nil),

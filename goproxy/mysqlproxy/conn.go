@@ -11,9 +11,8 @@ import (
 	"time"
 
 	"github.com/ridi-oss/proxy-monster/analyzer/probe"
-	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
+	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
-	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/wire"
 	"github.com/ridi-oss/proxy-monster/mysqlwire"
 	"google.golang.org/protobuf/proto"
@@ -696,8 +695,8 @@ func splitBatch(enabled bool, sql, version string, observe func() (engine.Sessio
 	if err != nil {
 		return nil
 	}
-	batch, ok := probe.SplitBatch(sql, &enginepb.EngineConfig{
-		Engine:                   enginepb.Engine_MYSQL,
+	batch, ok := probe.SplitBatch(sql, &pb.EngineConfig{
+		Engine:                   pb.Engine_MYSQL,
 		EngineVersion:            version,
 		MysqlLowerCaseTableNames: proto.Int32(0),
 		Session:                  session.SessionObservation,

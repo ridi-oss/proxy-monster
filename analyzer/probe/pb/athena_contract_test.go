@@ -1,9 +1,8 @@
-package proxymonsterv1
+package pb
 
 import (
 	"testing"
 
-	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -12,21 +11,21 @@ func TestNativeProtocolFieldNumbers(t *testing.T) {
 	if decision.ByName("current_catalog").Number() != 12 || decision.ByName("session").Number() != 14 {
 		t.Fatal("decision namespace and session field numbers changed")
 	}
-	session := new(analyzerpb.SessionObservation).ProtoReflect().Descriptor().Fields()
+	session := new(SessionObservation).ProtoReflect().Descriptor().Fields()
 	if session.ByName("athena").Number() != 3 {
 		t.Fatal("session Athena scope field number changed")
 	}
 }
 
 func TestAthenaScopeSharesAnalyzerTypeAndPreservesParameterOrder(t *testing.T) {
-	context := &analyzerpb.AthenaSqlContext{
+	context := &AthenaSqlContext{
 		Workgroup:           "reports",
 		ExecutionParameters: []string{"'second'", "'first'"},
-		PreparedDefinitions: []*analyzerpb.AthenaPreparedDefinition{{
+		PreparedDefinitions: []*AthenaPreparedDefinition{{
 			Workgroup: "reports", Name: "lookup", QueryString: "SELECT email FROM users WHERE id = ?",
 		}},
 	}
-	request := &DecisionRequest{Session: &analyzerpb.SessionObservation{Engine: &analyzerpb.SessionObservation_Athena{Athena: context}}}
+	request := &DecisionRequest{Session: &SessionObservation{Engine: &SessionObservation_Athena{Athena: context}}}
 	encoded, err := proto.Marshal(request)
 	if err != nil {
 		t.Fatal(err)
@@ -35,14 +34,14 @@ func TestAthenaScopeSharesAnalyzerTypeAndPreservesParameterOrder(t *testing.T) {
 	if err := proto.Unmarshal(encoded, decoded); err != nil {
 		t.Fatal(err)
 	}
-	analysis := &analyzerpb.AnalyzeRequest{EngineConfig: &analyzerpb.EngineConfig{Session: decoded.GetSession()}}
+	analysis := &AnalyzeRequest{EngineConfig: &EngineConfig{Session: decoded.GetSession()}}
 	if !proto.Equal(analysis.GetEngineConfig().GetSession().GetAthena(), context) {
 		t.Fatalf("scope changed across decision/analyzer boundary: %v", analysis.GetEngineConfig().GetSession().GetAthena())
 	}
 }
 
 func TestAthenaSubmissionEmptyParametersRemainPresent(t *testing.T) {
-	verdict := &Verdict{RewrittenSql: proto.String("SELECT email FROM users"), Submission: &analyzerpb.Submission{Engine: &analyzerpb.Submission_Athena{Athena: &analyzerpb.AthenaSubmission{}}}}
+	verdict := &Verdict{RewrittenSql: proto.String("SELECT email FROM users"), Submission: &Submission{Engine: &Submission_Athena{Athena: &AthenaSubmission{}}}}
 	encoded, err := proto.Marshal(verdict)
 	if err != nil {
 		t.Fatal(err)
@@ -60,9 +59,9 @@ func TestAthenaSubmissionEmptyParametersRemainPresent(t *testing.T) {
 }
 
 func TestNativeResultInstructionsReferenceOriginalContext(t *testing.T) {
-	instructions := &analyzerpb.AthenaNativeInstructions{
-		Action:   analyzerpb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_APPLY_ORIGINAL_CONTEXT,
-		Contexts: []*analyzerpb.AthenaContextRef{{ResourceId: "execution-123", ContextId: "context-456"}},
+	instructions := &AthenaNativeInstructions{
+		Action:   AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_APPLY_ORIGINAL_CONTEXT,
+		Contexts: []*AthenaContextRef{{ResourceId: "execution-123", ContextId: "context-456"}},
 	}
 	response := &RequestAuthorizationResult{Allowed: true, Instructions: &RequestAuthorizationResult_Athena{Athena: instructions}}
 	encoded, err := proto.Marshal(response)
@@ -77,14 +76,14 @@ func TestNativeResultInstructionsReferenceOriginalContext(t *testing.T) {
 	if !proto.Equal(got, instructions) {
 		t.Fatalf("native result instructions changed: %v", got)
 	}
-	if new(analyzerpb.AthenaNativeInstructions).GetAction() != analyzerpb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_UNSPECIFIED {
+	if new(AthenaNativeInstructions).GetAction() != AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_UNSPECIFIED {
 		t.Fatal("an absent native instruction must not imply response release")
 	}
 }
 
 func TestAthenaPreparedDefinitionCommandHasItsOwnArm(t *testing.T) {
 	command := &ProxyCommand{Command: &ProxyCommand_FetchAthenaPreparedDefinition{
-		FetchAthenaPreparedDefinition: &analyzerpb.FetchAthenaPreparedDefinition{Workgroup: "reports", Name: "lookup"},
+		FetchAthenaPreparedDefinition: &FetchAthenaPreparedDefinition{Workgroup: "reports", Name: "lookup"},
 	}}
 	encoded, err := proto.Marshal(command)
 	if err != nil {

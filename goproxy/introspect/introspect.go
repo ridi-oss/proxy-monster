@@ -23,9 +23,8 @@ import (
 	// The named mysql import both registers the "mysql" driver (via init()) AND gives us mysql.Config
 	// for safe DSN construction, so no separate blank import is needed.
 	mysqldriver "github.com/go-sql-driver/mysql"
-	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
+	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
-	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
@@ -198,13 +197,13 @@ func Run(ctx context.Context, db *sql.DB, dbImpl engine.Db, probe NamespaceProbe
 	)
 
 	catalog.EngineVersion = engineVersion
-	catalog.Catalog = &analyzerpb.CatalogSnapshot{Columns: columns, Routines: routines}
+	catalog.Catalog = &pb.CatalogSnapshot{Columns: columns, Routines: routines}
 	return catalog, nil
 }
 
 type schemaNamePair struct{ schema, name string }
 
-func introspectRoutines(conn *sql.Conn, dbImpl engine.Db, lctnMode int) ([]*analyzerpb.SchemaFunctions, error) {
+func introspectRoutines(conn *sql.Conn, dbImpl engine.Db, lctnMode int) ([]*pb.SchemaFunctions, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
 	defer cancel()
 	rows, err := conn.QueryContext(ctx, dbImpl.RoutinesSQL())
@@ -230,13 +229,13 @@ func introspectRoutines(conn *sql.Conn, dbImpl engine.Db, lctnMode int) ([]*anal
 
 // foldFunctionSchemas groups (schema, function) pairs by their canonical schema, folding the schema
 // through the dialect's NormalizeColumns and the function name through its FoldFunctionName.
-func foldFunctionSchemas(dbImpl engine.Db, lctnMode int, pairs []schemaNamePair) []*analyzerpb.SchemaFunctions {
+func foldFunctionSchemas(dbImpl engine.Db, lctnMode int, pairs []schemaNamePair) []*pb.SchemaFunctions {
 	if len(pairs) == 0 {
 		return nil
 	}
-	placeholders := make([]*analyzerpb.Column, len(pairs))
+	placeholders := make([]*pb.Column, len(pairs))
 	for i, p := range pairs {
-		placeholders[i] = &analyzerpb.Column{Schema: p.schema, Table: "_", Column: "_"}
+		placeholders[i] = &pb.Column{Schema: p.schema, Table: "_", Column: "_"}
 	}
 	folded := dbImpl.NormalizeColumns(lctnMode, placeholders)
 	grouped := make([]schemaNamePair, len(pairs))
@@ -247,7 +246,7 @@ func foldFunctionSchemas(dbImpl engine.Db, lctnMode int, pairs []schemaNamePair)
 }
 
 // groupBySchema deduplicates names while preserving first-seen order.
-func groupBySchema(pairs []schemaNamePair) []*analyzerpb.SchemaFunctions {
+func groupBySchema(pairs []schemaNamePair) []*pb.SchemaFunctions {
 	order := make([]string, 0)
 	names := make(map[string][]string)
 	seen := make(map[string]map[string]struct{})
@@ -262,9 +261,9 @@ func groupBySchema(pairs []schemaNamePair) []*analyzerpb.SchemaFunctions {
 		seen[p.schema][p.name] = struct{}{}
 		names[p.schema] = append(names[p.schema], p.name)
 	}
-	out := make([]*analyzerpb.SchemaFunctions, 0, len(order))
+	out := make([]*pb.SchemaFunctions, 0, len(order))
 	for _, schema := range order {
-		out = append(out, &analyzerpb.SchemaFunctions{Schema: schema, Names: names[schema]})
+		out = append(out, &pb.SchemaFunctions{Schema: schema, Names: names[schema]})
 	}
 	return out
 }
@@ -275,9 +274,9 @@ func groupBySchema(pairs []schemaNamePair) []*analyzerpb.SchemaFunctions {
 // regardless of the table argument). One call folds the whole list, so a dialect that memoizes
 // per-(schema, table) work does it once here too.
 func normalizeSchemas(dbImpl engine.Db, lctnMode int, schemas []string) []string {
-	placeholders := make([]*analyzerpb.Column, len(schemas))
+	placeholders := make([]*pb.Column, len(schemas))
 	for i, s := range schemas {
-		placeholders[i] = &analyzerpb.Column{Schema: s, Table: "_", Column: "_"}
+		placeholders[i] = &pb.Column{Schema: s, Table: "_", Column: "_"}
 	}
 	out := make([]string, len(schemas))
 	for i, c := range dbImpl.NormalizeColumns(lctnMode, placeholders) {
@@ -358,8 +357,8 @@ func ProbePostgresNamespace(ctx context.Context, conn *sql.Conn, _ string) (*pb.
 	return &pb.CatalogRequest{DefaultSchemas: schemas, CurrentCatalog: catalog}, nil
 }
 
-// introspectColumns runs columnsSQL on the pinned connection and scans every row into a *analyzerpb.Column.
-func introspectColumns(conn *sql.Conn) ([]*analyzerpb.Column, error) {
+// introspectColumns runs columnsSQL on the pinned connection and scans every row into a *pb.Column.
+func introspectColumns(conn *sql.Conn) ([]*pb.Column, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
 	defer cancel()
 
@@ -369,14 +368,14 @@ func introspectColumns(conn *sql.Conn) ([]*analyzerpb.Column, error) {
 	}
 	defer rows.Close()
 
-	var columns []*analyzerpb.Column
+	var columns []*pb.Column
 	for rows.Next() {
 		var catalog, schema, table, column, dataType, isNullable string
 		var ordinal int32
 		if err := rows.Scan(&catalog, &schema, &table, &column, &dataType, &ordinal, &isNullable); err != nil {
 			return nil, fmt.Errorf("introspect: scanning column row: %w", err)
 		}
-		columns = append(columns, &analyzerpb.Column{
+		columns = append(columns, &pb.Column{
 			Catalog:  catalog,
 			Schema:   schema,
 			Table:    table,

@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"google.golang.org/protobuf/proto"
 )
 

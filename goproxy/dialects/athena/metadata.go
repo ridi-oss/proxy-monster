@@ -9,8 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsa "github.com/aws/aws-sdk-go-v2/service/athena"
 	"github.com/aws/aws-sdk-go-v2/service/athena/types"
-	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
-	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
@@ -32,7 +31,7 @@ func (t *target) Introspect(ctx context.Context) (*pb.CatalogRequest, error) {
 	if err != nil {
 		return nil, err
 	}
-	columns := []*enginepb.Column{}
+	columns := []*pb.Column{}
 	for _, database := range databases {
 		fragment, err := t.readColumns(ctx, t.config.catalog, database)
 		if err != nil {
@@ -42,18 +41,18 @@ func (t *target) Introspect(ctx context.Context) (*pb.CatalogRequest, error) {
 	}
 	return &pb.CatalogRequest{
 		CurrentCatalog: t.catalogIdentity(), DefaultSchemas: []string{t.config.database},
-		Catalog: &enginepb.CatalogSnapshot{Columns: columns}, EngineVersion: version,
+		Catalog: &pb.CatalogSnapshot{Columns: columns}, EngineVersion: version,
 	}, nil
 }
 
-func (t *target) readColumns(ctx context.Context, catalog, database string) ([]*enginepb.Column, error) {
+func (t *target) readColumns(ctx context.Context, catalog, database string) ([]*pb.Column, error) {
 	if catalog == "" || database == "" {
 		return nil, errors.New("athena: namespace is incomplete")
 	}
 	pages := awsa.NewListTableMetadataPaginator(t.api, &awsa.ListTableMetadataInput{
 		CatalogName: aws.String(catalog), DatabaseName: aws.String(database), WorkGroup: aws.String(t.config.workgroup),
 	})
-	var columns []*enginepb.Column
+	var columns []*pb.Column
 	seen := make(map[string]bool)
 	tokens := make(map[string]bool)
 	for pages.HasMorePages() {
@@ -78,7 +77,7 @@ func (t *target) readColumns(ctx context.Context, catalog, database string) ([]*
 				return nil, err
 			}
 			for i, column := range tableColumns {
-				columns = append(columns, &enginepb.Column{
+				columns = append(columns, &pb.Column{
 					Catalog: strings.ToLower(catalog), Schema: database, Table: name,
 					Column: aws.ToString(column.Name), DataType: aws.ToString(column.Type), Ordinal: int32(i + 1), Nullable: true,
 				})
@@ -101,7 +100,7 @@ func metadataColumns(table types.TableMetadata) ([]types.Column, error) {
 	return columns, nil
 }
 
-func (t *target) ReadTableDetail(ctx context.Context, table *enginepb.ObjectRef) (*spi.TableDetail, error) {
+func (t *target) ReadTableDetail(ctx context.Context, table *pb.ObjectRef) (*spi.TableDetail, error) {
 	if table == nil || table.Table == "" || table.Schema == "" {
 		return nil, errors.New("athena: table selector is incomplete")
 	}

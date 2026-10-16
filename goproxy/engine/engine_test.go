@@ -7,8 +7,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
-	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 )
 
 type fakeDb struct {
@@ -34,7 +33,7 @@ func (f fakeDb) SchemaRoutinesSQL(string) string                      { return "
 func (f fakeDb) LowerCaseTableNamesProbeSQL() string                  { return "" }
 func (f fakeDb) FoldFunctionName(name string) string                  { return name }
 
-func (f fakeDb) NormalizeColumns(_ int, columns []*analyzerpb.Column) []*analyzerpb.Column {
+func (f fakeDb) NormalizeColumns(_ int, columns []*pb.Column) []*pb.Column {
 	return columns
 }
 
@@ -210,7 +209,7 @@ func TestMysqlAnsiQuotesForwardedAndCached(t *testing.T) {
 	probes := 0
 	in := AuthzInput{SQL: `SELECT "card_number" FROM cards`, ProbeSession: func() (SessionObservation, error) {
 		probes++
-		return SessionObservation{Namespace: []string{"app"}, SessionObservation: &analyzerpb.SessionObservation{Engine: &analyzerpb.SessionObservation_Mysql{Mysql: &analyzerpb.MySqlSession{AnsiQuotes: true}}}}, nil
+		return SessionObservation{Namespace: []string{"app"}, SessionObservation: &pb.SessionObservation{Engine: &pb.SessionObservation_Mysql{Mysql: &pb.MySqlSession{AnsiQuotes: true}}}}, nil
 	}}
 
 	e.Authorize(in)
@@ -230,7 +229,7 @@ func TestMysqlAnsiQuotesForwardedAndCached(t *testing.T) {
 	// so a mid-session flip back to the default mode is decided under the default lexer.
 	e.MarkNamespaceDirty()
 	in.ProbeSession = func() (SessionObservation, error) {
-		return SessionObservation{Namespace: []string{"app"}, SessionObservation: &analyzerpb.SessionObservation{Engine: &analyzerpb.SessionObservation_Mysql{Mysql: &analyzerpb.MySqlSession{AnsiQuotes: false}}}}, nil
+		return SessionObservation{Namespace: []string{"app"}, SessionObservation: &pb.SessionObservation{Engine: &pb.SessionObservation_Mysql{Mysql: &pb.MySqlSession{AnsiQuotes: false}}}}, nil
 	}
 	e.Authorize(in)
 	if dec.lastReq.Session.GetMysql().GetAnsiQuotes() {
@@ -245,13 +244,13 @@ func TestPostgresLookupStateForwardedAndCached(t *testing.T) {
 	observations := []SessionObservation{
 		{
 			Namespace: []string{"pg_catalog", "app"},
-			SessionObservation: &analyzerpb.SessionObservation{Engine: &analyzerpb.SessionObservation_Postgres{Postgres: &analyzerpb.PostgresSession{
+			SessionObservation: &pb.SessionObservation{Engine: &pb.SessionObservation_Postgres{Postgres: &pb.PostgresSession{
 				ShadowedFunctions: []string{"unnest"}, FunctionShadowingObserved: true, SystemXidVisible: proto.Bool(true),
 			}}},
 		},
 		{
 			Namespace: []string{"pg_catalog", "app"},
-			SessionObservation: &analyzerpb.SessionObservation{Engine: &analyzerpb.SessionObservation_Postgres{Postgres: &analyzerpb.PostgresSession{
+			SessionObservation: &pb.SessionObservation{Engine: &pb.SessionObservation_Postgres{Postgres: &pb.PostgresSession{
 				ShadowedFunctions: []string{}, FunctionShadowingObserved: true, SystemXidVisible: proto.Bool(false),
 			}}},
 		},
@@ -311,7 +310,7 @@ func TestFragmentColumnsFromRowsStrict(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FragmentColumnsFromRows: %v", err)
 	}
-	want := []*analyzerpb.Column{{Catalog: "db", Schema: "app", Table: "users", Column: "id", DataType: "integer", Ordinal: 1}, {Catalog: "db", Schema: "app", Table: "users", Column: "email", DataType: "text", Ordinal: 2, Nullable: true}}
+	want := []*pb.Column{{Catalog: "db", Schema: "app", Table: "users", Column: "id", DataType: "integer", Ordinal: 1}, {Catalog: "db", Schema: "app", Table: "users", Column: "email", DataType: "text", Ordinal: 2, Nullable: true}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("columns = %+v, want %+v", got, want)
 	}

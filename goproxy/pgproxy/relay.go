@@ -10,9 +10,8 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/ridi-oss/proxy-monster/analyzer/probe"
-	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
+	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
-	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 )
 
 var (
@@ -295,8 +294,8 @@ func (s *Server) handleQuery(sess *session, sql string) error {
 // explicitTransaction reports a batch that opens its own transaction first and commits it last, which runs as
 // PostgreSQL runs it without the proxy's wrapping transaction.
 func explicitTransaction(batch []probe.BatchStatement) bool {
-	return batch[0].Kind == analyzerpb.StatementKind_STATEMENT_KIND_START_TRANSACTION &&
-		batch[len(batch)-1].Kind == analyzerpb.StatementKind_STATEMENT_KIND_COMMIT
+	return batch[0].Kind == pb.StatementKind_STATEMENT_KIND_START_TRANSACTION &&
+		batch[len(batch)-1].Kind == pb.StatementKind_STATEMENT_KIND_COMMIT
 }
 
 // splitBatch cuts a multi-statement simple query into its statements, or nil to serve sql as one.
@@ -304,7 +303,7 @@ func splitBatch(sql string) []probe.BatchStatement {
 	if !strings.Contains(strings.TrimRight(sql, "; \t\r\n"), ";") {
 		return nil
 	}
-	batch, ok := probe.SplitBatch(sql, &analyzerpb.EngineConfig{Engine: analyzerpb.Engine_POSTGRES})
+	batch, ok := probe.SplitBatch(sql, &pb.EngineConfig{Engine: pb.Engine_POSTGRES})
 	if !ok || len(batch) < 2 {
 		return nil
 	}

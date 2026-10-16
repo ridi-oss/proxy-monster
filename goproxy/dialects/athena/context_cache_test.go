@@ -8,8 +8,7 @@ import (
 	"testing"
 	"time"
 
-	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
-	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -23,13 +22,13 @@ func privateCachePath(t *testing.T) string {
 	return filepath.Join(directory, "contexts.aof")
 }
 
-func testContext(t *testing.T, id string) *enginepb.AthenaCachedContext {
+func testContext(t *testing.T, id string) *pb.AthenaCachedContext {
 	t.Helper()
 	instructions, err := proto.Marshal(&pb.Verdict{Decision: pb.EnfAction_MASK, DecisionId: 42, Masks: []*pb.ColumnMask{{Ordinal: proto.Int32(0), Kind: "FIXED"}}, SanitizeDiagnostics: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &enginepb.AthenaCachedContext{Version: 1, ContextId: "context-" + id, ResourceId: id, Owner: "alice", TargetBinding: bytes.Repeat([]byte{1}, 32), ExpiresAt: timestamppb.New(time.Now().Add(time.Hour)), ExpectedWidth: proto.Uint32(2), EnforcementInstructions: instructions}
+	return &pb.AthenaCachedContext{Version: 1, ContextId: "context-" + id, ResourceId: id, Owner: "alice", TargetBinding: bytes.Repeat([]byte{1}, 32), ExpiresAt: timestamppb.New(time.Now().Add(time.Hour)), ExpectedWidth: proto.Uint32(2), EnforcementInstructions: instructions}
 }
 
 func TestContextAOFReopenOwnershipExpiryAndPermissions(t *testing.T) {
@@ -39,7 +38,7 @@ func TestContextAOFReopenOwnershipExpiryAndPermissions(t *testing.T) {
 		t.Fatal(err)
 	}
 	record := testContext(t, "native-id")
-	original := proto.Clone(record).(*enginepb.AthenaCachedContext)
+	original := proto.Clone(record).(*pb.AthenaCachedContext)
 	if err := cache.Associate("source", record); err != nil {
 		t.Fatal(err)
 	}
@@ -91,10 +90,10 @@ func TestContextAssociationIsImmutableAndBounded(t *testing.T) {
 	if err := cache.Associate("source", first); err != nil {
 		t.Fatal(err)
 	}
-	if err := cache.Associate("source", proto.Clone(first).(*enginepb.AthenaCachedContext)); err != nil {
+	if err := cache.Associate("source", proto.Clone(first).(*pb.AthenaCachedContext)); err != nil {
 		t.Fatal(err)
 	}
-	changed := proto.Clone(first).(*enginepb.AthenaCachedContext)
+	changed := proto.Clone(first).(*pb.AthenaCachedContext)
 	changed.Owner = "bob"
 	if err := cache.Associate("source", changed); !errors.Is(err, ErrContextConflict) {
 		t.Fatal("existing owner replaced")
@@ -179,17 +178,17 @@ func TestContextAOFFailsClosedWithoutRepairingPartialRecords(t *testing.T) {
 }
 
 func TestContextRejectsHistoryAndIncompatibleInstructions(t *testing.T) {
-	for _, mutate := range []func(*enginepb.AthenaCachedContext){
-		func(record *enginepb.AthenaCachedContext) { record.Version = 2 },
-		func(record *enginepb.AthenaCachedContext) { record.ExpiresAt = nil },
-		func(record *enginepb.AthenaCachedContext) { record.TargetBinding = []byte("short") },
-		func(record *enginepb.AthenaCachedContext) {
+	for _, mutate := range []func(*pb.AthenaCachedContext){
+		func(record *pb.AthenaCachedContext) { record.Version = 2 },
+		func(record *pb.AthenaCachedContext) { record.ExpiresAt = nil },
+		func(record *pb.AthenaCachedContext) { record.TargetBinding = []byte("short") },
+		func(record *pb.AthenaCachedContext) {
 			record.EnforcementInstructions, _ = proto.Marshal(&pb.Verdict{Decision: pb.EnfAction_ALLOW, RewrittenSql: proto.String("SELECT secret")})
 		},
-		func(record *enginepb.AthenaCachedContext) {
+		func(record *pb.AthenaCachedContext) {
 			record.EnforcementInstructions, _ = proto.Marshal(&pb.Verdict{Decision: pb.EnfAction_ALLOW, EffectiveRoles: []string{"role"}})
 		},
-		func(record *enginepb.AthenaCachedContext) {
+		func(record *pb.AthenaCachedContext) {
 			record.EnforcementInstructions, _ = proto.Marshal(&pb.Verdict{Decision: pb.EnfAction_DENY})
 		},
 	} {

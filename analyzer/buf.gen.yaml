@@ -1,9 +1,7 @@
 version: v2
-# Generates Go bindings for analyzer.proto and its shared engine.proto/athena.proto imports
-# (docs/statement-facts-contract.md) — the analyzer<->JVM FFM boundary. proto/src/main/proto/
-# also holds controlplane.proto (the separate proxy<->control-plane gRPC contract, owned by
-# goproxy/buf.gen.yaml). `mise run proto-generate` uses explicit paths so this module's codegen
-# never picks that file up.
+# Generates the Go bindings for every proto Go code uses except cp-go's gobridge services: analyzer.proto
+# (the analyzer<->JVM FFM boundary), controlplane.proto (the proxy<->control-plane gRPC contract) and the
+# engine.proto/athena.proto they share. One package, so each message has one registered Go type.
 managed:
   enabled: true
   override:
@@ -11,5 +9,8 @@ managed:
       value: github.com/ridi-oss/proxy-monster/analyzer/probe/pb
 plugins:
   - local: protoc-gen-go
+    out: probe/pb
+    opt: paths=source_relative
+  - local: protoc-gen-go-grpc
     out: probe/pb
     opt: paths=source_relative

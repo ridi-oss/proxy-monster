@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strconv"
 
-	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 )
 
 // Refetcher executes connection-local catalog commands through callback-injected held-target DB I/O.

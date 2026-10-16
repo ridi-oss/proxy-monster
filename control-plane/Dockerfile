@@ -65,6 +65,7 @@ RUN bun build --compile src/main.ts --outfile /out/pmon-auto-approver-agent
 FROM go AS cpgo
 WORKDIR /workspace/cpgo
 COPY auditmon /workspace/auditmon
+COPY analyzer /workspace/analyzer
 COPY cpgo ./
 ENV GOTOOLCHAIN=local CGO_ENABLED=0 GOWORK=off
 RUN go build -trimpath -o /out/cp-go ./cmd/cp-go

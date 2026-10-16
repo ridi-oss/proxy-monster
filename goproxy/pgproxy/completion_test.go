@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 )
 
 // completionDecisionID is the audit decision id the fake control plane stamps on a verdict so the proxy

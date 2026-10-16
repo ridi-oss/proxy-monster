@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgproto3"
+	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
-	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 )
 
 func ptr(s string) *string { return &s }

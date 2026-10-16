@@ -17,9 +17,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgproto3"
-	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
+	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
-	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/wire"
 )
 
@@ -285,7 +284,7 @@ func sessionFromRows(rows [][]*string) (engine.SessionObservation, error) {
 	}
 	return engine.SessionObservation{
 		Namespace: observed.SearchPath,
-		SessionObservation: &enginepb.SessionObservation{Engine: &enginepb.SessionObservation_Postgres{Postgres: &enginepb.PostgresSession{
+		SessionObservation: &pb.SessionObservation{Engine: &pb.SessionObservation_Postgres{Postgres: &pb.PostgresSession{
 			ShadowedFunctions:         observed.ShadowedFunctions,
 			FunctionShadowingObserved: observed.ShadowedFunctions != nil,
 			SystemXidVisible:          observed.PgCatalogXIDVisible,

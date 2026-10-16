@@ -6,8 +6,8 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 // (analyzer.proto), and the shared engine.proto. Generates Java + Kotlin message types and
 // grpc-java + grpc-kotlin stubs for the JVM modules that depend on it — :control-plane (the gRPC
 // server), :engine (which uses the proto types as its data classes), and :analyzer:jvm's tests. The
-// data plane is the Go `goproxy` module, not a Gradle subproject: it generates its own stubs from
-// the same controlplane.proto (goproxy/buf.gen.yaml → goproxy/internal/pb).
+// data plane is the Go `goproxy` module, not a Gradle subproject: its stubs come from the same
+// controlplane.proto (analyzer/buf.gen.yaml → analyzer/probe/pb).
 plugins {
     kotlin("jvm")
     id("com.google.protobuf") version "0.10.0"

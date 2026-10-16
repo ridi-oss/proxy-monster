@@ -3,7 +3,7 @@ package run
 import (
 	"testing"
 
-	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 )
 
 // TestAbandonedDuringOpen pins the post-completion re-check directly: a completed target-DB open must be failed

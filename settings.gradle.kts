@@ -13,8 +13,8 @@ include(":control-plane")
 
 // :proto — single source of truth for the proxy<->control-plane gRPC wire protocol
 // (controlplane.proto). Generates Java+Kotlin messages and grpc-java+grpc-kotlin stubs for
-// :control-plane; the data-plane proxy is the Go `goproxy` module, which generates its own stubs
-// from the same controlplane.proto (goproxy/buf.gen.yaml → goproxy/internal/pb).
+// :control-plane; the data-plane proxy is the Go `goproxy` module, whose stubs come from
+// the same controlplane.proto (analyzer/buf.gen.yaml → analyzer/probe/pb).
 include(":proto")
 
 // :analyzer:jvm — the Layer-1 analyzer's parse/lineage engine. proxy-monster owns the Go probe

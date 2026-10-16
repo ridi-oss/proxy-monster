@@ -3,7 +3,7 @@ package engine
 import (
 	"fmt"
 
-	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 )
 
 // StatementResult is the protocol-neutral result of serving one authorized statement.

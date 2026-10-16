@@ -6,9 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
+	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
-	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
@@ -42,7 +41,7 @@ func (s *enforcementSession) authorize(sql, clientAddr string, parameters []stri
 		ProbeSession: func() (engine.SessionObservation, error) {
 			return engine.SessionObservation{
 				CurrentCatalog: s.target.catalogIdentity(), Namespace: []string{s.target.config.database},
-				SessionObservation: &enginepb.SessionObservation{Engine: &enginepb.SessionObservation_Athena{Athena: &enginepb.AthenaSqlContext{Workgroup: s.target.config.workgroup, ExecutionParameters: parameters, MaxRows: uint32(max(maxRows, 0))}}},
+				SessionObservation: &pb.SessionObservation{Engine: &pb.SessionObservation_Athena{Athena: &pb.AthenaSqlContext{Workgroup: s.target.config.workgroup, ExecutionParameters: parameters, MaxRows: uint32(max(maxRows, 0))}}},
 			}, nil
 		},
 		RunCommands: s.refetcher.RunAll,

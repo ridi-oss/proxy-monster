@@ -5,7 +5,7 @@
 # optional PM_TLS_CERT/PM_TLS_KEY) — see deploy/README.md.
 #
 # Build context is the REPO ROOT: goproxy depends on the sibling `mysqlwire` module via a replace
-# directive, so both must be in the context. The generated proto stubs (goproxy/internal/pb) are
+# directive, so both must be in the context. The generated proto stubs (analyzer/probe/pb) are
 # committed, so no codegen runs at build time. Build from the repo root:
 #   docker build -f goproxy/Dockerfile -t proxy-monster-proxy .
 

@@ -26,11 +26,11 @@ const (
 	starOrderCommonRightLeft
 )
 
-// engine owns every engine-specific analysis decision, built once per Probe call from the caller's
-// EngineConfig — everything an engine needs (server version, MySQL's lower_case_table_names, the
+// analyzer owns every analyzer-specific analysis decision, built once per Probe call from the caller's
+// EngineConfig — everything an analyzer needs (server version, MySQL's lower_case_table_names, the
 // sqlglot-go Dialect built from them) is captured at construction, so nothing downstream re-derives
 // it from a namespace or re-parses it from a bare wire-name string.
-type engine interface {
+type analyzer interface {
 	// WireName is the canonical lowercase sqlglot-go dialect name ("mysql" | "postgres").
 	WireName() string
 	// Dialect is the single *dialects.Dialect built once from this engine's config — reused for
@@ -137,33 +137,33 @@ func referencedColumnKeys(report ProbeResult) map[string]bool {
 	return keys
 }
 
-// createEngine builds the engine for config, validating its engine-specific settings (MySQL's
+// createAnalyzer builds the analyzer for config, validating its engine-specific settings (MySQL's
 // required version + lower_case_table_names) fail-closed. config is the exact EngineConfig the
-// control-plane forwarded from what the proxy reported at introspection time — createEngine does not
+// control-plane forwarded from what the proxy reported at introspection time — createAnalyzer does not
 // re-derive or clean any of it, only validates and builds the sqlglot-go Dialect(s) it implies.
-func createEngine(config *pb.EngineConfig) (engine, error) {
+func createAnalyzer(config *pb.EngineConfig) (analyzer, error) {
 	if config == nil {
 		return nil, fmt.Errorf("engine config is required")
 	}
 	switch config.GetEngine() {
 	case pb.Engine_MYSQL:
-		return newMySQLEngine(config)
+		return newMySQLAnalyzer(config)
 	case pb.Engine_POSTGRES:
-		return newPostgresEngine(config)
+		return newPostgresAnalyzer(config)
 	case pb.Engine_ATHENA:
-		return newAthenaEngine(config)
+		return newAthenaAnalyzer(config)
 	default:
 		return nil, fmt.Errorf("unsupported engine %s", config.GetEngine())
 	}
 }
 
-// TODO: split mysqlEngine and postgresEngine into engine_mysql.go / engine_postgres.go — this file should
-// hold only the shared interface + createEngine factory; the two impls share nothing but that interface.
-type mysqlEngine struct {
+// TODO: split mysqlAnalyzer and postgresAnalyzer into analyzer_mysql.go / analyzer_postgres.go — this file should
+// hold only the shared interface + createAnalyzer factory; the two impls share nothing but that interface.
+type mysqlAnalyzer struct {
 	dialect *dialects.Dialect
 }
 
-func newMySQLEngine(config *pb.EngineConfig) (*mysqlEngine, error) {
+func newMySQLAnalyzer(config *pb.EngineConfig) (*mysqlAnalyzer, error) {
 	if config.MysqlLowerCaseTableNames == nil {
 		return nil, fmt.Errorf("mysqlLowerCaseTableNames is required for mysql")
 	}
@@ -193,48 +193,48 @@ func newMySQLEngine(config *pb.EngineConfig) (*mysqlEngine, error) {
 	if err != nil {
 		return nil, fmt.Errorf("build mysql dialect: %w", err)
 	}
-	return &mysqlEngine{dialect: dialect}, nil
+	return &mysqlAnalyzer{dialect: dialect}, nil
 }
 
-func (e *mysqlEngine) WireName() string { return "mysql" }
-func (e *mysqlEngine) PrepareStatement(root exp.Expression) (exp.Expression, bool, *pb.StatementFacts, error) {
+func (e *mysqlAnalyzer) WireName() string { return "mysql" }
+func (e *mysqlAnalyzer) PrepareStatement(root exp.Expression) (exp.Expression, bool, *pb.StatementFacts, error) {
 	return root, false, nil, nil
 }
-func (e *mysqlEngine) FinishSubmission(exp.Expression) bool { return false }
-func (e *mysqlEngine) StampSubmission(*pb.StatementFacts)   {}
-func (e *mysqlEngine) Dialect() *dialects.Dialect           { return e.dialect }
+func (e *mysqlAnalyzer) FinishSubmission(exp.Expression) bool { return false }
+func (e *mysqlAnalyzer) StampSubmission(*pb.StatementFacts)   {}
+func (e *mysqlAnalyzer) Dialect() *dialects.Dialect           { return e.dialect }
 
 // MySQL's catalog needs build-time folding: columns are always case-insensitive, while relation
 // spelling follows lower_case_table_names and the information_schema exception.
-func (e *mysqlEngine) NormalizeCatalogOnBuild() bool   { return true }
-func (e *mysqlEngine) AllowsCrossCatalog() bool        { return false }
-func (e *mysqlEngine) PreservesCatalogQualifier() bool { return false }
+func (e *mysqlAnalyzer) NormalizeCatalogOnBuild() bool   { return true }
+func (e *mysqlAnalyzer) AllowsCrossCatalog() bool        { return false }
+func (e *mysqlAnalyzer) PreservesCatalogQualifier() bool { return false }
 
-func (e *mysqlEngine) ConfigureNamespace(opts *optimizer.QualifyOpts, namespace NamespaceConfig) {
+func (e *mysqlAnalyzer) ConfigureNamespace(opts *optimizer.QualifyOpts, namespace NamespaceConfig) {
 	opts.SearchPath = namespace.SearchPath
 }
 
-func (e *mysqlEngine) BuiltinFunctionRow(string) []string { return nil }
-func (e *mysqlEngine) BareCallIsBuiltin(string) bool      { return false }
-func (e *mysqlEngine) PostgresSystemXIDVisible() bool     { return false }
+func (e *mysqlAnalyzer) BuiltinFunctionRow(string) []string { return nil }
+func (e *mysqlAnalyzer) BareCallIsBuiltin(string) bool      { return false }
+func (e *mysqlAnalyzer) PostgresSystemXIDVisible() bool     { return false }
 
-func (e *mysqlEngine) FoldColumn(column string) string {
+func (e *mysqlAnalyzer) FoldColumn(column string) string {
 	return e.dialect.FoldIdentifierName(column, false)
 }
 
 // MySQL has no temp-schema convention — temporary tables are marked by the TEMPORARY keyword (a
 // temporary arg / TemporaryProperty on the DDL), which isTemporaryDDL detects directly off the tree.
-func (e *mysqlEngine) IsTempSchema(exp.Expression) bool { return false }
+func (e *mysqlAnalyzer) IsTempSchema(exp.Expression) bool { return false }
 
 // MySQL has no trusted system-schema qualifier: its system databases (mysql, information_schema,
 // performance_schema, sys) are access-controlled resources the system-classification manifest covers,
 // not a blanket pass for calls made under them.
-func (e *mysqlEngine) IsTrustedSystemQualifier(exp.Expression) bool { return false }
+func (e *mysqlAnalyzer) IsTrustedSystemQualifier(exp.Expression) bool { return false }
 
 // MySQL labels an unaliased computed projection with its verbatim source text (`1 +    1` keeps
 // its exact spacing; verified against MySQL 8.0), truncated to 255 runes as the server does for
 // implicit labels. Fails closed on an unstamped node (only parse-time projections carry text).
-func (e *mysqlEngine) NativeOutputLabel(projection, _ exp.Expression) (string, bool) {
+func (e *mysqlAnalyzer) NativeOutputLabel(projection, _ exp.Expression) (string, bool) {
 	text, ok := projection.SpanText()
 	if !ok {
 		return "", false
@@ -251,7 +251,7 @@ func (e *mysqlEngine) NativeOutputLabel(projection, _ exp.Expression) (string, b
 // form is rewritten; a compound SET, GLOBAL/PERSIST scope, a same-named user variable, a qualified or
 // bogus-scoped target, or any non-NULL value is left untouched (and still fails closed at the wire session
 // invariant). Recognition is on the parsed AST, so every spelling MySQL accepts reduces to the same check.
-func (e *mysqlEngine) RewriteStatement(root exp.Expression) string {
+func (e *mysqlAnalyzer) RewriteStatement(root exp.Expression) string {
 	if root.Kind() != exp.KindSet {
 		return ""
 	}
@@ -302,28 +302,30 @@ func (e *mysqlEngine) RewriteStatement(root exp.Expression) string {
 
 // MySQL diagnostics echo only the operated value (`Truncated incorrect INTEGER value: '010-…'`) —
 // always an already-referenced column — and never dump unreferenced ones, so the template is the whole set.
-func (e *mysqlEngine) DiagnosticLeakKeys(report ProbeResult, _ schema.Schema) map[string]bool {
+func (e *mysqlAnalyzer) DiagnosticLeakKeys(report ProbeResult, _ schema.Schema) map[string]bool {
 	return referencedColumnKeys(report)
 }
 
 // A statement that degrades to an unstructured Command is one the analyzer cannot vouch for on
 // MySQL (an unrecognized SHOW carries data; RESET MASTER/REPLICA is a privileged admin op).
-func (e *mysqlEngine) CommandPassthrough(string) bool                { return false }
-func (e *mysqlEngine) ShowUtilityCommand(root exp.Expression) string { return showUtilityCommand(root) }
+func (e *mysqlAnalyzer) CommandPassthrough(string) bool { return false }
+func (e *mysqlAnalyzer) ShowUtilityCommand(root exp.Expression) string {
+	return showUtilityCommand(root)
+}
 
 // MySQL rejects a derived-table/CTE body with duplicated output labels: ER_DUP_FIELDNAME.
-func (e *mysqlEngine) RejectsDuplicateDerivedOutputLabels() bool { return true }
+func (e *mysqlAnalyzer) RejectsDuplicateDerivedOutputLabels() bool { return true }
 
-func (e *mysqlEngine) RightJoinStarOrder() starOrder { return starOrderCommonRightLeft }
+func (e *mysqlAnalyzer) RightJoinStarOrder() starOrder { return starOrderCommonRightLeft }
 
 // MySQL has no search path; a bare name never resolves in a system schema.
-func (e *mysqlEngine) SystemSchemaFirst([]string) bool { return false }
+func (e *mysqlAnalyzer) SystemSchemaFirst([]string) bool { return false }
 
-func (e *mysqlEngine) IsSafeTypeReference(exp.Expression, exp.Expression, NamespaceConfig) bool {
+func (e *mysqlAnalyzer) IsSafeTypeReference(exp.Expression, exp.Expression, NamespaceConfig) bool {
 	return false
 }
 
-type postgresEngine struct {
+type postgresAnalyzer struct {
 	dialect                   *dialects.Dialect
 	shadowedFunctions         map[string]bool
 	functionShadowingObserved bool
@@ -338,7 +340,7 @@ func postgresOpaqueDialect() *dialects.Dialect {
 	return d
 }
 
-func newPostgresEngine(config *pb.EngineConfig) (*postgresEngine, error) {
+func newPostgresAnalyzer(config *pb.EngineConfig) (*postgresAnalyzer, error) {
 	session := config.GetSession().GetPostgres()
 	if !session.GetFunctionShadowingObserved() && len(session.GetShadowedFunctions()) != 0 {
 		return nil, fmt.Errorf("shadowedFunctions requires an observed function-shadowing context")
@@ -353,7 +355,7 @@ func newPostgresEngine(config *pb.EngineConfig) (*postgresEngine, error) {
 		}
 		shadowed[name] = true
 	}
-	return &postgresEngine{
+	return &postgresAnalyzer{
 		dialect:                   postgresOpaqueDialect(),
 		shadowedFunctions:         shadowed,
 		functionShadowingObserved: session.GetFunctionShadowingObserved(),
@@ -361,25 +363,25 @@ func newPostgresEngine(config *pb.EngineConfig) (*postgresEngine, error) {
 	}, nil
 }
 
-func (e *postgresEngine) WireName() string { return "postgres" }
-func (e *postgresEngine) PrepareStatement(root exp.Expression) (exp.Expression, bool, *pb.StatementFacts, error) {
+func (e *postgresAnalyzer) WireName() string { return "postgres" }
+func (e *postgresAnalyzer) PrepareStatement(root exp.Expression) (exp.Expression, bool, *pb.StatementFacts, error) {
 	return root, false, nil, nil
 }
-func (e *postgresEngine) FinishSubmission(exp.Expression) bool { return false }
-func (e *postgresEngine) StampSubmission(*pb.StatementFacts)   {}
-func (e *postgresEngine) Dialect() *dialects.Dialect           { return e.dialect }
+func (e *postgresAnalyzer) FinishSubmission(exp.Expression) bool { return false }
+func (e *postgresAnalyzer) StampSubmission(*pb.StatementFacts)   {}
+func (e *postgresAnalyzer) Dialect() *dialects.Dialect           { return e.dialect }
 
 // PostgreSQL does not fold the introspected catalog: quoted and unquoted names can identify distinct
 // real columns, while query-side qualification already preserves quoted names and folds unquoted ones.
-func (e *postgresEngine) NormalizeCatalogOnBuild() bool   { return false }
-func (e *postgresEngine) AllowsCrossCatalog() bool        { return false }
-func (e *postgresEngine) PreservesCatalogQualifier() bool { return false }
+func (e *postgresAnalyzer) NormalizeCatalogOnBuild() bool   { return false }
+func (e *postgresAnalyzer) AllowsCrossCatalog() bool        { return false }
+func (e *postgresAnalyzer) PreservesCatalogQualifier() bool { return false }
 
-func (e *postgresEngine) ConfigureNamespace(opts *optimizer.QualifyOpts, namespace NamespaceConfig) {
+func (e *postgresAnalyzer) ConfigureNamespace(opts *optimizer.QualifyOpts, namespace NamespaceConfig) {
 	opts.SearchPath = namespace.SearchPath
 }
 
-func (e *postgresEngine) BuiltinFunctionRow(name string) []string {
+func (e *postgresAnalyzer) BuiltinFunctionRow(name string) []string {
 	switch name {
 	case "pg_available_extension_versions":
 		return []string{"name", "version", "superuser", "trusted", "relocatable", "schema", "requires", "comment"}
@@ -392,23 +394,23 @@ func (e *postgresEngine) BuiltinFunctionRow(name string) []string {
 
 // A zero-argument builtin has one signature, so the earliest schema wins and pg_catalog first settles
 // it. unnest is polymorphic: trusted only when the session's namespace probe ran and listed no user unnest.
-func (e *postgresEngine) BareCallIsBuiltin(name string) bool {
+func (e *postgresAnalyzer) BareCallIsBuiltin(name string) bool {
 	if name != "unnest" {
 		return true
 	}
 	return e.functionShadowingObserved && !e.shadowedFunctions[name]
 }
 
-func (e *postgresEngine) PostgresSystemXIDVisible() bool { return e.systemXIDVisible }
+func (e *postgresAnalyzer) PostgresSystemXIDVisible() bool { return e.systemXIDVisible }
 
-func (e *postgresEngine) FoldColumn(column string) string { return column }
+func (e *postgresAnalyzer) FoldColumn(column string) string { return column }
 
 // PostgreSQL places session-temporary objects in pg_temp (a per-backend alias for the numbered
 // pg_temp_<n> temp schema), so a DDL target there is session-local, not catalog-changing. Read off the
 // already-folded spelling (EmitFacts normalizes the statement's identifiers up front, quote-aware), so
 // an unquoted pg_temp/PG_TEMP matches while a quoted "PG_TEMP" — a distinct case-sensitive user schema —
 // does not. A raw strings.ToLower here would wrongly conflate the two and mis-fold non-ASCII.
-func (e *postgresEngine) IsTempSchema(schema exp.Expression) bool {
+func (e *postgresAnalyzer) IsTempSchema(schema exp.Expression) bool {
 	if schema == nil {
 		return false
 	}
@@ -420,7 +422,7 @@ func (e *postgresEngine) IsTempSchema(schema exp.Expression) bool {
 // unclassified Function grant. Only a single bare identifier qualifies — a quoted "PG_CATALOG" keeps its
 // case and is a DISTINCT user schema PostgreSQL's case-sensitive `pg_` reservation allows to exist, so a
 // user function there must not inherit a builtin's pass.
-func (e *postgresEngine) IsTrustedSystemQualifier(qualifier exp.Expression) bool {
+func (e *postgresAnalyzer) IsTrustedSystemQualifier(qualifier exp.Expression) bool {
 	if qualifier == nil || qualifier.Kind() != exp.KindIdentifier {
 		return false
 	}
@@ -429,34 +431,34 @@ func (e *postgresEngine) IsTrustedSystemQualifier(qualifier exp.Expression) bool
 
 // PostgreSQL has no relay rewrite: client_encoding is handled on the wire, not by an analyzer rewrite,
 // so there is nothing to rewrite here.
-func (e *postgresEngine) RewriteStatement(exp.Expression) string { return "" }
+func (e *postgresAnalyzer) RewriteStatement(exp.Expression) string { return "" }
 
 // A statement that degrades to an unstructured Command on PostgreSQL can only be a benign
 // session/config form: RESET restores defaults (de-escalation), an unmodeled SHOW is a read-only
 // GUC read (no table data). Everything else stays fail-closed at the caller.
-func (e *postgresEngine) CommandPassthrough(command string) bool {
+func (e *postgresAnalyzer) CommandPassthrough(command string) bool {
 	return command == "RESET" || command == "SHOW"
 }
-func (e *postgresEngine) ShowUtilityCommand(root exp.Expression) string {
+func (e *postgresAnalyzer) ShowUtilityCommand(root exp.Expression) string {
 	return showUtilityCommand(root)
 }
 
 // PostgreSQL allows duplicate OUTPUT labels; only a reference to one is ambiguous.
-func (e *postgresEngine) RejectsDuplicateDerivedOutputLabels() bool { return false }
+func (e *postgresAnalyzer) RejectsDuplicateDerivedOutputLabels() bool { return false }
 
-func (e *postgresEngine) RightJoinStarOrder() starOrder { return starOrderCommonLeftRight }
+func (e *postgresAnalyzer) RightJoinStarOrder() starOrder { return starOrderCommonLeftRight }
 
-func (e *postgresEngine) SystemSchemaFirst(searchPath []string) bool {
+func (e *postgresAnalyzer) SystemSchemaFirst(searchPath []string) bool {
 	return postgresCatalogFirstAfterTempSchemas(searchPath)
 }
 
-func (e *postgresEngine) IsSafeTypeReference(dt, kind exp.Expression, namespace NamespaceConfig) bool {
+func (e *postgresAnalyzer) IsSafeTypeReference(dt, kind exp.Expression, namespace NamespaceConfig) bool {
 	return e.isSafeXIDType(dt, kind, namespace)
 }
 
 // `'1'::pg_catalog.xid` is safe. Bare `'1'::xid` is safe only when pg_catalog is first on search_path
 // (after pg_temp) and the proxy saw pg_catalog.xid visible, so no user type can shadow it. `xid(4)` never.
-func (e *postgresEngine) isSafeXIDType(dt, kind exp.Expression, namespace NamespaceConfig) bool {
+func (e *postgresAnalyzer) isSafeXIDType(dt, kind exp.Expression, namespace NamespaceConfig) bool {
 	if kind == nil || len(dt.Expressions()) != 0 {
 		return false
 	}
@@ -484,14 +486,14 @@ func (e *postgresEngine) isSafeXIDType(dt, kind exp.Expression, namespace Namesp
 
 // PostgreSQL names an unaliased projection per parse_target.c FigureColname; a call is labeled by
 // its WRITTEN function name, read from the projection's parse-time SpanText.
-func (e *postgresEngine) NativeOutputLabel(projection, query exp.Expression) (string, bool) {
+func (e *postgresAnalyzer) NativeOutputLabel(projection, query exp.Expression) (string, bool) {
 	return nativeOutputLabel(projection, query, e, 0)
 }
 
 // PostgreSQL adds a failed write's WHOLE target row to the template: `INSERT INTO users (id) …` can fail
 // with `DETAIL: Failing row contains (1, 010-1234-5678, …)` — columns the statement never named. If the
 // row cannot be enumerated, an unresolvable sentinel key emits so the control-plane fails closed.
-func (e *postgresEngine) DiagnosticLeakKeys(report ProbeResult, qualifySchema schema.Schema) map[string]bool {
+func (e *postgresAnalyzer) DiagnosticLeakKeys(report ProbeResult, qualifySchema schema.Schema) map[string]bool {
 	keys := referencedColumnKeys(report)
 	if !report.IsWrite || report.WriteTarget == nil {
 		return keys

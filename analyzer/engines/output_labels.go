@@ -40,7 +40,7 @@ func hasSyntheticAlias(root exp.Expression) bool {
 // references it through the source alias. A SELECT whose list contains a star is never stamped —
 // the star hides labels this pass cannot count. A label the engine cannot compute is left to
 // Qualify (its synthetic name may then surface; restoreRelayOutputLabels repairs display labels).
-func stampNativeOutputLabels(root exp.Expression, eng engine) error {
+func stampNativeOutputLabels(root exp.Expression, eng analyzer) error {
 	derived := derivedBodySelects(root)
 	for _, sel := range root.FindAll(exp.KindSelect) {
 		projections := sel.Selects()
@@ -135,7 +135,7 @@ func derivedBodySelects(root exp.Expression) map[exp.Expression]string {
 
 // referencesLabel reports whether any column outside body references alias.label (folded per the
 // engine). Alias shadowing in unrelated scopes can over-match — that only fails closed.
-func referencesLabel(root, body exp.Expression, alias, foldedLabel string, eng engine) bool {
+func referencesLabel(root, body exp.Expression, alias, foldedLabel string, eng analyzer) bool {
 	inBody := map[exp.Expression]bool{}
 	for _, node := range body.Walk(true) {
 		inBody[node] = true
@@ -156,7 +156,7 @@ func referencesLabel(root, body exp.Expression, alias, foldedLabel string, eng e
 // stampNativeOutputLabels had to skip (a PG duplicate is legal as OUTPUT: two `?column?`s). A
 // set-operation root restores its leftmost branch, the label-bearing one. Only the top-level
 // alias is touched; a label something still references is left alone.
-func restoreRelayOutputLabels(root exp.Expression, eng engine) bool {
+func restoreRelayOutputLabels(root exp.Expression, eng analyzer) bool {
 	sel := leftmostSelect(root)
 	if sel == nil {
 		return false

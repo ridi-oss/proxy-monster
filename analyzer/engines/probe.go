@@ -105,7 +105,7 @@ func (id tableID) String() string {
 }
 
 type prober struct {
-	engine    engine
+	engine    analyzer
 	namespace NamespaceConfig
 
 	root         exp.Expression // the parsed statement, untouched
@@ -159,7 +159,7 @@ type naturalStarColumn struct {
 }
 
 func Probe(sql string, engineConfig *pb.EngineConfig, sch, implicit *schema.Mapping, namespace NamespaceConfig) ProbeResult {
-	eng, err := createEngine(engineConfig)
+	eng, err := createAnalyzer(engineConfig)
 	if err != nil {
 		return failResult("VALIDATE", err.Error())
 	}
@@ -197,7 +197,7 @@ func Probe(sql string, engineConfig *pb.EngineConfig, sch, implicit *schema.Mapp
 	return probeParsed(root, eng, qualifySchema, validatedNamespace)
 }
 
-func probeParsed(root exp.Expression, eng engine, qualifySchema schema.Schema, namespace NamespaceConfig) (out ProbeResult) {
+func probeParsed(root exp.Expression, eng analyzer, qualifySchema schema.Schema, namespace NamespaceConfig) (out ProbeResult) {
 	p := &prober{
 		engine:            eng,
 		namespace:         namespace,
@@ -1165,7 +1165,7 @@ func firstNonNil(values ...any) any {
 // lose the NormalizationStrategy this query was actually qualified under (Generate resolves any
 // non-*Dialect value via dialects.GetOrRaise, which builds a fresh DEFAULT dialect on every call), so
 // a lower_case_table_names=1/2 table could regenerate with the wrong identifier casing.
-func generateExecutableSQL(root exp.Expression, eng engine) (string, error) {
+func generateExecutableSQL(root exp.Expression, eng analyzer) (string, error) {
 	executable := root.Copy()
 	if !eng.PreservesCatalogQualifier() {
 		for _, table := range executable.FindAll(exp.KindTable) {
@@ -2098,7 +2098,7 @@ func skipCallResolution(fn exp.Expression) bool {
 
 // PostgreSQL `ARRAY(SELECT ...)` is syntax, not a pg_proc function; only that shape is exempt.
 func (p *prober) isGrammarConstructor(fn exp.Expression) bool {
-	if _, pg := p.engine.(*postgresEngine); !pg || !strings.EqualFold(fn.Name(), "array") {
+	if _, pg := p.engine.(*postgresAnalyzer); !pg || !strings.EqualFold(fn.Name(), "array") {
 		return false
 	}
 	args := fn.Expressions()

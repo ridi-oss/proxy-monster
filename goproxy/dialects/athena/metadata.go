@@ -18,12 +18,12 @@ import (
 // catalogIdentity is the catalog name the control plane and analyzer key on; Athena folds catalog names.
 func (t *target) catalogIdentity() string { return strings.ToLower(t.config.catalog) }
 
-// skippedSampleSize bounds the relation names one skip warning lists; a catalog can hold hundreds of views.
+// skippedSampleSize bounds the relation names one skip log lists; a catalog can hold hundreds of views.
 const skippedSampleSize = 10
 
-// Introspect scans every database of the configured catalog through Glue table metadata. A relation whose
-// columns the catalog cannot prove (a view, an unknown table type) is left out rather than flattened, so a
-// statement naming it does not resolve and is denied as unanalyzable. One warning per scan lists the skips.
+type skippedRelation struct{ name, kind string }
+
+// Introspect scans the configured catalog's Glue metadata, leaving out relations that are not tables.
 func (t *target) Introspect(ctx context.Context) (*pb.CatalogRequest, error) {
 	group, err := t.api.GetWorkGroup(ctx, &awsa.GetWorkGroupInput{WorkGroup: aws.String(t.config.workgroup)})
 	if err != nil {
@@ -38,7 +38,7 @@ func (t *target) Introspect(ctx context.Context) (*pb.CatalogRequest, error) {
 		return nil, err
 	}
 	columns := []*enginepb.Column{}
-	var skipped []string
+	var skipped []skippedRelation
 	for _, database := range databases {
 		fragment, unproved, err := t.readColumns(ctx, t.config.catalog, database)
 		if err != nil {
@@ -47,16 +47,15 @@ func (t *target) Introspect(ctx context.Context) (*pb.CatalogRequest, error) {
 		columns = append(columns, fragment...)
 		skipped = append(skipped, unproved...)
 	}
-	warnSkippedRelations(skipped)
+	logSkippedRelations(slog.Default(), slog.LevelWarn, skipped)
 	return &pb.CatalogRequest{
 		CurrentCatalog: t.catalogIdentity(), DefaultSchemas: []string{t.config.database},
 		Catalog: &enginepb.CatalogSnapshot{Columns: columns}, EngineVersion: version,
 	}, nil
 }
 
-// readColumns lists the columns of one database's tables, and the database.table names of the relations it
-// left out because their type is not a table.
-func (t *target) readColumns(ctx context.Context, catalog, database string) ([]*enginepb.Column, []string, error) {
+// readColumns lists the columns of one database's tables and the relations it left out.
+func (t *target) readColumns(ctx context.Context, catalog, database string) ([]*enginepb.Column, []skippedRelation, error) {
 	if catalog == "" || database == "" {
 		return nil, nil, errors.New("athena: namespace is incomplete")
 	}
@@ -64,7 +63,7 @@ func (t *target) readColumns(ctx context.Context, catalog, database string) ([]*
 		CatalogName: aws.String(catalog), DatabaseName: aws.String(database), WorkGroup: aws.String(t.config.workgroup),
 	})
 	var columns []*enginepb.Column
-	var skipped []string
+	var skipped []skippedRelation
 	seen := make(map[string]bool)
 	tokens := make(map[string]bool)
 	for pages.HasMorePages() {
@@ -82,7 +81,7 @@ func (t *target) readColumns(ctx context.Context, catalog, database string) ([]*
 			}
 			seen[name] = true
 			if kind := aws.ToString(table.TableType); kind != "EXTERNAL_TABLE" && kind != "MANAGED_TABLE" {
-				skipped = append(skipped, database+"."+name)
+				skipped = append(skipped, skippedRelation{name: database + "." + name, kind: kind})
 				continue
 			}
 			tableColumns, err := metadataColumns(table)
@@ -100,13 +99,24 @@ func (t *target) readColumns(ctx context.Context, catalog, database string) ([]*
 	return columns, skipped, nil
 }
 
-func warnSkippedRelations(skipped []string) {
+func logSkippedRelations(logger *slog.Logger, level slog.Level, skipped []skippedRelation) {
 	if len(skipped) == 0 {
 		return
 	}
-	sample := skipped[:min(len(skipped), skippedSampleSize)]
-	slog.Warn("athena: catalog skipped relations that are not tables; statements naming them are denied",
-		"count", len(skipped), "sample", sample)
+	types := make(map[string]int)
+	sample := make([]string, 0, min(len(skipped), skippedSampleSize))
+	for _, relation := range skipped {
+		kind := relation.kind
+		if kind == "" {
+			kind = "(none)"
+		}
+		types[kind]++
+		if len(sample) < skippedSampleSize {
+			sample = append(sample, relation.name)
+		}
+	}
+	logger.Log(context.Background(), level, "athena: catalog skipped relations that are not tables; statements naming them are unanalyzable",
+		"count", len(skipped), "types", types, "sample", sample)
 }
 
 func metadataColumns(table types.TableMetadata) ([]types.Column, error) {

@@ -92,7 +92,7 @@ func TestCatalogSkipsViewsAndUnknownTypesWithoutFlatteningTheirColumns(t *testin
 	if !slices.Equal(tables, []string{"base.email", "managed.id"}) {
 		t.Fatalf("catalog holds columns of an unproved relation: %v", tables)
 	}
-	if !slices.Equal(skipped, []string{"example.view", "example.unknown"}) {
+	if !slices.Equal(skipped, []skippedRelation{{"example.view", "VIRTUAL_VIEW"}, {"example.unknown", ""}}) {
 		t.Fatalf("skipped relations not reported: %v", skipped)
 	}
 }
@@ -114,32 +114,39 @@ func TestCatalogStillRejectsMissingOrDuplicateRelationNames(t *testing.T) {
 	}
 }
 
-func TestSkippedRelationWarningIsOneBoundedLine(t *testing.T) {
+func TestSkippedRelationLogIsOneBoundedLineCountedByType(t *testing.T) {
 	var logs bytes.Buffer
-	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
-	t.Cleanup(func() { slog.SetDefault(previous) })
-
-	skipped := make([]string, skippedSampleSize*3)
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+	skipped := make([]skippedRelation, skippedSampleSize*3)
 	for i := range skipped {
-		skipped[i] = fmt.Sprintf("example.view_%d", i)
+		skipped[i] = skippedRelation{name: fmt.Sprintf("example.view_%d", i), kind: "VIRTUAL_VIEW"}
 	}
-	warnSkippedRelations(skipped)
-	warnSkippedRelations(nil)
+	skipped[len(skipped)-1].kind = ""
+	logSkippedRelations(logger, slog.LevelWarn, skipped)
+	logSkippedRelations(logger, slog.LevelWarn, nil)
 
 	lines := strings.Split(strings.TrimSpace(logs.String()), "\n")
 	if len(lines) != 1 {
-		t.Fatalf("want one warning, got %d: %s", len(lines), logs.String())
+		t.Fatalf("want one line, got %d: %s", len(lines), logs.String())
 	}
 	var entry struct {
-		Count  int      `json:"count"`
-		Sample []string `json:"sample"`
+		Level  string         `json:"level"`
+		Count  int            `json:"count"`
+		Types  map[string]int `json:"types"`
+		Sample []string       `json:"sample"`
 	}
 	if err := json.Unmarshal([]byte(lines[0]), &entry); err != nil {
 		t.Fatal(err)
 	}
-	if entry.Count != len(skipped) || !slices.Equal(entry.Sample, skipped[:skippedSampleSize]) {
-		t.Fatalf("warning is not a bounded sample: %+v", entry)
+	want := make([]string, skippedSampleSize)
+	for i := range want {
+		want[i] = skipped[i].name
+	}
+	if entry.Level != "WARN" || entry.Count != len(skipped) || !slices.Equal(entry.Sample, want) {
+		t.Fatalf("log is not a bounded sample: %+v", entry)
+	}
+	if entry.Types["VIRTUAL_VIEW"] != len(skipped)-1 || entry.Types["(none)"] != 1 {
+		t.Fatalf("log does not count skips by type: %v", entry.Types)
 	}
 }
 

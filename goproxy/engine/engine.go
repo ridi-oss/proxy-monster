@@ -202,6 +202,7 @@ type Decision struct {
 	Action              string // "ALLOW" | "MASK" | "DENY" (mapped by NAME; unknown -> DENY, fail closed)
 	DecisionID          int64
 	DenyReason          string
+	DenyCode            string // a stable code for DenyReason ("rate_spent"), or empty
 	Masks               []*pb.ColumnMask
 	EffectiveRoles      []string
 	RewrittenSQL        *string // nil == relay the client's original SQL verbatim (no * expansion)

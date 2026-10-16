@@ -39,6 +39,7 @@
     "request_not_permitted": "You are not permitted to request access on this datasource.",
     "query_failed": "Query execution failed.",
     "execute_denied": "The query was denied at execution time.",
+    "rate_spent": "The result rate for this window is spent.",
     "canceled": "The execution was canceled.",
     "cancel_forbidden": "You do not have permission to cancel this execution.",
     "not_cancelable": "This execution is no longer running and cannot be canceled.",

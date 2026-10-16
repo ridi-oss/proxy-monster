@@ -23,6 +23,8 @@ interface Props {
   error: string | null
   onCancel?: () => void
   onRequestAccess: () => void
+  /** A spent `@cap` rate denied the statement (docs/result-caps.md): offer a rate boost role instead. */
+  onRequestRateBoost?: () => void
   /** Row count a stored result's view cap cut the release to (`QueryResultView.truncatedAt`). */
   truncatedAt?: number | null
 }
@@ -35,6 +37,7 @@ export function ResultsPanel({
   error,
   onCancel,
   onRequestAccess,
+  onRequestRateBoost,
   truncatedAt = null,
 }: Props) {
   const t = useTranslations('Query')
@@ -89,7 +92,7 @@ export function ResultsPanel({
               </span>
             )}
             <span className="text-muted-foreground font-mono text-xs">{result.latencyMs} ms</span>
-            {result.decision === 'DENY' && (
+            {result.decision === 'DENY' && result.denyCode !== 'rate_spent' && (
               <div className="flex items-center gap-2">
                 {result.decisionId != null && (
                   <Button size="xs" asChild>
@@ -100,6 +103,11 @@ export function ResultsPanel({
                   {t('results.requestAccess')}
                 </Button>
               </div>
+            )}
+            {result.decision === 'DENY' && result.denyCode === 'rate_spent' && onRequestRateBoost && (
+              <Button size="xs" data-testid="request-rate-boost-header" onClick={onRequestRateBoost}>
+                {t('rateBoost.button')}
+              </Button>
             )}
           </div>
         </div>
@@ -165,7 +173,7 @@ export function ResultsPanel({
               </div>
             </Centered>
           ) : result.decision === 'DENY' ? (
-            <DenyCallout result={result} onRequestAccess={onRequestAccess} />
+            <DenyCallout result={result} onRequestAccess={onRequestAccess} onRequestRateBoost={onRequestRateBoost} />
           ) : (
             <div className="flex h-full min-h-0 flex-col">
               {cappedAt != null && (
@@ -214,11 +222,14 @@ function CapNotice({ rows, onRequestAccess }: { rows: number; onRequestAccess: (
 function DenyCallout({
   result,
   onRequestAccess,
+  onRequestRateBoost,
 }: {
   result: QueryResponse
   onRequestAccess: () => void
+  onRequestRateBoost?: () => void
 }) {
   const t = useTranslations('Query')
+  const rateDeny = result.denyCode === 'rate_spent' && onRequestRateBoost != null
   return (
     <div className="flex min-h-0 flex-1 items-start justify-center overflow-y-auto p-6">
       <div className="max-w-lg rounded-xl border border-red-500/30 bg-red-500/10 p-4">
@@ -240,17 +251,25 @@ function DenyCallout({
           </p>
         )}
         <p className="text-muted-foreground mt-3 text-xs">
-          {t('results.denyHelp')}
+          {rateDeny ? t('rateBoost.denyHelp') : t('results.denyHelp')}
         </p>
         <div className="mt-3 flex flex-wrap items-center gap-2">
-          {result.decisionId != null && (
-            <Button size="sm" asChild>
-              <Link href={`/workflows/new?from=${result.decisionId}`}>{t('results.requestApproval')}</Link>
+          {rateDeny ? (
+            <Button size="sm" data-testid="request-rate-boost" onClick={onRequestRateBoost}>
+              {t('rateBoost.button')}
             </Button>
+          ) : (
+            <>
+              {result.decisionId != null && (
+                <Button size="sm" asChild>
+                  <Link href={`/workflows/new?from=${result.decisionId}`}>{t('results.requestApproval')}</Link>
+                </Button>
+              )}
+              <Button size="sm" variant="destructive" onClick={onRequestAccess}>
+                {t('results.requestAccess')}
+              </Button>
+            </>
           )}
-          <Button size="sm" variant="destructive" onClick={onRequestAccess}>
-            {t('results.requestAccess')}
-          </Button>
           {result.decisionId != null && (
             <Link
               href={`/audit/${result.decisionId}`}

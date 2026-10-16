@@ -106,6 +106,7 @@ data class QueryResponse(
     val decision: EnfAction,
     val decisionId: Long? = null,
     val denyReason: String? = null,
+    val denyCode: String? = null,
     val maskedColumns: List<String> = emptyList(),
     // The tagged columns touched, not only `pii`-tagged ones; see decideQuery (Query.kt).
     val piiTouched: List<String> = emptyList(),
@@ -181,6 +182,8 @@ data class DecisionContext(
     val detail: String?,
     val passthrough: Boolean,
     val structural: Boolean = false,
+    /** A stable code for [denyReason] a caller can branch on ([RATE_SPENT_CODE]), or null. */
+    val denyCode: String? = null,
     /** ALLOW/MASK only: the `*`-expanded query the wire proxy must send instead of the client's original
      * so target-DB column order matches the mask ordinals. Null = send verbatim. */
     val rewrittenSql: String? = null,
@@ -642,7 +645,7 @@ fun decideQuery(
         // A literal write reaches this relay too, and its diagnostic can leak (a PostgreSQL constraint ERR
         // dumps the whole target row) — gate on the analyzer's leak set. `SELECT 1` has an empty set: raw.
         if (relaysRows(statementKind)) {
-            spentRate(auditStore, principal, ds.name, datasourceCaps)?.let { return policyDeny(it, roleList, derivedTags) }
+            spentRate(auditStore, principal, ds.name, datasourceCaps)?.let { return policyDeny(it, roleList, derivedTags).copy(denyCode = RATE_SPENT_CODE) }
         }
         return passthroughAllow(roleList, "passthrough (no data touched)", derivedTags)
             .copy(
@@ -692,7 +695,7 @@ fun decideQuery(
                 // Unanalyzable: no leak set to authorize, so fail closed and redact the diagnostic.
                 sanitizeDiagnostics = true,
             ).withCaps(datasourceCaps).let { relay ->
-                if (relaysRows(statementKind)) spentRate(auditStore, principal, ds.name, datasourceCaps)?.let { deny(it) } ?: relay else relay
+                if (relaysRows(statementKind)) spentRate(auditStore, principal, ds.name, datasourceCaps)?.let { deny(it).copy(denyCode = RATE_SPENT_CODE) } ?: relay else relay
             }
             is AuthzDecision.Deny -> deny(reason, catalogMiss = true).copy(checkTargetError = true)
         }
@@ -736,7 +739,7 @@ fun decideQuery(
                 // An uncovered column means the leak set can't be authorized — fail closed and redact.
                 sanitizeDiagnostics = true,
             ).withCaps(datasourceCaps).let { relay ->
-                if (relaysRows(statementKind)) spentRate(auditStore, principal, ds.name, datasourceCaps)?.let { deny(it) } ?: relay else relay
+                if (relaysRows(statementKind)) spentRate(auditStore, principal, ds.name, datasourceCaps)?.let { deny(it).copy(denyCode = RATE_SPENT_CODE) } ?: relay else relay
             }
             is AuthzDecision.Deny -> structuralDeny(
                 coverage.reason, roleList, failedStage = "catalog", contextTags = derivedTags,
@@ -915,7 +918,7 @@ fun decideQuery(
         for ((command, tagId) in usedUtilityTags) add(CapResource.Utility(UtilityRef(command), tagId))
     }
     val statementCaps = authz.resolveResultCaps(principal, parents, ds.name, capResources, context, ds.tags)
-    spentRate(auditStore, principal, ds.name, datasourceCaps, statementCaps)?.let { return deny(it) }
+    spentRate(auditStore, principal, ds.name, datasourceCaps, statementCaps)?.let { return deny(it).copy(denyCode = RATE_SPENT_CODE) }
     // Every classified column the statement touched, whatever its tags are named: `pii` is a deployment's
     // own tag, so keying this on that one string leaves auditmon's mass-export detector blind on a
     // deployment that classifies with `pci`.
@@ -998,7 +1001,8 @@ private val SESSION_KINDS = setOf(
 
 internal fun spentRate(auditStore: AuditStore?, principal: String, datasource: String, vararg resolved: ResolvedCaps): String? {
     if (auditStore == null || resolved.any { it.unbounded }) return null
-    val rates = resolved.flatMap { it.rates }
+    val boost = resolved.maxOf { it.boost }
+    val rates = resolved.flatMap { it.rates }.map { it.boosted(boost) }
     if (rates.isEmpty()) return null
     val relayed = auditStore.relayedVolume(principal, datasource, rates.map { it.window }, Instant.now())
     val spent = rates.firstOrNull { rate ->
@@ -1019,6 +1023,7 @@ private const val SYSTEM_UTILITY_DENY = "utility command is not allowed on this 
 private const val DEACTIVATED_PRINCIPAL_DENY = "principal is deprovisioned (deactivated) — access denied"
 private const val CATALOG_CONFIGURATION_DENY = "fail-closed: invalid catalog or analyzer namespace configuration"
 internal const val RATE_SPENT_DENY = "rate"
+internal const val RATE_SPENT_CODE = "rate_spent"
 private const val WIRE_TASK_FORBIDDEN_DENY = "automatic task approval is not permitted for this datasource"
 
 private fun structuralDeny(

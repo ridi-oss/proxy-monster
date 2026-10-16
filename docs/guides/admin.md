@@ -204,7 +204,11 @@ principal's relayed volume on that datasource. The tightest matching cap wins; a
 `forbid` lifts every limit. With every row disabled the control plane still caps
 at 5,000 rows / 50 MB. To change the numbers, disable a row and write your own.
 
-A spent rate denies with `rate 10000/1h spent` until the window rolls off.
+A spent rate denies with `rate 10000/1h spent`. To raise it for a while, grant
+the user `system:rate-boost-2x` or `system:rate-boost-5x`, usually by approving
+their role request in **Workflows**. Each role's `@boost` permit multiplies
+every rate by 2 or 5 until the grant ends; caps stay as they are. Write your own
+boost the same way: `@boost("1.5")` on a `result.cap` permit.
 
 ## Approvals
 

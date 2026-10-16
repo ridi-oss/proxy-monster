@@ -602,6 +602,8 @@ export interface QueryResponse {
   decision: 'ALLOW' | 'MASK' | 'DENY'
   decisionId?: number | null
   denyReason?: string | null
+  /** A stable code for denyReason: `rate_spent` when a result rate is spent. */
+  denyCode?: string | null
   maskedColumns: string[]
   piiTouched: string[]
   effectiveRoles: string[]

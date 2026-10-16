@@ -80,8 +80,9 @@ import com.ridi.oss.proxymonster.controlplane.support.CpGoStack
 
 /**
  * Every result-cap path through the control plane's real surfaces (docs/result-caps.md): the shipped
- * policies, the gRPC Decide the wire proxy calls, the editor run channel, the workflow execute + view, and
- * policy-save validation. MySQL target; a fake proxy over gRPC answers the run channel.
+ * policies, the gRPC Decide the wire proxy calls, the editor run channel, the workflow execute + view, the
+ * boost role requested on the workflow surface, and policy-save validation. MySQL target; a fake proxy over gRPC
+ * answers the run channel.
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class ResultCapsE2eDbTest {
@@ -338,6 +339,7 @@ class ResultCapsE2eDbTest {
             val denied = wire.decide(sql)
             assertEquals(WireEnfAction.DENY, denied.decision)
             assertEquals("$RATE_SPENT_DENY 10000/1h spent", denied.denyReason)
+            assertEquals(RATE_SPENT_CODE, denied.denyCode)
             assertEquals(HttpStatusCode.OK, client.get("/api/editor/tasks/${ack.taskId}/result").status)
             // Session statements pass through a spent rate; a row-returning one does not.
             assertNotEquals(WireEnfAction.DENY, wire.decide("commit").decision)
@@ -369,6 +371,36 @@ class ResultCapsE2eDbTest {
         val denied = wire.decide("select id from users")
         assertEquals(WireEnfAction.DENY, denied.decision)
         assertEquals("$RATE_SPENT_DENY 100MB/1h spent", denied.denyReason)
+    }
+
+    // Workflow: the user requests a boost role, an approver grants it, the rate is doubled while it is held.
+    @Test
+    fun `a boost role approved on the workflow surface raises the requester's rate`() = testApplication {
+        wire()
+        val principal = "quota@example.com"
+        fx.userGroupStore.createUser(AppUserInput(principal = principal), fx.tokenStore, fx.accessStore, fx.daemonSessionStore)
+        fx.policyStore.createAssignment(RoleAssignmentInput(principal, analystRoleId))
+        val wire = WireClient(principal)
+        completion(principal, 10_000)
+        assertEquals("$RATE_SPENT_DENY 10000/1h spent", wire.decide("select id from users").denyReason)
+
+        val boost = fx.policyStore.getRoleByName("system:rate-boost-2x")!!
+        val user = console(principal)
+        val created = user.post("/api/access-requests") {
+            contentType(ContentType.Application.Json); setBody(AccessRequestInput(boost.id, reason = "monthly export re-run"))
+        }
+        assertEquals(HttpStatusCode.Created, created.status, created.bodyAsText())
+        val request = created.body<AccessRequest>()
+        assertEquals("$RATE_SPENT_DENY 10000/1h spent", wire.decide("select id from users").denyReason)
+
+        val approved = console(approver).post("/api/access-requests/${request.id}/approve")
+        assertEquals(HttpStatusCode.OK, approved.status, approved.bodyAsText())
+        val lifted = wire.decide("select id from users")
+        assertEquals(WireEnfAction.ALLOW, lifted.decision, lifted.denyReason)
+        assertEquals(5000L, lifted.maxRows, "a boost leaves the statement cap alone")
+
+        completion(principal, 10_000, ageSeconds = 0)
+        assertEquals("$RATE_SPENT_DENY 10000/1h x2 spent", wire.decide("select id from users").denyReason)
     }
 
     // Workflow: an approved query executed under the exporter role runs uncapped and unrated; the requester

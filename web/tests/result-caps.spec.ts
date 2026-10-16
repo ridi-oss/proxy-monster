@@ -1,7 +1,7 @@
 import { expect, test, type Page, type Route } from 'playwright/test'
 
-// The console's side of the result caps (docs/result-caps.md): a cap-truncated result says so; an old
-// RATE_RESET request still shows on Workflows as history.
+// The console's side of the result caps (docs/result-caps.md): a cap-truncated result says so; a spent rate
+// offers a rate boost role request; an old RATE_RESET request still shows on Workflows as history.
 
 const SESSION_CONFIG = {
   heartbeatMs: 90_000,
@@ -129,7 +129,67 @@ test('a view cut by the viewer cap shows the same notice', async ({ page }) => {
   await expect(page.getByRole('row')).toHaveCount(6)
 })
 
-test('an ordinary policy denial offers approval and access', async ({ page }) => {
+const ROLES = [
+  { id: 1, name: 'analyst' },
+  { id: 31, name: 'system:rate-boost-2x' },
+  { id: 32, name: 'system:rate-boost-5x' },
+]
+
+for (const denyReason of ['rate 10000/1h spent', 'rate 10000/1h x2 spent']) {
+  test(`a spent rate (${denyReason}, approval.rate_spent) offers a rate boost role request`, async ({ page }) => {
+    await mockAppShell(page)
+    await mockEditorShell(page)
+    await page.route('**/api/roles', (route) => fulfillJson(route, 200, ROLES))
+    await page.route('**/api/editor/tasks/9', (route) =>
+      fulfillJson(route, 200, {
+        taskId: 9,
+        status: 'FAILED',
+        result: {
+          taskId: 9,
+          status: 'FAILED',
+          ordinal: 0,
+          errorCode: 'approval.rate_spent',
+          denyReason,
+          decisionId: 4242,
+          columns: [],
+        },
+      }),
+    )
+    let filed: Record<string, unknown> | null = null
+    await page.route('**/api/access-requests', async (route) => {
+      if (route.request().method() !== 'POST') return fulfillJson(route, 200, [])
+      filed = route.request().postDataJSON()
+      await fulfillJson(route, 201, { id: 78, principal: 'sam@example.com', roleId: 31, status: 'PENDING', kind: 'ROLE' })
+    })
+
+    await runInEditor(page, 'select id from users')
+
+    const results = page.getByLabel('Results')
+    await expect(results.getByText('Query denied')).toBeVisible()
+    await expect(results.getByText(denyReason)).toBeVisible()
+    // A rate denial offers the boost role in place of "Request approval" and a free role pick.
+    await expect(page.getByRole('button', { name: 'Request approval' })).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Request access' })).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Request a rate boost' })).toHaveCount(2)
+
+    await page.getByTestId('request-rate-boost-header').click()
+    const dialog = page.getByRole('dialog')
+    await expect(dialog).toBeVisible()
+    await expect(dialog.getByRole('combobox').first()).toContainText('system:rate-boost-2x')
+    await expect(dialog.locator('#reason')).toHaveValue(`Blocked running a query: ${denyReason}`)
+    await dialog.getByRole('button', { name: 'Submit request' }).click()
+
+    await expect(dialog.getByText('Requested — awaiting approval')).toBeVisible()
+    await expect.poll(() => filed).toEqual({
+      roleId: 31,
+      datasourceId: 1,
+      reason: `Blocked running a query: ${denyReason}`,
+      requestedDurationSec: 3600,
+    })
+  })
+}
+
+test('an ordinary policy denial still offers approval and access, never a rate boost', async ({ page }) => {
   await mockAppShell(page)
   await mockEditorShell(page)
   await page.route('**/api/editor/tasks/9', (route) =>
@@ -141,7 +201,8 @@ test('an ordinary policy denial offers approval and access', async ({ page }) =>
         status: 'FAILED',
         ordinal: 0,
         errorCode: 'approval.execute_denied',
-        denyReason: 'ssn is off-limits',
+        // A rate-shaped reason without the rate_spent code is an ordinary denial.
+        denyReason: 'rate 10000/1h spent',
         decisionId: 4242,
         columns: [],
       },
@@ -154,6 +215,7 @@ test('an ordinary policy denial offers approval and access', async ({ page }) =>
   await expect(results.getByText('Query denied')).toBeVisible()
   await expect(results.getByRole('button', { name: 'Request access' })).toBeVisible()
   await expect(results.getByRole('button', { name: 'Request approval' })).toBeVisible()
+  await expect(results.getByTestId('request-rate-boost')).toHaveCount(0)
 })
 
 test('an old RATE_RESET request still shows on Workflows as read-only history', async ({ page }) => {

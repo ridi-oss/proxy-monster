@@ -372,11 +372,12 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
             // A policy DENY is a decision, not an error: returning it as a DENY result is what gives the
             // panel the reason and the decisionId it needs to offer "request approval". Throwing here
             // collapsed it into a generic failure and dropped both, leaving the requester nowhere to go.
-            if (child?.errorCode === 'approval.execute_denied') {
+            if (child?.errorCode === 'approval.execute_denied' || child?.errorCode === 'approval.rate_spent') {
               return {
                 decision: 'DENY',
                 decisionId: child.decisionId ?? null,
                 denyReason: child.denyReason ?? null,
+                denyCode: child.errorCode === 'approval.rate_spent' ? 'rate_spent' : null,
                 maskedColumns: [],
                 piiTouched: [],
                 effectiveRoles: [],
@@ -526,9 +527,9 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
           setSearchPath(response.searchPath)
           if (result?.status === 'DONE') {
             log(statement, { decision: 'ALLOW', denyReason: null, error: null })
-          } else if (result?.errorCode === 'approval.execute_denied') {
+          } else if (result?.errorCode === 'approval.execute_denied' || result?.errorCode === 'approval.rate_spent') {
             log(statement, { decision: 'DENY', denyReason: result.denyReason ?? null, error: null })
-            toast.error(result.denyReason ?? translateApiError('approval.execute_denied'))
+            toast.error(result.denyReason ?? translateApiError(result.errorCode))
           } else {
             const message = translateApiError(result?.errorCode ?? 'approval.query_failed')
             log(statement, { decision: 'ERROR', denyReason: null, error: message })

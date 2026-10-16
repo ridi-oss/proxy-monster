@@ -347,6 +347,8 @@ message Verdict {
   proxymonster.analyzer.v1.Submission submission = 14;
   // The proxy sends the target's error from check_target_error, redacted, and runs nothing.
   bool forward_target_error = 15;
+  // A stable code for the deny_reason the caller can branch on: "rate_spent", or empty.
+  string deny_code = 16;
 }
 message BeforeDecide {
   repeated ProxyCommand commands = 1;
@@ -457,6 +459,8 @@ message RunDecision {
   // short from one the client's own page size ended.
   int64 max_rows = 8;
   int64 max_bytes = 9;
+  // Verdict.deny_code echoed back.
+  string deny_code = 10;
 }
 message RunResultRows {
   repeated string columns = 1;

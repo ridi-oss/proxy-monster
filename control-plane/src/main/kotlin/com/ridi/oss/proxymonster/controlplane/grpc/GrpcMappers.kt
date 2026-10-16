@@ -28,6 +28,7 @@ internal fun DecisionContext.toWireDecision(
             maxRows = ctx.maxRows ?: 0
             maxBytes = ctx.maxBytes ?: 0
             ctx.denyReason?.let { denyReason = it }
+            ctx.denyCode?.let { denyCode = it }
             masks.addAll(ctx.masks)
             effectiveRoles.addAll(ctx.effectiveRoles)
             ctx.rewrittenSql?.let { rewrittenSql = it }

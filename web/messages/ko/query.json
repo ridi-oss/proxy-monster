@@ -165,5 +165,9 @@
     "metaTableComment": "테이블 설명",
     "onUpdate": "업데이트 시: {action}",
     "onDelete": "삭제 시: {action}"
+  },
+  "rateBoost": {
+    "button": "한도 상향 요청",
+    "denyHelp": "이 기간의 결과 전송량 한도를 모두 사용했습니다. 한도 상향 역할을 일정 시간 요청하거나 기간이 지나기를 기다리세요."
   }
 }

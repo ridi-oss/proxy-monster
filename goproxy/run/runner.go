@@ -426,6 +426,7 @@ func sendDecision(stream runStream, decision *engine.Decision) bool {
 			DecisionId:          decision.DecisionID,
 			MaskedColumns:       maskedColumns,
 			DenyReason:          decision.DenyReason,
+			DenyCode:            decision.DenyCode,
 			EffectiveRoles:      append([]string(nil), decision.EffectiveRoles...),
 			ResultFingerprint:   decision.ResultFingerprint,
 			SanitizeDiagnostics: decision.SanitizeDiagnostics,

@@ -62,8 +62,9 @@ func Validate(src string) []string {
 			}
 		}
 	}
-	if m := unsupportedExtension.FindStringSubmatch(src); m != nil {
-		out = append(out, m[1]+" is not a valid function")
+	// The re-printed policy has no comments, so a comment can neither hide a call nor fake one.
+	if m := unsupportedExtension.FindSubmatch(policy.MarshalCedar()); m != nil {
+		out = append(out, string(m[1])+" is not a valid function")
 	}
 	out = append(out, retiredUtilityErrors(src)...)
 	return append(out, capErrors(policy, src)...)

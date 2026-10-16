@@ -21,7 +21,7 @@ import (
 )
 
 var actions = []string{
-	"admin.datasources", "admin.policies", "admin.identity", "task.approve", "task.request", "task.read",
+	"admin.datasources", "admin.policies", "admin.identity", "task.approve", "task.request", "task.read", "task.run", "task.comment", "task.cc",
 	"task.assume", "task.cancel", "task.delete", "task.force_run", "grant.revoke", "token.mint", "token.list", "token.revoke",
 	"audit.read", "result.read.unmasked", "result.read.masked", "result.cap", "datasource.connect",
 	"native.invoke", "exception.unanalyzable", "exception.unmaskable",
@@ -55,7 +55,7 @@ func main() {
 	resources := []bridge.Resource{bridge.System, bridge.AuditLog}
 	for _, p := range principals {
 		resources = append(resources, bridge.AuditRecord(p))
-		for _, kind := range []string{"", "SESSION", "USER", "EDITOR"} {
+		for _, kind := range []string{"", "SESSION", "USER", "EDITOR", "APPROVER_EXEC", "WORKLOAD"} {
 			resources = append(resources, bridge.Resource{Type: "Token", Principal: p, Kind: kind})
 		}
 	}

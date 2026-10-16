@@ -60,6 +60,7 @@ func TestValidateRejects(t *testing.T) {
 		`permit(principal, action == Action::"result.read.unmasked", resource == Utility::"ds/SHOW_GRANTS");`,
 		`permit(principal, action == Action::"audit.read", resource) when { datetime("2026-01-01") == datetime("2026-01-01") };`,
 		`permit(principal, action == Action::"audit.read", resource) when { duration("1h") == duration("1h") };`,
+		"permit(principal, action == Action::\"audit.read\", resource) when { duration // a comment\n(\"1h\") == duration // a comment\n(\"1h\") };",
 		`@cap("9223372036854775808") permit(principal, action == Action::"result.cap", resource);`,
 	} {
 		if errs := Validate(src); len(errs) == 0 {
@@ -68,6 +69,7 @@ func TestValidateRejects(t *testing.T) {
 	}
 	for _, src := range []string{
 		`permit(principal, action == Action::"audit.read", resource);`,
+		"// duration(\"1h\") is not supported\npermit(principal, action == Action::\"audit.read\", resource);",
 		`@cap("2000, 3MB, 100KB/10m, 7GB/31d") permit(principal in Role::"analyst", action == Action::"result.cap", resource);`,
 		`permit(principal, action == Action::"context.tag::office", resource) when { context has requester_ip && context.requester_ip.isInRange(ip("10.0.0.0/8")) };`,
 	} {
@@ -99,7 +101,10 @@ func TestDecisionsUnderShippedPolicies(t *testing.T) {
 	exec(`INSERT INTO group_member (group_id, user_id) SELECT g.id, u.id FROM app_group g, app_user u WHERE u.principal IN ('grouped', 'lapsed') AND g.name IN ('eng', 'retired')`)
 	exec(`INSERT INTO policy (name, cedar_src, enabled, origin) VALUES ('eng-audit', 'permit(principal in Group::"eng", action == Action::"audit.read", resource == AuditLog::"all");', true, 'USER'),
 		('retired-audit', 'permit(principal in Group::"retired", action == Action::"admin.policies", resource);', true, 'USER'),
-		('eng-requests', 'permit(principal == User::"watcher", action == Action::"task.read", resource) when { resource.requester in Group::"eng" };', true, 'USER')`)
+		('eng-requests', 'permit(principal == User::"watcher", action == Action::"task.read", resource) when { resource.requester in Group::"eng" };', true, 'USER'),
+		('cc-graph', 'permit(principal == User::"ccwatch", action == Action::"task.read", resource) when { User::"grouped" in Group::"eng" };', true, 'USER'),
+		('overflow-permit', 'permit(principal == User::"overflow", action == Action::"audit.read", resource);', true, 'USER'),
+		('overflow-forbid', 'forbid(principal == User::"overflow", action == Action::"audit.read", resource) when { 9223372036854775807 + 1 > 0 };', true, 'USER')`)
 	exec(`INSERT INTO app_user (principal, active) VALUES ('gone', false)`)
 	exec(`INSERT INTO principal_role (principal, role_id) SELECT 'gone', id FROM app_role WHERE name = 'system:admin'`)
 
@@ -146,6 +151,8 @@ func TestDecisionsUnderShippedPolicies(t *testing.T) {
 		{"cc reads the request", "carol", "task.read", bridge.Resource{Type: "ApprovalRequest", Principal: "alice", CCs: []string{"carol"}}, "", true},
 		{"cc comments", "carol", "task.comment", bridge.Resource{Type: "ApprovalRequest", Principal: "alice", CCs: []string{"carol"}}, "", true},
 		{"cc may not run", "carol", "task.run", bridge.Resource{Type: "ApprovalRequest", Principal: "alice", CCs: []string{"carol"}}, "", false},
+		{"a cc's groups are not in the graph", "ccwatch", "task.read", bridge.Resource{Type: "ApprovalRequest", Principal: "alice", CCs: []string{"grouped"}}, "", false},
+		{"an erroring forbid denies", "overflow", "audit.read", bridge.AuditLog, "", false},
 		{"not a cc", "dave", "task.read", bridge.Resource{Type: "ApprovalRequest", Principal: "alice", CCs: []string{"carol"}}, "", false},
 		{"requester runs", "alice", "task.run", bridge.Resource{Type: "ApprovalRequest", Principal: "alice", Approver: &role}, "", true},
 		{"runner sees the result", "erin", "task.assume", bridge.Resource{Type: "ApprovalRequest", Principal: "alice", ExecutedBy: ptr("erin")}, "", true},

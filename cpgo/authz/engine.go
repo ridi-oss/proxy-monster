@@ -279,12 +279,9 @@ func (g graph) resource(r bridge.Resource) (types.EntityUID, error) {
 		attrs["source"] = types.String(cmp.Or(r.Source, "console"))
 		if len(r.CCs) > 0 {
 			ccs := make([]types.Value, 0, len(r.CCs))
+			// Kotlin passes CCs as bare ids: their roles, groups and attributes are not in the graph.
 			for _, name := range r.CCs {
-				u, err := g.namedUser(name)
-				if err != nil {
-					return types.EntityUID{}, err
-				}
-				ccs = append(ccs, u)
+				ccs = append(ccs, uid("User", name))
 			}
 			attrs["ccs"] = types.NewSet(ccs...)
 		}

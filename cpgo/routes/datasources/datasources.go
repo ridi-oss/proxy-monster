@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	"github.com/ridi-oss/proxy-monster/cpgo/api"
 	"github.com/ridi-oss/proxy-monster/cpgo/store/db"
 )
@@ -27,7 +28,7 @@ func Register(mux *http.ServeMux, pool *pgxpool.Pool, gate api.Gate) {
 	mux.HandleFunc("GET /api/datasources/{id}/wire-cert", gate.RequireAPIOrBearer(api.Serve(api.WithID(ds.wireCert))))
 }
 
-// datasource is one datasource row; fields in the Kotlin Datasource's order, defaultSchemaSettable last.
+// datasource is one datasource row; fields in the Kotlin Datasource's order, the engine-derived ones last.
 type datasource struct {
 	ID                       int64           `json:"id"`
 	Name                     string          `json:"name"`
@@ -48,6 +49,7 @@ type datasource struct {
 	ConnectionInfo           json.RawMessage `json:"connectionInfo,omitempty"`
 	Description              string          `json:"description"`
 	DefaultSchemaSettable    bool            `json:"defaultSchemaSettable"`
+	IdentifierQuote          string          `json:"identifierQuote"`
 }
 
 // withoutConnectionMaterial is the row a caller who may not datasource.connect sees.
@@ -71,7 +73,11 @@ func toDatasource(r db.DatasourcesRow) (datasource, error) {
 	d.CatalogSyncedAt, d.LastSeenAt = api.OptInstant(r.CatalogSyncedAt), api.OptInstant(r.LastSeenAt)
 	// Athena has no default-schema statement; the wire engines do.
 	d.DefaultSchemaSettable = d.Engine == "postgres" || d.Engine == "mysql"
-	var err error
+	engine, err := engines.Parse(d.Engine)
+	if err != nil {
+		return datasource{}, err
+	}
+	d.IdentifierQuote = engine.IdentifierQuote
 	if r.ConnectionInfo != nil {
 		d.ConnectionInfo, err = canonicalConnectionInfo(r.ConnectionInfo)
 	}

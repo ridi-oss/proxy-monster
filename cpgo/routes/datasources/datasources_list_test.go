@@ -35,8 +35,8 @@ func TestDatasourceList(t *testing.T) {
 
 	status, body := e.Do(t, http.MethodGet, "/api/datasources", "", alice)
 	want := fmt.Sprintf(`[{"id":%d,"name":"acme","engine":"mysql","host":"db","port":3306,"dbName":"acme","tags":["pii"],"defaultSchemas":[],`+
-		`"advertiseAddr":"proxy:6033","advertiseWireTls":false,"connectionInfo":{"endpoint":"proxy:6033","properties":{"z":"c","aa":"b","tls":"on"}},"description":"orders","defaultSchemaSettable":true},`+
-		`{"id":%d,"name":"lake","engine":"athena","host":"","port":0,"dbName":"","tags":[],"defaultSchemas":[],"advertiseWireTls":false,"description":"","defaultSchemaSettable":false}]`, open, closed)
+		`"advertiseAddr":"proxy:6033","advertiseWireTls":false,"connectionInfo":{"endpoint":"proxy:6033","properties":{"z":"c","aa":"b","tls":"on"}},"description":"orders","defaultSchemaSettable":true,"identifierQuote":"`+"`"+`"},`+
+		`{"id":%d,"name":"lake","engine":"athena","host":"","port":0,"dbName":"","tags":[],"defaultSchemas":[],"advertiseWireTls":false,"description":"","defaultSchemaSettable":false,"identifierQuote":"\""}]`, open, closed)
 	if status != http.StatusOK || body != want {
 		t.Fatalf("list:\n got %s\nwant %s", body, want)
 	}

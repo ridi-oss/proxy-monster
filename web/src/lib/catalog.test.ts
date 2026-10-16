@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import type { CatalogColumn, Datasource } from './api/types'
-import { connectionEndpoint, currentCatalog, groupCatalogTables, schemaKey, tableKey } from './catalog'
+import { classificationTarget, connectionEndpoint, currentCatalog, groupCatalogTables, quoteIdentifier, schemaKey, tableKey } from './catalog'
 
 const datasource: Datasource = {
   id: 1, name: 'test', engine: 'mysql', host: 'db.example.test', port: 3306,
-  dbName: 'app', tags: [], defaultSchemas: ['app'],
+  dbName: 'app', tags: [], defaultSchemas: ['app'], identifierQuote: '`',
 }
 
 function column(catalog: string, schema: string, table: string): CatalogColumn {
@@ -59,5 +59,17 @@ describe('legacy datasource metadata', () => {
     expect(connectionEndpoint(datasource)).toBe('db.example.test:3306/app')
     expect(connectionEndpoint({ ...datasource, engine: 'other' })).toBeNull()
     expect(connectionEndpoint({ ...datasource, connectionInfo: { endpoint: '', properties: {} } })).toBe('')
+  })
+})
+
+describe('classification identifiers', () => {
+  it('quotes a browsed name with the engine quote, doubling an embedded one', () => {
+    const postgres = { identifierQuote: '"' }
+    expect(quoteIdentifier(postgres, 'Users')).toBe('"Users"')
+    expect(quoteIdentifier(postgres, 'a"b')).toBe('"a""b"')
+    expect(quoteIdentifier(datasource, 'a`b')).toBe('`a``b`')
+    expect(classificationTarget(postgres, { catalog: 'Shop', schema: 'public', table: 'Users', column: 'SSN' }))
+      .toEqual({ catalog: '"Shop"', schema: '"public"', table: '"Users"', column: '"SSN"' })
+    expect(classificationTarget(postgres, { catalog: 'Shop', table: 't', column: 'c' }).schema).toBeUndefined()
   })
 })

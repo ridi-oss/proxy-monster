@@ -15,6 +15,7 @@ require (
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/moby/moby/api v1.55.0
 	github.com/pires/go-proxyproto v0.8.1
+	github.com/ridi-oss/proxy-monster/analyzer v0.0.0-00010101000000-000000000000
 	github.com/ridi-oss/proxy-monster/auditmon v0.0.0-00010101000000-000000000000
 	github.com/shurcooL/githubv4 v0.0.0-20260209031235-2402fdf4a9ed
 	github.com/testcontainers/testcontainers-go v0.44.0
@@ -119,6 +120,7 @@ require (
 	github.com/pkg/sftp v1.13.6 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect
+	github.com/ridi-oss/sqlglot-go v0.37.4 // indirect
 	github.com/safchain/ethtool v0.3.0 // indirect
 	github.com/shirou/gopsutil/v4 v4.26.6 // indirect
 	github.com/shurcooL/graphql v0.0.0-20240915155400-7ee5256398cf // indirect
@@ -171,3 +173,6 @@ require (
 // auditmon/canon is the audit hash both writers produce; resolve it from source so the GOWORK=off image
 // build (control-plane/Dockerfile copies ../auditmon in) matches the workspace.
 replace github.com/ridi-oss/proxy-monster/auditmon => ../auditmon
+
+// analyzer/engines holds each engine's facts; resolve it from source like auditmon (control-plane/Dockerfile copies ../analyzer in).
+replace github.com/ridi-oss/proxy-monster/analyzer => ../analyzer

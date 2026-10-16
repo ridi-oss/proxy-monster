@@ -12,7 +12,8 @@ import { deleteClassification, putClassification } from '@/lib/api/client'
 import { mutate } from 'swr'
 import { swrKeys, useMaskFns } from '@/lib/hooks'
 import { toneForTags } from '@/lib/decision'
-import type { CatalogColumn, Classification } from '@/lib/api/types'
+import type { CatalogColumn, Classification, Datasource } from '@/lib/api/types'
+import { classificationTarget } from '@/lib/catalog'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -32,11 +33,12 @@ import { TagsInput } from '@/components/tags-input'
 import { cn } from '@/lib/utils'
 
 interface Props {
-  datasourceId: number
+  datasource: Datasource
   col: CatalogColumn
 }
 
-export function ClassifyPopover({ datasourceId, col }: Props) {
+export function ClassifyPopover({ datasource, col }: Props) {
+  const datasourceId = datasource.id
   const t = useTranslations('Datasources')
   const { data: maskFns } = useMaskFns()
 
@@ -76,10 +78,7 @@ export function ClassifyPopover({ datasourceId, col }: Props) {
     setError(null)
     try {
       await putClassification(datasourceId, {
-        catalog: col.catalog,
-        schema: col.schema,
-        table: col.table,
-        column: col.column,
+        ...classificationTarget(datasource, col),
         tags,
         maskFnId: maskFnId != null ? Number(maskFnId) : null,
       })
@@ -96,12 +95,7 @@ export function ClassifyPopover({ datasourceId, col }: Props) {
     setBusy(true)
     setError(null)
     try {
-      await deleteClassification(datasourceId, {
-        catalog: col.catalog,
-        schema: col.schema,
-        table: col.table,
-        column: col.column,
-      })
+      await deleteClassification(datasourceId, classificationTarget(datasource, col))
       await mutate(swrKeys.catalog(datasourceId))
       setOpen(false)
     } catch (err) {

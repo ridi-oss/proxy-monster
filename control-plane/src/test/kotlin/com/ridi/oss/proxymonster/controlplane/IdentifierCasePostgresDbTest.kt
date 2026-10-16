@@ -12,7 +12,6 @@ import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.testing.testApplication
 import org.junit.jupiter.api.BeforeAll
-import org.junit.jupiter.api.Disabled
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
 import kotlin.test.assertEquals
@@ -51,7 +50,6 @@ class IdentifierCasePostgresDbTest {
     }
 
     @Test
-    @Disabled("pending-name-fix: classification input Users is stored as typed and attaches to \"Users\" instead of users")
     fun `HTTP classification Users means users`() = testApplication {
         val client = installControlPlane(mcpTestConfig(), stack.core)
         val t = target()
@@ -70,7 +68,6 @@ class IdentifierCasePostgresDbTest {
     }
 
     @Test
-    @Disabled("pending-name-fix: classification input \"Users\" is stored with its quotes and attaches to no table")
     fun `MCP classification quoted Users means Users`() = testApplication {
         val client = installControlPlane(mcpTestConfig(), stack.core)
         val t = target()
@@ -79,7 +76,6 @@ class IdentifierCasePostgresDbTest {
     }
 
     @Test
-    @Disabled("pending-name-fix: classification input Users is stored as typed and attaches to \"Users\" instead of users")
     fun `MCP classification Users means users`() = testApplication {
         val client = installControlPlane(mcpTestConfig(), stack.core)
         val t = target()

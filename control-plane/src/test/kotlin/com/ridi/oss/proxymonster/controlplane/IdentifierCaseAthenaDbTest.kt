@@ -8,7 +8,6 @@ import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.grpc.Engine
 import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.BeforeAll
-import org.junit.jupiter.api.Disabled
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
 import java.util.concurrent.atomic.AtomicInteger
@@ -70,21 +69,17 @@ class IdentifierCaseAthenaDbTest {
     }
 
     @Test
-    @Disabled("pending-name-fix: Athena classification input is stored as typed, so HR.Salaries.SSN never attaches to hr.salaries.ssn")
     fun `a mixed-case classification attaches to the canonical column`() = assertAttached(canonical[0].catalog, "HR", "Salaries", "SSN", 0)
 
     @Test
-    @Disabled("pending-name-fix: a mixed-case Athena catalog name is refused as datasource.invalid_catalog")
     fun `a mixed-case catalog name attaches to the canonical column`() = assertAttached("AwsDataCatalog", "HR", "Salaries", "SSN", 0)
 
     @Test
-    @Disabled("pending-name-fix: Athena classification input is not folded, so a non-ASCII column never attaches")
     fun `a non-ASCII classification attaches to the canonical column`() {
         assertAttached(canonical[1].catalog, "HR", "Salaries", "İsim", 1)
     }
 
     @Test
-    @Disabled("pending-name-fix: Athena classification input is not folded, so a non-ASCII column never attaches")
     fun `a sharp-s classification attaches to the canonical column`() {
         assertAttached(canonical[2].catalog, "hr", "salaries", "STRAẞE", 2)
     }

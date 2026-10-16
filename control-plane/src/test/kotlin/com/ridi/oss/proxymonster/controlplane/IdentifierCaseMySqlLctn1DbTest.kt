@@ -106,29 +106,24 @@ class IdentifierCaseMySqlLctn1DbTest {
     }
 
     @Test
-    @Disabled("pending-name-fix: classification input Users.Email is stored as typed and never attaches to users.email")
     fun `HTTP classification Users_Email masks every legal spelling`() = classifyOverHttp("Users", "Email")
 
     @Test
     fun `HTTP classification users_email masks every legal spelling`() = classifyOverHttp("users", "email")
 
     @Test
-    @Disabled("pending-name-fix: classification input USERS.EMAIL is stored as typed and never attaches to users.email")
     fun `HTTP classification USERS_EMAIL masks every legal spelling`() = classifyOverHttp("USERS", "EMAIL")
 
     @Test
-    @Disabled("pending-name-fix: classification input Users.Email is stored as typed and never attaches to users.email")
     fun `MCP classification Users_Email masks every legal spelling`() = classifyOverMcp("Users", "Email")
 
     @Test
     fun `MCP classification users_email masks every legal spelling`() = classifyOverMcp("users", "email")
 
     @Test
-    @Disabled("pending-name-fix: classification input USERS.EMAIL is stored as typed and never attaches to users.email")
     fun `MCP classification USERS_EMAIL masks every legal spelling`() = classifyOverMcp("USERS", "EMAIL")
 
     @Test
-    @Disabled("pending-name-fix: batch dedup compares typed spellings, so Users.SSN and users.ssn both pass")
     fun `a batch naming one column in two spellings is refused as a duplicate`() = testApplication {
         val client = installControlPlane(mcpTestConfig(), stack.core)
         val t = target()
@@ -209,7 +204,6 @@ class IdentifierCaseMySqlLctn1DbTest {
     }
 
     @Test
-    @Disabled("pending-name-fix: classification input Users.Email never attaches, so nothing is recorded as tagged")
     fun `the audit records a column tagged as Users_Email in canonical spelling`() {
         val t = target()
         stack.core.datasourceStore.upsertClassification(
@@ -252,7 +246,6 @@ class IdentifierCaseMySqlLctn1DbTest {
     }
 
     @Test
-    @Disabled("pending-name-fix: classification input Users.Email never attaches, so the stored task re-decides unmasked")
     fun `a stored editor task re-decides masked when tagged as Users_Email`() {
         val t = target()
         stack.core.datasourceStore.upsertClassification(

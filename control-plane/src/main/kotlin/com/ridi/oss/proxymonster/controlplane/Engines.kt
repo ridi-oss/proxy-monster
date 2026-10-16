@@ -43,6 +43,8 @@ class EngineDefinition internal constructor(
     val checksTargetErrors: Boolean = facts.checksTargetErrors
     /** True when the engine has a statement that makes a schema a session's default. */
     val defaultSchemaSettable: Boolean = facts.defaultSchemaSettable
+    /** The character that quotes an identifier in the engine's SQL; a quote inside the name is doubled. */
+    val identifierQuote: String = facts.identifierQuote
 
     /** The canonical analyzer catalog for a datasource registered on [registeredDbName], which is not normalized. */
     fun catalogName(registeredDbName: String): String = go.catalogName(registeredDbName)
@@ -96,6 +98,9 @@ class EngineDefinition internal constructor(
     }
     /** The statement that makes [canonicalSchema] a session's default, quoted exactly: MySQL ``USE `app` ``. */
     fun defaultSchemaStatement(canonicalSchema: String): String = go.defaultSchemaStatement(canonicalSchema)
+
+    /** [name] as one quoted identifier: MySQL a`b -> `a``b`. */
+    fun quoteIdentifier(name: String): String = "$identifierQuote${name.replace(identifierQuote, identifierQuote + identifierQuote)}$identifierQuote"
 }
 
 private val engineDefinitions = listOf(

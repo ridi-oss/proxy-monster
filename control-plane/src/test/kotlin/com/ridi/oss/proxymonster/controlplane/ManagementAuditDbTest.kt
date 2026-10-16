@@ -285,6 +285,37 @@ class ManagementAuditDbTest {
         verifyAuditChain(dataSource)
     }
 
+    @Test
+    fun `quoted names and the default schema keep the target's spelling through batch and clear`() {
+        val actor = AuditActor("management-quoted-${System.nanoTime()}@example.com", channel = AuditSource.CONSOLE)
+        val ds = datasources.createDatasource(DatasourceInput("quoted-${System.nanoTime()}", "postgres"), actor)
+        dataSource.connection.use { c ->
+            c.prepareStatement("UPDATE datasource SET current_catalog_name='app', default_schemas='[\"App\"]'::jsonb WHERE id=?").use { ps ->
+                ps.setLong(1, ds.id); ps.executeUpdate()
+            }
+        }
+        fun rows() = dataSource.connection.use { c ->
+            c.prepareStatement("SELECT schema_name, table_name, column_name FROM column_classification WHERE datasource_id=?").use { ps ->
+                ps.setLong(1, ds.id)
+                ps.executeQuery().use { rs -> buildList { while (rs.next()) add("${rs.getString(1)}.${rs.getString(2)}.${rs.getString(3)}") } }
+            }
+        }.sorted()
+        dataSource.inTx { c ->
+            datasources.setColumnClassifications(
+                ds.name,
+                listOf(
+                    ClassificationInput(null, "\"Users\"", "\"SSN\"", listOf("pii"), catalog = "\"app\""),
+                    ClassificationInput("\"App\"", "users", "email", listOf("contact"), catalog = "app"),
+                ),
+                actor,
+                c,
+            )
+        }
+        assertEquals(listOf("App.Users.SSN", "App.users.email"), rows())
+        assertEquals(true, datasources.clearColumnClassification(ds.id, null, "\"Users\"", "\"SSN\"", actor, "\"app\"").deleted)
+        assertEquals(listOf("App.users.email"), rows())
+    }
+
     private fun defaultSchemaPublic(datasourceId: Long) = dataSource.connection.use { c ->
         c.prepareStatement("UPDATE datasource SET current_catalog_name='app', default_schemas='[\"public\"]'::jsonb WHERE id=?").use { ps ->
             ps.setLong(1, datasourceId)

@@ -17,6 +17,7 @@ import com.ridi.oss.proxymonster.grpc.ConnectionInfo
 import com.ridi.oss.proxymonster.grpc.Engine
 import com.ridi.oss.proxymonster.grpc.ObjectRef
 import com.ridi.oss.proxymonster.probe.Classification
+import com.ridi.oss.proxymonster.probe.ColumnKey
 import com.ridi.oss.proxymonster.probe.TableDetail
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
@@ -78,6 +79,9 @@ data class Datasource(
 ) {
     /** Whether an editor session on this datasource can set its default schema (POST …/default-schema). */
     val defaultSchemaSettable: Boolean = engine.definition.defaultSchemaSettable
+
+    /** Quotes an identifier in classification and other name fields, which are SQL identifier text. */
+    val identifierQuote: String = engine.definition.identifierQuote
 
     /**
      * The same row with everything a caller would need to reach the proxy removed — the advertised address
@@ -696,23 +700,24 @@ class DatasourceStore(internal val dataSource: DataSource) {
             }
         }
 
-    fun defaultSchema(id: Long): String? = dataSource.connection.use { c -> defaultSchema(id, c) }
-
-    fun defaultSchema(id: Long, c: java.sql.Connection): String? = get(id, c)?.let { datasource ->
-        datasource.defaultSchemas.firstOrNull { !datasource.engine.isSystemSchema(it) }
-    }
+    /** The default schema as SQL identifier text, for a classification that names no schema. */
+    fun defaultSchemaIdentifier(id: Long, c: java.sql.Connection): String? = get(id, c)?.defaultSchemaIdentifier()
 
     fun upsertClassification(id: Long, input: ClassificationInput): Classification =
         dataSource.connection.use { c -> upsertClassification(id, input, c) }
 
+    /** Writes [input], whose names are SQL identifier text; a blank or omitted schema is the default schema. */
     fun upsertClassification(id: Long, input: ClassificationInput, c: java.sql.Connection): Classification {
-        requireWritableTags(input.tags)
-        // A blank schema is absent, not a name. Taking it literally writes a row keyed on "" that no
-        // enforcement lookup can ever match (decide joins classifications by exact schema/table/column),
-        // so the caller sees a tagged column while the real one stays untagged and reads cleartext.
-        val schema = input.schema?.takeIf(String::isNotBlank) ?: defaultSchema(id, c)
+        val datasource = checkNotNull(get(id, c))
+        // A blank schema is absent, not a name: a row keyed on "" matches no enforcement lookup.
+        val schema = input.schema?.takeIf(String::isNotBlank) ?: datasource.defaultSchemaIdentifier()
             ?: throw IllegalArgumentException("schema is required until datasource introspection captures a default schema")
-        val catalog = checkNotNull(get(id, c)).requireCatalog(input.catalog)
+        return upsertClassification(id, datasource.columnKey(input.catalog, schema, input.table, input.column), input.tags, input.maskFnId, c)
+    }
+
+    /** Writes a column already in canonical spelling. */
+    fun upsertClassification(id: Long, key: ColumnKey, tags: List<String>, maskFnId: Long?, c: java.sql.Connection): Classification {
+        requireWritableTags(tags)
         c.prepareStatement(
             """INSERT INTO column_classification
                (datasource_id, schema_name, table_name, column_name, tags, mask_fn_id, updated_at, catalog_name)
@@ -721,15 +726,15 @@ class DatasourceStore(internal val dataSource: DataSource) {
                DO UPDATE SET tags = EXCLUDED.tags, mask_fn_id = EXCLUDED.mask_fn_id, updated_at = now()""",
         ).use { ps ->
             ps.setLong(1, id)
-            ps.setString(2, schema)
-            ps.setString(3, input.table)
-            ps.setString(4, input.column)
-            ps.setString(5, json.encodeToString(stringList, input.tags))
-            setNullableLong(ps, 6, input.maskFnId)
-            ps.setString(7, catalog)
+            ps.setString(2, key.schema)
+            ps.setString(3, key.table)
+            ps.setString(4, key.column)
+            ps.setString(5, json.encodeToString(stringList, tags))
+            setNullableLong(ps, 6, maskFnId)
+            ps.setString(7, key.catalog)
             ps.executeUpdate()
         }
-        return Classification(schema, input.table, input.column, input.tags, input.maskFnId, maskFnName(input.maskFnId, c), catalog)
+        return Classification(key.schema, key.table, key.column, tags, maskFnId, maskFnName(maskFnId, c), key.catalog)
     }
 
     private fun maskFnName(id: Long?, c: java.sql.Connection): String? {
@@ -755,15 +760,17 @@ class DatasourceStore(internal val dataSource: DataSource) {
     fun deleteClassification(id: Long, schema: String, table: String, column: String, catalog: String): Boolean =
         dataSource.connection.use { c -> deleteClassification(id, schema, table, column, c, catalog) }
 
-    fun deleteClassification(id: Long, schema: String, table: String, column: String, c: java.sql.Connection, catalog: String): Boolean {
-        val resolvedCatalog = checkNotNull(get(id, c)).requireCatalog(catalog)
-        return c.prepareStatement(
+    fun deleteClassification(id: Long, schema: String, table: String, column: String, c: java.sql.Connection, catalog: String): Boolean =
+        deleteClassification(id, checkNotNull(get(id, c)).columnKey(catalog, schema, table, column), c)
+
+    /** Deletes a column already in canonical spelling. */
+    fun deleteClassification(id: Long, key: ColumnKey, c: java.sql.Connection): Boolean =
+        c.prepareStatement(
             "DELETE FROM column_classification WHERE datasource_id=? AND schema_name=? AND table_name=? AND column_name=? AND catalog_name=?",
         ).use { ps ->
-            ps.setLong(1, id); ps.setString(2, schema); ps.setString(3, table); ps.setString(4, column); ps.setString(5, resolvedCatalog)
+            ps.setLong(1, id); ps.setString(2, key.schema); ps.setString(3, key.table); ps.setString(4, key.column); ps.setString(5, key.catalog)
             ps.executeUpdate() > 0
         }
-    }
 
     private fun java.sql.ResultSet.toDatasource() = Datasource(
         id = getLong("id"),

@@ -49,7 +49,7 @@ class PerConnectionCatalogFixture(
         tokenKind: String = "USER",
         withRoutines: Boolean = true,
     ): OpenConnection {
-        val opened = core.connectionCatalog.open(Binding(datasource.name, principal, tokenKind, datasource.effectiveCatalog), datasource.namespaces(schemas))
+        val opened = core.connectionCatalog.open(Binding(datasource.name, principal, tokenKind, datasource.effectiveCatalog, datasource.engine), datasource.namespaces(schemas))
         val bySchema = enforcement.datasourceStore.catalog(datasource.id).columns.groupBy { it.schema }
         val routines = if (withRoutines) enforcement.datasourceStore.storedRoutines(datasource.id) else emptyMap()
         for (schema in schemas.distinct()) {

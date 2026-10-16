@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.15](https://github.com/ridi-oss/proxy-monster/compare/pmon-v0.1.14...pmon-v0.1.15) (2026-10-16)
+
+
+### Features
+
+* **pmon/tray:** Reconnect a remote from the menu and Settings ([604a07e](https://github.com/ridi-oss/proxy-monster/commit/604a07eef58b02d7192d2f88b0871a9459c988d6))
+* **pmon:** reconnect a remote now, and never cut off a pending ssh ([c30e342](https://github.com/ridi-oss/proxy-monster/commit/c30e342d2834df7f28db0d5021c5bcf2a561a6aa))
+
 ## [0.1.14](https://github.com/ridi-oss/proxy-monster/compare/pmon-v0.1.13...pmon-v0.1.14) (2026-10-15)
 
 

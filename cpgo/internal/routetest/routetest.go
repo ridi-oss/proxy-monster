@@ -82,6 +82,9 @@ func Setup(t *testing.T) *env {
 func (e *env) Do(t *testing.T, method, path, body string, cookies []*http.Cookie) (int, string) {
 	t.Helper()
 	req, _ := http.NewRequest(method, e.Srv.URL+path, strings.NewReader(body))
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	for _, c := range cookies {
 		req.AddCookie(c)
 	}

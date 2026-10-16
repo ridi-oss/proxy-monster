@@ -57,7 +57,17 @@ func TestPolicyWrites(t *testing.T) {
 		t.Fatalf("duplicate: %s", body)
 	}
 	for _, junk := range []string{`{"name":"trailing"} garbage`, `{"name":"two"}{"name":"three"}`, `not json`} {
-		do(http.MethodPost, "/api/roles", junk, admin, http.StatusBadRequest)
+		if body := do(http.MethodPost, "/api/roles", junk, admin, http.StatusBadRequest); body != `{"code":"common.invalid_value","params":{"field":"body"}}` {
+			t.Fatalf("%s: %s", junk, body)
+		}
+	}
+	formPost, _ := http.NewRequest(http.MethodPost, e.Srv.URL+"/api/roles", strings.NewReader(`{"name":"form"}`))
+	formPost.Header.Set("Content-Type", "text/plain")
+	for _, c := range admin {
+		formPost.AddCookie(c)
+	}
+	if resp, err := http.DefaultClient.Do(formPost); err != nil || resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("text/plain body: %v %v", resp, err)
 	}
 	if body := do(http.MethodPost, "/api/roles", `{"name":"  "}`, admin, http.StatusBadRequest); body != `{"code":"common.field_required","params":{"fields":"name"}}` {
 		t.Fatalf("blank: %s", body)

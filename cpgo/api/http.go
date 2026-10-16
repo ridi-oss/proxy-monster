@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"mime"
 	"net/http"
 	"strconv"
 	"strings"
@@ -85,8 +86,12 @@ func UpdateSummary(typ, before, after string) string {
 	return "update " + typ + " '" + before + "' -> '" + after + "'"
 }
 
-// DecodeBody reads exactly one JSON value; anything after it fails the request before it changes anything.
+// DecodeBody reads exactly one JSON value sent as application/json; anything after it fails the request before it
+// changes anything. Requiring the content type keeps a cross-site form post from reaching a write.
 func DecodeBody(r *http.Request, v any) error {
+	if mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mt != "application/json" {
+		return &ManagementError{"common.invalid_value", Params{{"field", "body"}}}
+	}
 	dec := json.NewDecoder(r.Body)
 	if err := dec.Decode(v); err != nil || dec.More() {
 		return &ManagementError{"common.invalid_value", Params{{"field", "body"}}}

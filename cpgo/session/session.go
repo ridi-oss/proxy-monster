@@ -15,7 +15,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/ridi-oss/proxy-monster/cpgo/store/db"
 )
 
@@ -24,9 +23,8 @@ const (
 	deviceCookieName = "pm_did"
 )
 
-// ErrDeviceMismatch means the session exists but the request's device cookie does not match it. The
-// Kotlin control plane ends such a session and clears the principal's editor state, so the caller hands
-// the request to Kotlin rather than deciding it here.
+// ErrDeviceMismatch means the session exists but the request's device cookie does not match it; Resolve
+// returns the session alongside it so the caller can end it.
 var ErrDeviceMismatch = errors.New("session: device binding mismatch")
 
 // Web is a live console session.
@@ -43,39 +41,60 @@ type Web struct {
 
 // Resolver reads sessions without extending them; only the heartbeat route slides idle.
 type Resolver struct {
-	pool   *pgxpool.Pool
-	secret []byte
+	pool     *pgxpool.Pool
+	settings Settings
 }
 
-func NewResolver(pool *pgxpool.Pool, secret string) *Resolver {
-	return &Resolver{pool: pool, secret: []byte(secret)}
+func NewResolver(pool *pgxpool.Pool, settings Settings) *Resolver {
+	return &Resolver{pool: pool, settings: settings}
 }
 
-// Resolve returns the request's live session, nil when there is none, or ErrDeviceMismatch.
+func (r *Resolver) Settings() Settings { return r.settings }
+
+// Resolve returns the request's live session, nil when there is none, or the session with
+// ErrDeviceMismatch when the request's device cookie is not the one it was opened on.
 func (r *Resolver) Resolve(ctx context.Context, req *http.Request) (*Web, error) {
-	key, ok := r.trackerID(req)
-	if !ok {
-		return nil, nil
+	ref, err := r.Ref(ctx, req)
+	if err != nil || ref == nil || ref.ID == 0 {
+		return nil, err
 	}
-	var device *string
-	if c, err := req.Cookie(deviceCookieName); err == nil {
-		if v, err := url.PathUnescape(c.Value); err == nil {
-			device = &v
-		}
+	w, err := r.byID(ctx, ref.ID)
+	if err != nil || w == nil {
+		return nil, err
 	}
-	row, err := db.New(r.pool).LiveWebSession(ctx, &key)
+	device, ok := Device(req)
+	if w.device == nil || !ok || *w.device != device {
+		return &w.Web, ErrDeviceMismatch
+	}
+	return &w.Web, nil
+}
+
+// Device is the request's pm_did cookie.
+func Device(req *http.Request) (string, bool) {
+	c, err := req.Cookie(deviceCookieName)
+	if err != nil {
+		return "", false
+	}
+	v, err := url.PathUnescape(c.Value)
+	return v, err == nil
+}
+
+type liveRow struct {
+	Web
+	device *string
+}
+
+// byID is web session id when it is live.
+func (r *Resolver) byID(ctx context.Context, id int64) (*liveRow, error) {
+	row, err := db.New(r.pool).LiveWebSession(ctx, id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	w := Web{ID: row.ID, Principal: row.Principal, CreatedAt: row.CreatedAt, AbsoluteExpiresAt: row.AbsoluteExpiresAt,
-		IdleExpiresAt: *row.IdleExpiresAt, Now: row.DbNow, DebugRequesterIP: row.DebugRequesterIp}
-	rowDevice := row.DeviceID
-	if rowDevice == nil || device == nil || *rowDevice != *device {
-		return nil, ErrDeviceMismatch
-	}
+	w := liveRow{Web{ID: row.ID, Principal: row.Principal, CreatedAt: row.CreatedAt, AbsoluteExpiresAt: row.AbsoluteExpiresAt,
+		IdleExpiresAt: *row.IdleExpiresAt, Now: row.DbNow, DebugRequesterIP: row.DebugRequesterIp}, row.DeviceID}
 	return &w, nil
 }
 
@@ -94,7 +113,7 @@ func (r *Resolver) trackerID(req *http.Request) (string, bool) {
 		return "", false
 	}
 	id, sig := value[:i], value[i+1:]
-	mac := hmac.New(sha256.New, r.secret)
+	mac := hmac.New(sha256.New, []byte(r.settings.Secret))
 	mac.Write([]byte(id))
 	if !hmac.Equal([]byte(hex.EncodeToString(mac.Sum(nil))), []byte(sig)) {
 		return "", false

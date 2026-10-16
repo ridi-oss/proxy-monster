@@ -10,11 +10,60 @@ import (
 	"time"
 )
 
+const displaceWebSessions = `-- name: DisplaceWebSessions :execrows
+UPDATE principal_session SET ended_at = clock_timestamp(), ended_reason = 'DISPLACED',
+liveness_status = 'INACTIVE' WHERE principal = $1 AND kind = 'WEB' AND ended_at IS NULL AND id <> $2
+`
+
+type DisplaceWebSessionsParams struct {
+	Principal string
+	ID        int64
+}
+
+func (q *Queries) DisplaceWebSessions(ctx context.Context, arg DisplaceWebSessionsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, displaceWebSessions, arg.Principal, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const endWebSession = `-- name: EndWebSession :one
+UPDATE principal_session SET ended_at = now(), ended_reason = $1, liveness_status = 'INACTIVE'
+WHERE id = $2 AND kind = 'WEB' AND ended_at IS NULL RETURNING principal
+`
+
+type EndWebSessionParams struct {
+	EndedReason *string
+	ID          int64
+}
+
+func (q *Queries) EndWebSession(ctx context.Context, arg EndWebSessionParams) (string, error) {
+	row := q.db.QueryRow(ctx, endWebSession, arg.EndedReason, arg.ID)
+	var principal string
+	err := row.Scan(&principal)
+	return principal, err
+}
+
+const linkSessionKey = `-- name: LinkSessionKey :exec
+UPDATE principal_session SET session_key = $1 WHERE id = $2 AND kind = 'WEB'
+`
+
+type LinkSessionKeyParams struct {
+	SessionKey *string
+	ID         int64
+}
+
+func (q *Queries) LinkSessionKey(ctx context.Context, arg LinkSessionKeyParams) error {
+	_, err := q.db.Exec(ctx, linkSessionKey, arg.SessionKey, arg.ID)
+	return err
+}
+
 const liveWebSession = `-- name: LiveWebSession :one
 SELECT id, principal, created_at, absolute_expires_at, idle_expires_at, device_id,
        coalesce(debug_requester_ip, '')::text AS debug_requester_ip, clock_timestamp()::timestamptz AS db_now
 FROM principal_session
-WHERE session_key = $1 AND kind = 'WEB' AND ended_at IS NULL
+WHERE id = $1 AND kind = 'WEB' AND ended_at IS NULL
   AND absolute_expires_at > clock_timestamp()
   AND idle_expires_at > clock_timestamp()
 `
@@ -30,8 +79,8 @@ type LiveWebSessionRow struct {
 	DbNow             time.Time
 }
 
-func (q *Queries) LiveWebSession(ctx context.Context, sessionKey *string) (LiveWebSessionRow, error) {
-	row := q.db.QueryRow(ctx, liveWebSession, sessionKey)
+func (q *Queries) LiveWebSession(ctx context.Context, id int64) (LiveWebSessionRow, error) {
+	row := q.db.QueryRow(ctx, liveWebSession, id)
 	var i LiveWebSessionRow
 	err := row.Scan(
 		&i.ID,
@@ -44,6 +93,109 @@ func (q *Queries) LiveWebSession(ctx context.Context, sessionKey *string) (LiveW
 		&i.DbNow,
 	)
 	return i, err
+}
+
+const mintWebSession = `-- name: MintWebSession :one
+WITH t AS (SELECT clock_timestamp() AS ts)
+INSERT INTO principal_session (kind, principal, device_id, refresh_token_enc, created_at, absolute_expires_at,
+                               idle_expires_at, liveness_status, debug_requester_ip)
+SELECT 'WEB', $1, $2, $3, t.ts, t.ts + make_interval(secs => $4), t.ts + make_interval(secs => $5), 'ACTIVE', $6
+FROM t RETURNING id
+`
+
+type MintWebSessionParams struct {
+	Principal        string
+	DeviceID         *string
+	RefreshTokenEnc  []byte
+	AbsoluteSeconds  float64
+	IdleSeconds      float64
+	DebugRequesterIp *string
+}
+
+func (q *Queries) MintWebSession(ctx context.Context, arg MintWebSessionParams) (int64, error) {
+	row := q.db.QueryRow(ctx, mintWebSession,
+		arg.Principal,
+		arg.DeviceID,
+		arg.RefreshTokenEnc,
+		arg.AbsoluteSeconds,
+		arg.IdleSeconds,
+		arg.DebugRequesterIp,
+	)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
+const touchWebSession = `-- name: TouchWebSession :exec
+UPDATE principal_session SET idle_expires_at = now() + make_interval(secs => $1), last_seen_at = now()
+WHERE id = $2 AND kind = 'WEB' AND ended_at IS NULL
+  AND absolute_expires_at > clock_timestamp() AND idle_expires_at > clock_timestamp()
+  AND device_id = $3
+  AND (last_seen_at IS NULL OR last_seen_at < now() - make_interval(secs => $4))
+`
+
+type TouchWebSessionParams struct {
+	IdleSeconds  float64
+	ID           int64
+	DeviceID     *string
+	SlideSeconds float64
+}
+
+func (q *Queries) TouchWebSession(ctx context.Context, arg TouchWebSessionParams) error {
+	_, err := q.db.Exec(ctx, touchWebSession,
+		arg.IdleSeconds,
+		arg.ID,
+		arg.DeviceID,
+		arg.SlideSeconds,
+	)
+	return err
+}
+
+const unlinkSessionKey = `-- name: UnlinkSessionKey :exec
+UPDATE principal_session SET session_key = NULL WHERE session_key = $1 AND kind = 'WEB' AND id <> $2
+`
+
+type UnlinkSessionKeyParams struct {
+	SessionKey *string
+	ID         int64
+}
+
+func (q *Queries) UnlinkSessionKey(ctx context.Context, arg UnlinkSessionKeyParams) error {
+	_, err := q.db.Exec(ctx, unlinkSessionKey, arg.SessionKey, arg.ID)
+	return err
+}
+
+const webSessionEndedReason = `-- name: WebSessionEndedReason :one
+SELECT ended_reason FROM principal_session WHERE id = $1 AND kind = 'WEB'
+`
+
+func (q *Queries) WebSessionEndedReason(ctx context.Context, id int64) (*string, error) {
+	row := q.db.QueryRow(ctx, webSessionEndedReason, id)
+	var ended_reason *string
+	err := row.Scan(&ended_reason)
+	return ended_reason, err
+}
+
+const webSessionIDByKey = `-- name: WebSessionIDByKey :one
+SELECT id FROM principal_session WHERE session_key = $1 AND kind = 'WEB'
+`
+
+func (q *Queries) WebSessionIDByKey(ctx context.Context, sessionKey *string) (int64, error) {
+	row := q.db.QueryRow(ctx, webSessionIDByKey, sessionKey)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
+const webSessionOwner = `-- name: WebSessionOwner :one
+SELECT principal FROM principal_session WHERE id = $1 AND kind = 'WEB'
+`
+
+func (q *Queries) WebSessionOwner(ctx context.Context, id int64) (string, error) {
+	row := q.db.QueryRow(ctx, webSessionOwner, id)
+	var principal string
+	err := row.Scan(&principal)
+	return principal, err
 }
 
 const wirePrincipal = `-- name: WirePrincipal :one

@@ -24,29 +24,28 @@ type Env struct {
 	St        dbtest.Store
 	Srv       *httptest.Server
 	Forwarded []string
-	Ended     []string
 	Authz     fakeAuthz
-	Kotlin    fakeKotlin
+	Kotlin    FakeKotlin
 }
 
-// fakeKotlin records what Go told Kotlin and answers attached as the datasources with a proxy.
-type fakeKotlin struct {
+// FakeKotlin records what Go told Kotlin and answers attached as the datasources with a proxy.
+type FakeKotlin struct {
 	Ended, Deleted, Attached, Notified []string
 }
 
-func (k *fakeKotlin) SessionsEnded(_ context.Context, p string) error {
+func (k *FakeKotlin) SessionsEnded(_ context.Context, p string) error {
 	k.Ended = append(k.Ended, p)
 	return nil
 }
 
-func (k *fakeKotlin) ProxiesAttached(context.Context) ([]string, error) { return k.Attached, nil }
+func (k *FakeKotlin) ProxiesAttached(context.Context) ([]string, error) { return k.Attached, nil }
 
-func (k *fakeKotlin) DatasourceDeleted(_ context.Context, name string) error {
+func (k *FakeKotlin) DatasourceDeleted(_ context.Context, name string) error {
 	k.Deleted = append(k.Deleted, name)
 	return nil
 }
 
-func (k *fakeKotlin) RequestNotified(_ context.Context, id int64, event string) error {
+func (k *FakeKotlin) RequestNotified(_ context.Context, id int64, event string) error {
 	k.Notified = append(k.Notified, fmt.Sprintf("%d:%s", id, event))
 	return nil
 }
@@ -150,12 +149,11 @@ func SetupConfig(t *testing.T, c Config) *Env {
 	})
 	mux := http.NewServeMux()
 	routes.Register(mux, e.St.Pool, api.Gate{
-		Sessions:      session.NewResolver(e.St.Pool, dbtest.Secret),
-		EndMismatched: func(r *http.Request) { e.Ended = append(e.Ended, r.Header.Get("Cookie")) },
-		Edges:         front.ParseTrustedEdges(c.Edges),
-		Kotlin:        &e.Kotlin,
-		AuthDebug:     true,
-		Authz:         decider,
+		Sessions:  session.NewResolver(e.St.Pool, dbtest.Settings),
+		Kotlin:    &e.Kotlin,
+		Edges:     front.ParseTrustedEdges(c.Edges),
+		AuthDebug: true,
+		Authz:     decider,
 	})
 	e.Srv = httptest.NewServer(front.Route(mux, forward))
 	t.Cleanup(e.Srv.Close)
@@ -203,4 +201,16 @@ func (e *Env) Count(t *testing.T, sql string, args ...any) int {
 		t.Fatal(err)
 	}
 	return n
+}
+
+func (e *Env) EndedReason(t *testing.T, key string) string {
+	t.Helper()
+	var reason *string
+	if err := e.St.Pool.QueryRow(context.Background(), `SELECT ended_reason FROM principal_session WHERE session_key = $1`, key).Scan(&reason); err != nil {
+		t.Fatal(err)
+	}
+	if reason == nil {
+		return ""
+	}
+	return *reason
 }

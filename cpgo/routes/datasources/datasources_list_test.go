@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -16,8 +17,8 @@ func TestDatasourceList(t *testing.T) {
 	e := routetest.Setup(t)
 	ctx := context.Background()
 	var open, closed int64
-	if err := e.St.Pool.QueryRow(ctx, `INSERT INTO datasource (name, engine, host, port, db_name, tags, advertise_addr, connection_info, description)
-		VALUES ('acme', 'mysql', 'db', 3306, 'acme', '["pii"]', 'proxy:6033', '{"properties": {"tls": "on", "aa": "b", "z": "c"}, "endpoint": "proxy:6033"}', 'orders')
+	if err := e.St.Pool.QueryRow(ctx, `INSERT INTO datasource (name, engine, host, port, db_name, tags, advertise_addr, advertise_cert_chain, connection_info, description)
+		VALUES ('acme', 'mysql', 'db', 3306, 'acme', '["pii"]', 'proxy:6033', 'BEGIN CERTIFICATE acme', '{"properties": {"tls": "on", "aa": "b", "z": "c"}, "endpoint": "proxy:6033"}', 'orders')
 		RETURNING id`).Scan(&open); err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +36,7 @@ func TestDatasourceList(t *testing.T) {
 
 	status, body := e.Do(t, http.MethodGet, "/api/datasources", "", alice)
 	want := fmt.Sprintf(`[{"id":%d,"name":"acme","engine":"mysql","host":"db","port":3306,"dbName":"acme","tags":["pii"],"defaultSchemas":[],`+
-		`"advertiseAddr":"proxy:6033","advertiseWireTls":false,"connectionInfo":{"endpoint":"proxy:6033","properties":{"z":"c","aa":"b","tls":"on"}},"description":"orders","defaultSchemaSettable":true},`+
+		`"advertiseAddr":"proxy:6033","advertiseCertChain":"BEGIN CERTIFICATE acme","advertiseWireTls":false,"connectionInfo":{"endpoint":"proxy:6033","properties":{"z":"c","aa":"b","tls":"on"}},"description":"orders","defaultSchemaSettable":true},`+
 		`{"id":%d,"name":"lake","engine":"athena","host":"","port":0,"dbName":"","tags":[],"defaultSchemas":[],"advertiseWireTls":false,"description":"","defaultSchemaSettable":false}]`, open, closed)
 	if status != http.StatusOK || body != want {
 		t.Fatalf("list:\n got %s\nwant %s", body, want)
@@ -72,8 +73,8 @@ func TestDatasourceList(t *testing.T) {
 			t.Fatalf("want %s: %d asked %v", tc.want, resp.StatusCode, e.Authz.Asked)
 		}
 	}
-	if len(e.Ended) != 1 {
-		t.Fatalf("the wrong-device session must still be ended: %v", e.Ended)
+	if len(e.Kotlin.Ended) != 1 {
+		t.Fatalf("the wrong-device session must still be ended: %v", e.Kotlin.Ended)
 	}
 	alice = e.St.WebSession(t, "alice@example.com", "k-a2", "dev-a")
 
@@ -90,8 +91,9 @@ func TestDatasourceList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	listed, _ := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusOK || len(e.Authz.Asked) != 2 || !strings.HasPrefix(e.Authz.Asked[0], "bob@example.com datasource.connect") ||
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(listed), `"name":"acme"`) || len(e.Authz.Asked) != 2 || !strings.HasPrefix(e.Authz.Asked[0], "bob@example.com datasource.connect") ||
 		!strings.HasSuffix(e.Authz.Asked[0], " @127.0.0.1") {
 		t.Fatalf("pmon bearer: %d asked %v", resp.StatusCode, e.Authz.Asked)
 	}

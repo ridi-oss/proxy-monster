@@ -25,6 +25,12 @@ internal fun namespace(catalog: String, schema: String): ObjectRef = objectRef {
     this.schema = schema
 }
 
+internal fun tableRef(catalog: String, schema: String, table: String): ObjectRef = objectRef {
+    this.catalog = catalog
+    this.schema = schema
+    this.table = table
+}
+
 internal fun columnRef(catalog: String, schema: String, table: String, column: String): ObjectRef = objectRef {
     this.catalog = catalog
     this.schema = schema

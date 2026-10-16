@@ -26,7 +26,23 @@ func AnalyzeStatement(req *pb.AnalyzeRequest) (*pb.StatementFacts, error) {
 		return nil, err
 	}
 	namespace.EngineCatalog = engineCatalogFromProto(req.GetCatalog().GetFunctions(), namespace.SearchPath)
+	namespace.UnprovedRelations = unprovedRelationsFromProto(namespace.Catalog, req.GetCatalog().GetUnprovedRelations())
 	return EmitFacts(req.GetSql(), req.GetEngineConfig(), sch, implicit, namespace), nil
+}
+
+func unprovedRelationsFromProto(namespaceCatalog string, relations []*pb.ObjectRef) map[tableID]bool {
+	if len(relations) == 0 {
+		return nil
+	}
+	out := make(map[tableID]bool, len(relations))
+	for _, relation := range relations {
+		catalog := relation.GetCatalog()
+		if catalog == "" {
+			catalog = namespaceCatalog
+		}
+		out[foldedTableID(catalog, relation.GetSchema(), relation.GetTable())] = true
+	}
+	return out
 }
 
 // Names arrive folded. Nil stays nil, which makes every call unknown.

@@ -187,6 +187,7 @@ private fun heldCatalog(core: ControlPlaneCore, connection: EnforcementConnectio
         ds.id,
         columns,
         ds.engine.functionCatalog(core.connectionCatalog.heldRoutines(connection), ds.engineVersion),
+        core.connectionCatalog.heldUnprovedRelations(connection),
     )
 }
 

@@ -49,12 +49,13 @@ data class SchemaFragment(
     val columns: List<FragmentColumn>,
     /** Routine names, folded like a call (MySQL `AddTax` -> `addtax`). */
     val routines: List<String> = emptyList(),
+    val unprovedTables: List<String> = emptyList(),
 )
 
 data class PooledFragment(val fragment: SchemaFragment, val refCount: Int)
 
 /** What the content hash covers; two pushes under one hash that differ here are an alias, rejected. */
-val SchemaFragment.content: Pair<List<FragmentColumn>, List<String>> get() = columns to routines
+val SchemaFragment.content: Triple<List<FragmentColumn>, List<String>, List<String>> get() = Triple(columns, routines, unprovedTables)
 
 /**
  * [measuredNanos] is when THIS datasource's target DB was last read and found to hold this content — the
@@ -306,7 +307,7 @@ class ConnectionCatalogRegistry(
         }
         return synchronized(stateLock) {
             val key = poolKey(ds, ns, pushedHash)
-            val fragment = SchemaFragment(key, pushedHash, columns.toList(), request.routinesList.toList())
+            val fragment = SchemaFragment(key, pushedHash, columns.toList(), request.routinesList.toList(), request.unprovedTablesList.toList())
             val existing = pool[key]
             if (existing != null && existing.fragment.content != fragment.content) {
                 return@synchronized CatalogMutationResult.Rejected(
@@ -472,6 +473,12 @@ class ConnectionCatalogRegistry(
             .toMap()
     }
 
+    fun heldUnprovedRelations(connection: EnforcementConnection): List<ObjectRef> = synchronized(stateLock) {
+        connection.held.entries
+            .flatMap { (ns, held) -> pool[held.pooledRef]?.fragment?.unprovedTables.orEmpty().map { tableRef(ns.catalog, ns.schema, it) } }
+            .sortedWith(compareBy({ it.catalog }, { it.schema }, { it.table }))
+    }
+
     fun heldAndFreshSchemas(connection: EnforcementConnection): Set<ObjectRef> =
         connection.held.keys.filterTo(LinkedHashSet()) { freshnessGate(connection, listOf(it)).isEmpty() }
 
@@ -500,10 +507,11 @@ class ConnectionCatalogRegistry(
         datasourceName: String,
         columnsBySchema: Map<ObjectRef, List<FragmentColumn>>,
         routinesBySchema: Map<ObjectRef, List<String>> = emptyMap(),
+        unprovedTablesBySchema: Map<ObjectRef, List<String>> = emptyMap(),
     ): Set<ObjectRef> = synchronized(stateLock) {
         val confirmed = LinkedHashSet<ObjectRef>()
         val now = clockNanos()
-        for (schema in columnsBySchema.keys + routinesBySchema.keys) {
+        for (schema in columnsBySchema.keys + routinesBySchema.keys + unprovedTablesBySchema.keys) {
             val authKey = datasourceName to schema
             val auth = authoritative[authKey] ?: continue
             val pooled = pool[auth.pooledRef] ?: continue
@@ -513,6 +521,7 @@ class ConnectionCatalogRegistry(
             // anything the moment the two orderings diverged, and nothing would report it.
             if (pooled.fragment.columns.toSet() != columnsBySchema[schema].orEmpty().toSet()) continue
             if (pooled.fragment.routines.toSet() != routinesBySchema[schema].orEmpty().toSet()) continue
+            if (pooled.fragment.unprovedTables.toSet() != unprovedTablesBySchema[schema].orEmpty().toSet()) continue
             authoritative[authKey] = auth.copy(measuredNanos = now)
             confirmed += schema
         }

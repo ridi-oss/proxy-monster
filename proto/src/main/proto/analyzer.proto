@@ -45,6 +45,9 @@ message CatalogSnapshot {
   FunctionCatalog functions = 2;
   // Routine names per schema, folded like a call; MySQL lists mysql.func loadables under "mysql".
   repeated SchemaFunctions routines = 3;
+  // Relations the target holds whose columns the catalog cannot prove (an Athena view). A statement
+  // naming one is inadmissible, so no exception.unanalyzable permit relays it.
+  repeated proxymonster.v1.ObjectRef unproved_relations = 4;
 }
 
 // Function names used to resolve SQL calls.

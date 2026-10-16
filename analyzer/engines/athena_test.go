@@ -324,3 +324,33 @@ func TestAthenaRowCapIsPushedIntoTheSubmission(t *testing.T) {
 		t.Fatalf("no cap requested but the submission was replaced: %s", facts)
 	}
 }
+
+func TestAthenaStatementNamingAnUnprovedRelationIsInadmissible(t *testing.T) {
+	withView := func(sql string) *pb.AnalyzeRequest {
+		request := athenaRequest(sql)
+		request.Catalog.UnprovedRelations = []*pb.ObjectRef{{Catalog: "awsdatacatalog", Schema: "sample", Table: "user_view"}}
+		return request
+	}
+	for _, sql := range []string{
+		"SELECT * FROM user_view",
+		"SELECT email FROM sample.user_view",
+		`SELECT * FROM "USER_VIEW"`,
+		"SELECT u.email FROM users u JOIN awsdatacatalog.sample.user_view v ON u.id = v.id",
+		"WITH x AS (SELECT * FROM user_view) SELECT * FROM x",
+		"SELECT email FROM users WHERE id IN (SELECT id FROM user_view)",
+		"CREATE TABLE sample.copy AS SELECT * FROM user_view",
+	} {
+		t.Run(sql, func(t *testing.T) {
+			facts := analyzeProto(t, withView(sql))
+			if facts.GetResolved() || facts.GetFailureClass() != pb.FailureClass_FAILURE_CLASS_INADMISSIBLE {
+				t.Fatalf("unproved relation not inadmissible: %s", facts)
+			}
+		})
+	}
+	if facts := analyzeProto(t, withView("SELECT email FROM users")); !facts.GetResolved() {
+		t.Fatalf("an unproved relation denied a statement that does not name it: %s", facts)
+	}
+	if facts := analyzeProto(t, withView("SELECT * FROM archive.sample.user_view")); facts.GetFailureClass() == pb.FailureClass_FAILURE_CLASS_INADMISSIBLE {
+		t.Fatalf("a relation in another catalog matched: %s", facts)
+	}
+}

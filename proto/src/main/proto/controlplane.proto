@@ -236,6 +236,9 @@ message SchemaFragmentPush {
   uint64 backend_generation = 7;        // target-DB-connection instance that measured this fragment
   // Routine names (see CatalogSnapshot.routines); in the content hash, so CREATE FUNCTION triggers REFETCH.
   repeated string routines = 8;
+  // Table names in this schema the catalog cannot prove (see CatalogSnapshot.unproved_relations); in the
+  // content hash.
+  repeated string unproved_tables = 10;
 }
 message SchemaFragmentAck {
   uint64 generation = 1;                // per-connection generation after applying

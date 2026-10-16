@@ -11,7 +11,7 @@ import (
 	"github.com/ridi-oss/sqlglot-go/tokens"
 )
 
-func athenaParameterExpressions(sql string, eng engine) ([]exp.Expression, error) {
+func athenaParameterExpressions(sql string, eng analyzer) ([]exp.Expression, error) {
 	root, err := singleStatement("SELECT "+sql, eng)
 	if err != nil {
 		return nil, err
@@ -30,7 +30,7 @@ func athenaParameterExpressions(sql string, eng engine) ([]exp.Expression, error
 	return root.Selects(), nil
 }
 
-func bindAthenaParameters(root exp.Expression, parameters []string, eng engine) error {
+func bindAthenaParameters(root exp.Expression, parameters []string, eng analyzer) error {
 	if root.Find(exp.KindParameter) != nil || root.Find(exp.KindSessionParameter) != nil {
 		return fmt.Errorf("Athena requires positional question-mark parameters")
 	}
@@ -74,7 +74,7 @@ func bindAthenaParameters(root exp.Expression, parameters []string, eng engine) 
 	return nil
 }
 
-func athenaExecute(root exp.Expression, eng engine) (string, []string, error) {
+func athenaExecute(root exp.Expression, eng analyzer) (string, []string, error) {
 	if root.Expr() == nil {
 		return "", nil, fmt.Errorf("prepared statement name is required")
 	}

@@ -8,7 +8,7 @@ import (
 
 // newQualifySchema: ctid/xmin resolve when written but never expand from `*`, `t.*`, NATURAL or USING;
 // a function table (`FROM pg_available_extension_versions()`) answers with its alias column names.
-func newQualifySchema(mapping, implicit *schema.Mapping, eng engine) (schema.Schema, error) {
+func newQualifySchema(mapping, implicit *schema.Mapping, eng analyzer) (schema.Schema, error) {
 	base, err := schema.NewMappingSchemaWithImplicit(mapping, implicit, eng.Dialect(), eng.NormalizeCatalogOnBuild())
 	if err != nil {
 		return nil, err

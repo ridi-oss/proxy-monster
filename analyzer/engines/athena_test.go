@@ -214,7 +214,7 @@ func TestAthenaParameterFailures(t *testing.T) {
 }
 
 func TestAthenaExecuteSyntax(t *testing.T) {
-	eng, err := newAthenaEngine(&pb.EngineConfig{Engine: pb.Engine_ATHENA, Session: &pb.SessionObservation{Engine: &pb.SessionObservation_Athena{Athena: &pb.AthenaSqlContext{Workgroup: "sample"}}}})
+	eng, err := newAthenaAnalyzer(&pb.EngineConfig{Engine: pb.Engine_ATHENA, Session: &pb.SessionObservation{Engine: &pb.SessionObservation_Athena{Athena: &pb.AthenaSqlContext{Workgroup: "sample"}}}})
 	if err != nil {
 		t.Fatal(err)
 	}

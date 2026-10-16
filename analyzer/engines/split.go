@@ -48,7 +48,7 @@ func SplitBatch(sql string, config *pb.EngineConfig) (statements []BatchStatemen
 
 	// The dialect decides where a statement ends: under ANSI_QUOTES `SELECT "a;b"` is two statements,
 	// and one otherwise — so split with exactly the config the target and the analyzer use.
-	eng, err := createEngine(config)
+	eng, err := createAnalyzer(config)
 	if err != nil {
 		return nil, false
 	}
@@ -85,7 +85,7 @@ func SplitBatch(sql string, config *pb.EngineConfig) (statements []BatchStatemen
 	return out, true
 }
 
-func mayControlTransaction(root exp.Expression, eng engine) bool {
+func mayControlTransaction(root exp.Expression, eng analyzer) bool {
 	kind := statementKind(root, eng)
 	if kind != pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN {
 		return transactionControlKinds[kind]

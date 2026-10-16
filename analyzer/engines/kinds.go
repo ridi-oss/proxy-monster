@@ -20,7 +20,7 @@ import (
 // keyword cannot reach a kind on its own, STMT_UNKNOWN — fail-closed, matching the deny-by-default-but-
 // grantable unknown category. The remainder of a Command is never parsed here. The zero value
 // (UNSPECIFIED) is never returned.
-func statementKind(root exp.Expression, eng engine) pb.StatementKind {
+func statementKind(root exp.Expression, eng analyzer) pb.StatementKind {
 	if root == nil {
 		return pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN
 	}
@@ -150,7 +150,7 @@ func insertKind(root exp.Expression) pb.StatementKind {
 // The `TABLE t` SELECT-shorthand target is distinct (MySQL kind=TABLE, PostgreSQL kind=EXPLAIN over a
 // Table — see isTableShorthandDescribe): it plans a scan of t, the same plan-only read EXPLAIN of that
 // SELECT is, and the same predicate emitDescribeFacts routes through lineage.
-func describeKind(root exp.Expression, eng engine) pb.StatementKind {
+func describeKind(root exp.Expression, eng analyzer) pb.StatementKind {
 	if isTableShorthandDescribe(root) {
 		return pb.StatementKind_STATEMENT_KIND_EXPLAIN
 	}

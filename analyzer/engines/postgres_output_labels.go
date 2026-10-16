@@ -13,7 +13,7 @@ import (
 
 // normalizedFunctionName is a call's name folded through the dialect's quote-aware
 // NormalizeIdentifier — an unquoted spelling lowercases, a quoted one keeps its case.
-func normalizedFunctionName(function exp.Expression, eng engine) string {
+func normalizedFunctionName(function exp.Expression, eng analyzer) string {
 	if identifier, ok := function.Arg("this").(exp.Expression); ok && identifier.Kind() == exp.KindIdentifier {
 		identifier = identifier.Copy()
 		eng.Dialect().NormalizeIdentifier(identifier)
@@ -26,7 +26,7 @@ func normalizedFunctionName(function exp.Expression, eng engine) string {
 // unaliased output, with the no-name fallback applied. query is the SELECT the projection belongs
 // to, for resolving references to its derived sources. ok=false means the label is unknowable —
 // the caller must not stamp.
-func nativeOutputLabel(node exp.Expression, query exp.Expression, eng engine, depth int) (string, bool) {
+func nativeOutputLabel(node exp.Expression, query exp.Expression, eng analyzer, depth int) (string, bool) {
 	name, strength, ok := figureLabel(node, query, eng, depth)
 	if !ok {
 		return "", false
@@ -40,7 +40,7 @@ func nativeOutputLabel(node exp.Expression, query exp.Expression, eng engine, de
 // figureLabel mirrors PostgreSQL's FigureColnameInternal: (label, strength, resolvable) where
 // strength 0 = no name (caller falls back to ?column?), 1 = weak (a cast may override it),
 // 2 = strong.
-func figureLabel(node exp.Expression, query exp.Expression, eng engine, depth int) (string, int, bool) {
+func figureLabel(node exp.Expression, query exp.Expression, eng analyzer, depth int) (string, int, bool) {
 	if node == nil || depth > 20 {
 		return "", 0, false
 	}
@@ -144,7 +144,7 @@ func writtenFunctionLabel(node exp.Expression) (string, int, bool) {
 
 // figureProjectionLabel is the label of one projection inside a derived source: its resname (the
 // explicit alias when real) or FigureColname of its expression.
-func figureProjectionLabel(projection exp.Expression, query exp.Expression, eng engine, depth int) (string, int, bool) {
+func figureProjectionLabel(projection exp.Expression, query exp.Expression, eng analyzer, depth int) (string, int, bool) {
 	if projection == nil || depth > 20 {
 		return "", 0, false
 	}
@@ -158,7 +158,7 @@ func figureProjectionLabel(projection exp.Expression, query exp.Expression, eng 
 }
 
 // subqueryLabel is a scalar subquery's label: its single output column's resname.
-func subqueryLabel(subquery exp.Expression, eng engine, depth int) (string, int, bool) {
+func subqueryLabel(subquery exp.Expression, eng analyzer, depth int) (string, int, bool) {
 	sel := leftmostSelect(subquery.This())
 	if sel == nil {
 		return "", 0, false

@@ -143,14 +143,14 @@ func TestExecutableCommentGateRespectsVersionThreshold(t *testing.T) {
 }
 
 func TestCreateEngineRejectsUnspecifiedEngine(t *testing.T) {
-	if _, err := createEngine(&pb.EngineConfig{}); err == nil {
-		t.Fatal("createEngine with ENGINE_UNSPECIFIED unexpectedly succeeded")
+	if _, err := createAnalyzer(&pb.EngineConfig{}); err == nil {
+		t.Fatal("createAnalyzer with ENGINE_UNSPECIFIED unexpectedly succeeded")
 	}
 }
 
 func TestCreateEngineRejectsNilConfig(t *testing.T) {
-	if _, err := createEngine(nil); err == nil {
-		t.Fatal("createEngine(nil) unexpectedly succeeded")
+	if _, err := createAnalyzer(nil); err == nil {
+		t.Fatal("createAnalyzer(nil) unexpectedly succeeded")
 	}
 }
 
@@ -158,7 +158,7 @@ func TestCreateEngineRejectsNilConfig(t *testing.T) {
 // builds as if no session facts were observed. The oneof makes a foreign fact unrepresentable rather than
 // something each engine must refuse.
 func TestCreateEngineIgnoresAnotherEnginesSessionArm(t *testing.T) {
-	eng, err := createEngine(&pb.EngineConfig{
+	eng, err := createAnalyzer(&pb.EngineConfig{
 		Engine:                   pb.Engine_MYSQL,
 		EngineVersion:            "8.0.46",
 		MysqlLowerCaseTableNames: proto.Int32(0),
@@ -170,13 +170,13 @@ func TestCreateEngineIgnoresAnotherEnginesSessionArm(t *testing.T) {
 }
 
 func TestCreateEngineValidatesPostgresFunctionShadowingContext(t *testing.T) {
-	if _, err := createEngine(&pb.EngineConfig{
+	if _, err := createAnalyzer(&pb.EngineConfig{
 		Engine:  pb.Engine_POSTGRES,
 		Session: &pb.SessionObservation{Engine: &pb.SessionObservation_Postgres{Postgres: &pb.PostgresSession{ShadowedFunctions: []string{"unnest"}}}},
 	}); err == nil {
 		t.Fatal("unobserved PostgreSQL function shadow list unexpectedly succeeded")
 	}
-	if _, err := createEngine(&pb.EngineConfig{
+	if _, err := createAnalyzer(&pb.EngineConfig{
 		Engine:  pb.Engine_POSTGRES,
 		Session: &pb.SessionObservation{Engine: &pb.SessionObservation_Postgres{Postgres: &pb.PostgresSession{FunctionShadowingObserved: true}}},
 	}); err != nil {

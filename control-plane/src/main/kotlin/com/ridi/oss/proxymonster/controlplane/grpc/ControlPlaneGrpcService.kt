@@ -472,6 +472,7 @@ class ControlPlaneGrpcService(
                 FragmentColumn(it.catalog, it.schema, it.table, it.column, it.dataType, it.ordinal, it.nullable)
             },
             request.catalog.routinesList.associate { namespace(currentCatalog, it.schema) to it.namesList },
+            request.catalog.unprovedRelationsList.groupBy({ namespace(it.catalog, it.schema) }) { it.table },
         )
         if (confirmed.isNotEmpty()) {
             log.debug("datasource '{}': ambient refresh re-verified {} pooled schema(s)", ds.name, confirmed.size)

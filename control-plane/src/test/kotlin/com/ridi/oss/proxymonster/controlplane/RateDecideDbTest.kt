@@ -87,11 +87,13 @@ class RateDecideDbTest {
                 val decision = fx.decide(sql, auditStore = fx.auditStore)
                 assertEquals(EnfAction.DENY, decision.action, sql)
                 assertEquals("$RATE_SPENT_DENY $spec spent", decision.denyReason, sql)
+                assertEquals(RATE_SPENT_CODE, decision.denyCode, sql)
             }
             // A read the policy denies is denied by the read gate, before any rate is consulted.
             val unrelated = fx.decide("select id from orders", auditStore = fx.auditStore)
             assertEquals(EnfAction.DENY, unrelated.action)
             assertNotEquals("$RATE_SPENT_DENY $spec spent", unrelated.denyReason)
+            assertNull(unrelated.denyCode)
         }
     }
 
@@ -142,5 +144,51 @@ class RateDecideDbTest {
         assertNotEquals(EnfAction.DENY, elsewhere.action, elsewhere.denyReason)
         fx.completion(10_000, 0, ageSeconds = 120)
         assertEquals("$RATE_SPENT_DENY 10000/1h spent", fx.decide("select id from users", auditStore = fx.auditStore).denyReason)
+    }
+
+    private fun EnforcementFixture.grant(role: String): Long {
+        val id = policyStore.getRoleByName(role)!!.id
+        val request = accessStore.createRequest("analyst@example.com", AccessRequestInput(id, reason = "export"))
+        accessStore.approve(request.id, 3600, "approver@example.com")
+        return accessStore.listGrants("analyst@example.com", activeOnly = true).single { it.roleName == role }.id
+    }
+
+    @Test
+    fun `a boost role multiplies every rate while it is held and leaves the cap alone`() {
+        requireDockerOrSkip()
+        val fx = EnforcementFixture.mysql()
+        fx.unmaskedPii()
+        fx.completion(10_000, 0, ageSeconds = 120)
+        assertEquals("$RATE_SPENT_DENY 10000/1h spent", fx.decide("select ssn from users", auditStore = fx.auditStore).denyReason)
+        val grant = fx.grant("system:rate-boost-2x")
+        val boosted = fx.decide("select ssn from users", auditStore = fx.auditStore)
+        assertEquals(EnfAction.ALLOW, boosted.action, boosted.denyReason)
+        assertEquals(500L, boosted.maxRows, "a boost never touches the statement cap")
+        fx.completion(10_000, 0, ageSeconds = 0)
+        assertEquals("$RATE_SPENT_DENY 10000/1h x2 spent", fx.decide("select ssn from users", auditStore = fx.auditStore).denyReason)
+        fx.accessStore.revoke(grant)
+        assertEquals("$RATE_SPENT_DENY 10000/1h spent", fx.decide("select ssn from users", auditStore = fx.auditStore).denyReason)
+    }
+
+    @Test
+    fun `the largest boost a principal holds wins`() {
+        requireDockerOrSkip()
+        val fx = EnforcementFixture.mysql()
+        fx.completion(30_000, 0, ageSeconds = 120)
+        fx.grant("system:rate-boost-2x")
+        assertEquals("$RATE_SPENT_DENY 10000/1h x2 spent", fx.decide("select id from users", auditStore = fx.auditStore).denyReason)
+        fx.grant("system:rate-boost-5x")
+        val five = fx.decide("select id from users", auditStore = fx.auditStore)
+        assertEquals(EnfAction.ALLOW, five.action, five.denyReason)
+    }
+
+    @Test
+    fun `a boost that matches only columns still lifts the datasource's rate`() {
+        requireDockerOrSkip()
+        val fx = EnforcementFixture.mysql()
+        fx.policy("column-boost", """@boost("2") permit(principal, action == Action::"result.cap", resource) when { resource is Column };""")
+        fx.completion(15_000, 0, ageSeconds = 120)
+        val decided = fx.decide("select id from users", auditStore = fx.auditStore)
+        assertEquals(EnfAction.ALLOW, decided.action, decided.denyReason)
     }
 }

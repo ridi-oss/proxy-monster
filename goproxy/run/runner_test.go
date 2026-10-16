@@ -441,7 +441,7 @@ func runEngineContract(t *testing.T, fixture runEngineFixture) {
 				Masks:          []*pb.ColumnMask{{Column: "secret", Kind: "FIXED", Ordinal: &ordinal}},
 			})
 		case denySQL:
-			return wireVerdict(&pb.Verdict{Decision: pb.EnfAction_DENY, DecisionId: 103, DenyReason: "not granted"})
+			return wireVerdict(&pb.Verdict{Decision: pb.EnfAction_DENY, DecisionId: 103, DenyReason: "not granted", DenyCode: "rate_spent"})
 		case badMaskSQL:
 			ordinal := int32(99)
 			return wireVerdict(&pb.Verdict{
@@ -490,7 +490,11 @@ func runEngineContract(t *testing.T, fixture runEngineFixture) {
 	runExpectDone(t, runRecv(t, fake), -1)
 
 	runSendQuery(fake, denySQL, 20)
-	runExpectDecision(t, runRecv(t, fake), pb.EnfAction_DENY, nil, "not granted")
+	denied := runRecv(t, fake)
+	runExpectDecision(t, denied, pb.EnfAction_DENY, nil, "not granted")
+	if code := denied.GetDecision().GetDenyCode(); code != "rate_spent" {
+		t.Fatalf("deny code = %q, want the verdict's rate_spent echoed", code)
+	}
 	runExpectSilence(t, fake, 200*time.Millisecond)
 
 	runSendQuery(fake, allowSQL, 20)

@@ -625,7 +625,7 @@ internal suspend fun runApprovedTask(
                     // failRun SKIPs the rest in the same transaction.
                     denyReason = response.denyReason
                     denyDecisionId = response.decisionId
-                    batchFailure = "approval.execute_denied"
+                    batchFailure = if (response.denyCode == RATE_SPENT_CODE) "approval.rate_spent" else "approval.execute_denied"
                     false
                 } else {
                     val result = DecryptedResult(response.columns, response.rows, response.rowsAffected, response.resultFingerprint, response.truncatedByCap)

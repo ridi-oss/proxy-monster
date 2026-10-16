@@ -25,6 +25,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.longOrNull
+import java.math.BigDecimal
 
 /**
  * The Cedar action set (docs/authz-model.md). `cedarId` is the literal Cedar `Action::"..."` id — see
@@ -823,12 +824,13 @@ sealed interface CapResource {
 
 /** The limits a statement's `result.cap` asks resolve to. [unbounded] = a forbid matched some ask; null on a
  *  dimension = no cap entry from any permit; [rates] = every rate entry collected, checked by the caller. */
-data class ResolvedCaps(val unbounded: Boolean, val rows: Long?, val bytes: Long?, val rates: List<ResultCap.Rate> = emptyList())
+data class ResolvedCaps(val unbounded: Boolean, val rows: Long?, val bytes: Long?, val rates: List<ResultCap.Rate> = emptyList(), val boost: BigDecimal = BigDecimal.ONE)
 
 /**
  * Ask `Action::"result.cap"` (docs/result-caps.md) on the datasource and on every [resources] entry, and fold
  * the outcomes: a DENY on any ask (a forbid matched) makes the statement unbounded; else the tightest cap
- * rows and cap bytes across the permits that determined each ALLOW, plus every rate entry they carry. A
+ * rows and cap bytes across the permits that determined each ALLOW, plus every rate entry they carry and the
+ * largest `@boost` among them. A
  * column ask carries `context.masked`; the others do not. `result.cap` grants nothing — no enforcement path
  * consults it — so an ALLOW here is only "these permits speak"; an evaluation error contributes nothing
  * (the caller's constant default then applies, fail-closed).
@@ -912,6 +914,7 @@ fun Authz.resolveResultCaps(
         rows = caps.mapNotNull { it.rows }.minOrNull(),
         bytes = caps.mapNotNull { it.bytes }.minOrNull(),
         rates = caps.flatMap { it.rates },
+        boost = caps.mapNotNull { it.boost }.maxOrNull() ?: BigDecimal.ONE,
     )
 }
 

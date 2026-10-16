@@ -137,7 +137,7 @@ class EditorTaskService(
                                 denyReason = response.denyReason
                                 denyDecisionId = response.decisionId
                                 // Reuses the channel-agnostic approval.* result codes the web already localizes.
-                                batchFailure = "approval.execute_denied"
+                                batchFailure = if (response.denyCode == RATE_SPENT_CODE) "approval.rate_spent" else "approval.execute_denied"
                                 false
                             } else {
                                 val result = DecryptedResult(response.columns, response.rows, response.rowsAffected, response.resultFingerprint, response.truncatedByCap)

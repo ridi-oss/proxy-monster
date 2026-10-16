@@ -291,6 +291,7 @@ func decisionFromWire(d *pb.WireDecision) ([]*pb.ProxyCommand, *engine.Decision)
 		MaxBytes:            v.GetMaxBytes(),
 		DecisionID:          v.GetDecisionId(),
 		DenyReason:          v.GetDenyReason(),
+		DenyCode:            v.GetDenyCode(),
 		Masks:               masks,
 		EffectiveRoles:      append([]string(nil), v.GetEffectiveRoles()...),
 		RewrittenSQL:        rewritten,

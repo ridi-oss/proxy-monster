@@ -42,6 +42,8 @@ const ROW_LIMITS = [100, 200, 500, 1000, 5000]
 // The proxy's shipped default row cap (docs/result-caps.md): a page size above it can only produce a capped run.
 const DEFAULT_CAP_ROWS = 5000
 
+const RATE_BOOST_ROLE = 'system:rate-boost-2x'
+
 export function Workbench() {
   const t = useTranslations('Query')
   const [datasourceId, setDatasourceId, datasourceLoaded] = usePersistedDatasource()
@@ -49,6 +51,7 @@ export function Workbench() {
   const [maxRows, setMaxRows] = useState('200')
   const [requestOpen, setRequestOpen] = useState(false)
   const [denyReason, setDenyReason] = useState<string | null>(null)
+  const [requestRoleName, setRequestRoleName] = useState<string | undefined>(undefined)
   const editorRef = useRef<SqlEditorHandle>(null)
   const insertAtCursor = useCallback((text: string) => editorRef.current?.insertAtCursor(text), [])
 
@@ -71,10 +74,13 @@ export function Workbench() {
     if (query) resultTabs.run(query)
   }
 
-  const handleRequestAccess = (reason?: string | null) => {
+  const openRequest = (reason: string | null | undefined, roleName?: string) => {
     setDenyReason(reason ?? null)
+    setRequestRoleName(roleName)
     setRequestOpen(true)
   }
+  const handleRequestAccess = (reason?: string | null) => openRequest(reason)
+  const handleRequestRateBoost = (reason?: string | null) => openRequest(reason, RATE_BOOST_ROLE)
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -192,7 +198,7 @@ export function Workbench() {
             <ResizableHandle />
 
             <ResizablePanel defaultSize={48} minSize={15}>
-              <ResultTabs api={resultTabs} onRequestAccess={handleRequestAccess} />
+              <ResultTabs api={resultTabs} onRequestAccess={handleRequestAccess} onRequestRateBoost={handleRequestRateBoost} />
             </ResizablePanel>
           </ResizablePanelGroup>
         </div>
@@ -204,6 +210,7 @@ export function Workbench() {
           onOpenChange={setRequestOpen}
           datasourceId={datasourceId}
           denyReason={denyReason}
+          roleName={requestRoleName}
         />
       )}
     </div>

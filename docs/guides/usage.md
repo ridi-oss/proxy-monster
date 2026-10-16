@@ -195,8 +195,10 @@ ERROR 1317 (70100): proxy-monster: result exceeds the row cap (5000 rows); reque
 ```
 
 When a rate is spent, statements that return rows are denied with
-`rate 10000/1h spent` until the window rolls off. For a full export, request
-access to `system:production-exporter`, which has no cap or rate.
+`rate 10000/1h spent` and the editor offers **Request a rate boost**: a role
+request for `system:rate-boost-2x` (or `-5x`), which multiplies every rate while
+the grant lasts. The per-statement cap stays. For a full export, request access
+to `system:production-exporter`, which has no cap or rate.
 
 ## 5. Connect a SQL client with pmon
 
@@ -322,10 +324,10 @@ The tools a developer uses: `list_connectable_datasources` and
 `describe_datasource` to see what you can query; `run_query` (waits up to 10 s
 and returns the first 200 rows, else a `taskId` for `get_query_status` and
 `get_query_result`); `discover_roles`, `request_approval`, and
-`get_approval_result` for §3's approval; `request_access`; `get_my_permissions`
-for your roles and where each comes from; and `get_pmon_guide` for pmon setup. A
-denied statement in `run_query` carries a `decisionId` to pass to
-`request_approval`.
+`get_approval_result` for §3's approval; `request_access` (also for a rate boost
+role); `get_my_permissions` for your roles and where each comes from; and
+`get_pmon_guide` for pmon setup. A denied statement in `run_query` carries a
+`decisionId` to pass to `request_approval`.
 
 ### Scopes
 

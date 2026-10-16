@@ -165,5 +165,9 @@
     "metaTableComment": "Table comment",
     "onUpdate": "On update: {action}",
     "onDelete": "On delete: {action}"
+  },
+  "rateBoost": {
+    "button": "Request a rate boost",
+    "denyHelp": "Your relayed-volume rate for this window is spent. Request a rate boost role for a while, or wait for the window to roll off."
   }
 }

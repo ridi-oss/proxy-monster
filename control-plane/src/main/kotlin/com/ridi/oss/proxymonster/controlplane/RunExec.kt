@@ -887,6 +887,7 @@ class RunExecService(
             decision = action,
             decisionId = decisionId,
             denyReason = decision.denyReason.ifBlank { null },
+            denyCode = decision.denyCode.ifBlank { null },
             maskedColumns = decision.maskedColumnsList,
             piiTouched = piiTouched,
             effectiveRoles = decision.effectiveRolesList,

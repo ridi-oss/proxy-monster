@@ -14,6 +14,8 @@ import com.cedarpolicy.model.policy.PolicySet
 import com.cedarpolicy.model.schema.Schema
 import com.cedarpolicy.value.EntityUID
 import com.cedarpolicy.value.Value
+import java.math.BigDecimal
+import java.math.RoundingMode
 import java.time.Duration
 
 /**
@@ -273,12 +275,12 @@ object CedarSchema {
         return parseErrors + typeErrors + retiredUtilityErrors(cedarSrc) + capErrors
     }
 
-    /** A cap annotation must parse, and must sit on a `result.cap` policy — anywhere else it is inert, which
-     *  reads as a cap that never applies; refuse both at the write. */
+    /** A cap or boost annotation must parse, and must sit on a `result.cap` policy — anywhere else it is inert,
+     *  which reads as a limit that never applies; refuse both at the write. */
     private fun capAnnotationErrors(policy: Policy): List<String> = try {
         val cap = ResultCap.parse(policy.annotations)
         if (!cap.isEmpty && !RESULT_CAP_ACTION.containsMatchIn(policy.source)) {
-            listOf("a @cap annotation belongs on an Action::\"result.cap\" policy")
+            listOf("a @cap or @boost annotation belongs on an Action::\"result.cap\" policy")
         } else {
             emptyList()
         }
@@ -341,19 +343,28 @@ object CedarSchema {
  * most 31 days. Cedar ignores annotations when it decides; the control plane folds these off the permits
  * that determined an ALLOW.
  */
-data class ResultCap(val rows: Long? = null, val bytes: Long? = null, val rates: List<Rate> = emptyList()) {
-    val isEmpty: Boolean get() = rows == null && bytes == null && rates.isEmpty()
+data class ResultCap(val rows: Long? = null, val bytes: Long? = null, val rates: List<Rate> = emptyList(), val boost: BigDecimal? = null) {
+    val isEmpty: Boolean get() = rows == null && bytes == null && rates.isEmpty() && boost == null
 
     /** One rate entry: [rows] xor [bytes] over [window]. [spec] is the entry text, for the deny reason. */
-    data class Rate(val rows: Long?, val bytes: Long?, val window: Duration, val spec: String)
+    data class Rate(val rows: Long?, val bytes: Long?, val window: Duration, val spec: String) {
+        /** This rate multiplied by [factor], rounded down; the spec names the factor (`10000/1h x1.5`). */
+        fun boosted(factor: BigDecimal): Rate {
+            if (factor.compareTo(BigDecimal.ONE) == 0) return this
+            fun times(n: Long) = n.toBigDecimal().multiply(factor).setScale(0, RoundingMode.FLOOR).longValueExact()
+            return Rate(rows?.let(::times), bytes?.let(::times), window, "$spec x${factor.stripTrailingZeros().toPlainString()}")
+        }
+    }
 
     companion object {
         const val NAME = "cap"
+        const val BOOST = "boost"
         val MAX_WINDOW: Duration = Duration.ofDays(31)
 
         /** Parse a policy's annotations; a malformed value throws so a write rejects it and a load fails. */
         fun parse(annotations: Map<String, String>): ResultCap {
-            val raw = annotations[NAME] ?: return ResultCap()
+            val boost = annotations[BOOST]?.let(::parseBoost)
+            val raw = annotations[NAME] ?: return ResultCap(boost = boost)
             var rows: Long? = null
             var bytes: Long? = null
             val rates = ArrayList<Rate>()
@@ -369,7 +380,16 @@ data class ResultCap(val rows: Long? = null, val bytes: Long? = null, val rates:
                     rates += Rate(r, b, parseWindow(entry.substring(slash + 1)), entry)
                 }
             }
-            return ResultCap(rows, bytes, rates)
+            return ResultCap(rows, bytes, rates, boost)
+        }
+
+        private val BOOST_FACTOR = Regex("""\d+(\.\d+)?""")
+
+        /** `@boost("<n>")` multiplies every rate by a decimal number greater than 1 (`1.5`, `2`). */
+        private fun parseBoost(raw: String): BigDecimal {
+            val n = raw.trim().takeIf { BOOST_FACTOR.matches(it) }?.toBigDecimal()
+            require(n != null && n > BigDecimal.ONE) { "@boost must be a number greater than 1, got \"$raw\"" }
+            return n
         }
 
         private val AMOUNT = Regex("""(\d+)\s*([KMG]B)?""", RegexOption.IGNORE_CASE)

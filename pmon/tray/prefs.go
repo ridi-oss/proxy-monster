@@ -314,18 +314,19 @@ func (p *prefs) handlers() map[string]func(args []json.RawMessage) (any, error) 
 		}
 	}
 	return map[string]func([]json.RawMessage) (any, error){
-		"state":        func([]json.RawMessage) (any, error) { return p.state(), nil },
-		"aiState":      func([]json.RawMessage) (any, error) { return p.aiState(), nil },
-		"start":        func([]json.RawMessage) (any, error) { return p.start(), nil },
-		"restart":      func([]json.RawMessage) (any, error) { return p.restart(), nil },
-		"signIn":       onServer(func(r, n string) any { return p.signIn(r, n) }),
-		"signOut":      onServer(p.signOut),
-		"removeServer": onServer(p.removeServer),
-		"addRemote":    one(func(t string) any { return p.addRemote(t) }),
-		"removeRemote": one(func(t string) any { return p.removeRemote(t) }),
-		"openLink":     one(func(u string) any { return p.openLink(u) }),
-		"setLanguage":  one(func(l string) any { return p.setLanguage(l) }),
-		"setTheme":     one(func(t string) any { return p.setTheme(t) }),
+		"state":           func([]json.RawMessage) (any, error) { return p.state(), nil },
+		"aiState":         func([]json.RawMessage) (any, error) { return p.aiState(), nil },
+		"start":           func([]json.RawMessage) (any, error) { return p.start(), nil },
+		"restart":         func([]json.RawMessage) (any, error) { return p.restart(), nil },
+		"signIn":          onServer(func(r, n string) any { return p.signIn(r, n) }),
+		"signOut":         onServer(p.signOut),
+		"removeServer":    onServer(p.removeServer),
+		"addRemote":       one(func(t string) any { return p.addRemote(t) }),
+		"reconnectRemote": one(func(t string) any { return p.reconnect(t) }),
+		"removeRemote":    one(func(t string) any { return p.removeRemote(t) }),
+		"openLink":        one(func(u string) any { return p.openLink(u) }),
+		"setLanguage":     one(func(l string) any { return p.setLanguage(l) }),
+		"setTheme":        one(func(t string) any { return p.setTheme(t) }),
 		"setServer": func(args []json.RawMessage) (any, error) {
 			name, err := str(args, 0)
 			if err != nil {
@@ -545,6 +546,16 @@ func (p *prefs) linkTerminal(mode string) any {
 		return err.Error()
 	}
 	return ""
+}
+
+// reconnect goes through the menu-bar process: 1Password checks that process is frontmost, not this one.
+func (p *prefs) reconnect(target string) string {
+	if !control.ValidTarget(target) {
+		return fmt.Sprintf("%q is not an ssh target", target)
+	}
+	yieldTo(os.Getppid())
+	_, err := fmt.Fprintln(toMenuBar, "reconnect "+target)
+	return errText(err)
 }
 
 // uninstall asks the menu-bar process, which owns the daemon and the app's lifetime, to uninstall.

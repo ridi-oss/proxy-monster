@@ -11,6 +11,7 @@ import "C"
 import (
 	"errors"
 	"strings"
+	"time"
 	"unsafe"
 )
 
@@ -68,6 +69,17 @@ func setLoginItem(on bool) error {
 }
 
 func activatePid(pid int) { C.pm_activate_pid(C.int(pid)) }
+
+// activateSelf makes this process frontmost: 1Password shows its SSH approval dialog only for the frontmost app.
+// yieldTo lets pid take the foreground from this process: macOS 14 refuses an activation the frontmost app did not yield.
+var yieldTo = func(pid int) { C.pm_yield_to(C.int(pid)) }
+
+func activateSelf() {
+	C.pm_activate_self()
+	for deadline := time.Now().Add(time.Second); time.Now().Before(deadline) && !bool(C.pm_is_frontmost()); {
+		time.Sleep(50 * time.Millisecond)
+	}
+}
 
 // listenForLinks routes pmon:// links opened anywhere on this Mac to onConnectLink.
 func listenForLinks() { C.pm_url_init() }

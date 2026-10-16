@@ -30,6 +30,7 @@ const (
 	opAddServer
 	opCheckUpdates
 	opInstallUpdate
+	opReconnect
 )
 
 // action is what a click does. Copy actions carry their payload, so a row's label and what it copies are built
@@ -191,9 +192,8 @@ func remoteEntry(r control.RemoteInfo, v view) entry {
 		e := entry{key: key, title: title}
 		if r.Error != "" {
 			e.children = []entry{{key: key + "#error", title: shorten(r.Error, 70), disabled: true}}
-		} else {
-			e.disabled = true
 		}
+		e.children = append(e.children, entry{key: key + "#reconnect", title: T("menu.reconnect"), act: &action{op: opReconnect, remote: r.Target}})
 		return e
 	}
 	e := entry{key: key, title: r.Target}

@@ -125,6 +125,10 @@ func setLoginItem(on bool) error {
 // activatePid lets the Settings process take the foreground; it raises its own window when told to show.
 func activatePid(pid int) { _, _, _ = allowSetForegroundWindow.Call(uintptr(pid)) }
 
+func activateSelf() {}
+
+var yieldTo = func(int) {}
+
 var allowSetForegroundWindow = windows.NewLazySystemDLL("user32.dll").NewProc("AllowSetForegroundWindow")
 
 func prefString(key string) string {

@@ -3,7 +3,6 @@ package engines
 import (
 	"fmt"
 	"regexp"
-	"strings"
 
 	exp "github.com/ridi-oss/sqlglot-go/expressions"
 )
@@ -198,7 +197,7 @@ func normalizedFunctionName(function exp.Expression, session *Session) string {
 		session.dialect.NormalizeIdentifier(identifier)
 		return identifier.Name()
 	}
-	return strings.ToLower(function.Name())
+	return session.dialect.FoldIdentifierName(function.Name(), false)
 }
 
 // leftmostSelect unwraps parens/subqueries and takes a set operation's first branch — the branch

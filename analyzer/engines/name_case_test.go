@@ -316,27 +316,22 @@ func TestNameMySQLSystemSchemasBySQL(t *testing.T) {
 func TestNamePostgresSearchPathCase(t *testing.T) {
 	quoted, folded := pbColumn("App", "t", "ssn", "VARCHAR"), pbColumn("app", "t", "ssn", "VARCHAR")
 	cases := []struct {
-		name    string
-		path    []string
-		want    *pb.Column
-		pending string
+		name string
+		path []string
+		want *pb.Column
 	}{
-		{"lowercase entry", []string{"app"}, folded, ""},
-		{"mixed-case entry as current_schemas reports it", []string{"App"}, quoted, "search_path entries are folded as unquoted identifiers"},
-		{"mixed-case entry ahead of lowercase", []string{"App", "app"}, quoted, "search_path entries are folded as unquoted identifiers"},
-		{"lowercase entry ahead of mixed-case", []string{"app", "App"}, folded, ""},
+		{"lowercase entry", []string{"app"}, folded},
+		{"mixed-case entry as current_schemas reports it", []string{"App"}, quoted},
+		{"mixed-case entry ahead of lowercase", []string{"App", "app"}, quoted},
+		{"lowercase entry ahead of mixed-case", []string{"app", "App"}, folded},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if tc.pending != "" {
-				t.Skip("pending-name-fix: " + tc.pending)
-			}
 			n := postgresNames(tc.path, quoted, folded)
 			requireReads(t, n, `SELECT ssn FROM t`, n.key(t, tc.want))
 		})
 	}
 	t.Run("entry naming no schema", func(t *testing.T) {
-		t.Skip("pending-name-fix: search_path entry APP folds onto schema app")
 		requireClosed(t, postgresNames([]string{"APP"}, quoted, folded), `SELECT ssn FROM t`)
 	})
 }
@@ -351,7 +346,6 @@ func TestNamePostgresExcludedCase(t *testing.T) {
 		requireReads(t, n, `INSERT INTO users ("SSN") SELECT ssn FROM "Users" ON CONFLICT ("SSN") DO UPDATE SET "SSN" = `+alias+`."SSN"`, n.key(t, upper), n.key(t, source))
 	}
 	t.Run("quoted EXCLUDED names no relation", func(t *testing.T) {
-		t.Skip(`pending-name-fix: "EXCLUDED" resolves as the excluded pseudo-relation`)
 		requireClosed(t, n, `INSERT INTO users (ssn) SELECT ssn FROM "Users" ON CONFLICT (ssn) DO UPDATE SET ssn = "EXCLUDED".ssn`)
 	})
 	t.Run("excluded column naming no target column", func(t *testing.T) {

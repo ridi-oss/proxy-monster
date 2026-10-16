@@ -286,6 +286,15 @@ func (c *Client) StartRemote(ctx context.Context, target string) error {
 	return resp.Body.Close()
 }
 
+// ReconnectRemote asks this daemon to try a remote that is not connected now, instead of after its backoff.
+func (c *Client) ReconnectRemote(ctx context.Context, target string) error {
+	resp, err := c.do(ctx, http.MethodPost, PathRemoteReconnect, RemoteRequest{Target: target})
+	if err != nil {
+		return err
+	}
+	return resp.Body.Close()
+}
+
 // RemoveRemote closes a remote's connection and forgets it.
 func (c *Client) RemoveRemote(ctx context.Context, target string) error {
 	resp, err := c.do(ctx, http.MethodPost, PathRemoteRemove, RemoteRequest{Target: target})

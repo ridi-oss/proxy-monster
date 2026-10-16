@@ -12,9 +12,10 @@ import (
 
 // remoteCmd manages the remotes: machines whose pmon daemons this daemon keeps an SSH connection to.
 type remoteCmd struct {
-	Add    remoteAddCmd    `cmd:"" help:"Reach the pmon daemon on an SSH target (a Host alias, host, or user@host)."`
-	Remove remoteRemoveCmd `cmd:"" help:"Close a remote's SSH connection and forget it."`
-	List   remoteListCmd   `cmd:"" default:"withargs" help:"List the remotes."`
+	Add       remoteAddCmd       `cmd:"" help:"Reach the pmon daemon on an SSH target (a Host alias, host, or user@host)."`
+	Remove    remoteRemoveCmd    `cmd:"" help:"Close a remote's SSH connection and forget it."`
+	Reconnect remoteReconnectCmd `cmd:"" help:"Try a remote that is not connected now, instead of after its wait."`
+	List      remoteListCmd      `cmd:"" default:"withargs" help:"List the remotes."`
 }
 
 type remoteAddCmd struct {
@@ -48,6 +49,23 @@ func (c *remoteRemoveCmd) Run() error {
 		return err
 	}
 	fmt.Printf("remote %q removed\n", c.Target)
+	return nil
+}
+
+type remoteReconnectCmd struct {
+	Target string `arg:"" help:"SSH target of the remote."`
+}
+
+func (c *remoteReconnectCmd) Run() error {
+	ctx := context.Background()
+	client, err := control.Connect(ctx)
+	if err != nil {
+		return err
+	}
+	if err := client.ReconnectRemote(ctx, c.Target); err != nil {
+		return err
+	}
+	fmt.Printf("reconnecting to %q — `pmon remote` shows when it connects\n", c.Target)
 	return nil
 }
 

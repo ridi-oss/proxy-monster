@@ -76,7 +76,8 @@ func (f *fakeBackend) SetDefault(SetDefaultRequest) error { return nil }
 
 func (f *fakeBackend) AddRemote(RemoteRequest) error { return nil }
 
-func (f *fakeBackend) RemoveRemote(RemoteRequest) error { return nil }
+func (f *fakeBackend) RemoveRemote(RemoteRequest) error    { return nil }
+func (f *fakeBackend) ReconnectRemote(RemoteRequest) error { return nil }
 
 func (f *fakeBackend) StartRemote(context.Context, RemoteRequest) error { return nil }
 

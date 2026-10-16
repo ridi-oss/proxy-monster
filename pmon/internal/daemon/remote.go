@@ -27,7 +27,9 @@ type remote struct {
 	done   chan struct{}
 	// recheck asks the connection to check the remote now rather than at its next tick.
 	recheck chan struct{}
-	info    control.RemoteInfo // guarded by Daemon.mu
+	// retry skips the backoff and replaces an ssh still waiting to sign in.
+	retry chan struct{}
+	info  control.RemoteInfo // guarded by Daemon.mu
 }
 
 // sshCommand runs ssh; replaceable in tests.
@@ -136,6 +138,21 @@ func (d *Daemon) RemoveRemote(req control.RemoteRequest) error {
 	return nil
 }
 
+// ReconnectRemote makes a remote that is not connected try again now.
+func (d *Daemon) ReconnectRemote(req control.RemoteRequest) error {
+	d.mu.Lock()
+	r := d.remotes[req.Target]
+	d.mu.Unlock()
+	if r == nil {
+		return fmt.Errorf("unknown remote %q", req.Target)
+	}
+	select {
+	case r.retry <- struct{}{}:
+	default:
+	}
+	return nil
+}
+
 // StartRemote starts the pmon daemon on a connected remote over its ssh connection, and returns once it answers.
 func (d *Daemon) StartRemote(ctx context.Context, req control.RemoteRequest) error {
 	d.mu.Lock()
@@ -207,7 +224,7 @@ func (d *Daemon) startRemote(target string) {
 		return
 	}
 	ctx, cancel := context.WithCancel(d.ctx)
-	r := &remote{target: target, cancel: cancel, done: make(chan struct{}), recheck: make(chan struct{}, 1),
+	r := &remote{target: target, cancel: cancel, done: make(chan struct{}), recheck: make(chan struct{}, 1), retry: make(chan struct{}, 1),
 		info: control.RemoteInfo{Target: target, State: control.RemoteConnecting}}
 	d.remotes[target] = r
 	d.mu.Unlock()
@@ -257,6 +274,10 @@ func (d *Daemon) runRemote(ctx context.Context, r *remote) {
 		if ctx.Err() != nil {
 			return
 		}
+		if errors.Is(err, errRetry) {
+			backoff = 2 * time.Second
+			continue
+		}
 		d.setRemote(r, control.RemoteInfo{State: control.RemoteDown, Error: errText(err)})
 		if time.Since(began) > time.Minute {
 			backoff = 2 * time.Second
@@ -264,6 +285,9 @@ func (d *Daemon) runRemote(ctx context.Context, r *remote) {
 		select {
 		case <-ctx.Done():
 			return
+		case <-r.retry:
+			backoff = 2 * time.Second
+			continue
 		case <-time.After(backoff):
 		}
 		backoff = min(backoff*2, time.Minute)
@@ -278,7 +302,7 @@ func (d *Daemon) connectRemote(ctx context.Context, r *remote, ctl, sock string)
 	_ = os.Remove(ctl)
 	var stderr tailBuffer
 	master := sshCommand(ctx, "-M", "-S", ctl, "-N",
-		"-o", "BatchMode=yes", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3",
+		"-o", "BatchMode=yes", "-o", "ConnectTimeout=20", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3",
 		"-o", "ControlPersist=no", "-o", "StreamLocalBindUnlink=yes", "--", r.target)
 	master.Stderr = &stderr
 	if err := master.Start(); err != nil {
@@ -296,7 +320,7 @@ func (d *Daemon) connectRemote(ctx context.Context, r *remote, ctl, sock string)
 		return errors.New("the ssh connection closed")
 	}
 
-	if err := waitForMaster(ctx, exited, ctl, r.target); err != nil {
+	if err := waitForMaster(ctx, exited, r.retry, ctl, r.target); err != nil {
 		if errors.Is(err, errMasterExited) {
 			return ended(nil)
 		}
@@ -364,6 +388,8 @@ func (d *Daemon) connectRemote(ctx context.Context, r *remote, ctl, sock string)
 		case <-changed:
 			check()
 		case <-r.recheck:
+			check()
+		case <-r.retry:
 			check()
 		case err := <-exited:
 			return ended(err)
@@ -460,6 +486,8 @@ func watchRemote(ctx context.Context, sock string, changed chan<- struct{}) {
 
 var errMasterExited = errors.New("ssh exited")
 
+var errRetry = errors.New("retry requested")
+
 var errRemoteRemoved = errors.New("the remote was removed")
 
 // stopRemotes ends every remote's ssh connection and waits for it, so no ssh outlives the daemon.
@@ -482,9 +510,8 @@ func (d *Daemon) stopRemotes() {
 }
 
 // waitForMaster waits until the shared connection's control socket answers. errMasterExited means it took ssh's
-// exit from exited.
-func waitForMaster(ctx context.Context, exited <-chan error, ctl, target string) error {
-	deadline := time.After(30 * time.Second)
+// exit from exited. No deadline: the wait can be a key approval in 1Password's menu-bar icon.
+func waitForMaster(ctx context.Context, exited <-chan error, retry <-chan struct{}, ctl, target string) error {
 	for {
 		check, cancel := context.WithTimeout(ctx, 5*time.Second)
 		_, err := sshOutput(check, "-S", ctl, "-O", "check", "--", target)
@@ -497,8 +524,8 @@ func waitForMaster(ctx context.Context, exited <-chan error, ctl, target string)
 			return errMasterExited
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-deadline:
-			return errors.New("ssh did not connect within 30s")
+		case <-retry:
+			return errRetry
 		case <-time.After(300 * time.Millisecond):
 		}
 	}

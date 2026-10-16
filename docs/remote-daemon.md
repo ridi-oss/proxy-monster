@@ -48,7 +48,7 @@ flowchart LR
   (`ssh -M -N -o BatchMode=yes`), so forwards outlive the tray and serve the
   CLI. It finds the remote socket with a new `pmon socket-path` command and
   forwards it into the laptop's `0700` state folder. It reconnects with backoff
-  and re-adds every forward.
+  and re-adds every forward; Reconnect skips the backoff.
 - Each remote datasource gets a sticky local port from the local daemon's own
   range, forwarded to the remote daemon's port, so local and remote ports never
   collide. Connection strings use the local port and the remote daemon's local

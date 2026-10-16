@@ -5,6 +5,8 @@ import com.ridi.oss.proxymonster.controlplane.authz.Authz
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzContext
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzDecision
+import com.ridi.oss.proxymonster.controlplane.authz.AuthzResource
+import com.ridi.oss.proxymonster.controlplane.authz.authorizeNativeResource
 import com.ridi.oss.proxymonster.controlplane.authz.authorizeDatasourceAction
 import com.ridi.oss.proxymonster.controlplane.authz.resolveContextTags
 import com.ridi.oss.proxymonster.controlplane.management.ManagementException
@@ -13,6 +15,7 @@ import com.ridi.oss.proxymonster.grpc.RequestAuthorization
 import com.ridi.oss.proxymonster.grpc.RequestAuthorizationResult
 import io.grpc.Status
 import io.grpc.StatusException
+import java.time.Instant
 
 /**
  * One request's caller, as the control plane sees it: the token's principal and kind, the channel and
@@ -77,13 +80,20 @@ sealed interface NativeInstructions {
     }
 }
 
-/**
- * Decides one request that carries no SQL statement. Deny by default: an operation the engine does not
- * recognize, a blank selector, or a datasource the request does not name is refused before Cedar runs.
- */
-fun interface RequestAuthorizer {
-    fun authorize(request: RequestAuthorization, datasource: Datasource, principal: String, parents: UserParents, context: AuthzContext, authz: Authz): RequestAdmission
+/** What a request without SQL touches, as its engine reads it; [authorizeRequest] asks Cedar about it. */
+sealed interface RequestAccess {
+    /** The engine refuses the request before Cedar runs, e.g. `native.invalid_descriptor`. */
+    data class Denied(val denyCode: String) : RequestAccess
+
+    /** A catalog or table-metadata read of the datasource's own catalog; only the connect gate applies. */
+    data object Metadata : RequestAccess
+
+    /** A native API call: each of [resources] needs native.invoke as [operation] (`athena:GetWorkGroup`), then the proxy follows [instructions]. */
+    data class Native(val operation: String, val resources: List<NativeResourceRef>, val instructions: NativeInstructions) : RequestAccess
 }
+
+/** One resource a native call touches, e.g. kind `workgroup`, id `primary`; [owner] when the target reports one. */
+data class NativeResourceRef(val kind: String, val id: String, val owner: String? = null)
 
 internal val RequestAuthorization.isNative: Boolean
     get() = operationCase != RequestAuthorization.OperationCase.READ_CATALOG &&
@@ -92,53 +102,55 @@ internal val RequestAuthorization.isNative: Boolean
 internal fun RequestAuthorization.deniedAdmission() =
     RequestAdmission.Denied(if (isNative) "native.not_authorized" else "datasource.not_connectable")
 
-internal fun RequestAuthorizer.authorizeBounded(
+/**
+ * Decides one request that carries no SQL statement: the engine reads what it touches, then Cedar runs the
+ * connect gate and native.invoke on each resource. A request naming another datasource or no operation is refused.
+ */
+internal fun Authz.authorizeRequest(
     request: RequestAuthorization,
     datasource: Datasource,
     principal: String,
     parents: UserParents,
     context: AuthzContext,
-    authz: Authz,
+    now: Instant = Instant.now(),
 ): RequestAdmission {
     if (request.datasourceName.isBlank() || request.datasourceName != datasource.name) return request.deniedAdmission()
     if (request.operationCase == RequestAuthorization.OperationCase.OPERATION_NOT_SET) return request.deniedAdmission()
-    val admission = authorize(request, datasource, principal, parents, context.copy(tags = emptySet(), stmtKind = null, nativeOperation = null), authz)
-    // A native operation is admitted only with instructions; a metadata read never carries any.
-    if (admission is RequestAdmission.Allowed && request.isNative != (admission.instructions != null)) return request.deniedAdmission()
-    return admission
+    val access = datasource.engine.definition.requestAccess(request, datasource, principal, now)
+    if (access is RequestAccess.Denied) return RequestAdmission.Denied(access.denyCode)
+    if ((access is RequestAccess.Native) != request.isNative) return request.deniedAdmission()
+    val raw = context.copy(tags = emptySet(), stmtKind = null, nativeOperation = null)
+    if (!authorizeMetadata(this, principal, parents, datasource, raw)) return request.deniedAdmission()
+    if (access !is RequestAccess.Native) return RequestAdmission.Allowed()
+    val allowed = access.resources.all { ref ->
+        val resource = AuthzResource.NativeResource(datasource.name, ref.kind, ref.id, ref.owner, datasource.tags)
+        authorizeNativeResource(principal, parents, resource, access.operation, raw) is AuthzDecision.Allow
+    }
+    return if (allowed) RequestAdmission.Allowed(access.instructions) else request.deniedAdmission()
 }
 
-/** Catalog and table-metadata reads: the selector must name this datasource's catalog, then the connect gate applies. */
-internal object MetadataRequestAuthorizer : RequestAuthorizer {
-    override fun authorize(
-        request: RequestAuthorization,
-        datasource: Datasource,
-        principal: String,
-        parents: UserParents,
-        context: AuthzContext,
-        authz: Authz,
-    ): RequestAdmission {
-        if (request.datasourceName.isBlank() || request.datasourceName != datasource.name) return request.deniedAdmission()
-        val catalog = when (request.operationCase) {
-            RequestAuthorization.OperationCase.READ_CATALOG -> {
-                val namespace = request.readCatalog.namespace
-                if (namespace.catalog.isBlank() || namespace.schema.isBlank()) return request.deniedAdmission()
-                namespace.catalog
-            }
-            RequestAuthorization.OperationCase.READ_TABLE_METADATA -> {
-                val table = request.readTableMetadata.table
-                if (table.catalog.isBlank() || table.schema.isBlank() || table.table.isBlank()) return request.deniedAdmission()
-                table.catalog
-            }
-            else -> return request.deniedAdmission()
+/** A MySQL or PostgreSQL catalog or table-metadata read whose selector names [datasource]'s catalog; anything else is denied. */
+internal fun metadataRequestAccess(request: RequestAuthorization, datasource: Datasource): RequestAccess {
+    val denied = RequestAccess.Denied(request.deniedAdmission().denyCode)
+    val catalog = when (request.operationCase) {
+        RequestAuthorization.OperationCase.READ_CATALOG -> {
+            val namespace = request.readCatalog.namespace
+            if (namespace.catalog.isBlank() || namespace.schema.isBlank()) return denied
+            namespace.catalog
         }
-        try {
-            datasource.requireCatalog(catalog)
-        } catch (_: ManagementException) {
-            return request.deniedAdmission()
+        RequestAuthorization.OperationCase.READ_TABLE_METADATA -> {
+            val table = request.readTableMetadata.table
+            if (table.catalog.isBlank() || table.schema.isBlank() || table.table.isBlank()) return denied
+            table.catalog
         }
-        return if (authorizeMetadata(authz, principal, parents, datasource, context)) RequestAdmission.Allowed() else request.deniedAdmission()
+        else -> return denied
     }
+    try {
+        datasource.requireCatalog(catalog)
+    } catch (_: ManagementException) {
+        return denied
+    }
+    return RequestAccess.Metadata
 }
 
 /** The same datasource.connect gate the HTTP metadata routes use, with context tags derived here. */

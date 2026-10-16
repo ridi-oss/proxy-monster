@@ -341,9 +341,8 @@ of a route and the gate it calls. Paths are relative to
 | Instance name and version | `/api/instance` | `mcp/McpConnect.kt` | none — under `/api` so the console forwards it |
 | Web session | `/auth/me`, `/auth/session/status`, `/auth/session/heartbeat` | `cpgo/routes/websession/auth.go` | a live session, else 401 `{"reason"}` |
 | OIDC web login | `/auth/oidc/login`, `/auth/oidc/callback` | `cpgo/routes/oidc/oidc.go` | none — this mints the session |
-| CLI device authorization | `/auth/device/start`, `/auth/device/poll` | `DeviceAuth.kt` | none — the handle plus the IdP grant are the credential |
-| Daemon session renew, logout | `/auth/session/renew`, `/auth/session/logout` | `DaemonSession.kt` | `Authorization: Bearer <renewalToken>` only |
-| Daemon session MCP token | `/auth/session/mcp-token` | `PmonMcpToken.kt` | `Authorization: Bearer <renewalToken>` only |
+| CLI device authorization | `/auth/device/start`, `/auth/device/confirm`, `/auth/device/authorize`, `/auth/device/poll` | `cpgo/routes/device/device.go` | start and poll: none — the handle is the credential; confirm and authorize: a live session, and authorize also the signed confirm cookie |
+| Daemon session renew, logout, MCP token | `/auth/session/renew`, `/auth/session/logout`, `/auth/session/mcp-token` | `cpgo/routes/device/device.go` | `Authorization: Bearer <renewalToken>` only |
 | OAuth 2.1 authorization server | `/.well-known/oauth-authorization-server`, `/oauth/**` | `oauth/OAuthRoutes.kt` | protocol-native (PKCE, client metadata, consent CSRF); `/oauth/consents` needs a session |
 | MCP admin surface | `/mcp`, `/.well-known/oauth-protected-resource**` | `mcp/McpServer.kt` | MCP access-token bearer + host/origin checks in an interceptor; metadata routes public |
 | CI token exchange | `/api/workload/token` | `WorkloadTokenRoutes.kt` | none — verifies the CI OIDC JWT itself; mints a `WORKLOAD` bearer |

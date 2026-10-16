@@ -31,9 +31,9 @@ func Register(mux *http.ServeMux, pool *pgxpool.Pool, gate api.Gate) {
 
 // Every wire token expires; a requested lifetime is clamped into [tokenMinTTL, tokenMaxTTL].
 const (
-	tokenMinTTL     = 60
-	tokenMaxTTL     = 24 * 3600
-	sessionTokenTTL = 12 * 3600
+	TokenMinTTL     = 60
+	TokenMaxTTL     = 24 * 3600
+	SessionTokenTTL = 12 * 3600
 	userTokenTTL    = 3600
 )
 
@@ -49,8 +49,8 @@ type wireToken struct {
 	LastUsedAt *string `json:"lastUsedAt,omitempty"`
 }
 
-// issuedToken is Kotlin's IssuedToken: the secret, shown once.
-type issuedToken struct {
+// IssuedToken is Kotlin's IssuedToken: the secret, shown once.
+type IssuedToken struct {
 	Token     string  `json:"token"`
 	ID        int64   `json:"id"`
 	Kind      string  `json:"kind"`
@@ -87,8 +87,8 @@ func (t tokens) authorizeToken(ctx context.Context, action, owner, kind string) 
 func (t tokens) mint(w http.ResponseWriter, r *http.Request, status int, kind string, name *string, ttl int64) {
 	ctx := r.Context()
 	principal := api.Principal(ctx)
-	ttl = min(max(ttl, tokenMinTTL), tokenMaxTTL)
-	var out issuedToken
+	ttl = min(max(ttl, TokenMinTTL), TokenMaxTTL)
+	var out IssuedToken
 	err := pgx.BeginFunc(ctx, t.pool, func(tx pgx.Tx) error {
 		if err := identity.LockPrincipal(ctx, tx, principal); err != nil {
 			return err
@@ -137,7 +137,7 @@ func (t tokens) mintSession(w http.ResponseWriter, r *http.Request) {
 		api.WriteMutationError(w, err)
 		return
 	}
-	ttl := int64(sessionTokenTTL)
+	ttl := int64(SessionTokenTTL)
 	if in.TTLSeconds != nil {
 		ttl = *in.TTLSeconds
 	}

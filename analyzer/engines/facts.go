@@ -140,6 +140,11 @@ func emitParsedFacts(parsed exp.Expression, eng analyzer, qualifySchema schema.S
 	// distinct user schema from `pg_catalog`, and `"MySchema".fn` from `myschema.fn`.
 	root := optimizer.NormalizeIdentifiers(unwrapSubquery(parsed), eng.Dialect())
 	originalRoot := root
+	if relation, ok := namedUnprovedRelation(root, validatedNamespace); ok {
+		facts := inadmissibleFacts("VALIDATE", fmt.Sprintf("relation %s has no columns the catalog can prove", relation))
+		facts.StatementExec = executeGrant(statementKind(originalRoot, eng))
+		return facts
+	}
 	if !hasSyntheticAlias(root) {
 		// A duplicate-label error is the target DB's own rejection (MySQL ER_DUP_FIELDNAME, a
 		// referenced PostgreSQL ambiguity) — the statement would never run there.
@@ -991,6 +996,36 @@ func isAccountObjectDDL(root exp.Expression) bool {
 // statement's identifiers before this runs — because a candidate is used to look that schema up: MySQL
 // under lower_case_table_names=1 reports information_schema lowercase, so an unfolded `GOODS_STORE`
 // would match nothing.
+// namedUnprovedRelation errs toward a match: names fold, and an unqualified one tries every search-path schema.
+func namedUnprovedRelation(root exp.Expression, namespace NamespaceConfig) (tableID, bool) {
+	if len(namespace.UnprovedRelations) == 0 {
+		return tableID{}, false
+	}
+	for _, table := range root.FindAll(exp.KindTable) {
+		if table.Name() == "" {
+			continue
+		}
+		catalog := table.CatalogName()
+		if catalog == "" {
+			catalog = namespace.Catalog
+		}
+		schemas := namespace.SearchPath
+		if schema := table.SchemaName(); schema != "" {
+			schemas = []string{schema}
+		}
+		for _, schema := range schemas {
+			if id := foldedTableID(catalog, schema, table.Name()); namespace.UnprovedRelations[id] {
+				return id, true
+			}
+		}
+	}
+	return tableID{}, false
+}
+
+func foldedTableID(catalog, schema, table string) tableID {
+	return tableID{catalog: strings.ToLower(catalog), schema: strings.ToLower(schema), table: strings.ToLower(table)}
+}
+
 func schemaQualifierCandidates(root exp.Expression) []string {
 	set := map[string]bool{}
 	for _, table := range root.FindAll(exp.KindTable) {

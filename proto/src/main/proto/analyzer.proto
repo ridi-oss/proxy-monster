@@ -204,7 +204,7 @@ enum MaskedDisposition {
 // Granularity tracks what the AST exposes: kinds are as specific as the parse distinguishes (every
 // CREATE/ALTER/DROP object type, every discriminated SHOW/SET form), and benign forms the parse treats
 // uniformly share a kind (all schema-introspecting SHOWs are SHOW_METADATA; benign session SETs are
-// SET_SESSION_VAR). The coverage test (analyzer/probe/mysql_statement_coverage_test.go) is the
+// SET_SESSION_VAR). The coverage test (analyzer/engines/mysql_statement_coverage_test.go) is the
 // authority and pins the kind for every MySQL statement.
 //
 // The enum numbers are opaque identifiers, not a taxonomy: 0 is unspecified, 1 is unknown, and every

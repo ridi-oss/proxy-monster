@@ -15,7 +15,7 @@ import (
 	"time"
 
 	// The shared proxymonster.v1.Engine enum (engine.proto) is generated once, into analyzer/probe/pb —
-	// goproxy links analyzer/probe into this same binary in-process (introspect.go, db.go), and two
+	// goproxy links analyzer/engines into this same binary in-process (introspect.go, db.go), and two
 	// independently-generated copies of the same .proto file panic the protobuf runtime's global file
 	// registry at init. controlplane.proto's own generated code (goproxy/internal/pb) already resolves
 	// its Engine field to this same package (see goproxy/buf.gen.yaml's Mengine.proto= mapping); this
@@ -378,7 +378,7 @@ type Db interface {
 	// ignores the mode argument in that case).
 	LowerCaseTableNamesProbeSQL() string
 	// NormalizeColumns folds columns to their canonical spelling per the dialect's own rules — the
-	// analyzer's normalization (analyzer/probe.NormalizeRelation), gated by lowerCaseTableNames for
+	// analyzer's normalization (analyzer/engines.NormalizeRelation), gated by lowerCaseTableNames for
 	// MySQL, an identity function for Postgres. The refetch path calls this so the schema-fragment pool
 	// pushed to the control plane matches the same canonical spelling introspect's bulk catalog push
 	// uses — no caller decides whether/how to fold.

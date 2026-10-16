@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ridi-oss/proxy-monster/analyzer/probe"
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
@@ -696,7 +696,7 @@ func splitBatch(enabled bool, sql, version string, observe func() (engine.Sessio
 	if err != nil {
 		return nil
 	}
-	batch, ok := probe.SplitBatch(sql, &enginepb.EngineConfig{
+	batch, ok := engines.SplitBatch(sql, &enginepb.EngineConfig{
 		Engine:                   enginepb.Engine_MYSQL,
 		EngineVersion:            version,
 		MysqlLowerCaseTableNames: proto.Int32(0),

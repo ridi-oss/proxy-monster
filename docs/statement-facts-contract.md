@@ -284,7 +284,7 @@ Command-RESET on PostgreSQL).
 
 ## Verification
 
-- `go test ./analyzer/probe/...` and the full DB-backed gate
+- `go test ./analyzer/engines/...` and the full DB-backed gate
   (`mise run verify`).
 - The documented leak cases each deny under the grant walk:
   `SELECT query_to_xml('SELECT ssn FROM users')`,

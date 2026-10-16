@@ -151,7 +151,7 @@ func Run(ctx context.Context, db *sql.DB, dbImpl engine.Db, probe NamespaceProbe
 	}
 	columnsMs := time.Since(phase).Milliseconds()
 
-	// Normalize to the SAME canonical spelling the analyzer treats as authoritative (analyzer/probe,
+	// Normalize to the SAME canonical spelling the analyzer treats as authoritative (analyzer/engines,
 	// Go-to-Go — no FFM/marshaling) — an identity function for Postgres, MySQL's role-aware fold
 	// (gated by lctnMode) for MySQL — before this ever reaches the control plane. Nothing downstream
 	// (catalog storage, browse_catalog, Cedar Table::/Column:: EUIDs, column_classification, the

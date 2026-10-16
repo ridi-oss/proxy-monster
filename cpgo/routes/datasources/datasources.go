@@ -14,7 +14,7 @@ import (
 
 func Register(mux *http.ServeMux, pool *pgxpool.Pool, gate api.Gate) {
 	ds := datasources{pool: pool, authz: gate.Authz}
-	mux.HandleFunc("GET /api/datasources", gate.RequireAPIOrBearer(ds.list))
+	mux.HandleFunc("GET /api/datasources", gate.RequireAPIOrBearer(api.Serve(ds.list)))
 }
 
 // datasource is one datasource row; fields in the Kotlin Datasource's order, defaultSchemaSettable last.
@@ -95,18 +95,16 @@ type datasources struct {
 
 // list is every live datasource; a row the caller may not connect to loses its connection material, and
 // connectable=true drops such rows instead.
-func (d datasources) list(w http.ResponseWriter, r *http.Request) {
+func (d datasources) list(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
 	rows, err := db.New(d.pool).Datasources(ctx)
 	if err != nil {
-		api.Fail(w, err)
-		return
+		return err
 	}
 	all := make([]datasource, len(rows))
 	for i, row := range rows {
 		if all[i], err = toDatasource(row); err != nil {
-			api.Fail(w, err)
-			return
+			return err
 		}
 	}
 	ids := make([]int64, len(all))
@@ -115,8 +113,7 @@ func (d datasources) list(w http.ResponseWriter, r *http.Request) {
 	}
 	may, err := d.authz.MayConnect(ctx, api.Principal(ctx), ids, api.RequesterIP(ctx))
 	if err != nil {
-		api.Fail(w, err)
-		return
+		return err
 	}
 	connectableOnly := strings.EqualFold(r.URL.Query().Get("connectable"), "true")
 	out := []datasource{}
@@ -129,4 +126,5 @@ func (d datasources) list(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	api.WriteJSON(w, http.StatusOK, out)
+	return nil
 }

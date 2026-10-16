@@ -13,9 +13,9 @@ import (
 
 func Register(mux *http.ServeMux, pool *pgxpool.Pool, gate api.Gate) {
 	ac := access{pool: pool, authz: gate.Authz}
-	mux.HandleFunc("GET /api/access-requests", gate.RequireAPI(ac.requests))
-	mux.HandleFunc("GET /api/access-grants", gate.RequireAPI(ac.grants))
-	mux.HandleFunc("GET /api/approvals", gate.RequireAPI(ac.ownApprovals))
+	mux.HandleFunc("GET /api/access-requests", gate.RequireAPI(api.Serve(ac.requests)))
+	mux.HandleFunc("GET /api/access-grants", gate.RequireAPI(api.Serve(ac.grants)))
+	mux.HandleFunc("GET /api/approvals", gate.RequireAPI(api.Serve(ac.ownApprovals)))
 }
 
 // accessRequest is one access_request row; fields in the Kotlin AccessRequest's order.
@@ -109,15 +109,14 @@ func (a accessRequest) approvalResource() bridge.Resource {
 }
 
 // ownApprovals lists the caller's own workflow approval requests; owning them is the whole check.
-func (a access) ownApprovals(w http.ResponseWriter, r *http.Request) {
+func (a access) ownApprovals(w http.ResponseWriter, r *http.Request) error {
 	q, principal := r.URL.Query(), api.Principal(r.Context())
 	if q.Has("status") {
 		rows, err := db.New(a.pool).OwnApprovalsByStatus(r.Context(), db.OwnApprovalsByStatusParams{Principal: principal, Status: q.Get("status")})
-		api.WriteRows(w, rows, err, func(r db.OwnApprovalsByStatusRow) accessRequest { return toAccessRequest(db.AccessRequestsRow(r)) })
-		return
+		return api.WriteRows(w, rows, err, func(r db.OwnApprovalsByStatusRow) accessRequest { return toAccessRequest(db.AccessRequestsRow(r)) })
 	}
 	rows, err := db.New(a.pool).OwnApprovals(r.Context(), principal)
-	api.WriteRows(w, rows, err, func(r db.OwnApprovalsRow) accessRequest { return toAccessRequest(db.AccessRequestsRow(r)) })
+	return api.WriteRows(w, rows, err, func(r db.OwnApprovalsRow) accessRequest { return toAccessRequest(db.AccessRequestsRow(r)) })
 }
 
 type accessGrant struct {
@@ -137,7 +136,7 @@ type access struct {
 }
 
 // requests lists the requests (status-filtered when asked) the caller may task.read.
-func (a access) requests(w http.ResponseWriter, r *http.Request) {
+func (a access) requests(w http.ResponseWriter, r *http.Request) error {
 	var (
 		rows []db.AccessRequestsRow
 		err  error
@@ -152,8 +151,7 @@ func (a access) requests(w http.ResponseWriter, r *http.Request) {
 		rows, err = db.New(a.pool).AccessRequests(r.Context())
 	}
 	if err != nil {
-		api.Fail(w, err)
-		return
+		return err
 	}
 	all := make([]accessRequest, len(rows))
 	for i, row := range rows {
@@ -163,11 +161,11 @@ func (a access) requests(w http.ResponseWriter, r *http.Request) {
 	for i, req := range all {
 		resources[i] = req.approvalResource()
 	}
-	writeAllowed(w, r, a.authz, all, resources)
+	return writeAllowed(w, r, a.authz, all, resources)
 }
 
 // grants lists the grants (by principal, live only when active=true) the caller may task.read.
-func (a access) grants(w http.ResponseWriter, r *http.Request) {
+func (a access) grants(w http.ResponseWriter, r *http.Request) error {
 	q := r.URL.Query()
 	queries, ctx := db.New(a.pool), r.Context()
 	var (
@@ -197,8 +195,7 @@ func (a access) grants(w http.ResponseWriter, r *http.Request) {
 		rows, err = queries.AccessGrants(ctx)
 	}
 	if err != nil {
-		api.Fail(w, err)
-		return
+		return err
 	}
 	all := make([]accessGrant, len(rows))
 	for i, g := range rows {
@@ -209,17 +206,16 @@ func (a access) grants(w http.ResponseWriter, r *http.Request) {
 	for i, g := range all {
 		resources[i] = bridge.Resource{Type: "AccessGrant", Principal: g.Principal, ID: g.ID, RoleName: &g.RoleName}
 	}
-	writeAllowed(w, r, a.authz, all, resources)
+	return writeAllowed(w, r, a.authz, all, resources)
 }
 
 // writeAllowed answers with the rows whose resource the caller may task.read, decided without a requester
 // IP as the Kotlin listings do.
-func writeAllowed[T any](w http.ResponseWriter, r *http.Request, authz api.Authorizer, rows []T, resources []bridge.Resource) {
+func writeAllowed[T any](w http.ResponseWriter, r *http.Request, authz api.Authorizer, rows []T, resources []bridge.Resource) error {
 	ctx := r.Context()
 	allowed, err := authz.AuthorizeEach(ctx, api.Principal(ctx), "task.read", resources, "")
 	if err != nil {
-		api.Fail(w, err)
-		return
+		return err
 	}
 	out := []T{}
 	for i, ok := range allowed {
@@ -228,4 +224,5 @@ func writeAllowed[T any](w http.ResponseWriter, r *http.Request, authz api.Autho
 		}
 	}
 	api.WriteJSON(w, http.StatusOK, out)
+	return nil
 }

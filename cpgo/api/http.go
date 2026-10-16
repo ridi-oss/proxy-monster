@@ -38,44 +38,49 @@ func NonNil(s []string) []string {
 	return s
 }
 
-// WriteRows answers with every row as a JSON array, [] when there are none.
-func WriteRows[R, T any](w http.ResponseWriter, rows []R, err error, to func(R) T) {
+// WriteRows answers with every row as a JSON array, [] when there are none, or returns the query's error.
+func WriteRows[R, T any](w http.ResponseWriter, rows []R, err error, to func(R) T) error {
 	if err != nil {
-		Fail(w, err)
-		return
+		return err
 	}
 	out := make([]T, 0, len(rows))
 	for _, r := range rows {
 		out = append(out, to(r))
 	}
 	WriteJSON(w, http.StatusOK, out)
+	return nil
 }
 
-// ManagementError is Kotlin's ManagementException: an ApiError whose code picks the status, as
-// respondManagementError does.
+// ManagementError is an ApiError a write returns; it answers with its code's status.
 type ManagementError struct {
-	Code   string
+	Code   Code
 	Params Params
 }
 
-func (e *ManagementError) Error() string { return e.Code }
+func (e *ManagementError) Error() string { return e.Code.key }
+
+// Write answers the error with its code's status.
+func (e *ManagementError) Write(w http.ResponseWriter) { writeError(w, e.Code, e.Params) }
+
+// Err is the code as a write's error, answered by WriteError with its status.
+func (c Code) Err(kv ...string) error { return &ManagementError{c, pairs(kv)} }
 
 func Required(field, value string) error {
 	if strings.TrimSpace(value) == "" {
-		return &ManagementError{"common.field_required", Params{{"fields", field}}}
+		return CodeFieldRequired.Err("fields", field)
 	}
 	return nil
 }
 
 func NotFound(resource string) error {
-	return &ManagementError{"common.not_found", Params{{"resource", resource}}}
+	return CodeNotFound.Err("resource", resource)
 }
 
 // Unique turns a unique-constraint violation into common.already_exists, as Kotlin's unique() does.
 func Unique(err error, resource, name string) error {
 	var pg *pgconn.PgError
 	if errors.As(err, &pg) && pg.Code == "23505" {
-		return &ManagementError{"common.already_exists", Params{{"resource", resource}, {"name", name}}}
+		return CodeAlreadyExists.Err("resource", resource, "name", name)
 	}
 	return err
 }
@@ -107,14 +112,14 @@ func Notify(ctx context.Context, f func(context.Context) error) error {
 // changes anything. Requiring the content type keeps a cross-site form post from reaching a write.
 func DecodeBody(r *http.Request, v any) error {
 	if mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mt != "application/json" {
-		return &ManagementError{"common.invalid_value", Params{{"field", "body"}}}
+		return CodeInvalidValue.Err("field", "body")
 	}
 	dec := json.NewDecoder(r.Body)
 	if err := dec.Decode(v); err != nil || dec.More() {
-		return &ManagementError{"common.invalid_value", Params{{"field", "body"}}}
+		return CodeInvalidValue.Err("field", "body")
 	}
 	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
-		return &ManagementError{"common.invalid_value", Params{{"field", "body"}}}
+		return CodeInvalidValue.Err("field", "body")
 	}
 	return nil
 }
@@ -125,21 +130,43 @@ func pathID(r *http.Request) (int64, bool) {
 }
 
 // WithID answers a non-numeric {id} with 400 common.bad_id before anything else, as Kotlin's idParam does.
-func WithID(next func(http.ResponseWriter, *http.Request, int64)) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
+func WithID(next func(http.ResponseWriter, *http.Request, int64) error) Route {
+	return func(w http.ResponseWriter, r *http.Request) error {
 		id, ok := pathID(r)
 		if !ok {
-			WriteError(w, http.StatusBadRequest, "common.bad_id", nil)
-			return
+			return CodeBadID.Err()
 		}
-		next(w, r, id)
+		return next(w, r, id)
 	}
 }
 
-func Fail(w http.ResponseWriter, err error) {
-	slog.Error("routes: store query failed", "err", err)
-	WriteError(w, http.StatusInternalServerError, "common.fallback", nil)
+// Route answers a request's success itself and returns its failure for Serve to answer.
+type Route func(w http.ResponseWriter, r *http.Request) error
+
+// Serve answers a route's failure: a coded error with its code's status, a rejected policy source with 400
+// {"errors": [...]}, anything else with a logged 500 common.fallback.
+func Serve(route Route) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		err := route(w, r)
+		var me *ManagementError
+		var ce CedarErrors
+		switch {
+		case err == nil:
+		case errors.As(err, &me):
+			me.Write(w)
+		case errors.As(err, &ce):
+			WriteJSON(w, http.StatusBadRequest, map[string][]string{"errors": ce})
+		default:
+			slog.Error("routes: request failed", "method", r.Method, "path", r.URL.Path, "err", err)
+			WriteError(w, CodeFallback)
+		}
+	}
 }
+
+// CedarErrors is a policy source the validator rejected; Kotlin answers it as 400 {"errors": [...]}.
+type CedarErrors []string
+
+func (CedarErrors) Error() string { return "invalid cedar policy" }
 
 // JavaInstant formats t like java.time.Instant.toString: UTC, fractional seconds in groups of three
 // digits, none when zero.

@@ -15,8 +15,8 @@ import (
 
 func Register(mux *http.ServeMux, pool *pgxpool.Pool, gate api.Gate) {
 	a := auditLog{pool: pool, authz: gate.Authz}
-	mux.HandleFunc("GET /api/audit", gate.RequireAPI(a.list))
-	mux.HandleFunc("GET /api/audit/{id}", gate.RequireAPI(a.get))
+	mux.HandleFunc("GET /api/audit", gate.RequireAPI(api.Serve(a.list)))
+	mux.HandleFunc("GET /api/audit/{id}", gate.RequireAPI(api.Serve(a.get)))
 }
 
 type auditEvent struct {
@@ -51,7 +51,7 @@ type auditLog struct {
 }
 
 // list returns the whole log to a caller Cedar grants audit.read on it, and the caller's own rows otherwise.
-func (a auditLog) list(w http.ResponseWriter, r *http.Request) {
+func (a auditLog) list(w http.ResponseWriter, r *http.Request) error {
 	limit := 100
 	if n, err := strconv.ParseInt(r.URL.Query().Get("limit"), 10, 32); err == nil {
 		limit = min(max(int(n), 1), 500)
@@ -60,8 +60,7 @@ func (a auditLog) list(w http.ResponseWriter, r *http.Request) {
 	principal := api.Principal(ctx)
 	all, _, err := a.authz.Authorize(ctx, principal, "audit.read", bridge.AuditLog, api.RequesterIP(ctx))
 	if err != nil {
-		api.Fail(w, err)
-		return
+		return err
 	}
 	q := db.New(a.pool)
 	var rows []db.AuditEvent
@@ -71,44 +70,40 @@ func (a auditLog) list(w http.ResponseWriter, r *http.Request) {
 		rows, err = q.AuditLogOf(ctx, db.AuditLogOfParams{Principal: principal, Limit: int32(limit)})
 	}
 	if err != nil {
-		api.Fail(w, err)
-		return
+		return err
 	}
 	out := make([]auditEvent, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, toAuditEvent(row))
 	}
 	api.WriteJSON(w, http.StatusOK, out)
+	return nil
 }
 
 // get answers a record Cedar hides exactly like a missing one, so the route is no existence oracle.
-func (a auditLog) get(w http.ResponseWriter, r *http.Request) {
+func (a auditLog) get(w http.ResponseWriter, r *http.Request) error {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		api.WriteError(w, http.StatusBadRequest, "common.bad_id", nil)
-		return
+		return api.CodeBadID.Err()
 	}
 	ctx := r.Context()
 	row, err := db.New(a.pool).AuditEvent(ctx, id)
 	e := toAuditEvent(row)
 	if errors.Is(err, pgx.ErrNoRows) {
-		api.WriteError(w, http.StatusNotFound, "common.not_found", map[string]string{"resource": "audit record"})
-		return
+		return api.CodeNotFound.Err("resource", "audit record")
 	}
 	if err != nil {
-		api.Fail(w, err)
-		return
+		return err
 	}
 	ok, _, err := a.authz.Authorize(ctx, api.Principal(ctx), "audit.read", bridge.AuditRecord(e.Principal), api.RequesterIP(ctx))
 	if err != nil {
-		api.Fail(w, err)
-		return
+		return err
 	}
 	if !ok {
-		api.WriteError(w, http.StatusNotFound, "common.not_found", map[string]string{"resource": "audit record"})
-		return
+		return api.CodeNotFound.Err("resource", "audit record")
 	}
 	api.WriteJSON(w, http.StatusOK, e)
+	return nil
 }
 
 func toAuditEvent(r db.AuditEvent) auditEvent {

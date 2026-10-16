@@ -2,7 +2,6 @@ package com.ridi.oss.proxymonster.controlplane.grpc
 
 import com.ridi.oss.proxymonster.analyzer.pb.SchemaFunctions
 import com.ridi.oss.proxymonster.analyzer.pb.schemaFunctions
-import com.ridi.oss.proxymonster.classification.PostgresGrammarFunctions
 import com.ridi.oss.proxymonster.controlplane.Catalog
 import com.ridi.oss.proxymonster.controlplane.support.storedSnapshot
 import com.ridi.oss.proxymonster.controlplane.DatasourceStore
@@ -872,7 +871,7 @@ class GrpcRegistrationHandlerDbTest {
         pushRoutines(name, emptyList())
         assertTrue(core.datasourceStore.storedSnapshot(ds.id).routinesList.isEmpty())
         val bare = core.datasourceStore.catalog(ds.id)
-        assertEquals(PostgresGrammarFunctions.names, bare.functions.builtinFunctionsList, "no routines: only the grammar functions")
+        assertEquals(listOf("coalesce", "greatest", "least", "nullif", "grouping", "xmlconcat", "xmlelement", "xmlforest", "xmlparse", "xmlpi", "xmlroot", "xmltable"), bare.functions.builtinFunctionsList, "no routines: only the grammar functions")
         assertTrue(udfs(bare).isEmpty())
     }
 

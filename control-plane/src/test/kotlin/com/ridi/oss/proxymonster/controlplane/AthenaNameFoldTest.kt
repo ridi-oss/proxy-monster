@@ -3,7 +3,6 @@ package com.ridi.oss.proxymonster.controlplane
 import com.ridi.oss.proxymonster.controlplane.support.canonicalColumns
 import com.ridi.oss.proxymonster.controlplane.support.pushedColumn
 import com.ridi.oss.proxymonster.grpc.Engine
-import org.junit.jupiter.api.Disabled
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
@@ -20,18 +19,17 @@ class AthenaNameFoldTest {
     }
 
     @Test
-    @Disabled("pending-name-fix: Kotlin lowercase() folds İ to i plus a combining dot, the analyzer to plain i")
     fun `the catalog name fold agrees with the analyzer on non-ASCII`() {
         for (name in listOf("İstanbul", "STRAẞE", "Straße", "ÇAĞ")) {
             assertEquals(analyzerFold(name), Engine.ATHENA.catalogName(name), name)
         }
-        assertEquals(analyzerFold("İNFORMATION_SCHEMA") == "information_schema", Engine.ATHENA.isSystemSchema("İNFORMATION_SCHEMA"))
+        assertEquals(analyzerFold("İNFORMATION_SCHEMA") == "information_schema", Engine.ATHENA.isSystemSchema(analyzerFold("İNFORMATION_SCHEMA")))
     }
 
     @Test
     fun `system schema detection agrees with the analyzer fold`() {
         for (name in listOf("information_schema", "INFORMATION_SCHEMA", "Information_Schema", "information_schemas")) {
-            assertEquals(analyzerFold(name) == "information_schema", Engine.ATHENA.isSystemSchema(name), name)
+            assertEquals(analyzerFold(name) == "information_schema", Engine.ATHENA.isSystemSchema(analyzerFold(name)), name)
         }
     }
 }

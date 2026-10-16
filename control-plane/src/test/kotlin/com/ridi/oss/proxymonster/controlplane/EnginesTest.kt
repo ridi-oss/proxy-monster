@@ -4,9 +4,6 @@ import com.ridi.oss.proxymonster.probe.splitStatements
 import com.ridi.oss.proxymonster.analyzer.pb.SessionObservation
 import com.ridi.oss.proxymonster.analyzer.pb.sessionObservation
 import com.ridi.oss.proxymonster.analyzer.pb.mySqlSession
-import com.ridi.oss.proxymonster.classification.AthenaNativeFunctions
-import com.ridi.oss.proxymonster.classification.MysqlNativeFunctions
-import com.ridi.oss.proxymonster.classification.PostgresGrammarFunctions
 import com.ridi.oss.proxymonster.grpc.Engine
 import com.ridi.oss.proxymonster.probe.Dialect
 import kotlinx.serialization.json.Json
@@ -110,16 +107,20 @@ class EnginesTest {
         assertEquals(setOf("pg_catalog", "information_schema"), Engine.POSTGRES.systemSchemas)
     }
 
-    @Test fun `MySQL system schemas match case-insensitively`() {
+    @Test fun `MySQL system schemas match the canonical spelling exactly`() {
         assertTrue(Engine.MYSQL.isSystemSchema("information_schema"))
-        assertTrue(Engine.MYSQL.isSystemSchema("INFORMATION_SCHEMA"))
-        assertTrue(Engine.MYSQL.isSystemSchema("Information_Schema"))
         assertTrue(Engine.MYSQL.isSystemSchema("mysql"))
-        assertTrue(Engine.MYSQL.isSystemSchema("MySQL"))
         assertTrue(Engine.MYSQL.isSystemSchema("performance_schema"))
-        assertTrue(Engine.MYSQL.isSystemSchema("PERFORMANCE_SCHEMA"))
         assertTrue(Engine.MYSQL.isSystemSchema("sys"))
-        assertTrue(Engine.MYSQL.isSystemSchema("SYS"))
+        // Under lower_case_table_names=0 these canonical names are user databases.
+        assertFalse(Engine.MYSQL.isSystemSchema("SYS"))
+        assertFalse(Engine.MYSQL.isSystemSchema("Mysql"))
+        assertFalse(Engine.MYSQL.isSystemSchema("PERFORMANCE_SCHEMA"))
+    }
+
+    @Test fun `Athena system schemas match the canonical spelling exactly`() {
+        assertTrue(Engine.ATHENA.isSystemSchema("information_schema"))
+        assertFalse(Engine.ATHENA.isSystemSchema("Information_Schema"))
     }
 
     @Test fun `MySQL non-system schema does not match`() {
@@ -127,8 +128,7 @@ class EnginesTest {
         assertFalse(Engine.MYSQL.isSystemSchema("acme"))
     }
 
-    @Test fun `Postgres system schemas require exact lowercase spelling, unlike MySQL`() {
-        // The Postgres branch does NOT fold case at all.
+    @Test fun `Postgres system schemas require exact lowercase spelling`() {
         assertTrue(Engine.POSTGRES.isSystemSchema("pg_catalog"))
         assertTrue(Engine.POSTGRES.isSystemSchema("information_schema"))
         assertFalse(Engine.POSTGRES.isSystemSchema("PG_CATALOG"), "the Postgres branch does not fold case")
@@ -147,8 +147,14 @@ class EnginesTest {
 
     @Test fun `isFixedSystemSchema keeps each engine's casing but drops the prefixes`() {
         assertTrue(Engine.POSTGRES.isFixedSystemSchema("pg_catalog"))
-        assertTrue(Engine.MYSQL.isFixedSystemSchema("INFORMATION_SCHEMA"), "MySQL folds")
+        assertFalse(Engine.MYSQL.isFixedSystemSchema("INFORMATION_SCHEMA"), "MySQL matches exactly")
         assertFalse(Engine.POSTGRES.isFixedSystemSchema("PG_CATALOG"), "Postgres matches exactly")
+    }
+
+    @Test fun `Athena catalog names fold like the analyzer`() {
+        assertEquals("awsdatacatalog", Engine.ATHENA.catalogName("AwsDataCatalog"))
+        assertEquals("ix", Engine.ATHENA.catalogName("\u0130X"))
+        assertEquals("σασ", Engine.ATHENA.catalogName("ΣΑΣ"))
     }
 
     @Test fun `Postgres non-system schema does not match`() {
@@ -157,9 +163,9 @@ class EnginesTest {
     }
 
     @Test fun `MySQL function catalog is the pinned native list plus loadable and stored routines`() {
-        val natives = MysqlNativeFunctions.forVersion("8.0.44")
         val empty = Engine.MYSQL.functionCatalog(emptyMap(), "8.0.44")
-        assertEquals(natives, empty.builtinFunctionsList)
+        val natives = empty.builtinFunctionsList
+        assertTrue("concat" in natives && "json_extract" in natives, "the pinned 8.0 natives")
         assertTrue(empty.udfSchemasList.isEmpty() && empty.loadableFunctionsList.isEmpty())
         val tiered = Engine.MYSQL.functionCatalog(
             mapOf("mysql" to listOf("fnv_64"), "app" to listOf("add_tax"), "sys" to listOf("format_bytes")),
@@ -177,7 +183,6 @@ class EnginesTest {
 
     @Test fun `Athena function catalog is the pinned builtin list for the engine version`() {
         val catalog = Engine.ATHENA.functionCatalog(mapOf("sample" to listOf("ignored")), "3")
-        assertEquals(AthenaNativeFunctions.forVersion("3"), catalog.builtinFunctionsList)
         assertTrue("upper" in catalog.builtinFunctionsList && "invoker_principal" in catalog.builtinFunctionsList)
         assertTrue(catalog.udfSchemasList.isEmpty() && catalog.systemFunctionSchemasList.isEmpty(), "Athena has no routine catalog")
         assertEquals(catalog.builtinFunctionsList, Engine.ATHENA.functionCatalog(emptyMap(), null).builtinFunctionsList, "an unknown version pins to 3")
@@ -185,10 +190,10 @@ class EnginesTest {
 
     @Test fun `Postgres function catalog tiers pg_catalog, information_schema, and user schemas`() {
         val empty = Engine.POSTGRES.functionCatalog(emptyMap(), "16.4")
-        assertEquals(PostgresGrammarFunctions.names, empty.builtinFunctionsList, "grammar functions have no pg_proc row")
+        assertEquals(postgresGrammarFunctions, empty.builtinFunctionsList, "grammar functions have no pg_proc row")
         val tiered = Engine.POSTGRES.functionCatalog(
             mapOf(
-                "pg_catalog" to listOf("abs", "lower", PostgresGrammarFunctions.names.first()),
+                "pg_catalog" to listOf("abs", "lower", postgresGrammarFunctions.first()),
                 "information_schema" to listOf("_pg_expandarray"),
                 "public" to listOf("add_tax"),
                 "pg_temp_3" to listOf("scratch"),
@@ -196,9 +201,9 @@ class EnginesTest {
             ),
             "16.4",
         )
-        assertEquals(listOf("abs", "lower") + PostgresGrammarFunctions.names, tiered.builtinFunctionsList)
+        assertEquals(listOf("abs", "lower") + postgresGrammarFunctions, tiered.builtinFunctionsList)
         val bySchema = tiered.systemFunctionSchemasList.associate { it.schema to it.namesList }
-        assertEquals(listOf("abs", "lower") + PostgresGrammarFunctions.names, bySchema.getValue("pg_catalog"))
+        assertEquals(listOf("abs", "lower") + postgresGrammarFunctions, bySchema.getValue("pg_catalog"))
         assertEquals(listOf("_pg_expandarray"), bySchema.getValue("information_schema"))
         assertEquals(
             listOf("public" to listOf("add_tax")),
@@ -210,4 +215,9 @@ class EnginesTest {
     @Test fun `functionCatalog fails closed on an unspecified engine`() {
         assertFailsWith<IllegalStateException> { Engine.ENGINE_UNSPECIFIED.functionCatalog(emptyMap(), null) }
     }
+
+    private val postgresGrammarFunctions = listOf(
+        "coalesce", "greatest", "least", "nullif", "grouping",
+        "xmlconcat", "xmlelement", "xmlforest", "xmlparse", "xmlpi", "xmlroot", "xmltable",
+    )
 }

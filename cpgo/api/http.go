@@ -12,7 +12,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/ridi-oss/proxy-monster/cpgo/audit"
 )
 
 func OptInstant(t *time.Time) *string {
@@ -92,6 +96,36 @@ func UpdateSummary(typ, before, after string) string {
 	return "update " + typ + " '" + before + "' -> '" + after + "'"
 }
 
+// Mutate runs change in one transaction with its audit rows, then afterCommit, then answers status with its
+// result, or returns the error.
+func Mutate(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request, status int, change func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error), afterCommit ...func(context.Context) error) error {
+	ctx := r.Context()
+	var out any
+	err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		var err error
+		out, err = change(ctx, tx, ActorOf(ctx))
+		return err
+	})
+	for _, f := range afterCommit {
+		if err == nil {
+			err = Notify(ctx, f)
+		}
+	}
+	switch {
+	case err != nil:
+		return err
+	case out == nil:
+		w.WriteHeader(status)
+	default:
+		WriteJSON(w, status, out)
+	}
+	return nil
+}
+
+func ActorOf(ctx context.Context) audit.Actor {
+	return audit.Actor{Principal: Principal(ctx), ClientAddr: RequesterIP(ctx), Channel: "console"}
+}
+
 // Notify runs a post-commit signal even if the client has gone, retrying briefly: the change is already
 // committed, so a lost signal would leave Kotlin deciding on the old state.
 func Notify(ctx context.Context, f func(context.Context) error) error {
@@ -124,7 +158,7 @@ func DecodeBody(r *http.Request, v any) error {
 	return nil
 }
 
-func pathID(r *http.Request) (int64, bool) {
+func PathID(r *http.Request) (int64, bool) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	return id, err == nil
 }
@@ -132,7 +166,7 @@ func pathID(r *http.Request) (int64, bool) {
 // WithID answers a non-numeric {id} with 400 common.bad_id before anything else, as Kotlin's idParam does.
 func WithID(next func(http.ResponseWriter, *http.Request, int64) error) Route {
 	return func(w http.ResponseWriter, r *http.Request) error {
-		id, ok := pathID(r)
+		id, ok := PathID(r)
 		if !ok {
 			return CodeBadID.Err()
 		}

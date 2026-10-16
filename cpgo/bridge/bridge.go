@@ -37,6 +37,14 @@ type Resource struct {
 	DatasourceTags []string `json:"datasourceTags,omitempty"`
 }
 
+// Scope is what a decision reads beyond the requester IP: its channel, and the datasource whose context
+// tags it derives first.
+type Scope struct {
+	Channel        string
+	Datasource     *string
+	DatasourceTags []string
+}
+
 var (
 	AuditLog = Resource{Type: "AuditLog"}
 	System   = Resource{Type: "System"}
@@ -62,6 +70,15 @@ func New(upstream *url.URL, token string) *Client {
 // PoliciesChanged tells Kotlin a policy change committed, so its next decision rebuilds the policy set.
 func (c *Client) PoliciesChanged(ctx context.Context) error {
 	return c.post(ctx, c.upstream.JoinPath("/internal/policies-changed").String(), struct{}{}, nil)
+}
+
+// RequestNotified asks Kotlin to send the notification for a request a Go write opened ("requested") or decided
+// ("decided").
+func (c *Client) RequestNotified(ctx context.Context, id int64, event string) error {
+	return c.post(ctx, c.upstream.JoinPath("/internal/request-notified").String(), struct {
+		ID    int64  `json:"id"`
+		Event string `json:"event"`
+	}{id, event}, nil)
 }
 
 func (c *Client) post(ctx context.Context, url string, in, out any) error {

@@ -2,6 +2,9 @@ package authz
 
 import (
 	"context"
+	"errors"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/ridi-oss/proxy-monster/cpgo/bridge"
 	"github.com/ridi-oss/proxy-monster/cpgo/store/db"
@@ -35,6 +38,33 @@ func (d *Decider) AuthorizeEach(ctx context.Context, principal, action string, r
 		out[i] = dec.Allow
 	}
 	return out, nil
+}
+
+// AuthorizeIn is Authorize within s: its channel, and the datasource whose context tags it derives first.
+func (d *Decider) AuthorizeIn(ctx context.Context, principal, action string, r bridge.Resource, ip string, s bridge.Scope) (bool, string, error) {
+	dec, err := d.AuthorizeWithContext(ctx, principal, action, r, Context{RequesterIP: ip, Channel: s.Channel}, s.Datasource, s.DatasourceTags)
+	return dec.Allow, dec.Reason, err
+}
+
+// MayRequest is mayRequestOn: task.request on a live datasource with its context tags derived first.
+func (d *Decider) MayRequest(ctx context.Context, principal string, id int64, ip string) (bool, error) {
+	row, err := db.New(d.pool).DatasourceNameTags(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	p, err := d.Parents(ctx, principal)
+	if err != nil {
+		return false, err
+	}
+	raw := Context{RequesterIP: ip}
+	if raw.Tags, err = d.ContextTags(ctx, principal, p, row.Name, row.Tags, raw); err != nil {
+		return false, err
+	}
+	dec, err := d.DatasourceAction(ctx, principal, p, "task.request", row.Name, row.Tags, raw)
+	return dec.Allow, err
 }
 
 // MayConnect is mayConnectById for each datasource: false for a missing datasource or a deactivated

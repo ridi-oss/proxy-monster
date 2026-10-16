@@ -12,10 +12,14 @@ import (
 )
 
 func Register(mux *http.ServeMux, pool *pgxpool.Pool, gate api.Gate) {
-	ac := access{pool: pool, authz: gate.Authz}
+	ac := access{pool: pool, authz: gate.Authz, kotlin: gate.Kotlin}
 	mux.HandleFunc("GET /api/access-requests", gate.RequireAPI(api.Serve(ac.requests)))
 	mux.HandleFunc("GET /api/access-grants", gate.RequireAPI(api.Serve(ac.grants)))
 	mux.HandleFunc("GET /api/approvals", gate.RequireAPI(api.Serve(ac.ownApprovals)))
+	mux.HandleFunc("POST /api/access-requests", gate.RequireAPI(api.Serve(ac.createRequest)))
+	mux.HandleFunc("POST /api/access-requests/{id}/approve", gate.RequireAPI(api.Serve(api.WithID(ac.approve))))
+	mux.HandleFunc("POST /api/access-requests/{id}/reject", gate.RequireAPI(api.Serve(api.WithID(ac.reject))))
+	mux.HandleFunc("POST /api/access-grants/{id}/revoke", gate.RequireAPIElse(api.Serve(ac.unauthenticatedRevoke), api.Serve(api.WithID(ac.revokeGrant))))
 }
 
 // accessRequest is one access_request row; fields in the Kotlin AccessRequest's order.
@@ -130,9 +134,15 @@ type accessGrant struct {
 	RevokedAt *string `json:"revokedAt,omitempty"`
 }
 
+func toGrant(g db.AccessGrantsRow) accessGrant {
+	return accessGrant{ID: g.ID, Principal: g.Principal, RoleID: g.RoleID, RoleName: g.RoleName, GrantedBy: g.GrantedBy,
+		GrantedAt: api.JavaInstant(g.GrantedAt), ExpiresAt: api.OptInstant(g.ExpiresAt), RevokedAt: api.OptInstant(g.RevokedAt)}
+}
+
 type access struct {
-	pool  *pgxpool.Pool
-	authz api.Authorizer
+	pool   *pgxpool.Pool
+	authz  api.Authorizer
+	kotlin api.Kotlin
 }
 
 // requests lists the requests (status-filtered when asked) the caller may task.read.
@@ -199,8 +209,7 @@ func (a access) grants(w http.ResponseWriter, r *http.Request) error {
 	}
 	all := make([]accessGrant, len(rows))
 	for i, g := range rows {
-		all[i] = accessGrant{ID: g.ID, Principal: g.Principal, RoleID: g.RoleID, RoleName: g.RoleName, GrantedBy: g.GrantedBy,
-			GrantedAt: api.JavaInstant(g.GrantedAt), ExpiresAt: api.OptInstant(g.ExpiresAt), RevokedAt: api.OptInstant(g.RevokedAt)}
+		all[i] = toGrant(g)
 	}
 	resources := make([]bridge.Resource, len(all))
 	for i, g := range all {

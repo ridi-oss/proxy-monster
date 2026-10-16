@@ -16,6 +16,7 @@ import com.ridi.oss.proxymonster.controlplane.management.AuditSource
 import com.ridi.oss.proxymonster.controlplane.management.DatasourceManagementService
 import com.ridi.oss.proxymonster.controlplane.management.IdentityManagementService
 import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
+import com.ridi.oss.proxymonster.controlplane.notify.NotificationEvent
 import com.ridi.oss.proxymonster.controlplane.notify.installNotifications
 import com.ridi.oss.proxymonster.controlplane.source.GitHubAdapter
 import com.ridi.oss.proxymonster.controlplane.source.GitHubSourceFlow
@@ -718,9 +719,6 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
             config, authz, userGroupStore, tokenStore, accessStore, principalSessionStore, identityManagement,
         )
 
-        // JIT access elevation: requests, approve/reject, grants, revoke (DESIGN.md).
-        accessRoutes(config, accessStore, authz, datasourceStore, roleResolver, managementAudit, accessService)
-
         // Query-approval workflow: from-denied + proactive compose, approver decide, then async
         // execute-under-R with encrypted short-retention result storage.
         approvalRoutes(
@@ -769,7 +767,17 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
         }
 
         // Live decision feed for the UI. Requires a session; each record is then filtered by audit.read.
-        internalPoliciesChangedRoute(config.internalToken, cedarPolicyStore::markCommittedMutation)
+        internalSignalRoutes(
+            config.internalToken, cedarPolicyStore::markCommittedMutation,
+            { id, event ->
+                val req = core.accessStore.getRequest(id)
+                when (event) {
+                    "requested" -> true.also { req?.let { notifications?.emitRequestedEvent(it) } }
+                    "decided" -> true.also { req?.let { notifications?.emitEvent(NotificationEvent.TASK_DECIDED, it) } }
+                    else -> false
+                }
+            },
+        )
 
         // Dev-only login shortcut; gated by PM_AUTH_DEBUG. OIDC (above) is the production path.
         post("/auth/debug") {

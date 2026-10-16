@@ -31,7 +31,10 @@ type fakeAuthz struct {
 	Allow     map[string]bool
 	Asked     []string
 	Resources []bridge.Resource
+	Scopes    []bridge.Scope
 	Changed   int
+	// Notified is each request-notified signal, as "id:event".
+	Notified []string
 	// AtSignal, when set, records what another connection sees each time PoliciesChanged runs.
 	AtSignal func() string
 	Seen     []string
@@ -43,6 +46,11 @@ func (f *fakeAuthz) Validate(_ context.Context, src string) ([]string, error) {
 		return []string{"unrecognized action `BAD`"}, nil
 	}
 	return nil, nil
+}
+
+func (f *fakeAuthz) RequestNotified(_ context.Context, id int64, event string) error {
+	f.Notified = append(f.Notified, fmt.Sprintf("%d:%s", id, event))
+	return nil
 }
 
 func (f *fakeAuthz) PoliciesChanged(context.Context) error {
@@ -61,6 +69,17 @@ func (f *fakeAuthz) Authorize(_ context.Context, principal, action string, resou
 		return true, "", nil
 	}
 	return false, "no permit for " + action, nil
+}
+
+func (f *fakeAuthz) AuthorizeIn(ctx context.Context, principal, action string, resource bridge.Resource, ip string, s bridge.Scope) (bool, string, error) {
+	f.Scopes = append(f.Scopes, s)
+	return f.Authorize(ctx, principal, action, resource, ip)
+}
+
+func (f *fakeAuthz) MayRequest(_ context.Context, principal string, id int64, ip string) (bool, error) {
+	key := fmt.Sprintf("%s task.request %d", principal, id)
+	f.Asked = append(f.Asked, key+" @"+ip)
+	return f.Allow[key], nil
 }
 
 func (f *fakeAuthz) MayConnect(_ context.Context, principal string, ids []int64, ip string) ([]bool, error) {
@@ -151,4 +170,13 @@ func (e *Env) Exec(t *testing.T, sql string, args ...any) {
 	if _, err := e.St.Pool.Exec(context.Background(), sql, args...); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func (e *Env) Count(t *testing.T, sql string, args ...any) int {
+	t.Helper()
+	var n int
+	if err := e.St.Pool.QueryRow(context.Background(), sql, args...).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
 }

@@ -4,7 +4,6 @@ import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
 import com.ridi.oss.proxymonster.controlplane.support.McpTokens
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.errorCode
-import com.ridi.oss.proxymonster.controlplane.support.installControlPlane
 import com.ridi.oss.proxymonster.controlplane.support.login
 import com.ridi.oss.proxymonster.controlplane.support.mcpCall
 import com.ridi.oss.proxymonster.controlplane.support.mcpTestConfig
@@ -55,7 +54,7 @@ class McpAccessToolsDbTest {
     private var roleId = 0L
     private val roleName = "mcp-jit-role"
     private val seq = AtomicInteger()
-    private val config = mcpTestConfig()
+    private val config = mcpTestConfig().copy(mcpResource = "http://127.0.0.1/mcp")
 
     @BeforeAll
     fun setUp() {
@@ -64,7 +63,7 @@ class McpAccessToolsDbTest {
         dataSource = SharedPostgres.hikari(database)
         Flyway.configure().dataSource(dataSource).load().migrate()
         core = ControlPlaneCore(dataSource)
-        tokens = McpTokens(dataSource)
+        tokens = McpTokens(dataSource, config.mcpResource)
         roleId = core.policyStore.createRole(RoleInput(roleName)).id
         datasource = core.datasourceStore.create(DatasourceInput("mcp-jit-ds", "postgres"))
         cpGo = CpGoStack(config, core, database) { routing { testLoginRoute(PrincipalSessionStore(dataSource, null), config) } }
@@ -77,7 +76,7 @@ class McpAccessToolsDbTest {
 
     @Test
     fun `a JIT request is approved, listed as a grant and revoked`() = testApplication {
-        val client = installControlPlane(config, core)
+        val client = cpGo.client()
         val requester = principal("requester")
         val admin = admin()
         val requesterToken = tokens.token(requester, setOf("mcp:query", "mcp:approvals:write"))
@@ -112,7 +111,7 @@ class McpAccessToolsDbTest {
 
     @Test
     fun `a requester cannot approve or reject their own request`() = testApplication {
-        val client = installControlPlane(config, core)
+        val client = cpGo.client()
         val requester = admin()
         val id = core.accessStore.createRequest(requester, AccessRequestInput(roleId = roleId)).id
         val token = tokens.token(requester, setOf("mcp:query", "mcp:approvals:write"))
@@ -132,7 +131,7 @@ class McpAccessToolsDbTest {
 
     @Test
     fun `an approver rejects with a reason the requester sees`() = testApplication {
-        val client = installControlPlane(config, core)
+        val client = cpGo.client()
         val requester = principal("rejected")
         val id = core.accessStore.createRequest(requester, AccessRequestInput(roleId = roleId, reason = "please")).id
         val token = tokens.token(admin(), setOf("mcp:approvals:write"))
@@ -144,7 +143,7 @@ class McpAccessToolsDbTest {
 
     @Test
     fun `a query approval id is refused toward the query approval tools`() = testApplication {
-        val client = installControlPlane(config, core)
+        val client = cpGo.client()
         val requester = principal("query")
         val id = core.accessStore.createQueryRequest(
             principal = requester, datasourceId = datasource.id, statements = listOf("SELECT 1"), denyReason = null,
@@ -164,7 +163,7 @@ class McpAccessToolsDbTest {
 
     @Test
     fun `a stranger sees neither the requests nor the grants of another, and principal does not widen it`() = testApplication {
-        val client = installControlPlane(config, core)
+        val client = cpGo.client()
         val owner = principal("owner")
         val stranger = principal("stranger")
         val request = core.accessStore.createRequest(owner, AccessRequestInput(roleId = roleId))
@@ -190,7 +189,7 @@ class McpAccessToolsDbTest {
 
     @Test
     fun `a denied task request answers request_not_permitted on both surfaces`() = testApplication {
-        val client = installControlPlane(config, core)
+        val client = cpGo.client()
         val requester = principal("forbidden")
         val policy = core.cedarPolicyStore.create(
             CedarPolicyInput(
@@ -222,7 +221,7 @@ class McpAccessToolsDbTest {
 
     @Test
     fun `a grant is revoked only by its owner or an admin`() = testApplication {
-        val client = installControlPlane(config, core)
+        val client = cpGo.client()
         val owner = principal("grant-owner")
         val other = principal("grant-other")
         val request = core.accessStore.createRequest(owner, AccessRequestInput(roleId = roleId))
@@ -245,7 +244,7 @@ class McpAccessToolsDbTest {
 
     @Test
     fun `request and approve answer the same body as REST`() = testApplication {
-        val client = installControlPlane(config, core)
+        val client = cpGo.client()
         val requester = principal("parity")
         val admin = admin()
         client.login(requester)

@@ -149,7 +149,6 @@ data class AccessGrant(
     val expiresAt: String? = null, val revokedAt: String? = null,
 )
 
-@Serializable data class ApproveInput(val durationSec: Long? = null)
 @Serializable data class RejectInput(val reason: String)
 
 /** `n:` the SQL's grant hash, or `r:` its raw bytes' hash when the normalizer refuses it. */
@@ -1395,66 +1394,5 @@ class AccessStore(internal val dataSource: DataSource) {
                                                           WHERE n.scope = f.scope AND n.repository = f.repository
                                                             AND n.pr = f.pr AND n.path = f.path AND n.id > f.id
                                                             AND n.status NOT IN ('DELETED', 'ALREADY_RAN', 'CANCELLED')))))"""
-    }
-}
-
-// ---- Routes ------------------------------------------------------------------------------
-
-fun Route.accessRoutes(
-    config: Config,
-    store: AccessStore,
-    authz: Authz,
-    datasourceStore: DatasourceStore,
-    roleResolver: RoleResolver,
-    recorder: ManagementAuditRecorder,
-    service: AccessService = AccessService(store, datasourceStore, AuditStore(store.dataSource), roleResolver, authz, recorder),
-) {
-    post("/api/access-requests") {
-        val principal = call.requireApi() ?: return@post
-        val input = call.receive<AccessRequestInput>()
-        try {
-            call.respond(
-                HttpStatusCode.Created,
-                service.createRequest(principal, call.httpRequesterIp(config), call.auditActor(config), input),
-            )
-        } catch (e: TaskServiceException) {
-            call.respondServiceError(e)
-        }
-    }
-    post("/api/access-requests/{id}/approve") {
-        val approver = call.requireApi() ?: return@post
-        val id = call.idParam() ?: return@post call.badId()
-        val body = runCatching { call.receive<ApproveInput>() }.getOrDefault(ApproveInput())
-        try {
-            call.respond(service.approve(approver, call.httpRequesterIp(config), call.auditActor(config), id, body.durationSec))
-        } catch (e: TaskServiceException) {
-            call.respondServiceError(e)
-        }
-    }
-    post("/api/access-requests/{id}/reject") {
-        val approver = call.requireApi() ?: return@post
-        val id = call.idParam() ?: return@post call.badId()
-        try {
-            service.requireApprover(approver, call.httpRequesterIp(config), id)
-            val body = call.receive<RejectInput>()
-            call.respond(service.rejectApproved(approver, call.auditActor(config), id, body.reason))
-        } catch (e: TaskServiceException) {
-            call.respondServiceError(e)
-        }
-    }
-    post("/api/access-grants/{id}/revoke") {
-        val id = call.idParam() ?: return@post call.badId()
-        // A missing grant is 404 before the session is asked for, as before any authorization.
-        val caller = call.userSession()?.principal ?: return@post if (store.getGrant(id) == null) {
-            call.notFound("access grant")
-        } else {
-            call.respond(HttpStatusCode.Unauthorized, ApiError("common.unauthenticated"))
-        }
-        try {
-            service.revokeGrant(caller, call.httpRequesterIp(config), call.auditActor(config), id)
-            call.respond(HttpStatusCode.NoContent)
-        } catch (e: TaskServiceException) {
-            call.respondServiceError(e)
-        }
     }
 }

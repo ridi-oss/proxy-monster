@@ -73,7 +73,7 @@ func (p policies) changed(ctx context.Context) error { return p.kotlin.PoliciesC
 func (p policies) createPolicy(w http.ResponseWriter, r *http.Request) error {
 	var in cedarPolicyInput
 	decodeErr := api.DecodeBody(r, &in)
-	return p.mutate(w, r, http.StatusCreated, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error) {
+	return api.Mutate(p.pool, w, r, http.StatusCreated, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error) {
 		if decodeErr != nil {
 			return nil, decodeErr
 		}
@@ -102,7 +102,7 @@ func (p policies) createPolicy(w http.ResponseWriter, r *http.Request) error {
 func (p policies) updatePolicy(w http.ResponseWriter, r *http.Request, id int64) error {
 	var in cedarPolicyInput
 	decodeErr := api.DecodeBody(r, &in)
-	return p.mutate(w, r, http.StatusOK, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error) {
+	return api.Mutate(p.pool, w, r, http.StatusOK, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error) {
 		if decodeErr != nil {
 			return nil, decodeErr
 		}
@@ -136,7 +136,7 @@ func (p policies) updatePolicy(w http.ResponseWriter, r *http.Request, id int64)
 
 func (p policies) deletePolicy(w http.ResponseWriter, r *http.Request, id int64) error {
 	deleted := false
-	return p.mutate(w, r, http.StatusNoContent, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error) {
+	return api.Mutate(p.pool, w, r, http.StatusNoContent, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error) {
 		current, err := getPolicy(ctx, tx, id, true)
 		if err != nil {
 			return nil, err
@@ -164,7 +164,7 @@ func (p policies) setPolicyEnabled(enabled bool) func(http.ResponseWriter, *http
 		verb = "enable"
 	}
 	return func(w http.ResponseWriter, r *http.Request, id int64) error {
-		return p.mutate(w, r, http.StatusOK, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error) {
+		return api.Mutate(p.pool, w, r, http.StatusOK, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error) {
 			current, err := getPolicy(ctx, tx, id, true)
 			if err != nil {
 				return nil, err

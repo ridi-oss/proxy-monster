@@ -27,6 +27,8 @@ analyzer/
   go.mod                     Go module github.com/ridi-oss/proxy-monster/analyzer;
                              pins github.com/ridi-oss/sqlglot-go v0.22.0
   engines/                   the analyzer (package engines)
+    mysql.go, postgres.go,   one file per engine holds all of its engine-specific code;
+    athena.go                every other file is shared by all engines
     facts.go                 EmitFacts: classify the statement + emit statement_exec + result-read grants
     probe.go, helpers.go     internal column lineage + reference bucketing + SELECT * expansion
     *_test.go                golden (hermetic) + parity (vs Python sqlglot) + admission-parity + unit tests

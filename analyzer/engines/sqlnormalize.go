@@ -5,7 +5,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/ridi-oss/sqlglot-go"
+	sqlglot "github.com/ridi-oss/sqlglot-go"
 	"github.com/ridi-oss/sqlglot-go/dialects"
 	"github.com/ridi-oss/sqlglot-go/tokens"
 )
@@ -140,11 +140,6 @@ func SqlNormalize(sql, dialect string) (normalized string, ok bool) {
 		return "", false
 	}
 	return normalized, true
-}
-
-func containsUnsafeMySQLComment(gap []rune) bool {
-	text := string(gap)
-	return strings.Contains(text, "/*!") || strings.Contains(text, "/*+")
 }
 
 func isWordToken(raw string, tokenType tokens.TokenType, d *dialects.Dialect) bool {

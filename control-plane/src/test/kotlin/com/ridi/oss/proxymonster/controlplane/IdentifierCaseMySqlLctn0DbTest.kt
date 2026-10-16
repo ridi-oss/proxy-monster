@@ -81,7 +81,6 @@ class IdentifierCaseMySqlLctn0DbTest {
     }
 
     @Test
-    @Disabled("pending-name-fix: the control plane treats SYS and MySQL as system schemas regardless of lower_case_table_names")
     fun `SYS and MySQL are ordinary databases under lower_case_table_names 0`() = testApplication {
         for (db in listOf("SYS", "MySQL")) {
             SharedMySql.executeAdmin("CREATE DATABASE IF NOT EXISTS `$db`")

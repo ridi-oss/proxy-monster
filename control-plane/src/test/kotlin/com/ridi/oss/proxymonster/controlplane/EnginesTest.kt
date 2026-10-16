@@ -157,6 +157,12 @@ class EnginesTest {
         assertEquals("σασ", Engine.ATHENA.catalogName("ΣΑΣ"))
     }
 
+    @Test fun `quoteIdentifier uses the engine quote and doubles an embedded one`() {
+        assertEquals("`a``b`", Engine.MYSQL.definition.quoteIdentifier("a`b"))
+        assertEquals("\"a\"\"b\"", Engine.POSTGRES.definition.quoteIdentifier("a\"b"))
+        assertEquals("\"Users\"", Engine.ATHENA.definition.quoteIdentifier("Users"))
+    }
+
     @Test fun `isTempSchema is the Postgres session temp schema, exactly`() {
         assertTrue(Engine.POSTGRES.isTempSchema("pg_temp"))
         assertTrue(Engine.POSTGRES.isTempSchema("pg_temp_3"))

@@ -28,7 +28,6 @@ import java.time.Clock
 import java.time.Instant
 import java.time.ZoneOffset
 import javax.sql.DataSource
-import org.junit.jupiter.api.Disabled
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -81,7 +80,8 @@ class AthenaRequestAuthorizerTest {
         val gate = authz(connect)
         fun submission(body: String) = admit(descriptor("StartQueryExecution", body = body), gate)
         assertTrue(submission("""{"QueryString":"select 1"}""") is RequestAdmission.Allowed)
-        assertTrue(submission("""{"QueryString":"select 1","WorkGroup":"PRIMARY"}""") is RequestAdmission.Allowed)
+        assertEquals(RequestAdmission.Denied("native.scope_violation"), submission("""{"QueryString":"select 1","WorkGroup":"PRIMARY"}"""), "workgroup names are exact")
+        assertTrue(submission("""{"QueryString":"select 1","QueryExecutionContext":{"Catalog":"AwsDataCatalog","Database":"Analytics"}}""") is RequestAdmission.Allowed)
         assertEquals(RequestAdmission.Denied("native.scope_violation"), submission("""{"QueryString":"select 1","WorkGroup":"other"}"""))
         assertEquals(RequestAdmission.Denied("native.scope_violation"), submission("""{"QueryString":"select 1","QueryExecutionContext":{"Catalog":"other"}}"""))
         assertEquals(RequestAdmission.Denied("native.scope_violation"), submission("""{"QueryString":"select 1","QueryExecutionContext":{"Database":"other"}}"""))
@@ -103,6 +103,8 @@ class AthenaRequestAuthorizerTest {
         val admission = admit(descriptor("GetTableMetadata", body = body), scoped)
         assertEquals(AthenaNativeInstruction.ATHENA_NATIVE_INSTRUCTION_FORWARD_REQUEST, instructions(admission).action)
         assertEquals(RequestAdmission.Denied("native.not_authorized"), admit(descriptor("GetTableMetadata", body = body.replace("users", "salaries")), scoped))
+        val spelled = """{"CatalogName":"AwsDataCatalog","DatabaseName":"Analytics","TableName":"USERS"}"""
+        assertEquals(AthenaNativeInstruction.ATHENA_NATIVE_INSTRUCTION_FORWARD_REQUEST, instructions(admit(descriptor("GetTableMetadata", body = spelled), scoped)).action)
         assertEquals(RequestAdmission.Denied("native.not_authorized"), admit(descriptor("GetTableMetadata", body = body), authz(connect)))
         assertEquals(RequestAdmission.Denied("native.not_authorized"), admit(descriptor("GetTableMetadata", body = body), authz(invokeAll)))
         assertEquals(RequestAdmission.Denied("native.invalid_descriptor"), admit(descriptor("GetTableMetadata", body = """{"CatalogName":"awsdatacatalog"}"""), scoped))
@@ -110,7 +112,6 @@ class AthenaRequestAuthorizerTest {
     }
 
     @Test
-    @Disabled("pending-name-fix: the GetTableMetadata resource id keeps the request's spelling, so a lowercase forbid misses it")
     fun `a forbid on the canonical table holds against a mixed-case metadata request`() {
         val gate = authz(
             connect,

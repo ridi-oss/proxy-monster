@@ -611,7 +611,7 @@ class GrpcRegistrationHandlerDbTest {
         val ds = core.datasourceStore.getByName("reg-ambient")!!
 
         // A connection measures `app` itself, so the control plane holds enforcement content for it.
-        val opened = core.connectionCatalog.open(Binding(ds.name, "p", "USER", ds.effectiveCatalog), ds.namespaces(listOf("app")))
+        val opened = core.connectionCatalog.open(Binding(ds.name, "p", "USER", ds.effectiveCatalog, ds.engine), ds.namespaces(listOf("app")))
         val applied = core.connectionCatalog.applyPush(
             schemaFragmentPush {
                 connectionId = opened.connectionId
@@ -656,7 +656,7 @@ class GrpcRegistrationHandlerDbTest {
 
         // The push confirms content; it never installs it.
         val adopter = core.connectionCatalog.open(
-            Binding(ds.name, "later", "USER", ds.effectiveCatalog), ds.namespaces(listOf("app")), adoptHeldContent = true,
+            Binding(ds.name, "later", "USER", ds.effectiveCatalog, ds.engine), ds.namespaces(listOf("app")), adoptHeldContent = true,
         )
         assertTrue(adopter.onOpen.isEmpty(), "the ambient push must leave the adopter with nothing to fetch")
         assertEquals(

@@ -8,8 +8,9 @@ class SystemManifestException(message: String) : Exception(message)
  * when the object is not in an exposed system surface). Compilation builds hash maps + schema-scoped prefix
  * lists so a decision classifies each distinct key once, not by scanning every rule.
  *
- * Matching is case-insensitive ASCII fold: system schemas and their objects are conventionally lower-case,
- * and matching is scoped to the exposed system schemas, so a user object can't be caught. The caller passes
+ * Names match exactly, since callers pass the analyzer's canonical names: folding again would make a MySQL
+ * lower_case_table_names=0 database `SYS` a system schema, or a quoted Postgres function "PG_READ_FILE" dangerous.
+ * Manifest entries fold once at load, so a manifest may keep the server spelling. The caller passes
  * the already schema-resolved `(catalog, schema, name)` identity (mapping-schema-construction.md); the
  * classifier owns only the manifest lookup, never namespace resolution.
  *
@@ -56,17 +57,15 @@ class SystemClassifier(val manifest: SystemManifest) {
 
     fun classifyColumn(catalog: String, schema: String, table: String, column: String): SystemTag? {
         if (!isSystemSchema(catalog, schema)) return null
-        return columnOverrides[Triple(fold(schema), fold(table), fold(column))]
+        return columnOverrides[Triple(schema, table, column)]
             ?: classifySystemRelation(schema, table)
     }
 
     /** True when the shipped manifest requires the catalog column to be output only as NULL. */
     fun redactsColumn(catalog: String, schema: String, table: String, column: String): Boolean =
-        isSystemSchema(catalog, schema) && Triple(fold(schema), fold(table), fold(column)) in redactedColumns
+        isSystemSchema(catalog, schema) && Triple(schema, table, column) in redactedColumns
 
-    private fun classifySystemRelation(schema: String, name: String): SystemTag {
-        val s = fold(schema)
-        val n = fold(name)
+    private fun classifySystemRelation(s: String, n: String): SystemTag {
         var tag = SystemTag.CATALOG
         relationExact[s to n]?.let { tag = SystemTag.stronger(tag, it) }
         relationFamilies[s]?.forEach { (prefix, t) -> if (n.startsWith(prefix)) tag = SystemTag.stronger(tag, t) }
@@ -79,16 +78,14 @@ class SystemClassifier(val manifest: SystemManifest) {
      * an extension `dblink`) is classified in ANY schema — over-classifying a same-named user function is
      * safe (fail-closed).
      */
-    fun classifyFunction(catalog: String, schema: String, name: String): SystemTag? {
-        val n = fold(name)
-        val s = fold(schema)
+    fun classifyFunction(catalog: String, s: String, n: String): SystemTag? {
         var tag: SystemTag? = null
         // Cross-schema (`schema:"*"`) rules classify a dangerous extension function wherever it is
         // installed: exacts (e.g. `dblink`) AND families (e.g. pageinspect `heap_page_`, `bt_page_`).
         functionAnySchema[n]?.let { tag = combine(tag, it) }
         functionFamilies["*"]?.forEach { (prefix, t) -> if (n.startsWith(prefix)) tag = combine(tag, t) }
         // In an exposed system schema (or the logical builtin schema): the catalog default + in-schema rules.
-        if (isSystemSchema(catalog, schema) || s in logicalSchemas) {
+        if (isSystemSchema(catalog, s) || s in logicalSchemas) {
             tag = combine(tag, SystemTag.CATALOG)
             functionExact[s to n]?.let { tag = combine(tag, it) }
             functionFamilies[s]?.forEach { (prefix, t) -> if (n.startsWith(prefix)) tag = combine(tag, t) }
@@ -106,8 +103,7 @@ class SystemClassifier(val manifest: SystemManifest) {
      * (null), so the control-plane marshals a Cedar Function only for the dangerous ones (never a forbid on
      * every projection). Over-classifying a same-named user function is safe (fail-closed).
      */
-    fun classifyBareFunction(name: String): SystemTag? {
-        val n = fold(name)
+    fun classifyBareFunction(n: String): SystemTag? {
         var tag: SystemTag? = null
         functionAnySchema[n]?.let { tag = combine(tag, it) }
         functionFamilies["*"]?.forEach { (prefix, t) -> if (n.startsWith(prefix)) tag = combine(tag, t) }
@@ -123,12 +119,9 @@ class SystemClassifier(val manifest: SystemManifest) {
     /** The system tag of the resource a utility command exposes, or null if the command is unmapped. */
     fun classifyCommand(id: String): SystemTag? = commandTags[id]
 
-    private fun isSystemSchema(catalog: String, schema: String): Boolean {
-        if (fold(schema) !in systemSchemas) return false
-        // The manifest may pin a catalog ("def" for MySQL) or wildcard it ("*" for PostgreSQL, since system
-        // schemas repeat in every database). A pinned catalog must match; "*" matches any.
-        return manifest.systemSchemas.any { fold(it.schema) == fold(schema) && (it.catalog == "*" || fold(it.catalog) == fold(catalog)) }
-    }
+    // A pinned catalog ("def" for MySQL) must match; "*" (PostgreSQL, whose system schemas repeat per database) matches any.
+    private fun isSystemSchema(catalog: String, schema: String): Boolean =
+        manifest.systemSchemas.any { it.schema == schema && (it.catalog == "*" || it.catalog == catalog) }
 
     private fun requireTag(id: String, where: String): SystemTag =
         SystemTag.fromId(id) ?: throw SystemManifestException("${manifestId()}: $where has non-system tag '$id'")
@@ -193,7 +186,7 @@ class SystemClassifier(val manifest: SystemManifest) {
             if (fold(rule.schema) !in systemSchemas) {
                 throw SystemManifestException("${manifestId()}: redacted column ${rule.schema}.${rule.table}.${rule.column} is outside a system schema")
             }
-            if (classifySystemRelation(rule.schema, rule.table) != SystemTag.CATALOG) {
+            if (classifySystemRelation(fold(rule.schema), fold(rule.table)) != SystemTag.CATALOG) {
                 throw SystemManifestException("${manifestId()}: redacted column ${rule.schema}.${rule.table}.${rule.column} belongs to a non-catalog relation")
             }
         }

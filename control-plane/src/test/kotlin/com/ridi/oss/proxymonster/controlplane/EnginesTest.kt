@@ -157,6 +157,15 @@ class EnginesTest {
         assertEquals("σασ", Engine.ATHENA.catalogName("ΣΑΣ"))
     }
 
+    @Test fun `isTempSchema is the Postgres session temp schema, exactly`() {
+        assertTrue(Engine.POSTGRES.isTempSchema("pg_temp"))
+        assertTrue(Engine.POSTGRES.isTempSchema("pg_temp_3"))
+        assertFalse(Engine.POSTGRES.isTempSchema("PG_TEMP_3"))
+        assertFalse(Engine.POSTGRES.isTempSchema("pg_tempx"))
+        assertFalse(Engine.MYSQL.isTempSchema("pg_temp_3"))
+        assertFalse(Engine.ATHENA.isTempSchema("pg_temp"))
+    }
+
     @Test fun `Postgres non-system schema does not match`() {
         assertFalse(Engine.POSTGRES.isSystemSchema("public"))
         assertFalse(Engine.POSTGRES.isSystemSchema("app"))

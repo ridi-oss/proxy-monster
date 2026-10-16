@@ -932,7 +932,7 @@ fun decideQuery(
     val referencedSchemas = buildSet {
         facts.sourcesList.mapTo(this) { namespace(it.catalog, it.schema) }
         columnGrants.mapTo(this) { namespace(it.column.catalog, it.column.schema) }
-    }.filterNotTo(LinkedHashSet()) { it.schema.startsWith("pg_temp", ignoreCase = true) }
+    }.filterNotTo(LinkedHashSet()) { ds.engine.isTempSchema(it.schema) }
     // MASK/DENY always redacts; an ALLOW redacts iff the analyzer's leak set holds a column the viewer
     // can't read unmasked. `select id from users` (all readable) relays raw.
     val sanitizeDiagnostics = action != EnfAction.ALLOW ||

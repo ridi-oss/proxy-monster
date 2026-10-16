@@ -36,7 +36,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 
-/** The caller-only tools: permissions, editor query history, rate-reset requests and editor task delete. */
+/** The caller-only tools: permissions, editor query history and editor task delete. */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class McpSelfToolsDbTest {
     private lateinit var dataSource: DataSource
@@ -130,24 +130,6 @@ class McpSelfToolsDbTest {
         assertEquals(2, cleared.jsonObject.getValue("cleared").jsonPrimitive.int)
         assertEquals(0, history.recent(caller, 50).size)
         assertEquals(1, history.recent(other, 50).size)
-    }
-
-    @Test
-    fun `reset_my_rate opens a rate-reset request and refuses a blank reason`() = testApplication {
-        val client = installControlPlane(config, core)
-        val caller = principal("rate")
-        val token = tokens.token(caller, setOf("mcp:query"))
-
-        val blank = client.mcpCall(token, "reset_my_rate", buildJsonObject { put("reason", " ") })
-        assertEquals("common.field_required", blank.errorCode())
-
-        val created = client.mcpCall(token, "reset_my_rate", buildJsonObject {
-            put("reason", "month end"); put("denyReason", "rows per hour spent")
-        }).okResult().jsonObject
-        assertEquals("RATE_RESET", created.str("kind"))
-        assertEquals("PENDING", created.str("status"))
-        assertEquals(caller, created.str("principal"))
-        assertEquals("rows per hour spent", created.str("denyReason"))
     }
 
     @Test

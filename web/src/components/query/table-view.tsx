@@ -72,13 +72,11 @@ export function TableView({
   onViewChange,
   onFocusShown,
   onRequestAccess,
-  onRequestRateReset,
 }: {
   tab: TableTab
   onViewChange: (view: string) => void
   onFocusShown: () => void
   onRequestAccess: (denyReason?: string | null) => void
-  onRequestRateReset?: (denyReason?: string | null) => void
 }) {
   const t = useTranslations('Query')
   const unavailable = t('table.unavailable')
@@ -364,7 +362,6 @@ export function TableView({
             running={tab.res.loading}
             error={tab.res.error}
             onRequestAccess={() => onRequestAccess(tab.res.result?.denyReason)}
-            onRequestRateReset={onRequestRateReset && (() => onRequestRateReset(tab.res.result?.denyReason))}
           />
         )}
       </TabsContent>

@@ -5,7 +5,7 @@ import com.ridi.oss.proxymonster.controlplane.SlackChannelRoute
 
 /**
  * The Slack channel a request is posted to: the first route whose tag its datasource carries. A request on no
- * datasource (a rate reset, or a role on every datasource) goes to the first route.
+ * datasource (a role on every datasource) goes to the first route.
  */
 class SlackChannelRouter(
     private val routes: List<SlackChannelRoute>,

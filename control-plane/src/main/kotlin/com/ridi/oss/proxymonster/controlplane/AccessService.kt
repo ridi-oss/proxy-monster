@@ -14,7 +14,7 @@ import io.ktor.http.HttpStatusCode
 import java.sql.Connection
 
 /**
- * JIT role requests, rate resets and grants, shared by the REST access routes and the MCP access tools. Each
+ * JIT role requests and grants, shared by the REST access routes and the MCP access tools. Each
  * Cedar decision runs on the same context REST builds. Failures throw [TaskServiceException].
  */
 class AccessService(
@@ -48,12 +48,6 @@ class AccessService(
             throw TaskServiceException(HttpStatusCode.Forbidden, ApiError("approval.request_not_permitted"))
         }
         return accessStore.createRequest(principal, input, actor, recorder, source)
-            .also { notifications?.emitRequestedEvent(it) }
-    }
-
-    fun requestRateReset(principal: String, actor: AuditActor, input: RateResetRequestInput): AccessRequest {
-        if (input.reason.isBlank()) throw fieldRequired("reason")
-        return accessStore.createRateResetRequest(principal, input, actor, recorder)
             .also { notifications?.emitRequestedEvent(it) }
     }
 
@@ -135,17 +129,6 @@ class AccessService(
         }
         if (!accessStore.revoke(id, actor, recorder)) throw serviceNotFound("access grant")
     }
-
-    /** An admin's direct reset. The caller has already passed admin.identity. */
-    fun resetRate(principal: String, reason: String, actor: AuditActor, c: Connection): RateReset {
-        if (reason.isBlank()) throw fieldRequired("reason")
-        return accessStore.resetRate(principal, reason, actor, recorder, c)
-    }
-
-    fun resetRate(principal: String, reason: String, actor: AuditActor): RateReset =
-        accessStore.dataSource.inTx { resetRate(principal, reason, actor, it) }
-
-    fun lastRateReset(principal: String): RateReset? = auditStore.lastRateReset(principal)
 
     private fun fieldRequired(field: String) =
         TaskServiceException(HttpStatusCode.BadRequest, ApiError("common.field_required", mapOf("fields" to field)))

@@ -5,7 +5,6 @@ import com.ridi.oss.proxymonster.controlplane.AccessService
 import com.ridi.oss.proxymonster.controlplane.ApiError
 import com.ridi.oss.proxymonster.controlplane.AuditService
 import com.ridi.oss.proxymonster.controlplane.QueryHistoryStore
-import com.ridi.oss.proxymonster.controlplane.RateResetRequestInput
 import com.ridi.oss.proxymonster.controlplane.MePermissions
 import com.ridi.oss.proxymonster.controlplane.RoleWithSources
 import com.ridi.oss.proxymonster.controlplane.TokenService
@@ -179,9 +178,6 @@ internal class McpTaskTools(
             }
             "list_access_requests" -> structured(access.listRequests(p, args.string("status")))
             "list_access_grants" -> structured(access.listGrants(p, args.string("principal"), args.boolean("active") ?: false))
-            "reset_my_rate" -> structured(
-                access.requestRateReset(p, actor(ctx), RateResetRequestInput(args.string("reason").orEmpty(), args.string("denyReason"))),
-            )
             "list_query_history" -> structured(history.recent(p, historyLimit(args.int("limit"))))
             "clear_query_history" -> structured(ClearedResult(history.clear(p)))
             "delete_query_task" -> structured(DeleteResult(editorTasks.delete(p, args.requiredLong("taskId"))))

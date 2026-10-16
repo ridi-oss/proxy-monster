@@ -204,9 +204,7 @@ principal's relayed volume on that datasource. The tightest matching cap wins; a
 `forbid` lifts every limit. With every row disabled the control plane still caps
 at 5,000 rows / 50 MB. To change the numbers, disable a row and write your own.
 
-A spent rate denies with `rate 10000/1h spent`. Reset it from **Admin → Users →
-a user → Reset result rates**, `reset_principal_rate` over MCP, or by approving
-the user's rate-reset request in **Workflows**.
+A spent rate denies with `rate 10000/1h spent` until the window rolls off.
 
 ## Approvals
 
@@ -323,11 +321,11 @@ without the role denies.
 | Scope | Covers |
 | --- | --- |
 | `mcp:read` | Read tools, audit, own permissions, token listing |
-| `mcp:query` | Queries, own tasks, approval and access requests, rate-reset requests |
+| `mcp:query` | Queries, own tasks, approval and access requests |
 | `mcp:approvals:write` | Approve, reject, and run approvals; decide access requests; revoke grants |
 | `mcp:datasources:write` | Datasource writes and classifications |
 | `mcp:policies:write` | Policies, roles, mask functions |
-| `mcp:identity:write` | Users, groups, members, role assignments, rate resets |
+| `mcp:identity:write` | Users, groups, members, role assignments |
 | `mcp:tokens` | Mint and revoke your own wire tokens |
 
 A pmon login grants `mcp:read` and `mcp:query`; `pmon login --scopes` asks for

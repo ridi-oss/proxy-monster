@@ -1,8 +1,7 @@
 import { expect, test, type Page, type Route } from 'playwright/test'
 
-// The console's side of the result caps (docs/result-caps.md): a cap-truncated result says so; a spent rate
-// offers a RATE_RESET request instead of a role; the request is decided on the Workflows page; an admin
-// resets a principal's rates from the Users page.
+// The console's side of the result caps (docs/result-caps.md): a cap-truncated result says so; an old
+// RATE_RESET request still shows on Workflows as history.
 
 const SESSION_CONFIG = {
   heartbeatMs: 90_000,
@@ -63,8 +62,10 @@ const RATE_RESET_REQUEST = {
   id: 77,
   principal: 'sam@example.com',
   requestedDurationSec: 0,
-  status: 'PENDING',
+  status: 'APPROVED',
   createdAt: '2026-09-16T10:00:00Z',
+  decidedBy: 'approver@example.com',
+  decidedAt: '2026-09-16T10:05:00Z',
   kind: 'RATE_RESET',
   reason: 'monthly export re-run',
   denyReason: 'rate 10000/1h spent',
@@ -128,55 +129,7 @@ test('a view cut by the viewer cap shows the same notice', async ({ page }) => {
   await expect(page.getByRole('row')).toHaveCount(6)
 })
 
-test('a spent rate offers a rate-reset request and files it with the deny reason', async ({ page }) => {
-  await mockAppShell(page)
-  await mockEditorShell(page)
-  await page.route('**/api/editor/tasks/9', (route) =>
-    fulfillJson(route, 200, {
-      taskId: 9,
-      status: 'FAILED',
-      result: {
-        taskId: 9,
-        status: 'FAILED',
-        ordinal: 0,
-        errorCode: 'approval.execute_denied',
-        denyReason: 'rate 10000/1h spent',
-        decisionId: 4242,
-        columns: [],
-      },
-    }),
-  )
-  let filed: Record<string, unknown> | null = null
-  await page.route('**/api/access-requests/rate-reset', async (route) => {
-    filed = route.request().postDataJSON()
-    await fulfillJson(route, 201, RATE_RESET_REQUEST)
-  })
-
-  await runInEditor(page, 'select id from users')
-
-  const results = page.getByLabel('Results')
-  await expect(results.getByText('Query denied')).toBeVisible()
-  await expect(results.getByText('rate 10000/1h spent')).toBeVisible()
-  // A rate denial is not a role problem: the callout and the result header both drop "Request approval"
-  // and "Request access" and offer the reset instead.
-  await expect(page.getByRole('button', { name: 'Request approval' })).toHaveCount(0)
-  await expect(page.getByRole('button', { name: 'Request access' })).toHaveCount(0)
-  await expect(page.getByRole('button', { name: 'Request rate reset' })).toHaveCount(2)
-
-  await page.getByTestId('request-rate-reset-header').click()
-  const dialog = page.getByRole('dialog')
-  await expect(dialog).toBeVisible()
-  await expect(dialog.getByText('rate 10000/1h spent')).toBeVisible()
-  const submit = dialog.getByRole('button', { name: 'Request reset' })
-  await expect(submit).toBeDisabled()
-  await dialog.locator('#rate-reset-reason').fill('monthly export re-run')
-  await submit.click()
-
-  await expect(dialog.getByText('Requested — awaiting approval')).toBeVisible()
-  await expect.poll(() => filed).toEqual({ reason: 'monthly export re-run', denyReason: 'rate 10000/1h spent' })
-})
-
-test('an ordinary policy denial still offers approval and access, never a rate reset', async ({ page }) => {
+test('an ordinary policy denial offers approval and access', async ({ page }) => {
   await mockAppShell(page)
   await mockEditorShell(page)
   await page.route('**/api/editor/tasks/9', (route) =>
@@ -201,20 +154,14 @@ test('an ordinary policy denial still offers approval and access, never a rate r
   await expect(results.getByText('Query denied')).toBeVisible()
   await expect(results.getByRole('button', { name: 'Request access' })).toBeVisible()
   await expect(results.getByRole('button', { name: 'Request approval' })).toBeVisible()
-  await expect(results.getByTestId('request-rate-reset')).toHaveCount(0)
 })
 
-test('an approver sees the RATE_RESET request on Workflows and approves it', async ({ page }) => {
-  await mockAppShell(page, true, 'approver@example.com')
-  await page.route('**/api/access-requests?status=PENDING', (route) => fulfillJson(route, 200, [RATE_RESET_REQUEST]))
+test('an old RATE_RESET request still shows on Workflows as read-only history', async ({ page }) => {
+  await mockAppShell(page)
+  await page.route('**/api/access-requests?status=PENDING', (route) => fulfillJson(route, 200, []))
   await page.route('**/api/access-requests', (route) => fulfillJson(route, 200, [RATE_RESET_REQUEST]))
   await page.route('**/api/approvals/inbox', (route) => fulfillJson(route, 200, []))
   await page.route('**/api/requests/involved', (route) => fulfillJson(route, 200, []))
-  let approved = false
-  await page.route('**/api/access-requests/77/approve', async (route) => {
-    approved = true
-    await fulfillJson(route, 200, { ...RATE_RESET_REQUEST, status: 'APPROVED', decidedBy: 'approver@example.com', decidedAt: '2026-09-16T10:05:00Z' })
-  })
 
   await page.goto('/workflows')
   const row = page.getByTestId('workflow-request-row').filter({ hasText: 'Rate reset' })
@@ -225,93 +172,12 @@ test('an approver sees the RATE_RESET request on Workflows and approves it', asy
   const detail = page.locator('[data-workflow-detail-kind="RATE_RESET"]')
   await expect(detail).toBeVisible()
   await expect(detail.getByText('Rate reset request #77')).toBeVisible()
-  await expect(detail.getByText('rate 10000/1h spent')).toBeVisible()
   await expect(detail.getByText('monthly export re-run')).toBeVisible()
-  await detail.getByRole('button', { name: 'Approve', exact: true }).click()
+  await expect(detail.getByText('Rate resets were removed.', { exact: false })).toBeVisible()
+  await expect(detail.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(0)
+  await expect(detail.getByRole('button', { name: 'Reject', exact: true })).toHaveCount(0)
 
-  await expect.poll(() => approved).toBe(true)
-  await expect(page.getByText("Approved — reset sam@example.com's result rates")).toBeVisible()
-})
-
-test('the Workflows "New request" menu files a RATE_RESET request for a wire-side denial', async ({ page }) => {
-  await mockAppShell(page)
-  await page.route('**/api/access-requests?status=PENDING', (route) => fulfillJson(route, 200, []))
-  await page.route('**/api/access-requests', (route) => fulfillJson(route, 200, []))
-  await page.route('**/api/approvals/inbox', (route) => fulfillJson(route, 200, []))
-  await page.route('**/api/requests/involved', (route) => fulfillJson(route, 200, []))
-  await page.route('**/api/access-requests/77', (route) => fulfillJson(route, 200, RATE_RESET_REQUEST))
-  let filed: Record<string, unknown> | null = null
-  await page.route('**/api/access-requests/rate-reset', async (route) => {
-    filed = route.request().postDataJSON()
-    await fulfillJson(route, 201, RATE_RESET_REQUEST)
-  })
-
-  await page.goto('/workflows')
   await page.getByRole('button', { name: 'New request' }).click()
-  await page.getByRole('menuitem', { name: 'Rate reset request' }).click()
-
-  const composer = page.locator('[data-workflow-composer-kind="RATE_RESET"]')
-  await expect(composer).toBeVisible()
-  const submit = composer.getByRole('button', { name: 'Submit request' })
-  await expect(submit).toBeDisabled()
-  // The denied-with line is optional: a wire-side denial is retyped or left out.
-  await composer.locator('#rate-reset-request-reason').fill('monthly export re-run')
-  await submit.click()
-
-  await expect.poll(() => filed).toEqual({ reason: 'monthly export re-run', denyReason: null })
-  await expect(page).toHaveURL(/\/workflows\/77$/)
-})
-
-test('an admin resets a principal\'s result rates from the Users page', async ({ page }) => {
-  await mockAppShell(page, true, 'admin@example.com')
-  await page.route('**/api/users', (route) =>
-    fulfillJson(route, 200, [
-      { id: 1, principal: 'sam@example.com', source: 'LOCAL', active: true, createdAt: '2026-09-01T00:00:00Z', groups: [] },
-    ]),
-  )
-  await page.route('**/api/groups', (route) => fulfillJson(route, 200, []))
-  let reset: Record<string, unknown> | null = null
-  await page.route('**/api/access/principals/sam%40example.com/rate-reset', async (route) => {
-    if (route.request().method() === 'POST') {
-      reset = route.request().postDataJSON()
-      return fulfillJson(route, 200, { principal: 'sam@example.com', resetAt: '2026-09-16T10:10:00Z', resetBy: 'admin@example.com', reason: 'false positive' })
-    }
-    return route.fulfill({ status: 204, body: '' })
-  })
-
-  await page.goto('/admin/users')
-  const row = page.getByRole('row').filter({ hasText: 'sam@example.com' })
-  await row.getByRole('button', { name: 'More actions' }).click()
-  await page.getByRole('menuitem', { name: 'Reset result rates' }).click()
-
-  const dialog = page.getByRole('dialog')
-  await expect(dialog).toBeVisible()
-  await expect(dialog.getByTestId('rate-reset-last')).toHaveText('Never reset.')
-  const submit = dialog.getByRole('button', { name: 'Reset', exact: true })
-  await expect(submit).toBeDisabled()
-  await dialog.locator('#admin-rate-reset-reason').fill('false positive')
-  await submit.click()
-
-  await expect.poll(() => reset).toEqual({ reason: 'false positive' })
-  await expect(page.getByText('Reset result rates for sam@example.com')).toBeVisible()
-  await expect(dialog).toHaveCount(0)
-})
-
-test('the reset dialog shows the last reset when one exists', async ({ page }) => {
-  await mockAppShell(page, true, 'admin@example.com')
-  await page.route('**/api/users', (route) =>
-    fulfillJson(route, 200, [
-      { id: 1, principal: 'sam@example.com', source: 'LOCAL', active: true, createdAt: '2026-09-01T00:00:00Z', groups: [] },
-    ]),
-  )
-  await page.route('**/api/groups', (route) => fulfillJson(route, 200, []))
-  await page.route('**/api/access/principals/sam%40example.com/rate-reset', (route) =>
-    fulfillJson(route, 200, { principal: 'sam@example.com', resetAt: '2026-09-16T10:10:00Z', resetBy: 'ops@example.com', reason: 'earlier' }),
-  )
-
-  await page.goto('/admin/users')
-  await page.getByRole('row').filter({ hasText: 'sam@example.com' }).getByRole('button', { name: 'More actions' }).click()
-  await page.getByRole('menuitem', { name: 'Reset result rates' }).click()
-
-  await expect(page.getByTestId('rate-reset-last')).toContainText('by ops@example.com')
+  await expect(page.getByRole('menuitem', { name: 'Role access request' })).toBeVisible()
+  await expect(page.getByRole('menuitem', { name: /rate reset/i })).toHaveCount(0)
 })

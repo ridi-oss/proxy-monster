@@ -442,20 +442,6 @@ export interface AccessRequestInput {
   requestedDurationSec: number
 }
 
-/** Ask an approver to reset the caller's spent result rates (docs/result-caps.md). */
-export interface RateResetRequestInput {
-  reason: string
-  denyReason?: string | null
-}
-
-/** One rate reset marker: relayed volume before `resetAt` no longer counts toward any rate. */
-export interface RateReset {
-  principal: string
-  resetAt: string
-  resetBy: string
-  reason: string
-}
-
 export interface AccessGrant {
   id: number
   principal: string

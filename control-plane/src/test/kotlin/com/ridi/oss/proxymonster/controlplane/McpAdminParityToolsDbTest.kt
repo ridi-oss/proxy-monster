@@ -44,7 +44,7 @@ import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 
-/** The admin tools for group members and roles, principal rates, and datasource CRUD, each against its REST route. */
+/** The admin tools for group members and roles, and datasource CRUD, each against its REST route. */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class McpAdminParityToolsDbTest {
     private lateinit var dataSource: DataSource
@@ -88,33 +88,6 @@ class McpAdminParityToolsDbTest {
         val missing = client.mcpCall(token, "list_group_members", buildJsonObject { put("groupName", "no-such-group") })
         assertEquals("common.not_found", missing.errorCode())
         assertEquals("common.not_found", restCode(client.get("/api/groups/${Long.MAX_VALUE}/members")))
-    }
-
-    @Test
-    fun `a principal rate reset is audited on mcp and read back like REST`() = testApplication {
-        val client = installControlPlane(config, core)
-        val admin = admin()
-        val target = "mcp-rate-target-${seq.incrementAndGet()}@example.com"
-        val token = tokens.token(admin, setOf("mcp:read", "mcp:identity:write"))
-        client.login(admin)
-
-        val never = client.mcpCall(token, "get_principal_rate", buildJsonObject { put("principal", target) }).okResult()
-        assertEquals(JsonNull, never)
-        assertEquals(HttpStatusCode.NoContent, client.get("/api/access/principals/$target/rate-reset").status)
-
-        val blank = client.mcpCall(token, "reset_principal_rate", buildJsonObject { put("principal", target); put("reason", " ") })
-        assertEquals("common.field_required", blank.errorCode())
-
-        val reset = client.mcpCall(token, "reset_principal_rate", buildJsonObject {
-            put("principal", target); put("reason", "support ticket")
-        }).okResult().jsonObject
-        assertEquals(target, reset.str("principal"))
-        assertEquals(admin, reset.str("resetBy"))
-        assertEquals(1L, adminRows(admin, "admin.identity", "User::\"$target\""))
-
-        val read = client.mcpCall(token, "get_principal_rate", buildJsonObject { put("principal", target) }).okResult()
-        assertEquals(reset, read)
-        assertEquals(parseJson(client.get("/api/access/principals/$target/rate-reset").bodyAsText()), read)
     }
 
     @Test
@@ -228,8 +201,6 @@ class McpAdminParityToolsDbTest {
         val rest = listOf(
             client.get("/api/groups/${group.id}/members"),
             client.get("/api/groups/${group.id}/roles"),
-            client.get("/api/access/principals/someone/rate-reset"),
-            client.post("/api/access/principals/someone/rate-reset") { json("""{"reason":"r"}""") },
             client.post("/api/datasources") { json("""{"name":"mcp-outsider-new"}""") },
             client.put("/api/datasources/${ds.id}") { json("""{"name":"${ds.name}"}""") },
             client.delete("/api/datasources/${ds.id}"),
@@ -247,8 +218,6 @@ class McpAdminParityToolsDbTest {
     private fun argsFor(tool: String, group: String = "g", ds: String = "d"): JsonObject = buildJsonObject {
         when (tool) {
             "list_group_members", "list_group_roles" -> put("groupName", group)
-            "get_principal_rate" -> put("principal", "someone")
-            "reset_principal_rate" -> { put("principal", "someone"); put("reason", "r") }
             "create_datasource" -> put("name", "mcp-outsider-new")
             else -> put("datasource", ds)
         }
@@ -279,9 +248,8 @@ class McpAdminParityToolsDbTest {
     }
 
     private companion object {
-        val READS = listOf("list_group_members", "list_group_roles", "get_principal_rate")
+        val READS = listOf("list_group_members", "list_group_roles")
         val WRITES = mapOf(
-            "reset_principal_rate" to "mcp:identity:write",
             "create_datasource" to "mcp:datasources:write",
             "update_datasource" to "mcp:datasources:write",
             "delete_datasource" to "mcp:datasources:write",

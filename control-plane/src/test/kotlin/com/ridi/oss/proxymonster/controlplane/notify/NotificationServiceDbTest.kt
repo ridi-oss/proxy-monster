@@ -344,7 +344,7 @@ class NotificationServiceDbTest {
     }
 
     @Test
-    fun `role and rate-reset requests are announced and decided through AccessService, with role text`() = runBlocking {
+    fun `role requests are announced and decided through AccessService, with role text`() = runBlocking {
         val approver = "role-approver@example.com"
         val roles = fx.policyStore.listRoles().associateBy { it.name }
         fx.policyStore.createAssignment(com.ridi.oss.proxymonster.controlplane.RoleAssignmentInput(approver, roles.getValue("system:admin").id))
@@ -358,7 +358,10 @@ class NotificationServiceDbTest {
             "req@example.com", null, actor,
             com.ridi.oss.proxymonster.controlplane.AccessRequestInput(roleId = role.id, reason = "on call", requestedDurationSec = 1800),
         )
-        val reset = access.requestRateReset("req@example.com", actor, com.ridi.oss.proxymonster.controlplane.RateResetRequestInput("ran out"))
+        val reset = access.createRequest(
+            "req@example.com", null, actor,
+            com.ridi.oss.proxymonster.controlplane.AccessRequestInput(roleId = role.id, reason = "again", requestedDurationSec = 1800),
+        )
         assertEquals("PENDING", statusOf(req.id, NotificationEvent.TASK_SUBMITTED, "req@example.com"))
         assertEquals("PENDING", statusOf(reset.id, NotificationEvent.TASK_SUBMITTED, "req@example.com"))
         enqueue(req.id, NotificationEvent.TASK_REQUESTED, "sam@x")

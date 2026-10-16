@@ -249,11 +249,11 @@ the user's authority (e.g. a read-only agent):
 <!-- prettier-ignore -->
 | Scope | Ceiling over | Cedar action still enforced |
 | --- | --- | --- |
-| `mcp:read` | all in-scope read tools, including audit, token listing, own permissions, principal rate | matching `admin.*` per tool, or the REST route's gate (`audit.read`, `token.list`) |
+| `mcp:read` | all in-scope read tools, including audit, token listing, own permissions | matching `admin.*` per tool, or the REST route's gate (`audit.read`, `token.list`) |
 | `mcp:datasources:write` | datasource create/update/delete, refresh, test, classification writes | `admin.datasources` |
 | `mcp:policies:write` | Cedar policy + role + mask-fn writes | `admin.policies` |
-| `mcp:identity:write` | users/groups/members/role-assignments, principal rate reset | `admin.identity` |
-| `mcp:query` | queries, own tasks and query history, approval and access requests, grant listing, own rate-reset request | the REST route's Cedar gate per tool |
+| `mcp:identity:write` | users/groups/members/role-assignments | `admin.identity` |
+| `mcp:query` | queries, own tasks and query history, approval and access requests, grant listing | the REST route's Cedar gate per tool |
 | `mcp:approvals:write` | approve, reject, and execute query approvals; approve and reject access requests; revoke grants | `task.approve` on the Request, `grant.revoke` on the grant |
 | `mcp:tokens` | mint and revoke the caller's wire tokens | `token.mint` / `token.revoke` on the Token |
 
@@ -359,11 +359,6 @@ All under `admin.policies` (write tools also require `mcp:policies:write`):
   `admin.policies` (writes need `mcp:policies:write`).
 - `list_group_members` / `list_group_roles` (`groupName`) → `admin.identity`,
   scope `mcp:read` (REST: `GET /api/groups/{id}/members`, `.../roles`).
-- `get_principal_rate` (`principal`) → `admin.identity`, scope `mcp:read` — the
-  principal's last rate reset (REST:
-  `GET /api/access/principals/{p}/rate-reset`).
-- `reset_principal_rate` (`principal`, `reason`) → `admin.identity`, scope
-  `mcp:identity:write` (REST: `POST /api/access/principals/{p}/rate-reset`).
 
 ### Query and approval tools
 
@@ -457,9 +452,6 @@ reject record the MCP caller as the actor with `channel=mcp`.
 - `revoke_access_grant` (`id`; `grant.revoke`, scope `mcp:approvals:write`,
   destructive) — decided against the grant's owner (REST:
   `POST /api/access-grants/{id}/revoke`).
-- `reset_my_rate` (`reason`, `denyReason?`; scope `mcp:query`) — asks an
-  approver to reset the caller's spent `@cap` rate (REST:
-  `POST /api/access-requests/rate-reset`).
 
 ### Audit
 

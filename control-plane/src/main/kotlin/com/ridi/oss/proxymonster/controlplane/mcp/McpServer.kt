@@ -5,7 +5,6 @@ import com.ridi.oss.proxymonster.auth.sha256Hex
 import com.ridi.oss.proxymonster.controlplane.AccessService
 import com.ridi.oss.proxymonster.controlplane.ApiError
 import com.ridi.oss.proxymonster.controlplane.DatasourceInput
-import com.ridi.oss.proxymonster.controlplane.RateReset
 import com.ridi.oss.proxymonster.controlplane.wireName
 import com.ridi.oss.proxymonster.controlplane.ApprovalService
 import com.ridi.oss.proxymonster.controlplane.EditorTaskService
@@ -566,7 +565,6 @@ private suspend fun executeRead(
     "list_mask_fns" -> structured(policies.listMaskFns())
     "list_group_members" -> structured(identities.listGroupMembers(args.requiredString("groupName")))
     "list_group_roles" -> structured(identities.listGroupRoles(args.requiredString("groupName")))
-    "get_principal_rate" -> structured<RateReset?>(access.lastRateReset(args.requiredString("principal")))
     else -> throw ManagementException(ApiError("mcp.invalid_request"))
 }
 
@@ -724,9 +722,6 @@ private fun executeWrite(
                 },
             )
             "delete_mask_fn" -> structured(policies.deleteMaskFn(args.requiredString("name"), actor, connection))
-            "reset_principal_rate" -> structured(
-                access.resetRate(args.requiredString("principal"), args.requiredString("reason"), actor, connection),
-            )
             "create_datasource" -> structured(
                 datasources.createDatasource(
                     DatasourceInput(
@@ -780,8 +775,6 @@ private fun schemaFor(tool: String): ToolSchema {
         when (tool) {
             "get_datasource_liveness", "browse_catalog", "list_column_tags" -> string("datasource")
             "list_group_members", "list_group_roles" -> string("groupName")
-            "get_principal_rate" -> string("principal")
-            "reset_principal_rate" -> { string("principal"); string("reason") }
             "create_datasource" -> { string("name"); datasourceFields() }
             "update_datasource" -> { string("datasource"); string("newName"); datasourceFields() }
             "delete_datasource", "refresh_datasource", "test_datasource" -> string("datasource")
@@ -852,7 +845,6 @@ private fun schemaFor(tool: String): ToolSchema {
             "request_access" -> { string("roleName"); string("reason"); string("datasource"); integer("durationSec", min = 1) }
             "list_access_requests" -> string("status")
             "list_access_grants" -> { string("principal"); boolean("active") }
-            "reset_my_rate" -> { string("reason"); string("denyReason") }
             "list_query_history" -> integer("limit", min = 1, max = 200)
             "delete_query_task" -> integer("taskId")
             "approve_access_request" -> { integer("id"); integer("durationSec", min = 1) }
@@ -869,8 +861,6 @@ private fun schemaFor(tool: String): ToolSchema {
     val required = when (tool) {
         "get_datasource_liveness", "browse_catalog", "list_column_tags" -> listOf("datasource")
         "list_group_members", "list_group_roles" -> listOf("groupName")
-        "get_principal_rate" -> listOf("principal")
-        "reset_principal_rate" -> listOf("principal", "reason")
         "create_datasource" -> listOf("name")
         "update_datasource", "delete_datasource", "refresh_datasource", "test_datasource" -> listOf("datasource")
         "get_table_detail" -> listOf("datasource", "catalog", "schema", "table")
@@ -900,7 +890,6 @@ private fun schemaFor(tool: String): ToolSchema {
         "reject_approval" -> listOf("id", "reason")
         "get_audit_event", "approve_access_request", "revoke_access_grant", "revoke_token" -> listOf("id")
         "request_access" -> listOf("roleName", "reason")
-        "reset_my_rate" -> listOf("reason")
         "delete_query_task" -> listOf("taskId")
         "reject_access_request" -> listOf("id", "reason")
         else -> emptyList()

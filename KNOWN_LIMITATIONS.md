@@ -187,8 +187,10 @@ captured on the connection's own held target-DB connection (design:
   unanalyzable and denies. Cover a second catalog with a second datasource.
 - 🟡 A forwarded `GetQueryResults` page reports no row or byte volume; the audit
   completion covers the accepted submission only.
-- 🟡 A database containing a Glue view fails the catalog scan, so the datasource
-  does not register until the view is moved out of the crawled databases.
+- 🟡 Glue views are not queryable through the proxy. The catalog scan leaves out
+  every relation that is not an `EXTERNAL_TABLE` or `MANAGED_TABLE` (a view, an
+  unknown table type) and logs one warning per scan with the count and a sample
+  of names. A statement naming a skipped relation is unanalyzable and denies.
 
 ## Wire-cert distribution (direct clients and `pmon`)
 

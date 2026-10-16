@@ -28,12 +28,10 @@ func userTypeCast(root exp.Expression, sess session, namespace NamespaceConfig) 
 			continue
 		}
 		if kind != nil && kind.Kind() == exp.KindDot {
-			qualifier := strings.ToLower(kind.Left().Name())
-			leaf := strings.ToLower(kind.Right().Name())
-			return qualifier + "." + leaf
+			return kind.Left().Name() + "." + kind.Right().Name()
 		}
 		if kind != nil {
-			return strings.ToLower(kind.Name())
+			return kind.Name()
 		}
 		return "user-defined type"
 	}
@@ -740,7 +738,7 @@ func conflictDoesUpdate(root exp.Expression) bool {
 func resolveStandaloneCalls(root exp.Expression, sess session, namespace NamespaceConfig) (builtins []string, gated bool) {
 	var callNodes []exp.Expression
 	for _, fn := range root.FindAll(exp.KindAnonymous) {
-		if fn.Is(exp.TraitFunc) && !skipCallResolution(fn) {
+		if fn.Is(exp.TraitFunc) && !skipCallResolution(fn, sess) {
 			callNodes = append(callNodes, fn)
 		}
 	}

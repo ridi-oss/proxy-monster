@@ -2,6 +2,9 @@ package engines
 
 import (
 	"fmt"
+	"net/url"
+	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -13,6 +16,7 @@ import (
 	"github.com/ridi-oss/sqlglot-go/optimizer"
 	"github.com/ridi-oss/sqlglot-go/schema"
 	"github.com/ridi-oss/sqlglot-go/tokens"
+	"google.golang.org/protobuf/proto"
 
 	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 )
@@ -33,6 +37,15 @@ var Athena = &Engine{
 	normalizeCatalogOnBuild:   true,
 	allowsCrossCatalog:        true,
 	preservesCatalogQualifier: true,
+
+	connectionProperties:           []string{"region", "workgroup", "catalog", "database"},
+	catalogIsConnectionIndependent: true,
+	defaultSchema:                  func(registeredDbName string) string { return registeredDbName },
+	serverVersion:                  athenaServerVersion,
+	manifestSeries:                 func(version string) string { return version },
+	functionCatalog:                athenaFunctionCatalog,
+	connectionInfoValid:            athenaConnectionInfoValid,
+	analyzerConfig:                 athenaAnalyzerConfig,
 }
 
 var athenaDialect = dialects.Athena()
@@ -292,4 +305,65 @@ func capAthenaRows(root exp.Expression, maxRows uint32) bool {
 	}
 	root.Set("limit", exp.Limit(exp.Args{"expression": exp.LiteralNumber(int64(maxRows))}))
 	return true
+}
+
+var athenaNatives = map[string][]string{"3": nativeFunctions("athena", "3")}
+
+// Athena has no routine catalog: the builtins are the pinned list for the engine version, 3 when unknown.
+func athenaFunctionCatalog(_ *Engine, _ []*pb.SchemaFunctions, version string) *pb.FunctionCatalog {
+	natives, ok := athenaNatives[strings.TrimSpace(version)]
+	if !ok {
+		natives = athenaNatives["3"]
+	}
+	return &pb.FunctionCatalog{BuiltinFunctions: slices.Clone(natives)}
+}
+
+var athenaVersionPattern = regexp.MustCompile(`(?i)^(?:athena engine version )?([0-9]+)$`)
+
+// "Athena engine version 3" -> 3.
+func athenaServerVersion(raw string) *pb.ServerVersion {
+	if m := athenaVersionPattern.FindStringSubmatch(strings.TrimSpace(raw)); m != nil {
+		return &pb.ServerVersion{Version: &m[1]}
+	}
+	return &pb.ServerVersion{}
+}
+
+var athenaRegion = regexp.MustCompile(`^[a-z]{2}(?:-[a-z0-9]+)+-[0-9]+$`)
+
+// Athena publishes region, workgroup, catalog and database together, plus an optional https endpoint.
+func athenaConnectionInfoValid(e *Engine, info *pb.EngineConnectionInfo) bool {
+	if !e.allowsProperties(info) {
+		return false
+	}
+	properties := info.GetProperties()
+	if info.GetEndpoint() == "" && len(properties) == 0 {
+		return true
+	}
+	if len(properties) != len(e.connectionProperties) {
+		return false
+	}
+	for _, value := range properties {
+		if strings.TrimSpace(value) == "" {
+			return false
+		}
+	}
+	if !athenaRegion.MatchString(properties["region"]) {
+		return false
+	}
+	if info.GetEndpoint() == "" {
+		return true
+	}
+	u, err := url.Parse(info.GetEndpoint())
+	return err == nil && !strings.Contains(info.GetEndpoint(), "#") && u.Scheme == "https" && u.Hostname() != "" && u.User == nil && u.RawQuery == "" &&
+		!u.ForceQuery && u.Fragment == "" && (u.Path == "" || u.Path == "/") && validPort(u.Port(), true)
+}
+
+// A decision that carries no request (an editor run, a stored-result view) runs in the datasource's
+// registered workgroup with no parameters.
+func athenaAnalyzerConfig(e *Engine, ds *pb.EngineDatasource, session *pb.SessionObservation) *pb.EngineConfig {
+	if session.GetAthena() == nil {
+		session = proto.Clone(session).(*pb.SessionObservation)
+		session.Engine = &pb.SessionObservation_Athena{Athena: &pb.AthenaSqlContext{Workgroup: ds.GetProperties()["workgroup"]}}
+	}
+	return sessionAnalyzerConfig(e, ds, session)
 }

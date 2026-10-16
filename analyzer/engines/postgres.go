@@ -118,7 +118,7 @@ func (e *postgresSession) ShowUtilityCommand(root exp.Expression) string {
 }
 
 func (e *postgresSession) SystemSchemaFirst(searchPath []string) bool {
-	return postgresCatalogFirstAfterTempSchemas(searchPath)
+	return e.catalogFirstAfterTempSchemas(searchPath)
 }
 
 func (e *postgresSession) IsSafeTypeReference(dt, kind exp.Expression, namespace NamespaceConfig) bool {
@@ -150,7 +150,7 @@ func (e *postgresSession) isSafeXIDType(dt, kind exp.Expression, namespace Names
 	if qualifier != nil {
 		return e.datasource.isBuiltinQualifier(qualifier)
 	}
-	return e.systemXIDVisible && postgresCatalogFirstAfterTempSchemas(namespace.SearchPath)
+	return e.systemXIDVisible && e.catalogFirstAfterTempSchemas(namespace.SearchPath)
 }
 
 // PostgreSQL names an unaliased projection per parse_target.c FigureColname; a call is labeled by
@@ -285,7 +285,7 @@ func figureLabel(node exp.Expression, query exp.Expression, sess session, depth 
 		// A DEDICATED function kind canonicalizes its AST name (`char_length` parses to Length,
 		// `position(...)` to StrPosition) but PostgreSQL labels the call by its WRITTEN name, so
 		// read that off the node's source span; no span (a sub-expression) → unknowable.
-		return writtenFunctionLabel(node)
+		return writtenFunctionLabel(node, sess)
 	}
 	// Operators, literals, boolean tests, … — PostgreSQL gives them no name (→ ?column?).
 	return "", 0, true
@@ -294,7 +294,7 @@ func figureLabel(node exp.Expression, query exp.Expression, sess session, depth 
 // writtenFunctionLabel is the function name as the client wrote it: the leading identifier of the
 // call's parse-time SpanText, folded per PostgreSQL's case rule (unquoted → lowercase, quoted →
 // verbatim).
-func writtenFunctionLabel(node exp.Expression) (string, int, bool) {
+func writtenFunctionLabel(node exp.Expression, sess session) (string, int, bool) {
 	text, ok := node.SpanText()
 	if !ok {
 		return "", 0, false
@@ -310,7 +310,7 @@ func writtenFunctionLabel(node exp.Expression) (string, int, bool) {
 	if !functionLabelPattern.MatchString(written) {
 		return "", 0, false
 	}
-	return strings.ToLower(written), 2, true
+	return sess.Dialect().FoldIdentifierName(written, false), 2, true
 }
 
 // figureProjectionLabel is the label of one projection inside a derived source: its resname (the
@@ -455,12 +455,14 @@ func postgresCastLabel(cast exp.Expression) (string, bool) {
 
 var functionLabelPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
-func postgresCatalogFirstAfterTempSchemas(searchPath []string) bool {
-	for _, schema := range searchPath {
-		if schema == "pg_temp" || strings.HasPrefix(schema, "pg_temp_") {
+// searchPath is the session's schemas as the proxy read them from the target.
+func (e *postgresSession) catalogFirstAfterTempSchemas(searchPath []string) bool {
+	for _, s := range searchPath {
+		schema := e.datasource.IntrospectedSchema(&pb.Column{Schema: s})
+		if e.datasource.IsTempSchema(schema) {
 			continue
 		}
-		return schema == "pg_catalog"
+		return schema == e.datasource.BuiltinSchema
 	}
 	return false
 }

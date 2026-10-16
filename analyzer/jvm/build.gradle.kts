@@ -91,7 +91,7 @@ val nativeTasks = nativeTargets.associateWith { t ->
         doFirst { outFile.parentFile.mkdirs() }
         inputs.files(
             fileTree(goModuleDir) {
-                include("**/*.go", "go.mod", "go.sum")
+                include("**/*.go", "go.mod", "go.sum", "engines/native-functions/**")
                 exclude("jvm/**", ".reference/**", ".git/**")
             },
         ).withPathSensitivity(PathSensitivity.RELATIVE)

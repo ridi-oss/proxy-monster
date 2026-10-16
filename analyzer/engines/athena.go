@@ -2,6 +2,8 @@ package engines
 
 import (
 	"fmt"
+	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -45,6 +47,16 @@ var Athena = &Engine{
 		normalizeCatalogOnBuild:   true,
 		allowsCrossCatalog:        true,
 		preservesCatalogQualifier: true,
+
+		connectionProperties:           []string{"region", "workgroup", "catalog", "database"},
+		catalogIsConnectionIndependent: true,
+		defaultSchema:                  func(registeredDbName string) string { return registeredDbName },
+		serverVersion:                  athenaServerVersion,
+		manifestSeries:                 func(version string) string { return version },
+		functionCatalog:                athenaFunctionCatalog,
+		connectionPropertyPatterns:     map[string]*regexp.Regexp{"region": athenaRegion},
+		endpointIsURL:                  true,
+		defaultSession:                 athenaDefaultSession,
 	},
 	hooks: athenaHooks{},
 }
@@ -282,4 +294,32 @@ func capAthenaRows(root exp.Expression, maxRows uint32) bool {
 	}
 	root.Set("limit", exp.Limit(exp.Args{"expression": exp.LiteralNumber(int64(maxRows))}))
 	return true
+}
+
+var athenaNatives = map[string][]string{"3": nativeFunctions("athena", "3")}
+
+// Athena has no routine catalog: the builtins are the pinned list for the engine version, 3 when unknown.
+func athenaFunctionCatalog(_ *Engine, _ []*pb.SchemaFunctions, version string) *pb.FunctionCatalog {
+	natives, ok := athenaNatives[strings.TrimSpace(version)]
+	if !ok {
+		natives = athenaNatives["3"]
+	}
+	return &pb.FunctionCatalog{BuiltinFunctions: slices.Clone(natives)}
+}
+
+var athenaVersionPattern = regexp.MustCompile(`(?i)^(?:athena engine version )?([0-9]+)$`)
+
+// "Athena engine version 3" -> 3.
+func athenaServerVersion(raw string) *pb.ServerVersion {
+	if m := athenaVersionPattern.FindStringSubmatch(strings.TrimSpace(raw)); m != nil {
+		return &pb.ServerVersion{Version: &m[1]}
+	}
+	return &pb.ServerVersion{}
+}
+
+var athenaRegion = regexp.MustCompile(`^[a-z]{2}(?:-[a-z0-9]+)+-[0-9]+$`)
+
+// athenaDefaultSession is the datasource's registered workgroup, with no parameters.
+func athenaDefaultSession(targetSettings *pb.TargetSettings) *pb.SessionObservation {
+	return &pb.SessionObservation{Engine: &pb.SessionObservation_Athena{Athena: &pb.AthenaSqlContext{Workgroup: targetSettings.GetProperties()["workgroup"]}}}
 }

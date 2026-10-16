@@ -49,6 +49,14 @@ var Postgres = &Engine{
 		// RESET restores defaults; an unmodeled SHOW reads a GUC, not table data.
 		passthroughCommands: []string{"RESET", "SHOW"},
 		syntaxCalls:         []string{"array"},
+
+		checksTargetErrors:  true,
+		implicitColumns:     postgresSystemColumns,
+		defaultSchemaPrefix: "SET search_path TO ",
+		defaultSchema:       func(string) string { return "public" },
+		serverVersion:       postgresServerVersion,
+		manifestSeries:      func(version string) string { return strings.SplitN(version, ".", 2)[0] },
+		functionCatalog:     postgresFunctionCatalog,
 	},
 	// PostgreSQL has no relay rewrite: client_encoding is handled on the wire, not by an analyzer rewrite,
 	// so there is nothing to rewrite here.
@@ -419,6 +427,66 @@ func postgresCastLabel(cast exp.Expression) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+var postgresSystemColumns = []*pb.ImplicitColumn{
+	{Name: "ctid", DataType: "tid"},
+	{Name: "xmin", DataType: "xid"},
+	{Name: "xmax", DataType: "xid"},
+	{Name: "cmin", DataType: "cid"},
+	{Name: "cmax", DataType: "cid"},
+	{Name: "tableoid", DataType: "oid"},
+}
+
+// PostgreSQL functions the grammar reserves as keywords: no pg_proc row, and no user function can shadow them.
+var postgresGrammarFunctions = []string{
+	"coalesce", "greatest", "least", "nullif", "grouping",
+	"xmlconcat", "xmlelement", "xmlforest", "xmlparse", "xmlpi", "xmlroot", "xmltable",
+}
+
+// {"pg_catalog": [abs], "public": [add_tax], "pg_temp_3": [x]} -> builtins = [abs, coalesce, ...], udf public =
+// [add_tax], pg_temp_3 dropped.
+func postgresFunctionCatalog(e *Engine, routines []*pb.SchemaFunctions, _ string) *pb.FunctionCatalog {
+	var pgCatalog []string
+	for _, r := range routines {
+		if r.GetSchema() == "pg_catalog" {
+			pgCatalog = append(pgCatalog, r.GetNames()...)
+		}
+	}
+	pgCatalog = distinct(append(pgCatalog, postgresGrammarFunctions...))
+	catalog := &pb.FunctionCatalog{
+		BuiltinFunctions:      pgCatalog,
+		SystemFunctionSchemas: []*pb.SchemaFunctions{{Schema: "pg_catalog", Names: pgCatalog}},
+	}
+	for _, r := range routines {
+		schema := SchemaName{name: r.GetSchema()}
+		switch {
+		case r.GetSchema() == "pg_catalog":
+		case slices.Contains(e.Traits.systemSchemas, schema):
+			catalog.SystemFunctionSchemas = append(catalog.SystemFunctionSchemas, &pb.SchemaFunctions{Schema: r.GetSchema(), Names: r.GetNames()})
+		case !e.IsSystemSchema(schema):
+			catalog.UdfSchemas = append(catalog.UdfSchemas, &pb.SchemaFunctions{Schema: r.GetSchema(), Names: r.GetNames()})
+		}
+	}
+	return catalog
+}
+
+var postgresVersionPattern = regexp.MustCompile(`PostgreSQL\s+(\d+(?:\.\d+)?)`)
+
+var numericVersion = regexp.MustCompile(`\d+(?:\.\d+)?`)
+
+// "PostgreSQL 16.4 on x86_64" -> 16.4.
+func postgresServerVersion(raw string) *pb.ServerVersion {
+	if strings.TrimSpace(raw) == "" {
+		return &pb.ServerVersion{}
+	}
+	version := ""
+	if m := postgresVersionPattern.FindStringSubmatch(raw); m != nil {
+		version = m[1]
+	} else {
+		version = numericVersion.FindString(raw)
+	}
+	return &pb.ServerVersion{Version: nonEmpty(version), Aurora: isAurora(raw)}
 }
 
 var functionLabelPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)

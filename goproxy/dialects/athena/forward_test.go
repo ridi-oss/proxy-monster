@@ -290,13 +290,18 @@ func TestForwardBoundsIncomingAndRewrittenBodies(t *testing.T) {
 func TestForwardPropagatesCancellation(t *testing.T) {
 	started := make(chan struct{})
 	canceled := make(chan struct{})
+	// The handler holds its response until the test ends: a 200 sent on cancellation could reach the
+	// client before its transport sees the cancel, and Forward would then return no error.
+	release := make(chan struct{})
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.Copy(io.Discard, r.Body)
 		close(started)
 		<-r.Context().Done()
 		close(canceled)
+		<-release
 	}))
 	defer upstream.Close()
+	defer close(release)
 	forwarder := forwarderForTest(t, upstream, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

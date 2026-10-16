@@ -410,16 +410,6 @@ func (p *prober) markBuiltinFunctionRow(root exp.Expression) {
 	}
 }
 
-func postgresCatalogFirstAfterTempSchemas(searchPath []string) bool {
-	for _, schema := range searchPath {
-		if schema == "pg_temp" || strings.HasPrefix(schema, "pg_temp_") {
-			continue
-		}
-		return schema == "pg_catalog"
-	}
-	return false
-}
-
 // A client-written alias list (`AS u(a, b)`) wins.
 func setImplicitRelationColumns(relation exp.Expression, names []string) {
 	if len(names) == 0 {

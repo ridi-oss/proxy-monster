@@ -3,13 +3,12 @@ package engines
 import (
 	"fmt"
 	"regexp"
+	"strings"
 
 	exp "github.com/ridi-oss/sqlglot-go/expressions"
 )
 
 var syntheticLabelPattern = regexp.MustCompile(`^_col_\d+$`)
-
-var functionLabelPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // hasSyntheticAlias reports whether root aliases anything as `_col_N`. On a qualified tree it
 // means Qualify synthesized labels; on the client's ORIGINAL tree it means client labels are
@@ -189,4 +188,33 @@ func restoreRelayOutputLabels(root exp.Expression, eng analyzer) bool {
 func projectionIsStar(projection exp.Expression) bool {
 	return projection != nil && (projection.Kind() == exp.KindStar ||
 		(projection.Kind() == exp.KindColumn && projection.This() != nil && projection.This().Kind() == exp.KindStar))
+}
+
+// normalizedFunctionName is a call's name folded through the dialect's quote-aware
+// NormalizeIdentifier — an unquoted spelling lowercases, a quoted one keeps its case.
+func normalizedFunctionName(function exp.Expression, eng analyzer) string {
+	if identifier, ok := function.Arg("this").(exp.Expression); ok && identifier.Kind() == exp.KindIdentifier {
+		identifier = identifier.Copy()
+		eng.Dialect().NormalizeIdentifier(identifier)
+		return identifier.Name()
+	}
+	return strings.ToLower(function.Name())
+}
+
+// leftmostSelect unwraps parens/subqueries and takes a set operation's first branch — the branch
+// PostgreSQL takes output names from.
+func leftmostSelect(node exp.Expression) exp.Expression {
+	for node != nil {
+		switch {
+		case node.Kind() == exp.KindSelect:
+			return node
+		case node.Kind() == exp.KindSubquery || node.Kind() == exp.KindParen:
+			node = node.This()
+		case node.Is(exp.TraitSetOperation):
+			node = node.Left()
+		default:
+			return nil
+		}
+	}
+	return nil
 }

@@ -4,6 +4,7 @@ import com.ridi.oss.proxymonster.controlplane.support.CpGoStack
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.controlplane.support.testLoginRoute
+import com.ridi.oss.proxymonster.controlplane.support.verifyAuditChain
 import io.ktor.client.HttpClient
 import io.ktor.client.request.delete
 import io.ktor.client.request.post
@@ -121,6 +122,7 @@ class RoleAndMaskFnRoutesDbTest {
         t.send("DELETE", "/api/roles/$id")
         assertEquals(EXPECTED_ROLES.trim().replace("{id}", "$id").replace("{admin}", "${roleId("system:admin")}"), t.text())
         assertEquals(EXPECTED_ROLES_AUDIT.trim().replace("{id}", "$id"), auditSince(before))
+        verifyAuditChain(dataSource)
     }
 
     @Test
@@ -138,6 +140,7 @@ class RoleAndMaskFnRoutesDbTest {
         t.send("DELETE", "/api/role-assignments/abc")
         assertEquals(EXPECTED_ASSIGNMENTS.trim().replace("{id}", "$id").replace("{role}", "${role.id}"), t.text())
         assertEquals(EXPECTED_ASSIGNMENTS_AUDIT.trim().replace("{id}", "$id").replace("{role}", "${role.id}"), auditSince(before))
+        verifyAuditChain(dataSource)
     }
 
     @Test
@@ -155,6 +158,7 @@ class RoleAndMaskFnRoutesDbTest {
         t.send("DELETE", "/api/mask-fns/$id")
         assertEquals(EXPECTED_MASK_FNS.trim().replace("{id}", "$id"), t.text())
         assertEquals(EXPECTED_MASK_FNS_AUDIT.trim().replace("{id}", "$id"), auditSince(before))
+        verifyAuditChain(dataSource)
     }
 
     @Test

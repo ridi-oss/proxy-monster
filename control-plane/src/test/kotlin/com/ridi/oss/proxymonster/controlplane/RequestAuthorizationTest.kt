@@ -10,7 +10,6 @@ import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyStore
 import com.ridi.oss.proxymonster.controlplane.authz.RoleSource
 import com.ridi.oss.proxymonster.grpc.Engine
 import com.ridi.oss.proxymonster.athena.pb.AthenaNativeDescriptor
-import com.ridi.oss.proxymonster.athena.pb.AthenaNativeInstructions
 import com.ridi.oss.proxymonster.grpc.RequestAuthorization
 import com.ridi.oss.proxymonster.grpc.objectRef
 import com.ridi.oss.proxymonster.grpc.readCatalog
@@ -18,6 +17,7 @@ import com.ridi.oss.proxymonster.grpc.readTableMetadata
 import java.lang.reflect.Proxy
 import javax.sql.DataSource
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -131,47 +131,14 @@ class RequestAuthorizationTest {
     }
 
     @Test
-    fun `common native dispatch scrubs the context without interpreting provider operations`() {
-        var calls = 0
-        val provider = RequestAuthorizer { request, _, principal, parents, context, _ ->
-            calls++
-            assertTrue(request.hasAthena())
-            assertTrue(principal == "alice" && parents == UserParents(setOf("reader")))
-            assertTrue(context.channel == "workflow-executor" && context.requesterIp == "10.2.3.4")
-            assertTrue(context.tags.isEmpty() && context.stmtKind == null && context.nativeOperation == null)
-            RequestAdmission.Allowed(NativeInstructions.Athena(AthenaNativeInstructions.getDefaultInstance()))
+    fun `a request naming another datasource or no operation is refused before the engine reads it`() {
+        val request = RequestAuthorization.newBuilder().setDatasourceName(datasource.name)
+            .setAthena(AthenaNativeDescriptor.newBuilder().setService("athena").setOperation("ListWorkGroups"))
+            .build()
+        val athena = datasource.copy(engine = Engine.ATHENA)
+        for (invalid in listOf(request.toBuilder().clearOperation().build(), request.toBuilder().setDatasourceName("other").build())) {
+            assertEquals(RequestAdmission.Denied("native.not_authorized"), allow.authorizeRequest(invalid, athena, "alice", UserParents(setOf("reader")), AuthzContext()))
         }
-        val request = RequestAuthorization.newBuilder().setDatasourceName(datasource.name)
-            .setAthena(AthenaNativeDescriptor.newBuilder().setService("athena").setOperation("ListWorkGroups"))
-            .build()
-        val context = AuthzContext(channel = "workflow-executor", requesterIp = "10.2.3.4", tags = setOf("forged"), stmtKind = "select", nativeOperation = "forged")
-        fun dispatch(value: RequestAuthorization) = provider.authorizeBounded(value, datasource, "alice", UserParents(setOf("reader")), context, allow) is RequestAdmission.Allowed
-        assertTrue(dispatch(request))
-        val invalid = listOf(
-            request.toBuilder().clearOperation().build(),
-            request.toBuilder().setDatasourceName("other").build(),
-        )
-        invalid.forEach { assertFalse(dispatch(it)) }
-        assertTrue(calls == 1)
-    }
-
-    @Test
-    fun `native admission requires instructions and metadata keeps them absent`() {
-        val request = RequestAuthorization.newBuilder().setDatasourceName(datasource.name)
-            .setAthena(AthenaNativeDescriptor.newBuilder().setService("athena").setOperation("ListWorkGroups"))
-            .build()
-        val instructions = NativeInstructions.Athena(AthenaNativeInstructions.getDefaultInstance())
-        fun dispatch(request: RequestAuthorization, instructions: NativeInstructions?): RequestAdmission =
-            RequestAuthorizer { _, _, _, _, _, _ -> RequestAdmission.Allowed(instructions) }
-                .authorizeBounded(request, datasource, "alice", UserParents(setOf("reader")), AuthzContext(), allow)
-        assertTrue(dispatch(request, null) is RequestAdmission.Denied)
-        val admission = dispatch(request, instructions)
-        assertTrue(admission is RequestAdmission.Allowed && admission.instructions != null)
-        assertTrue(dispatch(catalogRequest(datasource), instructions) is RequestAdmission.Denied)
-        assertTrue(dispatch(catalogRequest(datasource), null) is RequestAdmission.Allowed)
-        val denied = RequestAuthorizer { _, _, _, _, _, _ -> RequestAdmission.Denied("common.forbidden") }
-            .authorizeBounded(request, datasource, "alice", UserParents(setOf("reader")), AuthzContext(), allow)
-        assertTrue(denied == RequestAdmission.Denied("common.forbidden"))
     }
 
     private fun authorize(
@@ -180,7 +147,7 @@ class RequestAuthorizationTest {
         ds: Datasource = datasource,
         roles: Set<String> = setOf("reader"),
         context: AuthzContext = AuthzContext(),
-    ) = ds.engine.definition.requestAuthorizer.authorize(request, ds, "alice", UserParents(roles), context, authz) is RequestAdmission.Allowed
+    ) = authz.authorizeRequest(request, ds, "alice", UserParents(roles), context) is RequestAdmission.Allowed
 
     private fun catalogRequest(ds: Datasource): RequestAuthorization = RequestAuthorization.newBuilder()
         .setDatasourceName(ds.name)

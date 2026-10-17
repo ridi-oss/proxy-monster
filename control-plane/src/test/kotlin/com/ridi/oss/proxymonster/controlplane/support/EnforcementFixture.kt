@@ -34,6 +34,9 @@ import com.ridi.oss.proxymonster.analyzer.pb.CatalogSnapshot
 import com.ridi.oss.proxymonster.analyzer.pb.Column
 import com.ridi.oss.proxymonster.analyzer.pb.catalogSnapshot
 import com.ridi.oss.proxymonster.analyzer.pb.column
+import com.ridi.oss.proxymonster.analyzer.pb.engineDatasource
+import com.ridi.oss.proxymonster.grpc.Engine
+import com.ridi.oss.proxymonster.probe.introspectedColumns
 import java.sql.DriverManager
 import javax.sql.DataSource
 
@@ -47,6 +50,7 @@ internal fun DatasourceStore.pushTestCatalog(
     jdbcUrl: String,
     user: String,
     password: String,
+    canonical: Boolean = false,
 ) {
     data class Namespace(
         val defaultSchemas: List<String>,
@@ -115,11 +119,28 @@ internal fun DatasourceStore.pushTestCatalog(
         mysqlLowerCaseTableNames = namespace.mysqlLowerCaseTableNames,
         engineVersion = namespace.engineVersion,
         catalog = catalogSnapshot {
-            this.columns.addAll(columns)
+            this.columns.addAll(
+                if (canonical) canonicalColumns(datasource.engine, namespace.engineVersion, namespace.mysqlLowerCaseTableNames, columns) else columns,
+            )
             routines.addAll(introspectTestRoutines(jdbcUrl, user, password, isMysql))
         },
     )
 }
+
+/** Introspected rows in the analyzer's canonical spelling, as goproxy folds them before a push. */
+internal fun canonicalColumns(engine: Engine, engineVersion: String, lowerCaseTableNames: Int?, rows: List<Column>): List<Column> =
+    checkNotNull(
+        introspectedColumns(
+            engine,
+            engineDatasource {
+                this.engineVersion = checkNotNull(Regex("[0-9]+(\\.[0-9]+)*").find(engineVersion)).value
+                lowerCaseTableNames?.let { mysqlLowerCaseTableNames = it }
+            },
+            rows,
+        ),
+    ) { "the analyzer could not normalize the introspected catalog" }.zip(rows) { name, row ->
+        row.toBuilder().setCatalog(name.catalog).setSchema(name.schema).setTable(name.table).setColumn(name.column).build()
+    }
 
 /** The stored catalog snapshot bytes, parsed; the default instance when nothing is stored. */
 internal fun DatasourceStore.storedSnapshot(id: Long): CatalogSnapshot = dataSource.connection.use { c ->

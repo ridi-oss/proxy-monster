@@ -187,7 +187,7 @@ func TestSDKMetadataPreservesCatalogAndPartitions(t *testing.T) {
 	if catalog.GetCurrentCatalog() != "awsdatacatalog" || catalog.EngineVersion != "Athena engine version 3" || len(catalog.Catalog.Columns) != 2 || catalog.Catalog.Columns[1].Column != "day" || catalog.Catalog.Columns[1].Ordinal != 2 {
 		t.Fatalf("bad catalog: %v", catalog)
 	}
-	detail, err := target.ReadTableDetail(context.Background(), &enginepb.ObjectRef{Catalog: "AwsDataCatalog", Schema: "example", Table: "events"})
+	detail, err := target.ReadTableDetail(context.Background(), &enginepb.ObjectRef{Catalog: "awsdatacatalog", Schema: "example", Table: "events"})
 	if err != nil {
 		t.Fatal(err)
 	}

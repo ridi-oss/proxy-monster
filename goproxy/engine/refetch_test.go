@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 )
@@ -33,10 +34,11 @@ func (refetchDb) SchemaHashFromRows(rows [][]*string) ([]byte, bool, error) {
 func (refetchDb) SchemaColumnsSQL(schema string) string  { return "columns:" + schema }
 func (refetchDb) RoutinesSQL() string                    { return "routines" }
 func (refetchDb) SchemaRoutinesSQL(schema string) string { return "routines:" + schema }
+func (refetchDb) Engine() *engines.Engine                { return engines.Postgres }
 func (refetchDb) LowerCaseTableNamesProbeSQL() string    { return "" }
 func (refetchDb) FoldFunctionName(name string) string    { return name }
 
-func (refetchDb) NormalizeColumns(_ int, columns []*analyzerpb.Column) []*analyzerpb.Column {
+func (refetchDb) NormalizeColumns(_ engines.Datasource, columns []*analyzerpb.Column) []*analyzerpb.Column {
 	return columns
 }
 
@@ -112,19 +114,20 @@ func TestRefetcherUnconditionalFetch(t *testing.T) {
 	}
 }
 
-// normalizingRefetchDb proves Run wires the mode probe into NormalizeColumns (not that folding itself
-// is correct — that's covered by analyzer/engines's and goproxy/db's own tests). It records the mode it
-// was called with and uppercases every field, an arbitrary but easy-to-assert-on transform.
+// normalizingRefetchDb proves Run wires the lower_case_table_names probe into NormalizeColumns (not that
+// folding itself is correct — that's covered by analyzer/engines's and goproxy/db's own tests). It records the
+// target it was called with and uppercases every field, an arbitrary but easy-to-assert-on transform.
 type normalizingRefetchDb struct {
 	refetchDb
-	gotMode *int
+	gotTarget *engines.Datasource
 }
 
+func (d *normalizingRefetchDb) Engine() *engines.Engine             { return engines.MySQL }
 func (d *normalizingRefetchDb) LowerCaseTableNamesProbeSQL() string { return "lctn" }
 func (d *normalizingRefetchDb) FoldFunctionName(name string) string { return name }
 
-func (d *normalizingRefetchDb) NormalizeColumns(mode int, columns []*analyzerpb.Column) []*analyzerpb.Column {
-	d.gotMode = &mode
+func (d *normalizingRefetchDb) NormalizeColumns(ds engines.Datasource, columns []*analyzerpb.Column) []*analyzerpb.Column {
+	d.gotTarget = &ds
 	out := make([]*analyzerpb.Column, len(columns))
 	for i, c := range columns {
 		out[i] = &analyzerpb.Column{Schema: strings.ToUpper(c.GetSchema()), Table: strings.ToUpper(c.GetTable()), Column: strings.ToUpper(c.GetColumn())}
@@ -155,11 +158,34 @@ func TestRefetcherProbesModeAndNormalizesBeforePush(t *testing.T) {
 	if err := r.Run(&pb.Refetch{Schema: "app", Catalog: "def"}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if fakeDb.gotMode == nil || *fakeDb.gotMode != 2 {
-		t.Fatalf("NormalizeColumns called with mode %v, want 2 (from the lctn probe)", fakeDb.gotMode)
+	if fakeDb.gotTarget == nil {
+		t.Fatal("NormalizeColumns was not called")
+	}
+	if got := fakeDb.gotTarget.IntrospectedSchema(&analyzerpb.Column{Schema: "App"}).String(); got != "app" {
+		t.Fatalf("NormalizeColumns target keeps App as %q, want app (lower_case_table_names 2 from the probe)", got)
 	}
 	if len(pushed.Columns) != 1 || pushed.Columns[0].GetSchema() != "APP" || pushed.Columns[0].GetTable() != "T" || pushed.Columns[0].GetColumn() != "C" {
 		t.Fatalf("pushed columns = %+v, want the NormalizeColumns-transformed (uppercased) fragment", pushed.Columns)
+	}
+}
+
+func TestRefetcherFailsWhenLowerCaseTableNamesIsUnknown(t *testing.T) {
+	r := Refetcher{
+		Catalog: "def",
+		Db:      &normalizingRefetchDb{},
+		Probe: func(sql string, columns int) ([][]*string, error) {
+			if sql == "lctn" {
+				return nil, errors.New("lost connection")
+			}
+			return fragmentRows("app"), nil
+		},
+		Push: func(*pb.SchemaFragmentPush) (uint64, error) {
+			t.Fatal("a fragment folded under a guessed mode must not be pushed")
+			return 0, nil
+		},
+	}
+	if err := r.Run(&pb.Refetch{Schema: "app", Catalog: "def"}); err == nil || !strings.Contains(err.Error(), "lower_case_table_names") {
+		t.Fatalf("Run error = %v", err)
 	}
 }
 

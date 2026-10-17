@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
+	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 )
 
@@ -73,7 +75,11 @@ func (r *Refetcher) Run(cmd *pb.Refetch) error {
 	if err != nil {
 		return fmt.Errorf("introspecting schema %q: %w", cmd.GetSchema(), err)
 	}
-	columns, err := FragmentColumnsFromRows(r.Db, r.lowerCaseTableNames(), cmd.GetSchema(), rows)
+	ds, err := r.datasource()
+	if err != nil {
+		return err
+	}
+	columns, err := FragmentColumnsFromRows(r.Db, ds, cmd.GetSchema(), rows)
 	if err != nil {
 		return fmt.Errorf("mapping schema %q fragment: %w", cmd.GetSchema(), err)
 	}
@@ -113,24 +119,26 @@ func (r *Refetcher) Run(cmd *pb.Refetch) error {
 	return err
 }
 
-// lowerCaseTableNames probes the connection's live mode fresh (no cached state on Refetcher/Db —
-// mirrors mysqlSchemaFilter's own live @@lower_case_table_names check in goproxy/db). "" from
-// LowerCaseTableNamesProbeSQL (non-MySQL, or a probe failure) returns 0, which NormalizeColumns
-// ignores for any dialect that doesn't fold at all.
-func (r *Refetcher) lowerCaseTableNames() int {
+// datasource is the engine with the connection's live lower_case_table_names, probed fresh where the engine has
+// one. A failed probe fails the refetch: guessing 0 would leave a lower_case_table_names=2 `Goods` unfolded.
+func (r *Refetcher) datasource() (engines.Datasource, error) {
 	probeSQL := r.Db.LowerCaseTableNamesProbeSQL()
 	if probeSQL == "" {
-		return 0
+		return r.Db.Engine().Datasource(nil)
 	}
 	rows, err := r.Probe(probeSQL, 1)
-	if err != nil || len(rows) != 1 || len(rows[0]) != 1 || rows[0][0] == nil {
-		return 0
-	}
-	mode, err := strconv.Atoi(*rows[0][0])
 	if err != nil {
-		return 0
+		return engines.Datasource{}, fmt.Errorf("reading lower_case_table_names: %w", err)
 	}
-	return mode
+	if len(rows) != 1 || len(rows[0]) != 1 || rows[0][0] == nil {
+		return engines.Datasource{}, errors.New("reading lower_case_table_names: no value")
+	}
+	n, err := strconv.ParseInt(*rows[0][0], 10, 32)
+	if err != nil {
+		return engines.Datasource{}, fmt.Errorf("reading lower_case_table_names: invalid value %q", *rows[0][0])
+	}
+	lctn := int32(n)
+	return r.Db.Engine().Datasource(&enginepb.EngineDatasource{MysqlLowerCaseTableNames: &lctn})
 }
 
 func (r *Refetcher) measureHash(sql string, expectedColumns int, sqlErr error) ([]byte, bool) {

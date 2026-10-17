@@ -24,7 +24,7 @@ func inCatalog(catalog string, columns []*analyzerpb.Column) []*analyzerpb.Colum
 
 func TestMySQLNormalizationPreservesCatalog(t *testing.T) {
 	column := &analyzerpb.Column{Catalog: "def", Schema: "App", Table: "Orders", Column: "ID", Ordinal: 1}
-	normalized := (MySqlDb{}).NormalizeColumns(1, []*analyzerpb.Column{column})
+	normalized := (MySqlDb{}).NormalizeColumns(mysqlDatasource(t, 1), []*analyzerpb.Column{column})
 	if len(normalized) != 1 || normalized[0].GetCatalog() != "def" || normalized[0].GetSchema() != "app" {
 		t.Fatalf("normalized column = %v", normalized)
 	}

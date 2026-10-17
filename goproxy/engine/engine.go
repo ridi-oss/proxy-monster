@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"google.golang.org/protobuf/proto"
@@ -243,23 +244,23 @@ type Db interface {
 	// SchemaRoutinesSQL returns the schema's routine names, one column; they are part of the same
 	// fragment and the same content hash as the columns.
 	SchemaRoutinesSQL(schema string) string
+	// Engine is the target engine this adapter speaks to.
+	Engine() *engines.Engine
 	// LowerCaseTableNamesProbeSQL is the query whose single-row single-column result is MySQL's live
-	// lower_case_table_names mode ("" for a dialect with no such concept, e.g. Postgres — NormalizeColumns
-	// ignores the mode argument in that case).
+	// lower_case_table_names ("" for an engine without one, e.g. Postgres).
 	LowerCaseTableNamesProbeSQL() string
 	// NormalizeColumns folds columns to their canonical spelling per the dialect's own rules — the
-	// analyzer's normalization (analyzer/engines.NormalizeRelation), gated by lowerCaseTableNames for
+	// analyzer's normalization (engines.MySQL.IntrospectedColumns), gated by lowerCaseTableNames for
 	// MySQL, an identity function for Postgres. The refetch path calls this so the schema-fragment pool
 	// pushed to the control plane matches the same canonical spelling introspect's bulk catalog push
 	// uses — no caller decides whether/how to fold.
-	NormalizeColumns(lowerCaseTableNames int, columns []*enginepb.Column) []*enginepb.Column
-	// FoldFunctionName folds an introspected function name the way the analyzer resolves an
-	// unquoted call for this dialect.
+	NormalizeColumns(ds engines.Datasource, columns []*enginepb.Column) []*enginepb.Column
+	// FoldFunctionName is an introspected function name as the analyzer keys its function inventory.
 	FoldFunctionName(name string) string
 }
 
 // FragmentColumnsFromRows strictly maps seven-column information_schema rows into a canonical schema
-// fragment. Rows are folded via db.NormalizeColumns(lowerCaseTableNames, ...) — the SAME rule
+// fragment. Rows are folded via db.NormalizeColumns(ds, ...) — the SAME rule
 // introspect's bulk catalog push uses — and every row's canonical schema must then equal the requested
 // schema's own canonical form. This is a self-consistency check (every row came back for the schema
 // that was actually asked for), not an authorization boundary, but its strictness now follows the
@@ -268,7 +269,7 @@ type Db interface {
 // (case-insensitive lookup, case-preserving storage), so it's the only one where this tolerates a case
 // difference — Postgres and MySQL modes 0/1 require an exact match, same as before this normalized the
 // comparison at all. The column is the proto Column (enginepb.Column) used AS the data class.
-func FragmentColumnsFromRows(db Db, lowerCaseTableNames int, schema string, rows [][]*string) ([]*enginepb.Column, error) {
+func FragmentColumnsFromRows(db Db, ds engines.Datasource, schema string, rows [][]*string) ([]*enginepb.Column, error) {
 	raw := make([]*enginepb.Column, 0, len(rows))
 	for i, row := range rows {
 		if len(row) != 7 {
@@ -303,8 +304,8 @@ func FragmentColumnsFromRows(db Db, lowerCaseTableNames int, schema string, rows
 		})
 	}
 
-	canonicalSchema := db.NormalizeColumns(lowerCaseTableNames, []*enginepb.Column{{Schema: schema, Table: "_", Column: "_"}})[0].GetSchema()
-	columns := db.NormalizeColumns(lowerCaseTableNames, raw)
+	canonicalSchema := db.NormalizeColumns(ds, []*enginepb.Column{{Schema: schema, Table: "_", Column: "_"}})[0].GetSchema()
+	columns := db.NormalizeColumns(ds, raw)
 	for i, column := range columns {
 		if column.GetSchema() != canonicalSchema {
 			return nil, fmt.Errorf("fragment row %d schema %q does not match requested schema %q (canonical %q vs %q)",

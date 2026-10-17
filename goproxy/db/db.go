@@ -1,6 +1,6 @@
 // Package db is the DUMB per-database adapter set: the few facts engine.QueryEngine needs to gather
 // context (namespace probe SQL, temp-overlay support), plus each dialect's NormalizeColumns
-// specialization (analyzer/engines.NormalizeRelation — Go-to-Go, no SQL driver, no cgo). No enforcement
+// specialization (analyzer/engines.MySQL.IntrospectedColumns — Go-to-Go, no SQL driver, no cgo). No enforcement
 // logic, no state machine.
 package db
 
@@ -19,6 +19,8 @@ import (
 // MySqlDb is the engine.Db adapter for MySQL.
 type MySqlDb struct{}
 
+func (MySqlDb) Engine() *engines.Engine { return engines.MySQL }
+
 // NamespaceProbeSQL yields the connection's current database.
 func (MySqlDb) NamespaceProbeSQL() string { return "SELECT DATABASE()" }
 
@@ -30,27 +32,16 @@ func (MySqlDb) HashSetupColumns() int       { return 0 }
 // LowerCaseTableNamesProbeSQL yields the connection's live lower_case_table_names mode.
 func (MySqlDb) LowerCaseTableNamesProbeSQL() string { return "SELECT @@lower_case_table_names" }
 
-// NormalizeColumns folds each column to analyzer/engines's canonical MySQL spelling — the SAME
-// normalization introspect's bulk catalog push uses, so the schema-fragment pool this feeds
-// (goproxy/engine.Refetcher) and the persisted catalog never disagree on spelling.
-//
-// Folds through engines.NormalizeMySQLColumns, which memoizes the per-(schema, table) identifier parse.
-// A schema fragment repeats one schema and each table name once per column, so the per-row path
-// re-parsed the same two identifiers thousands of times: ~13s of CPU on a 4,390-column schema, enough
-// to push a catalog refetch past the control plane's run-open deadline and fail every query on the
-// datasource. The batched fold is O(distinct tables) parses instead of O(columns).
-func (MySqlDb) NormalizeColumns(lowerCaseTableNames int, columns []*analyzerpb.Column) []*analyzerpb.Column {
-	schemas := make([]string, len(columns))
-	tables := make([]string, len(columns))
-	names := make([]string, len(columns))
-	for i, c := range columns {
-		schemas[i], tables[i], names[i] = c.GetSchema(), c.GetTable(), c.GetColumn()
-	}
-	outSchemas, outTables, outColumns := engines.NormalizeMySQLColumns(lowerCaseTableNames, schemas, tables, names)
+// NormalizeColumns folds each column to the canonical MySQL spelling (engines.MySQL.IntrospectedColumns) — the
+// SAME normalization introspect's bulk catalog push uses, so the schema-fragment pool this feeds
+// (goproxy/engine.Refetcher) and the persisted catalog never disagree on spelling. IntrospectedColumns normalizes
+// each distinct (schema, table) once: a wide schema repeats them on every column.
+func (MySqlDb) NormalizeColumns(ds engines.Datasource, columns []*analyzerpb.Column) []*analyzerpb.Column {
+	canonical := ds.IntrospectedColumns(columns)
 	out := make([]*analyzerpb.Column, len(columns))
 	for i, c := range columns {
 		out[i] = proto.Clone(c).(*analyzerpb.Column)
-		out[i].Schema, out[i].Table, out[i].Column = outSchemas[i], outTables[i], outColumns[i]
+		out[i].Schema, out[i].Table, out[i].Column = canonical[i].Schema().String(), canonical[i].Table(), canonical[i].Column()
 	}
 	return out
 }
@@ -59,7 +50,7 @@ func (MySqlDb) NormalizeColumns(lowerCaseTableNames int, columns []*analyzerpb.C
 func (MySqlDb) FoldFunctionName(name string) string { return dialects.MySQLLower(name) }
 
 // mysqlSchemaFilter renders the WHERE-clause comparison for schema (a possibly-canonical spelling —
-// see analyzer/engines.NormalizeRelation) against the live TABLE_SCHEMA. Mode 0 never folds schema names
+// see engines.MySQL.IntrospectedColumns) against the live TABLE_SCHEMA. Mode 0 never folds schema names
 // (canonical == raw) and mode 1 folds AT THE STORAGE LAYER itself (information_schema already reports
 // lowercase), so both compare byte-exact. Mode 2 is the one case canonical (folded) can diverge from
 // the live stored spelling (case preserved in storage, looked up case-insensitively) — MySQL guarantees
@@ -69,9 +60,15 @@ func (MySqlDb) FoldFunctionName(name string) string { return dialects.MySQLLower
 func mysqlSchemaFilter(column, schema string) string {
 	literal := hex.EncodeToString([]byte(schema))
 	return fmt.Sprintf(
-		`(CASE WHEN @@lower_case_table_names = 2 THEN LOWER(CAST(%s AS BINARY)) ELSE CAST(%s AS BINARY) END) = X'%s'`,
-		column, column, literal,
+		`(CASE WHEN @@lower_case_table_names = 2 THEN %s ELSE CAST(%s AS BINARY) END) = X'%s'`,
+		mysqlFoldedName(column), column, literal,
 	)
+}
+
+// mysqlFoldedName is column folded by utf8mb3_general_ci, the map dialects.MySQLLower copies; LOWER on a
+// binary string returns it unchanged.
+func mysqlFoldedName(column string) string {
+	return fmt.Sprintf("CAST(LOWER(CONVERT(%s USING utf8mb3) COLLATE utf8mb3_general_ci) AS BINARY)", column)
 }
 
 // SchemaColumnsSQL returns one schema fragment without excluding system schemas.
@@ -182,9 +179,8 @@ func (PgDb) NamespaceProbeSQL() string {
 )::pg_catalog.text`
 }
 
-func (PgDb) FoldFunctionName(name string) string {
-	return dialects.Postgres().FoldIdentifierName(name, false)
-}
+// pg_proc.proname is already the exact name: "GetSSN" is a different function from getssn.
+func (PgDb) FoldFunctionName(name string) string { return name }
 
 func (PgDb) SupportsTempOverlay() bool { return true }
 
@@ -207,14 +203,15 @@ WHERE e.extname = 'pgcrypto'`
 }
 func (PgDb) HashSetupColumns() int { return 1 }
 
-// LowerCaseTableNamesProbeSQL: Postgres has no such concept — NormalizeColumns is an identity function
-// regardless of the mode argument.
+func (PgDb) Engine() *engines.Engine { return engines.Postgres }
+
+// LowerCaseTableNamesProbeSQL: Postgres has no such concept.
 func (PgDb) LowerCaseTableNamesProbeSQL() string { return "" }
 
 // NormalizeColumns is an identity function: Postgres never folds — a quoted-vs-unquoted identifier
 // pair is genuinely two distinct columns, and introspection already reports each one's real, resolved
-// spelling (analyzer/engines.NormalizeRelation's contract for any non-MySQL dialect).
-func (PgDb) NormalizeColumns(_ int, columns []*analyzerpb.Column) []*analyzerpb.Column {
+// spelling.
+func (PgDb) NormalizeColumns(_ engines.Datasource, columns []*analyzerpb.Column) []*analyzerpb.Column {
 	return columns
 }
 

@@ -89,6 +89,10 @@ var (
 	CodeUseQueryApproval      = Code{"approval.use_query_approval_endpoint", http.StatusBadRequest}
 	CodeNotConnectable        = Code{"datasource.not_connectable", http.StatusForbidden}
 	CodeNoWireCert            = Code{"datasource.no_wire_cert", http.StatusNotFound}
+	CodeInvalidEngine         = Code{"datasource.invalid_engine", http.StatusBadRequest}
+	CodeEngineImmutable       = Code{"datasource.engine_immutable", http.StatusConflict}
+	CodeInUseProxyAttached    = Code{"datasource.in_use_proxy_attached", http.StatusConflict}
+	CodeInUseActiveRequests   = Code{"datasource.in_use_active_requests", http.StatusConflict}
 )
 
 // WriteError writes an ApiError; kv is its params as alternating keys and values, kept in that order.
@@ -136,7 +140,7 @@ type Authorizer interface {
 	Validate(ctx context.Context, cedarSrc string) ([]string, error)
 }
 
-// Kotlin is what Go routes tell the Kotlin control plane about the state it holds in memory.
+// Kotlin is what Go routes tell or ask the Kotlin control plane about the state it holds in memory.
 type Kotlin interface {
 	// PoliciesChanged: a committed policy write; Kotlin's query path rebuilds its cached policy set.
 	PoliciesChanged(ctx context.Context) error
@@ -144,6 +148,10 @@ type Kotlin interface {
 	RequestNotified(ctx context.Context, id int64, event string) error
 	// SessionsEnded: a committed change ended the principal's web sessions; close the editor runs held for them.
 	SessionsEnded(ctx context.Context, principal string) error
+	// ProxiesAttached names the datasources with a proxy on an open Events stream.
+	ProxiesAttached(ctx context.Context) ([]string, error)
+	// DatasourceDeleted: a committed delete freed the name; drop the in-memory catalog keyed by it.
+	DatasourceDeleted(ctx context.Context, name string) error
 }
 
 // Gate authenticates console requests for Go routes.

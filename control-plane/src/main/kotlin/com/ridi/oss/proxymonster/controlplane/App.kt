@@ -770,6 +770,8 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
                 }
             },
             runExecService::closeSessionsForPrincipal,
+            core.proxyEventsHub::attached,
+            { name -> core.connectionCatalog.invalidateDatasource(name) },
         )
 
         // Dev-only login shortcut; gated by PM_AUTH_DEBUG. OIDC (above) is the production path.

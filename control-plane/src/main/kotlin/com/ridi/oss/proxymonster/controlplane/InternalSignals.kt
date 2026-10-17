@@ -15,8 +15,14 @@ data class InternalRequestNotified(val id: Long, val event: String)
 @Serializable
 data class InternalPrincipalRequest(val principal: String)
 
+@Serializable
+data class InternalNameRequest(val name: String)
+
+@Serializable
+data class InternalNamesResult(val names: List<String>)
+
 /**
- * What cp-go tells this process after a commit, about state it holds in memory. cp-go never forwards `/internal/`
+ * What cp-go tells or asks this process about state it holds in memory. cp-go never forwards `/internal/`
  * and starts this process with a per-boot [token]; without one the routes do not exist.
  */
 fun Route.internalSignalRoutes(
@@ -24,6 +30,8 @@ fun Route.internalSignalRoutes(
     policiesChanged: () -> Unit,
     requestNotified: (id: Long, event: String) -> Boolean = { _, _ -> false },
     sessionsEnded: (principal: String) -> Unit = {},
+    proxiesAttached: () -> Set<String> = { emptySet() },
+    datasourceDeleted: (name: String) -> Unit = {},
 ) {
     if (token.isNullOrEmpty()) return
     // A policy write committed: rebuild this process's PolicySet on its next decision.
@@ -51,6 +59,21 @@ fun Route.internalSignalRoutes(
             return@post call.respond(HttpStatusCode.NotFound)
         }
         sessionsEnded(call.receive<InternalPrincipalRequest>().principal)
+        call.respond(HttpStatusCode.NoContent)
+    }
+    // The datasources with a proxy on an open Events stream, which this process holds.
+    post("/internal/proxies-attached") {
+        if (!constantTimeEquals(call.request.headers[INTERNAL_TOKEN_HEADER], token)) {
+            return@post call.respond(HttpStatusCode.NotFound)
+        }
+        call.respond(InternalNamesResult(proxiesAttached().sorted()))
+    }
+    // A delete freed the datasource's name: drop the connection catalog keyed by it, which a new datasource may reuse.
+    post("/internal/datasource-deleted") {
+        if (!constantTimeEquals(call.request.headers[INTERNAL_TOKEN_HEADER], token)) {
+            return@post call.respond(HttpStatusCode.NotFound)
+        }
+        datasourceDeleted(call.receive<InternalNameRequest>().name)
         call.respond(HttpStatusCode.NoContent)
     }
 }

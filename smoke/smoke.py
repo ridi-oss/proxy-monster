@@ -44,15 +44,14 @@ TYPED_COLUMN = "pending-name-fix: classification input is stored as typed; a non
 TYPED_TABLE = "pending-name-fix: classification input is not folded under lower_case_table_names=1"
 QUOTED_INPUT = "pending-name-fix: quoted classification input keeps its quotes and never attaches"
 UNQUOTED_INPUT = "pending-name-fix: unquoted classification input is not folded and attaches to the quoted table"
-DETAIL_COLUMN = "pending-name-fix: table detail reports MySQL column names as declared, not lowercase"
 ATHENA_INPUT = "pending-name-fix: Athena classification input is not folded; a non-lowercase spelling never attaches"
-GLUE_CASE = "pending-name-fix: a mixed-case Glue name is not folded in the control-plane catalog; reads fail closed"
+GLUE_CASE = "pending-name-fix: a mixed-case Glue table is allowed, but its read fails on the target"
 NAMES = {
     "mysql": {
         "classify": [("Customers", "Email"), ("Customers", "phone"), ("Customers", "SSN")],
         "refuse": [("CUSTOMERS", "EMAIL", ["Customers", "customers"])],
         "forbid": ("Customers", "secret"),
-        "detail": [("Customers", "email", DETAIL_COLUMN), ("Customers", "phone", DETAIL_COLUMN), ("Customers", "ssn", DETAIL_COLUMN)],
+        "detail": [("Customers", "email", TYPED_COLUMN), ("Customers", "phone"), ("Customers", "ssn", TYPED_COLUMN)],
         "reads": [
             ("mask", "SELECT id, Email FROM Customers ORDER BY id", TYPED_COLUMN),
             ("mask", "SELECT id, email FROM Customers ORDER BY id", TYPED_COLUMN),
@@ -72,7 +71,7 @@ NAMES = {
         "classify": [("Customers", "Email"), ("CUSTOMERS", "PHONE"), ("customers", "ssn")],
         "refuse": [],
         "forbid": ("customers", "secret"),
-        "detail": [("customers", "email", DETAIL_COLUMN), ("customers", "phone", DETAIL_COLUMN), ("customers", "ssn", DETAIL_COLUMN)],
+        "detail": [("customers", "email", TYPED_TABLE), ("customers", "phone", TYPED_TABLE), ("customers", "ssn")],
         "reads": [
             ("mask", "SELECT id, email FROM customers ORDER BY id", TYPED_TABLE),
             ("mask", "SELECT id, Email FROM Customers ORDER BY id", TYPED_TABLE),

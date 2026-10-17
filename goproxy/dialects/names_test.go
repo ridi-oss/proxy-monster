@@ -79,7 +79,6 @@ func TestTableDetailMySQLLowerCase1FindsAnySpelling(t *testing.T) {
 		}
 	})
 	t.Run("columns canonical", func(t *testing.T) {
-		t.Skip("pending-name-fix: table detail returns column names as stored, not folded")
 		if _, columns := detailNames(t, targetDb, "def", canonical, "users"); !slices.Equal(columns, []string{"id", "email"}) {
 			t.Fatalf("columns = %v, want [id email]", columns)
 		}
@@ -111,7 +110,6 @@ func TestTableDetailMySQLLowerCase0KeepsTablesDistinct(t *testing.T) {
 		}
 	}
 	t.Run("columns canonical", func(t *testing.T) {
-		t.Skip("pending-name-fix: table detail returns column names as stored, not folded")
 		if _, columns := detailNames(t, targetDb, "def", schema, "Users"); !slices.Equal(columns, []string{"id", "email"}) {
 			t.Fatalf("columns = %v, want [id email]", columns)
 		}

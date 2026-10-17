@@ -23,6 +23,7 @@ import (
 	// The named mysql import both registers the "mysql" driver (via init()) AND gives us mysql.Config
 	// for safe DSN construction, so no separate blank import is needed.
 	mysqldriver "github.com/go-sql-driver/mysql"
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
@@ -153,24 +154,21 @@ func Run(ctx context.Context, db *sql.DB, dbImpl engine.Db, probe NamespaceProbe
 
 	// Normalize to the SAME canonical spelling the analyzer treats as authoritative (analyzer/engines,
 	// Go-to-Go — no FFM/marshaling) — an identity function for Postgres, MySQL's role-aware fold
-	// (gated by lctnMode) for MySQL — before this ever reaches the control plane. Nothing downstream
+	// (by lower_case_table_names) for MySQL — before this ever reaches the control plane. Nothing downstream
 	// (catalog storage, browse_catalog, Cedar Table::/Column:: EUIDs, column_classification, the
 	// per-connection schema-fragment pool normalized the same way in goproxy/db) ever sees raw
 	// introspected spelling; no caller decides whether/how to fold.
-	// The dialect's own engine.Db owns the fold, so this call site names no dialect. Only the MySQL
-	// namespace probe sets mysqlLowerCaseTableNames (the Postgres probe returns nil), and it carries the
-	// fold mode MySQL's NormalizeColumns is gated by; Postgres ignores the argument.
-	lctnMode := 0
-	if catalog.MysqlLowerCaseTableNames != nil {
-		lctnMode = int(catalog.GetMysqlLowerCaseTableNames())
+	ds, err := dbImpl.CatalogDatasource(catalog)
+	if err != nil {
+		return nil, err
 	}
 	phase = time.Now()
-	columns = dbImpl.NormalizeColumns(lctnMode, columns)
-	catalog.DefaultSchemas = normalizeSchemas(dbImpl, lctnMode, catalog.DefaultSchemas)
+	columns = dbImpl.NormalizeColumns(ds, columns)
+	catalog.DefaultSchemas = normalizeSchemas(dbImpl, ds, catalog.DefaultSchemas)
 	normalizeMs := time.Since(phase).Milliseconds()
 
 	phase = time.Now()
-	routines, err := introspectRoutines(conn, dbImpl, lctnMode)
+	routines, err := introspectRoutines(conn, dbImpl, ds)
 	if err != nil {
 		return nil, err
 	}
@@ -204,7 +202,7 @@ func Run(ctx context.Context, db *sql.DB, dbImpl engine.Db, probe NamespaceProbe
 
 type schemaNamePair struct{ schema, name string }
 
-func introspectRoutines(conn *sql.Conn, dbImpl engine.Db, lctnMode int) ([]*analyzerpb.SchemaFunctions, error) {
+func introspectRoutines(conn *sql.Conn, dbImpl engine.Db, ds engines.Datasource) ([]*analyzerpb.SchemaFunctions, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
 	defer cancel()
 	rows, err := conn.QueryContext(ctx, dbImpl.RoutinesSQL())
@@ -225,12 +223,12 @@ func introspectRoutines(conn *sql.Conn, dbImpl engine.Db, lctnMode int) ([]*anal
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("introspect: routines query: %w", err)
 	}
-	return foldFunctionSchemas(dbImpl, lctnMode, pairs), nil
+	return foldFunctionSchemas(dbImpl, ds, pairs), nil
 }
 
 // foldFunctionSchemas groups (schema, function) pairs by their canonical schema, folding the schema
 // through the dialect's NormalizeColumns and the function name through its FoldFunctionName.
-func foldFunctionSchemas(dbImpl engine.Db, lctnMode int, pairs []schemaNamePair) []*analyzerpb.SchemaFunctions {
+func foldFunctionSchemas(dbImpl engine.Db, ds engines.Datasource, pairs []schemaNamePair) []*analyzerpb.SchemaFunctions {
 	if len(pairs) == 0 {
 		return nil
 	}
@@ -238,7 +236,7 @@ func foldFunctionSchemas(dbImpl engine.Db, lctnMode int, pairs []schemaNamePair)
 	for i, p := range pairs {
 		placeholders[i] = &analyzerpb.Column{Schema: p.schema, Table: "_", Column: "_"}
 	}
-	folded := dbImpl.NormalizeColumns(lctnMode, placeholders)
+	folded := dbImpl.NormalizeColumns(ds, placeholders)
 	grouped := make([]schemaNamePair, len(pairs))
 	for i, p := range pairs {
 		grouped[i] = schemaNamePair{schema: folded[i].GetSchema(), name: dbImpl.FoldFunctionName(p.name)}
@@ -274,13 +272,13 @@ func groupBySchema(pairs []schemaNamePair) []*analyzerpb.SchemaFunctions {
 // discarding those parts — the fold decision is schema-name-only (verified empirically: stable
 // regardless of the table argument). One call folds the whole list, so a dialect that memoizes
 // per-(schema, table) work does it once here too.
-func normalizeSchemas(dbImpl engine.Db, lctnMode int, schemas []string) []string {
+func normalizeSchemas(dbImpl engine.Db, ds engines.Datasource, schemas []string) []string {
 	placeholders := make([]*analyzerpb.Column, len(schemas))
 	for i, s := range schemas {
 		placeholders[i] = &analyzerpb.Column{Schema: s, Table: "_", Column: "_"}
 	}
 	out := make([]string, len(schemas))
-	for i, c := range dbImpl.NormalizeColumns(lctnMode, placeholders) {
+	for i, c := range dbImpl.NormalizeColumns(ds, placeholders) {
 		out[i] = c.GetSchema()
 	}
 	return out
@@ -308,7 +306,7 @@ func ProbeMySQLNamespace(ctx context.Context, conn *sql.Conn, targetDb string) (
 	if !matches.Valid || !matches.Bool {
 		return nil, fmt.Errorf("introspect: MySQL current database %q does not match bound database %q", currentDb.String, targetDb)
 	}
-	return &pb.CatalogRequest{DefaultSchemas: []string{currentDb.String}, MysqlLowerCaseTableNames: proto.Int32(int32(lctn)), CurrentCatalog: "def"}, nil
+	return &pb.CatalogRequest{DefaultSchemas: []string{currentDb.String}, MysqlLowerCaseTableNames: proto.Int32(int32(lctn)), CurrentCatalog: engines.MySQL.CatalogName("").String()}, nil
 }
 
 // ReadPostgresCatalog returns current_database(); the catalog every fragment and temp column from this

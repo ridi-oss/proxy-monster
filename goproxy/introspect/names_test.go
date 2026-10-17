@@ -83,7 +83,6 @@ func TestProbeMySQLNamespaceRefusesUnknownLowerCaseTableNames(t *testing.T) {
 }
 
 func TestRunRefusesUnknownLowerCaseTableNames(t *testing.T) {
-	t.Skip("pending-name-fix: introspect folds an unreported or out-of-range lower_case_table_names as 0")
 	targetDb := dbtest.MySQL(t)
 	for _, tc := range []struct {
 		name string

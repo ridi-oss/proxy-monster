@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
@@ -201,7 +202,9 @@ func asMode2(sqlText string) string {
 	return strings.ReplaceAll(sqlText, "@@lower_case_table_names", "2")
 }
 
-func (lowerCase2Db) LowerCaseTableNamesProbeSQL() string { return "SELECT 2" }
+func (d lowerCase2Db) Datasource(query func(string) (*string, error)) (engines.Datasource, error) {
+	return d.MySqlDb.Datasource(func(string) (*string, error) { return query("SELECT 2") })
+}
 func (d lowerCase2Db) SchemaColumnsSQL(schema string) string {
 	return asMode2(d.MySqlDb.SchemaColumnsSQL(schema))
 }
@@ -246,7 +249,6 @@ func TestMySQLLowerCase2FoldsStoredCase(t *testing.T) {
 	}
 
 	t.Run("refetch and hash find the stored case by its canonical name", func(t *testing.T) {
-		t.Skip("pending-name-fix: the mode-2 schema filter applies LOWER to a BINARY cast, which does not fold, so it matches no rows")
 		adapter := lowerCase2Db{}
 		assertFragmentMatchesBulk(t, adapter, conn, "def", bulk, canonical)
 		if !bytes.Equal(trustedRefetchHash(t, adapter, conn, canonical), trustedRefetchHash(t, MySqlDb{}, conn, mixed)) {
@@ -261,7 +263,7 @@ func TestMySQLFragmentRowsUnderEachMode(t *testing.T) {
 	}
 	for _, tc := range []struct {
 		name                 string
-		mode                 int
+		mode                 int32
 		requested            string
 		schema, table, colmn string
 		want                 *relationKey
@@ -273,7 +275,7 @@ func TestMySQLFragmentRowsUnderEachMode(t *testing.T) {
 		{"mode 2 refuses another schema", 2, "app", "Other", "Users", "EMail", nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := engine.FragmentColumnsFromRows(MySqlDb{}, tc.mode, tc.requested, row(tc.schema, tc.table, tc.colmn))
+			got, err := engine.FragmentColumnsFromRows(MySqlDb{}, mysqlDatasource(t, tc.mode), tc.requested, row(tc.schema, tc.table, tc.colmn))
 			if tc.want == nil {
 				if err == nil {
 					t.Fatalf("FragmentColumnsFromRows = %+v, want refused", got)
@@ -292,7 +294,7 @@ func TestMySQLFragmentRowsUnderEachMode(t *testing.T) {
 
 func TestMySQLNormalizeSystemSchemasByMode(t *testing.T) {
 	for _, tc := range []struct {
-		mode   int
+		mode   int32
 		schema string
 		want   string
 	}{
@@ -310,7 +312,7 @@ func TestMySQLNormalizeSystemSchemasByMode(t *testing.T) {
 		{2, "MySQL", "mysql"},
 		{2, "PERFORMANCE_SCHEMA", "performance_schema"},
 	} {
-		got := (MySqlDb{}).NormalizeColumns(tc.mode, []*analyzerpb.Column{{Schema: tc.schema, Table: "T", Column: "C"}})[0]
+		got := (MySqlDb{}).NormalizeColumns(mysqlDatasource(t, tc.mode), []*analyzerpb.Column{{Schema: tc.schema, Table: "T", Column: "C"}})[0]
 		if got.GetSchema() != tc.want || got.GetColumn() != "c" {
 			t.Errorf("mode %d NormalizeColumns(%s.T.C) = %s.%s.%s, want schema %s, column c", tc.mode, tc.schema, got.GetSchema(), got.GetTable(), got.GetColumn(), tc.want)
 		}
@@ -331,14 +333,13 @@ func TestMySQLRefetchRefusesUnknownLowerCaseTableNames(t *testing.T) {
 		{"not a number", [][]*string{{ptr("on")}}, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Skip("pending-name-fix: refetch treats an unreported lower_case_table_names as 0")
 			pushed := false
 			refetcher := engine.Refetcher{
 				Catalog: "def",
 				Db:      MySqlDb{},
 				Probe: func(statement string, _ int) ([][]*string, error) {
 					switch statement {
-					case (MySqlDb{}).LowerCaseTableNamesProbeSQL():
+					case lowerCaseTableNamesSQL:
 						return tc.rows, tc.probe
 					case (MySqlDb{}).SchemaColumnsSQL("App"):
 						return [][]*string{{ptr("App"), ptr("Users"), ptr("Id"), ptr("int"), ptr("1"), ptr("NO"), ptr("def")}}, nil

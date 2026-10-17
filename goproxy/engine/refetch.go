@@ -5,8 +5,8 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
-	"strconv"
 
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 )
 
@@ -73,7 +73,11 @@ func (r *Refetcher) Run(cmd *pb.Refetch) error {
 	if err != nil {
 		return fmt.Errorf("introspecting schema %q: %w", cmd.GetSchema(), err)
 	}
-	columns, err := FragmentColumnsFromRows(r.Db, r.lowerCaseTableNames(), cmd.GetSchema(), rows)
+	ds, err := r.datasource()
+	if err != nil {
+		return err
+	}
+	columns, err := FragmentColumnsFromRows(r.Db, ds, cmd.GetSchema(), rows)
 	if err != nil {
 		return fmt.Errorf("mapping schema %q fragment: %w", cmd.GetSchema(), err)
 	}
@@ -113,24 +117,14 @@ func (r *Refetcher) Run(cmd *pb.Refetch) error {
 	return err
 }
 
-// lowerCaseTableNames probes the connection's live mode fresh (no cached state on Refetcher/Db —
-// mirrors mysqlSchemaFilter's own live @@lower_case_table_names check in goproxy/db). "" from
-// LowerCaseTableNamesProbeSQL (non-MySQL, or a probe failure) returns 0, which NormalizeColumns
-// ignores for any dialect that doesn't fold at all.
-func (r *Refetcher) lowerCaseTableNames() int {
-	probeSQL := r.Db.LowerCaseTableNamesProbeSQL()
-	if probeSQL == "" {
-		return 0
-	}
-	rows, err := r.Probe(probeSQL, 1)
-	if err != nil || len(rows) != 1 || len(rows[0]) != 1 || rows[0][0] == nil {
-		return 0
-	}
-	mode, err := strconv.Atoi(*rows[0][0])
-	if err != nil {
-		return 0
-	}
-	return mode
+func (r *Refetcher) datasource() (engines.Datasource, error) {
+	return r.Db.Datasource(func(statement string) (*string, error) {
+		rows, err := r.Probe(statement, 1)
+		if err != nil || len(rows) != 1 || len(rows[0]) != 1 {
+			return nil, err
+		}
+		return rows[0][0], nil
+	})
 }
 
 func (r *Refetcher) measureHash(sql string, expectedColumns int, sqlErr error) ([]byte, bool) {

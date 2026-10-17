@@ -223,24 +223,6 @@ func (e *mysqlSession) IsSafeTypeReference(exp.Expression, exp.Expression, Names
 	return false
 }
 
-// mysqlNormalizationDialect returns a MySQL *Dialect configured with the identifier-normalization
-// strategy for the server's lower_case_table_names. Under lctn=0 the server is case-sensitive for
-// table/db names but STILL case-insensitive for columns, so the role-aware
-// mysql_case_sensitive_table_names strategy folds every identifier except table/db names; under
-// lctn=1/2 all identifiers are case-insensitive, so mysql_case_insensitive folds them all. Both fold
-// with MySQL's exact utf8mb3_general_ci map (MySQLLower). sqlglot-go's mysql default is CASE_SENSITIVE
-// (a no-op, for upstream faithfulness), so the strategy is set explicitly here. We pass the typed
-// *Dialect straight to Qualify so its normalization and qualification passes share one configuration.
-func mysqlNormalizationDialect(mysqlLowerCaseTableNames int) *dialects.Dialect {
-	d := dialects.MySQL()
-	if mysqlLowerCaseTableNames == 0 {
-		d.NormalizationStrategy = dialects.MySQLCaseSensitiveTableNames
-	} else {
-		d.NormalizationStrategy = dialects.MySQLCaseInsensitive
-	}
-	return d
-}
-
 var mysqlVersionPattern = regexp.MustCompile(`^(\d+)\.(\d+)(?:\.(\d+))?`)
 
 // mysqlVersionID converts a clean MySQL version string (e.g. "8.0.46" or the patch-less "8.0") to
@@ -266,63 +248,4 @@ func mysqlVersionID(version string) int {
 func containsUnsafeMySQLComment(gap []rune) bool {
 	text := string(gap)
 	return strings.Contains(text, "/*!") || strings.Contains(text, "/*+")
-}
-
-// CanonicalMySQLRelation resolves a MySQL schema/table/column's canonical spelling under a given
-// lower_case_table_names mode — including the information_schema exception (always
-// case-insensitive, regardless of mode) — via the same role-aware Dialect the analyzer's own catalog
-// build and query resolution use (mysqlNormalizationDialect + Dialect.NormalizeIdentifier). It is
-// exported (via cmd/libsqlglot) so the control-plane's PII-classification keys resolve identically to
-// whatever the analyzer treats as canonical.
-//
-// schemaName and table are wired into a throwaway *exp.Table (the Table value itself is discarded)
-// purely so NormalizeIdentifier can read each part's parent to detect relation-level role and the
-// information_schema exception — a detached identifier has no parent, so this AST wiring is what
-// makes the check possible. Catalog is never folded (by either language), so it takes no part here.
-// column folds unconditionally via FoldIdentifierName — a column name's role is never ambiguous,
-// matching probe.go's canonicalColumn.
-func CanonicalMySQLRelation(mysqlLowerCaseTableNames int, schemaName, table, column string) (canonicalSchema, canonicalTable, canonicalColumn string) {
-	d := mysqlNormalizationDialect(mysqlLowerCaseTableNames)
-
-	schemaID := exp.ParseIdentifier(schemaName, d)
-	tableID := exp.ParseIdentifier(table, d)
-	exp.Table(exp.Args{"this": tableID, "schema": schemaID})
-
-	d.NormalizeIdentifier(schemaID)
-	d.NormalizeIdentifier(tableID)
-
-	return schemaID.Name(), tableID.Name(), d.FoldIdentifierName(column, false)
-}
-
-// NormalizeMySQLColumns folds a batch of column identities to their canonical spelling, memoizing the
-// per-(schema, table) work. Semantically identical to calling CanonicalMySQLRelation for each row, but
-// O(distinct tables) sqlglot parses instead of O(columns): within a schema fragment the schema is
-// constant and each table's columns repeat its name, so re-parsing schema+table per column (as the
-// per-row path does) is pure waste — the dominant cost on a wide schema. Column names still fold
-// per row (a cheap name fold, no identifier parse). schemas/tables/columns are parallel, equal-length.
-func NormalizeMySQLColumns(mysqlLowerCaseTableNames int, schemas, tables, columns []string) (outSchemas, outTables, outColumns []string) {
-	n := len(columns)
-	outSchemas = make([]string, n)
-	outTables = make([]string, n)
-	outColumns = make([]string, n)
-	d := mysqlNormalizationDialect(mysqlLowerCaseTableNames)
-	type rel struct{ schema, table string }
-	cache := make(map[rel][2]string)
-	for i := 0; i < n; i++ {
-		key := rel{schemas[i], tables[i]}
-		canon, ok := cache[key]
-		if !ok {
-			schemaID := exp.ParseIdentifier(key.schema, d)
-			tableID := exp.ParseIdentifier(key.table, d)
-			exp.Table(exp.Args{"this": tableID, "schema": schemaID})
-			d.NormalizeIdentifier(schemaID)
-			d.NormalizeIdentifier(tableID)
-			canon = [2]string{schemaID.Name(), tableID.Name()}
-			cache[key] = canon
-		}
-		outSchemas[i] = canon[0]
-		outTables[i] = canon[1]
-		outColumns[i] = d.FoldIdentifierName(columns[i], false)
-	}
-	return outSchemas, outTables, outColumns
 }

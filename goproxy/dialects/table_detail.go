@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/ridi-oss/proxy-monster/analyzer/engines"
+	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
+	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
@@ -21,10 +23,79 @@ type tableDetailIndexes struct {
 	indexedColumns map[string]struct{}
 }
 
-func tableDetailTableExists(conn *sql.Conn, e *engines.Engine, schema, table string) (bool, error) {
+// liveDatasource is db's engine with conn's live settings.
+func liveDatasource(ctx context.Context, conn *sql.Conn, db engine.Db) (engines.Datasource, error) {
+	return db.Datasource(func(statement string) (*string, error) {
+		var value sql.NullString
+		if err := conn.QueryRowContext(ctx, statement).Scan(&value); err != nil || !value.Valid {
+			return nil, err
+		}
+		return &value.String, nil
+	})
+}
+
+// canonicalDetailNames rewrites the live detail's names to the catalog's canonical spelling, which the control
+// plane joins classifications on: MySQL reports a column as declared (`Email`) and keys it folded (`email`).
+func canonicalDetailNames(db engine.Db, ds engines.Datasource, detail *spi.TableDetail) {
+	var refs []*pb.Column
+	add := func(schema, table string, columns ...*string) {
+		for _, c := range columns {
+			refs = append(refs, &pb.Column{Schema: schema, Table: table, Column: *c})
+		}
+	}
+	for i := range detail.Columns {
+		add(detail.Schema, detail.Table, &detail.Columns[i].Name)
+	}
+	for i := range detail.Indexes {
+		for j := range detail.Indexes[i].Columns {
+			add(detail.Schema, detail.Table, &detail.Indexes[i].Columns[j].Name)
+		}
+	}
+	relations := [][]spi.TableRelation{detail.ForeignKeys, detail.ReferencedBy}
+	for _, list := range relations {
+		for _, r := range list {
+			placeholder := "_"
+			add(r.SourceSchema, r.SourceTable, &placeholder)
+			add(r.TargetSchema, r.TargetTable, &placeholder)
+			for j := range r.SourceColumns {
+				add(r.SourceSchema, r.SourceTable, &r.SourceColumns[j])
+			}
+			for j := range r.TargetColumns {
+				add(r.TargetSchema, r.TargetTable, &r.TargetColumns[j])
+			}
+		}
+	}
+	folded := db.NormalizeColumns(ds, refs)
+	next := 0
+	take := func() *pb.Column { next++; return folded[next-1] }
+	for i := range detail.Columns {
+		detail.Columns[i].Name = take().GetColumn()
+	}
+	for i := range detail.Indexes {
+		for j := range detail.Indexes[i].Columns {
+			detail.Indexes[i].Columns[j].Name = take().GetColumn()
+		}
+	}
+	for _, list := range relations {
+		for i := range list {
+			r := &list[i]
+			source, target := take(), take()
+			r.SourceSchema, r.SourceTable = source.GetSchema(), source.GetTable()
+			r.TargetSchema, r.TargetTable = target.GetSchema(), target.GetTable()
+			for j := range r.SourceColumns {
+				r.SourceColumns[j] = take().GetColumn()
+			}
+			for j := range r.TargetColumns {
+				r.TargetColumns[j] = take().GetColumn()
+			}
+		}
+	}
+}
+
+func tableDetailTableExists(conn *sql.Conn, db engine.Db, ds engines.Datasource, schema, table string) (bool, error) {
 	query := fmt.Sprintf(
 		"SELECT table_schema, table_name FROM information_schema.tables WHERE table_schema = %s AND table_name = %s",
-		e.Placeholder(1), e.Placeholder(2),
+		ds.Placeholder(1), ds.Placeholder(2),
 	)
 	found := false
 	err := tableDetailQuery(conn, query, []any{schema, table}, func(rows *sql.Rows) error {
@@ -33,7 +104,8 @@ func tableDetailTableExists(conn *sql.Conn, e *engines.Engine, schema, table str
 			if err := rows.Scan(&rowSchema, &rowTable); err != nil {
 				return err
 			}
-			if rowSchema == schema && rowTable == table {
+			canonical := db.NormalizeColumns(ds, []*pb.Column{{Schema: rowSchema, Table: rowTable, Column: "_"}})[0]
+			if canonical.GetSchema() == schema && canonical.GetTable() == table {
 				found = true
 			}
 		}

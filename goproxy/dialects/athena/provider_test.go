@@ -35,6 +35,11 @@ func (t endpointTransport) RoundTrip(request *http.Request) (*http.Response, err
 
 func testTarget(t *testing.T, handler http.HandlerFunc) *target {
 	t.Helper()
+	return testTargetIn(t, "example", handler)
+}
+
+func testTargetIn(t *testing.T, database string, handler http.HandlerFunc) *target {
+	t.Helper()
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		if strings.HasPrefix(request.Host, "sts.") {
 			w.Header().Set("Content-Type", "text/xml")
@@ -48,7 +53,7 @@ func testTarget(t *testing.T, handler http.HandlerFunc) *target {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := targetConfig{region: "us-east-1", workgroup: "primary", catalog: "AwsDataCatalog", database: "example", contextPath: ":memory:", target: spi.TargetDb{Db: "example"}}
+	cfg := targetConfig{region: "us-east-1", workgroup: "primary", catalog: "AwsDataCatalog", database: database, contextPath: ":memory:", target: spi.TargetDb{Db: database}}
 	result, err := newTarget(context.Background(), cfg, aws.Config{
 		Region: cfg.region, Credentials: credentials.NewStaticCredentialsProvider("test-key", "test-secret", "test-session"),
 	}, endpointTransport{endpoint: endpoint, transport: server.Client().Transport})

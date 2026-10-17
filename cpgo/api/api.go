@@ -87,6 +87,8 @@ var (
 	CodeNotApprover           = Code{"approval.not_approver", http.StatusForbidden}
 	CodeRequestNotPermitted   = Code{"approval.request_not_permitted", http.StatusForbidden}
 	CodeUseQueryApproval      = Code{"approval.use_query_approval_endpoint", http.StatusBadRequest}
+	CodeNotConnectable        = Code{"datasource.not_connectable", http.StatusForbidden}
+	CodeNoWireCert            = Code{"datasource.no_wire_cert", http.StatusNotFound}
 )
 
 // WriteError writes an ApiError; kv is its params as alternating keys and values, kept in that order.

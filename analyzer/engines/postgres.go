@@ -3,6 +3,7 @@ package engines
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/ridi-oss/sqlglot-go/dialects"
@@ -37,6 +38,16 @@ var Postgres = &Engine{
 	// RESET restores defaults; an unmodeled SHOW reads a GUC, not table data.
 	passthroughCommands: []string{"RESET", "SHOW"},
 	syntaxCalls:         []string{"array"},
+
+	checksTargetErrors:  true,
+	implicitColumns:     postgresSystemColumns,
+	defaultSchemaPrefix: "SET search_path TO ",
+	defaultSchema:       func(string) string { return "public" },
+	serverVersion:       postgresServerVersion,
+	manifestSeries:      func(version string) string { return strings.SplitN(version, ".", 2)[0] },
+	functionCatalog:     postgresFunctionCatalog,
+	connectionInfoValid: nativeConnectionInfoValid,
+	analyzerConfig:      sessionAnalyzerConfig,
 }
 
 // postgresIntrospected keeps catalog rows as they are: pg_catalog already holds the exact names.
@@ -118,7 +129,7 @@ func (e *postgresSession) ShowUtilityCommand(root exp.Expression) string {
 }
 
 func (e *postgresSession) SystemSchemaFirst(searchPath []string) bool {
-	return postgresCatalogFirstAfterTempSchemas(searchPath)
+	return e.catalogFirstAfterTempSchemas(searchPath)
 }
 
 func (e *postgresSession) IsSafeTypeReference(dt, kind exp.Expression, namespace NamespaceConfig) bool {
@@ -150,7 +161,7 @@ func (e *postgresSession) isSafeXIDType(dt, kind exp.Expression, namespace Names
 	if qualifier != nil {
 		return e.datasource.isBuiltinQualifier(qualifier)
 	}
-	return e.systemXIDVisible && postgresCatalogFirstAfterTempSchemas(namespace.SearchPath)
+	return e.systemXIDVisible && e.catalogFirstAfterTempSchemas(namespace.SearchPath)
 }
 
 // PostgreSQL names an unaliased projection per parse_target.c FigureColname; a call is labeled by
@@ -285,7 +296,7 @@ func figureLabel(node exp.Expression, query exp.Expression, sess session, depth 
 		// A DEDICATED function kind canonicalizes its AST name (`char_length` parses to Length,
 		// `position(...)` to StrPosition) but PostgreSQL labels the call by its WRITTEN name, so
 		// read that off the node's source span; no span (a sub-expression) → unknowable.
-		return writtenFunctionLabel(node)
+		return writtenFunctionLabel(node, sess)
 	}
 	// Operators, literals, boolean tests, … — PostgreSQL gives them no name (→ ?column?).
 	return "", 0, true
@@ -294,7 +305,7 @@ func figureLabel(node exp.Expression, query exp.Expression, sess session, depth 
 // writtenFunctionLabel is the function name as the client wrote it: the leading identifier of the
 // call's parse-time SpanText, folded per PostgreSQL's case rule (unquoted → lowercase, quoted →
 // verbatim).
-func writtenFunctionLabel(node exp.Expression) (string, int, bool) {
+func writtenFunctionLabel(node exp.Expression, sess session) (string, int, bool) {
 	text, ok := node.SpanText()
 	if !ok {
 		return "", 0, false
@@ -310,7 +321,7 @@ func writtenFunctionLabel(node exp.Expression) (string, int, bool) {
 	if !functionLabelPattern.MatchString(written) {
 		return "", 0, false
 	}
-	return strings.ToLower(written), 2, true
+	return sess.Dialect().FoldIdentifierName(written, false), 2, true
 }
 
 // figureProjectionLabel is the label of one projection inside a derived source: its resname (the
@@ -453,14 +464,76 @@ func postgresCastLabel(cast exp.Expression) (string, bool) {
 	return "", false
 }
 
+var postgresSystemColumns = []*pb.ImplicitColumn{
+	{Name: "ctid", DataType: "tid"},
+	{Name: "xmin", DataType: "xid"},
+	{Name: "xmax", DataType: "xid"},
+	{Name: "cmin", DataType: "cid"},
+	{Name: "cmax", DataType: "cid"},
+	{Name: "tableoid", DataType: "oid"},
+}
+
+// PostgreSQL functions the grammar reserves as keywords: no pg_proc row, and no user function can shadow them.
+var postgresGrammarFunctions = []string{
+	"coalesce", "greatest", "least", "nullif", "grouping",
+	"xmlconcat", "xmlelement", "xmlforest", "xmlparse", "xmlpi", "xmlroot", "xmltable",
+}
+
+// {"pg_catalog": [abs], "public": [add_tax], "pg_temp_3": [x]} -> builtins = [abs, coalesce, ...], udf public =
+// [add_tax], pg_temp_3 dropped.
+func postgresFunctionCatalog(e *Engine, routines []*pb.SchemaFunctions, _ string) *pb.FunctionCatalog {
+	var pgCatalog []string
+	for _, r := range routines {
+		if r.GetSchema() == "pg_catalog" {
+			pgCatalog = append(pgCatalog, r.GetNames()...)
+		}
+	}
+	pgCatalog = distinct(append(pgCatalog, postgresGrammarFunctions...))
+	catalog := &pb.FunctionCatalog{
+		BuiltinFunctions:      pgCatalog,
+		SystemFunctionSchemas: []*pb.SchemaFunctions{{Schema: "pg_catalog", Names: pgCatalog}},
+	}
+	for _, r := range routines {
+		schema := SchemaName{name: r.GetSchema()}
+		switch {
+		case r.GetSchema() == "pg_catalog":
+		case slices.Contains(e.systemSchemas, schema):
+			catalog.SystemFunctionSchemas = append(catalog.SystemFunctionSchemas, &pb.SchemaFunctions{Schema: r.GetSchema(), Names: r.GetNames()})
+		case !e.IsSystemSchema(schema):
+			catalog.UdfSchemas = append(catalog.UdfSchemas, &pb.SchemaFunctions{Schema: r.GetSchema(), Names: r.GetNames()})
+		}
+	}
+	return catalog
+}
+
+var postgresVersionPattern = regexp.MustCompile(`PostgreSQL\s+(\d+(?:\.\d+)?)`)
+
+var numericVersion = regexp.MustCompile(`\d+(?:\.\d+)?`)
+
+// "PostgreSQL 16.4 on x86_64" -> 16.4.
+func postgresServerVersion(raw string) *pb.ServerVersion {
+	if strings.TrimSpace(raw) == "" {
+		return &pb.ServerVersion{}
+	}
+	version := ""
+	if m := postgresVersionPattern.FindStringSubmatch(raw); m != nil {
+		version = m[1]
+	} else {
+		version = numericVersion.FindString(raw)
+	}
+	return &pb.ServerVersion{Version: nonEmpty(version), Aurora: isAurora(raw)}
+}
+
 var functionLabelPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
-func postgresCatalogFirstAfterTempSchemas(searchPath []string) bool {
-	for _, schema := range searchPath {
-		if schema == "pg_temp" || strings.HasPrefix(schema, "pg_temp_") {
+// searchPath is the session's schemas as the proxy read them from the target.
+func (e *postgresSession) catalogFirstAfterTempSchemas(searchPath []string) bool {
+	for _, s := range searchPath {
+		schema := e.datasource.IntrospectedSchema(&pb.Column{Schema: s})
+		if e.datasource.IsTempSchema(schema) {
 			continue
 		}
-		return schema == "pg_catalog"
+		return schema == e.datasource.BuiltinSchema
 	}
 	return false
 }

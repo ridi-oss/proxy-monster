@@ -41,7 +41,7 @@ func (s *enforcementSession) authorize(sql, clientAddr string, parameters []stri
 		SQL: sql, Token: s.token, ClientAddr: clientAddr, ConnectionID: s.connectionID,
 		ProbeSession: func() (engine.SessionObservation, error) {
 			return engine.SessionObservation{
-				CurrentCatalog: s.target.catalogIdentity(), Namespace: []string{s.target.config.database},
+				CurrentCatalog: s.target.catalogIdentity(), Namespace: []string{s.target.databaseIdentity()},
 				SessionObservation: &enginepb.SessionObservation{Engine: &enginepb.SessionObservation_Athena{Athena: &enginepb.AthenaSqlContext{Workgroup: s.target.config.workgroup, ExecutionParameters: parameters, MaxRows: uint32(max(maxRows, 0))}}},
 			}, nil
 		},

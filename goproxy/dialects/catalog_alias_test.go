@@ -3,13 +3,13 @@ package dialects_test
 import (
 	"context"
 	"fmt"
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	"net"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/cp"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"

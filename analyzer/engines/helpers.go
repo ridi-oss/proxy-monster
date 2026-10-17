@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"strings"
 
 	exp "github.com/ridi-oss/sqlglot-go/expressions"
 	"github.com/ridi-oss/sqlglot-go/schema"
@@ -107,8 +106,7 @@ func sortStrings(values []string) {
 
 // validateNamespace checks the namespace: catalog and an ordered searchPath are required. Namespace
 // resolution has no engine-specific settings — those live on EngineConfig and are validated by
-// openSession instead. It returns namespace unchanged — folding the search path's identifiers is
-// optimizer.Qualify's own job (via the dialect passed to it), not this function's.
+// openSession instead. It returns namespace unchanged: the search path is already canonical.
 func validateNamespace(namespace NamespaceConfig) (NamespaceConfig, error) {
 	if namespace.Catalog == "" {
 		return NamespaceConfig{}, fmt.Errorf("namespace catalog is required")
@@ -122,19 +120,6 @@ func validateNamespace(namespace NamespaceConfig) (NamespaceConfig, error) {
 		}
 	}
 	return namespace, nil
-}
-
-// NormalizeRelation resolves schemaName/table/column's canonical spelling for dialect — the single
-// source of truth every direct Go-to-Go caller shares (goproxy calls this in-process: introspect's
-// bulk catalog push and the schema-fragment refetch path both go through it), so no caller ever
-// independently decides whether/how to fold. Postgres (and any other non-MySQL dialect) is an
-// identity function — the catalog's server-resolved spelling already IS canonical — while MySQL
-// delegates to CanonicalMySQLRelation's role-aware fold, gated by mysqlLowerCaseTableNames.
-func NormalizeRelation(dialect string, mysqlLowerCaseTableNames int, schemaName, table, column string) (canonicalSchema, canonicalTable, canonicalColumn string) {
-	if strings.ToLower(dialect) != "mysql" {
-		return schemaName, table, column
-	}
-	return CanonicalMySQLRelation(mysqlLowerCaseTableNames, schemaName, table, column)
 }
 
 type columnID struct {

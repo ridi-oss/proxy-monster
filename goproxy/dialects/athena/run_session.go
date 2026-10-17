@@ -37,7 +37,7 @@ type runSession struct {
 
 func (t *target) NewRunSession(_ context.Context, client spi.SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.TargetDbSession, error) {
 	// Every Athena query names the configured database, so a run cannot open anywhere else.
-	if defaultSchema != "" && defaultSchema != t.config.database {
+	if defaultSchema != "" && defaultSchema != t.databaseIdentity() {
 		return nil, fmt.Errorf("athena run cannot open in database %q: the target is configured for %q", defaultSchema, t.config.database)
 	}
 	session, err := t.newEnforcementSession(client, token, connectionID)
@@ -54,10 +54,10 @@ func (s *runSession) OnOpen(ctx context.Context, commands []*pb.ProxyCommand) er
 	return s.session.onOpen(commands)
 }
 
-// Namespace is the configured catalog and database: every query execution names them, and nothing on the
-// session changes them.
+// Namespace is the configured catalog and database in canonical spelling: every query execution names them,
+// and nothing on the session changes them.
 func (s *runSession) Namespace() (string, []string, error) {
-	return s.target.config.catalog, []string{s.target.config.database}, nil
+	return s.target.catalogIdentity(), []string{s.target.databaseIdentity()}, nil
 }
 
 func (s *runSession) ServeStatement(sql string, maxRows int) (result engine.StatementResult, err error) {

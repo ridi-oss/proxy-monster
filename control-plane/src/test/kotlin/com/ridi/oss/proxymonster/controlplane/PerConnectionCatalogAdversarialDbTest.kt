@@ -47,7 +47,7 @@ abstract class PerConnectionCatalogAdversarialDbContract {
         principal: String,
         schemas: List<String>,
     ): OpenConnection {
-        val opened = fixture.core.connectionCatalog.open(Binding(fixture.datasource.name, principal, "USER", fixture.datasource.effectiveCatalog), fixture.datasource.namespaces(schemas))
+        val opened = fixture.core.connectionCatalog.open(Binding(fixture.datasource.name, principal, "USER", fixture.datasource.effectiveCatalog, fixture.datasource.engine), fixture.datasource.namespaces(schemas))
         schemas.distinct().forEach { fixture.pushFromTarget(target, opened.connectionId, it) }
         return opened
     }

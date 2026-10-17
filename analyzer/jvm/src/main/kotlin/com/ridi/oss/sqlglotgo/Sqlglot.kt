@@ -30,6 +30,7 @@ object Sqlglot {
     private val splitStatementsHandle: MethodHandle
     private val parseColumnsHandle: MethodHandle
     private val introspectedColumnsHandle: MethodHandle
+    private val engineCallHandle: MethodHandle
     private val sqlNormalizeHandle: MethodHandle
     private val freeHandle: MethodHandle
 
@@ -65,6 +66,10 @@ object Sqlglot {
         )
         introspectedColumnsHandle = linker.downcallHandle(
             lookup.find("IntrospectedColumns").orElseThrow { IllegalStateException("IntrospectedColumns not exported by native lib") },
+            FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS),
+        )
+        engineCallHandle = linker.downcallHandle(
+            lookup.find("EngineCall").orElseThrow { IllegalStateException("EngineCall not exported by native lib") },
             FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS),
         )
         sqlNormalizeHandle = linker.downcallHandle(
@@ -105,6 +110,9 @@ object Sqlglot {
 
     /** Same messages as [parseColumns], for names the engine's own catalog reported. */
     fun introspectedColumns(requestBytes: ByteArray): ByteArray = callByteBufferHandle(introspectedColumnsHandle, requestBytes)
+
+    /** A marshaled `analyzerv1.EngineCallRequest` in, a marshaled `EngineCallResponse` out. */
+    fun engineCall(requestBytes: ByteArray): ByteArray = callByteBufferHandle(engineCallHandle, requestBytes)
 
     /**
      * The byte-buffer FFM calling convention [analyzeStatement] follows: one byte buffer in (a

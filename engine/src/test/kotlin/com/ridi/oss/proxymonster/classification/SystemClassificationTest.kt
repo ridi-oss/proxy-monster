@@ -34,7 +34,7 @@ class SystemClassificationTest {
     }
 
     @Test
-    fun `case-insensitive within a system schema, catalog wildcard vs pinned`() {
+    fun `names match exactly and a pinned catalog must match`() {
         val c = SystemClassifier(
             SystemManifest(
                 engine = "mysql", series = "8.0", manifestVersion = 1, curatedThrough = "8.0.44",
@@ -42,7 +42,10 @@ class SystemClassificationTest {
                 relations = listOf(ObjectRule("mysql", "user", "system:critical")),
             ),
         )
-        assertEquals(SystemTag.CRITICAL, c.classifyRelation("def", "MySQL", "USER"), "match folds case")
+        assertEquals(SystemTag.CRITICAL, c.classifyRelation("def", "mysql", "user"))
+        assertEquals(SystemTag.CATALOG, c.classifyRelation("def", "mysql", "USER"), "lower_case_table_names=0 `USER` is another table")
+        assertNull(c.classifyRelation("def", "MySQL", "user"), "a canonical `MySQL` is a user database")
+        assertNull(c.classifyRelation("DEF", "mysql", "user"), "a catalog matches exactly")
         assertNull(c.classifyRelation("otherdb", "mysql", "user"), "a pinned catalog must match")
     }
 
@@ -60,6 +63,10 @@ class SystemClassificationTest {
         assertEquals(SystemTag.DATA_LEAK, c.classifyFunction("acme", "pg_catalog", "pg_read_file"), "family in a system schema")
         assertEquals(SystemTag.CATALOG, c.classifyFunction("acme", "pg_catalog", "lower"), "an ordinary system-schema builtin is catalog")
         assertNull(c.classifyFunction("acme", "public", "my_udf"), "a user function is not shipped-classified")
+        assertNull(c.classifyBareFunction("PG_READ_FILE"), "a quoted user function is not the builtin")
+        assertEquals(SystemTag.DATA_LEAK, c.classifyBareFunction("pg_read_file"))
+        assertNull(BaselineDangerousFunctions.classify("PG_READ_FILE"))
+        assertEquals(SystemTag.DATA_LEAK, BaselineDangerousFunctions.classify("pg_read_file"))
     }
 
     @Test
@@ -73,7 +80,9 @@ class SystemClassificationTest {
             ),
         )
         assertEquals(SystemTag.ACTIVITY, c.classifyRelation("acme", "pg_catalog", "pg_locks"))
-        assertEquals(SystemTag.CATALOG, c.classifyColumn("acme", "PG_CATALOG", "PG_LOCKS", "TRANSACTIONID"))
+        assertEquals(SystemTag.CATALOG, c.classifyColumn("acme", "pg_catalog", "pg_locks", "transactionid"))
+        assertEquals(SystemTag.ACTIVITY, c.classifyColumn("acme", "pg_catalog", "pg_locks", "TRANSACTIONID"), "a quoted column is another column")
+        assertNull(c.classifyColumn("acme", "PG_CATALOG", "pg_locks", "transactionid"))
         assertEquals(SystemTag.ACTIVITY, c.classifyColumn("acme", "pg_catalog", "pg_locks", "pid"))
         assertNull(c.classifyColumn("acme", "public", "pg_locks", "transactionid"))
     }
@@ -100,7 +109,9 @@ class SystemClassificationTest {
                 redactedColumns = listOf(RedactedColumnRule("pg_catalog", "pg_foreign_server", "srvoptions")),
             ),
         )
-        assertTrue(c.redactsColumn("acme", "PG_CATALOG", "PG_FOREIGN_SERVER", "SRVOPTIONS"))
+        assertTrue(c.redactsColumn("acme", "pg_catalog", "pg_foreign_server", "srvoptions"))
+        assertFalse(c.redactsColumn("acme", "pg_catalog", "PG_FOREIGN_SERVER", "SRVOPTIONS"))
+        assertFalse(c.redactsColumn("acme", "PG_CATALOG", "pg_foreign_server", "srvoptions"))
         assertFalse(c.redactsColumn("acme", "pg_catalog", "pg_foreign_server", "srvname"))
         assertFalse(c.redactsColumn("acme", "public", "pg_foreign_server", "srvoptions"))
         assertEquals(SystemTag.CATALOG, c.classifyRelation("acme", "pg_catalog", "pg_foreign_server"))
@@ -305,12 +316,12 @@ class SystemClassificationTest {
     fun `real MySQL classifications (incl Aurora rds_) are correct`() {
         val c = SystemClassificationStore.load().classifierFor("mysql", "8.0")!!
         assertEquals(SystemTag.CRITICAL, c.classifyRelation("def", "mysql", "user"))
-        assertEquals(SystemTag.ACTIVITY, c.classifyRelation("def", "information_schema", "PROCESSLIST"))
-        assertEquals(SystemTag.CRITICAL, c.classifyRelation("def", "information_schema", "USER_PRIVILEGES"))
-        assertEquals(SystemTag.DATA_LEAK, c.classifyRelation("def", "information_schema", "COLUMN_STATISTICS"))
-        assertEquals(SystemTag.ACTIVITY, c.classifyRelation("def", "information_schema", "PROCESSLIST"))
+        assertEquals(SystemTag.ACTIVITY, c.classifyRelation("def", "information_schema", "processlist"))
+        assertEquals(SystemTag.CRITICAL, c.classifyRelation("def", "information_schema", "user_privileges"))
+        assertEquals(SystemTag.DATA_LEAK, c.classifyRelation("def", "information_schema", "column_statistics"))
+        assertEquals(SystemTag.ACTIVITY, c.classifyRelation("def", "information_schema", "processlist"))
         assertEquals(SystemTag.ACTIVITY, c.classifyRelation("def", "performance_schema", "events_statements_current"), "family")
-        assertEquals(SystemTag.CATALOG, c.classifyRelation("def", "information_schema", "TABLES"), "structure stays open")
+        assertEquals(SystemTag.CATALOG, c.classifyRelation("def", "information_schema", "tables"), "structure stays open")
         assertEquals(SystemTag.DATA_LEAK, c.classifyFunction("def", "__builtin__", "load_file"))
         assertEquals(SystemTag.CATALOG, c.classifyFunction("def", "__builtin__", "now"), "ordinary builtin is catalog")
         // Aurora proprietary management procedures (mysql.rds_* family → critical)
@@ -323,7 +334,7 @@ class SystemClassificationTest {
         assertNull(c.classifyCommand("SHOW_PROCESSLIST"))
         assertEquals(SystemTag.CRITICAL, c.classifyRelation("def", "mysql", "global_grants"))
         assertEquals(SystemTag.CRITICAL, c.classifyRelation("def", "mysql", "user"))
-        assertEquals(SystemTag.ACTIVITY, c.classifyRelation("def", "information_schema", "PROCESSLIST"))
+        assertEquals(SystemTag.ACTIVITY, c.classifyRelation("def", "information_schema", "processlist"))
     }
 
     @Test

@@ -19,7 +19,7 @@ import { toast } from 'sonner'
 import { mutate } from 'swr'
 import { refreshDatasource, putClassification } from '@/lib/api/client'
 import { useCatalog, useDatasources, swrKeys } from '@/lib/hooks'
-import { connectionEndpoint, groupCatalogTables, tableKey } from '@/lib/catalog'
+import { classificationTarget, connectionEndpoint, groupCatalogTables, tableKey } from '@/lib/catalog'
 import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -67,6 +67,7 @@ export function DatasourceCatalog({ id }: { id: number }) {
   }
 
   const handleImport = async (file: File) => {
+    if (!ds) return
     setImporting(true)
     try {
       const data = JSON.parse(await file.text())
@@ -82,10 +83,7 @@ export function DatasourceCatalog({ id }: { id: number }) {
       for (const c of list) {
         if (!c.catalog || !c.table || !c.column) continue
         await putClassification(id, {
-          catalog: c.catalog,
-          schema: c.schema,
-          table: c.table,
-          column: c.column,
+          ...classificationTarget(ds, { catalog: c.catalog, schema: c.schema, table: c.table, column: c.column }),
           tags: c.tags ?? [],
           maskFnId: c.maskFnId ?? null,
         })
@@ -245,7 +243,7 @@ export function DatasourceCatalog({ id }: { id: number }) {
                         </td>
                         <td className="border-b px-4 py-1.5">
                           {/* ClassifyPopover's trigger is the tags/mask badge (or "+ classify"). */}
-                          <ClassifyPopover datasourceId={id} col={c} />
+                          {ds && <ClassifyPopover datasource={ds} col={c} />}
                         </td>
                       </tr>
                     )

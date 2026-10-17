@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.analyzer.pb.catalogSnapshot
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import org.flywaydb.core.Flyway
@@ -112,6 +113,7 @@ class RoleMaskFnSoftDeleteDbTest {
     @Test
     fun `a soft-deleted mask function falls back and its name is reusable`() {
         val datasource = datasourceStore.create(DatasourceInput("maskfn-ds-${System.nanoTime()}", "mysql"))
+        datasourceStore.storePushedCatalog(datasource.id, listOf("app"), 0, "8.0.36", catalogSnapshot {}, currentCatalog = "def")
         val name = "email-mask-${System.nanoTime()}"
         val fn = policyStore.createMaskFn(MaskFnInput(name, "LAST_N"))
         datasourceStore.upsertClassification(

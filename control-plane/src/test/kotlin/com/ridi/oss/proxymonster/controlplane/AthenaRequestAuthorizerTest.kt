@@ -28,6 +28,7 @@ import java.time.Clock
 import java.time.Instant
 import java.time.ZoneOffset
 import javax.sql.DataSource
+import org.junit.jupiter.api.Disabled
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -106,6 +107,24 @@ class AthenaRequestAuthorizerTest {
         assertEquals(RequestAdmission.Denied("native.not_authorized"), admit(descriptor("GetTableMetadata", body = body), authz(invokeAll)))
         assertEquals(RequestAdmission.Denied("native.invalid_descriptor"), admit(descriptor("GetTableMetadata", body = """{"CatalogName":"awsdatacatalog"}"""), scoped))
         assertEquals(RequestAdmission.Denied("native.invalid_descriptor"), admit(descriptor("ListWorkGroups") { addObservations(observation("workgroup", "primary")) }, scoped))
+    }
+
+    @Test
+    @Disabled("pending-name-fix: the GetTableMetadata resource id keeps the request's spelling, so a lowercase forbid misses it")
+    fun `a forbid on the canonical table holds against a mixed-case metadata request`() {
+        val gate = authz(
+            connect,
+            invokeAll,
+            """forbid(principal, action == Action::"native.invoke", resource) when { resource.kind == "table" && resource.id == "awsdatacatalog/analytics/users" };""",
+        )
+        for (body in listOf(
+            """{"CatalogName":"awsdatacatalog","DatabaseName":"analytics","TableName":"users"}""",
+            """{"CatalogName":"awsdatacatalog","DatabaseName":"analytics","TableName":"Users"}""",
+            """{"CatalogName":"AwsDataCatalog","DatabaseName":"Analytics","TableName":"USERS"}""",
+        )) {
+            val admission = admit(descriptor("GetTableMetadata", body = body), gate)
+            assertTrue(admission is RequestAdmission.Denied, "$body: $admission")
+        }
     }
 
     @Test

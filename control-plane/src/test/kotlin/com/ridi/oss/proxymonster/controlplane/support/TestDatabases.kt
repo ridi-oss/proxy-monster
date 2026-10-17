@@ -147,7 +147,12 @@ object SharedPostgres {
         DriverManager.getConnection(container.jdbcUrl, container.username, container.password)
 }
 
-object SharedMySql {
+object SharedMySql : SharedMySqlServer(lowerCaseTableNames = null)
+
+/** A second MySQL server initialized with lower_case_table_names=1, started on first use. */
+object SharedMySqlLowerCaseTableNames1 : SharedMySqlServer(lowerCaseTableNames = 1)
+
+open class SharedMySqlServer(private val lowerCaseTableNames: Int?) {
     val IMAGE: String = imageFor("PM_TEST_MYSQL_IMAGE", "mysql:8.4")
     private val counter = AtomicInteger()
 
@@ -181,6 +186,7 @@ object SharedMySql {
 
     private val container: MySQLContainer<*> by lazy {
         MySQLContainer(IMAGE).apply {
+            lowerCaseTableNames?.let { withCommand("--lower-case-table-names=$it") }
             start()
             DriverManager.getConnection(jdbcUrl, "root", password).use { c ->
                 c.createStatement().use { it.executeUpdate("GRANT SELECT ON mysql.func TO '$username'@'%'") }

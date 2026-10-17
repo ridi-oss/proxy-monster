@@ -160,8 +160,7 @@ class ApprovalService(
         val roleId = roleIdOf(input, roleName)
 
         // Split server-side, so the stored boundary is the engine's rather than a client's guess.
-        val splitConfig = ds.splitEngineConfig() ?: throw unsplittableSql()
-        val statements = splitStatements(sql, splitConfig) ?: throw unsplittableSql()
+        val statements = splitStatements(sql, ds.splitEngineConfig()) ?: throw unsplittableSql()
 
         val analysis = analyze(principal, ds, statements, requesterIp)
         val request = accessStore.createQueryRequest(
@@ -376,8 +375,7 @@ class ApprovalService(
     fun discoverRoles(principal: String, requesterIp: String?, datasourceId: Long, sql: String): DiscoverRolesResponse {
         val ds = datasourceStore.get(datasourceId) ?: throw serviceNotFound("datasource")
         val discoverContext = AuthzContext(requesterIp = requesterIp)
-        val splitConfig = ds.splitEngineConfig() ?: throw unsplittableSql()
-        val statements = splitStatements(sql, splitConfig) ?: throw unsplittableSql()
+        val statements = splitStatements(sql, ds.splitEngineConfig()) ?: throw unsplittableSql()
         val catalog = datasourceStore.catalog(ds.id)
         return discoverRoles(policyStore.listRoles(), statements.size) { index, roles, channel ->
             decideQuery(
@@ -550,8 +548,7 @@ class ApprovalService(
         if (input.reason != null && input.reason.isBlank()) throw fieldRequired("reason")
         val ds = req.datasourceId?.let(datasourceStore::get) ?: throw serviceNotFound("datasource")
         if (!mayRequest(principal, requesterIp, ds)) throw serviceForbidden()
-        val splitConfig = ds.splitEngineConfig() ?: throw unsplittableSql()
-        val statements = splitStatements(input.sql, splitConfig)?.takeIf { it.isNotEmpty() } ?: throw unsplittableSql()
+        val statements = splitStatements(input.sql, ds.splitEngineConfig())?.takeIf { it.isNotEmpty() } ?: throw unsplittableSql()
         val edited = revise(req, ds, input.sql, statements, trimmedTitle(input.title), input.reason?.trim(), actor, requesterIp)
             ?: throw notEditable()
         log.info("query approval edited request={} revision={} by={}", id, edited.revision, principal)

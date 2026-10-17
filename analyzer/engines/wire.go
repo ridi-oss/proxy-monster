@@ -156,13 +156,13 @@ func columnNamesSafe(reqBytes []byte, names func(Datasource, []*pb.Column) ([]Co
 	}
 	target, err := eng.Datasource(req.GetDatasource())
 	if err != nil {
-		return columnNamesFailure
+		return datasourceRejected
 	}
 	canonical, err := names(target, req.GetColumns())
 	if err != nil {
 		return columnNamesFailure
 	}
-	resp := &pb.ColumnNamesResponse{Ok: true}
+	resp := &pb.ColumnNamesResponse{}
 	for _, n := range canonical {
 		resp.Columns = append(resp.Columns, &pb.Column{Catalog: n.Catalog().String(), Schema: n.Schema().String(), Table: n.Table(), Column: n.Column()})
 	}
@@ -173,7 +173,9 @@ func columnNamesSafe(reqBytes []byte, names func(Datasource, []*pb.Column) ([]Co
 	return encoded
 }
 
-var columnNamesFailure = must(proto.Marshal(&pb.ColumnNamesResponse{Ok: false}))
+var columnNamesFailure = must(proto.Marshal(&pb.ColumnNamesResponse{Error: pb.ColumnNamesResponse_INVALID}))
+
+var datasourceRejected = must(proto.Marshal(&pb.ColumnNamesResponse{Error: pb.ColumnNamesResponse_DATASOURCE_REJECTED}))
 
 // marshalErrorFallback is a statically-valid encoded fail-closed StatementFacts, computed once so
 // mustFailProto never has to marshal twice on the (essentially unreachable) path where encoding the

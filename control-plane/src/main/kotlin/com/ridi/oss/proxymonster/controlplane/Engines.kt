@@ -1,6 +1,8 @@
 package com.ridi.oss.proxymonster.controlplane
 
 import com.ridi.oss.proxymonster.analyzer.pb.EngineConfig as PbEngineConfig
+import com.ridi.oss.proxymonster.analyzer.pb.EngineDatasource
+import com.ridi.oss.proxymonster.analyzer.pb.engineDatasource
 import com.ridi.oss.proxymonster.analyzer.pb.FunctionCatalog
 import com.ridi.oss.proxymonster.analyzer.pb.SessionObservation
 import com.ridi.oss.proxymonster.analyzer.pb.StatementFacts
@@ -45,14 +47,10 @@ interface EngineDefinition {
     /** The schema an unqualified table resolves to when no per-request schema is given. */
     fun defaultSchema(dbName: String): String
     /** Maps the cross-engine "public" selector to [defaultSchema]; any other value is an explicit schema. */
-    /** The MySQL lower_case_table_names mode the analyzer needs, or null for an engine without one. */
-    fun requireCaseMode(lowerCaseTableNames: Int?): Int?
     /** [systemSchemas] membership with engine-correct casing; the catalog pool key predicate. */
     fun isFixedSystemSchema(schema: String): Boolean
     /** [isFixedSystemSchema] plus the engine's ephemeral per-session schemas (Postgres pg_temp_*, pg_toast). */
     fun isSystemSchema(schema: String): Boolean
-    /** The analyzer config for splitting a batch before any session exists; null when introspection has not captured what the dialect needs. */
-    fun splitEngineConfig(datasource: Datasource): PbEngineConfig?
     /**
      * The analyzer config for one statement decision, with the per-statement facts the proxy sent (session
      * observations and, for Athena, the request scope). A definition refuses facts it does not model.
@@ -96,14 +94,22 @@ val Engine.isPostgres: Boolean get() = this == Engine.POSTGRES
 
 fun Engine.catalogName(dbName: String): String = definition.catalogName(dbName)
 fun Engine.defaultSchema(dbName: String): String = definition.defaultSchema(dbName)
-fun Engine.requireCaseMode(lowerCaseTableNames: Int?): Int? = definition.requireCaseMode(lowerCaseTableNames)
 fun Engine.isFixedSystemSchema(schema: String): Boolean = definition.isFixedSystemSchema(schema)
 fun Engine.isSystemSchema(schema: String): Boolean = definition.isSystemSchema(schema)
 fun Engine.parseServerVersion(raw: String?): Pair<String?, Boolean> = definition.parseServerVersion(raw)
 fun Engine.functionCatalog(routines: Map<String, List<String>>, engineVersion: String?): FunctionCatalog =
     definition.functionCatalog(routines, engineVersion)
 fun Engine.implicitColumns(rows: List<CatalogColumn>): List<CatalogColumn> = definition.implicitColumns(rows)
-fun Datasource.splitEngineConfig(): PbEngineConfig? = engine.definition.splitEngineConfig(this)
+fun Datasource.splitEngineConfig(): PbEngineConfig = engine.definition.analyzerEngineConfig(this, SessionObservation.getDefaultInstance())
+
+/** What introspection reported; the analyzer refuses to fold names when its engine needs a fact still missing. */
+fun Datasource.engineDatasource(): EngineDatasource {
+    val ds = this
+    return engineDatasource {
+        ds.engineVersion?.let { engineVersion = it }
+        ds.mysqlLowerCaseTableNames?.let { mysqlLowerCaseTableNames = it }
+    }
+}
 
 fun engineFromWire(raw: String): Engine =
     engineFromWireOrNull(raw) ?: throw IllegalArgumentException("unknown datasource engine '$raw'")

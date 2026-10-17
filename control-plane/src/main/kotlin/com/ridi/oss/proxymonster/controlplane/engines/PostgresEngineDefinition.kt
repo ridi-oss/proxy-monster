@@ -1,6 +1,5 @@
 package com.ridi.oss.proxymonster.controlplane.engines
 
-import com.ridi.oss.proxymonster.analyzer.pb.engineDatasource
 import com.ridi.oss.proxymonster.analyzer.pb.EngineConfig
 import com.ridi.oss.proxymonster.analyzer.pb.FunctionCatalog
 import com.ridi.oss.proxymonster.analyzer.pb.functionCatalog
@@ -11,6 +10,7 @@ import com.ridi.oss.proxymonster.analyzer.pb.SessionObservation
 import com.ridi.oss.proxymonster.analyzer.pb.engineConfig
 import com.ridi.oss.proxymonster.controlplane.CatalogColumn
 import com.ridi.oss.proxymonster.controlplane.Datasource
+import com.ridi.oss.proxymonster.controlplane.engineDatasource
 import com.ridi.oss.proxymonster.controlplane.EngineDefinition
 import com.ridi.oss.proxymonster.controlplane.MetadataRequestAuthorizer
 import com.ridi.oss.proxymonster.controlplane.RequestAuthorizer
@@ -32,17 +32,14 @@ internal object PostgresEngineDefinition : EngineDefinition {
 
     override fun catalogName(dbName: String): String = dbName
     override fun defaultSchema(dbName: String): String = "public"
-    override fun requireCaseMode(lowerCaseTableNames: Int?): Int? = null
     override fun isFixedSystemSchema(schema: String): Boolean = schema in systemSchemas
     override fun isSystemSchema(schema: String): Boolean =
         isFixedSystemSchema(schema) || schema.startsWith("pg_temp_") || schema.startsWith("pg_toast")
     override val defaultSchemaStatement = { schema: String -> "SET search_path TO \"${schema.replace("\"", "\"\"")}\"" }
 
-    override fun splitEngineConfig(datasource: Datasource): EngineConfig = analyzerEngineConfig(datasource, SessionObservation.getDefaultInstance())
-
     override fun analyzerEngineConfig(datasource: Datasource, session: SessionObservation): EngineConfig = engineConfig {
         engine = this@PostgresEngineDefinition.engine
-        this.datasource = engineDatasource { engineVersion = datasource.engineVersion ?: "" }
+        this.datasource = datasource.engineDatasource()
         this.session = session
     }
 

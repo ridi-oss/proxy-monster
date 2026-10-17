@@ -104,8 +104,7 @@ class EditorTaskService(
         if (!autoApproveTask(principal, own, ds, AuthzContext(requesterIp = requesterIp), authz, Channel.EDITOR)) {
             throw serviceForbidden()
         }
-        val splitConfig = ds.splitEngineConfig() ?: throw unsplittableSql()
-        val statements = splitStatements(sql, splitConfig) ?: throw unsplittableSql()
+        val statements = splitStatements(sql, ds.splitEngineConfig()) ?: throw unsplittableSql()
         val task = accessStore.createEditorTask(principal, ds.id, statements, own.roles.toList(), approver = principal)
         val childId = accessStore.editorChildId(task.id) ?: -1L
         // APPROVED → EXECUTING and the child NULL → RUNNING commit together, so a cancel can't slip into a gap.

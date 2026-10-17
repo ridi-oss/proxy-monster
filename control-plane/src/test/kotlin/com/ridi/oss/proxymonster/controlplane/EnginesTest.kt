@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.probe.splitStatements
 import com.ridi.oss.proxymonster.analyzer.pb.SessionObservation
 import com.ridi.oss.proxymonster.analyzer.pb.sessionObservation
 import com.ridi.oss.proxymonster.analyzer.pb.mySqlSession
@@ -78,18 +79,16 @@ class EnginesTest {
         assertEquals(1, mysqlConfig.datasource.mysqlLowerCaseTableNames)
         assertTrue(mysqlConfig.session.mysql.ansiQuotes)
         assertEquals("8.0", mysql.engine.definition.manifestSeries(mysqlConfig.datasource.engineVersion))
-        assertFalse(mysql.splitEngineConfig()!!.session.mysql.ansiQuotes)
-        assertNull(mysql.copy(engineVersion = null).splitEngineConfig())
-        assertNull(mysql.copy(mysqlLowerCaseTableNames = null).splitEngineConfig())
-        assertFailsWith<IllegalArgumentException> {
-            mysql.engine.definition.analyzerEngineConfig(mysql.copy(mysqlLowerCaseTableNames = null), SessionObservation.getDefaultInstance())
-        }
-        val postgresConfig = postgres.splitEngineConfig()!!
+        assertFalse(mysql.splitEngineConfig().session.mysql.ansiQuotes)
+        // The analyzer, not the control plane, refuses a MySQL datasource introspection has not reported.
+        assertNull(splitStatements("SELECT 1", mysql.copy(engineVersion = null).splitEngineConfig()))
+        assertNull(splitStatements("SELECT 1", mysql.copy(mysqlLowerCaseTableNames = null).splitEngineConfig()))
+        val postgresConfig = postgres.splitEngineConfig()
         assertEquals(Engine.POSTGRES, postgresConfig.engine)
         assertEquals("17.9", postgresConfig.datasource.engineVersion)
         assertFalse(postgresConfig.datasource.hasMysqlLowerCaseTableNames())
         assertEquals("17", postgres.engine.definition.manifestSeries(postgresConfig.datasource.engineVersion))
-        assertEquals("", postgres.copy(engineVersion = null).splitEngineConfig()!!.datasource.engineVersion)
+        assertEquals("", postgres.copy(engineVersion = null).splitEngineConfig().datasource.engineVersion)
     }
 
     @Test fun `unregistered engines have no metadata or version fallback`() {

@@ -122,9 +122,9 @@ class GitHubSourceFlow(
             throw TaskServiceException(HttpStatusCode.Conflict, ApiError("approval.github_stale_head", mapOf("head" to pr.headSha)))
         }
         val scope = input.scope?.trim()?.takeIf { it.isNotEmpty() } ?: "${ds.name}/${input.schema}"
-        val splitConfig = ds.splitEngineConfig() ?: throw unsplittable()
         val dialect = ds.engine.dialect
 
+        val splitConfig = ds.splitEngineConfig()
         val keyed = files.map { f ->
             val statements = splitStatements(f.content, splitConfig)?.takeIf { it.isNotEmpty() } ?: throw unsplittable()
             val hash = contentHash(f.content, dialect)

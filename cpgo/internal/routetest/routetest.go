@@ -37,6 +37,8 @@ type fakeAuthz struct {
 	Notified []string
 	// Ended is each principal Kotlin was told had its web sessions ended.
 	Ended []string
+	// Attached is what ProxiesAttached answers; Deleted is each datasource Kotlin was told was deleted.
+	Attached, Deleted []string
 	// AtSignal, when set, records what another connection sees each time PoliciesChanged runs.
 	AtSignal func() string
 	Seen     []string
@@ -48,6 +50,13 @@ func (f *fakeAuthz) Validate(_ context.Context, src string) ([]string, error) {
 		return []string{"unrecognized action `BAD`"}, nil
 	}
 	return nil, nil
+}
+
+func (f *fakeAuthz) ProxiesAttached(context.Context) ([]string, error) { return f.Attached, nil }
+
+func (f *fakeAuthz) DatasourceDeleted(_ context.Context, name string) error {
+	f.Deleted = append(f.Deleted, name)
+	return nil
 }
 
 func (f *fakeAuthz) SessionsEnded(_ context.Context, p string) error {

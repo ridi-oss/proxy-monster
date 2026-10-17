@@ -9,7 +9,7 @@ import (
 	"time"
 
 	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
-	"github.com/ridi-oss/proxy-monster/goproxy/engine"
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
@@ -18,7 +18,7 @@ import (
 // Athena JSON API to clients and the editor run path.
 type Provider struct{}
 
-func (Provider) Dialect() engine.Dialect { return engine.Athena }
+func (Provider) Engine() *engines.Engine { return engines.Athena }
 
 func (Provider) NewDb(target spi.TargetDb) (spi.Db, error) {
 	cfg, err := configure(os.LookupEnv, target)

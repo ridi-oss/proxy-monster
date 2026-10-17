@@ -9,9 +9,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/cp"
-	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
@@ -98,7 +98,7 @@ func TestPostgresCatalogThroughDatabaseAlias(t *testing.T) {
 		}
 	}
 	gateway, rewritten := dbtest.PostgresAlias(t, database, "advisory")
-	target := openDb(t, engine.Postgres, spi.TargetDb{Host: gateway.Host, Port: gateway.Port, Db: gateway.DB, User: gateway.User, Password: gateway.Password})
+	target := openDb(t, engines.Postgres, spi.TargetDb{Host: gateway.Host, Port: gateway.Port, Db: gateway.DB, User: gateway.User, Password: gateway.Password})
 	catalog, err := target.Introspect(ctx)
 	if err != nil {
 		t.Fatal(err)

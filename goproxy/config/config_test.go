@@ -1,6 +1,7 @@
 package config
 
 import (
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	"net/netip"
 	"os"
 	"slices"
@@ -8,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
@@ -21,17 +21,17 @@ import (
 // default (blank == absent either way, including the string-typed ports which Load(testRegistry()) parses
 // via parsePort) are set to "" via t.Setenv.
 type configTestProvider struct {
-	dialect engine.Dialect
+	engine *engines.Engine
 }
 
-func (p configTestProvider) Dialect() engine.Dialect          { return p.dialect }
+func (p configTestProvider) Engine() *engines.Engine          { return p.engine }
 func (configTestProvider) NewDb(spi.TargetDb) (spi.Db, error) { return nil, nil }
 
 func testRegistry() spi.Registry {
 	return spi.MustRegistry(
-		configTestProvider{dialect: engine.MySQL},
-		configTestProvider{dialect: engine.Postgres},
-		configTestProvider{dialect: engine.Athena},
+		configTestProvider{engine: engines.MySQL},
+		configTestProvider{engine: engines.Postgres},
+		configTestProvider{engine: engines.Athena},
 	)
 }
 
@@ -77,8 +77,8 @@ func TestLoadDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.Engine != "mysql" {
-		t.Errorf("Engine = %q, want mysql", cfg.Engine)
+	if cfg.EngineName != "mysql" {
+		t.Errorf("EngineName = %q, want mysql", cfg.EngineName)
 	}
 	if cfg.ProxyPort != 6033 {
 		t.Errorf("ProxyPort = %d, want 6033 (mysql default)", cfg.ProxyPort)
@@ -198,8 +198,8 @@ func TestLoadPostgresDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.Engine != "postgres" {
-		t.Errorf("Engine = %q, want postgres (lowercased)", cfg.Engine)
+	if cfg.EngineName != "postgres" {
+		t.Errorf("EngineName = %q, want postgres (lowercased)", cfg.EngineName)
 	}
 	if cfg.ProxyPort != 6432 {
 		t.Errorf("ProxyPort = %d, want 6432 (postgres default)", cfg.ProxyPort)
@@ -369,7 +369,7 @@ func TestTLSEnabled(t *testing.T) {
 }
 
 func TestValidateRequiresDatasourceName(t *testing.T) {
-	cfg := &Config{Engine: "mysql"}
+	cfg := &Config{EngineName: "mysql"}
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("Validate() = nil, want error for missing DatasourceName")
 	}
@@ -380,8 +380,8 @@ func TestValidateRejectsPartialTLSConfig(t *testing.T) {
 		name string
 		cfg  *Config
 	}{
-		{"cert only", &Config{Engine: "mysql", DatasourceName: "ds", TLSCertPath: "/cert.pem"}},
-		{"key only", &Config{Engine: "mysql", DatasourceName: "ds", TLSKeyPath: "/key.pem"}},
+		{"cert only", &Config{EngineName: "mysql", DatasourceName: "ds", TLSCertPath: "/cert.pem"}},
+		{"key only", &Config{EngineName: "mysql", DatasourceName: "ds", TLSKeyPath: "/key.pem"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -393,22 +393,20 @@ func TestValidateRejectsPartialTLSConfig(t *testing.T) {
 }
 
 func TestValidateAllowsCompleteOrAbsentTLSConfig(t *testing.T) {
-	provider, _ := testRegistry().For(engine.MySQL)
-	both := &Config{Engine: "mysql", Dialect: engine.MySQL, Provider: provider, DatasourceName: "ds", TLSCertPath: "/cert.pem", TLSKeyPath: "/key.pem"}
+	provider, _ := testRegistry().For(engines.MySQL)
+	both := &Config{EngineName: "mysql", Engine: engines.MySQL, Provider: provider, DatasourceName: "ds", TLSCertPath: "/cert.pem", TLSKeyPath: "/key.pem"}
 	if err := both.Validate(); err != nil {
 		t.Errorf("Validate() with both TLS paths set = %v, want nil", err)
 	}
-	neither := &Config{Engine: "mysql", Dialect: engine.MySQL, Provider: provider, DatasourceName: "ds"}
+	neither := &Config{EngineName: "mysql", Engine: engines.MySQL, Provider: provider, DatasourceName: "ds"}
 	if err := neither.Validate(); err != nil {
 		t.Errorf("Validate() with no TLS paths set = %v, want nil", err)
 	}
 }
 
 func TestValidateRejectsUnsupportedEngine(t *testing.T) {
-	// Load parses PM_ENGINE to Dialect once; an unrecognized value yields the fail-closed sentinel, which
-	// Validate must reject.
-	badDialect, _ := engine.ParseDialect("oracle")
-	cfg := &Config{Engine: "oracle", Dialect: badDialect, DatasourceName: "ds"}
+	// Load parses PM_ENGINE once; an unrecognized value leaves Engine nil, which Validate must reject.
+	cfg := &Config{EngineName: "oracle", DatasourceName: "ds"}
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("Validate() = nil, want error for an unsupported engine")
 	}
@@ -416,9 +414,9 @@ func TestValidateRejectsUnsupportedEngine(t *testing.T) {
 
 func TestValidateAcceptsRegisteredEngines(t *testing.T) {
 	for _, name := range []string{"mysql", "postgres", "athena"} {
-		dialect, _ := engine.ParseDialect(name)
-		provider, _ := testRegistry().For(dialect)
-		cfg := &Config{Engine: name, Dialect: dialect, Provider: provider, DatasourceName: "ds"}
+		e, _ := engines.Parse(name)
+		provider, _ := testRegistry().For(e)
+		cfg := &Config{EngineName: name, Engine: e, Provider: provider, DatasourceName: "ds"}
 		if err := cfg.Validate(); err != nil {
 			t.Errorf("Validate() for engine %q = %v, want nil", name, err)
 		}
@@ -428,8 +426,7 @@ func TestValidateAcceptsRegisteredEngines(t *testing.T) {
 func TestValidateOrderDatasourceNameCheckedBeforeEngine(t *testing.T) {
 	// Both the datasource name AND the engine are invalid; the datasource-name error must win (it is
 	// checked first), so a caller logging only the first error still gets the actionable one.
-	badDialect, _ := engine.ParseDialect("oracle")
-	cfg := &Config{Engine: "oracle", Dialect: badDialect}
+	cfg := &Config{EngineName: "oracle"}
 	err := cfg.Validate()
 	if err == nil {
 		t.Fatal("Validate() = nil, want error")

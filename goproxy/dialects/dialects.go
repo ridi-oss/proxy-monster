@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/db"
 	"github.com/ridi-oss/proxy-monster/goproxy/dialects/athena"
@@ -25,10 +26,10 @@ const tableDetailConnectTimeout = 5 * time.Second
 
 // sqlProvider is a database/sql-backed dialect: MySQL and PostgreSQL differ only in the functions below.
 type sqlProvider struct {
-	dialect engine.Dialect
-	db      engine.Db
-	open    func(spi.TargetDb) (*sql.DB, error)
-	probe   introspect.NamespaceProbe
+	engine *engines.Engine
+	db     engine.Db
+	open   func(spi.TargetDb) (*sql.DB, error)
+	probe  introspect.NamespaceProbe
 	// catalog reads the connection's current catalog; MySQL pins "def", Postgres asks the server.
 	catalog    func(context.Context, *sql.Conn) (string, error)
 	readDetail func(*sql.Conn, string, string) (*spi.TableDetail, error)
@@ -36,7 +37,7 @@ type sqlProvider struct {
 	newSession func(context.Context, spi.TargetDb, engine.Db, spi.SessionClient, string, []byte, engine.ExecGuard, time.Duration, string) (spi.TargetDbSession, error)
 }
 
-func (p sqlProvider) Dialect() engine.Dialect { return p.dialect }
+func (p sqlProvider) Engine() *engines.Engine { return p.engine }
 
 func (p sqlProvider) NewDb(target spi.TargetDb) (spi.Db, error) {
 	pool, err := p.open(target)
@@ -85,7 +86,7 @@ func (d *sqlDb) ReadTableDetail(ctx context.Context, table *enginepb.ObjectRef) 
 		return nil, fmt.Errorf("table catalog %q does not match target catalog %q", table.Catalog, catalog)
 	}
 	schema := table.Schema
-	exists, err := tableDetailTableExists(conn, d.provider.dialect, schema, table.Table)
+	exists, err := tableDetailTableExists(conn, d.provider.engine, schema, table.Table)
 	if err != nil || !exists {
 		return nil, err
 	}
@@ -115,7 +116,7 @@ func (d *sqlDb) Close() error { return d.pool.Close() }
 var registry = spi.MustRegistry(
 	athena.Provider{},
 	sqlProvider{
-		dialect:    engine.MySQL,
+		engine:     engines.MySQL,
 		db:         db.MySqlDb{},
 		open:       introspect.OpenMySQLTarget,
 		probe:      introspect.ProbeMySQLNamespace,
@@ -129,7 +130,7 @@ var registry = spi.MustRegistry(
 		},
 	},
 	sqlProvider{
-		dialect:    engine.Postgres,
+		engine:     engines.Postgres,
 		db:         db.PgDb{},
 		open:       introspect.OpenPostgresTarget,
 		probe:      introspect.ProbePostgresNamespace,
@@ -147,8 +148,8 @@ var registry = spi.MustRegistry(
 // Registry returns the executable composition root's immutable provider registry.
 func Registry() spi.Registry { return registry }
 
-// For returns the registered provider for a canonical dialect key.
-func For(dialect engine.Dialect) (spi.Provider, error) { return registry.For(dialect) }
+// For returns the registered provider for an engine.
+func For(e *engines.Engine) (spi.Provider, error) { return registry.For(e) }
 
 var (
 	_ spi.Provider        = sqlProvider{}

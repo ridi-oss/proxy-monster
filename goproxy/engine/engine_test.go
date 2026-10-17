@@ -12,13 +12,11 @@ import (
 )
 
 type fakeDb struct {
-	dialect      Dialect
 	nsProbeSQL   string
 	tempOverlay  bool
 	tempProbeSQL string
 }
 
-func (f fakeDb) Dialect() Dialect            { return f.dialect }
 func (f fakeDb) NamespaceProbeSQL() string   { return f.nsProbeSQL }
 func (f fakeDb) SupportsTempOverlay() bool   { return f.tempOverlay }
 func (f fakeDb) TempColumnsProbeSQL() string { return f.tempProbeSQL }
@@ -38,8 +36,8 @@ func (f fakeDb) NormalizeColumns(_ int, columns []*analyzerpb.Column) []*analyze
 	return columns
 }
 
-var mysqlDb = fakeDb{dialect: MySQL, nsProbeSQL: "SELECT DATABASE()"}
-var pgDb = fakeDb{dialect: Postgres, nsProbeSQL: "probe", tempOverlay: true, tempProbeSQL: "temps"}
+var mysqlDb = fakeDb{nsProbeSQL: "SELECT DATABASE()"}
+var pgDb = fakeDb{nsProbeSQL: "probe", tempOverlay: true, tempProbeSQL: "temps"}
 
 type fakeDecider struct {
 	outcome DecisionOutcome

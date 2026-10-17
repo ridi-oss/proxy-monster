@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	"net"
 	"reflect"
 	"strings"
@@ -218,7 +219,7 @@ func (f *runFakeCP) runSetFragmentPushError(err error) {
 }
 
 type runEngineFixture struct {
-	runDialect   engine.Dialect
+	runEngine    *engines.Engine
 	runDb        spi.Db
 	runTarget    spi.TargetDb
 	runTable     string
@@ -641,7 +642,7 @@ func runCatalogRefreshContract(t *testing.T, fixture runEngineFixture) {
 		table := runUniqueTable("pm_run_routine_refresh")
 		var callSQL string
 		directSchema := fixture.runNamespaceForTable()
-		if fixture.runDialect == engine.MySQL {
+		if fixture.runEngine == engines.MySQL {
 			procedure := runUniqueTable("pm_run_routine")
 			direct := dbtest.OpenMySQL(t, directSchema)
 			if _, err := direct.Exec("CREATE PROCEDURE " + procedure + "() CREATE TABLE " + table + " (id INT PRIMARY KEY)"); err != nil {
@@ -815,7 +816,7 @@ func runCatalogRefreshContract(t *testing.T, fixture runEngineFixture) {
 		runExpectSingleClose(t, fake)
 	})
 
-	if fixture.runDialect == engine.Postgres {
+	if fixture.runEngine == engines.Postgres {
 		t.Run("transactional DDL refetches inside the open transaction", func(t *testing.T) {
 			fake, client := runStartFakeCP(t, runSessionID)
 			runLaunch(t, fake, client, fixture)
@@ -862,14 +863,14 @@ func runCreateTableSQL(fixture runEngineFixture, table string) string {
 }
 
 func (f runEngineFixture) runCatalog() string {
-	if f.runDialect == engine.MySQL {
+	if f.runEngine == engines.MySQL {
 		return "def"
 	}
 	return f.runTarget.Db
 }
 
 func (f runEngineFixture) runNamespaceForTable() string {
-	if f.runDialect == engine.MySQL {
+	if f.runEngine == engines.MySQL {
 		return runMySQLSchema
 	}
 	return runPGSchema
@@ -1571,7 +1572,7 @@ func TestRunnerCloseDuringRealDialAbortsIt(t *testing.T) {
 	fake, client := runStartFakeCP(t, runSessionID)
 	done := make(chan struct{})
 	go func() {
-		run.NewRunner(client, mustDb(t, engine.MySQL, stall.target), 0).Run(runStallOpen(), nil)
+		run.NewRunner(client, mustDb(t, engines.MySQL, stall.target), 0).Run(runStallOpen(), nil)
 		close(done)
 	}()
 
@@ -1598,7 +1599,7 @@ func TestRunnerDrainDuringRealDialAbortsIt(t *testing.T) {
 	draining := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
-		run.NewRunner(client, mustDb(t, engine.MySQL, stall.target), 0).Run(runStallOpen(), draining)
+		run.NewRunner(client, mustDb(t, engines.MySQL, stall.target), 0).Run(runStallOpen(), draining)
 		close(done)
 	}()
 
@@ -1785,8 +1786,8 @@ func runSeedMySQL(t *testing.T) runEngineFixture {
 		User: runMySQLService, Password: runMySQLServicePwd,
 	}
 	return runEngineFixture{
-		runDialect:   engine.MySQL,
-		runDb:        mustDb(t, engine.MySQL, target),
+		runEngine:    engines.MySQL,
+		runDb:        mustDb(t, engines.MySQL, target),
 		runTarget:    target,
 		runTable:     runMySQLSchema + ".pm_run_rows",
 		runNamespace: []string{runMySQLSchema},
@@ -1813,23 +1814,23 @@ func runSeedPostgres(t *testing.T) runEngineFixture {
 		User: targetDb.User, Password: targetDb.Password,
 	}
 	return runEngineFixture{
-		runDialect:   engine.Postgres,
-		runDb:        mustDb(t, engine.Postgres, target),
+		runEngine:    engines.Postgres,
+		runDb:        mustDb(t, engines.Postgres, target),
 		runTarget:    target,
 		runTable:     runPGSchema + ".pm_run_rows",
 		runNamespace: []string{"pg_catalog", "public"},
 	}
 }
 
-func mustDb(t *testing.T, dialect engine.Dialect, target spi.TargetDb) spi.Db {
+func mustDb(t *testing.T, e *engines.Engine, target spi.TargetDb) spi.Db {
 	t.Helper()
-	provider, err := dialects.For(dialect)
+	provider, err := dialects.For(e)
 	if err != nil {
-		t.Fatalf("dialects.For(%v): %v", dialect, err)
+		t.Fatalf("dialects.For(%s): %v", e.WireName, err)
 	}
 	targetDb, err := provider.NewDb(target)
 	if err != nil {
-		t.Fatalf("NewDb(%v): %v", dialect, err)
+		t.Fatalf("NewDb(%s): %v", e.WireName, err)
 	}
 	t.Cleanup(func() { _ = targetDb.Close() })
 	return targetDb

@@ -9,7 +9,6 @@ import com.ridi.oss.proxymonster.controlplane.authz.authorizeDatasourceAction
 import com.ridi.oss.proxymonster.controlplane.authz.requireAdmin
 import com.ridi.oss.proxymonster.controlplane.authz.resolveContextTags
 import com.ridi.oss.proxymonster.controlplane.management.DatasourceManagementService
-import com.ridi.oss.proxymonster.controlplane.grpc.inspectTrustChain
 import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
 import com.ridi.oss.proxymonster.controlplane.management.ManagementException
 import com.ridi.oss.proxymonster.analyzer.pb.CatalogSnapshot
@@ -19,14 +18,12 @@ import com.ridi.oss.proxymonster.grpc.Engine
 import com.ridi.oss.proxymonster.grpc.ObjectRef
 import com.ridi.oss.proxymonster.probe.Classification
 import com.ridi.oss.proxymonster.probe.TableDetail
-import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.request.receive
 import io.ktor.server.response.header
 import io.ktor.server.response.respond
-import io.ktor.server.response.respondText
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
@@ -852,8 +849,6 @@ private suspend fun ApplicationCall.requireApiOrBearer(config: Config, tokenStor
     return null
 }
 
-private val datasourceLog = org.slf4j.LoggerFactory.getLogger("com.ridi.oss.proxymonster.controlplane.Datasources")
-
 /** Whether Cedar grants [principal] datasource.connect on [ds] — the decision the proxy runs on connect. */
 internal fun mayConnect(authz: Authz, roleResolver: RoleResolver, principal: String, requesterIp: String?, ds: Datasource): Boolean =
     authorizeMetadata(authz, principal, roleResolver.resolveParents(principal), ds, AuthzContext(requesterIp = requesterIp))
@@ -890,13 +885,6 @@ fun Route.datasourceRoutes(
         return authorizeMetadata(authz, principal, roleResolver.resolveParents(principal), ds, call.httpAuthzContext(config))
     }
 
-    // The datasource LIST stays open to every authenticated principal: the SQL editor's picker,
-    // JIT-request compose (which must show datasources you CANNOT yet connect to, precisely so they can be
-    // requested), and token generation all need it — not an admin action. `?connectable=true` narrows it to
-    // datasources the caller can connect to (for the query picker), and a row the caller cannot connect to
-    // is served without its connection material. Everything keyed to ONE datasource — the row, its catalog,
-    // its wire cert, its table detail — is connect-gated below. Only mutation/config routes require
-    // admin.datasources.
     // Which datasources currently have a proxy attached (an open Events stream) — the admin liveness
     // view. Read-only; returns the set of attached datasource names.
     get("/api/datasources/live") {
@@ -922,19 +910,6 @@ fun Route.datasourceRoutes(
         } catch (e: ManagementException) {
             call.respondManagementError(e)
         }
-    }
-    get("/api/datasources/{id}") {
-        // Connect-gated, unlike the list: a single row carries advertiseAddr and advertiseCertChain, the
-        // same trust material {id}/wire-cert serves under datasource.connect. Leaving this on
-        // authentication alone would make that gate decorative.
-        val principal = call.requireApiOrBearer(config, tokenStore, userGroupStore) ?: return@get
-        val id = call.idParam() ?: return@get call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        val datasource = store.get(id)
-            ?: return@get call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "datasource")))
-        if (!mayConnect(call, principal, datasource)) {
-            return@get call.respond(HttpStatusCode.Forbidden, ApiError("datasource.not_connectable"))
-        }
-        call.respond(datasource)
     }
     put("/api/datasources/{id}") {
         if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_DATASOURCES)) return@put
@@ -980,52 +955,6 @@ fun Route.datasourceRoutes(
             return@get call.respond(HttpStatusCode.Forbidden, ApiError("datasource.not_connectable"))
         }
         call.respond(management.browseCatalog(datasource.name))
-    }
-    /**
-     * The certificate chain to trust for this datasource's proxy, PEM, leaf first — the same bytes the
-     * datasource list carries, offered as a downloadable file for psql/mysql/DataGrip to use as
-     * `sslrootcert` / `--ssl-ca` with `verify-full`. A self-signed proxy cert is the one-element case.
-     * pmon does not need this route: it reads the chain from the datasource list it already polls.
-     *
-     * Not a secret — these are the certificates the proxy already presents to every client that opens a TLS
-     * connection to it — so the gate is `datasource.connect`, the same authority `{id}/catalog` needs:
-     * whoever may open a session may fetch what they need to open it safely.
-     *
-     * Re-validated before serving. Registration already refuses a chain that does not chain, so a failure
-     * here means the row changed underneath the control plane — exactly when serving trust material would be
-     * worst. 409 rather than 500: the row is readable, the chain is not usable, and re-registering fixes it.
-     */
-    get("/api/datasources/{id}/wire-cert") {
-        // Same gate and the same principal resolution as {id}/catalog: a browser session or a wire-token
-        // Bearer. The console is today's only caller, since the chain also rides on the datasource list pmon
-        // already polls — but a Bearer client asking for the certificate directly is a reasonable thing to do,
-        // and session-only would answer it 401.
-        val principal = call.requireApiOrBearer(config, tokenStore, userGroupStore) ?: return@get
-        val id = call.idParam() ?: return@get call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        val datasource = store.get(id)
-            ?: return@get call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "datasource")))
-        if (!mayConnect(call, principal, datasource)) {
-            return@get call.respond(HttpStatusCode.Forbidden, ApiError("datasource.not_connectable"))
-        }
-        val chain = store.wireCertChain(id)
-        if (chain.isNullOrBlank()) {
-            // Distinct from "not found" so the console can say "this proxy has no wire TLS" rather than
-            // "no such datasource".
-            return@get call.respond(HttpStatusCode.NotFound, ApiError("datasource.no_wire_cert"))
-        }
-        // Served whatever it looks like. The client verifies, and it is the only party that can report a
-        // meaningful error about its own trust store — withholding the file just leaves the operator with
-        // nothing to install and no way to see why.
-        inspectTrustChain(chain)?.let { reason ->
-            datasourceLog.warn("serving datasource '{}' wire cert chain that may not verify: {}", datasource.name, reason)
-        }
-        // Filename from the id, not the name: a datasource name is barely constrained, and a quote or CRLF in
-        // one would be header injection here.
-        call.response.header(
-            HttpHeaders.ContentDisposition,
-            "attachment; filename=\"datasource-${datasource.id}-wire-cert.pem\"",
-        )
-        call.respondText(chain, ContentType.parse("application/x-pem-file"))
     }
     get("/api/datasources/{id}/table-detail") {
         // Same authority as {id}/catalog, and for the same reason: this is the physical shape of a table the

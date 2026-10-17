@@ -3,9 +3,13 @@ package datasources
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ridi-oss/proxy-monster/cpgo/api"
@@ -15,6 +19,8 @@ import (
 func Register(mux *http.ServeMux, pool *pgxpool.Pool, gate api.Gate) {
 	ds := datasources{pool: pool, authz: gate.Authz}
 	mux.HandleFunc("GET /api/datasources", gate.RequireAPIOrBearer(api.Serve(ds.list)))
+	mux.HandleFunc("GET /api/datasources/{id}", gate.RequireAPIOrBearer(api.Serve(api.WithID(ds.get))))
+	mux.HandleFunc("GET /api/datasources/{id}/wire-cert", gate.RequireAPIOrBearer(api.Serve(api.WithID(ds.wireCert))))
 }
 
 // datasource is one datasource row; fields in the Kotlin Datasource's order, defaultSchemaSettable last.
@@ -127,4 +133,53 @@ func (d datasources) list(w http.ResponseWriter, r *http.Request) error {
 	}
 	api.WriteJSON(w, http.StatusOK, out)
 	return nil
+}
+
+// connectable is the live datasource id names, when the caller may datasource.connect to it.
+func (d datasources) connectable(r *http.Request, id int64) (datasource, error) {
+	ctx := r.Context()
+	row, err := db.New(d.pool).Datasource(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return datasource{}, api.NotFound("datasource")
+	}
+	if err != nil {
+		return datasource{}, err
+	}
+	ds, err := toDatasource(db.DatasourcesRow(row))
+	if err != nil {
+		return datasource{}, err
+	}
+	may, err := d.authz.MayConnect(ctx, api.Principal(ctx), []int64{id}, api.RequesterIP(ctx))
+	if err != nil {
+		return datasource{}, err
+	}
+	if !may[0] {
+		return datasource{}, api.CodeNotConnectable.Err()
+	}
+	return ds, nil
+}
+
+func (d datasources) get(w http.ResponseWriter, r *http.Request, id int64) error {
+	ds, err := d.connectable(r, id)
+	if err != nil {
+		return err
+	}
+	api.WriteJSON(w, http.StatusOK, ds)
+	return nil
+}
+
+func (d datasources) wireCert(w http.ResponseWriter, r *http.Request, id int64) error {
+	ds, err := d.connectable(r, id)
+	if err != nil {
+		return err
+	}
+	if ds.AdvertiseCertChain == nil || strings.TrimSpace(*ds.AdvertiseCertChain) == "" {
+		return api.CodeNoWireCert.Err()
+	}
+	// Named by id: a datasource name could carry a quote or CRLF into the header.
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="datasource-%d-wire-cert.pem"`, ds.ID))
+	w.Header().Set("Content-Type", "application/x-pem-file")
+	w.WriteHeader(http.StatusOK)
+	_, err = io.WriteString(w, *ds.AdvertiseCertChain)
+	return err
 }

@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ridi-oss/proxy-monster/cpgo/api"
+	"github.com/ridi-oss/proxy-monster/cpgo/front"
 	"github.com/ridi-oss/proxy-monster/cpgo/routes/access"
 	"github.com/ridi-oss/proxy-monster/cpgo/routes/auditlog"
 	"github.com/ridi-oss/proxy-monster/cpgo/routes/datasources"
@@ -24,4 +25,5 @@ func Register(mux *http.ServeMux, pool *pgxpool.Pool, gate api.Gate) {
 	access.Register(mux, pool, gate)
 	identity.Register(mux, pool, gate)
 	datasources.Register(mux, pool, gate)
+	mux.Handle("GET /api/datasources/live", front.Kotlin{})
 }

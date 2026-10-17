@@ -176,10 +176,16 @@ message ColumnNamesRequest {
   repeated Column columns = 3;
 }
 
-// [columns] answers the request's columns in order; [ok] false leaves it empty (unknown engine, a name that
-// is not an identifier).
+// [columns] answers the request's columns in order; any [error] leaves it empty.
 message ColumnNamesResponse {
-  bool ok = 1;
+  enum Error {
+    NONE = 0;
+    // An unknown engine, a name that is not an identifier, or a malformed request.
+    INVALID = 1;
+    // The engine refused the datasource: MySQL before introspection reports lower_case_table_names.
+    DATASOURCE_REJECTED = 2;
+  }
+  Error error = 1;
   repeated Column columns = 2;
 }
 

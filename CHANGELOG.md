@@ -1,5 +1,60 @@
 # Changelog
 
+## [0.1.35](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.34...server-v0.1.35) (2026-10-17)
+
+
+### Features
+
+* add pmon-auto-approver-agent, an LLM review of a rate reset ([236ef9e](https://github.com/ridi-oss/proxy-monster/commit/236ef9e9e468a41dd6f82f6f69a3e248294b808f))
+* **analyzer:** one Engine per target and one canonical-name API ([6de539e](https://github.com/ridi-oss/proxy-monster/commit/6de539ef66fe875fabe1977d5374a68194ec248e))
+* **analyzer:** redact literals in SQL ([3cc985a](https://github.com/ridi-oss/proxy-monster/commit/3cc985a3e71e9b53deb711e82d7794bde7622b2a))
+* **cpgo:** append to the audit chain from Go ([393ee7a](https://github.com/ridi-oss/proxy-monster/commit/393ee7ad7781a1991df1c5edaff666a38a34cf60))
+* **cpgo:** decide Cedar in Go with cedar-go ([b5ceb99](https://github.com/ridi-oss/proxy-monster/commit/b5ceb99491d2a2e8702f97c206ded91e924a9fce))
+* **cpgo:** serve datasource create, edit and delete in Go ([13a4a79](https://github.com/ridi-oss/proxy-monster/commit/13a4a793968d61a1d8563dbb8c346bccb76a6fe4))
+* **cpgo:** serve JIT access request writes in Go ([e718670](https://github.com/ridi-oss/proxy-monster/commit/e7186704ca332b4ee5ac26fc00325a87236d4725))
+* **cpgo:** serve role, assignment and mask function writes in Go ([8bfcd03](https://github.com/ridi-oss/proxy-monster/commit/8bfcd03c1bb0993d4f5f3f5aff23aeb98e746bdc))
+* **cpgo:** serve the access request and grant lists in Go ([871126e](https://github.com/ridi-oss/proxy-monster/commit/871126ea7edf764d45a0391a213b4835f546bc56))
+* **cpgo:** serve the admin list and permission routes in Go ([3214512](https://github.com/ridi-oss/proxy-monster/commit/3214512fc28246b33d17afa8b2701fe07dc69d05))
+* **cpgo:** serve the caller's own approval list in Go ([0fa90f6](https://github.com/ridi-oss/proxy-monster/commit/0fa90f6b362f14d5d2941e146cf6754e64eca7d3))
+* **cpgo:** serve the Cedar policy writes in Go ([5e4556d](https://github.com/ridi-oss/proxy-monster/commit/5e4556da9aa8ed0eb4c51b91e2db3e8321b9e17d))
+* **cpgo:** serve the datasource list in Go ([d7dc012](https://github.com/ridi-oss/proxy-monster/commit/d7dc012ed1d177c55f98d01c1eb4fb89188b2a25))
+* **cpgo:** serve the datasource row and its wire cert in Go ([522fb0d](https://github.com/ridi-oss/proxy-monster/commit/522fb0d996e4c9afefc9e35cd3dcd7765387d55b))
+* **cpgo:** serve user and group admin in Go ([ca5bca9](https://github.com/ridi-oss/proxy-monster/commit/ca5bca937b7fc911e012ae7e2319c34c96c9b46b))
+* **pmon:** reconnect a remote now, and never cut off a pending ssh ([c30e342](https://github.com/ridi-oss/proxy-monster/commit/c30e342d2834df7f28db0d5021c5bcf2a561a6aa))
+* raise a spent rate with a boost role ([64a6a6c](https://github.com/ridi-oss/proxy-monster/commit/64a6a6c81248d5833d641b24d3b6e7b1b143567f))
+* remove rate resets ([4050bc5](https://github.com/ridi-oss/proxy-monster/commit/4050bc5ad882fd114493b29b2e5978260b1b8261))
+
+
+### Bug Fixes
+
+* **cpgo:** deliver the policies-changed signal even if the client leaves ([83e22d9](https://github.com/ridi-oss/proxy-monster/commit/83e22d96f69e6de38d71e161ebd6f74afe37f416))
+* **cpgo:** reject trailing body data and keep error params unescaped ([ad81efd](https://github.com/ridi-oss/proxy-monster/commit/ad81efdad6a19dae638b72a86d50d5232a79e3cf))
+* **cpgo:** take write bodies only as application/json ([c3a1d2c](https://github.com/ridi-oss/proxy-monster/commit/c3a1d2c48c61ba69921eeb55a6c9d466b5dae7a9))
+
+
+### Refactoring
+
+* **analyzer:** call the per-statement analyzer an analyzer ([a64d5cc](https://github.com/ridi-oss/proxy-monster/commit/a64d5cc708f46cba53698f6c41d3e516d74ec421))
+* **analyzer:** move the probe into analyzer/engines ([a026312](https://github.com/ridi-oss/proxy-monster/commit/a026312f65dc31a00b992e47e9c71a3acaa6f040))
+* **analyzer:** one file per engine ([d57e7ec](https://github.com/ridi-oss/proxy-monster/commit/d57e7ecaad15107ee3b427d8ae205f350cd7d313))
+* **control-plane:** send the reported datasource and let the analyzer refuse ([8d71586](https://github.com/ridi-oss/proxy-monster/commit/8d715860d59341d60103101ab2c7e8d9ab0916a6))
+* **cpgo:** answer every route error one way, with a named code ([0091743](https://github.com/ridi-oss/proxy-monster/commit/00917436bfa69f01fc786bce8be4a9af3badd41c))
+* **cpgo:** give each route area its own package ([2bacac3](https://github.com/ridi-oss/proxy-monster/commit/2bacac3b26fd239584e007db5cdadc1170d7b77c))
+* **goproxy:** hold *engines.Engine instead of its own Dialect ([4911860](https://github.com/ridi-oss/proxy-monster/commit/4911860759df74024b67e7abb9f176c71440034d))
+
+
+### Build & Dependencies
+
+* **cpgo:** generate cp-go's store queries with sqlc ([c331e7d](https://github.com/ridi-oss/proxy-monster/commit/c331e7d6df0f7e74d9efcc1f54ceee4eb85ce6b4))
+
+
+### Documentation
+
+* bump the Homebrew tap after a pmon release ([d7b77fa](https://github.com/ridi-oss/proxy-monster/commit/d7b77fac4cbb94105a6db24c1ac3e7adec9a9a6d))
+* **cpgo:** say why WriteJSON matches Kotlin's bytes ([26407f1](https://github.com/ridi-oss/proxy-monster/commit/26407f16f828814faa7f94d4c5739c7e2e3db890))
+* point the HTTP gate map at the routes cp-go serves ([5b0a4dc](https://github.com/ridi-oss/proxy-monster/commit/5b0a4dce79cf3a854d4c183919f0e58ee5ee9924))
+* the first PM_SLACK_CHANNELS entry a datasource matches picks the channel ([1e436ba](https://github.com/ridi-oss/proxy-monster/commit/1e436baac7ff0a40a159a7f42de4b9933c5254a5))
+
 ## [0.1.34](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.33...server-v0.1.34) (2026-10-15)
 
 

@@ -89,6 +89,7 @@ var (
 	CodeUseQueryApproval      = Code{"approval.use_query_approval_endpoint", http.StatusBadRequest}
 	CodeNotConnectable        = Code{"datasource.not_connectable", http.StatusForbidden}
 	CodeNoWireCert            = Code{"datasource.no_wire_cert", http.StatusNotFound}
+	CodeDeprovisioned         = Code{"auth.principal_deprovisioned", http.StatusForbidden}
 	CodeInvalidEngine         = Code{"datasource.invalid_engine", http.StatusBadRequest}
 	CodeEngineImmutable       = Code{"datasource.engine_immutable", http.StatusConflict}
 	CodeInUseProxyAttached    = Code{"datasource.in_use_proxy_attached", http.StatusConflict}

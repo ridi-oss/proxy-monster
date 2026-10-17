@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ridi-oss/proxy-monster/goproxy/engine"
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
@@ -21,10 +21,10 @@ type tableDetailIndexes struct {
 	indexedColumns map[string]struct{}
 }
 
-func tableDetailTableExists(conn *sql.Conn, dialect engine.Dialect, schema, table string) (bool, error) {
+func tableDetailTableExists(conn *sql.Conn, e *engines.Engine, schema, table string) (bool, error) {
 	query := fmt.Sprintf(
 		"SELECT table_schema, table_name FROM information_schema.tables WHERE table_schema = %s AND table_name = %s",
-		dialect.Placeholder(1), dialect.Placeholder(2),
+		e.Placeholder(1), e.Placeholder(2),
 	)
 	found := false
 	err := tableDetailQuery(conn, query, []any{schema, table}, func(rows *sql.Rows) error {

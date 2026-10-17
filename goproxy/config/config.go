@@ -14,7 +14,7 @@ import (
 	"unicode"
 
 	"github.com/alecthomas/kong"
-	"github.com/ridi-oss/proxy-monster/goproxy/engine"
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 	"github.com/ridi-oss/proxy-monster/goproxy/targettls"
 )
@@ -81,11 +81,10 @@ const MaxDatasourceDescription = 500
 // Config is the proxy's normalized configuration. A blank string field means "absent"; there is no
 // separate presence flag.
 type Config struct {
-	// Engine is the raw, lowercased PM_ENGINE value — the genuine string source kept for error messages
-	// and the boot log. Dialect is the typed form every downstream consumer uses; the string is parsed to
-	// it exactly once, here at the config boundary.
-	Engine         string
-	Dialect        engine.Dialect
+	// EngineName is the raw, lowercased PM_ENGINE value, kept for error messages and the boot log. Engine is
+	// what every downstream consumer uses; the string is parsed to it exactly once, here at the config boundary.
+	EngineName     string
+	Engine         *engines.Engine
 	Provider       spi.Provider
 	ProxyPort      int
 	TargetHost     string
@@ -139,20 +138,20 @@ func Load(registry spi.Registry) (*Config, error) {
 	}
 
 	engineName := strings.ToLower(raw.Engine)
-	dialect, parseErr := engine.ParseDialect(engineName)
+	e, parseErr := engines.Parse(engineName)
 	var provider spi.Provider
 	if parseErr == nil {
-		provider, _ = registry.For(dialect)
+		provider, _ = registry.For(e)
 	}
 
 	proxyPort := parsePort(raw.ProxyPort)
 	if proxyPort == 0 && provider != nil {
-		proxyPort = dialect.DefaultProxyPort()
+		proxyPort = e.DefaultProxyPort
 	}
 
 	targetPort := parsePort(raw.TargetPort)
 	if targetPort == 0 && provider != nil {
-		targetPort = dialect.DefaultTargetPort()
+		targetPort = e.DefaultTargetPort
 	}
 
 	queryTimeout := 600 * time.Second
@@ -202,8 +201,8 @@ func Load(registry spi.Registry) (*Config, error) {
 	advertiseAddr := strings.TrimSpace(raw.AdvertiseAddr)
 
 	return &Config{
-		Engine:                 engineName,
-		Dialect:                dialect,
+		EngineName:             engineName,
+		Engine:                 e,
 		Provider:               provider,
 		ProxyPort:              proxyPort,
 		TargetHost:             raw.TargetHost,
@@ -270,12 +269,12 @@ func (c *Config) TLSEnabled() bool {
 }
 
 // Validate runs the three fail-closed boot checks IN ORDER, so a typo'd PM_ENGINE can never clobber a
-// live datasource's stored dialect via a stray register call.
+// live datasource's stored engine via a stray register call.
 func (c *Config) Validate() error {
 	// (1) The datasource identity is required — otherwise boot would start and NOT_FOUND every query
 	// instead of failing fast.
 	if c.DatasourceName == "" {
-		return fmt.Errorf("PM_DATASOURCE_NAME is required for the %s proxy (which datasource it fronts)", c.Engine)
+		return fmt.Errorf("PM_DATASOURCE_NAME is required for the %s proxy (which datasource it fronts)", c.EngineName)
 	}
 
 	// (2) Fail closed on a partial TLS config — a typo'd/empty env var must not silently boot plaintext.
@@ -285,8 +284,8 @@ func (c *Config) Validate() error {
 
 	// (3) Validate the engine BEFORE any register. The injected registry is the supported-engine authority;
 	// adding a provider changes only its wiring row, not config or the engine core.
-	if !c.Dialect.Valid() || c.Provider == nil {
-		return fmt.Errorf("unsupported PM_ENGINE=%s", c.Engine)
+	if c.Engine == nil || c.Provider == nil {
+		return fmt.Errorf("unsupported PM_ENGINE=%s", c.EngineName)
 	}
 
 	// (4) A configured advertise address must be a real host:port (port 1-65535) — a typo would register a

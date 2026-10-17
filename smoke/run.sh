@@ -5,8 +5,8 @@
 #   smoke/run.sh                 full run, tears everything down at the end
 #   smoke/run.sh --keep          leave the stack up for debugging (prints how to stop it)
 #   smoke/run.sh --no-build      reuse the binaries from the last run
-#   smoke/run.sh --only wire     run one leg (editor|browser|wire|pmon|workflow|audit|rate|github)
-#   smoke/run.sh --engine mysql  run one engine (mysql|postgres|athena)
+#   smoke/run.sh --only wire     run one leg (editor|browser|wire|pmon|workflow|audit|rate|github|names)
+#   smoke/run.sh --engine mysql  run one matrix row (mysql|mysql-lctn1|postgres|athena)
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -16,6 +16,7 @@ export SMOKE_CP_DB_PORT="${SMOKE_CP_DB_PORT:-17010}"
 export SMOKE_MYSQL_PORT="${SMOKE_MYSQL_PORT:-17011}"
 export SMOKE_PG_PORT="${SMOKE_PG_PORT:-17012}"
 export SMOKE_ATHENA_PORT="${SMOKE_ATHENA_PORT:-17013}"
+export SMOKE_MYSQL_LCTN1_PORT="${SMOKE_MYSQL_LCTN1_PORT:-17015}"
 CP_HTTP="${SMOKE_CP_HTTP_PORT:-17000}"
 CP_GRPC="${SMOKE_CP_GRPC_PORT:-17001}"
 CP_CHILD_HTTP="${SMOKE_CP_CHILD_HTTP_PORT:-17030}"
@@ -23,6 +24,7 @@ CP_CHILD_GRPC="${SMOKE_CP_CHILD_GRPC_PORT:-17031}"
 PROXY_MYSQL="${SMOKE_PROXY_MYSQL_PORT:-17002}"
 PROXY_PG="${SMOKE_PROXY_PG_PORT:-17003}"
 PROXY_ATHENA="${SMOKE_PROXY_ATHENA_PORT:-17014}"
+PROXY_MYSQL_LCTN1="${SMOKE_PROXY_MYSQL_LCTN1_PORT:-17016}"
 PMON_BASE="${SMOKE_PMON_PORT_BASE:-17020}"
 GITHUB_TLS="${SMOKE_GITHUB_PORT:-17040}"
 GITHUB_HTTP="${SMOKE_GITHUB_TOKEN_PORT:-17041}"
@@ -129,13 +131,13 @@ done
 curl -sf -m 2 "http://127.0.0.1:$CP_HTTP/health" >/dev/null || { echo "smoke: control plane did not come up; see $SMOKE_DIR/logs/control-plane.log" >&2; exit 1; }
 
 proxy() {
-  local engine=$1 name=$2 port=$3 target_port=$4
+  local engine=$1 name=$2 port=$3 target_port=$4 row=${5:-$1}
   env PM_ENGINE="$engine" PM_DATASOURCE_NAME="$name" PM_DATASOURCE_TAGS=system:production \
     PM_PROXY_PORT="$port" PM_TARGET_HOST=127.0.0.1 PM_TARGET_PORT="$target_port" \
     PM_TARGET_DB=acme PM_TARGET_USER=acme PM_TARGET_PASSWORD=acme \
     PM_CONTROL_PLANE_GRPC="127.0.0.1:$CP_GRPC" PM_SECRET_TOKEN="$SECRET" \
     PM_ADVERTISE_ADDR="127.0.0.1:$port" \
-    "$SMOKE_DIR/bin/goproxy" > "$SMOKE_DIR/logs/proxy-$engine.log" 2>&1 &
+    "$SMOKE_DIR/bin/goproxy" > "$SMOKE_DIR/logs/proxy-$row.log" 2>&1 &
   pids+=($!)
 }
 # The Athena proxy talks to the emulator (self-signed HTTPS) through the SDK's endpoint override, and serves
@@ -156,16 +158,17 @@ athena_proxy() {
     "$SMOKE_DIR/bin/goproxy" > "$SMOKE_DIR/logs/proxy-athena.log" 2>&1 &
   pids+=($!)
 }
-echo "smoke: starting proxies on :$PROXY_MYSQL (mysql), :$PROXY_PG (postgres), :$PROXY_ATHENA (athena)"
+echo "smoke: starting proxies on :$PROXY_MYSQL (mysql), :$PROXY_MYSQL_LCTN1 (mysql-lctn1), :$PROXY_PG (postgres), :$PROXY_ATHENA (athena)"
 proxy mysql smoke-mysql "$PROXY_MYSQL" "$SMOKE_MYSQL_PORT"
+proxy mysql smoke-mysql-lctn1 "$PROXY_MYSQL_LCTN1" "$SMOKE_MYSQL_LCTN1_PORT" mysql-lctn1
 proxy postgres smoke-postgres "$PROXY_PG" "$SMOKE_PG_PORT"
 athena_proxy
 for _ in $(seq 1 60); do
-  n=$(grep -l "datasource registered + catalog pushed" "$SMOKE_DIR"/logs/proxy-{mysql,postgres,athena}.log 2>/dev/null | wc -l | tr -d ' ' || true)
-  [ "$n" = 3 ] && break
+  n=$(grep -l "datasource registered + catalog pushed" "$SMOKE_DIR"/logs/proxy-{mysql,mysql-lctn1,postgres,athena}.log 2>/dev/null | wc -l | tr -d ' ' || true)
+  [ "$n" = 4 ] && break
   sleep 1
 done
-[ "$n" = 3 ] || { echo "smoke: a proxy did not register; see $SMOKE_DIR/logs/proxy-*.log" >&2; exit 1; }
+[ "$n" = 4 ] || { echo "smoke: a proxy did not register; see $SMOKE_DIR/logs/proxy-*.log" >&2; exit 1; }
 
 for _ in $(seq 1 90); do
   curl -sf -m 3 -o /dev/null "http://127.0.0.1:$WEB/login" 2>/dev/null && break
@@ -181,7 +184,7 @@ fi
 
 args=(--cp "http://127.0.0.1:$CP_HTTP" --web "http://127.0.0.1:$WEB" --root "$ROOT" --cp-db "postgresql://proxymonster:proxymonster@127.0.0.1:$SMOKE_CP_DB_PORT/proxymonster" --pmon "$SMOKE_DIR/bin/pmon" --pmon-dir "$SMOKE_DIR/pmon" --pmon-port-base "$PMON_BASE" --logs "$SMOKE_DIR/logs")
 args+=(--github "$GITHUB_TLS,$GITHUB_HTTP,$GH/tls-cert.pem,$GH/tls-key.pem,$GH/oidc-key.pem,1" --pm-ci "$SMOKE_DIR/bin/pm-ci")
-args+=(--datasource "mysql:smoke-mysql:$PROXY_MYSQL" --datasource "postgres:smoke-postgres:$PROXY_PG" --datasource "athena:smoke-athena:$PROXY_ATHENA")
+args+=(--datasource "mysql:smoke-mysql:$PROXY_MYSQL" --datasource "mysql:smoke-mysql-lctn1:$PROXY_MYSQL_LCTN1:mysql-lctn1" --datasource "postgres:smoke-postgres:$PROXY_PG" --datasource "athena:smoke-athena:$PROXY_ATHENA")
 [ -n "$ONLY" ] && args+=(--only "$ONLY")
 [ -n "$ENGINE" ] && args+=(--engine "$ENGINE")
 python3 "$ROOT/smoke/smoke.py" "${args[@]}"

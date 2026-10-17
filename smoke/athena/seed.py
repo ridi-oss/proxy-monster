@@ -35,4 +35,22 @@ glue.create_table(
         "Parameters": {"classification": "csv"},
     },
 )
-print("athena seed: acme.users ready")
+# For the names leg: accounts lowercase as Glue stores names, Customers in a mixed case only the emulator keeps.
+for table, prefix, names in (("accounts", "acct", ("email", "phone", "ssn", "secret")),
+                             ("Customers", "upper", ("Email", "Phone", "Ssn", "Secret"))):
+    body = "id," + ",".join(names) + "\n" + "".join(
+        f"{i}," + ",".join(f"{prefix}-{n.lower()}-{i}" for n in names) + "\n" for i in (1, 2, 3))
+    s3.put_object(Bucket="acme-data", Key=f"{table.lower()}/{table.lower()}.csv", Body=body.encode())
+    glue.create_table(
+        DatabaseName="acme",
+        TableInput={
+            "Name": table,
+            "TableType": "EXTERNAL_TABLE",
+            "StorageDescriptor": {
+                "Columns": [{"Name": "id", "Type": "bigint"}] + [{"Name": n, "Type": "string"} for n in names],
+                "Location": f"s3://acme-data/{table.lower()}/",
+            },
+            "Parameters": {"classification": "csv"},
+        },
+    )
+print("athena seed: acme.users, acme.accounts, acme.Customers ready")

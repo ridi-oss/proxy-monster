@@ -31,7 +31,7 @@ for (const ds of datasources) {
     await page.goto('/query')
 
     await page.getByRole('combobox').first().click()
-    await page.getByRole('option', { name: ds.name }).click()
+    await page.getByRole('option', { name: ds.name, exact: true }).click()
     await expect(page.getByRole('combobox').first()).toContainText(ds.name)
     await expect(page.getByTestId('schema-tree')).toBeVisible()
 

@@ -153,7 +153,7 @@ var mysqlParseSafeSqlModes = map[string]bool{
 // not recognize — fails the session closed (errUnsafeSqlMode), because it could desync the analyzer's lexer
 // from the target DB's and leak a masked column. sql_mode is a comma-separated flag list; an unsafe member
 // takes precedence over an observed ANSI_QUOTES (e.g. "ANSI_QUOTES,NO_BACKSLASH_ESCAPES" fails closed).
-// Mirrors the PG standard_conforming_strings guard (pgproxy/target DB.go).
+// Mirrors the PG standard_conforming_strings guard (postgres/backend.go).
 func classifyMySQLSqlMode(value string) (ansiQuotes bool, err error) {
 	for _, raw := range strings.Split(value, ",") {
 		mode := strings.ToUpper(strings.TrimSpace(raw))

@@ -18,7 +18,7 @@ import (
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/introspect"
 	"github.com/ridi-oss/proxy-monster/goproxy/mysql"
-	"github.com/ridi-oss/proxy-monster/goproxy/pgproxy"
+	"github.com/ridi-oss/proxy-monster/goproxy/postgres"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
@@ -137,10 +137,10 @@ var registry = spi.MustRegistry(
 		catalog:    introspect.ReadPostgresCatalog,
 		readDetail: readPostgresTableDetail,
 		newServer: func(listen spi.Listen, target spi.TargetDb, client spi.ControlPlane, db engine.Db, tlsProvider func() (*tls.Config, error)) spi.WireServer {
-			return pgproxy.New(listen, target, client, db, tlsProvider)
+			return postgres.New(listen, target, client, db, tlsProvider)
 		},
 		newSession: func(ctx context.Context, target spi.TargetDb, db engine.Db, client spi.ControlPlane, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.TargetDbSession, error) {
-			return pgproxy.NewRunSession(ctx, target, db, client, token, connectionID, guard, readTimeout, defaultSchema)
+			return postgres.NewRunSession(ctx, target, db, client, token, connectionID, guard, readTimeout, defaultSchema)
 		},
 	},
 )
@@ -155,7 +155,7 @@ var (
 	_ spi.Provider        = sqlProvider{}
 	_ spi.Db              = (*sqlDb)(nil)
 	_ spi.TargetDbSession = (*mysql.RunSession)(nil)
-	_ spi.TargetDbSession = (*pgproxy.RunSession)(nil)
+	_ spi.TargetDbSession = (*postgres.RunSession)(nil)
 	_ spi.WireServer      = (*mysql.Server)(nil)
-	_ spi.WireServer      = (*pgproxy.Server)(nil)
+	_ spi.WireServer      = (*postgres.Server)(nil)
 )

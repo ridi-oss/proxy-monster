@@ -1,4 +1,4 @@
-package pgproxy
+package postgres
 
 // SchemaMessageTemplates exposes the allowlist to the external e2e tests.
 func SchemaMessageTemplates() map[string][]string { return pgSchemaMessages }

@@ -1130,7 +1130,7 @@ func runExpectDoneNamespace(t *testing.T, message *pb.ProxyRunMsg, want []string
 }
 
 // TestRunnerPostgresRejectsUnsafeGUC proves the persistent PostgreSQL session holds the UTF-8 and
-// on-mode invariants the wire relay enforces (pgproxy/relay.go), so a session-scoped GUC change that
+// on-mode invariants the wire relay enforces (postgres/relay.go), so a session-scoped GUC change that
 // would let the control plane and the target DB bind different objects for the same bytes fails closed and
 // terminates the session before any follow-up query can run.
 func TestRunnerPostgresRejectsUnsafeGUC(t *testing.T) {

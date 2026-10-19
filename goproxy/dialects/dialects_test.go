@@ -24,7 +24,7 @@ func TestRegistryProviderContracts(t *testing.T) {
 		server string
 	}{
 		{"mysql", engines.MySQL, "*mysql.Server"},
-		{"postgres", engines.Postgres, "*pgproxy.Server"},
+		{"postgres", engines.Postgres, "*postgres.Server"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			provider, err := registry.For(test.engine)

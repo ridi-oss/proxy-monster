@@ -134,7 +134,7 @@ var registry = spi.MustRegistry(
 		open:       postgres.OpenPool,
 		probe:      postgres.ProbeNamespace,
 		catalog:    postgres.ReadCatalog,
-		readDetail: readPostgresTableDetail,
+		readDetail: postgres.ReadTableDetail,
 		newServer: func(listen spi.Listen, config spi.TargetConfig, client spi.ControlPlane, queries relay.Db, tlsProvider func() (*tls.Config, error)) spi.WireServer {
 			return postgres.New(listen, config, client, queries, tlsProvider)
 		},

@@ -1,6 +1,6 @@
 package postgres
 
-import "github.com/ridi-oss/proxy-monster/goproxy/engine"
+import "github.com/ridi-oss/proxy-monster/goproxy/relay"
 
 // pgDiagnosticMessage maps a PostgreSQL SQLSTATE to a fixed, value-free identity string for a
 // diagnostic-redacted connection: the canonical condition name when the exact code is known, else
@@ -18,7 +18,7 @@ func pgDiagnosticMessage(sqlState string) string {
 			return class
 		}
 	}
-	return engine.RedactedDiagnosticMessage
+	return relay.RedactedDiagnosticMessage
 }
 
 // pgConditionNames: exact SQLSTATE → condition name. This is the complete catalog generated from the

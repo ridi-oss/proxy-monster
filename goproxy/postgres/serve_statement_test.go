@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgproto3"
-	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 )
 
 func ptr(s string) *string { return &s }
@@ -50,8 +50,8 @@ func (s *RunSession) execute(sql string, maxRows int) ([]string, [][]*string, in
 	if err := s.targetDb.Flush(); err != nil {
 		return nil, nil, 0, err
 	}
-	result := engine.StatementResult{Rows: make([][]*string, 0)}
-	collector := rowsCollector{budget: engine.RowBudget{MaxRows: maxRows}, result: &result}
+	result := relay.StatementResult{Rows: make([][]*string, 0)}
+	collector := rowsCollector{budget: relay.RowBudget{MaxRows: maxRows}, result: &result}
 	targetDbErr, streamErr := s.streamResult(nil, streamOpts{extended: true}, collector.emit)
 	err = firstErr(targetDbErr, streamErr, collector.failed)
 	if streamErr != nil || collector.failed != nil {
@@ -163,7 +163,7 @@ func TestStreamResultMaskUnboundEmitsNoDataRow(t *testing.T) {
 		}
 		return nil
 	})
-	if !errors.Is(err, engine.ErrMaskUnbound) || dataRows != 0 {
+	if !errors.Is(err, relay.ErrMaskUnbound) || dataRows != 0 {
 		t.Fatalf("err = %v dataRows = %d, want mask-unbound before any DataRow", err, dataRows)
 	}
 }
@@ -317,11 +317,11 @@ func TestStreamResultTargetDbErrStaysProxyInternalWithBothForms(t *testing.T) {
 		t.Fatal("expected a target-DB error from the ErrorResponse")
 	}
 	// streamResult also serves internal catalog probes/refetches (collectProbe), so its error must NOT be
-	// engine.TargetDbError — only RunSession.ServeStatement promotes the statement's OWN ERR. Otherwise a
+	// relay.TargetDbError — only RunSession.ServeStatement promotes the statement's OWN ERR. Otherwise a
 	// probe failure would be surfaced to a viewer as the query's error detail.
-	var eng engine.TargetDbError
+	var eng relay.TargetDbError
 	if errors.As(targetDbErr, &eng) {
-		t.Fatal("streamResult tagged an ErrorResponse as engine.TargetDbError; a probe error would leak as error detail")
+		t.Fatal("streamResult tagged an ErrorResponse as relay.TargetDbError; a probe error would leak as error detail")
 	}
 	// It still carries BOTH forms for the statement site to promote: the raw message and the value-free strip.
 	var pgErr *pgTargetDbErr

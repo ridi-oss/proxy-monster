@@ -7,8 +7,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 )
 
 var ErrResultShape = errors.New("athena: result shape cannot be enforced")
@@ -40,12 +40,12 @@ func MaskResultPage(body []byte, masks []*pb.ColumnMask, expectedWidth *int32, m
 	}
 	for _, mask := range masks {
 		if mask == nil {
-			return nil, nil, engine.ErrMaskUnbound
+			return nil, nil, relay.ErrMaskUnbound
 		}
 	}
-	masker := engine.NewRowMasker(masks, len(columns))
+	masker := relay.NewRowMasker(masks, len(columns))
 	if masker == nil {
-		return nil, nil, engine.ErrMaskUnbound
+		return nil, nil, relay.ErrMaskUnbound
 	}
 
 	var shape any
@@ -138,7 +138,7 @@ func MaskResultPage(body []byte, masks []*pb.ColumnMask, expectedWidth *int32, m
 			return nil, nil, err
 		}
 	}
-	for index, kind := range engine.BindMasks(masks, len(columns)).ByIndex {
+	for index, kind := range relay.BindMasks(masks, len(columns)).ByIndex {
 		if kind == "NULL" {
 			continue
 		}

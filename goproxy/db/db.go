@@ -1,4 +1,4 @@
-// Package db is the DUMB per-database adapter set: the few facts engine.QueryEngine needs to gather
+// Package db is the DUMB per-database adapter set: the few facts relay.QueryEngine needs to gather
 // context (namespace probe SQL, temp-overlay support), plus each dialect's NormalizeColumns
 // specialization (analyzer/engines.NormalizeRelation — Go-to-Go, no SQL driver, no cgo). No enforcement
 // logic, no state machine.
@@ -16,7 +16,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// MySqlDb is the engine.Db adapter for MySQL.
+// MySqlDb is the relay.Db adapter for MySQL.
 type MySqlDb struct{}
 
 // NamespaceProbeSQL yields the connection's current database.
@@ -32,7 +32,7 @@ func (MySqlDb) LowerCaseTableNamesProbeSQL() string { return "SELECT @@lower_cas
 
 // NormalizeColumns folds each column to analyzer/engines's canonical MySQL spelling — the SAME
 // normalization introspect's bulk catalog push uses, so the schema-fragment pool this feeds
-// (goproxy/engine.Refetcher) and the persisted catalog never disagree on spelling.
+// (goproxy/relay.Refetcher) and the persisted catalog never disagree on spelling.
 //
 // Folds through engines.NormalizeMySQLColumns, which memoizes the per-(schema, table) identifier parse.
 // A schema fragment repeats one schema and each table name once per column, so the per-row path
@@ -158,7 +158,7 @@ func (MySqlDb) SchemaHashFromRows(rows [][]*string) ([]byte, bool, error) {
 	return hash, true, nil
 }
 
-// PgDb is the engine.Db adapter for Postgres.
+// PgDb is the relay.Db adapter for Postgres.
 type PgDb struct{}
 
 // NamespaceProbeSQL yields one JSON observation containing the connection's effective search_path,

@@ -8,7 +8,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsa "github.com/aws/aws-sdk-go-v2/service/athena"
-	"github.com/ridi-oss/proxy-monster/goproxy/engine"
+	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 )
 
 // replayTolerance bounds how far before the admission an execution may have been submitted and still count
@@ -42,7 +42,7 @@ func redactValue(value any) {
 			switch key {
 			case "Message", "StateChangeReason", "ErrorMessage":
 				if _, text := child.(string); text {
-					node[key] = engine.RedactedDiagnosticMessage
+					node[key] = relay.RedactedDiagnosticMessage
 				}
 			default:
 				redactValue(child)

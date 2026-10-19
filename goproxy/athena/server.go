@@ -16,9 +16,9 @@ import (
 	"time"
 
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
-	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/listen"
+	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -108,7 +108,7 @@ type nativeRequest struct {
 	requestBody []byte
 	// SQL submission state, set only for StartQueryExecution.
 	session   *enforcementSession
-	decision  *engine.Decision
+	decision  *relay.Decision
 	submitted []byte
 	tokened   bool
 	started   time.Time
@@ -304,15 +304,15 @@ func (c *nativeRequest) admitSubmission(envelope *Envelope) (*Envelope, error) {
 	c.started = time.Now()
 	verdict := session.authorize(scope.query, c.clientAddr, scope.parameters, 0)
 	switch v := verdict.(type) {
-	case engine.Fail:
-		return nil, engine.FailError{Message: v.Message}
-	case engine.Deny:
+	case relay.Fail:
+		return nil, relay.FailError{Message: v.Message}
+	case relay.Deny:
 		// A DENY relays nothing: the control plane already failed its task inline, so no completion follows.
 		return nil, &denied{reason: v.Decision.DenyReason}
-	case engine.Proceed:
+	case relay.Proceed:
 		c.decision = v.Decision
 	default:
-		return nil, engine.FailError{Message: fmt.Sprintf("unexpected authorization verdict %T", verdict)}
+		return nil, relay.FailError{Message: fmt.Sprintf("unexpected authorization verdict %T", verdict)}
 	}
 	query, parameters := submittedQuery(scope.query, scope.parameters, c.decision)
 	admitted, err := applySubmission(envelope, query, parameters)
@@ -634,7 +634,7 @@ func (d *denied) Error() string { return "athena: statement denied: " + d.reason
 
 func (c *nativeRequest) fail(w http.ResponseWriter, err error) {
 	var deny *denied
-	var fail engine.FailError
+	var fail relay.FailError
 	code, status := "athena.forwarding_failed", http.StatusBadGateway
 	switch {
 	case errors.As(err, &deny):
@@ -651,7 +651,7 @@ func (c *nativeRequest) fail(w http.ResponseWriter, err error) {
 		code, status = "athena.original_context_unavailable", http.StatusConflict
 	case errors.Is(err, ErrBodyTooLarge):
 		code, status = "athena.request_too_large", http.StatusRequestEntityTooLarge
-	case errors.Is(err, ErrResultShape), errors.Is(err, engine.ErrMaskUnbound):
+	case errors.Is(err, ErrResultShape), errors.Is(err, relay.ErrMaskUnbound):
 		code, status = "athena.result_unenforceable", http.StatusBadGateway
 	}
 	if c.decision != nil && c.operation == "StartQueryExecution" {

@@ -11,8 +11,8 @@ import (
 	"time"
 
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
-	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -115,8 +115,8 @@ func namespacedToken(datasource, principal, token string) string {
 }
 
 // newCachedContext freezes an ALLOW/MASK decision for a returned execution id.
-func newCachedContext(resourceID, owner string, targetBinding []byte, decision *engine.Decision, expectedWidth *uint32, binding []byte, now time.Time) (*enginepb.AthenaCachedContext, error) {
-	action := engine.ParseEnfActionName(decision.Action)
+func newCachedContext(resourceID, owner string, targetBinding []byte, decision *relay.Decision, expectedWidth *uint32, binding []byte, now time.Time) (*enginepb.AthenaCachedContext, error) {
+	action := relay.ParseEnfActionName(decision.Action)
 	if action != pb.EnfAction_ALLOW && action != pb.EnfAction_MASK {
 		return nil, ErrUnauthorized
 	}

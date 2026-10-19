@@ -24,11 +24,11 @@ import (
 
 	"github.com/ridi-oss/proxy-monster/goproxy/cp"
 	"github.com/ridi-oss/proxy-monster/goproxy/db"
-	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/mysql"
 	"github.com/ridi-oss/proxy-monster/goproxy/proxytls"
+	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 	"github.com/ridi-oss/proxy-monster/mysqlwire"
 )
@@ -290,7 +290,7 @@ func startBroker(t *testing.T) *brokerHarness {
 	return startBrokerWithTLS(t, nil)
 }
 
-func startBrokerWithDb(t *testing.T, dbImpl engine.Db) *brokerHarness {
+func startBrokerWithDb(t *testing.T, dbImpl relay.Db) *brokerHarness {
 	t.Helper()
 	return startBrokerConfigured(t, nil, dbImpl)
 }
@@ -308,12 +308,12 @@ func startBrokerWithTLS(t *testing.T, tlsProvider func() (*tls.Config, error)) *
 	return startBrokerConfigured(t, tlsProvider, db.MySqlDb{})
 }
 
-func startBrokerConfigured(t *testing.T, tlsProvider func() (*tls.Config, error), dbImpl engine.Db) *brokerHarness {
+func startBrokerConfigured(t *testing.T, tlsProvider func() (*tls.Config, error), dbImpl relay.Db) *brokerHarness {
 	t.Helper()
 	return startBrokerListening(t, spi.Listen{}, tlsProvider, dbImpl)
 }
 
-func startBrokerListening(t *testing.T, listen spi.Listen, tlsProvider func() (*tls.Config, error), dbImpl engine.Db) *brokerHarness {
+func startBrokerListening(t *testing.T, listen spi.Listen, tlsProvider func() (*tls.Config, error), dbImpl relay.Db) *brokerHarness {
 	t.Helper()
 	targetDb := seedTargetDb(t)
 	fake, cpClient := startFakeCP(t)
@@ -486,7 +486,7 @@ func TestOnOpenEqualHashPushesUnchangedWithoutColumns(t *testing.T) {
 func TestOnOpenFailureRefusesConnectionAndClosesCPState(t *testing.T) {
 	for _, test := range []struct {
 		name   string
-		dbImpl engine.Db
+		dbImpl relay.Db
 		setup  func(*fakeControlPlane)
 	}{
 		{"introspection", failingColumnsDb{MySqlDb: db.MySqlDb{}}, func(*fakeControlPlane) {}},

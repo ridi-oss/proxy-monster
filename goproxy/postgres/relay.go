@@ -11,12 +11,12 @@ import (
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
-	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 )
 
 var (
-	errMaskUnbound          = engine.ErrMaskUnbound
+	errMaskUnbound          = relay.ErrMaskUnbound
 	errCopyStream           = errors.New("COPY is not supported")
 	errClientEncoding       = errors.New("client_encoding changed away from UTF8")
 	errStdConformingStrings = errors.New("standard_conforming_strings changed away from on")
@@ -28,10 +28,10 @@ const clientFlushThreshold = 64
 type streamOpts struct{ extended, soft bool }
 
 // pgTargetDbErr carries both forms of a PostgreSQL ErrorResponse — the raw message and the diagnostic-redacted
-// message — from streamResult to its caller. It is NOT engine.TargetDbError: streamResult also serves
+// message — from streamResult to its caller. It is NOT relay.TargetDbError: streamResult also serves
 // internal catalog probes and refetches (collectProbe), whose errors must stay proxy-internal and never be
 // surfaced as a query's error detail. Only the statement site (RunSession.ServeStatement) promotes this to
-// engine.TargetDbError, so provenance is decided there, not for every ErrorResponse streamResult sees.
+// relay.TargetDbError, so provenance is decided there, not for every ErrorResponse streamResult sees.
 type pgTargetDbErr struct {
 	message  string
 	redacted string
@@ -43,7 +43,7 @@ func (e *pgTargetDbErr) Error() string { return e.message }
 // TARGET-DB row it came from, so a caller measuring result volume charges the target's row rather than the
 // rewritten one. rowBytes is 0 for every frame that is not a DataRow.
 func (c *sessionCore) streamResult(masks []*pb.ColumnMask, opts streamOpts, emit func(message pgproto3.BackendMessage, rowBytes int64) error) (targetDbErr error, err error) {
-	var masker *engine.RowMasker
+	var masker *relay.RowMasker
 	columnCount := -1
 	fail := func(cause error) bool {
 		if err == nil {
@@ -77,7 +77,7 @@ func (c *sessionCore) streamResult(masks []*pb.ColumnMask, opts streamOpts, emit
 			columnCount = len(message.Fields)
 			masker = nil
 			if len(masks) > 0 {
-				masker = engine.NewRowMasker(masks, columnCount)
+				masker = relay.NewRowMasker(masks, columnCount)
 				if masker == nil && !fail(errMaskUnbound) {
 					return targetDbErr, err
 				}
@@ -163,8 +163,8 @@ func (c *sessionCore) streamResult(masks []*pb.ColumnMask, opts streamOpts, emit
 
 type rowsCollector struct {
 	expected int
-	budget   engine.RowBudget
-	result   *engine.StatementResult
+	budget   relay.RowBudget
+	result   *relay.StatementResult
 	failed   error
 }
 
@@ -223,7 +223,7 @@ func decodeTextRow(message *pgproto3.DataRow) []*string {
 	return values
 }
 
-func maskDataRow(message *pgproto3.DataRow, masker *engine.RowMasker) *pgproto3.DataRow {
+func maskDataRow(message *pgproto3.DataRow, masker *relay.RowMasker) *pgproto3.DataRow {
 	masked := masker.Apply(decodeTextRow(message))
 	encoded := make([][]byte, len(masked))
 	for i, value := range masked {
@@ -255,7 +255,7 @@ func firstErr(errs ...error) error {
 
 // resultCapError is the 57014 a client sees INSTEAD of the capped statement's own terminator — the same
 // SQLSTATE PostgreSQL itself sends for a cancelled query. Nil while the next row still fits.
-func resultCapError(dec *engine.Decision, relayed engine.RelayStats, rowBytes int64) *pgproto3.ErrorResponse {
+func resultCapError(dec *relay.Decision, relayed relay.RelayStats, rowBytes int64) *pgproto3.ErrorResponse {
 	message := dec.CapExceeded(relayed, rowBytes)
 	if message == "" {
 		return nil
@@ -377,13 +377,13 @@ type queryResult struct {
 func (s *Server) serveQuery(sess *session, sql string, mode relayMode) (queryResult, error) {
 	ref := s.refetcher(sess, false)
 	start := time.Now()
-	var relayStats engine.RelayStats
-	relayStatus := engine.StatusError
+	var relayStats relay.RelayStats
+	relayStatus := relay.StatusError
 	var result queryResult
 	in := sess.authzInput(sql, sess.token, sess.clientAddr, sess.connectionID, ref.RunAll)
-	in.CheckTargetError = func(sql string) (*engine.TargetError, error) { return s.checkTargetErrorAndSync(sess, sql) }
-	decision, denied, err := engine.ServeStatement(sess.qe, in, ref, nil,
-		func(toSend string, masks []*pb.ColumnMask, dec *engine.Decision) (bool, error) {
+	in.CheckTargetError = func(sql string) (*relay.TargetError, error) { return s.checkTargetErrorAndSync(sess, sql) }
+	decision, denied, err := relay.ServeStatement(sess.qe, in, ref, nil,
+		func(toSend string, masks []*pb.ColumnMask, dec *relay.Decision) (bool, error) {
 			sess.targetDb.Send(&pgproto3.Query{String: toSend})
 			if err := sess.targetDb.Flush(); err != nil {
 				return false, err
@@ -446,17 +446,17 @@ func (s *Server) serveQuery(sess *session, sql string, mode relayMode) (queryRes
 			if err := sess.client.Flush(); err != nil {
 				return false, err
 			}
-			relayStatus = engine.RelayStatus(targetDbErr == nil && capped == nil, nil)
+			relayStatus = relay.RelayStatus(targetDbErr == nil && capped == nil, nil)
 			result.stop = targetDbErr != nil || capped != nil
 			return !result.stop, nil
 		})
 	// Post-relay, best-effort completion: only a relayed (Proceed) statement reports. A DENY relayed
 	// nothing, and EmitCompletion additionally no-ops for a decision with no audit id.
 	if !denied {
-		sess.qe.AwaitCompletion(engine.EmitCompletion(s.client, decision, relayStats, relayStatus, start))
+		sess.qe.AwaitCompletion(relay.EmitCompletion(s.client, decision, relayStats, relayStatus, start))
 	}
 	if err != nil {
-		var fail engine.FailError
+		var fail relay.FailError
 		if errors.As(err, &fail) {
 			if err := abortTransaction(sess); err != nil {
 				return queryResult{stop: true}, closeRelay(sess, err)
@@ -471,7 +471,7 @@ func (s *Server) serveQuery(sess *session, sql string, mode relayMode) (queryRes
 			if mode == relayQuery {
 				sess.client.Send(&pgproto3.ReadyForQuery{TxStatus: sess.lastTxStatus})
 			}
-			sess.qe.AwaitCompletion(engine.EmitCompletion(s.client, decision, engine.RelayStats{}, engine.StatusError, start))
+			sess.qe.AwaitCompletion(relay.EmitCompletion(s.client, decision, relay.RelayStats{}, relay.StatusError, start))
 			return queryResult{stop: true}, sess.client.Flush()
 		}
 	}

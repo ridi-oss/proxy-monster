@@ -10,10 +10,10 @@ import (
 	"testing"
 
 	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
-	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/introspect"
+	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
@@ -21,7 +21,7 @@ func quoteMySQL(identifier string) string {
 	return "`" + strings.ReplaceAll(identifier, "`", "``") + "`"
 }
 
-func introspectTarget(t *testing.T, open func(spi.TargetDb) (*sql.DB, error), adapter engine.Db, probe introspect.NamespaceProbe, target dbtest.TargetDb, database string) *pb.CatalogRequest {
+func introspectTarget(t *testing.T, open func(spi.TargetDb) (*sql.DB, error), adapter relay.Db, probe introspect.NamespaceProbe, target dbtest.TargetDb, database string) *pb.CatalogRequest {
 	t.Helper()
 	pool, err := open(spi.TargetDb{Host: target.Host, Port: target.Port, Db: database, User: target.User, Password: target.Password})
 	if err != nil {
@@ -74,7 +74,7 @@ func schemaColumns(columns []*analyzerpb.Column, schema string) []*analyzerpb.Co
 }
 
 // assertFragmentMatchesBulk requires a refetch of schema to equal the bulk catalog, and its hash to be stable.
-func assertFragmentMatchesBulk(t *testing.T, adapter engine.Db, conn *sql.Conn, catalog string, bulk *pb.CatalogRequest, schema string) {
+func assertFragmentMatchesBulk(t *testing.T, adapter relay.Db, conn *sql.Conn, catalog string, bulk *pb.CatalogRequest, schema string) {
 	t.Helper()
 	want := schemaColumns(bulk.GetCatalog().GetColumns(), schema)
 	if len(want) == 0 {
@@ -273,7 +273,7 @@ func TestMySQLFragmentRowsUnderEachMode(t *testing.T) {
 		{"mode 2 refuses another schema", 2, "app", "Other", "Users", "EMail", nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := engine.FragmentColumnsFromRows(MySqlDb{}, tc.mode, tc.requested, row(tc.schema, tc.table, tc.colmn))
+			got, err := relay.FragmentColumnsFromRows(MySqlDb{}, tc.mode, tc.requested, row(tc.schema, tc.table, tc.colmn))
 			if tc.want == nil {
 				if err == nil {
 					t.Fatalf("FragmentColumnsFromRows = %+v, want refused", got)
@@ -333,7 +333,7 @@ func TestMySQLRefetchRefusesUnknownLowerCaseTableNames(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Skip("pending-name-fix: refetch treats an unreported lower_case_table_names as 0")
 			pushed := false
-			refetcher := engine.Refetcher{
+			refetcher := relay.Refetcher{
 				Catalog: "def",
 				Db:      MySqlDb{},
 				Probe: func(statement string, _ int) ([][]*string, error) {

@@ -14,8 +14,8 @@ import (
 	"unicode/utf8"
 
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
-	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 	"github.com/ridi-oss/proxy-monster/goproxy/wire"
 	"github.com/ridi-oss/proxy-monster/mysqlwire"
@@ -367,11 +367,11 @@ func interpretSessionProbeRow(values []*string) (namespace []string, ansiQuotes 
 // textResultCollector decodes one COM_QUERY text result for probes and run execution.
 type textResultCollector struct {
 	expected, columns        int
-	budget                   engine.RowBudget
+	budget                   relay.RowBudget
 	masks                    []*pb.ColumnMask
 	columnDefs               []mysqlwire.ColumnDefinition
-	result                   *engine.StatementResult
-	masker                   *engine.RowMasker
+	result                   *relay.StatementResult
+	masker                   *relay.RowMasker
 	targetDbErr, affectedErr error
 }
 
@@ -394,9 +394,9 @@ func (c *textResultCollector) onColumns(count int) error {
 		c.columnDefs = make([]mysqlwire.ColumnDefinition, 0, count)
 	}
 	if len(c.masks) > 0 {
-		c.masker = engine.NewRowMasker(c.masks, count)
+		c.masker = relay.NewRowMasker(c.masks, count)
 		if c.masker == nil {
-			return engine.ErrMaskUnbound
+			return relay.ErrMaskUnbound
 		}
 	}
 	return nil
@@ -508,7 +508,7 @@ func runInternalQuery(targetDb net.Conn, deprecateEOF bool, sql string, expected
 	if err := mysqlwire.WritePacket(targetDb, 0, mysqlwire.ComQueryPayload(sql)); err != nil {
 		return nil, err
 	}
-	result := engine.StatementResult{Rows: make([][]*string, 0)}
+	result := relay.StatementResult{Rows: make([][]*string, 0)}
 	collect := textResultCollector{expected: expectedColumns, result: &result}
 	_, _, err := relayResultSet(targetDb, deprecateEOF, collect.hooks())
 	if err != nil {
@@ -536,16 +536,16 @@ func probeNamespace(targetDb net.Conn, deprecateEOF bool) (namespace []string, a
 
 // probeSession runs the pre-statement session probe and packages its result as the engine's
 // SessionObservation, so every wire/editor call site shares one probe→engine conversion.
-func probeSession(targetDb net.Conn, deprecateEOF bool) (engine.SessionObservation, error) {
+func probeSession(targetDb net.Conn, deprecateEOF bool) (relay.SessionObservation, error) {
 	namespace, ansiQuotes, err := probeNamespace(targetDb, deprecateEOF)
 	if err != nil {
-		return engine.SessionObservation{}, err
+		return relay.SessionObservation{}, err
 	}
 	return mysqlSession(namespace, ansiQuotes), nil
 }
 
-func mysqlSession(namespace []string, ansiQuotes bool) engine.SessionObservation {
-	return engine.SessionObservation{
+func mysqlSession(namespace []string, ansiQuotes bool) relay.SessionObservation {
+	return relay.SessionObservation{
 		CurrentCatalog:     "def",
 		Namespace:          namespace,
 		SessionObservation: &enginepb.SessionObservation{Engine: &enginepb.SessionObservation_Mysql{Mysql: &enginepb.MySqlSession{AnsiQuotes: ansiQuotes}}},

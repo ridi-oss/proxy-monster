@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/ridi-oss/proxy-monster/goproxy/engine"
+	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 	"github.com/ridi-oss/proxy-monster/mysqlwire"
 )
 
@@ -16,10 +16,10 @@ func TestByteCapRejectsWholeFragmentedRow(t *testing.T) {
 		writeTestPacket(t, &target, 3, make([]byte, maxPacketPayload))
 		writeTestPacket(t, &target, 4, []byte{0xff, 1, 2})
 		writeTestPacket(t, &target, 5, trackedOKPacket(0xfe, 2, "", nil))
-		var stats engine.RelayStats
+		var stats relay.RelayStats
 		cancels, packets := 0, 0
 		_, capped, err := relayResultSet(&target, true, resultHooks{
-			Cap: &engine.Decision{MaxBytes: limit}, Stats: &stats,
+			Cap: &relay.Decision{MaxBytes: limit}, Stats: &stats,
 			OnCapExceeded: func() { cancels++ },
 			Sink:          func(_ byte, _ []byte) error { packets++; return nil },
 		})
@@ -41,10 +41,10 @@ func TestRowCapSwallowsCancellationError(t *testing.T) {
 	for i, payload := range [][]byte{{1}, {3, 'd', 'e', 'f'}, {1, 'a'}, {1, 'b'}, mysqlwire.ErrPacketState(1317, "70100", "interrupted")} {
 		writeTestPacket(t, &target, byte(i+1), payload)
 	}
-	var stats engine.RelayStats
+	var stats relay.RelayStats
 	cancels, rows, packets := 0, 0, 0
 	ok, capped, err := relayResultSet(&target, true, resultHooks{
-		Cap: &engine.Decision{MaxRows: 1}, Stats: &stats,
+		Cap: &relay.Decision{MaxRows: 1}, Stats: &stats,
 		OnCapExceeded: func() { cancels++ },
 		OnRow:         func(payload []byte) ([]byte, error) { rows++; return payload, nil },
 		Sink:          func(_ byte, _ []byte) error { packets++; return nil },

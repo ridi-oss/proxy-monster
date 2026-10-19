@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ridi-oss/proxy-monster/goproxy/engine"
+	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 	"github.com/ridi-oss/proxy-monster/mysqlwire"
 )
 
@@ -153,7 +153,7 @@ func TestMysqlDiagnosticMessage(t *testing.T) {
 	if got := mysqlDiagnosticMessage(1050); got != "ER_TABLE_EXISTS_ERROR" {
 		t.Errorf("mysqlDiagnosticMessage(1050) = %q, want ER_TABLE_EXISTS_ERROR (added by the full-catalog expansion)", got)
 	}
-	if got := mysqlDiagnosticMessage(999999); got != engine.RedactedDiagnosticMessage {
+	if got := mysqlDiagnosticMessage(999999); got != relay.RedactedDiagnosticMessage {
 		t.Errorf("mysqlDiagnosticMessage(unknown) = %q, want the generic fallback", got)
 	}
 }

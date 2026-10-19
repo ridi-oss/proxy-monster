@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgproto3"
-	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 	"github.com/ridi-oss/proxy-monster/goproxy/wire"
 )
@@ -21,12 +21,12 @@ type RunSession struct {
 	target       spi.TargetDb
 	token        string
 	connectionID []byte
-	ref          *engine.Refetcher
-	guard        engine.ExecGuard
+	ref          *relay.Refetcher
+	guard        relay.ExecGuard
 	poisoned     bool
 }
 
-func NewRunSession(ctx context.Context, target spi.TargetDb, db engine.Db, client spi.ControlPlane, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration, defaultSchema string) (*RunSession, error) {
+func NewRunSession(ctx context.Context, target spi.TargetDb, db relay.Db, client spi.ControlPlane, token string, connectionID []byte, guard relay.ExecGuard, readTimeout time.Duration, defaultSchema string) (*RunSession, error) {
 	var extra map[string]string
 	if defaultSchema != "" {
 		extra = map[string]string{"search_path": `"` + strings.ReplaceAll(defaultSchema, `"`, `""`) + `"`}
@@ -45,7 +45,7 @@ func NewRunSession(ctx context.Context, target spi.TargetDb, db engine.Db, clien
 		sessionCore: sessionCore{
 			currentCatalog: catalog,
 			targetDb:       pgproto3.NewFrontend(conn, conn),
-			qe:             engine.NewQueryEngine(client),
+			qe:             relay.NewQueryEngine(client),
 			db:             db,
 			lastTxStatus:   txStatus,
 		},
@@ -56,7 +56,7 @@ func NewRunSession(ctx context.Context, target spi.TargetDb, db engine.Db, clien
 		connectionID: append([]byte(nil), connectionID...),
 		guard:        guard,
 	}
-	s.ref = engine.NewRefetcher(db, s.connectionID, generation, func(sql string, expectedColumns int) ([][]*string, error) {
+	s.ref = relay.NewRefetcher(db, s.connectionID, generation, func(sql string, expectedColumns int) ([][]*string, error) {
 		return s.runProbe(sql, expectedColumns, true)
 	}, client.PushSchemaFragment)
 	s.ref.Catalog = catalog
@@ -71,13 +71,13 @@ func (s *RunSession) OnOpen(ctx context.Context, cmds []*pb.ProxyCommand) error 
 	return s.ref.RunAll(cmds, nil)
 }
 
-func (s *RunSession) ServeStatement(sql string, maxRows int) (result engine.StatementResult, err error) {
+func (s *RunSession) ServeStatement(sql string, maxRows int) (result relay.StatementResult, err error) {
 	if s.poisoned {
 		return result, errors.New("run session is unusable after a prior protocol error")
 	}
-	result.Decision, result.Denied, err = engine.ServeStatement(s.qe,
+	result.Decision, result.Denied, err = relay.ServeStatement(s.qe,
 		s.authzInput(sql, s.token, "", s.connectionID, s.ref.RunAll), s.ref, s.guard,
-		func(toSend string, masks []*pb.ColumnMask, dec *engine.Decision) (bool, error) {
+		func(toSend string, masks []*pb.ColumnMask, dec *relay.Decision) (bool, error) {
 			pageRows := dec.PageRows(maxRows)
 			max, runErr := executeMaxRows(pageRows)
 			if runErr != nil {
@@ -93,7 +93,7 @@ func (s *RunSession) ServeStatement(sql string, maxRows int) (result engine.Stat
 				return false, runErr
 			}
 			collector := rowsCollector{
-				budget: engine.RowBudget{MaxRows: pageRows, MaxBytes: dec.MaxBytes},
+				budget: relay.RowBudget{MaxRows: pageRows, MaxBytes: dec.MaxBytes},
 				result: &result,
 			}
 			targetDbErr, runErr := s.streamResult(masks, streamOpts{extended: true}, collector.emit)
@@ -101,12 +101,12 @@ func (s *RunSession) ServeStatement(sql string, maxRows int) (result engine.Stat
 			s.poisoned = runErr != nil
 			s.pendingDirty = true
 			if targetDbErr != nil {
-				// Promote the statement's OWN target-DB ERR to engine.TargetDbError (raw + redacted forms), the
+				// Promote the statement's OWN target-DB ERR to relay.TargetDbError (raw + redacted forms), the
 				// only provenance the control-plane may surface — and re-gate per viewer. A probe/refetch ERR
 				// reaches ServeStatement as a plain error, never a *pgTargetDbErr, so it stays generic.
 				var pgErr *pgTargetDbErr
 				if errors.As(targetDbErr, &pgErr) {
-					return false, engine.TargetDbError{Message: pgErr.message, Redacted: pgErr.redacted}
+					return false, relay.TargetDbError{Message: pgErr.message, Redacted: pgErr.redacted}
 				}
 				return false, targetDbErr
 			}

@@ -12,8 +12,8 @@ import (
 
 	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
-	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 	"github.com/ridi-oss/proxy-monster/goproxy/wire"
 	"github.com/ridi-oss/proxy-monster/mysqlwire"
 	"google.golang.org/protobuf/proto"
@@ -172,7 +172,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 	defer targetDbConn.Close()
 	cancelQuery := func() { _ = cancelTargetDbQuery(s.targetDb, targetGreeting.ConnectionID) }
 
-	qe := engine.NewQueryEngine(s.client)
+	qe := relay.NewQueryEngine(s.client)
 	preparedStmts := make(map[uint32]preparedStmt)
 	if handshake.Database != "" {
 		// The client selected a database at connect time. Switching the current database is not a gated
@@ -202,7 +202,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 	if !ok {
 		return
 	}
-	refetcher := engine.NewRefetcher(s.db, identity.ConnectionID, generation, func(sql string, expectedColumns int) ([][]*string, error) {
+	refetcher := relay.NewRefetcher(s.db, identity.ConnectionID, generation, func(sql string, expectedColumns int) ([][]*string, error) {
 		return runInternalQuery(targetDbConn, deprecateEOF, sql, expectedColumns)
 	}, s.client.PushSchemaFragment)
 	refetcher.Catalog = "def"
@@ -256,20 +256,20 @@ func (s *Server) handleConn(clientConn net.Conn) {
 			// when serve returns closed.
 			serve := func(sql string, seqBase byte, more bool) (lastSeq byte, stop, closed bool) {
 				start := time.Now()
-				var relayStats engine.RelayStats
-				relayStatus := engine.StatusError
+				var relayStats relay.RelayStats
+				relayStatus := relay.StatusError
 				stop = true
-				decision, denied, serveErr := engine.ServeStatement(qe, engine.AuthzInput{
+				decision, denied, serveErr := relay.ServeStatement(qe, relay.AuthzInput{
 					SQL:          sql,
 					Token:        token,
 					ClientAddr:   clientAddr,
 					ConnectionID: identity.ConnectionID,
-					ProbeSession: func() (engine.SessionObservation, error) { return probeSession(targetDbConn, deprecateEOF) },
+					ProbeSession: func() (relay.SessionObservation, error) { return probeSession(targetDbConn, deprecateEOF) },
 					RunCommands:  refetcher.RunAll,
-					CheckTargetError: func(sql string) (*engine.TargetError, error) {
+					CheckTargetError: func(sql string) (*relay.TargetError, error) {
 						return checkTargetError(targetDbConn, deprecateEOF, sql)
 					},
-				}, refetcher, nil, func(toSend string, masks []*pb.ColumnMask, dec *engine.Decision) (bool, error) {
+				}, refetcher, nil, func(toSend string, masks []*pb.ColumnMask, dec *relay.Decision) (bool, error) {
 					queryPayload := mysqlwire.ComQueryPayload(toSend)
 					if len(queryPayload) >= maxPacketPayload {
 						if err := mysqlwire.WritePacket(clientConn, seqBase+1, mysqlwire.ErrPacketState(
@@ -286,7 +286,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 					}
 					clean, stats, last, err := relayQueryResponseTracked(clientConn, targetDbConn, deprecateEOF, masks, errRedactor(qe), dec, cancelQuery, seqBase, more)
 					relayStats = stats
-					relayStatus = engine.RelayStatus(clean, err)
+					relayStatus = relay.RelayStatus(clean, err)
 					if err != nil {
 						return false, err
 					}
@@ -300,17 +300,17 @@ func (s *Server) handleConn(clientConn net.Conn) {
 						return 0, true, true
 					}
 					if forwarded {
-						qe.AwaitCompletion(engine.EmitCompletion(s.client, decision, relayStats, engine.StatusError, start))
+						qe.AwaitCompletion(relay.EmitCompletion(s.client, decision, relayStats, relay.StatusError, start))
 					}
 					return lastSeq, stop, false
 				}
 				// Post-relay, best-effort completion: only a relayed (Proceed) statement reports. A DENY relayed
 				// nothing, and EmitCompletion additionally no-ops for a decision with no audit id.
 				if !denied {
-					qe.AwaitCompletion(engine.EmitCompletion(s.client, decision, relayStats, relayStatus, start))
+					qe.AwaitCompletion(relay.EmitCompletion(s.client, decision, relayStats, relayStatus, start))
 				}
 				if serveErr != nil {
-					var fail engine.FailError
+					var fail relay.FailError
 					if errors.As(serveErr, &fail) {
 						_ = mysqlwire.WritePacket(clientConn, seqBase+1, mysqlwire.ErrPacketState(1105, "HY000", "proxy-monster: "+fail.Message))
 					} else if more && lastSeq != 0 {
@@ -321,7 +321,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 				}
 				return lastSeq, stop, false
 			}
-			batch := splitBatch(multiStatements, sql, targetGreeting.ServerVersion, func() (engine.SessionObservation, error) {
+			batch := splitBatch(multiStatements, sql, targetGreeting.ServerVersion, func() (relay.SessionObservation, error) {
 				return probeSession(targetDbConn, deprecateEOF)
 			})
 			if batch == nil {
@@ -379,7 +379,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 			sql := string(payload[1:])
 			var frozen []string
 			var frozenAnsiQuotes bool
-			proceed, allowed, err := s.authorize(qe, clientConn, targetDbConn, deprecateEOF, seq, sql, token, clientAddr, identity.ConnectionID, refetcher.RunAll, func() (engine.SessionObservation, error) {
+			proceed, allowed, err := s.authorize(qe, clientConn, targetDbConn, deprecateEOF, seq, sql, token, clientAddr, identity.ConnectionID, refetcher.RunAll, func() (relay.SessionObservation, error) {
 				obs, err := probeSession(targetDbConn, deprecateEOF)
 				if err == nil {
 					frozen = append([]string{}, obs.Namespace...)
@@ -469,7 +469,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 			// namespace rather than live session state, then dirty the engine cache immediately so it cannot
 			// leak into the next statement's decision.
 			qe.MarkNamespaceDirty()
-			proceed, allowed, err := s.authorize(qe, clientConn, targetDbConn, deprecateEOF, seq, ps.sql, token, clientAddr, identity.ConnectionID, refetcher.RunAll, func() (engine.SessionObservation, error) {
+			proceed, allowed, err := s.authorize(qe, clientConn, targetDbConn, deprecateEOF, seq, ps.sql, token, clientAddr, identity.ConnectionID, refetcher.RunAll, func() (relay.SessionObservation, error) {
 				return mysqlSession(ps.namespace, ps.ansiQuotes), nil
 			})
 			qe.MarkNamespaceDirty()
@@ -509,7 +509,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 			}
 			ok, stats, _, err := relayQueryResponseTracked(clientConn, targetDbConn, deprecateEOF, nil, errRedactor(qe), proceed.Decision, cancelQuery, 0, false)
 			// Post-relay, best-effort completion for this binary-protocol EXECUTE (no-op if unaudited).
-			qe.AwaitCompletion(engine.EmitCompletion(s.client, proceed.Decision, stats, engine.RelayStatus(ok, err), start))
+			qe.AwaitCompletion(relay.EmitCompletion(s.client, proceed.Decision, stats, relay.RelayStatus(ok, err), start))
 			if err != nil {
 				return
 			}
@@ -575,47 +575,47 @@ func (s *Server) handleConn(clientConn net.Conn) {
 }
 
 func (s *Server) authorize(
-	qe *engine.QueryEngine,
+	qe *relay.QueryEngine,
 	clientConn, targetDbConn net.Conn,
 	deprecateEOF bool,
 	seq byte,
 	sql, token, clientAddr string,
 	connectionID []byte,
-	runCommands func([]*pb.ProxyCommand, *engine.SessionObservation) error,
-	probeSession func() (engine.SessionObservation, error),
-) (engine.Proceed, bool, error) {
-	verdict := qe.Authorize(engine.AuthzInput{
+	runCommands func([]*pb.ProxyCommand, *relay.SessionObservation) error,
+	probeSession func() (relay.SessionObservation, error),
+) (relay.Proceed, bool, error) {
+	verdict := qe.Authorize(relay.AuthzInput{
 		SQL:          sql,
 		Token:        token,
 		ClientAddr:   clientAddr,
 		ConnectionID: connectionID,
 		ProbeSession: probeSession,
 		RunCommands:  runCommands,
-		CheckTargetError: func(sql string) (*engine.TargetError, error) {
+		CheckTargetError: func(sql string) (*relay.TargetError, error) {
 			return checkTargetError(targetDbConn, deprecateEOF, sql)
 		},
 	})
 	switch v := verdict.(type) {
-	case engine.Fail:
+	case relay.Fail:
 		if err := mysqlwire.WritePacket(clientConn, seq+1, mysqlwire.ErrPacketState(
 			1105,
 			"HY000",
 			"proxy-monster: "+v.Message,
 		)); err != nil {
-			return engine.Proceed{}, false, err
+			return relay.Proceed{}, false, err
 		}
-		return engine.Proceed{}, false, errors.New("mysqlproxy: authorization failed mechanically")
-	case engine.Deny:
+		return relay.Proceed{}, false, errors.New("mysqlproxy: authorization failed mechanically")
+	case relay.Deny:
 		start := time.Now()
 		forwarded, err := writeDeny(clientConn, seq, v.Decision, errRedactor(qe))
 		if forwarded {
-			qe.AwaitCompletion(engine.EmitCompletion(s.client, v.Decision, engine.RelayStats{}, engine.StatusError, start))
+			qe.AwaitCompletion(relay.EmitCompletion(s.client, v.Decision, relay.RelayStats{}, relay.StatusError, start))
 		}
-		return engine.Proceed{}, false, err
-	case engine.Proceed:
+		return relay.Proceed{}, false, err
+	case relay.Proceed:
 		return v, true, nil
 	default:
-		return engine.Proceed{}, false, errors.New("mysqlproxy: engine returned an unknown verdict")
+		return relay.Proceed{}, false, errors.New("mysqlproxy: engine returned an unknown verdict")
 	}
 }
 
@@ -688,7 +688,7 @@ func mysqlNamespace(schema string) []string {
 
 // splitBatch cuts a multi-statement query into its statements when the client enabled them, or returns nil
 // to serve sql as one, which the analyzer denies if it holds several.
-func splitBatch(enabled bool, sql, version string, observe func() (engine.SessionObservation, error)) []string {
+func splitBatch(enabled bool, sql, version string, observe func() (relay.SessionObservation, error)) []string {
 	if !enabled || !strings.Contains(strings.TrimRight(sql, "; \t\r\n"), ";") {
 		return nil
 	}

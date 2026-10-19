@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
-	"github.com/ridi-oss/proxy-monster/goproxy/engine"
+	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 )
 
 func TestMySqlDbConstants(t *testing.T) {
@@ -146,7 +146,7 @@ func TestPgNormalizeColumnsIsIdentity(t *testing.T) {
 	}
 }
 
-// TestFragmentColumnsFromRowsModeAwareSchemaCheck proves engine.FragmentColumnsFromRows' schema
+// TestFragmentColumnsFromRowsModeAwareSchemaCheck proves relay.FragmentColumnsFromRows' schema
 // consistency check follows each dialect/mode's own fold rule instead of a blanket case-insensitive
 // comparison: mode 2 is the only configuration where a live row's case may legitimately diverge from
 // the requested (canonical) schema, so it's the only one where that divergence is accepted.
@@ -157,13 +157,13 @@ func TestFragmentColumnsFromRowsModeAwareSchemaCheck(t *testing.T) {
 	}
 
 	t.Run("MySQL mode 0 rejects a case-differing schema (no legitimate divergence)", func(t *testing.T) {
-		if _, err := engine.FragmentColumnsFromRows(MySqlDb{}, 0, "App", row("app")); err == nil {
+		if _, err := relay.FragmentColumnsFromRows(MySqlDb{}, 0, "App", row("app")); err == nil {
 			t.Fatal("FragmentColumnsFromRows succeeded, want a strict mismatch under mode 0")
 		}
 	})
 
 	t.Run("MySQL mode 2 accepts the live stored spelling diverging in case from the canonical request", func(t *testing.T) {
-		got, err := engine.FragmentColumnsFromRows(MySqlDb{}, 2, "app", row("App"))
+		got, err := relay.FragmentColumnsFromRows(MySqlDb{}, 2, "app", row("App"))
 		if err != nil {
 			t.Fatalf("FragmentColumnsFromRows: %v", err)
 		}
@@ -173,7 +173,7 @@ func TestFragmentColumnsFromRowsModeAwareSchemaCheck(t *testing.T) {
 	})
 
 	t.Run("Postgres rejects a case-differing schema (Postgres never folds)", func(t *testing.T) {
-		if _, err := engine.FragmentColumnsFromRows(PgDb{}, 0, "Sales", row("sales")); err == nil {
+		if _, err := relay.FragmentColumnsFromRows(PgDb{}, 0, "Sales", row("sales")); err == nil {
 			t.Fatal("FragmentColumnsFromRows succeeded, want a strict mismatch on Postgres")
 		}
 	})
@@ -311,8 +311,8 @@ func rows(values ...string) [][]*string {
 	return [][]*string{row}
 }
 
-var _ engine.Db = MySqlDb{}
-var _ engine.Db = PgDb{}
+var _ relay.Db = MySqlDb{}
+var _ relay.Db = PgDb{}
 
 func TestFoldFunctionNameMatchesTheResolverFold(t *testing.T) {
 	// MySQL folds with its exact case map; PostgreSQL folds ASCII only, so a non-ASCII upper-case

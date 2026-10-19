@@ -20,9 +20,9 @@ import (
 
 	"github.com/ridi-oss/proxy-monster/goproxy/cp"
 	"github.com/ridi-oss/proxy-monster/goproxy/dialects"
-	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 	"github.com/ridi-oss/proxy-monster/goproxy/run"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
@@ -231,7 +231,7 @@ type runCapturingDb struct {
 	readTimeout chan time.Duration
 }
 
-func (p *runCapturingDb) NewRunSession(ctx context.Context, client spi.ControlPlane, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.TargetDbSession, error) {
+func (p *runCapturingDb) NewRunSession(ctx context.Context, client spi.ControlPlane, token string, connectionID []byte, guard relay.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.TargetDbSession, error) {
 	p.readTimeout <- readTimeout
 	return p.Db.NewRunSession(ctx, client, token, connectionID, guard, readTimeout, defaultSchema)
 }
@@ -252,7 +252,7 @@ type runSlowOpenDb struct {
 	beforeDelegate func()
 }
 
-func (p *runSlowOpenDb) NewRunSession(ctx context.Context, client spi.ControlPlane, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.TargetDbSession, error) {
+func (p *runSlowOpenDb) NewRunSession(ctx context.Context, client spi.ControlPlane, token string, connectionID []byte, guard relay.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.TargetDbSession, error) {
 	if p.entered != nil {
 		p.enterOnce.Do(func() { close(p.entered) })
 	}

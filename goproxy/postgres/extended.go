@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgproto3"
-	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 )
 
 // isCleanExecuteTerminal reports whether an extended-protocol Execute ended without a target-DB error: a
@@ -35,27 +35,27 @@ type preparedStatement struct {
 // portal SQL against that snapshot, and no decision is ever stored.
 type boundPortal struct {
 	sql     string
-	session engine.SessionObservation
-	temps   []engine.TempColumn
+	session relay.SessionObservation
+	temps   []relay.TempColumn
 	binary  bool
 	// Volume already relayed from this portal. A suspended portal resumes on a further Execute, so the cap
 	// is measured against the portal's whole output rather than restarting with each page.
-	relayed engine.RelayStats
+	relayed relay.RelayStats
 }
 
-func (s *Server) renderExtendedVerdict(sess *session, verdict engine.Verdict) (engine.Proceed, bool, error) {
+func (s *Server) renderExtendedVerdict(sess *session, verdict relay.Verdict) (relay.Proceed, bool, error) {
 	switch verdict := verdict.(type) {
-	case engine.Fail:
+	case relay.Fail:
 		sess.skipToSync, sess.abortAtSync = true, true
 		err := sendError(sess.client, "ERROR", "58000", "proxy-monster: "+verdict.Message, false, 0)
-		return engine.Proceed{}, false, err
-	case engine.Deny:
+		return relay.Proceed{}, false, err
+	case relay.Deny:
 		if verdict.Decision != nil && verdict.Decision.TargetError != nil {
 			if targetErr, ok := verdict.Decision.TargetError.Message.(*pgproto3.ErrorResponse); ok {
 				sess.skipToSync = true
 				forwardTargetError(sess, targetErr)
-				sess.qe.AwaitCompletion(engine.EmitCompletion(s.client, verdict.Decision, engine.RelayStats{}, engine.StatusError, time.Now()))
-				return engine.Proceed{}, false, sess.client.Flush()
+				sess.qe.AwaitCompletion(relay.EmitCompletion(s.client, verdict.Decision, relay.RelayStats{}, relay.StatusError, time.Now()))
+				return relay.Proceed{}, false, sess.client.Flush()
 			}
 		}
 		reason := "policy"
@@ -64,11 +64,11 @@ func (s *Server) renderExtendedVerdict(sess *session, verdict engine.Verdict) (e
 		}
 		sess.skipToSync, sess.abortAtSync = true, true
 		err := sendError(sess.client, "ERROR", "42501", "proxy-monster denied: "+reason, false, 0)
-		return engine.Proceed{}, false, err
-	case engine.Proceed:
+		return relay.Proceed{}, false, err
+	case relay.Proceed:
 		return verdict, true, nil
 	default:
-		return engine.Proceed{}, false, errors.New("pgproxy: engine returned an unknown verdict")
+		return relay.Proceed{}, false, errors.New("pgproxy: engine returned an unknown verdict")
 	}
 }
 
@@ -118,7 +118,7 @@ func (s *Server) handleParse(sess *session, message *pgproto3.Parse) error {
 	sess.qe.MarkNamespaceDirty()
 	sess.pendingDirty = false
 	in := sess.authzInput(message.Query, sess.token, sess.clientAddr, sess.connectionID, s.refetcher(sess, true).RunAll)
-	in.CheckTargetError = func(sql string) (*engine.TargetError, error) {
+	in.CheckTargetError = func(sql string) (*relay.TargetError, error) {
 		return s.checkTargetError(sess, sql, message.ParameterOIDs)
 	}
 	verdict := sess.qe.Authorize(in)
@@ -338,32 +338,32 @@ func (s *Server) runExtendedProbe(sess *session, sql string, expectedColumns int
 
 // probeBindContext captures the namespace, function visibility, and temporary columns PostgreSQL will
 // bind the next portal under.
-func (s *Server) probeBindContext(sess *session) (engine.SessionObservation, []engine.TempColumn, error) {
+func (s *Server) probeBindContext(sess *session) (relay.SessionObservation, []relay.TempColumn, error) {
 	if sess.lastTxStatus == 'E' {
 		// Aborted transaction: both injected probes would fail with 25P02 and block an extended-protocol
 		// ROLLBACK's Bind. Reuse the last context snapshot (symmetric with handleQuery / handleParse).
-		return sess.session.Clone(), append([]engine.TempColumn{}, sess.tempOverlay...), nil
+		return sess.session.Clone(), append([]relay.TempColumn{}, sess.tempOverlay...), nil
 	}
 	namespaceRows, err := s.runExtendedProbe(sess, s.db.NamespaceProbeSQL(), 1)
 	if err != nil {
-		return engine.SessionObservation{}, nil, fmt.Errorf("target-DB namespace probe: %w", err)
+		return relay.SessionObservation{}, nil, fmt.Errorf("target-DB namespace probe: %w", err)
 	}
 	observed, err := sessionFromRows(namespaceRows)
 	if err != nil {
-		return engine.SessionObservation{}, nil, err
+		return relay.SessionObservation{}, nil, err
 	}
 	observed.CurrentCatalog = sess.currentCatalog
 	sess.session = observed.Clone()
 
 	tempRows, err := s.runExtendedProbe(sess, s.db.TempColumnsProbeSQL(), 6)
 	if err != nil {
-		return engine.SessionObservation{}, nil, fmt.Errorf("target DB temp-column probe: %w", err)
+		return relay.SessionObservation{}, nil, fmt.Errorf("target DB temp-column probe: %w", err)
 	}
 	temps, err := tempColumnsFromRows(tempRows)
 	if err != nil {
-		return engine.SessionObservation{}, nil, err
+		return relay.SessionObservation{}, nil, err
 	}
-	sess.tempOverlay = append([]engine.TempColumn{}, temps...)
+	sess.tempOverlay = append([]relay.TempColumn{}, temps...)
 	return observed, temps, nil
 }
 
@@ -376,17 +376,17 @@ func (s *Server) handleExecute(sess *session, message *pgproto3.Execute) error {
 	// Re-decide the portal SQL under the context snapshotted when PostgreSQL bound it. A live probe here can
 	// diverge from the bound plan after post-Bind search_path drift and authorize a different resource.
 	sess.qe.MarkNamespaceDirty()
-	verdict := sess.qe.Authorize(engine.AuthzInput{
+	verdict := sess.qe.Authorize(relay.AuthzInput{
 		SQL:          portal.sql,
 		Token:        sess.token,
 		ClientAddr:   sess.clientAddr,
 		ConnectionID: sess.connectionID,
 		RunCommands:  s.refetcher(sess, true).RunAll,
-		ProbeSession: func() (engine.SessionObservation, error) { return portal.session.Clone(), nil },
-		ProbeTempColumns: func() ([]engine.TempColumn, error) {
+		ProbeSession: func() (relay.SessionObservation, error) { return portal.session.Clone(), nil },
+		ProbeTempColumns: func() ([]relay.TempColumn, error) {
 			return portal.temps, nil
 		},
-		CheckTargetError: func(sql string) (*engine.TargetError, error) { return s.checkTargetError(sess, sql, nil) },
+		CheckTargetError: func(sql string) (*relay.TargetError, error) { return s.checkTargetError(sess, sql, nil) },
 	})
 	sess.qe.MarkNamespaceDirty()
 	proceed, allowed, err := s.renderExtendedVerdict(sess, verdict)
@@ -415,7 +415,7 @@ func (s *Server) handleExecute(sess *session, message *pgproto3.Execute) error {
 	if err := sess.targetDb.Flush(); err != nil {
 		return err
 	}
-	var relayStats engine.RelayStats
+	var relayStats relay.RelayStats
 	terminal, err := s.relayExecuteStream(sess, masks, &relayStats, portal.relayed, proceed.Decision)
 	// A re-Bind of the same name replaces this entry, which is what resets the tally for a new portal.
 	portal.relayed = portal.relayed.Plus(relayStats)
@@ -423,7 +423,7 @@ func (s *Server) handleExecute(sess *session, message *pgproto3.Execute) error {
 	// Post-relay, best-effort completion for this extended-protocol Execute (no-op if unaudited). A
 	// CommandComplete / EmptyQueryResponse / PortalSuspended is a clean finish; an ErrorResponse or a
 	// transport fault is an error carrying the partial counts relayed before it.
-	sess.qe.AwaitCompletion(engine.EmitCompletion(s.client, proceed.Decision, relayStats, engine.RelayStatus(isCleanExecuteTerminal(terminal), err), start))
+	sess.qe.AwaitCompletion(relay.EmitCompletion(s.client, proceed.Decision, relayStats, relay.RelayStatus(isCleanExecuteTerminal(terminal), err), start))
 	if err != nil {
 		return err
 	}
@@ -450,8 +450,8 @@ func nullOnlyMasks(masks []*pb.ColumnMask) bool {
 
 // carried is the volume earlier Executes already drew from this portal; stats stays this Execute's own
 // tally so each page audits its own completion.
-func (s *Server) relayExecuteStream(sess *session, masks []*pb.ColumnMask, stats *engine.RelayStats, carried engine.RelayStats, dec *engine.Decision) (pgproto3.BackendMessage, error) {
-	var masker *engine.RowMasker
+func (s *Server) relayExecuteStream(sess *session, masks []*pb.ColumnMask, stats *relay.RelayStats, carried relay.RelayStats, dec *relay.Decision) (pgproto3.BackendMessage, error) {
+	var masker *relay.RowMasker
 	var capped *pgproto3.ErrorResponse
 	bufferedFrames := 0
 	for {
@@ -470,7 +470,7 @@ func (s *Server) relayExecuteStream(sess *session, masks []*pb.ColumnMask, stats
 				continue
 			}
 			if len(masks) > 0 && masker == nil {
-				masker = engine.NewRowMasker(masks, len(message.Values))
+				masker = relay.NewRowMasker(masks, len(message.Values))
 				if masker == nil {
 					return nil, failClosedRelay(sess, "0A000", "proxy-monster: required mask could not be bound to a result column", errMaskUnbound)
 				}

@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgproto3"
-	"github.com/ridi-oss/proxy-monster/goproxy/engine"
+	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 	"github.com/ridi-oss/proxy-monster/goproxy/wire"
 )
 
@@ -40,12 +40,12 @@ func postgresProtocolNegotiation(startup *pgproto3.StartupMessage) *pgproto3.Neg
 type sessionCore struct {
 	currentCatalog string
 	targetDb       *pgproto3.Frontend
-	qe             *engine.QueryEngine
-	db             engine.Db
+	qe             *relay.QueryEngine
+	db             relay.Db
 	lastTxStatus   byte
 	pendingDirty   bool
-	session        engine.SessionObservation
-	tempOverlay    []engine.TempColumn
+	session        relay.SessionObservation
+	tempOverlay    []relay.TempColumn
 	forward        func(pgproto3.BackendMessage)
 	flushForward   func() error
 }
@@ -211,7 +211,7 @@ startupComplete:
 		sessionCore: sessionCore{
 			currentCatalog: catalog,
 			targetDb:       targetDb,
-			qe:             engine.NewQueryEngine(s.client),
+			qe:             relay.NewQueryEngine(s.client),
 			db:             s.db,
 			lastTxStatus:   txStatus,
 			forward:        client.Send,

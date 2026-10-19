@@ -1,12 +1,12 @@
 // Package postgres is the blocking PostgreSQL wire broker for the simple and extended query protocols.
 // It owns only wire I/O and mechanically applies engine verdicts; authorization remains exclusively in
-// engine.QueryEngine. COPY is deferred to a later phase.
+// relay.QueryEngine. COPY is deferred to a later phase.
 package postgres
 
 import (
 	"crypto/tls"
 
-	"github.com/ridi-oss/proxy-monster/goproxy/engine"
+	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 	"github.com/ridi-oss/proxy-monster/goproxy/wire"
 )
@@ -17,12 +17,12 @@ type Server struct {
 	*wire.Server
 	targetDb    spi.TargetDb
 	client      spi.ControlPlane
-	db          engine.Db
+	db          relay.Db
 	tlsProvider func() (*tls.Config, error)
 }
 
 // New constructs a PostgreSQL wire broker for one target DB datasource.
-func New(listen spi.Listen, targetDb spi.TargetDb, client spi.ControlPlane, dbImpl engine.Db, tlsProvider func() (*tls.Config, error)) *Server {
+func New(listen spi.Listen, targetDb spi.TargetDb, client spi.ControlPlane, dbImpl relay.Db, tlsProvider func() (*tls.Config, error)) *Server {
 	s := &Server{targetDb: targetDb, client: client, db: dbImpl, tlsProvider: tlsProvider}
 	s.Server = wire.New(listen, "pgproxy", s.handleConn)
 	return s

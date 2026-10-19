@@ -67,35 +67,20 @@ func TestServeStatementRunErrorRetainsDecision(t *testing.T) {
 }
 
 func TestServeStatementRefetchesOnlyAfterCleanCompletion(t *testing.T) {
-	str := func(value string) *string { return &value }
-	newRef := func(calls *int) *Refetcher {
-		return &Refetcher{
-			Catalog: "def",
-			Db:      mysqlDb,
-			Probe: func(sql string, expected int) ([][]*string, error) {
-				*calls++
-				if expected == 7 {
-					return [][]*string{{str("app"), str("t"), str("id"), str("int"), str("1"), str("NO"), str("def")}}, nil
-				}
-				return [][]*string{{str("hash")}}, nil
-			},
-			Push: func(*pb.SchemaFragmentPush) (uint64, error) { return 1, nil },
-		}
-	}
 	for _, tc := range []struct {
 		name  string
 		clean bool
 		want  int
-	}{{"clean", true, 4}, {"target-DB error response", false, 0}} {
+	}{{"clean", true, 1}, {"target-DB error response", false, 0}} {
 		t.Run(tc.name, func(t *testing.T) {
 			calls := 0
 			decision := &spi.Decision{Action: "ALLOW", AfterStatement: []*pb.ProxyCommand{&pb.ProxyCommand{Command: &pb.ProxyCommand_Refetch{Refetch: &pb.Refetch{Catalog: "def", Schema: "app"}}}}}
 			authz := spi.NewAuthorizer(&fakeDecider{outcome: spi.DecisionOutcome{Decision: decision}}, "", nil)
-			_, _, err := ServeStatement(authz, serveInput(), newRef(&calls), nil, func(string, []*pb.ColumnMask, *spi.Decision) (bool, error) {
+			_, _, err := ServeStatement(authz, serveInput(), countingRunner{&calls}, nil, func(string, []*pb.ColumnMask, *spi.Decision) (bool, error) {
 				return tc.clean, nil
 			})
 			if err != nil || calls != tc.want {
-				t.Fatalf("ServeStatement err=%v probe calls=%d, want %d", err, calls, tc.want)
+				t.Fatalf("ServeStatement err=%v after-statement runs=%d, want %d", err, calls, tc.want)
 			}
 		})
 	}
@@ -244,4 +229,11 @@ type blockingReporter struct {
 func (r *blockingReporter) ReportCompletion(spi.CompletionReport) {
 	<-r.release
 	r.reports.Add(1)
+}
+
+type countingRunner struct{ calls *int }
+
+func (r countingRunner) RunAll([]*pb.ProxyCommand, *spi.SessionObservation) error {
+	*r.calls++
+	return nil
 }

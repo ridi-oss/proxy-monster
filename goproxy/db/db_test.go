@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
+
 	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 )
@@ -146,7 +148,7 @@ func TestPgNormalizeColumnsIsIdentity(t *testing.T) {
 	}
 }
 
-// TestFragmentColumnsFromRowsModeAwareSchemaCheck proves relay.FragmentColumnsFromRows' schema
+// TestFragmentColumnsFromRowsModeAwareSchemaCheck proves sqldb.FragmentColumnsFromRows' schema
 // consistency check follows each dialect/mode's own fold rule instead of a blanket case-insensitive
 // comparison: mode 2 is the only configuration where a live row's case may legitimately diverge from
 // the requested (canonical) schema, so it's the only one where that divergence is accepted.
@@ -157,13 +159,13 @@ func TestFragmentColumnsFromRowsModeAwareSchemaCheck(t *testing.T) {
 	}
 
 	t.Run("MySQL mode 0 rejects a case-differing schema (no legitimate divergence)", func(t *testing.T) {
-		if _, err := relay.FragmentColumnsFromRows(MySqlDb{}, 0, "App", row("app")); err == nil {
+		if _, err := sqldb.FragmentColumnsFromRows(MySqlDb{}, 0, "App", row("app")); err == nil {
 			t.Fatal("FragmentColumnsFromRows succeeded, want a strict mismatch under mode 0")
 		}
 	})
 
 	t.Run("MySQL mode 2 accepts the live stored spelling diverging in case from the canonical request", func(t *testing.T) {
-		got, err := relay.FragmentColumnsFromRows(MySqlDb{}, 2, "app", row("App"))
+		got, err := sqldb.FragmentColumnsFromRows(MySqlDb{}, 2, "app", row("App"))
 		if err != nil {
 			t.Fatalf("FragmentColumnsFromRows: %v", err)
 		}
@@ -173,7 +175,7 @@ func TestFragmentColumnsFromRowsModeAwareSchemaCheck(t *testing.T) {
 	})
 
 	t.Run("Postgres rejects a case-differing schema (Postgres never folds)", func(t *testing.T) {
-		if _, err := relay.FragmentColumnsFromRows(PgDb{}, 0, "Sales", row("sales")); err == nil {
+		if _, err := sqldb.FragmentColumnsFromRows(PgDb{}, 0, "Sales", row("sales")); err == nil {
 			t.Fatal("FragmentColumnsFromRows succeeded, want a strict mismatch on Postgres")
 		}
 	})

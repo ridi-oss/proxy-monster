@@ -273,7 +273,7 @@ func TestMySQLFragmentRowsUnderEachMode(t *testing.T) {
 		{"mode 2 refuses another schema", 2, "app", "Other", "Users", "EMail", nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := relay.FragmentColumnsFromRows(MySqlDb{}, tc.mode, tc.requested, row(tc.schema, tc.table, tc.colmn))
+			got, err := sqldb.FragmentColumnsFromRows(MySqlDb{}, tc.mode, tc.requested, row(tc.schema, tc.table, tc.colmn))
 			if tc.want == nil {
 				if err == nil {
 					t.Fatalf("FragmentColumnsFromRows = %+v, want refused", got)
@@ -333,7 +333,7 @@ func TestMySQLRefetchRefusesUnknownLowerCaseTableNames(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Skip("pending-name-fix: refetch treats an unreported lower_case_table_names as 0")
 			pushed := false
-			refetcher := relay.Refetcher{
+			refetcher := sqldb.Refetcher{
 				Catalog: "def",
 				Db:      MySqlDb{},
 				Probe: func(statement string, _ int) ([][]*string, error) {

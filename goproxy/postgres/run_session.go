@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
+
 	"github.com/jackc/pgx/v5/pgproto3"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/relay"
@@ -19,7 +21,7 @@ type RunSession struct {
 	conn     net.Conn
 	keyData  pgproto3.BackendKeyData
 	config   spi.TargetConfig
-	ref      *relay.Refetcher
+	ref      *sqldb.Refetcher
 	guard    spi.ExecGuard
 	poisoned bool
 }
@@ -52,7 +54,7 @@ func NewRunSession(ctx context.Context, config spi.TargetConfig, db relay.Db, au
 		config:  config,
 		guard:   guard,
 	}
-	s.ref = relay.NewRefetcher(db, authz.ConnectionID(), generation, func(sql string, expectedColumns int) ([][]*string, error) {
+	s.ref = sqldb.NewRefetcher(db, authz.ConnectionID(), generation, func(sql string, expectedColumns int) ([][]*string, error) {
 		return s.runProbe(sql, expectedColumns, true)
 	}, authz.Client().PushSchemaFragment)
 	s.ref.Catalog = catalog

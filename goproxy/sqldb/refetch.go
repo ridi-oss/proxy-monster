@@ -1,4 +1,4 @@
-package relay
+package sqldb
 
 import (
 	"bytes"
@@ -7,21 +7,23 @@ import (
 	"fmt"
 	"strconv"
 
+	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
 // Refetcher executes connection-local catalog commands through callback-injected held-target DB I/O.
 type Refetcher struct {
 	Catalog           string
-	Db                Db
+	Db                relay.Db
 	ConnectionID      []byte
 	BackendGeneration uint64
 	Probe             func(sql string, expectedColumns int) ([][]*string, error)
 	Push              func(*pb.SchemaFragmentPush) (uint64, error)
 }
 
-func NewRefetcher(db Db, connectionID []byte, generation uint64, probe func(string, int) ([][]*string, error), push func(*pb.SchemaFragmentPush) (uint64, error)) *Refetcher {
+func NewRefetcher(db relay.Db, connectionID []byte, generation uint64, probe func(string, int) ([][]*string, error), push func(*pb.SchemaFragmentPush) (uint64, error)) *Refetcher {
 	return &Refetcher{Db: db, ConnectionID: connectionID, BackendGeneration: generation, Probe: probe, Push: push}
 }
 
@@ -164,4 +166,60 @@ func (r *Refetcher) RunAll(cmds []*pb.ProxyCommand, _ *spi.SessionObservation) e
 		}
 	}
 	return nil
+}
+
+// FragmentColumnsFromRows strictly maps seven-column information_schema rows into a canonical schema
+// fragment. Rows are folded via db.NormalizeColumns(lowerCaseTableNames, ...) — the SAME rule
+// introspect's bulk catalog push uses — and every row's canonical schema must then equal the requested
+// schema's own canonical form. This is a self-consistency check (every row came back for the schema
+// that was actually asked for), not an authorization boundary, but its strictness now follows the
+// connection's actual dialect/mode instead of a blanket case-fold: MySQL lower_case_table_names=2 is
+// the only configuration where canonical spelling can legitimately diverge in case from live storage
+// (case-insensitive lookup, case-preserving storage), so it's the only one where this tolerates a case
+// difference — Postgres and MySQL modes 0/1 require an exact match, same as before this normalized the
+// comparison at all. The column is the proto Column (enginepb.Column) used AS the data class.
+func FragmentColumnsFromRows(db relay.Db, lowerCaseTableNames int, schema string, rows [][]*string) ([]*enginepb.Column, error) {
+	raw := make([]*enginepb.Column, 0, len(rows))
+	for i, row := range rows {
+		if len(row) != 7 {
+			return nil, fmt.Errorf("fragment row %d has %d columns, want 7", i, len(row))
+		}
+		for j, field := range row {
+			if field == nil {
+				return nil, fmt.Errorf("fragment row %d field %d is NULL", i, j)
+			}
+		}
+		ordinal, err := strconv.ParseInt(*row[4], 10, 32)
+		if err != nil {
+			return nil, fmt.Errorf("fragment row %d ordinal %q: %w", i, *row[4], err)
+		}
+		var nullable bool
+		switch *row[5] {
+		case "YES":
+			nullable = true
+		case "NO":
+			nullable = false
+		default:
+			return nil, fmt.Errorf("fragment row %d nullable %q is not YES or NO", i, *row[5])
+		}
+		raw = append(raw, &enginepb.Column{
+			Catalog:  *row[6],
+			Schema:   *row[0],
+			Table:    *row[1],
+			Column:   *row[2],
+			DataType: *row[3],
+			Ordinal:  int32(ordinal),
+			Nullable: nullable,
+		})
+	}
+
+	canonicalSchema := db.NormalizeColumns(lowerCaseTableNames, []*enginepb.Column{{Schema: schema, Table: "_", Column: "_"}})[0].GetSchema()
+	columns := db.NormalizeColumns(lowerCaseTableNames, raw)
+	for i, column := range columns {
+		if column.GetSchema() != canonicalSchema {
+			return nil, fmt.Errorf("fragment row %d schema %q does not match requested schema %q (canonical %q vs %q)",
+				i, raw[i].GetSchema(), schema, column.GetSchema(), canonicalSchema)
+		}
+	}
+	return columns, nil
 }

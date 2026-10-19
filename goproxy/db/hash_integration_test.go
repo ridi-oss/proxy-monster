@@ -14,7 +14,6 @@ import (
 
 	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
-	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
 )
 
@@ -81,7 +80,7 @@ func TestMySqlSchemaHashIntegration(t *testing.T) {
 		if err != nil {
 			t.Fatalf("fragment query for %q: %v", schema, err)
 		}
-		columns, err := relay.FragmentColumnsFromRows(db, lowerCaseTableNames, schema, rows)
+		columns, err := sqldb.FragmentColumnsFromRows(db, lowerCaseTableNames, schema, rows)
 		if err != nil {
 			t.Fatalf("FragmentColumnsFromRows(%q): %v", schema, err)
 		}
@@ -310,7 +309,7 @@ func verifyPostgresHashAndFragment(t *testing.T, database *sql.DB, wantCrypto bo
 	if err != nil {
 		t.Fatalf("Postgres fragment query: %v", err)
 	}
-	fragment, err := relay.FragmentColumnsFromRows(db, 0, schema, rows)
+	fragment, err := sqldb.FragmentColumnsFromRows(db, 0, schema, rows)
 	if err != nil {
 		t.Fatalf("Postgres fragment mapping: %v", err)
 	}

@@ -18,8 +18,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgproto3"
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
-	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 	"github.com/ridi-oss/proxy-monster/goproxy/wire"
 )
 
@@ -247,10 +247,10 @@ func (c *sessionCore) probeCurrentCatalog() (string, error) {
 	return *rows[0][0], nil
 }
 
-func (c *sessionCore) probeSession() (engine.SessionObservation, error) {
+func (c *sessionCore) probeSession() (relay.SessionObservation, error) {
 	rows, err := c.runProbe(c.db.NamespaceProbeSQL(), 1, false)
 	if err != nil {
-		return engine.SessionObservation{}, fmt.Errorf("target-DB namespace probe: %w", err)
+		return relay.SessionObservation{}, fmt.Errorf("target-DB namespace probe: %w", err)
 	}
 	observed, err := sessionFromRows(rows)
 	observed.CurrentCatalog = c.currentCatalog
@@ -263,27 +263,27 @@ type postgresNamespaceObservation struct {
 	PgCatalogXIDVisible *bool    `json:"pg_catalog_xid_visible"`
 }
 
-func sessionFromRows(rows [][]*string) (engine.SessionObservation, error) {
+func sessionFromRows(rows [][]*string) (relay.SessionObservation, error) {
 	if len(rows) != 1 || len(rows[0]) != 1 || rows[0][0] == nil {
-		return engine.SessionObservation{}, errors.New("namespace probe returned a malformed result")
+		return relay.SessionObservation{}, errors.New("namespace probe returned a malformed result")
 	}
 	var observed postgresNamespaceObservation
 	decoder := json.NewDecoder(strings.NewReader(*rows[0][0]))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&observed); err != nil {
-		return engine.SessionObservation{}, fmt.Errorf("namespace probe returned invalid JSON: %w", err)
+		return relay.SessionObservation{}, fmt.Errorf("namespace probe returned invalid JSON: %w", err)
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return engine.SessionObservation{}, errors.New("namespace probe returned trailing JSON")
+		return relay.SessionObservation{}, errors.New("namespace probe returned trailing JSON")
 	}
 	seen := make(map[string]bool, len(observed.ShadowedFunctions))
 	for _, name := range observed.ShadowedFunctions {
 		if name == "" || name != strings.ToLower(name) || seen[name] {
-			return engine.SessionObservation{}, fmt.Errorf("namespace probe returned invalid shadowed function %q", name)
+			return relay.SessionObservation{}, fmt.Errorf("namespace probe returned invalid shadowed function %q", name)
 		}
 		seen[name] = true
 	}
-	return engine.SessionObservation{
+	return relay.SessionObservation{
 		Namespace: observed.SearchPath,
 		SessionObservation: &enginepb.SessionObservation{Engine: &enginepb.SessionObservation_Postgres{Postgres: &enginepb.PostgresSession{
 			ShadowedFunctions:         observed.ShadowedFunctions,
@@ -293,7 +293,7 @@ func sessionFromRows(rows [][]*string) (engine.SessionObservation, error) {
 	}, nil
 }
 
-func (c *sessionCore) probeTempColumns() ([]engine.TempColumn, error) {
+func (c *sessionCore) probeTempColumns() ([]relay.TempColumn, error) {
 	rows, err := c.runProbe(c.db.TempColumnsProbeSQL(), 6, false)
 	if err != nil {
 		return nil, fmt.Errorf("target DB temp-column probe: %w", err)
@@ -301,8 +301,8 @@ func (c *sessionCore) probeTempColumns() ([]engine.TempColumn, error) {
 	return tempColumnsFromRows(rows)
 }
 
-func tempColumnsFromRows(rows [][]*string) ([]engine.TempColumn, error) {
-	columns := make([]engine.TempColumn, 0, len(rows))
+func tempColumnsFromRows(rows [][]*string) ([]relay.TempColumn, error) {
+	columns := make([]relay.TempColumn, 0, len(rows))
 	for _, row := range rows {
 		if len(row) != 6 || row[0] == nil || row[1] == nil || row[2] == nil || row[3] == nil || row[4] == nil || row[5] == nil {
 			return nil, errors.New("temp-column probe returned a malformed row")
@@ -311,7 +311,7 @@ func tempColumnsFromRows(rows [][]*string) ([]engine.TempColumn, error) {
 		if err != nil {
 			return nil, fmt.Errorf("temp-column probe returned invalid ordinal %q", *row[4])
 		}
-		columns = append(columns, engine.TempColumn{
+		columns = append(columns, relay.TempColumn{
 			Catalog: *row[5],
 			Schema:  *row[0],
 			Table:   *row[1],
@@ -332,7 +332,7 @@ func (c *sessionCore) collectProbe(expectedColumns int, quiet bool) ([][]*string
 	if err := c.targetDb.Flush(); err != nil {
 		return nil, err
 	}
-	result := engine.StatementResult{Rows: make([][]*string, 0)}
+	result := relay.StatementResult{Rows: make([][]*string, 0)}
 	collector := rowsCollector{expected: expectedColumns, result: &result}
 	emit := collector.emit
 	if !quiet && c.forward != nil {
@@ -355,19 +355,19 @@ func (c *sessionCore) collectProbe(expectedColumns int, quiet bool) ([][]*string
 	return result.Rows, nil
 }
 
-func (c *sessionCore) authzInput(sql, token, clientAddr string, connectionID []byte, runCommands func([]*pb.ProxyCommand, *engine.SessionObservation) error) engine.AuthzInput {
+func (c *sessionCore) authzInput(sql, token, clientAddr string, connectionID []byte, runCommands func([]*pb.ProxyCommand, *relay.SessionObservation) error) relay.AuthzInput {
 	// In an aborted transaction the probe below returns the session's last snapshot instead of querying.
 	if c.pendingDirty {
 		c.qe.MarkNamespaceDirty()
 		c.pendingDirty = false
 	}
-	return engine.AuthzInput{
+	return relay.AuthzInput{
 		SQL:          sql,
 		Token:        token,
 		ClientAddr:   clientAddr,
 		ConnectionID: connectionID,
 		RunCommands:  runCommands,
-		ProbeSession: func() (engine.SessionObservation, error) {
+		ProbeSession: func() (relay.SessionObservation, error) {
 			// Postgres never reports MysqlAnsiQuotes: it has no ANSI_QUOTES mode, and its string-lexing
 			// divergence (standard_conforming_strings) fails the connection closed at the relay instead.
 			if c.lastTxStatus == 'E' {
@@ -379,7 +379,7 @@ func (c *sessionCore) authzInput(sql, token, clientAddr string, connectionID []b
 			}
 			return session, err
 		},
-		ProbeTempColumns: func() ([]engine.TempColumn, error) {
+		ProbeTempColumns: func() ([]relay.TempColumn, error) {
 			if c.lastTxStatus == 'E' {
 				return c.tempOverlay, nil
 			}
@@ -392,7 +392,7 @@ func (c *sessionCore) authzInput(sql, token, clientAddr string, connectionID []b
 	}
 }
 
-func (s *Server) refetcher(sess *session, extended bool) *engine.Refetcher {
+func (s *Server) refetcher(sess *session, extended bool) *relay.Refetcher {
 	probe := func(sql string, expectedColumns int) ([][]*string, error) {
 		return sess.sessionCore.runProbe(sql, expectedColumns, false)
 	}
@@ -401,13 +401,13 @@ func (s *Server) refetcher(sess *session, extended bool) *engine.Refetcher {
 			return s.runExtendedProbe(sess, sql, expectedColumns)
 		}
 	}
-	refetcher := engine.NewRefetcher(s.db, sess.connectionID, sess.backendGen, probe, s.client.PushSchemaFragment)
+	refetcher := relay.NewRefetcher(s.db, sess.connectionID, sess.backendGen, probe, s.client.PushSchemaFragment)
 	refetcher.Catalog = sess.currentCatalog
 	return refetcher
 }
 
-func (s *Server) quietRefetcher(sess *session) *engine.Refetcher {
-	refetcher := engine.NewRefetcher(s.db, sess.connectionID, sess.backendGen, func(sql string, expectedColumns int) ([][]*string, error) {
+func (s *Server) quietRefetcher(sess *session) *relay.Refetcher {
+	refetcher := relay.NewRefetcher(s.db, sess.connectionID, sess.backendGen, func(sql string, expectedColumns int) ([][]*string, error) {
 		return sess.sessionCore.runProbe(sql, expectedColumns, true)
 	}, s.client.PushSchemaFragment)
 	refetcher.Catalog = sess.currentCatalog

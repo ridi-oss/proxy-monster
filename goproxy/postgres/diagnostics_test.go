@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgproto3"
-	"github.com/ridi-oss/proxy-monster/goproxy/engine"
+	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 )
 
 const diagSentinel = "010-1234-5678"
@@ -90,8 +90,8 @@ func TestPgDiagnosticMessage(t *testing.T) {
 		"22P02": "invalid_text_representation",    // exact condition name
 		"42P07": "duplicate_table",                // exact condition name (added by the full-catalog expansion)
 		"23999": "integrity_constraint_violation", // unmapped exact code -> its class (23)
-		"ZZZZZ": engine.RedactedDiagnosticMessage, // unknown class -> generic (guaranteed absent from the full table)
-		"":      engine.RedactedDiagnosticMessage, // no code -> generic
+		"ZZZZZ": relay.RedactedDiagnosticMessage,  // unknown class -> generic (guaranteed absent from the full table)
+		"":      relay.RedactedDiagnosticMessage,  // no code -> generic
 	}
 	for code, want := range cases {
 		if got := pgDiagnosticMessage(code); got != want {

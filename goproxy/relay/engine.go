@@ -5,7 +5,7 @@
 // applies (deny / relay / mask). It fails closed ONLY on mechanical impossibility (the control plane
 // is unreachable, or a returned mask cannot be bound to the result columns). Databases and protocols
 // are dumb adapters around this engine.
-package engine
+package relay
 
 import (
 	"errors"

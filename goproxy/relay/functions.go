@@ -1,4 +1,4 @@
-package engine
+package relay
 
 // FoldFunctionNames folds like a call (MySQL `AddTax` -> `addtax`) and drops duplicates, keeping order.
 func FoldFunctionNames(db Db, names []string) []string {

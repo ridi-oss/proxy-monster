@@ -13,9 +13,9 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 	"github.com/ridi-oss/proxy-monster/mysqlwire"
 )
@@ -81,7 +81,7 @@ func TestMaskedRowExpansionAtPacketBoundaryFailsClosed(t *testing.T) {
 	if len(payload) >= maxPacketPayload {
 		t.Fatalf("test input length = %d, want below max", len(payload))
 	}
-	masker := engine.NewRowMasker([]*pb.ColumnMask{{Column: "masked", Kind: "FIXED", Ordinal: proto.Int32(1)}}, 2)
+	masker := relay.NewRowMasker([]*pb.ColumnMask{{Column: "masked", Kind: "FIXED", Ordinal: proto.Int32(1)}}, 2)
 	if masker == nil {
 		t.Fatal("test mask did not bind")
 	}

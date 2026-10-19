@@ -10,8 +10,8 @@ import (
 	"time"
 
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
-	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
@@ -210,7 +210,7 @@ func (r *Runner) Run(open spi.RunOpen, draining <-chan struct{}) {
 // the open is reaped in the background (see abort). A close or drain that lands just as the open completes
 // still fails the open (the post-completion re-check) so a live session is never installed on an abandoned
 // run or a departing proxy — the editor re-homes to the replacement rather than onto a stream about to die.
-func (r *Runner) openTargetDb(ctx context.Context, stream runStream, messages <-chan *pb.ControlRunMsg, draining <-chan struct{}, open spi.RunOpen, guard engine.ExecGuard) (spi.TargetDbSession, *enginepb.Namespace) {
+func (r *Runner) openTargetDb(ctx context.Context, stream runStream, messages <-chan *pb.ControlRunMsg, draining <-chan struct{}, open spi.RunOpen, guard relay.ExecGuard) (spi.TargetDbSession, *enginepb.Namespace) {
 	openCtx, cancelOpen := context.WithCancel(ctx)
 	defer cancelOpen()
 
@@ -348,7 +348,7 @@ func (r *Runner) closeConnection(sessionID string, connectionID []byte) {
 	}
 }
 
-func (r *Runner) handleQuery(sess spi.TargetDbSession, stream runStream, query *pb.RunQuery, guard engine.ExecGuard) bool {
+func (r *Runner) handleQuery(sess spi.TargetDbSession, stream runStream, query *pb.RunQuery, guard relay.ExecGuard) bool {
 	maxRows := int(query.GetMaxRows())
 	if maxRows == 0 {
 		maxRows = defaultMaxRows
@@ -356,7 +356,7 @@ func (r *Runner) handleQuery(sess spi.TargetDbSession, stream runStream, query *
 	maxRows = min(max(maxRows, 1), maxMaxRows)
 	result, err := sess.ServeStatement(query.GetSql(), maxRows)
 	if err != nil {
-		var fail engine.FailError
+		var fail relay.FailError
 		if errors.As(err, &fail) {
 			return sendError(stream, "decision failed: "+fail.Message)
 		}
@@ -367,14 +367,14 @@ func (r *Runner) handleQuery(sess spi.TargetDbSession, stream runStream, query *
 			// Send the exact sentinel so the CP attributes a PM_QUERY_TIMEOUT abort, not a generic failure.
 			return sendError(stream, QueryTimeoutMessage)
 		}
-		var targetDbErr engine.TargetDbError
+		var targetDbErr relay.TargetDbError
 		if errors.As(err, &targetDbErr) {
 			// The only failure the CP may surface as errorDetail: the target DB's own ERR for the executed
 			// statement. Send BOTH forms (raw + redacted) so the CP re-gates it per viewer at view.
 			return sendTargetDbError(stream, targetDbErr.Message, targetDbErr.Redacted)
 		}
 		message := "query execution failed: " + err.Error()
-		if errors.Is(err, engine.ErrMaskUnbound) {
+		if errors.Is(err, relay.ErrMaskUnbound) {
 			message = "mask binding failed: " + err.Error()
 		}
 		return sendError(stream, message)
@@ -390,7 +390,7 @@ func (r *Runner) handleQuery(sess spi.TargetDbSession, stream runStream, query *
 }
 
 // sessionNamespace returns nil when the read fails or outlasts guard. Authorization never uses it.
-func sessionNamespace(sess spi.TargetDbSession, guard engine.ExecGuard) *enginepb.Namespace {
+func sessionNamespace(sess spi.TargetDbSession, guard relay.ExecGuard) *enginepb.Namespace {
 	var catalog string
 	var searchPath []string
 	read := func() (err error) {
@@ -410,11 +410,11 @@ func sessionNamespace(sess spi.TargetDbSession, guard engine.ExecGuard) *enginep
 	return &enginepb.Namespace{Catalog: catalog, SearchPath: searchPath}
 }
 
-func sendDecision(stream runStream, decision *engine.Decision) bool {
+func sendDecision(stream runStream, decision *relay.Decision) bool {
 	if decision == nil {
 		return false
 	}
-	action := engine.ParseEnfActionName(decision.Action)
+	action := relay.ParseEnfActionName(decision.Action)
 	maskedColumns := make([]string, 0, len(decision.Masks))
 	for _, mask := range decision.Masks {
 		maskedColumns = append(maskedColumns, mask.GetColumn())

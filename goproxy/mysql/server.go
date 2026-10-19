@@ -1,6 +1,6 @@
 // Package mysql is the blocking MySQL wire broker. It runs the protocol path in one goroutine
 // per connection. It owns only wire I/O and mechanically applies engine verdicts; authorization remains
-// exclusively in engine.QueryEngine. Prepared statements are authorized at PREPARE and re-authorized on every
+// exclusively in relay.QueryEngine. Prepared statements are authorized at PREPARE and re-authorized on every
 // EXECUTE against their frozen prepare-time namespace, so mid-session token, grant, or permit revocation fails
 // closed on the next EXECUTE. Binary results relay only under that fresh verdict and its unmaskable permit.
 package mysql
@@ -9,7 +9,7 @@ import (
 	"crypto/tls"
 	"sync/atomic"
 
-	"github.com/ridi-oss/proxy-monster/goproxy/engine"
+	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 	"github.com/ridi-oss/proxy-monster/goproxy/wire"
 )
@@ -20,13 +20,13 @@ type Server struct {
 	*wire.Server
 	targetDb    spi.TargetDb
 	client      spi.ControlPlane
-	db          engine.Db
+	db          relay.Db
 	tlsProvider func() (*tls.Config, error)
 	connID      atomic.Uint32
 }
 
 // New constructs a MySQL wire broker for one target DB datasource.
-func New(listen spi.Listen, targetDb spi.TargetDb, client spi.ControlPlane, dbImpl engine.Db, tlsProvider func() (*tls.Config, error)) *Server {
+func New(listen spi.Listen, targetDb spi.TargetDb, client spi.ControlPlane, dbImpl relay.Db, tlsProvider func() (*tls.Config, error)) *Server {
 	s := &Server{targetDb: targetDb, client: client, db: dbImpl, tlsProvider: tlsProvider}
 	s.Server = wire.New(listen, "mysqlproxy", s.handleConn)
 	return s

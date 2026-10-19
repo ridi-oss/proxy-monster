@@ -9,26 +9,26 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 	"github.com/ridi-oss/proxy-monster/mysqlwire"
 )
 
 type runTestDecider struct{}
 
-func (runTestDecider) Decide(engine.DecideRequest) engine.DecisionOutcome {
-	return engine.DecisionOutcome{Decision: &engine.Decision{Action: "ALLOW"}}
+func (runTestDecider) Decide(relay.DecideRequest) relay.DecisionOutcome {
+	return relay.DecisionOutcome{Decision: &relay.Decision{Action: "ALLOW"}}
 }
 
-func scriptedMySQLRun(t *testing.T, decider engine.DecisionClient, maxRows int, response []byte) (*RunSession, <-chan string) {
+func scriptedMySQLRun(t *testing.T, decider relay.DecisionClient, maxRows int, response []byte) (*RunSession, <-chan string) {
 	t.Helper()
 	client, server := net.Pipe()
 	t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
 	_ = client.SetDeadline(time.Now().Add(5 * time.Second))
 	_ = server.SetDeadline(time.Now().Add(5 * time.Second))
-	qe := engine.NewQueryEngine(decider)
+	qe := relay.NewQueryEngine(decider)
 	qe.SetNamespace([]string{"test"})
-	s := &RunSession{conn: client, qe: qe, ref: &engine.Refetcher{Catalog: "def"}}
+	s := &RunSession{conn: client, qe: qe, ref: &relay.Refetcher{Catalog: "def"}}
 	writes := make(chan string, 3)
 	go func() {
 		defer close(writes)
@@ -58,7 +58,7 @@ func scriptedMySQLRun(t *testing.T, decider engine.DecisionClient, maxRows int, 
 	return s, writes
 }
 
-func runMySQLStatement(t *testing.T, maxRows int, response []byte) (engine.StatementResult, error, []string) {
+func runMySQLStatement(t *testing.T, maxRows int, response []byte) (relay.StatementResult, error, []string) {
 	t.Helper()
 	s, writes := scriptedMySQLRun(t, runTestDecider{}, maxRows, response)
 	result, err := s.ServeStatement("SELECT 1", maxRows)
@@ -127,9 +127,9 @@ func TestRunStatementMySQLCapturesRawAndRedactedTargetDbError(t *testing.T) {
 	_, err := s.ServeStatement("SELECT email FROM tb_user WHERE 1 = (SELECT 1 UNION ALL SELECT 2)", 2)
 	for range writes {
 	}
-	var tdbErr engine.TargetDbError
+	var tdbErr relay.TargetDbError
 	if !errors.As(err, &tdbErr) {
-		t.Fatalf("err = %T, want engine.TargetDbError carrying both forms", err)
+		t.Fatalf("err = %T, want relay.TargetDbError carrying both forms", err)
 	}
 	if tdbErr.Message != "Subquery returns more than 1 row" {
 		t.Errorf("raw message = %q, want the verbatim target-DB text for a full-reader view", tdbErr.Message)
@@ -143,8 +143,8 @@ func TestRunStatementMySQLCapturesRawAndRedactedTargetDbError(t *testing.T) {
 }
 
 func TestTextResultCollectorRejectsMalformedRowWidth(t *testing.T) {
-	result := engine.StatementResult{Rows: make([][]*string, 0)}
-	collect := textResultCollector{budget: engine.RowBudget{MaxRows: 1}, result: &result}
+	result := relay.StatementResult{Rows: make([][]*string, 0)}
+	collect := textResultCollector{budget: relay.RowBudget{MaxRows: 1}, result: &result}
 	if err := collect.onColumns(2); err != nil {
 		t.Fatal(err)
 	}
@@ -155,8 +155,8 @@ func TestTextResultCollectorRejectsMalformedRowWidth(t *testing.T) {
 }
 
 func TestTextResultCollectorDisplaysBinaryValuesAsHex(t *testing.T) {
-	result := engine.StatementResult{Rows: make([][]*string, 0)}
-	collect := textResultCollector{budget: engine.RowBudget{MaxRows: 1}, result: &result}
+	result := relay.StatementResult{Rows: make([][]*string, 0)}
+	collect := textResultCollector{budget: relay.RowBudget{MaxRows: 1}, result: &result}
 	if err := collect.onColumns(2); err != nil {
 		t.Fatal(err)
 	}
@@ -183,8 +183,8 @@ func TestTextResultCollectorHexesBitAndGeometry(t *testing.T) {
 	// BIT (0x10) and GEOMETRY (0xff) carry a binary charset; their bytes must always render as hex like every
 	// other binary column, even when a value happens to be valid UTF-8 (e.g. BIT(1) = 0x01) — otherwise it
 	// would reach the UI as an invisible control character.
-	result := engine.StatementResult{Rows: make([][]*string, 0)}
-	collect := textResultCollector{budget: engine.RowBudget{MaxRows: 1}, result: &result}
+	result := relay.StatementResult{Rows: make([][]*string, 0)}
+	collect := textResultCollector{budget: relay.RowBudget{MaxRows: 1}, result: &result}
 	if err := collect.onColumns(2); err != nil {
 		t.Fatal(err)
 	}
@@ -209,8 +209,8 @@ func TestTextResultCollectorHexesBitAndGeometry(t *testing.T) {
 func TestTextResultCollectorHexesNonUTF8Fallback(t *testing.T) {
 	// A cell whose bytes are not valid UTF-8 must be hexed even when its column is not classified binary, so
 	// an unnamed or future binary type cannot revive the proto3-string marshal failure.
-	result := engine.StatementResult{Rows: make([][]*string, 0)}
-	collect := textResultCollector{budget: engine.RowBudget{MaxRows: 1}, result: &result}
+	result := relay.StatementResult{Rows: make([][]*string, 0)}
+	collect := textResultCollector{budget: relay.RowBudget{MaxRows: 1}, result: &result}
 	if err := collect.onColumns(1); err != nil {
 		t.Fatal(err)
 	}
@@ -229,9 +229,9 @@ func TestTextResultCollectorHexesNonUTF8Fallback(t *testing.T) {
 
 func TestTextResultCollectorLeavesMaskedBinaryValuesMasked(t *testing.T) {
 	ordinal := int32(0)
-	result := engine.StatementResult{Rows: make([][]*string, 0)}
+	result := relay.StatementResult{Rows: make([][]*string, 0)}
 	collect := textResultCollector{
-		budget: engine.RowBudget{MaxRows: 1},
+		budget: relay.RowBudget{MaxRows: 1},
 		result: &result,
 		masks:  []*pb.ColumnMask{{Kind: "FIXED", Ordinal: &ordinal}},
 	}
@@ -275,10 +275,10 @@ func mysqlColumnDef(name string, charset uint16, typ byte) []byte {
 
 func TestTextResultCollectorMaskUnboundBeforeRows(t *testing.T) {
 	ordinal := int32(3)
-	result := engine.StatementResult{Rows: make([][]*string, 0)}
-	collect := textResultCollector{budget: engine.RowBudget{MaxRows: 1}, result: &result, masks: []*pb.ColumnMask{{Ordinal: &ordinal}}}
+	result := relay.StatementResult{Rows: make([][]*string, 0)}
+	collect := textResultCollector{budget: relay.RowBudget{MaxRows: 1}, result: &result, masks: []*pb.ColumnMask{{Ordinal: &ordinal}}}
 	err := collect.onColumns(1)
-	if !errors.Is(err, engine.ErrMaskUnbound) || len(result.Rows) != 0 {
+	if !errors.Is(err, relay.ErrMaskUnbound) || len(result.Rows) != 0 {
 		t.Fatalf("err=%v rows=%v, want unbound before rows", err, result.Rows)
 	}
 }

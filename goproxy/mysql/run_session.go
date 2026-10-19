@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 	"github.com/ridi-oss/proxy-monster/goproxy/wire"
 	"github.com/ridi-oss/proxy-monster/mysqlwire"
@@ -21,12 +21,12 @@ type RunSession struct {
 	target       spi.TargetDb
 	token        string
 	connectionID []byte
-	qe           *engine.QueryEngine
-	ref          *engine.Refetcher
-	guard        engine.ExecGuard
+	qe           *relay.QueryEngine
+	ref          *relay.Refetcher
+	guard        relay.ExecGuard
 }
 
-func NewRunSession(ctx context.Context, target spi.TargetDb, db engine.Db, client spi.ControlPlane, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration, defaultSchema string) (*RunSession, error) {
+func NewRunSession(ctx context.Context, target spi.TargetDb, db relay.Db, client spi.ControlPlane, token string, connectionID []byte, guard relay.ExecGuard, readTimeout time.Duration, defaultSchema string) (*RunSession, error) {
 	if defaultSchema != "" {
 		target.Db = defaultSchema
 	}
@@ -46,10 +46,10 @@ func NewRunSession(ctx context.Context, target spi.TargetDb, db engine.Db, clien
 		target:       target,
 		token:        token,
 		connectionID: append([]byte(nil), connectionID...),
-		qe:           engine.NewQueryEngine(client),
+		qe:           relay.NewQueryEngine(client),
 		guard:        guard,
 	}
-	s.ref = engine.NewRefetcher(db, s.connectionID, generation, func(sql string, expectedColumns int) ([][]*string, error) {
+	s.ref = relay.NewRefetcher(db, s.connectionID, generation, func(sql string, expectedColumns int) ([][]*string, error) {
 		return runInternalQuery(s.conn, true, sql, expectedColumns)
 	}, client.PushSchemaFragment)
 	s.ref.Catalog = "def"
@@ -64,14 +64,14 @@ func (s *RunSession) OnOpen(ctx context.Context, cmds []*pb.ProxyCommand) error 
 	return s.ref.RunAll(cmds, nil)
 }
 
-func (s *RunSession) ServeStatement(sql string, maxRows int) (result engine.StatementResult, err error) {
-	result.Decision, result.Denied, err = engine.ServeStatement(s.qe, engine.AuthzInput{
+func (s *RunSession) ServeStatement(sql string, maxRows int) (result relay.StatementResult, err error) {
+	result.Decision, result.Denied, err = relay.ServeStatement(s.qe, relay.AuthzInput{
 		SQL:          sql,
 		Token:        s.token,
 		ConnectionID: s.connectionID,
-		ProbeSession: func() (engine.SessionObservation, error) { return probeSession(s.conn, true) },
+		ProbeSession: func() (relay.SessionObservation, error) { return probeSession(s.conn, true) },
 		RunCommands:  s.ref.RunAll,
-	}, s.ref, s.guard, func(toSend string, masks []*pb.ColumnMask, dec *engine.Decision) (clean bool, runErr error) {
+	}, s.ref, s.guard, func(toSend string, masks []*pb.ColumnMask, dec *relay.Decision) (clean bool, runErr error) {
 		payload := mysqlwire.ComQueryPayload(toSend)
 		if len(payload) >= mysqlwire.MaxPacketPayload {
 			return false, errors.New("query exceeds the maximum MySQL packet payload")
@@ -98,7 +98,7 @@ func (s *RunSession) ServeStatement(sql string, maxRows int) (result engine.Stat
 			return false, err
 		}
 		collect := textResultCollector{
-			budget: engine.RowBudget{MaxRows: pageRows, MaxBytes: dec.MaxBytes},
+			budget: relay.RowBudget{MaxRows: pageRows, MaxBytes: dec.MaxBytes},
 			masks:  masks,
 			result: &result,
 		}
@@ -127,7 +127,7 @@ func (s *RunSession) ServeStatement(sql string, maxRows int) (result engine.Stat
 				raw = mysqlwire.ErrString(rawErrPacket)
 				redacted = redactedErrString(rawErrPacket)
 			}
-			return false, engine.TargetDbError{Message: raw, Redacted: redacted}
+			return false, relay.TargetDbError{Message: raw, Redacted: redacted}
 		}
 		if resetErr != nil {
 			return false, resetErr

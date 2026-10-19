@@ -12,8 +12,8 @@ import (
 	"time"
 
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
-	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 	"google.golang.org/protobuf/proto"
 )
@@ -29,14 +29,14 @@ type flowClient struct {
 	verdict     *pb.Verdict
 	decisions   []*pb.DecisionRequest
 	pushes      []*pb.SchemaFragmentPush
-	completions []engine.CompletionReport
+	completions []relay.CompletionReport
 	completed   chan struct{}
 	closed      [][]byte
 	descriptors []*enginepb.AthenaNativeDescriptor
 }
 
 // awaitCompletion waits for the asynchronous completion report and returns the reports so far.
-func (c *flowClient) awaitCompletion(t *testing.T) []engine.CompletionReport {
+func (c *flowClient) awaitCompletion(t *testing.T) []relay.CompletionReport {
 	t.Helper()
 	select {
 	case <-c.completed:
@@ -45,7 +45,7 @@ func (c *flowClient) awaitCompletion(t *testing.T) []engine.CompletionReport {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return append([]engine.CompletionReport(nil), c.completions...)
+	return append([]relay.CompletionReport(nil), c.completions...)
 }
 
 func (c *flowClient) AuthorizeRequest(_ context.Context, request *pb.RequestAuthorization) (*pb.RequestAuthorizationResult, error) {
@@ -114,17 +114,17 @@ func (c *flowClient) ValidateToken(token, _ string) (spi.Identity, error) {
 	return spi.Identity{Principal: c.principal, ConnectionID: []byte("0123456789abcdef"), OnOpen: []*pb.ProxyCommand{{Command: &pb.ProxyCommand_Refetch{Refetch: &pb.Refetch{Schema: "example", Catalog: "awsdatacatalog"}}}}}, nil
 }
 
-func (c *flowClient) Decide(request engine.DecideRequest) engine.DecisionOutcome {
+func (c *flowClient) Decide(request relay.DecideRequest) relay.DecisionOutcome {
 	wire := &pb.DecisionRequest{Sql: request.SQL, SearchPath: request.Session.Namespace, CurrentCatalog: request.Session.CurrentCatalog, Session: request.Session.SessionObservation}
 	c.mu.Lock()
 	c.decisions = append(c.decisions, wire)
 	verdict := c.verdict
 	c.mu.Unlock()
 	if request.Session.GetAthena().GetWorkgroup() == "" {
-		return engine.DecisionOutcome{Err: "missing athena context"}
+		return relay.DecisionOutcome{Err: "missing athena context"}
 	}
 	_, decision := decisionFromWireForTest(verdict)
-	return engine.DecisionOutcome{Decision: decision}
+	return relay.DecisionOutcome{Decision: decision}
 }
 
 func (c *flowClient) PushSchemaFragment(push *pb.SchemaFragmentPush) (uint64, error) {
@@ -134,7 +134,7 @@ func (c *flowClient) PushSchemaFragment(push *pb.SchemaFragmentPush) (uint64, er
 	return uint64(len(c.pushes)), nil
 }
 
-func (c *flowClient) ReportCompletion(report engine.CompletionReport) {
+func (c *flowClient) ReportCompletion(report relay.CompletionReport) {
 	c.mu.Lock()
 	c.completions = append(c.completions, report)
 	c.mu.Unlock()
@@ -149,8 +149,8 @@ func (c *flowClient) CloseConnection(id []byte) error {
 }
 
 // decisionFromWireForTest mirrors the cp client's verdict mapping for the fields this package consumes.
-func decisionFromWireForTest(v *pb.Verdict) (any, *engine.Decision) {
-	decision := &engine.Decision{Action: engine.EnfActionName(v.GetDecision()), DecisionID: v.GetDecisionId(), DenyReason: v.GetDenyReason(), Masks: v.GetMasks(), SanitizeDiagnostics: v.GetSanitizeDiagnostics(), MaxRows: v.GetMaxRows(), MaxBytes: v.GetMaxBytes()}
+func decisionFromWireForTest(v *pb.Verdict) (any, *relay.Decision) {
+	decision := &relay.Decision{Action: relay.EnfActionName(v.GetDecision()), DecisionID: v.GetDecisionId(), DenyReason: v.GetDenyReason(), Masks: v.GetMasks(), SanitizeDiagnostics: v.GetSanitizeDiagnostics(), MaxRows: v.GetMaxRows(), MaxBytes: v.GetMaxBytes()}
 	decision.AfterStatement = v.GetAfterStatement()
 	decision.RewrittenSQL = v.RewrittenSql
 	decision.Submission = v.Submission

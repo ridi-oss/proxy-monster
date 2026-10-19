@@ -28,7 +28,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/ridi-oss/proxy-monster/goproxy/engine"
+	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 
 	// The shared proxymonster.v1.Engine enum lives in analyzer/probe/pb (see engine/engine.go's
@@ -104,7 +104,7 @@ func defaultEventLoopTimings() eventLoopTimings {
 	}
 }
 
-// Client is the proxy's gRPC client to the control plane. It implements spi.ControlPlane.
+// Client is the proxy's gRPC client to the control plane. It satisfies relay.DecisionClient.
 type Client struct {
 	conn           *grpc.ClientConn
 	stub           pb.ControlPlaneClient
@@ -235,13 +235,13 @@ func (c *Client) ValidateToken(token, clientAddr string) (spi.Identity, error) {
 // denyClosed builds a fail-closed DENY decision for a wire response the proxy cannot safely honor
 // (an absent outcome, a not-yet-supported outcome arm, or an unhonorable command). Masks is an empty
 // (non-nil) slice so callers never dereference a nil.
-func denyClosed(reason string) *engine.Decision {
-	return &engine.Decision{Action: "DENY", DenyReason: reason, Masks: []*pb.ColumnMask{}}
+func denyClosed(reason string) *relay.Decision {
+	return &relay.Decision{Action: "DENY", DenyReason: reason, Masks: []*pb.ColumnMask{}}
 }
 
 // decisionFromWire maps the control plane's WireDecision onto the engine's dialect-agnostic outcome.
 // Before-decision commands are returned separately and take precedence over any verdict accessor.
-func decisionFromWire(d *pb.WireDecision) ([]*pb.ProxyCommand, *engine.Decision) {
+func decisionFromWire(d *pb.WireDecision) ([]*pb.ProxyCommand, *relay.Decision) {
 	if before := d.GetBeforeDecide(); before != nil {
 		commands, err := commandsFromWire(before.GetCommands())
 		if err != nil {
@@ -258,7 +258,7 @@ func decisionFromWire(d *pb.WireDecision) ([]*pb.ProxyCommand, *engine.Decision)
 		return nil, denyClosed("control plane returned no verdict")
 	}
 
-	action := engine.EnfActionName(v.GetDecision())
+	action := relay.EnfActionName(v.GetDecision())
 
 	// The proto ColumnMask is the mask data class — carry it through verbatim. An absent ordinal keeps its
 	// explicit-presence nil (BindMasks fails closed on it); do NOT normalize it to a sentinel here.
@@ -285,7 +285,7 @@ func decisionFromWire(d *pb.WireDecision) ([]*pb.ProxyCommand, *engine.Decision)
 	if v.GetMaxRows() < 0 || v.GetMaxBytes() < 0 {
 		return nil, denyClosed("control plane returned a negative result cap")
 	}
-	return nil, &engine.Decision{
+	return nil, &relay.Decision{
 		Action:              action,
 		MaxRows:             v.GetMaxRows(),
 		MaxBytes:            v.GetMaxBytes(),
@@ -305,9 +305,9 @@ func decisionFromWire(d *pb.WireDecision) ([]*pb.ProxyCommand, *engine.Decision)
 	}
 }
 
-// Decide implements engine.DecisionClient: it re-sends the same raw request after mechanically satisfying at
+// Decide implements relay.DecisionClient: it re-sends the same raw request after mechanically satisfying at
 // most three before_decide command rounds. Every failure path yields a non-empty Err (fail closed).
-func (c *Client) Decide(req engine.DecideRequest) engine.DecisionOutcome {
+func (c *Client) Decide(req relay.DecideRequest) relay.DecisionOutcome {
 	temps := make([]*pb.TempColumn, 0, len(req.TempColumns))
 	for _, t := range req.TempColumns {
 		temps = append(temps, &pb.TempColumn{
@@ -331,7 +331,7 @@ func (c *Client) Decide(req engine.DecideRequest) engine.DecisionOutcome {
 		CurrentCatalog: req.Session.CurrentCatalog,
 	}
 
-	var targetErr *engine.TargetError
+	var targetErr *relay.TargetError
 	for round := 0; ; round++ {
 		ctx, cancel := context.WithTimeout(context.Background(), rpcDeadline)
 		resp, err := c.stub.Decide(c.outCtx(ctx), wireReq)
@@ -342,23 +342,23 @@ func (c *Client) Decide(req engine.DecideRequest) engine.DecisionOutcome {
 				if msg == "" {
 					msg = st.Code().String()
 				}
-				return engine.DecisionOutcome{Err: msg}
+				return relay.DecisionOutcome{Err: msg}
 			}
-			return engine.DecisionOutcome{Err: "control plane unreachable: " + err.Error()}
+			return relay.DecisionOutcome{Err: "control plane unreachable: " + err.Error()}
 		}
 		if resp == nil {
-			return engine.DecisionOutcome{Err: "control plane returned an empty decision"}
+			return relay.DecisionOutcome{Err: "control plane returned an empty decision"}
 		}
 
 		commands, decision := decisionFromWire(resp)
 		if commands == nil {
-			return engine.DecisionOutcome{Decision: decision, TargetError: targetErr}
+			return relay.DecisionOutcome{Decision: decision, TargetError: targetErr}
 		}
 		if round >= 3 {
-			return engine.DecisionOutcome{Err: fmt.Sprintf("control plane demanded pre-decision commands %d times", round+1)}
+			return relay.DecisionOutcome{Err: fmt.Sprintf("control plane demanded pre-decision commands %d times", round+1)}
 		}
 		if err := runBeforeDecide(commands, &req, wireReq, &targetErr); err != nil {
-			return engine.DecisionOutcome{Err: "pre-decision commands failed: " + err.Error()}
+			return relay.DecisionOutcome{Err: "pre-decision commands failed: " + err.Error()}
 		}
 	}
 }
@@ -366,7 +366,7 @@ func (c *Client) Decide(req engine.DecideRequest) engine.DecisionOutcome {
 // runBeforeDecide executes one before-decide round through the dialect's command runner. A command may
 // extend the session facts the re-sent request carries (a fetched prepared definition), so the runner gets
 // the request's session and the wire request is rebuilt from it.
-func runBeforeDecide(commands []*pb.ProxyCommand, req *engine.DecideRequest, wireReq *pb.DecisionRequest, targetErr **engine.TargetError) error {
+func runBeforeDecide(commands []*pb.ProxyCommand, req *relay.DecideRequest, wireReq *pb.DecisionRequest, targetErr **relay.TargetError) error {
 	var run []*pb.ProxyCommand
 	for _, cmd := range commands {
 		if cmd.GetCheckTargetError() == nil {
@@ -401,9 +401,9 @@ func runBeforeDecide(commands []*pb.ProxyCommand, req *engine.DecideRequest, wir
 
 // ReportCompletion sends a post-relay completion report (audit-only result volume) to the control plane.
 // It is synchronous with its own deadline; callers keep it off the client session's critical path (see
-// engine.EmitCompletion, which runs it on its own goroutine). A failure is logged, never returned — a lost
+// relay.EmitCompletion, which runs it on its own goroutine). A failure is logged, never returned — a lost
 // completion only degrades the audit monitor's volume signal and must never affect the client session.
-func (c *Client) ReportCompletion(report engine.CompletionReport) {
+func (c *Client) ReportCompletion(report relay.CompletionReport) {
 	ctx, cancel := context.WithTimeout(context.Background(), rpcDeadline)
 	defer cancel()
 	if _, err := c.stub.ReportCompletion(c.outCtx(ctx), &pb.CompletionReport{

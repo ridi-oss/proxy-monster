@@ -11,8 +11,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsa "github.com/aws/aws-sdk-go-v2/service/athena"
 	"github.com/aws/aws-sdk-go-v2/service/athena/types"
-	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
@@ -27,7 +27,7 @@ const (
 type runSession struct {
 	target  *target
 	session *enforcementSession
-	guard   engine.ExecGuard
+	guard   relay.ExecGuard
 	timeout time.Duration
 	mu      sync.Mutex
 	current string
@@ -35,7 +35,7 @@ type runSession struct {
 	cancel  context.CancelFunc
 }
 
-func (t *target) NewRunSession(_ context.Context, client spi.ControlPlane, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.TargetDbSession, error) {
+func (t *target) NewRunSession(_ context.Context, client spi.ControlPlane, token string, connectionID []byte, guard relay.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.TargetDbSession, error) {
 	// Every Athena query names the configured database, so a run cannot open anywhere else.
 	if defaultSchema != "" && defaultSchema != t.config.database {
 		return nil, fmt.Errorf("athena run cannot open in database %q: the target is configured for %q", defaultSchema, t.config.database)
@@ -60,23 +60,23 @@ func (s *runSession) Namespace() (string, []string, error) {
 	return s.target.config.catalog, []string{s.target.config.database}, nil
 }
 
-func (s *runSession) ServeStatement(sql string, maxRows int) (result engine.StatementResult, err error) {
+func (s *runSession) ServeStatement(sql string, maxRows int) (result relay.StatementResult, err error) {
 	verdict := s.session.authorize(sql, "", nil, maxRows)
-	var proceed engine.Proceed
+	var proceed relay.Proceed
 	switch v := verdict.(type) {
-	case engine.Fail:
-		return result, engine.FailError{Message: v.Message}
-	case engine.Deny:
+	case relay.Fail:
+		return result, relay.FailError{Message: v.Message}
+	case relay.Deny:
 		result.Decision, result.Denied = v.Decision, true
 		return result, nil
-	case engine.Proceed:
+	case relay.Proceed:
 		proceed = v
 		result.Decision = v.Decision
 	default:
 		return result, verdictError(verdict)
 	}
 	query, parameters := submittedQuery(sql, nil, proceed.Decision)
-	budget := &engine.RowBudget{MaxRows: proceed.Decision.PageRows(maxRows), MaxBytes: proceed.Decision.MaxBytes}
+	budget := &relay.RowBudget{MaxRows: proceed.Decision.PageRows(maxRows), MaxBytes: proceed.Decision.MaxBytes}
 	exec := func() error {
 		columns, rows, affected, execErr := s.execute(query, parameters, budget, proceed.Masks, proceed.Decision.AfterStatement)
 		if execErr != nil {
@@ -94,7 +94,7 @@ func (s *runSession) ServeStatement(sql string, maxRows int) (result engine.Stat
 	return result, err
 }
 
-func (s *runSession) execute(query string, parameters []string, budget *engine.RowBudget, masks []*pb.ColumnMask, afterStatement []*pb.ProxyCommand) ([]string, [][]*string, int, error) {
+func (s *runSession) execute(query string, parameters []string, budget *relay.RowBudget, masks []*pb.ColumnMask, afterStatement []*pb.ProxyCommand) ([]string, [][]*string, int, error) {
 	ctx, cancel := withDeadline(context.Background(), 0)
 	s.mu.Lock()
 	if s.closed {
@@ -176,9 +176,9 @@ func (t *target) awaitExecution(ctx context.Context, id string) (*types.QueryExe
 
 // read pages the managed result set within budget, drops Athena's header row on a DML first page, and masks
 // inline.
-func (s *runSession) read(ctx context.Context, id string, budget *engine.RowBudget, masks []*pb.ColumnMask, headerRow bool) ([]string, [][]*string, int, error) {
+func (s *runSession) read(ctx context.Context, id string, budget *relay.RowBudget, masks []*pb.ColumnMask, headerRow bool) ([]string, [][]*string, int, error) {
 	var columns []string
-	var masker *engine.RowMasker
+	var masker *relay.RowMasker
 	rows := [][]*string{}
 	affected := 0
 	var next *string
@@ -204,9 +204,9 @@ func (s *runSession) read(ctx context.Context, id string, budget *engine.RowBudg
 		if columns == nil {
 			columns = pageColumns
 			if len(masks) > 0 {
-				masker = engine.NewRowMasker(masks, len(columns))
+				masker = relay.NewRowMasker(masks, len(columns))
 				if masker == nil {
-					return nil, nil, 0, engine.ErrMaskUnbound
+					return nil, nil, 0, relay.ErrMaskUnbound
 				}
 			}
 		} else if !slices.Equal(columns, pageColumns) {

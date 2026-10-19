@@ -1,6 +1,6 @@
 package mysql
 
-import "github.com/ridi-oss/proxy-monster/goproxy/engine"
+import "github.com/ridi-oss/proxy-monster/goproxy/relay"
 
 // mysqlDiagnosticMessage maps a MySQL essno to its canonical error symbol (ER_*) for a diagnostic-redacted
 // connection — a fixed, value-free identity looked up from the code, never reconstructed from the
@@ -11,7 +11,7 @@ func mysqlDiagnosticMessage(essno int) string {
 	if sym, ok := mysqlErrorSymbols[essno]; ok {
 		return sym
 	}
-	return engine.RedactedDiagnosticMessage
+	return relay.RedactedDiagnosticMessage
 }
 
 // mysqlErrorSymbols: essno → ER_* symbol. This is the complete catalog generated from the authoritative

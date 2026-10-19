@@ -7,8 +7,8 @@ import (
 	"time"
 
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
-	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
@@ -19,7 +19,7 @@ type enforcementSession struct {
 	client       spi.ControlPlane
 	token        string
 	connectionID []byte
-	engine       *engine.QueryEngine
+	engine       *relay.QueryEngine
 	refetcher    *refetcher
 }
 
@@ -28,7 +28,7 @@ func (t *target) newEnforcementSession(client spi.ControlPlane, token string, co
 	if err != nil {
 		return nil, err
 	}
-	return &enforcementSession{target: t, client: client, token: token, connectionID: append([]byte(nil), connectionID...), engine: engine.NewQueryEngine(client), refetcher: refetcher}, nil
+	return &enforcementSession{target: t, client: client, token: token, connectionID: append([]byte(nil), connectionID...), engine: relay.NewQueryEngine(client), refetcher: refetcher}, nil
 }
 
 func (s *enforcementSession) onOpen(commands []*pb.ProxyCommand) error {
@@ -36,11 +36,11 @@ func (s *enforcementSession) onOpen(commands []*pb.ProxyCommand) error {
 }
 
 // authorize obtains the control plane's verdict for one statement in the target's fixed scope.
-func (s *enforcementSession) authorize(sql, clientAddr string, parameters []string, maxRows int) engine.Verdict {
-	return s.engine.Authorize(engine.AuthzInput{
+func (s *enforcementSession) authorize(sql, clientAddr string, parameters []string, maxRows int) relay.Verdict {
+	return s.engine.Authorize(relay.AuthzInput{
 		SQL: sql, Token: s.token, ClientAddr: clientAddr, ConnectionID: s.connectionID,
-		ProbeSession: func() (engine.SessionObservation, error) {
-			return engine.SessionObservation{
+		ProbeSession: func() (relay.SessionObservation, error) {
+			return relay.SessionObservation{
 				CurrentCatalog: s.target.catalogIdentity(), Namespace: []string{s.target.config.database},
 				SessionObservation: &enginepb.SessionObservation{Engine: &enginepb.SessionObservation_Athena{Athena: &enginepb.AthenaSqlContext{Workgroup: s.target.config.workgroup, ExecutionParameters: parameters, MaxRows: uint32(max(maxRows, 0))}}},
 			}, nil
@@ -51,7 +51,7 @@ func (s *enforcementSession) authorize(sql, clientAddr string, parameters []stri
 
 // submittedQuery is the text and parameters the proxy sends: the control plane's rewrite and the parameter
 // list that goes with it when present, else the client's own.
-func submittedQuery(sql string, parameters []string, decision *engine.Decision) (string, []string) {
+func submittedQuery(sql string, parameters []string, decision *relay.Decision) (string, []string) {
 	if decision != nil && decision.RewrittenSQL != nil {
 		sql = *decision.RewrittenSQL
 	}
@@ -69,8 +69,8 @@ func (s *enforcementSession) close(client interface{ CloseConnection([]byte) err
 
 // completion reports the wire task's outcome; Athena executes asynchronously, so an accepted submission is
 // the proxy's execution boundary and row volume is unknown.
-func completion(reporter spi.ControlPlane, decision *engine.Decision, status string, start time.Time) {
-	engine.EmitCompletion(reporter, decision, engine.RelayStats{}, status, start)
+func completion(reporter spi.ControlPlane, decision *relay.Decision, status string, start time.Time) {
+	relay.EmitCompletion(reporter, decision, relay.RelayStats{}, status, start)
 }
 
 var errRunCanceled = errors.New("athena: query execution was canceled")
@@ -79,7 +79,7 @@ func describeFailure(reason string) error {
 	if reason == "" {
 		reason = "query execution failed"
 	}
-	return engine.TargetDbError{Message: reason, Redacted: engine.RedactedDiagnosticMessage}
+	return relay.TargetDbError{Message: reason, Redacted: relay.RedactedDiagnosticMessage}
 }
 
 func withDeadline(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
@@ -89,15 +89,15 @@ func withDeadline(parent context.Context, timeout time.Duration) (context.Contex
 	return context.WithTimeout(parent, timeout)
 }
 
-func verdictError(verdict engine.Verdict) error {
+func verdictError(verdict relay.Verdict) error {
 	switch v := verdict.(type) {
-	case engine.Fail:
-		return engine.FailError{Message: v.Message}
-	case engine.Deny:
+	case relay.Fail:
+		return relay.FailError{Message: v.Message}
+	case relay.Deny:
 		return nil
-	case engine.Proceed:
+	case relay.Proceed:
 		return nil
 	default:
-		return engine.FailError{Message: fmt.Sprintf("unexpected authorization verdict %T", verdict)}
+		return relay.FailError{Message: fmt.Sprintf("unexpected authorization verdict %T", verdict)}
 	}
 }

@@ -9,8 +9,8 @@ import (
 	"time"
 
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
-	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 )
 
 func flowServer(t *testing.T, principal string, verdict *pb.Verdict) (*nativeServer, *flowClient, *fakeAthena) {
@@ -58,7 +58,7 @@ func TestSubmissionIsDecidedRewrittenAndMaskedOnRead(t *testing.T) {
 		t.Fatalf("result page not masked: %d %s", response.Code, response.Body.String())
 	}
 	response = serve(server, "alice", "GetQueryExecution", `{"QueryExecutionId":"exec-0001"}`)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "SUCCEEDED") || strings.Contains(response.Body.String(), "a@example.test") || !strings.Contains(response.Body.String(), engine.RedactedDiagnosticMessage) {
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "SUCCEEDED") || strings.Contains(response.Body.String(), "a@example.test") || !strings.Contains(response.Body.String(), relay.RedactedDiagnosticMessage) {
 		t.Fatalf("status not released with redacted diagnostics: %d %s", response.Code, response.Body.String())
 	}
 	response = serve(server, "alice", "ListQueryExecutions", `{}`)

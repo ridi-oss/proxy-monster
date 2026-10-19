@@ -10,9 +10,9 @@ import (
 	"testing"
 
 	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
-	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 )
 
 func TestMySqlRefetcherIntegration(t *testing.T) {
@@ -406,7 +406,7 @@ func (db narrowMySqlHashDb) SchemaHashSQL(schema string, setupRows [][]*string) 
 	return strings.Replace(sqlText, "33554432", "1024", 1), columns, nil
 }
 
-func trustedRefetchHash(t *testing.T, adapter engine.Db, conn *sql.Conn, schema string) []byte {
+func trustedRefetchHash(t *testing.T, adapter relay.Db, conn *sql.Conn, schema string) []byte {
 	t.Helper()
 	var setupRows [][]*string
 	if setupSQL := adapter.HashSetupProbeSQL(); setupSQL != "" {
@@ -431,12 +431,12 @@ func trustedRefetchHash(t *testing.T, adapter engine.Db, conn *sql.Conn, schema 
 	return hash
 }
 
-func runRefetchIntegration(t *testing.T, adapter engine.Db, conn *sql.Conn, catalog, schema string, ifHashDiffers []byte) *pb.SchemaFragmentPush {
+func runRefetchIntegration(t *testing.T, adapter relay.Db, conn *sql.Conn, catalog, schema string, ifHashDiffers []byte) *pb.SchemaFragmentPush {
 	t.Helper()
 	connectionID := []byte("refetch-test-connection")
 	const generation = uint64(41)
 	var pushes []*pb.SchemaFragmentPush
-	refetcher := engine.Refetcher{
+	refetcher := relay.Refetcher{
 		Catalog:           catalog,
 		Db:                adapter,
 		ConnectionID:      connectionID,

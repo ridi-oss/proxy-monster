@@ -9,10 +9,10 @@ import (
 	"testing"
 
 	mysqldriver "github.com/go-sql-driver/mysql"
-	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/mysql"
+	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 )
 
 // diagDB holds the schema objects the allowlist cases raise errors against; diagROSchema is a READ ONLY
@@ -514,7 +514,7 @@ func TestDiagnosticRedactionMysqlErrPacketEndToEnd(t *testing.T) {
 		{1062, "ER_DUP_ENTRY", "INSERT INTO " + s + ".diag_orders VALUES (5, 10, '" + sentinel + "', 'new', 1)"},
 		{1366, "ER_TRUNCATED_WRONG_VALUE_FOR_FIELD", "INSERT INTO " + s + ".diag_orders VALUES (6, 'x" + sentinel + "', 'f', 'new', 1)"},
 		{1064, "ER_PARSE_ERROR", "SELECT * FROM " + s + ".diag_orders WHERE email = = '" + sentinel + "'"},
-		{3511, engine.RedactedDiagnosticMessage, "CREATE PROCEDURE diag_long() COMMENT '" + sentinel + strings.Repeat("x", 65536) + "' SELECT 1"},
+		{3511, relay.RedactedDiagnosticMessage, "CREATE PROCEDURE diag_long() COMMENT '" + sentinel + strings.Repeat("x", 65536) + "' SELECT 1"},
 	}
 	for _, c := range stripped {
 		raw, err := run(false, mysqlKeptCase{query: c.query})

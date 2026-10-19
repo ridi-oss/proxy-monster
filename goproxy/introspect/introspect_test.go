@@ -10,9 +10,9 @@ import (
 
 	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/db"
-	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
@@ -40,7 +40,7 @@ func runPostgres(target spi.TargetDb) (*pb.CatalogRequest, error) {
 	return runWith(OpenPostgresTarget, db.PgDb{}, ProbePostgresNamespace, target)
 }
 
-func runWith(open func(spi.TargetDb) (*sql.DB, error), dbImpl engine.Db, probe NamespaceProbe, target spi.TargetDb) (*pb.CatalogRequest, error) {
+func runWith(open func(spi.TargetDb) (*sql.DB, error), dbImpl relay.Db, probe NamespaceProbe, target spi.TargetDb) (*pb.CatalogRequest, error) {
 	pool, err := open(target)
 	if err != nil {
 		return nil, err

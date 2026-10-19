@@ -7,8 +7,8 @@ import (
 	"io"
 	"net"
 
-	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 	"github.com/ridi-oss/proxy-monster/mysqlwire"
 )
 
@@ -32,14 +32,14 @@ func (e *resultSetError) Error() string { return e.err.Error() }
 func (e *resultSetError) Unwrap() error { return e.err }
 
 var (
-	errMaskUnbound = engine.ErrMaskUnbound
+	errMaskUnbound = relay.ErrMaskUnbound
 	errRowTooLong  = errors.New("result row exceeds max packet size")
 )
 
 type resultHooks struct {
 	// Cap, when non-nil, bounds how much of this result may reach the client; OnCapExceeded fires once when
 	// the bound is first crossed, so the relay can cancel the statement on the target.
-	Cap           *engine.Decision
+	Cap           *relay.Decision
 	OnCapExceeded func()
 	Sink          func(seq byte, payload []byte) error
 	OnColumns     func(int) error
@@ -57,7 +57,7 @@ type resultHooks struct {
 	// Stats, when non-nil, tallies result volume as rows stream: one row per logical data row and the
 	// target DB row-packet payload bytes (including continuation fragments of an oversized row). It measures
 	// target DB data volume, not the post-mask relayed size, so a masked result reports the same volume signal.
-	Stats *engine.RelayStats
+	Stats *relay.RelayStats
 }
 
 // relayResultSet consumes one complete COM_QUERY text result for both wire relay and in-memory collection.
@@ -68,7 +68,7 @@ func relayResultSet(targetDb io.Reader, deprecateEOF bool, h resultHooks) (clean
 	var capped error
 	stats := h.Stats
 	if stats == nil {
-		stats = &engine.RelayStats{}
+		stats = &relay.RelayStats{}
 	}
 	// Reports whether one more row of rowBytes crosses the cap, latching the terminator and cancelling the
 	// target statement the first time it does.
@@ -336,7 +336,7 @@ func withMoreResults(payload []byte, eof bool) ([]byte, error) {
 // errRedactor returns the ERR-packet redactor for the current decision — sanitizeErrPacket when the control
 // plane latched diagnostic redaction for this statement, else nil (relay the ERR verbatim). It is the single
 // gate every target-DB-ERR relay path passes through. See docs/diagnostic-redaction.md.
-func errRedactor(qe *engine.QueryEngine) func([]byte) []byte {
+func errRedactor(qe *relay.QueryEngine) func([]byte) []byte {
 	if qe != nil && qe.SanitizeDiagnostics() {
 		return sanitizeErrPacket
 	}
@@ -356,21 +356,21 @@ func relayQueryResponseTracked(
 	deprecateEOF bool,
 	masks []*pb.ColumnMask,
 	redactErr func([]byte) []byte,
-	dec *engine.Decision,
+	dec *relay.Decision,
 	cancel func(),
 	seqBase byte,
 	moreResults bool,
-) (bool, engine.RelayStats, byte, error) {
+) (bool, relay.RelayStats, byte, error) {
 	columnCount := 0
-	var masker *engine.RowMasker
-	var stats engine.RelayStats
+	var masker *relay.RowMasker
+	var stats relay.RelayStats
 
 	var onFirst func(int) error
 	var rewrite func([]byte) ([]byte, error)
 	if len(masks) > 0 {
 		onFirst = func(count int) error {
 			columnCount = count
-			masker = engine.NewRowMasker(masks, count)
+			masker = relay.NewRowMasker(masks, count)
 			if masker == nil {
 				return errMaskUnbound
 			}
@@ -440,7 +440,7 @@ func relayQueryResponseTracked(
 	return false, stats, lastSeq, err
 }
 
-func rewriteMaskedTextRow(payload []byte, columnCount int, masker *engine.RowMasker) ([]byte, error) {
+func rewriteMaskedTextRow(payload []byte, columnCount int, masker *relay.RowMasker) ([]byte, error) {
 	values, err := mysqlwire.ParseTextRow(payload, columnCount)
 	if err != nil {
 		return nil, fmt.Errorf("decode text row: %w", err)

@@ -1,25 +1,17 @@
 package dialects
 
 import (
-	"context"
 	"database/sql"
 	"fmt"
 	"math"
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
+	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
 )
-
-const tableDetailQueryTimeout = 30 * time.Second
-
-type tableDetailIndexes struct {
-	indexes        []spi.TableIndex
-	indexedColumns map[string]struct{}
-}
 
 func tableDetailTableExists(conn *sql.Conn, e *engines.Engine, schema, table string) (bool, error) {
 	query := fmt.Sprintf(
@@ -27,7 +19,7 @@ func tableDetailTableExists(conn *sql.Conn, e *engines.Engine, schema, table str
 		e.Placeholder(1), e.Placeholder(2),
 	)
 	found := false
-	err := tableDetailQuery(conn, query, []any{schema, table}, func(rows *sql.Rows) error {
+	err := sqldb.DetailQuery(conn, query, []any{schema, table}, func(rows *sql.Rows) error {
 		for rows.Next() {
 			var rowSchema, rowTable string
 			if err := rows.Scan(&rowSchema, &rowTable); err != nil {
@@ -47,7 +39,7 @@ func readMySQLTableDetail(conn *sql.Conn, schema, table string) (*spi.TableDetai
 	if err != nil {
 		return nil, err
 	}
-	columns, err := readMySQLColumns(conn, schema, table, indexes.indexedColumns)
+	columns, err := readMySQLColumns(conn, schema, table, indexes.IndexedColumns)
 	if err != nil {
 		return nil, err
 	}
@@ -67,7 +59,7 @@ func readMySQLTableDetail(conn *sql.Conn, schema, table string) (*spi.TableDetai
 		Schema:       schema,
 		Table:        table,
 		Columns:      columns,
-		Indexes:      indexes.indexes,
+		Indexes:      indexes.Indexes,
 		ForeignKeys:  foreignKeys,
 		ReferencedBy: referencedBy,
 		Metadata:     metadata,
@@ -82,7 +74,7 @@ func readMySQLColumns(conn *sql.Conn, schema, table string, indexedColumns map[s
            WHERE table_schema = ? AND table_name = ?
            ORDER BY ordinal_position`
 	columns := make([]spi.TableDetailColumn, 0)
-	err := tableDetailQuery(conn, query, []any{schema, table}, func(rows *sql.Rows) error {
+	err := sqldb.DetailQuery(conn, query, []any{schema, table}, func(rows *sql.Rows) error {
 		for rows.Next() {
 			var name, dataType, nullable string
 			var ordinal int
@@ -110,15 +102,15 @@ func readMySQLColumns(conn *sql.Conn, schema, table string, indexedColumns map[s
 				DataType:               dataType,
 				Ordinal:                ordinal,
 				Nullable:               nullable == "YES",
-				DefaultValue:           tableDetailStringPtr(defaultValue),
-				CharacterMaximumLength: tableDetailInt64Ptr(characterMaximumLength),
-				NumericPrecision:       tableDetailIntPtr(numericPrecision),
-				NumericScale:           tableDetailIntPtr(numericScale),
+				DefaultValue:           sqldb.StringPtr(defaultValue),
+				CharacterMaximumLength: sqldb.Int64Ptr(characterMaximumLength),
+				NumericPrecision:       sqldb.IntPtr(numericPrecision),
+				NumericScale:           sqldb.IntPtr(numericScale),
 				PartOfIndex:            partOfIndex,
 				AutoIncrement:          extra.Valid && strings.Contains(strings.ToLower(extra.String), "auto_increment"),
-				Comment:                tableDetailStringPtr(comment),
-				Charset:                tableDetailStringPtr(charset),
-				Collation:              tableDetailStringPtr(collation),
+				Comment:                sqldb.StringPtr(comment),
+				Charset:                sqldb.StringPtr(charset),
+				Collation:              sqldb.StringPtr(collation),
 				Classification:         nil,
 			})
 		}
@@ -127,20 +119,13 @@ func readMySQLColumns(conn *sql.Conn, schema, table string, indexedColumns map[s
 	return columns, err
 }
 
-type tableDetailIndexAccumulator struct {
-	name     string
-	columns  []spi.TableIndexColumn
-	unique   bool
-	typeName string
-}
-
-func readMySQLIndexes(conn *sql.Conn, schema, table string) (tableDetailIndexes, error) {
+func readMySQLIndexes(conn *sql.Conn, schema, table string) (sqldb.DetailIndexes, error) {
 	indexedColumns := make(map[string]struct{})
 	const indexedColumnsQuery = `SELECT column_name, seq_in_index
                FROM information_schema.statistics
                WHERE table_schema = ? AND table_name = ?
                ORDER BY index_name, seq_in_index`
-	if err := tableDetailQuery(conn, indexedColumnsQuery, []any{schema, table}, func(rows *sql.Rows) error {
+	if err := sqldb.DetailQuery(conn, indexedColumnsQuery, []any{schema, table}, func(rows *sql.Rows) error {
 		for rows.Next() {
 			var columnName sql.NullString
 			var sequence int
@@ -153,11 +138,11 @@ func readMySQLIndexes(conn *sql.Conn, schema, table string) (tableDetailIndexes,
 		}
 		return nil
 	}); err != nil {
-		return tableDetailIndexes{}, err
+		return sqldb.DetailIndexes{}, err
 	}
 
 	query := "SHOW INDEX FROM " + mysqlIdentifier(table) + " FROM " + mysqlIdentifier(schema)
-	grouped := make(map[string]*tableDetailIndexAccumulator)
+	grouped := make(map[string]*sqldb.IndexAccumulator)
 	order := make([]string, 0)
 	if err := tableDetailQueryMaps(conn, query, nil, func(row map[string]*string) error {
 		name, ok := tableDetailMapString(row, "key_name")
@@ -179,16 +164,16 @@ func readMySQLIndexes(conn *sql.Conn, schema, table string) (tableDetailIndexes,
 		unique := nonUnique == 0
 		accumulator := grouped[name]
 		if accumulator == nil {
-			accumulator = &tableDetailIndexAccumulator{
-				name:     name,
-				columns:  make([]spi.TableIndexColumn, 0),
-				unique:   unique,
-				typeName: typeName,
+			accumulator = &sqldb.IndexAccumulator{
+				Name:     name,
+				Columns:  make([]spi.TableIndexColumn, 0),
+				Unique:   unique,
+				TypeName: typeName,
 			}
 			grouped[name] = accumulator
 			order = append(order, name)
 		}
-		if accumulator.unique != unique || accumulator.typeName != typeName {
+		if accumulator.Unique != unique || accumulator.TypeName != typeName {
 			return fmt.Errorf("inconsistent index metadata for %s", name)
 		}
 		columnName, ok := tableDetailMapString(row, "column_name")
@@ -198,46 +183,30 @@ func readMySQLIndexes(conn *sql.Conn, schema, table string) (tableDetailIndexes,
 		if !ok {
 			return fmt.Errorf("index %s has no column or expression metadata", name)
 		}
-		accumulator.columns = append(accumulator.columns, spi.TableIndexColumn{
+		accumulator.Columns = append(accumulator.Columns, spi.TableIndexColumn{
 			Name:      columnName,
 			Position:  int(position),
 			Direction: mysqlIndexDirection(tableDetailMapStringPtr(row, "collation")),
 		})
 		return nil
 	}); err != nil {
-		return tableDetailIndexes{}, err
+		return sqldb.DetailIndexes{}, err
 	}
 
 	indexes := make([]spi.TableIndex, 0, len(order))
 	for _, name := range order {
 		accumulator := grouped[name]
-		sort.SliceStable(accumulator.columns, func(i, j int) bool {
-			return accumulator.columns[i].Position < accumulator.columns[j].Position
+		sort.SliceStable(accumulator.Columns, func(i, j int) bool {
+			return accumulator.Columns[i].Position < accumulator.Columns[j].Position
 		})
 		indexes = append(indexes, spi.TableIndex{
-			Name:    accumulator.name,
-			Columns: accumulator.columns,
-			Unique:  accumulator.unique,
-			Type:    accumulator.typeName,
+			Name:    accumulator.Name,
+			Columns: accumulator.Columns,
+			Unique:  accumulator.Unique,
+			Type:    accumulator.TypeName,
 		})
 	}
-	return tableDetailIndexes{indexes: indexes, indexedColumns: indexedColumns}, nil
-}
-
-type tableDetailRelationIdentity struct {
-	name         string
-	sourceSchema string
-	sourceTable  string
-	targetSchema string
-	targetTable  string
-}
-
-type tableDetailRelationAccumulator struct {
-	identity      tableDetailRelationIdentity
-	sourceColumns []string
-	targetColumns []string
-	onUpdate      *string
-	onDelete      *string
+	return sqldb.DetailIndexes{Indexes: indexes, IndexedColumns: indexedColumns}, nil
 }
 
 func readMySQLRelations(conn *sql.Conn, schema, table string, incoming bool) ([]spi.TableRelation, error) {
@@ -259,21 +228,21 @@ func readMySQLRelations(conn *sql.Conn, schema, table string, incoming bool) ([]
                WHERE kcu.referenced_table_name IS NOT NULL AND ` + directionPredicate + `
                ORDER BY kcu.constraint_schema, kcu.table_name, kcu.constraint_name, kcu.ordinal_position`
 
-	grouped := make(map[tableDetailRelationIdentity]*tableDetailRelationAccumulator)
-	order := make([]tableDetailRelationIdentity, 0)
-	err := tableDetailQuery(conn, query, []any{schema, table, schema}, func(rows *sql.Rows) error {
+	grouped := make(map[sqldb.RelationIdentity]*sqldb.RelationAccumulator)
+	order := make([]sqldb.RelationIdentity, 0)
+	err := sqldb.DetailQuery(conn, query, []any{schema, table, schema}, func(rows *sql.Rows) error {
 		for rows.Next() {
-			var identity tableDetailRelationIdentity
+			var identity sqldb.RelationIdentity
 			var sourceColumn, targetColumn string
 			var onUpdate, onDelete sql.NullString
 			var ordinal int
 			if err := rows.Scan(
-				&identity.name,
-				&identity.sourceSchema,
-				&identity.sourceTable,
+				&identity.Name,
+				&identity.SourceSchema,
+				&identity.SourceTable,
 				&sourceColumn,
-				&identity.targetSchema,
-				&identity.targetTable,
+				&identity.TargetSchema,
+				&identity.TargetTable,
 				&targetColumn,
 				&onUpdate,
 				&onDelete,
@@ -281,25 +250,25 @@ func readMySQLRelations(conn *sql.Conn, schema, table string, incoming bool) ([]
 			); err != nil {
 				return err
 			}
-			updatePtr := tableDetailStringPtr(onUpdate)
-			deletePtr := tableDetailStringPtr(onDelete)
+			updatePtr := sqldb.StringPtr(onUpdate)
+			deletePtr := sqldb.StringPtr(onDelete)
 			relation := grouped[identity]
 			if relation == nil {
-				relation = &tableDetailRelationAccumulator{
-					identity:      identity,
-					sourceColumns: make([]string, 0),
-					targetColumns: make([]string, 0),
-					onUpdate:      updatePtr,
-					onDelete:      deletePtr,
+				relation = &sqldb.RelationAccumulator{
+					Identity:      identity,
+					SourceColumns: make([]string, 0),
+					TargetColumns: make([]string, 0),
+					OnUpdate:      updatePtr,
+					OnDelete:      deletePtr,
 				}
 				grouped[identity] = relation
 				order = append(order, identity)
 			}
-			if !tableDetailEqualStringPtr(relation.onUpdate, updatePtr) || !tableDetailEqualStringPtr(relation.onDelete, deletePtr) {
-				return fmt.Errorf("inconsistent foreign-key metadata for %s", identity.name)
+			if !sqldb.EqualStringPtr(relation.OnUpdate, updatePtr) || !sqldb.EqualStringPtr(relation.OnDelete, deletePtr) {
+				return fmt.Errorf("inconsistent foreign-key metadata for %s", identity.Name)
 			}
-			relation.sourceColumns = append(relation.sourceColumns, sourceColumn)
-			relation.targetColumns = append(relation.targetColumns, targetColumn)
+			relation.SourceColumns = append(relation.SourceColumns, sourceColumn)
+			relation.TargetColumns = append(relation.TargetColumns, targetColumn)
 		}
 		return nil
 	})
@@ -372,7 +341,7 @@ func readPostgresTableDetail(conn *sql.Conn, schema, table string) (*spi.TableDe
 	if err != nil {
 		return nil, err
 	}
-	columns, err := readPostgresColumns(conn, schema, table, indexes.indexedColumns)
+	columns, err := readPostgresColumns(conn, schema, table, indexes.IndexedColumns)
 	if err != nil {
 		return nil, err
 	}
@@ -392,7 +361,7 @@ func readPostgresTableDetail(conn *sql.Conn, schema, table string) (*spi.TableDe
 		Schema:       schema,
 		Table:        table,
 		Columns:      columns,
-		Indexes:      indexes.indexes,
+		Indexes:      indexes.Indexes,
 		ForeignKeys:  foreignKeys,
 		ReferencedBy: referencedBy,
 		Metadata:     metadata,
@@ -417,7 +386,7 @@ func readPostgresColumns(conn *sql.Conn, schema, table string, indexedColumns ma
            WHERE cols.table_schema = $1 AND cols.table_name = $2
            ORDER BY cols.ordinal_position`
 	columns := make([]spi.TableDetailColumn, 0)
-	err := tableDetailQuery(conn, query, []any{schema, table}, func(rows *sql.Rows) error {
+	err := sqldb.DetailQuery(conn, query, []any{schema, table}, func(rows *sql.Rows) error {
 		for rows.Next() {
 			var name, dataType, nullable string
 			var ordinal int
@@ -446,15 +415,15 @@ func readPostgresColumns(conn *sql.Conn, schema, table string, indexedColumns ma
 				DataType:               dataType,
 				Ordinal:                ordinal,
 				Nullable:               nullable == "YES",
-				DefaultValue:           tableDetailStringPtr(defaultValue),
-				CharacterMaximumLength: tableDetailInt64Ptr(characterMaximumLength),
-				NumericPrecision:       tableDetailIntPtr(numericPrecision),
-				NumericScale:           tableDetailIntPtr(numericScale),
+				DefaultValue:           sqldb.StringPtr(defaultValue),
+				CharacterMaximumLength: sqldb.Int64Ptr(characterMaximumLength),
+				NumericPrecision:       sqldb.IntPtr(numericPrecision),
+				NumericScale:           sqldb.IntPtr(numericScale),
 				PartOfIndex:            partOfIndex,
 				AutoIncrement:          autoIncrement.Valid && autoIncrement.Bool,
-				Comment:                tableDetailStringPtr(comment),
-				Charset:                tableDetailStringPtr(charset),
-				Collation:              tableDetailStringPtr(collation),
+				Comment:                sqldb.StringPtr(comment),
+				Charset:                sqldb.StringPtr(charset),
+				Collation:              sqldb.StringPtr(collation),
 				Classification:         nil,
 			})
 		}
@@ -463,7 +432,7 @@ func readPostgresColumns(conn *sql.Conn, schema, table string, indexedColumns ma
 	return columns, err
 }
 
-func readPostgresIndexes(conn *sql.Conn, schema, table string) (tableDetailIndexes, error) {
+func readPostgresIndexes(conn *sql.Conn, schema, table string) (sqldb.DetailIndexes, error) {
 	const indexedColumnsQuery = `SELECT DISTINCT attribute.attname AS column_name
                FROM pg_namespace namespace
                JOIN pg_class table_class ON table_class.relnamespace = namespace.oid
@@ -475,7 +444,7 @@ func readPostgresIndexes(conn *sql.Conn, schema, table string) (tableDetailIndex
                WHERE namespace.nspname = $1 AND table_class.relname = $2
                ORDER BY attribute.attname`
 	indexedColumns := make(map[string]struct{})
-	if err := tableDetailQuery(conn, indexedColumnsQuery, []any{schema, table}, func(rows *sql.Rows) error {
+	if err := sqldb.DetailQuery(conn, indexedColumnsQuery, []any{schema, table}, func(rows *sql.Rows) error {
 		for rows.Next() {
 			var name string
 			if err := rows.Scan(&name); err != nil {
@@ -485,7 +454,7 @@ func readPostgresIndexes(conn *sql.Conn, schema, table string) (tableDetailIndex
 		}
 		return nil
 	}); err != nil {
-		return tableDetailIndexes{}, err
+		return sqldb.DetailIndexes{}, err
 	}
 
 	const indexesQuery = `SELECT index_class.relname AS index_name, index_info.indisunique,
@@ -503,9 +472,9 @@ func readPostgresIndexes(conn *sql.Conn, schema, table string) (tableDetailIndex
                CROSS JOIN LATERAL generate_series(0, index_info.indnkeyatts - 1) AS ordinal(key_offset)
                WHERE namespace.nspname = $1 AND table_class.relname = $2
                ORDER BY index_class.relname, ordinal.key_offset`
-	grouped := make(map[string]*tableDetailIndexAccumulator)
+	grouped := make(map[string]*sqldb.IndexAccumulator)
 	order := make([]string, 0)
-	if err := tableDetailQuery(conn, indexesQuery, []any{schema, table}, func(rows *sql.Rows) error {
+	if err := sqldb.DetailQuery(conn, indexesQuery, []any{schema, table}, func(rows *sql.Rows) error {
 		for rows.Next() {
 			var name, typeName, columnName string
 			var unique bool
@@ -516,43 +485,43 @@ func readPostgresIndexes(conn *sql.Conn, schema, table string) (tableDetailIndex
 			}
 			accumulator := grouped[name]
 			if accumulator == nil {
-				accumulator = &tableDetailIndexAccumulator{
-					name:     name,
-					columns:  make([]spi.TableIndexColumn, 0),
-					unique:   unique,
-					typeName: typeName,
+				accumulator = &sqldb.IndexAccumulator{
+					Name:     name,
+					Columns:  make([]spi.TableIndexColumn, 0),
+					Unique:   unique,
+					TypeName: typeName,
 				}
 				grouped[name] = accumulator
 				order = append(order, name)
 			}
-			if accumulator.unique != unique || accumulator.typeName != typeName {
+			if accumulator.Unique != unique || accumulator.TypeName != typeName {
 				return fmt.Errorf("inconsistent index metadata for %s", name)
 			}
-			accumulator.columns = append(accumulator.columns, spi.TableIndexColumn{
+			accumulator.Columns = append(accumulator.Columns, spi.TableIndexColumn{
 				Name:      columnName,
 				Position:  position,
-				Direction: tableDetailStringPtr(direction),
+				Direction: sqldb.StringPtr(direction),
 			})
 		}
 		return nil
 	}); err != nil {
-		return tableDetailIndexes{}, err
+		return sqldb.DetailIndexes{}, err
 	}
 
 	indexes := make([]spi.TableIndex, 0, len(order))
 	for _, name := range order {
 		accumulator := grouped[name]
-		sort.SliceStable(accumulator.columns, func(i, j int) bool {
-			return accumulator.columns[i].Position < accumulator.columns[j].Position
+		sort.SliceStable(accumulator.Columns, func(i, j int) bool {
+			return accumulator.Columns[i].Position < accumulator.Columns[j].Position
 		})
 		indexes = append(indexes, spi.TableIndex{
-			Name:    accumulator.name,
-			Columns: accumulator.columns,
-			Unique:  accumulator.unique,
-			Type:    accumulator.typeName,
+			Name:    accumulator.Name,
+			Columns: accumulator.Columns,
+			Unique:  accumulator.Unique,
+			Type:    accumulator.TypeName,
 		})
 	}
-	return tableDetailIndexes{indexes: indexes, indexedColumns: indexedColumns}, nil
+	return sqldb.DetailIndexes{Indexes: indexes, IndexedColumns: indexedColumns}, nil
 }
 
 func readPostgresRelations(conn *sql.Conn, schema, table string, incoming bool) ([]spi.TableRelation, error) {
@@ -587,23 +556,23 @@ func readPostgresRelations(conn *sql.Conn, schema, table string, incoming bool) 
                WHERE constraint_info.contype = 'f' AND ` + directionPredicate + `
                ORDER BY constraint_info.oid, source_key.position`
 
-	grouped := make(map[int64]*tableDetailRelationAccumulator)
+	grouped := make(map[int64]*sqldb.RelationAccumulator)
 	order := make([]int64, 0)
-	err := tableDetailQuery(conn, query, []any{schema, table}, func(rows *sql.Rows) error {
+	err := sqldb.DetailQuery(conn, query, []any{schema, table}, func(rows *sql.Rows) error {
 		for rows.Next() {
 			var oid int64
-			var identity tableDetailRelationIdentity
+			var identity sqldb.RelationIdentity
 			var sourceColumn, targetColumn string
 			var updateAction, deleteAction sql.NullString
 			var position int
 			if err := rows.Scan(
 				&oid,
-				&identity.name,
-				&identity.sourceSchema,
-				&identity.sourceTable,
+				&identity.Name,
+				&identity.SourceSchema,
+				&identity.SourceTable,
 				&sourceColumn,
-				&identity.targetSchema,
-				&identity.targetTable,
+				&identity.TargetSchema,
+				&identity.TargetTable,
 				&targetColumn,
 				&updateAction,
 				&deleteAction,
@@ -611,31 +580,31 @@ func readPostgresRelations(conn *sql.Conn, schema, table string, incoming bool) 
 			); err != nil {
 				return err
 			}
-			onUpdate, err := postgresReferentialAction(tableDetailStringPtr(updateAction))
+			onUpdate, err := postgresReferentialAction(sqldb.StringPtr(updateAction))
 			if err != nil {
 				return err
 			}
-			onDelete, err := postgresReferentialAction(tableDetailStringPtr(deleteAction))
+			onDelete, err := postgresReferentialAction(sqldb.StringPtr(deleteAction))
 			if err != nil {
 				return err
 			}
 			relation := grouped[oid]
 			if relation == nil {
-				relation = &tableDetailRelationAccumulator{
-					identity:      identity,
-					sourceColumns: make([]string, 0),
-					targetColumns: make([]string, 0),
-					onUpdate:      onUpdate,
-					onDelete:      onDelete,
+				relation = &sqldb.RelationAccumulator{
+					Identity:      identity,
+					SourceColumns: make([]string, 0),
+					TargetColumns: make([]string, 0),
+					OnUpdate:      onUpdate,
+					OnDelete:      onDelete,
 				}
 				grouped[oid] = relation
 				order = append(order, oid)
 			}
-			if relation.identity != identity || !tableDetailEqualStringPtr(relation.onUpdate, onUpdate) || !tableDetailEqualStringPtr(relation.onDelete, onDelete) {
-				return fmt.Errorf("inconsistent foreign-key metadata for %s", identity.name)
+			if relation.Identity != identity || !sqldb.EqualStringPtr(relation.OnUpdate, onUpdate) || !sqldb.EqualStringPtr(relation.OnDelete, onDelete) {
+				return fmt.Errorf("inconsistent foreign-key metadata for %s", identity.Name)
 			}
-			relation.sourceColumns = append(relation.sourceColumns, sourceColumn)
-			relation.targetColumns = append(relation.targetColumns, targetColumn)
+			relation.SourceColumns = append(relation.SourceColumns, sourceColumn)
+			relation.TargetColumns = append(relation.TargetColumns, targetColumn)
 		}
 		return nil
 	})
@@ -645,7 +614,7 @@ func readPostgresRelations(conn *sql.Conn, schema, table string, incoming bool) 
 
 	relations := make([]spi.TableRelation, 0, len(order))
 	for _, oid := range order {
-		relations = append(relations, tableDetailRelation(grouped[oid]))
+		relations = append(relations, sqldb.Relation(grouped[oid]))
 	}
 	return relations, nil
 }
@@ -659,7 +628,7 @@ func readPostgresMetadata(conn *sql.Conn, schema, table string) (spi.TableMetada
                JOIN pg_class table_class ON table_class.relnamespace = namespace.oid
                WHERE namespace.nspname = $1 AND table_class.relname = $2`
 	var metadata *spi.TableMetadata
-	err := tableDetailQuery(conn, query, []any{schema, table}, func(rows *sql.Rows) error {
+	err := sqldb.DetailQuery(conn, query, []any{schema, table}, func(rows *sql.Rows) error {
 		if !rows.Next() {
 			return fmt.Errorf("validated table disappeared while reading table metadata")
 		}
@@ -670,11 +639,11 @@ func readPostgresMetadata(conn *sql.Conn, schema, table string) (spi.TableMetada
 		}
 		metadata = &spi.TableMetadata{
 			Engine:        "PostgreSQL",
-			EstimatedRows: tableDetailInt64Ptr(estimatedRows),
+			EstimatedRows: sqldb.Int64Ptr(estimatedRows),
 			RowFormat:     nil,
-			OnDiskBytes:   tableDetailInt64Ptr(onDiskBytes),
+			OnDiskBytes:   sqldb.Int64Ptr(onDiskBytes),
 			Collation:     nil,
-			Comment:       tableDetailStringPtr(comment),
+			Comment:       sqldb.StringPtr(comment),
 		}
 		return nil
 	})
@@ -687,27 +656,8 @@ func readPostgresMetadata(conn *sql.Conn, schema, table string) (spi.TableMetada
 	return *metadata, nil
 }
 
-func tableDetailQuery(conn *sql.Conn, query string, args []any, consume func(*sql.Rows) error) error {
-	ctx, cancel := context.WithTimeout(context.Background(), tableDetailQueryTimeout)
-	defer cancel()
-	statement, err := conn.PrepareContext(ctx, query)
-	if err != nil {
-		return err
-	}
-	defer statement.Close()
-	rows, err := statement.QueryContext(ctx, args...)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	if err := consume(rows); err != nil {
-		return err
-	}
-	return rows.Err()
-}
-
 func tableDetailQueryMaps(conn *sql.Conn, query string, args []any, consume func(map[string]*string) error) error {
-	return tableDetailQuery(conn, query, args, func(rows *sql.Rows) error {
+	return sqldb.DetailQuery(conn, query, args, func(rows *sql.Rows) error {
 		columns, err := rows.Columns()
 		if err != nil {
 			return err
@@ -736,30 +686,6 @@ func tableDetailQueryMaps(conn *sql.Conn, query string, args []any, consume func
 		}
 		return nil
 	})
-}
-
-func tableDetailStringPtr(value sql.NullString) *string {
-	if !value.Valid {
-		return nil
-	}
-	result := value.String
-	return &result
-}
-
-func tableDetailInt64Ptr(value sql.NullInt64) *int64 {
-	if !value.Valid {
-		return nil
-	}
-	result := value.Int64
-	return &result
-}
-
-func tableDetailIntPtr(value sql.NullInt64) *int {
-	if !value.Valid {
-		return nil
-	}
-	result := int(value.Int64)
-	return &result
 }
 
 func tableDetailMapString(row map[string]*string, key string) (string, bool) {
@@ -800,13 +726,6 @@ func tableDetailMapOptionalInt64(row map[string]*string, key string) (*int64, er
 		return nil, fmt.Errorf("invalid %s metadata %q: %w", key, value, err)
 	}
 	return &result, nil
-}
-
-func tableDetailEqualStringPtr(left, right *string) bool {
-	if left == nil || right == nil {
-		return left == nil && right == nil
-	}
-	return *left == *right
 }
 
 func mysqlIdentifier(value string) string {
@@ -851,24 +770,10 @@ func postgresReferentialAction(value *string) (*string, error) {
 	return &action, nil
 }
 
-func tableDetailRelations(grouped map[tableDetailRelationIdentity]*tableDetailRelationAccumulator, order []tableDetailRelationIdentity) []spi.TableRelation {
+func tableDetailRelations(grouped map[sqldb.RelationIdentity]*sqldb.RelationAccumulator, order []sqldb.RelationIdentity) []spi.TableRelation {
 	relations := make([]spi.TableRelation, 0, len(order))
 	for _, identity := range order {
-		relations = append(relations, tableDetailRelation(grouped[identity]))
+		relations = append(relations, sqldb.Relation(grouped[identity]))
 	}
 	return relations
-}
-
-func tableDetailRelation(relation *tableDetailRelationAccumulator) spi.TableRelation {
-	return spi.TableRelation{
-		Name:          relation.identity.name,
-		SourceSchema:  relation.identity.sourceSchema,
-		SourceTable:   relation.identity.sourceTable,
-		SourceColumns: relation.sourceColumns,
-		TargetSchema:  relation.identity.targetSchema,
-		TargetTable:   relation.identity.targetTable,
-		TargetColumns: relation.targetColumns,
-		OnUpdate:      relation.onUpdate,
-		OnDelete:      relation.onDelete,
-	}
 }

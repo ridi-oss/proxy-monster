@@ -272,12 +272,48 @@ pnpm -C web install
 [tasks.verify]
 description = "The full verification gate: lint, JVM tests, Go tests, web unit tests + build"
 shell = "bash -c"
-# CI runs the same three tasks as parallel jobs, sharding the two test tasks.
+# The three parts run concurrently, each into its own log; CI runs the same three as parallel jobs,
+# sharding the two test tasks. PM_VERIFY_LOGS picks the log directory. The JVM tests take longest, so
+# the other two run at a lower CPU priority.
 run = '''
-set -euo pipefail
-mise run verify-static
-mise run verify-jvm
-mise run verify-go
+set -uo pipefail
+logs="${PM_VERIFY_LOGS:-$(mktemp -d "${TMPDIR:-/tmp}/pm-verify.XXXXXX")}"
+mkdir -p "$logs"
+echo "verify: logs in $logs"
+parts="static jvm go"
+start=$SECONDS
+# Set here rather than in the build so CI keeps its own; past 3/4 of Docker's CPUs more forks gained nothing.
+docker_cpus=$(docker info | awk '/^ CPUs:/ {print $2}')
+forks=$((docker_cpus * 3 / 4)) host_cpus=$(getconf _NPROCESSORS_ONLN)
+[ "$forks" -gt "$host_cpus" ] && forks=$host_cpus
+[ "$forks" -lt 1 ] && forks=1
+export GRADLE_OPTS="${GRADLE_OPTS:-} -Dorg.gradle.parallel=true -Dorg.gradle.project.pm.testForks=$forks"
+for part in $parts; do
+  (
+    t0=$SECONDS
+    if [ "$part" = jvm ]; then prio=0; else prio=10; fi
+    nice -n "$prio" mise run "verify-$part" > "$logs/$part.log" 2>&1
+    rc=$?
+    echo "$rc" > "$logs/$part.status"
+    if [ "$rc" -eq 0 ]; then result=passed; else result=FAILED; fi
+    echo "verify: $part $result in $((SECONDS - t0))s"
+  ) &
+done
+wait
+failed=""
+for part in $parts; do
+  rc=$(cat "$logs/$part.status" 2>/dev/null || echo 1)
+  if [ "$rc" -ne 0 ]; then
+    failed="$failed $part"
+    echo "=== verify-$part failed; last 60 lines of $logs/$part.log ===" >&2
+    tail -n 60 "$logs/$part.log" >&2
+  fi
+done
+if [ -n "$failed" ]; then
+  echo "verify: FAILED:$failed after $((SECONDS - start))s" >&2
+  exit 1
+fi
+echo "verify: all parts passed in $((SECONDS - start))s"
 '''
 
 [tasks.verify-static]

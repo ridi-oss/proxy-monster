@@ -18,6 +18,8 @@ type Settings struct {
 	OIDCEnabled bool
 	// ResultKey is whether editor results are stored; ending a session deletes them only then.
 	ResultKey bool
+	// WebOrigin prefixes redirects into the console when it is served from another origin.
+	WebOrigin string
 
 	AbsoluteSeconds, IdleSeconds, SlideSeconds   int64
 	IdleWarnLeadSeconds, AbsoluteWarnLeadSeconds int64
@@ -68,4 +70,12 @@ func ParseDuration(raw string) (int64, error) {
 		return 0, fmt.Errorf("invalid duration: %q", raw)
 	}
 	return total, nil
+}
+
+// WebRedirect is a console path, under PM_WEB_ORIGIN when that is set.
+func (s Settings) WebRedirect(path string) string {
+	if strings.TrimSpace(s.WebOrigin) == "" {
+		return path
+	}
+	return strings.TrimRight(strings.TrimSpace(s.WebOrigin), "/") + path
 }

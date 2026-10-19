@@ -88,6 +88,7 @@ var (
 	CodeNotConnectable        = Code{"datasource.not_connectable", http.StatusForbidden}
 	CodeNoWireCert            = Code{"datasource.no_wire_cert", http.StatusNotFound}
 	CodeDeprovisioned         = Code{"auth.principal_deprovisioned", http.StatusForbidden}
+	CodeOIDCNotConfigured     = Code{"common.oidc_not_configured", http.StatusNotImplemented}
 	CodeInvalidRequesterIP    = Code{"auth.invalid_requester_ip", http.StatusBadRequest}
 	CodeInvalidEngine         = Code{"datasource.invalid_engine", http.StatusBadRequest}
 	CodeEngineImmutable       = Code{"datasource.engine_immutable", http.StatusConflict}

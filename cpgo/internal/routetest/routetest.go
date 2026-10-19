@@ -15,6 +15,7 @@ import (
 	"github.com/ridi-oss/proxy-monster/cpgo/front"
 	"github.com/ridi-oss/proxy-monster/cpgo/internal/dbtest"
 	"github.com/ridi-oss/proxy-monster/cpgo/routes"
+	"github.com/ridi-oss/proxy-monster/cpgo/routes/oidc"
 	"github.com/ridi-oss/proxy-monster/cpgo/session"
 )
 
@@ -124,6 +125,10 @@ type Config struct {
 	Edges []string
 	// AuthDebugOff turns the debug login off.
 	AuthDebugOff bool
+	// Login is the OIDC login the routes serve; the zero value is OIDC not configured.
+	Login oidc.Login
+	// Settings replaces dbtest.Settings.
+	Settings *session.Settings
 }
 
 func SetupConfig(t *testing.T, c Config) *Env {
@@ -142,7 +147,12 @@ func SetupConfig(t *testing.T, c Config) *Env {
 		w.WriteHeader(http.StatusTeapot)
 	})
 	settings := dbtest.Settings()
-	settings.AuthDebug = !c.AuthDebugOff
+	if c.Settings != nil {
+		settings = *c.Settings
+	}
+	if c.AuthDebugOff {
+		settings.AuthDebug = false
+	}
 	mux := http.NewServeMux()
 	routes.Register(mux, e.St.Pool, api.Gate{
 		Sessions:  session.NewResolver(e.St.Pool, settings),
@@ -150,7 +160,7 @@ func SetupConfig(t *testing.T, c Config) *Env {
 		AuthDebug: settings.AuthDebug,
 		Authz:     decider,
 		Kotlin:    &e.Authz,
-	})
+	}, c.Login)
 	e.Srv = httptest.NewServer(front.Route(mux, forward))
 	t.Cleanup(e.Srv.Close)
 	return e
@@ -183,6 +193,18 @@ func (e *Env) DoHeader(t *testing.T, method, path, body string, cookies []*http.
 	return resp.StatusCode, strings.TrimSpace(string(b))
 }
 
+func (e *Env) EndedReason(t *testing.T, key string) string {
+	t.Helper()
+	var reason *string
+	if err := e.St.Pool.QueryRow(context.Background(), `SELECT ended_reason FROM principal_session WHERE session_key = $1`, key).Scan(&reason); err != nil {
+		t.Fatal(err)
+	}
+	if reason == nil {
+		return ""
+	}
+	return *reason
+}
+
 func (e *Env) Exec(t *testing.T, sql string, args ...any) {
 	t.Helper()
 	if _, err := e.St.Pool.Exec(context.Background(), sql, args...); err != nil {
@@ -197,16 +219,4 @@ func (e *Env) Count(t *testing.T, sql string, args ...any) int {
 		t.Fatal(err)
 	}
 	return n
-}
-
-func (e *Env) EndedReason(t *testing.T, key string) string {
-	t.Helper()
-	var reason *string
-	if err := e.St.Pool.QueryRow(context.Background(), `SELECT ended_reason FROM principal_session WHERE session_key = $1`, key).Scan(&reason); err != nil {
-		t.Fatal(err)
-	}
-	if reason == nil {
-		return ""
-	}
-	return *reason
 }

@@ -11,6 +11,7 @@ import com.ridi.oss.proxymonster.auth.OidcGroupMapping
 import com.ridi.oss.proxymonster.controlplane.OidcConfig
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
+import io.ktor.http.Parameters
 import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
@@ -29,8 +30,16 @@ import java.util.concurrent.atomic.AtomicReference
 /**
  * A loopback IdP: the token endpoint signs an id_token for whichever identity [next] names, and answers a
  * refresh grant for a token [rejectRefresh] named with invalid_grant, every other one with the same identity.
+ * [pkceMethods] is what discovery advertises (none when null); [tokenFails] makes the code exchange answer
+ * 500; [idToken] replaces the signed id_token; [tokenForm] records the last code exchange's form.
  */
-class FakeOidcIdp : AutoCloseable {
+class FakeOidcIdp(
+    val clientId: String = "fake-oidc-client",
+    private val pkceMethods: List<String>? = listOf("S256"),
+    private val tokenFails: Boolean = false,
+    private val idToken: String? = null,
+    private val tokenForm: AtomicReference<Parameters>? = null,
+) : AutoCloseable {
     data class Identity(val subject: String, val email: String?, val groups: List<String>?)
 
     private val key = RSAKeyGenerator(2048).keyID("fake-oidc-idp").generate()
@@ -41,9 +50,10 @@ class FakeOidcIdp : AutoCloseable {
     private val server: EmbeddedServer<*, *> = embeddedServer(Netty, port = 0, host = "127.0.0.1") {
         routing {
             get("/.well-known/openid-configuration") {
+                val pkce = pkceMethods?.let { m -> ""","code_challenge_methods_supported":[${m.joinToString(",") { "\"$it\"" }}]""" } ?: ""
                 call.respondText(
                     """{"issuer":"$issuer","authorization_endpoint":"$issuer/authorize","token_endpoint":"$issuer/token",""" +
-                        """"jwks_uri":"$issuer/jwks","code_challenge_methods_supported":["S256"]}""",
+                        """"jwks_uri":"$issuer/jwks"$pkce}""",
                     ContentType.Application.Json,
                 )
             }
@@ -60,6 +70,15 @@ class FakeOidcIdp : AutoCloseable {
                     }
                     return@post
                 }
+                tokenForm?.set(form)
+                if (tokenFails) {
+                    call.respondText("""{"error":"server_error"}""", ContentType.Application.Json, HttpStatusCode.InternalServerError)
+                    return@post
+                }
+                if (idToken != null) {
+                    call.respondText("""{"id_token":"$idToken"}""", ContentType.Application.Json)
+                    return@post
+                }
                 val (identity, nonce) = pending.get()
                 val refresh = "rt-${identity.subject}-${refreshes.incrementAndGet()}"
                 issued[refresh] = identity
@@ -70,7 +89,6 @@ class FakeOidcIdp : AutoCloseable {
     private val port = runBlocking { server.engine.resolvedConnectors().first().port }
 
     val issuer get() = "http://127.0.0.1:$port"
-    val clientId = "fake-oidc-client"
     private val clientSecret = "fake-oidc-secret"
     private val redirectUri = "http://control-plane.test/auth/oidc/callback"
     private val scopes = "openid email groups offline_access"

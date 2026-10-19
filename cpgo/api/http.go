@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -40,6 +42,25 @@ func NonNil(s []string) []string {
 		return []string{}
 	}
 	return s
+}
+
+func RandomToken(n int) string {
+	b := make([]byte, n)
+	_, _ = rand.Read(b)
+	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+func Truncate(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n])
+	}
+	return s
+}
+
+// Found is Ktor's respondRedirect: a 302 with a Location and no body.
+func Found(w http.ResponseWriter, location string) {
+	w.Header().Set("Location", location)
+	w.WriteHeader(http.StatusFound)
 }
 
 // WriteRows answers with every row as a JSON array, [] when there are none, or returns the query's error.

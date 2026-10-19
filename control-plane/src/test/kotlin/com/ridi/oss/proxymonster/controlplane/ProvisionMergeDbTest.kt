@@ -1,5 +1,7 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import org.junit.jupiter.api.AfterAll
+import com.ridi.oss.proxymonster.controlplane.support.OidcProvisioner
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import kotlinx.coroutines.Dispatchers
@@ -33,6 +35,7 @@ class ProvisionMergeDbTest {
     private lateinit var accessStore: AccessStore
     private lateinit var daemonSessionStore: PrincipalSessionStore
     private lateinit var policyStore: PolicyStore
+    private lateinit var provisioner: OidcProvisioner
 
     @BeforeAll
     fun setup() {
@@ -45,6 +48,23 @@ class ProvisionMergeDbTest {
         accessStore = AccessStore(ds)
         daemonSessionStore = PrincipalSessionStore(ds, null)
         policyStore = PolicyStore(ds)
+        provisioner = OidcProvisioner(ControlPlaneCore(ds), dbName)
+    }
+
+    /** JIT provisioning, now done by cp-go: a real OIDC login with these claims, then the row it left. */
+    private fun UserGroupStore.provisionFromOidc(
+        principal: String,
+        email: String?,
+        idpGroups: List<String>,
+        mapping: OidcGroupMapping = OidcGroupMapping(emptyMap(), null),
+    ): AppUser {
+        provisioner.login(principal, email, idpGroups, mapping)
+        return checkNotNull(getUserByPrincipal(email ?: principal))
+    }
+
+    @AfterAll
+    fun closeProvisioner() {
+        if (::provisioner.isInitialized) provisioner.close()
     }
 
     @Test
@@ -102,7 +122,7 @@ class ProvisionMergeDbTest {
 
     @Test
     fun `JIT never clobbers a source=SCIM user's fields`() {
-        val principal = "scim-owned@example.com"
+        val principal = "attacker-supplied@evil.com"
         val scimUser = store.upsertScimUser(
             externalId = "ext-1", principal = principal, email = "scim-owned@example.com",
             displayName = "SCIM Name", active = true,

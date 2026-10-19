@@ -11,7 +11,8 @@ requires access granted by the maintainers.
 Status: phases 0–2 done; phases 3–5 in progress (Go decides Cedar for the routes
 it serves; roles, mask functions, policies, JIT access requests, users, groups,
 datasource read, wire cert, create, edit and delete, and wire tokens run on Go);
-phase 6 in progress (web sessions run on Go); phases 7–8 not started.
+phase 6 in progress (web sessions, OIDC login and the IdP recheck run on Go);
+phases 7–8 not started.
 
 ## Shape
 

@@ -1,5 +1,10 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import org.junit.jupiter.api.AfterEach
+import io.ktor.client.plugins.defaultRequest
+import io.ktor.client.engine.cio.CIO
+import com.ridi.oss.proxymonster.controlplane.support.FakeOidcIdp
+import com.ridi.oss.proxymonster.controlplane.support.CpGoStack
 import com.ridi.oss.proxymonster.auth.isValidPkceChallenge
 import com.ridi.oss.proxymonster.auth.isValidPkceVerifier
 import com.ridi.oss.proxymonster.auth.pkceS256
@@ -62,6 +67,8 @@ private const val CALLER_ADDR = "203.0.113.9"
  */
 private const val UNPARSEABLE_ID_TOKEN = "not-a-real-jwt"
 
+private const val OAUTH_STATE_COOKIE = "pm_oauth_state"
+
 /**
  * [oidcRoutes] exercised through a real Ktor test host: the CSRF `state` + `nonce` cookies'
  * one-time-use, callback errors, and the allowlisted co-hosted OAuth continuation. The IdP side
@@ -79,6 +86,15 @@ class OidcCallbackTest {
     private lateinit var dataSource: DataSource
     private lateinit var userGroupStore: UserGroupStore
     private lateinit var roleResolver: RoleResolver
+    private lateinit var database: String
+    private val closing = mutableListOf<AutoCloseable>()
+    private lateinit var current: CpGoStack
+
+    @AfterEach
+    fun closeStacks() {
+        closing.asReversed().forEach { it.close() }
+        closing.clear()
+    }
 
     /** The newest audit row's id, so an assertion can scope itself to what a single request appended —
      *  the whole class shares one database and several branches produce the same `detail`. */
@@ -127,7 +143,8 @@ class OidcCallbackTest {
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_oidc_callback"))
+        database = SharedPostgres.freshDatabase("pm_oidc_callback")
+        dataSource = SharedPostgres.hikari(database)
         Flyway.configure().dataSource(dataSource).load().migrate()
         userGroupStore = UserGroupStore(dataSource)
         roleResolver = RoleResolver(dataSource, userGroupStore, AccessStore(dataSource))
@@ -169,56 +186,33 @@ class OidcCallbackTest {
      * disabled, so the 3xx responses under test are inspectable directly instead of being silently
      * followed.
      */
+    @Suppress("UnusedReceiverParameter")
     private fun ApplicationTestBuilder.wireOidc(
         config: Config,
         pkceMethods: List<String>? = null,
         tokenForm: AtomicReference<Parameters>? = null,
         tokenEndpointFails: Boolean = false,
     ): HttpClient {
-        // The client oidcRoutes/OidcDiscovery use for their OWN outbound calls (discovery fetch +
-        // token exchange) — bound to this test app's in-process engine, so "/.well-known/..." and
-        // "/token" below resolve without a real socket.
-        val internalHttp = createClient {
-            install(ClientContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
-        }
-        val discovery = config.oidc?.let { OidcDiscovery(internalHttp, it.issuer) }
-        val validator = discovery?.let { IdTokenValidator(it, config.oidc!!.issuer, config.oidc!!.clientId) }
-
-        // A top-level `Application.()` extension (below) rather than inlined here: nested directly in
-        // this `ApplicationTestBuilder` extension function, plain `install(...)` calls are ambiguous
-        // between `Application.install` and `TestApplicationBuilder.install` (both are implicit
-        // receivers in scope) — pulling the app setup out to its own receiver scope, matching how
-        // Application.module itself is structured, resolves it unambiguously.
-        application {
-            installOidcTestApp(
-                config, discovery, validator, internalHttp, dataSource, userGroupStore, roleResolver, log,
-                pkceMethods, tokenForm, tokenEndpointFails,
+        val env = mutableMapOf("PM_TRUSTED_PROXIES" to "127.0.0.1")
+        config.oidc?.let { oidc ->
+            val idp = FakeOidcIdp(oidc.clientId, pkceMethods, tokenEndpointFails, UNPARSEABLE_ID_TOKEN, tokenForm).also(closing::add)
+            env += mapOf(
+                "PM_OIDC_ISSUER" to idp.issuer, "PM_OIDC_CLIENT_ID" to oidc.clientId, "PM_OIDC_CLIENT_SECRET" to oidc.clientSecret,
+                "PM_OIDC_REDIRECT_URI" to oidc.redirectUri, "PM_OIDC_SCOPES" to oidc.scopes,
             )
         }
-
-        return createClient {
-            expectSuccess = false
-            followRedirects = false
-            install(HttpCookies)
-            install(DefaultRequest) { header("X-Forwarded-For", CALLER_ADDR) }
-        }
+        current = CpGoStack(config, ControlPlaneCore(dataSource), database, extraEnv = env).also(closing::add)
+        return current.client().config { defaultRequest { header("X-Forwarded-For", CALLER_ADDR) } }
     }
 
-    @Test
-    fun `OIDC continuation accepts only fixed auth and device routes`() {
-        assertEquals("/oauth/resume", oidcReturnTarget("/oauth/resume"))
-        assertEquals("/auth/reauth-complete", oidcReturnTarget("/auth/reauth-complete"))
-        assertEquals("/device", oidcReturnTarget("/device"))
-        assertEquals("/device?user_code=ABCD-EFGH", oidcReturnTarget("/device?user_code=ABCD-EFGH"))
-        assertNull(oidcReturnTarget("/auth/device/authorize?user_code=ABCD-EFGH"))
-        assertNull(oidcReturnTarget("https://evil.example/device"))
-        assertNull(oidcReturnTarget("//evil.example/device"))
-        assertNull(oidcReturnTarget("/device/other"))
-        assertNull(oidcReturnTarget("/device?foo=bar"))
-        assertNull(oidcReturnTarget("/device?user_code=ABCD-EFGH&next=https://evil.example"))
-        assertNull(oidcReturnTarget("/auth/device/authorize?user_code=ABCD-EFGH&extra=x"))
-        assertNull(oidcReturnTarget("/other"))
-        assertNull(oidcReturnTarget("/"))
+    /** A cp-go client that keeps no cookies, for replaying one by hand. */
+    private fun jarlessClient(): HttpClient = HttpClient(CIO) {
+        expectSuccess = false
+        followRedirects = false
+        defaultRequest {
+            url(current.baseUrl)
+            header("X-Forwarded-For", CALLER_ADDR)
+        }
     }
 
     @Test
@@ -282,11 +276,7 @@ class OidcCallbackTest {
         // what rejects the callback, which is the branch under test. A cookie-jar client would carry both.
         val stateCookie = loginResp.headers.getAll(HttpHeaders.SetCookie)!!
             .single { it.startsWith("$OAUTH_STATE_COOKIE=") }.substringBefore(';')
-        val jarless = createClient {
-            expectSuccess = false
-            followRedirects = false
-            install(DefaultRequest) { header("X-Forwarded-For", CALLER_ADDR) }
-        }
+        val jarless = jarlessClient()
         val before = latestAuditId()
         val resp = jarless.get("/auth/oidc/callback?code=abc&state=$realState") {
             header(HttpHeaders.Cookie, stateCookie)
@@ -471,78 +461,5 @@ class OidcCallbackTest {
         val resp = get(path)
         assertEquals(HttpStatusCode.Found, resp.status)
         return parseQueryString(resp.headers[HttpHeaders.Location]!!.substringAfter('?'))
-    }
-}
-
-/**
- * Sessions/content-negotiation + the fake IdP double (discovery + token) + the real [oidcRoutes]
- * under test, all in one [Application] extension so `install(...)` inside it resolves unambiguously
- * (see the comment at its call site in [OidcCallbackTest.wireOidc]).
- */
-private fun Application.installOidcTestApp(
-    config: Config,
-    discovery: OidcDiscovery?,
-    validator: IdTokenValidator?,
-    http: HttpClient,
-    dataSource: DataSource,
-    userGroupStore: UserGroupStore,
-    roleResolver: RoleResolver,
-    log: Logger,
-    pkceMethods: List<String>? = null,
-    tokenForm: AtomicReference<Parameters>? = null,
-    tokenEndpointFails: Boolean = false,
-) {
-    install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
-    install(Sessions) {
-        cookie<OAuthStateSession>(OAUTH_STATE_COOKIE) {
-            cookie.path = "/"
-            cookie.httpOnly = true
-            serializer = jsonSessionSerializer()
-            transform(SessionTransportTransformerMessageAuthentication(TEST_SESSION_SECRET.toByteArray()))
-        }
-        cookie<OAuthNonceSession>(OAUTH_NONCE_COOKIE) {
-            cookie.path = "/"
-            cookie.httpOnly = true
-            serializer = jsonSessionSerializer()
-            transform(SessionTransportTransformerMessageAuthentication(TEST_SESSION_SECRET.toByteArray()))
-        }
-        cookie<DeviceVerifySession>(DEVICE_VERIFY_COOKIE) {
-            cookie.path = "/"
-            cookie.httpOnly = true
-            serializer = jsonSessionSerializer()
-            transform(SessionTransportTransformerMessageAuthentication(TEST_SESSION_SECRET.toByteArray()))
-        }
-        // oidcRoutes clears this on every login and every callback, so it must be registered even
-        // for an IdP that advertises no PKCE — an unregistered session name throws.
-        cookie<OAuthVerifierSession>(OAUTH_VERIFIER_COOKIE) {
-            cookie.path = "/"
-            cookie.httpOnly = true
-            serializer = jsonSessionSerializer()
-            transform(SessionTransportTransformerMessageAuthentication(TEST_SESSION_SECRET.toByteArray()))
-        }
-    }
-    routing {
-        // Fake IdP double: a discovery document + token endpoint, just enough for oidcRoutes' own
-        // round-trips. jwks_uri is deliberately unreachable — never hit (see UNPARSEABLE_ID_TOKEN).
-        serverGet("/.well-known/openid-configuration") {
-            call.respond(
-                OidcDiscoveryDocument(
-                    issuer = config.oidc?.issuer ?: "",
-                    authorization_endpoint = "/authorize",
-                    token_endpoint = "/token",
-                    jwks_uri = "http://jwks.invalid/keys",
-                    code_challenge_methods_supported = pkceMethods,
-                ),
-            )
-        }
-        post("/token") {
-            tokenForm?.set(call.receiveParameters())
-            if (tokenEndpointFails) call.respond(HttpStatusCode.BadGateway, mapOf("error" to "temporarily_unavailable"))
-            else call.respond(mapOf("id_token" to UNPARSEABLE_ID_TOKEN))
-        }
-        oidcRoutes(
-            config, discovery, validator, http, userGroupStore, roleResolver, PrincipalSessionStore(dataSource, null),
-            AuthAuditRecorder(AuditStore(dataSource)), log,
-        )
     }
 }

@@ -28,7 +28,9 @@ import (
 	"github.com/ridi-oss/proxy-monster/cpgo/front"
 	"github.com/ridi-oss/proxy-monster/cpgo/gobridge"
 	bridgepb "github.com/ridi-oss/proxy-monster/cpgo/gobridge/pb"
+	"github.com/ridi-oss/proxy-monster/cpgo/idp"
 	"github.com/ridi-oss/proxy-monster/cpgo/routes"
+	"github.com/ridi-oss/proxy-monster/cpgo/routes/oidc"
 	"github.com/ridi-oss/proxy-monster/cpgo/session"
 	"github.com/ridi-oss/proxy-monster/cpgo/store"
 	"github.com/ridi-oss/proxy-monster/cpgo/tailnet"
@@ -56,6 +58,9 @@ type config struct {
 	// UserAttributes is PM_OIDC_USER_ATTRIBUTES, which Kotlin declares only when OIDC login is configured.
 	UserAttributes string           `kong:"-"`
 	Session        session.Settings `kong:"-"`
+	// OIDC is nil unless all four PM_OIDC_* settings are present.
+	OIDC      *idp.Config `kong:"-"`
+	ResultKey string      `kong:"-"`
 }
 
 func envOr(key, def string) string {
@@ -72,6 +77,7 @@ func sessionSettings() (session.Settings, error) {
 		AuthDebug:   envOr("PM_AUTH_DEBUG", "true") == "true",
 		Secure:      strings.HasPrefix(envOr("PM_MCP_RESOURCE", "http://127.0.0.1:8080/mcp"), "https://"),
 		ResultKey:   os.Getenv("PM_RESULT_KEY") != "",
+		WebOrigin:   os.Getenv("PM_WEB_ORIGIN"),
 		OIDCEnabled: oidcConfigured(),
 	}
 	for _, d := range []struct {
@@ -98,6 +104,27 @@ func sessionSettings() (session.Settings, error) {
 	return s, nil
 }
 
+// oidcSettings is the OIDC client Kotlin's Config reads, nil when OIDC login is not configured.
+func oidcSettings() (*idp.Config, error) {
+	c := &idp.Config{
+		Issuer: os.Getenv("PM_OIDC_ISSUER"), ClientID: os.Getenv("PM_OIDC_CLIENT_ID"),
+		ClientSecret: os.Getenv("PM_OIDC_CLIENT_SECRET"), RedirectURI: os.Getenv("PM_OIDC_REDIRECT_URI"),
+		Scopes: envOr("PM_OIDC_SCOPES", "openid profile email groups offline_access"), RecheckInterval: 300 * time.Second,
+		Groups: idp.ParseGroupMapping(os.Getenv("PM_OIDC_GROUP_MAP"), os.Getenv("PM_OIDC_GROUP_PREFIX")),
+	}
+	if v := os.Getenv("PM_IDP_RECHECK_INTERVAL"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n <= 0 {
+			return nil, fmt.Errorf("PM_IDP_RECHECK_INTERVAL must be a positive number of seconds: %q", v)
+		}
+		c.RecheckInterval = time.Duration(n) * time.Second
+	}
+	if !oidcConfigured() {
+		return nil, nil
+	}
+	return c, nil
+}
+
 func oidcConfigured() bool {
 	return os.Getenv("PM_OIDC_ISSUER") != "" && os.Getenv("PM_OIDC_CLIENT_ID") != "" &&
 		os.Getenv("PM_OIDC_CLIENT_SECRET") != "" && os.Getenv("PM_OIDC_REDIRECT_URI") != ""
@@ -111,10 +138,14 @@ func main() {
 	cfg.DBPassword = envOr("PM_DB_PASSWORD", "proxymonster")
 	cfg.InternalToken = os.Getenv("PM_CP_INTERNAL_TOKEN")
 	var err error
-	if cfg.Session, err = sessionSettings(); err != nil {
+	if cfg.Session, err = sessionSettings(); err == nil {
+		cfg.OIDC, err = oidcSettings()
+	}
+	if err != nil {
 		slog.Error("cp-go: " + err.Error())
 		os.Exit(1)
 	}
+	cfg.ResultKey = os.Getenv("PM_RESULT_KEY")
 	if oidcConfigured() {
 		cfg.UserAttributes = os.Getenv("PM_OIDC_USER_ATTRIBUTES")
 	}
@@ -150,6 +181,11 @@ func run(ctx context.Context, cfg config) int {
 	if err == nil {
 		schema, err = authz.NewSchema(attrs)
 	}
+	if err != nil {
+		slog.Error("cp-go: " + err.Error())
+		return 1
+	}
+	crypto, err := idp.NewCrypto(cfg.ResultKey)
 	if err != nil {
 		slog.Error("cp-go: " + err.Error())
 		return 1
@@ -207,15 +243,21 @@ func run(ctx context.Context, cfg config) int {
 	defer pool.Close()
 
 	kotlin := bridge.New(httpUpstream, internalToken)
+	resolver := session.NewResolver(pool, cfg.Session)
+	login := oidc.Login{Crypto: crypto, Schema: schema}
+	if cfg.OIDC != nil {
+		login.Provider = idp.NewProvider(*cfg.OIDC)
+		go oidc.Liveness{Pool: pool, Sessions: resolver, Kotlin: kotlin, Provider: login.Provider, Crypto: crypto, Schema: schema}.Run(ctx)
+	}
 	serve := func(edges front.TrustedEdges) http.Handler {
 		mux := http.NewServeMux()
 		routes.Register(mux, pool, api.Gate{
-			Sessions:  session.NewResolver(pool, cfg.Session),
+			Sessions:  resolver,
 			Edges:     edges,
 			AuthDebug: cfg.Session.AuthDebug,
 			Authz:     authz.NewDecider(pool, schema),
 			Kotlin:    kotlin,
-		})
+		}, login)
 		h := front.Route(mux, front.NewHTTP(httpUpstream, edges))
 		if web != nil {
 			h = front.Split(h, front.NewHTTP(web, edges))

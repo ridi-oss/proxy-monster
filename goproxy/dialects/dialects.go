@@ -118,8 +118,8 @@ var registry = spi.MustRegistry(
 	sqlProvider{
 		engine:     engines.MySQL,
 		queries:    mysql.TargetSQL{},
-		open:       sqldb.OpenMySQLTarget,
-		probe:      sqldb.ProbeMySQLNamespace,
+		open:       mysql.OpenPool,
+		probe:      mysql.ProbeNamespace,
 		catalog:    func(context.Context, *sql.Conn) (string, error) { return "def", nil },
 		readDetail: readMySQLTableDetail,
 		newServer: func(listen spi.Listen, config spi.TargetConfig, client spi.ControlPlane, queries relay.Db, tlsProvider func() (*tls.Config, error)) spi.WireServer {

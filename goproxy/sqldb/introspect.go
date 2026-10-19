@@ -18,24 +18,23 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
-	"google.golang.org/protobuf/proto"
 
 	// The named mysql import both registers the "mysql" driver (via init()) AND gives us mysql.Config
 	// for safe DSN construction, so no separate blank import is needed.
-	mysqldriver "github.com/go-sql-driver/mysql"
+
 	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
-// queryTimeout bounds every introspection query. A full catalog scan of a large schema on a remote
+// QueryTimeout bounds every introspection query. A full catalog scan of a large schema on a remote
 // target DB has been measured at ~53s, so a bound near that turns an ordinary slow scan into a failed
 // refresh; this leaves room for one well clear of the observed cost.
-const queryTimeout = 120 * time.Second
+const QueryTimeout = 120 * time.Second
 
-// connectTimeout bounds establishing the introspection connection to the target.
-const connectTimeout = 5 * time.Second
+// ConnectTimeout bounds establishing the introspection connection to the target.
+const ConnectTimeout = 5 * time.Second
 
 // columnsSQL introspects column metadata for every table.
 //
@@ -48,35 +47,6 @@ const connectTimeout = 5 * time.Second
 const columnsSQL = `SELECT table_catalog, table_schema, table_name, column_name, data_type, ordinal_position, is_nullable
 FROM information_schema.columns
 ORDER BY table_schema, table_name, ordinal_position`
-
-// OpenMySQLTarget opens a database/sql handle to a MySQL target (5s connect / 30s socket).
-func OpenMySQLTarget(config spi.TargetConfig) (*sql.DB, error) {
-	cfg := mysqldriver.NewConfig()
-	cfg.User = config.User
-	cfg.Passwd = config.Password
-	cfg.Net = "tcp"
-	cfg.Addr = fmt.Sprintf("%s:%d", config.Host, config.Port)
-	cfg.DBName = config.Db
-	cfg.Timeout = connectTimeout
-	cfg.ReadTimeout = queryTimeout
-	cfg.WriteTimeout = queryTimeout
-	// go-sql-driver handles caching_sha2_password public-key retrieval natively; no
-	// allowPublicKeyRetrieval equivalent is needed. zeroDateTimeBehavior/connectionTimeZone are moot
-	// since every read here is a string or int (no parseTime).
-	cfg.TLSConfig = "false"
-	if config.TLS != nil {
-		cfg.TLS = config.TLS.Clone()
-	}
-	// Hand the *Config straight to a connector rather than FormatDSN()->sql.Open(): FormatDSN does not
-	// escape the username, so a service account like "svc:reader" would round-trip back through the DSN
-	// grammar as user "svc" / password "reader:<pw>" and fail auth on every catalog refresh. The
-	// connector path keeps credentials as structured fields, never serialized through DSN syntax.
-	connector, err := mysqldriver.NewConnector(cfg)
-	if err != nil {
-		return nil, fmt.Errorf("introspect: building mysql connector: %w", err)
-	}
-	return sql.OpenDB(connector), nil
-}
 
 // OpenPostgresTarget opens a database/sql handle to a Postgres target.
 func OpenPostgresTarget(config spi.TargetConfig) (*sql.DB, error) {
@@ -123,7 +93,7 @@ func Introspect(ctx context.Context, db *sql.DB, queries relay.Db, probe Namespa
 	// logins per refresh (and, across the boot retries, several times that) — risking service-account
 	// lockout and tripling dead-target boot latency. db.Conn(ctx) establishes exactly one connection here
 	// (a dial failure returns immediately, no reconnect), and every probe runs on it.
-	connectCtx, connectCancel := context.WithTimeout(ctx, connectTimeout+queryTimeout)
+	connectCtx, connectCancel := context.WithTimeout(ctx, ConnectTimeout+QueryTimeout)
 	defer connectCancel()
 	started := time.Now()
 	conn, err := db.Conn(connectCtx)
@@ -205,7 +175,7 @@ func Introspect(ctx context.Context, db *sql.DB, queries relay.Db, probe Namespa
 type schemaNamePair struct{ schema, name string }
 
 func introspectRoutines(conn *sql.Conn, queries relay.Db, lctnMode int) ([]*analyzerpb.SchemaFunctions, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), QueryTimeout)
 	defer cancel()
 	rows, err := conn.QueryContext(ctx, queries.RoutinesSQL())
 	if err != nil {
@@ -286,35 +256,10 @@ func normalizeSchemas(queries relay.Db, lctnMode int, schemas []string) []string
 	return out
 }
 
-// ProbeMySQLNamespace captures the current database plus the load-bearing
-// @@lower_case_table_names and verifies the connection's database matches the bound one.
-func ProbeMySQLNamespace(ctx context.Context, conn *sql.Conn, targetDb string) (*pb.CatalogRequest, error) {
-	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
-	defer cancel()
-
-	row := conn.QueryRowContext(ctx, "SELECT DATABASE(), @@lower_case_table_names, DATABASE() = ?", targetDb)
-	var currentDb sql.NullString
-	var lctn int
-	var matches sql.NullBool
-	if err := row.Scan(&currentDb, &lctn, &matches); err != nil {
-		return nil, fmt.Errorf("introspect: MySQL namespace probe: %w", err)
-	}
-	if !currentDb.Valid {
-		return nil, errors.New("introspect: MySQL connection has no current database")
-	}
-	if lctn < 0 || lctn > 2 {
-		return nil, fmt.Errorf("introspect: MySQL returned invalid lower_case_table_names: %d", lctn)
-	}
-	if !matches.Valid || !matches.Bool {
-		return nil, fmt.Errorf("introspect: MySQL current database %q does not match bound database %q", currentDb.String, targetDb)
-	}
-	return &pb.CatalogRequest{DefaultSchemas: []string{currentDb.String}, MysqlLowerCaseTableNames: proto.Int32(int32(lctn)), CurrentCatalog: "def"}, nil
-}
-
 // ReadPostgresCatalog returns current_database(); the catalog every fragment and temp column from this
 // connection is stamped with.
 func ReadPostgresCatalog(ctx context.Context, conn *sql.Conn) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
+	ctx, cancel := context.WithTimeout(ctx, QueryTimeout)
 	defer cancel()
 	var catalog string
 	if err := conn.QueryRowContext(ctx, "SELECT pg_catalog.current_database()").Scan(&catalog); err != nil {
@@ -329,7 +274,7 @@ func ReadPostgresCatalog(ctx context.Context, conn *sql.Conn) (string, error) {
 
 // ProbePostgresNamespace captures the effective search_path.
 func ProbePostgresNamespace(ctx context.Context, conn *sql.Conn, _ string) (*pb.CatalogRequest, error) {
-	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
+	ctx, cancel := context.WithTimeout(ctx, QueryTimeout)
 	defer cancel()
 
 	catalog, err := ReadPostgresCatalog(ctx, conn)
@@ -360,7 +305,7 @@ func ProbePostgresNamespace(ctx context.Context, conn *sql.Conn, _ string) (*pb.
 
 // introspectColumns runs columnsSQL on the pinned connection and scans every row into a *analyzerpb.Column.
 func introspectColumns(conn *sql.Conn) ([]*analyzerpb.Column, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), QueryTimeout)
 	defer cancel()
 
 	rows, err := conn.QueryContext(ctx, columnsSQL)
@@ -400,7 +345,7 @@ func introspectColumns(conn *sql.Conn) ([]*analyzerpb.Column, error) {
 func probeVersion(conn *sql.Conn) string {
 	base := ""
 	func() {
-		ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), QueryTimeout)
 		defer cancel()
 		row := conn.QueryRowContext(ctx, "SELECT version()")
 		var v sql.NullString
@@ -413,7 +358,7 @@ func probeVersion(conn *sql.Conn) string {
 
 	var aurora string
 	func() {
-		ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), QueryTimeout)
 		defer cancel()
 		row := conn.QueryRowContext(ctx, "SELECT aurora_version()")
 		var v sql.NullString

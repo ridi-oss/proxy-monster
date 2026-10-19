@@ -17,8 +17,8 @@ import (
 // catalogIdentity is the catalog name the control plane and analyzer key on; Athena folds catalog names.
 func (t *target) catalogIdentity() string { return strings.ToLower(t.config.catalog) }
 
-// ReadCatalog scans every database of the configured catalog through Glue table metadata. A relation the
-// catalog cannot prove (a view, an unknown table type) fails the scan rather than being flattened or dropped.
+var catalogedTableTypes = map[string]bool{"EXTERNAL_TABLE": true, "MANAGED_TABLE": true, "VIRTUAL_VIEW": true, "GOVERNED": true, "": true}
+
 func (t *target) Introspect(ctx context.Context) (*pb.CatalogRequest, error) {
 	group, err := t.api.GetWorkGroup(ctx, &awsa.GetWorkGroupInput{WorkGroup: aws.String(t.config.workgroup)})
 	if err != nil {
@@ -70,8 +70,8 @@ func (t *target) readColumns(ctx context.Context, catalog, database string) ([]*
 				return nil, errors.New("athena: missing or duplicate table metadata")
 			}
 			seen[name] = true
-			if kind := aws.ToString(table.TableType); kind != "EXTERNAL_TABLE" && kind != "MANAGED_TABLE" {
-				return nil, fmt.Errorf("athena: catalog cannot represent unproved relation %q of type %q", name, kind)
+			if kind := aws.ToString(table.TableType); !catalogedTableTypes[kind] {
+				return nil, fmt.Errorf("athena: relation %q has unsupported table type %q", name, kind)
 			}
 			tableColumns, err := metadataColumns(table)
 			if err != nil {

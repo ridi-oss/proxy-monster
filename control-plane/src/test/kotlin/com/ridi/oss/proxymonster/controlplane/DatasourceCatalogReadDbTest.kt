@@ -11,6 +11,12 @@ import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
+import java.lang.reflect.InvocationTargetException
+import java.lang.reflect.Method
+import java.lang.reflect.Proxy
+import java.sql.Connection
+import java.sql.PreparedStatement
+import java.sql.ResultSet
 import javax.sql.DataSource
 import kotlin.test.assertEquals
 
@@ -66,6 +72,39 @@ class DatasourceCatalogReadDbTest {
         val catalog = core.datasourceStore.catalog(id)
         assertEquals(EXPECTED_CATALOG.trim(), catalog.columns.joinToString("\n") { it.line() })
         assertEquals(EXPECTED_BROWSE.trim(), management.browseCatalog("catalog-read").joinToString("\n") { it.line() })
+    }
+
+    @Test
+    fun `a catalog read fetches the stored catalog once however many columns are classified`() {
+        var fetches = 0
+        val counting = countingCatalogReads(dataSource) { fetches++ }
+        DatasourceStore(counting).catalog(id)
+        assertEquals(1, fetches)
+    }
+}
+
+/** [dataSource], calling [onCatalog] each time a result set hands out the `catalog` column. */
+private fun countingCatalogReads(dataSource: DataSource, onCatalog: () -> Unit): DataSource {
+    fun <T : Any> wrap(target: T, type: Class<T>, intercept: (Method, Array<out Any?>?, Any?) -> Any?): T =
+        type.cast(Proxy.newProxyInstance(type.classLoader, arrayOf(type)) { _, method, args ->
+            try {
+                intercept(method, args, method.invoke(target, *(args ?: emptyArray())))
+            } catch (e: InvocationTargetException) {
+                throw e.targetException
+            }
+        })
+    fun results(rs: ResultSet) = wrap(rs, ResultSet::class.java) { method, args, result ->
+        if (method.name == "getBytes" && args?.firstOrNull() == "catalog") onCatalog()
+        result
+    }
+    fun statement(ps: PreparedStatement) = wrap(ps, PreparedStatement::class.java) { method, _, result ->
+        if (method.name == "executeQuery") results(result as ResultSet) else result
+    }
+    fun connection(c: Connection) = wrap(c, Connection::class.java) { method, _, result ->
+        if (method.name == "prepareStatement") statement(result as PreparedStatement) else result
+    }
+    return wrap(dataSource, DataSource::class.java) { method, _, result ->
+        if (method.name == "getConnection") connection(result as Connection) else result
     }
 }
 

@@ -620,35 +620,23 @@ class DatasourceStore(internal val dataSource: DataSource) {
         id: Long,
         c: java.sql.Connection,
         columns: (CatalogSnapshot, String?, Map<ObjectRef, Classification>) -> List<CatalogColumn>,
-    ): Catalog = c.prepareStatement(
-        """SELECT d.current_catalog_name, d.catalog,
-                  d.engine, d.engine_version,
-                  cl.catalog_name, cl.schema_name, cl.table_name, cl.column_name, cl.tags, cl.mask_fn_id, m.name AS mask_fn_name
-           FROM datasource d
-           LEFT JOIN column_classification cl ON cl.datasource_id = d.id
-           LEFT JOIN mask_fn m ON m.id = cl.mask_fn_id AND m.deleted_at IS NULL
-           WHERE d.id = ?""",
-    ).use { ps ->
-        ps.setLong(1, id)
-        ps.executeQuery().use { rs ->
-            var currentCatalog: String? = null
-            var engine: Engine? = null
-            var engineVersion: String? = null
-            var snapshot = CatalogSnapshot.getDefaultInstance()
-            val classifications = HashMap<ObjectRef, Classification>()
-            while (rs.next()) {
-                currentCatalog = rs.getString("current_catalog_name")
-                engine = engineFromWire(rs.getString("engine"))
-                engineVersion = rs.getString("engine_version")
-                rs.getBytes("catalog")?.let { snapshot = CatalogSnapshot.parseFrom(it) }
-                rs.classification()?.let { classifications[columnRef(it.catalog!!, it.schema, it.table, it.column)] = it }
+    ): Catalog {
+        // Classifications are read on their own: joined here, every classification row would carry the whole catalog.
+        val (row, snapshot) = c.prepareStatement(
+            "SELECT current_catalog_name, catalog, engine, engine_version FROM datasource WHERE id = ?",
+        ).use { ps ->
+            ps.setLong(1, id)
+            ps.executeQuery().use { rs ->
+                if (!rs.next()) return Catalog(emptyList(), FunctionCatalog.getDefaultInstance())
+                Triple(rs.getString("current_catalog_name"), engineFromWire(rs.getString("engine")), rs.getString("engine_version")) to
+                    (rs.getBytes("catalog")?.let(CatalogSnapshot::parseFrom) ?: CatalogSnapshot.getDefaultInstance())
             }
-            Catalog(
-                columns(snapshot, currentCatalog, classifications),
-                engine?.functionCatalog(snapshot.routinesList.associate { it.schema to it.namesList }, engineVersion)
-                    ?: FunctionCatalog.getDefaultInstance(),
-            )
         }
+        val (currentCatalog, engine, engineVersion) = row
+        return Catalog(
+            columns(snapshot, currentCatalog, classificationsFor(id, c)),
+            engine.functionCatalog(snapshot.routinesList.associate { it.schema to it.namesList }, engineVersion),
+        )
     }
 
     private fun java.sql.ResultSet.classification(): Classification? = getString("tags")?.let { tags ->
@@ -662,35 +650,22 @@ class DatasourceStore(internal val dataSource: DataSource) {
      * Live classification metadata keyed independently of the pushed catalog. Enforcement fragments provide the
      * structural rows; classifications remain CP-owned and can change without a connection re-introspection.
      */
-    fun classificationsFor(id: Long): Map<ObjectRef, Classification> =
-        dataSource.connection.use { c ->
-            c.prepareStatement(
-                """SELECT cl.catalog_name, cl.schema_name, cl.table_name, cl.column_name, cl.tags, cl.mask_fn_id,
-                          m.name AS mask_fn_name
-                   FROM column_classification cl
-                   LEFT JOIN mask_fn m ON m.id = cl.mask_fn_id AND m.deleted_at IS NULL
-                   WHERE cl.datasource_id = ?""",
-            ).use { ps ->
-                ps.setLong(1, id)
-                ps.executeQuery().use { rs ->
-                    buildMap {
-                        while (rs.next()) {
-                            val schema = rs.getString("schema_name")
-                            val table = rs.getString("table_name")
-                            val column = rs.getString("column_name")
-                            put(
-                                columnRef(rs.getString("catalog_name"), schema, table, column),
-                                Classification(
-                                    schema,
-                                    table,
-                                    column,
-                                    json.decodeFromString(stringList, rs.getString("tags")),
-                                    rs.longOrNull("mask_fn_id"),
-                                    rs.getString("mask_fn_name"),
-                                    rs.getString("catalog_name"),
-                                ),
-                            )
-                        }
+    fun classificationsFor(id: Long): Map<ObjectRef, Classification> = dataSource.connection.use { c -> classificationsFor(id, c) }
+
+    private fun classificationsFor(id: Long, c: java.sql.Connection): Map<ObjectRef, Classification> =
+        c.prepareStatement(
+            """SELECT cl.catalog_name, cl.schema_name, cl.table_name, cl.column_name, cl.tags, cl.mask_fn_id,
+                      m.name AS mask_fn_name
+               FROM column_classification cl
+               LEFT JOIN mask_fn m ON m.id = cl.mask_fn_id AND m.deleted_at IS NULL
+               WHERE cl.datasource_id = ?""",
+        ).use { ps ->
+            ps.setLong(1, id)
+            ps.executeQuery().use { rs ->
+                buildMap {
+                    while (rs.next()) {
+                        val cl = rs.classification() ?: continue
+                        put(columnRef(cl.catalog!!, cl.schema, cl.table, cl.column), cl)
                     }
                 }
             }

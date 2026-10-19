@@ -49,8 +49,9 @@ PostgreSQL tests with Testcontainers through the shared helpers
 start each container once per test JVM or `go test` run, and tests isolate by
 database or schema; never start a container per test. The control-plane tests
 run in parallel forks (`-Ppm.testForks=n`), each with its own pair of
-containers. They are required, not optional: without a Docker environment they
-fail rather than skip, so Docker must be running for `mise run verify`.
+containers; under `mise run verify` the forks share one server per engine
+instead. They are required, not optional: without a Docker environment they fail
+rather than skip, so Docker must be running for `mise run verify`.
 
 `PM_REQUIRE_DB_TESTS=true` turns a missing-Docker skip into a hard failure. CI
 sets it so a security test can never pass by skipping. Locally, leaving it unset

@@ -41,7 +41,7 @@ func runMySQL(config spi.TargetConfig) (*pb.CatalogRequest, error) {
 }
 
 func runPostgres(config spi.TargetConfig) (*pb.CatalogRequest, error) {
-	return runWith(sqldb.OpenPostgresTarget, postgres.TargetSQL{}, sqldb.ProbePostgresNamespace, config)
+	return runWith(postgres.OpenPool, postgres.TargetSQL{}, postgres.ProbeNamespace, config)
 }
 
 func runWith(open func(spi.TargetConfig) (*sql.DB, error), queries relay.Db, probe sqldb.NamespaceProbe, config spi.TargetConfig) (*pb.CatalogRequest, error) {

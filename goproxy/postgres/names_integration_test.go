@@ -7,7 +7,6 @@ import (
 
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/targettest"
-	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
 )
 
 func TestPostgresQuotedNamesStayDistinct(t *testing.T) {
@@ -28,7 +27,7 @@ func TestPostgresQuotedNamesStayDistinct(t *testing.T) {
 		}
 	}
 
-	bulk := targettest.IntrospectTarget(t, sqldb.OpenPostgresTarget, TargetSQL{}, sqldb.ProbePostgresNamespace, targetConfig, name)
+	bulk := targettest.IntrospectTarget(t, OpenPool, TargetSQL{}, ProbeNamespace, targetConfig, name)
 	if got := bulk.GetDefaultSchemas(); !slices.Equal(got, []string{"pg_catalog", "Sales", "public"}) {
 		t.Errorf("DefaultSchemas = %v, want [pg_catalog Sales public]", got)
 	}

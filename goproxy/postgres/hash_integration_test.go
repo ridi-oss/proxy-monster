@@ -121,7 +121,7 @@ func verifyPostgresHashAndFragment(t *testing.T, database *sql.DB, wantCrypto bo
 	if err != nil {
 		t.Fatalf("Postgres fragment mapping: %v", err)
 	}
-	catalog, err := sqldb.ReadPostgresCatalog(context.Background(), conn)
+	catalog, err := ReadCatalog(context.Background(), conn)
 	if err != nil {
 		t.Fatalf("Postgres catalog probe: %v", err)
 	}

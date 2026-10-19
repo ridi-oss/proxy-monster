@@ -109,7 +109,7 @@ func tableDetailRun(
 ) *pb.ProxyTableDetailMsg {
 	t.Helper()
 	tableDetailFake.tableDetailExpect(tableDetailSessionID)
-	run.NewTableDetailRunner(tableDetailClient, tableDetailDb).Run(tableDetailSessionID, &enginepb.ObjectRef{Catalog: catalog, Schema: schema, Table: table})
+	run.NewRunner(tableDetailClient, tableDetailDb, 0).RunTableDetail(tableDetailSessionID, &enginepb.ObjectRef{Catalog: catalog, Schema: schema, Table: table})
 	select {
 	case tableDetailObservation := <-tableDetailFake.observed:
 		if tableDetailObservation.err != nil {

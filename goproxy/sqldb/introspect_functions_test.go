@@ -4,7 +4,6 @@ import (
 	"testing"
 
 	"github.com/ridi-oss/proxy-monster/goproxy/mysql"
-	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
 
 	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
@@ -21,7 +20,7 @@ type routinesQueryDb struct {
 func (d routinesQueryDb) RoutinesSQL() string { return d.query }
 
 func runRoutinesQuery(query string, config spi.TargetConfig) (*pb.CatalogRequest, error) {
-	return runWith(sqldb.OpenMySQLTarget, routinesQueryDb{query: query}, sqldb.ProbeMySQLNamespace, config)
+	return runWith(mysql.OpenPool, routinesQueryDb{query: query}, mysql.ProbeNamespace, config)
 }
 
 func TestRoutinesObservation(t *testing.T) {

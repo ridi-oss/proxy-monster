@@ -37,7 +37,7 @@ func TestMySQLLowerCase0KeepsSchemaAndTableCase(t *testing.T) {
 	targettest.ExecRefetchSQL(t, conn, "CREATE TABLE "+quoteMySQL(upper)+".`users` (id INT NOT NULL, Note VARCHAR(64) NULL)")
 	targettest.ExecRefetchSQL(t, conn, "CREATE TABLE "+quoteMySQL(lower)+".`users` (id INT NOT NULL, email VARCHAR(64) NULL)")
 
-	bulk := targettest.IntrospectTarget(t, sqldb.OpenMySQLTarget, TargetSQL{}, sqldb.ProbeMySQLNamespace, targetConfig, upper)
+	bulk := targettest.IntrospectTarget(t, OpenPool, TargetSQL{}, ProbeNamespace, targetConfig, upper)
 	if got := bulk.GetDefaultSchemas(); !slices.Equal(got, []string{upper}) {
 		t.Fatalf("DefaultSchemas = %v, want [%s]", got, upper)
 	}
@@ -79,7 +79,7 @@ func TestMySQLLowerCase1FoldsSchemaAndTable(t *testing.T) {
 	targettest.ExecRefetchSQL(t, conn, "CREATE TABLE "+quoteMySQL(mixed)+".`Users` (Id INT NOT NULL, EMail VARCHAR(64) NULL)")
 	targettest.ExecRefetchSQL(t, conn, "CREATE FUNCTION "+quoteMySQL(mixed)+".`AddTax` (amount INT) RETURNS INT DETERMINISTIC RETURN amount")
 
-	bulk := targettest.IntrospectTarget(t, sqldb.OpenMySQLTarget, TargetSQL{}, sqldb.ProbeMySQLNamespace, targetConfig, mixed)
+	bulk := targettest.IntrospectTarget(t, OpenPool, TargetSQL{}, ProbeNamespace, targetConfig, mixed)
 	if got := bulk.GetDefaultSchemas(); !slices.Equal(got, []string{canonical}) {
 		t.Fatalf("DefaultSchemas = %v, want [%s]", got, canonical)
 	}
@@ -146,7 +146,7 @@ func (d lowerCase2Db) SchemaHashSQL(schema string, setup [][]*string) (string, i
 }
 
 func probeAsMode2(ctx context.Context, conn *sql.Conn, targetDb string) (*pb.CatalogRequest, error) {
-	catalog, err := sqldb.ProbeMySQLNamespace(ctx, conn, targetDb)
+	catalog, err := ProbeNamespace(ctx, conn, targetDb)
 	if err != nil {
 		return nil, err
 	}
@@ -166,7 +166,7 @@ func TestMySQLLowerCase2FoldsStoredCase(t *testing.T) {
 	t.Cleanup(func() { _, _ = admin.Exec("DROP DATABASE IF EXISTS " + quoteMySQL(mixed)) })
 	targettest.ExecRefetchSQL(t, conn, "CREATE TABLE "+quoteMySQL(mixed)+".`Users` (Id INT NOT NULL, EMail VARCHAR(64) NULL)")
 
-	bulk := targettest.IntrospectTarget(t, sqldb.OpenMySQLTarget, TargetSQL{}, probeAsMode2, targetConfig, mixed)
+	bulk := targettest.IntrospectTarget(t, OpenPool, TargetSQL{}, probeAsMode2, targetConfig, mixed)
 	if got := bulk.GetDefaultSchemas(); !slices.Equal(got, []string{canonical}) {
 		t.Fatalf("DefaultSchemas = %v, want [%s]", got, canonical)
 	}

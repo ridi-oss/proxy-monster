@@ -36,7 +36,7 @@ const (
 
 // runMySQL and runPostgres open a pool on target and introspect it the way the dialect's Db does.
 func runMySQL(config spi.TargetConfig) (*pb.CatalogRequest, error) {
-	return runWith(sqldb.OpenMySQLTarget, mysql.TargetSQL{}, sqldb.ProbeMySQLNamespace, config)
+	return runWith(mysql.OpenPool, mysql.TargetSQL{}, mysql.ProbeNamespace, config)
 }
 
 func runPostgres(config spi.TargetConfig) (*pb.CatalogRequest, error) {
@@ -100,7 +100,7 @@ func TestRunPinsOneConnectionOnDeadTarget(t *testing.T) {
 	config := spi.TargetConfig{Host: "127.0.0.1", Port: addr.Port, Db: "appdb", User: "svc", Password: "pw"}
 
 	// Baseline: the dials a single connection acquisition costs against this dead target.
-	baseDB, err := sqldb.OpenMySQLTarget(config)
+	baseDB, err := mysql.OpenPool(config)
 	if err != nil {
 		t.Fatalf("openTarget: %v", err)
 	}

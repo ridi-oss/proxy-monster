@@ -486,7 +486,7 @@ Fixes for gaps documented in
   and call it from Kotlin over FFM instead of hand-maintaining byte-identical
   copies. Masking is the clearest case: `Masking.kt` and `Masks.kt` under
   `engine/src/main/kotlin/com/ridi/oss/proxymonster/probe/` versus
-  `goproxy/engine/masking.go`, which must stay identical by hand. The analyzer
+  `goproxy/relay/masking.go`, which must stay identical by hand. The analyzer
   already reaches Go through an FFM binding, so the same Go implementation could
   serve the JVM side. Medium priority.
 - Structural de-duplication: shared route-CRUD helpers, web CRUD tabs, JDBC

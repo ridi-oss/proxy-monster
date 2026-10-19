@@ -90,8 +90,8 @@ walk runs before redaction), independent of the whitelist.
   valid for every column type where a fixed text token would be a wire type
   mismatch. A denied base still denies. A direct identity projection masks with
   the column's own kind.
-- Proxy: no change — `engine.applyMaskKind` (`goproxy/engine/masking.go`)
-  already renders `NULL` to nil.
+- Proxy: no change — `relay.applyMaskKind` (`goproxy/relay/masking.go`) already
+  renders `NULL` to nil.
 
 ## Tests
 

@@ -149,7 +149,7 @@ policy.
 ## Catalog
 
 The proxy introspects the target and pushes the catalog — it already holds the
-live connection (`goproxy/introspect/`). The scan is the ordinary
+live connection (`goproxy/sqldb/introspect.go`). The scan is the ordinary
 `information_schema.columns` query per engine.
 
 ```protobuf

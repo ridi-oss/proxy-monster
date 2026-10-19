@@ -1,7 +1,8 @@
-// Package introspect is the proxy's own live-connection introspection of its target — the catalog it
+// Introspection is the proxy's own live-connection introspection of its target — the catalog it
 // pushes to the control plane (docs/datasource-registration.md). The control plane never dials the
 // target; the proxy is the one side with a live connection and the credential that matters, so
 // introspection lives here.
+
 package sqldb
 
 import (
@@ -11,9 +12,6 @@ import (
 	"log/slog"
 	"strings"
 	"time"
-
-	// The named mysql import both registers the "mysql" driver (via init()) AND gives us mysql.Config
-	// for safe DSN construction, so no separate blank import is needed.
 
 	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
@@ -84,7 +82,7 @@ func Introspect(ctx context.Context, db *sql.DB, queries Queries, probe Namespac
 	// Go-to-Go — no FFM/marshaling) — an identity function for Postgres, MySQL's role-aware fold
 	// (gated by lctnMode) for MySQL — before this ever reaches the control plane. Nothing downstream
 	// (catalog storage, browse_catalog, Cedar Table::/Column:: EUIDs, column_classification, the
-	// per-connection schema-fragment pool normalized the same way in goproxy/db) ever sees raw
+	// per-connection schema-fragment pool normalized the same way by the relay) ever sees raw
 	// introspected spelling; no caller decides whether/how to fold.
 	// The dialect's own Queries owns the fold, so this call site names no dialect. Only the MySQL
 	// namespace probe sets mysqlLowerCaseTableNames (the Postgres probe returns nil), and it carries the

@@ -272,7 +272,7 @@ class EditorTempTableViewDbTest {
     }
 
     private companion object {
-        // goproxy/db PgDb.TempColumnsProbeSQL.
+        // goproxy/postgres tempColumnsProbeSQL.
         const val TEMP_COLUMNS_PROBE = """SELECT n.nspname, c.relname, a.attname, pg_catalog.format_type(a.atttypid, a.atttypmod), a.attnum
 FROM pg_catalog.pg_attribute a
 JOIN pg_catalog.pg_class c ON c.oid = a.attrelid

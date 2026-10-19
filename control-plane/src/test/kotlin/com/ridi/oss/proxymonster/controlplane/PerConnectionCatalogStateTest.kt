@@ -455,6 +455,16 @@ class PerConnectionCatalogStateTest {
     }
 
     @Test
+    fun `an unproved table list that is blank, repeated, or names a proven table rejects`() = runBlocking {
+        val registry = ConnectionCatalogRegistry()
+        for (unproved in listOf(listOf(" "), listOf("user_view", "USER_VIEW"), listOf("Users"))) {
+            val opened = registry.open(Binding(ds.name, "p", "USER", ds.effectiveCatalog), listOf(namespace("def", "app")))
+            val result = registry.applyPush(push(opened, "app", "h-$unproved", unprovedTables = unproved), ds)
+            assertTrue(result is CatalogMutationResult.Rejected && result.code == Status.Code.INVALID_ARGUMENT, "accepted $unproved: $result")
+        }
+    }
+
+    @Test
     fun `same hash with the same columns but different routines rejects`() = runBlocking {
         val registry = ConnectionCatalogRegistry()
         val first = registry.open(Binding(ds.name, "first", "USER", ds.effectiveCatalog), listOf(namespace("def", "app")))

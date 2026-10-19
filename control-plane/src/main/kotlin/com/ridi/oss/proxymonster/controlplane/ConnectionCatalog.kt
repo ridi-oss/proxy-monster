@@ -305,6 +305,11 @@ class ConnectionCatalogRegistry(
         if (columns.any { it.catalog != catalog || it.schema != request.schema }) {
             return CatalogMutationResult.Rejected(Status.Code.INVALID_ARGUMENT, "fragment column schema mismatch")
         }
+        val unprovedTables = request.unprovedTablesList.map { it.lowercase() }
+        val provenTables = columns.mapTo(HashSet()) { it.table.lowercase() }
+        if (unprovedTables.any { it.isBlank() || it in provenTables } || unprovedTables.toSet().size != unprovedTables.size) {
+            return CatalogMutationResult.Rejected(Status.Code.INVALID_ARGUMENT, "invalid unproved table list")
+        }
         return synchronized(stateLock) {
             val key = poolKey(ds, ns, pushedHash)
             val fragment = SchemaFragment(key, pushedHash, columns.toList(), request.routinesList.toList(), request.unprovedTablesList.toList())

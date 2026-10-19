@@ -102,7 +102,7 @@ func TestRunRefusesUnknownLowerCaseTableNames(t *testing.T) {
 				catalog.MysqlLowerCaseTableNames = tc.lctn
 				return catalog, nil
 			}
-			cat, err := runWith(OpenMySQLTarget, db.MySqlDb{}, probe, spi.TargetDb{Host: targetDb.Host, Port: targetDb.Port, Db: targetDb.DB, User: targetDb.User, Password: targetDb.Password})
+			cat, err := runWith(OpenMySQLTarget, db.MySqlDb{}, probe, spi.TargetConfig{Host: targetDb.Host, Port: targetDb.Port, Db: targetDb.DB, User: targetDb.User, Password: targetDb.Password})
 			if err == nil {
 				t.Fatalf("Run pushed a catalog of %d columns, want refused", len(cat.GetCatalog().GetColumns()))
 			}

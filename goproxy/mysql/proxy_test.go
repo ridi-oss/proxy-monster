@@ -317,14 +317,14 @@ func startBrokerListening(t *testing.T, listen spi.Listen, tlsProvider func() (*
 	t.Helper()
 	targetDb := seedTargetDb(t)
 	fake, cpClient := startFakeCP(t)
-	target := spi.TargetDb{
+	config := spi.TargetConfig{
 		Host:     targetDb.Host,
 		Port:     targetDb.Port,
 		Db:       primarySchema,
 		User:     serviceUser,
 		Password: servicePassword,
 	}
-	server := mysql.New(listen, target, cpClient, dbImpl, tlsProvider)
+	server := mysql.New(listen, config, cpClient, dbImpl, tlsProvider)
 	if err := server.Listen(); err != nil {
 		t.Fatalf("mysql.Listen: %v", err)
 	}
@@ -1465,7 +1465,7 @@ func TestLegacyEOFRelayRewriteAndPing(t *testing.T) {
 }
 
 func TestOversizedUnauthenticatedHandshakeIsRejectedWithoutBody(t *testing.T) {
-	server := mysql.New(spi.Listen{}, spi.TargetDb{}, nil, nil, nil)
+	server := mysql.New(spi.Listen{}, spi.TargetConfig{}, nil, nil, nil)
 	if err := server.Listen(); err != nil {
 		t.Fatalf("Listen: %v", err)
 	}

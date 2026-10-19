@@ -55,7 +55,7 @@ func Run(registry spi.Registry) error {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	provider := cfg.Provider
-	targetDb, err := provider.NewDb(spi.TargetDb{
+	targetDb, err := provider.OpenTarget(spi.TargetConfig{
 		Host:     cfg.TargetHost,
 		Port:     cfg.TargetPort,
 		Db:       cfg.TargetDb,

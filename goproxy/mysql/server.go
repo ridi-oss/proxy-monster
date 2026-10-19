@@ -18,7 +18,7 @@ import (
 // graceful drain) plus this protocol's per-connection handler and its target DB/enforcement dependencies.
 type Server struct {
 	*wire.Server
-	targetDb    spi.TargetDb
+	config      spi.TargetConfig
 	client      spi.ControlPlane
 	db          relay.Db
 	tlsProvider func() (*tls.Config, error)
@@ -26,8 +26,8 @@ type Server struct {
 }
 
 // New constructs a MySQL wire broker for one target DB datasource.
-func New(listen spi.Listen, targetDb spi.TargetDb, client spi.ControlPlane, dbImpl relay.Db, tlsProvider func() (*tls.Config, error)) *Server {
-	s := &Server{targetDb: targetDb, client: client, db: dbImpl, tlsProvider: tlsProvider}
+func New(listen spi.Listen, config spi.TargetConfig, client spi.ControlPlane, dbImpl relay.Db, tlsProvider func() (*tls.Config, error)) *Server {
+	s := &Server{config: config, client: client, db: dbImpl, tlsProvider: tlsProvider}
 	s.Server = wire.New(listen, "mysqlproxy", s.handleConn)
 	return s
 }

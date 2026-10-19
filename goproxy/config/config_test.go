@@ -24,8 +24,8 @@ type configTestProvider struct {
 	engine *engines.Engine
 }
 
-func (p configTestProvider) Engine() *engines.Engine          { return p.engine }
-func (configTestProvider) NewDb(spi.TargetDb) (spi.Db, error) { return nil, nil }
+func (p configTestProvider) Engine() *engines.Engine                       { return p.engine }
+func (configTestProvider) OpenTarget(spi.TargetConfig) (spi.Target, error) { return nil, nil }
 
 func testRegistry() spi.Registry {
 	return spi.MustRegistry(

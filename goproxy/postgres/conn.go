@@ -186,9 +186,9 @@ startupComplete:
 	defer func() { _ = authz.Close() }()
 	slog.Info("authenticated postgres client", "client", rawClientConn.RemoteAddr().String(), "principal", identity.Principal, "roles", identity.Roles)
 
-	targetDbConn, parameters, keyData, txStatus, catalog, err := dialTargetDbAuth(context.Background(), s.targetDb)
+	targetDbConn, parameters, keyData, txStatus, catalog, err := dialTargetDbAuth(context.Background(), s.config)
 	if err != nil {
-		slog.Warn("postgres target DB unavailable", "host", s.targetDb.Host, "port", s.targetDb.Port, "error", err)
+		slog.Warn("postgres target DB unavailable", "host", s.config.Host, "port", s.config.Port, "error", err)
 		_ = sendError(client, "FATAL", "08004", "proxy-monster: target DB unavailable", false, 0)
 		return
 	}

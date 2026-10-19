@@ -28,43 +28,43 @@ const tableDetailConnectTimeout = 5 * time.Second
 type sqlProvider struct {
 	engine *engines.Engine
 	db     relay.Db
-	open   func(spi.TargetDb) (*sql.DB, error)
+	open   func(spi.TargetConfig) (*sql.DB, error)
 	probe  introspect.NamespaceProbe
 	// catalog reads the connection's current catalog; MySQL pins "def", Postgres asks the server.
 	catalog    func(context.Context, *sql.Conn) (string, error)
 	readDetail func(*sql.Conn, string, string) (*spi.TableDetail, error)
-	newServer  func(spi.Listen, spi.TargetDb, spi.ControlPlane, relay.Db, func() (*tls.Config, error)) spi.WireServer
-	newSession func(context.Context, spi.TargetDb, relay.Db, *spi.Authorizer, spi.ExecGuard, time.Duration, string) (spi.TargetDbSession, error)
+	newServer  func(spi.Listen, spi.TargetConfig, spi.ControlPlane, relay.Db, func() (*tls.Config, error)) spi.WireServer
+	newSession func(context.Context, spi.TargetConfig, relay.Db, *spi.Authorizer, spi.ExecGuard, time.Duration, string) (spi.Session, error)
 }
 
 func (p sqlProvider) Engine() *engines.Engine { return p.engine }
 
-func (p sqlProvider) NewDb(target spi.TargetDb) (spi.Db, error) {
-	pool, err := p.open(target)
+func (p sqlProvider) OpenTarget(config spi.TargetConfig) (spi.Target, error) {
+	pool, err := p.open(config)
 	if err != nil {
 		return nil, err
 	}
 	// Metadata reads must observe the defaults a new target session would inherit.
 	pool.SetMaxIdleConns(0)
 	advertise, _ := os.LookupEnv("PM_ADVERTISE_ADDR")
-	return &sqlDb{provider: p, target: target, pool: pool, endpoint: strings.TrimSpace(advertise)}, nil
+	return &sqlDb{provider: p, config: config, pool: pool, endpoint: strings.TrimSpace(advertise)}, nil
 }
 
 // sqlDb is one open MySQL or PostgreSQL target: the pool serves introspection and table detail; the wire
 // server and run sessions dial the target themselves with the same TargetDb.
 type sqlDb struct {
 	provider sqlProvider
-	target   spi.TargetDb
+	config   spi.TargetConfig
 	pool     *sql.DB
 	endpoint string
 }
 
-func (d *sqlDb) TargetDb() spi.TargetDb { return d.target }
+func (d *sqlDb) Config() spi.TargetConfig { return d.config }
 
 func (d *sqlDb) ConnectionInfo() *pb.ConnectionInfo { return &pb.ConnectionInfo{Endpoint: d.endpoint} }
 
 func (d *sqlDb) Introspect(ctx context.Context) (*pb.CatalogRequest, error) {
-	return introspect.Run(ctx, d.pool, d.provider.db, d.provider.probe, d.target.Db)
+	return introspect.Run(ctx, d.pool, d.provider.db, d.provider.probe, d.config.Db)
 }
 
 func (d *sqlDb) ReadTableDetail(ctx context.Context, table *enginepb.ObjectRef) (*spi.TableDetail, error) {
@@ -104,11 +104,11 @@ func (d *sqlDb) ReadTableDetail(ctx context.Context, table *enginepb.ObjectRef) 
 }
 
 func (d *sqlDb) NewWireServer(listen spi.Listen, client spi.ControlPlane, tlsProvider func() (*tls.Config, error)) spi.WireServer {
-	return d.provider.newServer(listen, d.target, client, d.provider.db, tlsProvider)
+	return d.provider.newServer(listen, d.config, client, d.provider.db, tlsProvider)
 }
 
-func (d *sqlDb) NewRunSession(ctx context.Context, authz *spi.Authorizer, guard spi.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.TargetDbSession, error) {
-	return d.provider.newSession(ctx, d.target, d.provider.db, authz, guard, readTimeout, defaultSchema)
+func (d *sqlDb) NewRunSession(ctx context.Context, authz *spi.Authorizer, guard spi.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.Session, error) {
+	return d.provider.newSession(ctx, d.config, d.provider.db, authz, guard, readTimeout, defaultSchema)
 }
 
 func (d *sqlDb) Close() error { return d.pool.Close() }
@@ -122,11 +122,11 @@ var registry = spi.MustRegistry(
 		probe:      introspect.ProbeMySQLNamespace,
 		catalog:    func(context.Context, *sql.Conn) (string, error) { return "def", nil },
 		readDetail: readMySQLTableDetail,
-		newServer: func(listen spi.Listen, target spi.TargetDb, client spi.ControlPlane, db relay.Db, tlsProvider func() (*tls.Config, error)) spi.WireServer {
-			return mysql.New(listen, target, client, db, tlsProvider)
+		newServer: func(listen spi.Listen, config spi.TargetConfig, client spi.ControlPlane, db relay.Db, tlsProvider func() (*tls.Config, error)) spi.WireServer {
+			return mysql.New(listen, config, client, db, tlsProvider)
 		},
-		newSession: func(ctx context.Context, target spi.TargetDb, db relay.Db, authz *spi.Authorizer, guard spi.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.TargetDbSession, error) {
-			return mysql.NewRunSession(ctx, target, db, authz, guard, readTimeout, defaultSchema)
+		newSession: func(ctx context.Context, config spi.TargetConfig, db relay.Db, authz *spi.Authorizer, guard spi.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.Session, error) {
+			return mysql.NewRunSession(ctx, config, db, authz, guard, readTimeout, defaultSchema)
 		},
 	},
 	sqlProvider{
@@ -136,11 +136,11 @@ var registry = spi.MustRegistry(
 		probe:      introspect.ProbePostgresNamespace,
 		catalog:    introspect.ReadPostgresCatalog,
 		readDetail: readPostgresTableDetail,
-		newServer: func(listen spi.Listen, target spi.TargetDb, client spi.ControlPlane, db relay.Db, tlsProvider func() (*tls.Config, error)) spi.WireServer {
-			return postgres.New(listen, target, client, db, tlsProvider)
+		newServer: func(listen spi.Listen, config spi.TargetConfig, client spi.ControlPlane, db relay.Db, tlsProvider func() (*tls.Config, error)) spi.WireServer {
+			return postgres.New(listen, config, client, db, tlsProvider)
 		},
-		newSession: func(ctx context.Context, target spi.TargetDb, db relay.Db, authz *spi.Authorizer, guard spi.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.TargetDbSession, error) {
-			return postgres.NewRunSession(ctx, target, db, authz, guard, readTimeout, defaultSchema)
+		newSession: func(ctx context.Context, config spi.TargetConfig, db relay.Db, authz *spi.Authorizer, guard spi.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.Session, error) {
+			return postgres.NewRunSession(ctx, config, db, authz, guard, readTimeout, defaultSchema)
 		},
 	},
 )
@@ -152,10 +152,10 @@ func Registry() spi.Registry { return registry }
 func For(e *engines.Engine) (spi.Provider, error) { return registry.For(e) }
 
 var (
-	_ spi.Provider        = sqlProvider{}
-	_ spi.Db              = (*sqlDb)(nil)
-	_ spi.TargetDbSession = (*mysql.RunSession)(nil)
-	_ spi.TargetDbSession = (*postgres.RunSession)(nil)
-	_ spi.WireServer      = (*mysql.Server)(nil)
-	_ spi.WireServer      = (*postgres.Server)(nil)
+	_ spi.Provider   = sqlProvider{}
+	_ spi.Target     = (*sqlDb)(nil)
+	_ spi.Session    = (*mysql.RunSession)(nil)
+	_ spi.Session    = (*postgres.RunSession)(nil)
+	_ spi.WireServer = (*mysql.Server)(nil)
+	_ spi.WireServer = (*postgres.Server)(nil)
 )

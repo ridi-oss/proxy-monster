@@ -50,13 +50,13 @@ FROM information_schema.columns
 ORDER BY table_schema, table_name, ordinal_position`
 
 // OpenMySQLTarget opens a database/sql handle to a MySQL target (5s connect / 30s socket).
-func OpenMySQLTarget(target spi.TargetDb) (*sql.DB, error) {
+func OpenMySQLTarget(config spi.TargetConfig) (*sql.DB, error) {
 	cfg := mysqldriver.NewConfig()
-	cfg.User = target.User
-	cfg.Passwd = target.Password
+	cfg.User = config.User
+	cfg.Passwd = config.Password
 	cfg.Net = "tcp"
-	cfg.Addr = fmt.Sprintf("%s:%d", target.Host, target.Port)
-	cfg.DBName = target.Db
+	cfg.Addr = fmt.Sprintf("%s:%d", config.Host, config.Port)
+	cfg.DBName = config.Db
 	cfg.Timeout = connectTimeout
 	cfg.ReadTimeout = queryTimeout
 	cfg.WriteTimeout = queryTimeout
@@ -64,8 +64,8 @@ func OpenMySQLTarget(target spi.TargetDb) (*sql.DB, error) {
 	// allowPublicKeyRetrieval equivalent is needed. zeroDateTimeBehavior/connectionTimeZone are moot
 	// since every read here is a string or int (no parseTime).
 	cfg.TLSConfig = "false"
-	if target.TLS != nil {
-		cfg.TLS = target.TLS.Clone()
+	if config.TLS != nil {
+		cfg.TLS = config.TLS.Clone()
 	}
 	// Hand the *Config straight to a connector rather than FormatDSN()->sql.Open(): FormatDSN does not
 	// escape the username, so a service account like "svc:reader" would round-trip back through the DSN
@@ -79,16 +79,16 @@ func OpenMySQLTarget(target spi.TargetDb) (*sql.DB, error) {
 }
 
 // OpenPostgresTarget opens a database/sql handle to a Postgres target.
-func OpenPostgresTarget(target spi.TargetDb) (*sql.DB, error) {
+func OpenPostgresTarget(config spi.TargetConfig) (*sql.DB, error) {
 	// pgx has no socket-timeout DSN param; the per-query 30s context below carries that intent.
 	u := url.URL{
 		Scheme:   "postgres",
-		User:     url.UserPassword(target.User, target.Password),
-		Host:     fmt.Sprintf("%s:%d", target.Host, target.Port),
-		Path:     "/" + target.Db,
+		User:     url.UserPassword(config.User, config.Password),
+		Host:     fmt.Sprintf("%s:%d", config.Host, config.Port),
+		Path:     "/" + config.Db,
 		RawQuery: "connect_timeout=5&sslmode=disable",
 	}
-	return sql.OpenDB(pgConnector{dsn: u.String(), tls: target.TLS}), nil
+	return sql.OpenDB(pgConnector{dsn: u.String(), tls: config.TLS}), nil
 }
 
 // pgConnector parses at connect time, as sql.Open does, so an unusable target fails its first connect, not the open.

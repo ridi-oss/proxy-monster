@@ -34,14 +34,14 @@ func TestRegistryProviderContracts(t *testing.T) {
 			if provider.Engine() != test.engine {
 				t.Errorf("Engine() = %s, want %s", provider.Engine().WireName, test.engine.WireName)
 			}
-			target := spi.TargetDb{Host: "target", Port: 1234, Db: "app", User: "service", Password: "secret"}
-			targetDb, err := provider.NewDb(target)
+			config := spi.TargetConfig{Host: "target", Port: 1234, Db: "app", User: "service", Password: "secret"}
+			targetDb, err := provider.OpenTarget(config)
 			if err != nil {
-				t.Fatalf("NewDb: %v", err)
+				t.Fatalf("OpenTarget: %v", err)
 			}
 			defer targetDb.Close()
-			if targetDb.TargetDb() != target {
-				t.Fatalf("TargetDb() = %+v, want %+v", targetDb.TargetDb(), target)
+			if targetDb.Config() != config {
+				t.Fatalf("Config() = %+v, want %+v", targetDb.Config(), config)
 			}
 			server := targetDb.NewWireServer(spi.Listen{}, nil, nil)
 			if reflect.TypeOf(server).String() != test.server {
@@ -83,7 +83,7 @@ func TestRegistryIntrospectDelegates(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			provider, _ := dialects.For(test.engine)
-			targetDb, err := provider.NewDb(spi.TargetDb{Host: test.target.Host, Port: test.target.Port, Db: test.target.DB, User: test.target.User, Password: test.target.Password})
+			targetDb, err := provider.OpenTarget(spi.TargetConfig{Host: test.target.Host, Port: test.target.Port, Db: test.target.DB, User: test.target.User, Password: test.target.Password})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -103,7 +103,7 @@ func TestNewWireServerStartsExpectedProtocol(t *testing.T) {
 	for _, e := range []*engines.Engine{engines.MySQL, engines.Postgres} {
 		t.Run(e.WireName, func(t *testing.T) {
 			provider, _ := dialects.For(e)
-			targetDb, err := provider.NewDb(spi.TargetDb{})
+			targetDb, err := provider.OpenTarget(spi.TargetConfig{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -170,7 +170,7 @@ func TestCatalogRefreshObservesNewConnectionDefaults(t *testing.T) {
 	if _, err := seed.Exec("ALTER ROLE " + role + " SET search_path TO public"); err != nil {
 		t.Fatal(err)
 	}
-	target := openDb(t, engines.Postgres, spi.TargetDb{Host: database.Host, Port: database.Port, Db: database.DB, User: role, Password: "test-secret"})
+	target := openDb(t, engines.Postgres, spi.TargetConfig{Host: database.Host, Port: database.Port, Db: database.DB, User: role, Password: "test-secret"})
 	first, err := target.Introspect(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -190,13 +190,13 @@ func TestCatalogRefreshObservesNewConnectionDefaults(t *testing.T) {
 	}
 }
 
-func openDb(t *testing.T, e *engines.Engine, target spi.TargetDb) spi.Db {
+func openDb(t *testing.T, e *engines.Engine, config spi.TargetConfig) spi.Target {
 	t.Helper()
 	provider, err := dialects.For(e)
 	if err != nil {
 		t.Fatal(err)
 	}
-	targetDb, err := provider.NewDb(target)
+	targetDb, err := provider.OpenTarget(config)
 	if err != nil {
 		t.Fatal(err)
 	}

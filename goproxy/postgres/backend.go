@@ -30,14 +30,14 @@ const targetDbHandshakeTimeout = 10 * time.Second
 // (deadline-bounded) auth exchange runs, an AfterFunc closes the conn on cancel so a blocked read unwinds at
 // once. On the run path ctx is the target-DB open context, so a run the control-plane already closed does not
 // finish a target-DB handshake nobody is waiting for; the wire path passes a background ctx (never cancelled).
-func dialTargetDbAuth(ctx context.Context, target spi.TargetDb) (net.Conn, []pgproto3.ParameterStatus, pgproto3.BackendKeyData, byte, string, error) {
-	return dialTargetDbAuthParams(ctx, target, nil)
+func dialTargetDbAuth(ctx context.Context, config spi.TargetConfig) (net.Conn, []pgproto3.ParameterStatus, pgproto3.BackendKeyData, byte, string, error) {
+	return dialTargetDbAuthParams(ctx, config, nil)
 }
 
 // dialTargetDbAuthParams adds extra startup parameters; the server applies them as session settings.
-func dialTargetDbAuthParams(ctx context.Context, target spi.TargetDb, extra map[string]string) (net.Conn, []pgproto3.ParameterStatus, pgproto3.BackendKeyData, byte, string, error) {
+func dialTargetDbAuthParams(ctx context.Context, config spi.TargetConfig, extra map[string]string) (net.Conn, []pgproto3.ParameterStatus, pgproto3.BackendKeyData, byte, string, error) {
 	dialer := net.Dialer{Timeout: targetDbHandshakeTimeout}
-	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(target.Host, strconv.Itoa(target.Port)))
+	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(config.Host, strconv.Itoa(config.Port)))
 	if err != nil {
 		return nil, nil, pgproto3.BackendKeyData{}, 0, "", err
 	}
@@ -52,7 +52,7 @@ func dialTargetDbAuthParams(ctx context.Context, target spi.TargetDb, extra map[
 	if err := conn.SetDeadline(time.Now().Add(targetDbHandshakeTimeout)); err != nil {
 		return nil, nil, pgproto3.BackendKeyData{}, 0, "", fmt.Errorf("set target-DB auth deadline: %w", err)
 	}
-	secured, err := startTargetDbTLS(ctx, conn, target.TLS)
+	secured, err := startTargetDbTLS(ctx, conn, config.TLS)
 	if err != nil {
 		return nil, nil, pgproto3.BackendKeyData{}, 0, "", err
 	}
@@ -61,8 +61,8 @@ func dialTargetDbAuthParams(ctx context.Context, target spi.TargetDb, extra map[
 	wireConn := &switchConn{Conn: conn, strictReads: true}
 	frontend := pgproto3.NewFrontend(wireConn, wireConn)
 	startup := map[string]string{
-		"user":            target.User,
-		"database":        target.Db,
+		"user":            config.User,
+		"database":        config.Db,
 		"client_encoding": "UTF8",
 	}
 	for key, value := range extra {
@@ -93,13 +93,13 @@ func dialTargetDbAuthParams(ctx context.Context, target spi.TargetDb, extra map[
 			authenticated = true
 
 		case *pgproto3.AuthenticationCleartextPassword:
-			frontend.Send(&pgproto3.PasswordMessage{Password: target.Password})
+			frontend.Send(&pgproto3.PasswordMessage{Password: config.Password})
 			if err := frontend.Flush(); err != nil {
 				return nil, nil, pgproto3.BackendKeyData{}, 0, "", fmt.Errorf("write target DB cleartext password: %w", err)
 			}
 
 		case *pgproto3.AuthenticationMD5Password:
-			frontend.Send(&pgproto3.PasswordMessage{Password: md5Password(target.User, target.Password, message.Salt)})
+			frontend.Send(&pgproto3.PasswordMessage{Password: md5Password(config.User, config.Password, message.Salt)})
 			if err := frontend.Flush(); err != nil {
 				return nil, nil, pgproto3.BackendKeyData{}, 0, "", fmt.Errorf("write target DB md5 password: %w", err)
 			}
@@ -108,7 +108,7 @@ func dialTargetDbAuthParams(ctx context.Context, target spi.TargetDb, extra map[
 			if scram != nil || !containsString(message.AuthMechanisms, "SCRAM-SHA-256") {
 				return nil, nil, pgproto3.BackendKeyData{}, 0, "", fmt.Errorf("target DB offered no usable SCRAM-SHA-256 mechanism: %v", message.AuthMechanisms)
 			}
-			scram, err = newScramClient(target.Password)
+			scram, err = newScramClient(config.Password)
 			if err != nil {
 				return nil, nil, pgproto3.BackendKeyData{}, 0, "", fmt.Errorf("create SCRAM client: %w", err)
 			}
@@ -413,8 +413,8 @@ func (s *Server) quietRefetcher(sess *session) *relay.Refetcher {
 }
 
 func (s *Server) forwardCancelRequest(message *pgproto3.CancelRequest) {
-	if err := sendCancelRequest(s.targetDb, message.ProcessID, message.SecretKey); err != nil {
-		slog.Warn("postgres CancelRequest forward failed", "host", s.targetDb.Host, "port", s.targetDb.Port, "error", err)
+	if err := sendCancelRequest(s.config, message.ProcessID, message.SecretKey); err != nil {
+		slog.Warn("postgres CancelRequest forward failed", "host", s.config.Host, "port", s.config.Port, "error", err)
 	}
 }
 
@@ -445,13 +445,13 @@ func startTargetDbTLS(ctx context.Context, conn net.Conn, config *tls.Config) (n
 	return tlsConn, nil
 }
 
-func sendCancelRequest(target spi.TargetDb, processID uint32, secretKey []byte) error {
+func sendCancelRequest(config spi.TargetConfig, processID uint32, secretKey []byte) error {
 	request := &pgproto3.CancelRequest{ProcessID: processID, SecretKey: secretKey}
 	encoded, err := request.Encode(nil)
 	if err != nil {
 		return fmt.Errorf("encode CancelRequest: %w", err)
 	}
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(target.Host, strconv.Itoa(target.Port)), targetDbHandshakeTimeout)
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(config.Host, strconv.Itoa(config.Port)), targetDbHandshakeTimeout)
 	if err != nil {
 		return fmt.Errorf("dial target DB for cancel: %w", err)
 	}
@@ -459,7 +459,7 @@ func sendCancelRequest(target spi.TargetDb, processID uint32, secretKey []byte) 
 	if err := conn.SetDeadline(time.Now().Add(targetDbHandshakeTimeout)); err != nil {
 		return fmt.Errorf("set cancel handshake deadline: %w", err)
 	}
-	secured, err := startTargetDbTLS(context.Background(), conn, target.TLS)
+	secured, err := startTargetDbTLS(context.Background(), conn, config.TLS)
 	if err != nil {
 		return err
 	}

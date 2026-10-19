@@ -18,17 +18,17 @@ import (
 type RunSession struct {
 	conn   net.Conn
 	connID uint32
-	target spi.TargetDb
+	config spi.TargetConfig
 	authz  *spi.Authorizer
 	ref    *relay.Refetcher
 	guard  spi.ExecGuard
 }
 
-func NewRunSession(ctx context.Context, target spi.TargetDb, db relay.Db, authz *spi.Authorizer, guard spi.ExecGuard, readTimeout time.Duration, defaultSchema string) (*RunSession, error) {
+func NewRunSession(ctx context.Context, config spi.TargetConfig, db relay.Db, authz *spi.Authorizer, guard spi.ExecGuard, readTimeout time.Duration, defaultSchema string) (*RunSession, error) {
 	if defaultSchema != "" {
-		target.Db = defaultSchema
+		config.Db = defaultSchema
 	}
-	conn, greeting, err := dialTargetDbAuthID(ctx, target, true)
+	conn, greeting, err := dialTargetDbAuthID(ctx, config, true)
 	if err != nil {
 		return nil, err
 	}
@@ -41,7 +41,7 @@ func NewRunSession(ctx context.Context, target spi.TargetDb, db relay.Db, authz 
 	s := &RunSession{
 		conn:   conn,
 		connID: greeting.ConnectionID,
-		target: target,
+		config: config,
 		authz:  authz,
 		guard:  guard,
 	}
@@ -138,7 +138,7 @@ func (s *RunSession) Namespace() (string, []string, error) {
 }
 
 func (s *RunSession) Cancel() error {
-	conn, _, err := dialTargetDbAuthID(context.Background(), s.target, true)
+	conn, _, err := dialTargetDbAuthID(context.Background(), s.config, true)
 	if err != nil {
 		_ = s.conn.Close()
 		return err

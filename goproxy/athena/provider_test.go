@@ -53,7 +53,7 @@ func testTargetIn(t *testing.T, database string, handler http.HandlerFunc) *targ
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := targetConfig{region: "us-east-1", workgroup: "primary", catalog: "AwsDataCatalog", database: database, contextPath: ":memory:", target: spi.TargetDb{Db: database}}
+	cfg := targetConfig{region: "us-east-1", workgroup: "primary", catalog: "AwsDataCatalog", database: database, contextPath: ":memory:"}
 	result, err := newTarget(context.Background(), cfg, aws.Config{
 		Region: cfg.region, Credentials: credentials.NewStaticCredentialsProvider("test-key", "test-secret", "test-session"),
 	}, endpointTransport{endpoint: endpoint, transport: server.Client().Transport})
@@ -80,7 +80,7 @@ func TestProviderConfiguration(t *testing.T) {
 		{"host port advertised", map[string]string{"AWS_REGION": "us-east-1", "PM_ADVERTISE_ADDR": "proxy.example:6443"}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := configure(func(key string) (string, bool) { value, ok := tc.env[key]; return value, ok }, spi.TargetDb{Db: "example"})
+			_, err := configure(func(key string) (string, bool) { value, ok := tc.env[key]; return value, ok }, spi.TargetConfig{Db: "example"})
 			if (err == nil) != tc.valid {
 				t.Fatalf("configure error = %v; valid = %v", err, tc.valid)
 			}

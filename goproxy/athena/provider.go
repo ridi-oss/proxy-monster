@@ -13,15 +13,15 @@ import (
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
-// Provider registers the Athena engine under PM_ENGINE=athena. NewDb reads the target scope from the
+// Provider registers the Athena engine under PM_ENGINE=athena. OpenTarget reads the target scope from the
 // environment (PM_TARGET_DB is the default database) and pins the AWS identity; the Db then serves the
 // Athena JSON API to clients and the editor run path.
 type Provider struct{}
 
 func (Provider) Engine() *engines.Engine { return engines.Athena }
 
-func (Provider) NewDb(target spi.TargetDb) (spi.Db, error) {
-	cfg, err := configure(os.LookupEnv, target)
+func (Provider) OpenTarget(config spi.TargetConfig) (spi.Target, error) {
+	cfg, err := configure(os.LookupEnv, config)
 	if err != nil {
 		return nil, err
 	}
@@ -48,4 +48,4 @@ func (t *target) NewWireServer(listen spi.Listen, client spi.ControlPlane, tlsPr
 }
 
 var _ spi.Provider = Provider{}
-var _ spi.Db = (*target)(nil)
+var _ spi.Target = (*target)(nil)

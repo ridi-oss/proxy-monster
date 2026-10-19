@@ -16,8 +16,8 @@ import (
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 )
 
-// TargetDb is the per-datasource target-DB connection details (the service-account broker target).
-type TargetDb struct {
+// TargetConfig is the per-datasource target-DB connection details (the service-account broker target).
+type TargetConfig struct {
 	Host     string
 	Port     int
 	Db       string
@@ -97,8 +97,8 @@ type Listen struct {
 	TrustedProxies    []netip.Prefix
 }
 
-// TargetDbSession is one dedicated run target-DB session.
-type TargetDbSession interface {
+// Session is one dedicated run session on the target DB.
+type Session interface {
 	ServeStatement(sql string, maxRows int) (StatementResult, error)
 	// OnOpen runs the on-open catalog fetch. ctx is the target-DB open context: if the control-plane closes the
 	// run (or the proxy drains) while the fetch is in flight, ctx is cancelled and the in-flight target-DB read
@@ -192,19 +192,19 @@ type Classification struct {
 	MaskFnName *string  `json:"maskFnName"`
 }
 
-// Provider is one engine's registration: its identity and how to open a Db on a target. The engine's own
+// Provider is one engine's registration: its identity and how to open a Target. The engine's own
 // facts (default ports, placeholder, schema resolution) live on *engines.Engine; a new engine is one Provider
 // implementation plus one registry row.
 type Provider interface {
 	Engine() *engines.Engine
-	NewDb(target TargetDb) (Db, error)
+	OpenTarget(config TargetConfig) (Target, error)
 }
 
-// Db is one open target database. It owns its connection pool and answers everything the proxy core asks of
+// Target is one open target database. It owns its connection pool and answers everything the proxy core asks of
 // a target: the catalog scan, a table's detail, the wire server, and a dedicated run session. Boot and the
-// Runner hold a Db and never see a connection string or a *sql.DB.
-type Db interface {
-	TargetDb() TargetDb
+// Runner hold a Target and never see a connection string or a *sql.DB.
+type Target interface {
+	Config() TargetConfig
 	// ConnectionInfo is the nonsecret client-facing metadata published at Register: an endpoint plus the
 	// properties the engine allows. A wire dialect publishes only the advertised address.
 	ConnectionInfo() *pb.ConnectionInfo
@@ -214,7 +214,7 @@ type Db interface {
 	// NewRunSession dials and authenticates the target DB. ctx is the target-DB open context: cancelling it aborts
 	// an in-flight dial/auth so a run the control-plane already closed does not finish a target-DB handshake.
 	// A non-empty defaultSchema opens the session in that schema; empty keeps the target's default.
-	NewRunSession(ctx context.Context, authz *Authorizer, guard ExecGuard, readTimeout time.Duration, defaultSchema string) (TargetDbSession, error)
+	NewRunSession(ctx context.Context, authz *Authorizer, guard ExecGuard, readTimeout time.Duration, defaultSchema string) (Session, error)
 	Close() error
 }
 

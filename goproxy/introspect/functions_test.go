@@ -18,8 +18,8 @@ type routinesQueryDb struct {
 
 func (d routinesQueryDb) RoutinesSQL() string { return d.query }
 
-func runRoutinesQuery(query string, target spi.TargetDb) (*pb.CatalogRequest, error) {
-	return runWith(OpenMySQLTarget, routinesQueryDb{query: query}, ProbeMySQLNamespace, target)
+func runRoutinesQuery(query string, config spi.TargetConfig) (*pb.CatalogRequest, error) {
+	return runWith(OpenMySQLTarget, routinesQueryDb{query: query}, ProbeMySQLNamespace, config)
 }
 
 func TestRoutinesObservation(t *testing.T) {
@@ -34,9 +34,9 @@ func TestRoutinesObservation(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	target := spi.TargetDb{Host: targetDb.Host, Port: targetDb.Port, Db: schema, User: targetDb.User, Password: targetDb.Password}
+	config := spi.TargetConfig{Host: targetDb.Host, Port: targetDb.Port, Db: schema, User: targetDb.User, Password: targetDb.Password}
 	t.Run("routines fold and group by schema", func(t *testing.T) {
-		catalog, err := runRoutinesQuery("SELECT 'app', 'LOOKUP' UNION ALL SELECT 'app', 'lookup' UNION ALL SELECT 'mysql', 'PLUGIN_FN'", target)
+		catalog, err := runRoutinesQuery("SELECT 'app', 'LOOKUP' UNION ALL SELECT 'app', 'lookup' UNION ALL SELECT 'mysql', 'PLUGIN_FN'", config)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -57,7 +57,7 @@ func TestRoutinesObservation(t *testing.T) {
 		}
 	})
 	t.Run("an empty observation is an empty list", func(t *testing.T) {
-		catalog, err := runRoutinesQuery("SELECT 'app', 'lookup' WHERE FALSE", target)
+		catalog, err := runRoutinesQuery("SELECT 'app', 'lookup' WHERE FALSE", config)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -70,7 +70,7 @@ func TestRoutinesObservation(t *testing.T) {
 		"column count": "SELECT 'one'",
 	} {
 		t.Run(name+" failure fails the whole catalog", func(t *testing.T) {
-			if _, err := runRoutinesQuery(query, target); err == nil {
+			if _, err := runRoutinesQuery(query, config); err == nil {
 				t.Fatal("Run succeeded, want a routines failure")
 			}
 		})

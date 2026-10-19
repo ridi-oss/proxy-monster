@@ -34,8 +34,8 @@ func (r *Runner) TryRegisterAndPushCatalog(cfg *config.Config, engine *engines.E
 // reconnect exit; all other failures leave the proxy running fail-closed until the next resync can recover.
 func (r *Runner) RegisterAndPushCatalog(cfg *config.Config, engine *engines.Engine, certChain func() *string) error {
 	for attempt := 0; attempt < bootRegisterAttempts; attempt++ {
-		target := r.target.TargetDb()
-		err := r.client.Register(engine.Proto, target.Host, target.Port, target.Db, cfg.DatasourceTags, cfg.AdvertiseAddr, certChain(), cfg.TLSEnabled(), r.target.ConnectionInfo(), &cfg.DatasourceDescription)
+		targetConfig := r.target.Config()
+		err := r.client.Register(engine.Proto, targetConfig.Host, targetConfig.Port, targetConfig.Db, cfg.DatasourceTags, cfg.AdvertiseAddr, certChain(), cfg.TLSEnabled(), r.target.ConnectionInfo(), &cfg.DatasourceDescription)
 		if errors.Is(err, cp.ErrIncompatibleControlPlane) {
 			return err
 		}

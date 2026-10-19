@@ -17,7 +17,7 @@ const bootRegisterAttempts = 3
 const maxResyncConcurrency = 1
 
 type datasourceReconciler struct {
-	configClient  *cp.Client
+	client        *cp.Client
 	cfg           *config.Config
 	targetDb      spi.Db
 	engine        *engines.Engine
@@ -31,9 +31,9 @@ type refreshBatch struct {
 	ok   bool
 }
 
-func newDatasourceReconciler(configClient *cp.Client, cfg *config.Config, targetDb spi.Db, engine *engines.Engine, certChain func() *string, resyncConcurrency int) *datasourceReconciler {
+func newDatasourceReconciler(client *cp.Client, cfg *config.Config, targetDb spi.Db, engine *engines.Engine, certChain func() *string, resyncConcurrency int) *datasourceReconciler {
 	return &datasourceReconciler{
-		configClient:  configClient,
+		client:        client,
 		cfg:           cfg,
 		targetDb:      targetDb,
 		engine:        engine,
@@ -56,7 +56,7 @@ func (d *datasourceReconciler) tryRegisterAndPushCatalog() error {
 func (d *datasourceReconciler) registerAndPushCatalog() error {
 	for attempt := 0; attempt < bootRegisterAttempts; attempt++ {
 		target := d.targetDb.TargetDb()
-		err := d.configClient.Register(d.engine.Proto, target.Host, target.Port, target.Db, d.cfg.DatasourceTags, d.cfg.AdvertiseAddr, d.certChain(), d.cfg.TLSEnabled(), d.targetDb.ConnectionInfo(), &d.cfg.DatasourceDescription)
+		err := d.client.Register(d.engine.Proto, target.Host, target.Port, target.Db, d.cfg.DatasourceTags, d.cfg.AdvertiseAddr, d.certChain(), d.cfg.TLSEnabled(), d.targetDb.ConnectionInfo(), &d.cfg.DatasourceDescription)
 		if errors.Is(err, cp.ErrIncompatibleControlPlane) {
 			return err
 		}
@@ -83,7 +83,7 @@ func (d *datasourceReconciler) refreshCatalog() bool {
 func (d *datasourceReconciler) refreshCatalogNow() bool {
 	catalog, err := d.targetDb.Introspect(context.Background())
 	if err == nil {
-		err = d.configClient.PushCatalog(catalog)
+		err = d.client.PushCatalog(catalog)
 	}
 
 	if err != nil {

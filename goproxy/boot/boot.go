@@ -28,7 +28,7 @@ const ambientRefreshInterval = 12 * time.Minute
 const drainTimeout = 10 * time.Second
 
 // runDrainTimeout bounds how long shutdown waits for an in-flight editor/approval query to finish before
-// closing the control-plane clients its runExec stream rides — the run-stream analogue of drainTimeout.
+// closing the control-plane client its runExec stream rides — the run-stream analogue of drainTimeout.
 const runDrainTimeout = 10 * time.Second
 
 // Run is the dialect-neutral boot consumer. The executable composition root injects the provider registry;
@@ -45,16 +45,11 @@ func Run(registry spi.Registry) error {
 		return err
 	}
 
-	enforcementClient, err := cp.New(cfg.ControlPlaneGrpcTarget, cfg.SecretToken, cfg.DatasourceName)
+	client, err := cp.New(cfg.ControlPlaneGrpcTarget, cfg.SecretToken, cfg.DatasourceName)
 	if err != nil {
-		return fmt.Errorf("failed to create enforcement control-plane client: %w", err)
+		return fmt.Errorf("failed to create control-plane client: %w", err)
 	}
-	defer enforcementClient.Close()
-	configClient, err := cp.New(cfg.ControlPlaneGrpcTarget, cfg.SecretToken, cfg.DatasourceName)
-	if err != nil {
-		return fmt.Errorf("failed to create config control-plane client: %w", err)
-	}
-	defer configClient.Close()
+	defer client.Close()
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -136,7 +131,7 @@ func Run(registry spi.Registry) error {
 	}
 
 	reconciler := newDatasourceReconciler(
-		configClient,
+		client,
 		cfg,
 		targetDb,
 		provider.Engine(),
@@ -160,7 +155,7 @@ func Run(registry spi.Registry) error {
 	}
 	go func() {
 		defer close(eventsDone)
-		err := configClient.RunEventsLoop(
+		err := client.RunEventsLoop(
 			eventsCtx,
 			func() {
 				// A re-register (reconnect) that finds a now-incompatible control-plane is equally fatal:
@@ -175,11 +170,11 @@ func Run(registry spi.Registry) error {
 				runs.Add()
 				go func() {
 					defer runs.Done()
-					run.NewRunner(enforcementClient, targetDb, cfg.QueryTimeout).Run(open, runs.Signal())
+					run.NewRunner(client, targetDb, cfg.QueryTimeout).Run(open, runs.Signal())
 				}()
 			},
 			func(sessionID string, table *enginepb.ObjectRef) {
-				go run.NewTableDetailRunner(configClient, targetDb).Run(sessionID, table)
+				go run.NewTableDetailRunner(client, targetDb).Run(sessionID, table)
 			},
 		)
 		// A version rejection on the events stream is fatal even when a resync Register races to a still-
@@ -201,7 +196,7 @@ func Run(registry spi.Registry) error {
 		}
 	}()
 
-	server := targetDb.NewWireServer(cfg.Listen(), enforcementClient, tlsProvider)
+	server := targetDb.NewWireServer(cfg.Listen(), client, tlsProvider)
 	slog.Info("starting proxy-monster data plane", "engine", cfg.EngineName, "control_plane", cfg.ControlPlaneGrpcTarget)
 
 	serveErr := make(chan error, 1)
@@ -215,7 +210,7 @@ func Run(registry spi.Registry) error {
 	}
 
 	// On SIGTERM (a rolling redeploy), drain gracefully: stop accepting, let in-flight statements finish,
-	// send idle clients a protocol-level shutdown notice, then close the control-plane clients and exit.
+	// send idle clients a protocol-level shutdown notice, then close the control-plane client and exit.
 	// The replacement task is already fronted by the NLB, so reconnects land there.
 	slog.Info("shutting down, draining client connections", "timeout", drainTimeout)
 	gracefulDrain(runs, eventsCancel, eventsDone, server.Drain)
@@ -226,8 +221,7 @@ func Run(registry spi.Registry) error {
 	if serveExitErr != nil {
 		slog.Error("data plane serve error during shutdown", "error", serveExitErr)
 	}
-	_ = enforcementClient.Close()
-	_ = configClient.Close()
+	_ = client.Close()
 	if serveExitErr != nil {
 		os.Exit(1)
 	}
@@ -245,7 +239,7 @@ func Run(registry spi.Registry) error {
 // counted out, and the client close would then strand it on the control-plane's dial timeout. That wait is
 // unbounded on purpose: a loop that never returns after its context is cancelled is a wedged process, left to
 // the stop timeout's SIGKILL like any other. Both drains are bounded, so the caller can close the
-// control-plane clients those run streams ride without cutting one. Split from Run so this ordering is
+// control-plane client those run streams ride without cutting one. Split from Run so this ordering is
 // unit-testable.
 func gracefulDrain(
 	runs *drain.Tracker,

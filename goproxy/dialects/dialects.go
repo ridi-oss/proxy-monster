@@ -71,7 +71,7 @@ func (d *sqlDb) ReadTableDetail(ctx context.Context, table *enginepb.ObjectRef) 
 	if table == nil || table.Schema == "" || table.Table == "" {
 		return nil, fmt.Errorf("table selector is incomplete")
 	}
-	connectCtx, cancel := context.WithTimeout(ctx, tableDetailConnectTimeout+tableDetailQueryTimeout)
+	connectCtx, cancel := context.WithTimeout(ctx, tableDetailConnectTimeout+sqldb.DetailQueryTimeout)
 	defer cancel()
 	conn, err := d.pool.Conn(connectCtx)
 	if err != nil {

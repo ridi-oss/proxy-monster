@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
+
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
@@ -20,7 +22,7 @@ type RunSession struct {
 	connID uint32
 	config spi.TargetConfig
 	authz  *spi.Authorizer
-	ref    *relay.Refetcher
+	ref    *sqldb.Refetcher
 	guard  spi.ExecGuard
 }
 
@@ -45,7 +47,7 @@ func NewRunSession(ctx context.Context, config spi.TargetConfig, db relay.Db, au
 		authz:  authz,
 		guard:  guard,
 	}
-	s.ref = relay.NewRefetcher(db, authz.ConnectionID(), generation, func(sql string, expectedColumns int) ([][]*string, error) {
+	s.ref = sqldb.NewRefetcher(db, authz.ConnectionID(), generation, func(sql string, expectedColumns int) ([][]*string, error) {
 		return runInternalQuery(s.conn, true, sql, expectedColumns)
 	}, authz.Client().PushSchemaFragment)
 	s.ref.Catalog = "def"

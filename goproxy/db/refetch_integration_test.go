@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
+
 	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
@@ -436,7 +438,7 @@ func runRefetchIntegration(t *testing.T, adapter relay.Db, conn *sql.Conn, catal
 	connectionID := []byte("refetch-test-connection")
 	const generation = uint64(41)
 	var pushes []*pb.SchemaFragmentPush
-	refetcher := relay.Refetcher{
+	refetcher := sqldb.Refetcher{
 		Catalog:           catalog,
 		Db:                adapter,
 		ConnectionID:      connectionID,

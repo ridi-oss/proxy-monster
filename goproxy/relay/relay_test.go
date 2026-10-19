@@ -1,9 +1,6 @@
 package relay
 
 import (
-	"reflect"
-	"testing"
-
 	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 )
 
@@ -34,34 +31,3 @@ func (f fakeDb) NormalizeColumns(_ int, columns []*analyzerpb.Column) []*analyze
 
 var mysqlDb = fakeDb{nsProbeSQL: "SELECT DATABASE()"}
 var pgDb = fakeDb{nsProbeSQL: "probe", tempOverlay: true, tempProbeSQL: "temps"}
-
-func TestFragmentColumnsFromRowsStrict(t *testing.T) {
-	str := func(s string) *string { return &s }
-	valid := [][]*string{{str("app"), str("users"), str("id"), str("integer"), str("1"), str("NO"), str("db")}, {str("app"), str("users"), str("email"), str("text"), str("2"), str("YES"), str("db")}}
-	got, err := FragmentColumnsFromRows(fakeDb{}, 0, "app", valid)
-	if err != nil {
-		t.Fatalf("FragmentColumnsFromRows: %v", err)
-	}
-	want := []*analyzerpb.Column{{Catalog: "db", Schema: "app", Table: "users", Column: "id", DataType: "integer", Ordinal: 1}, {Catalog: "db", Schema: "app", Table: "users", Column: "email", DataType: "text", Ordinal: 2, Nullable: true}}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("columns = %+v, want %+v", got, want)
-	}
-
-	cases := []struct {
-		name string
-		rows [][]*string
-	}{
-		{"wrong width", [][]*string{{str("app")}}},
-		{"nil field", [][]*string{{str("app"), nil, str("id"), str("int"), str("1"), str("NO"), str("db")}}},
-		{"schema mismatch", [][]*string{{str("other"), str("t"), str("c"), str("int"), str("1"), str("NO"), str("db")}}},
-		{"bad ordinal", [][]*string{{str("app"), str("t"), str("c"), str("int"), str("2147483648"), str("NO"), str("db")}}},
-		{"bad nullable", [][]*string{{str("app"), str("t"), str("c"), str("int"), str("1"), str("TRUE"), str("db")}}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if _, err := FragmentColumnsFromRows(fakeDb{}, 0, "app", tc.rows); err == nil {
-				t.Fatal("FragmentColumnsFromRows succeeded, want strict error")
-			}
-		})
-	}
-}

@@ -25,11 +25,16 @@ type TargetDbError struct {
 
 func (e TargetDbError) Error() string { return e.Message }
 
+// CommandRunner runs control-plane commands on the held target connection.
+type CommandRunner interface {
+	RunAll(cmds []*pb.ProxyCommand, session *spi.SessionObservation) error
+}
+
 // ServeStatement authorizes, executes, and conditionally runs after-statement refetch commands.
 func ServeStatement(
 	authz *spi.Authorizer,
 	in spi.AuthzInput,
-	ref *Refetcher,
+	ref CommandRunner,
 	guard spi.ExecGuard,
 	run func(toSend string, masks []*pb.ColumnMask, dec *spi.Decision) (clean bool, err error),
 ) (dec *spi.Decision, denied bool, err error) {

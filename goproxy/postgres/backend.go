@@ -15,12 +15,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
+
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 
 	"github.com/jackc/pgx/v5/pgproto3"
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
-	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 	"github.com/ridi-oss/proxy-monster/goproxy/wire"
 )
 
@@ -390,7 +391,7 @@ func (c *sessionCore) authzInput(sql string, runCommands func([]*pb.ProxyCommand
 	}
 }
 
-func (s *Server) refetcher(sess *session, extended bool) *relay.Refetcher {
+func (s *Server) refetcher(sess *session, extended bool) *sqldb.Refetcher {
 	probe := func(sql string, expectedColumns int) ([][]*string, error) {
 		return sess.sessionCore.runProbe(sql, expectedColumns, false)
 	}
@@ -399,13 +400,13 @@ func (s *Server) refetcher(sess *session, extended bool) *relay.Refetcher {
 			return s.runExtendedProbe(sess, sql, expectedColumns)
 		}
 	}
-	refetcher := relay.NewRefetcher(s.db, sess.authz.ConnectionID(), sess.backendGen, probe, s.client.PushSchemaFragment)
+	refetcher := sqldb.NewRefetcher(s.db, sess.authz.ConnectionID(), sess.backendGen, probe, s.client.PushSchemaFragment)
 	refetcher.Catalog = sess.currentCatalog
 	return refetcher
 }
 
-func (s *Server) quietRefetcher(sess *session) *relay.Refetcher {
-	refetcher := relay.NewRefetcher(s.db, sess.authz.ConnectionID(), sess.backendGen, func(sql string, expectedColumns int) ([][]*string, error) {
+func (s *Server) quietRefetcher(sess *session) *sqldb.Refetcher {
+	refetcher := sqldb.NewRefetcher(s.db, sess.authz.ConnectionID(), sess.backendGen, func(sql string, expectedColumns int) ([][]*string, error) {
 		return sess.sessionCore.runProbe(sql, expectedColumns, true)
 	}, s.client.PushSchemaFragment)
 	refetcher.Catalog = sess.currentCatalog

@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
+
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
@@ -29,7 +31,7 @@ func scriptedMySQLRun(t *testing.T, decider spi.ControlPlane, maxRows int, respo
 	_ = server.SetDeadline(time.Now().Add(5 * time.Second))
 	authz := spi.NewAuthorizer(decider, "", nil)
 	authz.SetNamespace([]string{"test"})
-	s := &RunSession{conn: client, authz: authz, ref: &relay.Refetcher{Catalog: "def"}}
+	s := &RunSession{conn: client, authz: authz, ref: &sqldb.Refetcher{Catalog: "def"}}
 	writes := make(chan string, 3)
 	go func() {
 		defer close(writes)

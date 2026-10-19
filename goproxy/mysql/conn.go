@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
+
 	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
@@ -202,7 +204,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 	if !ok {
 		return
 	}
-	refetcher := relay.NewRefetcher(s.db, identity.ConnectionID, generation, func(sql string, expectedColumns int) ([][]*string, error) {
+	refetcher := sqldb.NewRefetcher(s.db, identity.ConnectionID, generation, func(sql string, expectedColumns int) ([][]*string, error) {
 		return runInternalQuery(targetDbConn, deprecateEOF, sql, expectedColumns)
 	}, s.client.PushSchemaFragment)
 	refetcher.Catalog = "def"

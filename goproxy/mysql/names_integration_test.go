@@ -8,11 +8,13 @@ import (
 	"strings"
 	"testing"
 
-	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
+	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
+
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/targettest"
-	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
+
+	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 )
 
 func quoteMySQL(identifier string) string {
@@ -37,7 +39,7 @@ func TestMySQLLowerCase0KeepsSchemaAndTableCase(t *testing.T) {
 	targettest.ExecRefetchSQL(t, conn, "CREATE TABLE "+quoteMySQL(upper)+".`users` (id INT NOT NULL, Note VARCHAR(64) NULL)")
 	targettest.ExecRefetchSQL(t, conn, "CREATE TABLE "+quoteMySQL(lower)+".`users` (id INT NOT NULL, email VARCHAR(64) NULL)")
 
-	bulk := targettest.IntrospectTarget(t, OpenPool, TargetSQL{}, ProbeNamespace, targetConfig, upper)
+	bulk := targettest.IntrospectTarget(t, OpenPool, Queries, ProbeNamespace, targetConfig, upper)
 	if got := bulk.GetDefaultSchemas(); !slices.Equal(got, []string{upper}) {
 		t.Fatalf("DefaultSchemas = %v, want [%s]", got, upper)
 	}
@@ -54,12 +56,12 @@ func TestMySQLLowerCase0KeepsSchemaAndTableCase(t *testing.T) {
 		t.Errorf("pushed %s columns = %v, want %v", lower, got, want)
 	}
 
-	targettest.AssertFragmentMatchesBulk(t, TargetSQL{}, conn, "def", bulk, upper)
-	targettest.AssertFragmentMatchesBulk(t, TargetSQL{}, conn, "def", bulk, lower)
-	if bytes.Equal(targettest.TrustedRefetchHash(t, TargetSQL{}, conn, upper), targettest.TrustedRefetchHash(t, TargetSQL{}, conn, lower)) {
+	targettest.AssertFragmentMatchesBulk(t, Queries, conn, "def", bulk, upper)
+	targettest.AssertFragmentMatchesBulk(t, Queries, conn, "def", bulk, lower)
+	if bytes.Equal(targettest.TrustedRefetchHash(t, Queries, conn, upper), targettest.TrustedRefetchHash(t, Queries, conn, lower)) {
 		t.Fatalf("schemas %q and %q hash identically", upper, lower)
 	}
-	if !bytes.Equal(targettest.TrustedRefetchHash(t, TargetSQL{}, conn, upper), targettest.TrustedRefetchHash(t, TargetSQL{}, conn, upper)) {
+	if !bytes.Equal(targettest.TrustedRefetchHash(t, Queries, conn, upper), targettest.TrustedRefetchHash(t, Queries, conn, upper)) {
 		t.Fatalf("schema %q hash is not stable", upper)
 	}
 }
@@ -79,7 +81,7 @@ func TestMySQLLowerCase1FoldsSchemaAndTable(t *testing.T) {
 	targettest.ExecRefetchSQL(t, conn, "CREATE TABLE "+quoteMySQL(mixed)+".`Users` (Id INT NOT NULL, EMail VARCHAR(64) NULL)")
 	targettest.ExecRefetchSQL(t, conn, "CREATE FUNCTION "+quoteMySQL(mixed)+".`AddTax` (amount INT) RETURNS INT DETERMINISTIC RETURN amount")
 
-	bulk := targettest.IntrospectTarget(t, OpenPool, TargetSQL{}, ProbeNamespace, targetConfig, mixed)
+	bulk := targettest.IntrospectTarget(t, OpenPool, Queries, ProbeNamespace, targetConfig, mixed)
 	if got := bulk.GetDefaultSchemas(); !slices.Equal(got, []string{canonical}) {
 		t.Fatalf("DefaultSchemas = %v, want [%s]", got, canonical)
 	}
@@ -110,8 +112,8 @@ func TestMySQLLowerCase1FoldsSchemaAndTable(t *testing.T) {
 		t.Errorf("pushed %s routines = %v, want [addtax]", canonical, routines)
 	}
 
-	targettest.AssertFragmentMatchesBulk(t, TargetSQL{}, conn, "def", bulk, canonical)
-	targettest.AssertFragmentMatchesBulk(t, TargetSQL{}, conn, "def", bulk, "information_schema")
+	targettest.AssertFragmentMatchesBulk(t, Queries, conn, "def", bulk, canonical)
+	targettest.AssertFragmentMatchesBulk(t, Queries, conn, "def", bulk, "information_schema")
 }
 
 func mysqlMode(t *testing.T, conn *sql.Conn) int {
@@ -123,26 +125,21 @@ func mysqlMode(t *testing.T, conn *sql.Conn) int {
 	return mode
 }
 
-// lowerCase2Db evaluates TargetSQL's SQL as mode 2 on a case-preserving mode-0 server; Linux cannot run mode 2.
-type lowerCase2Db struct{ TargetSQL }
-
 func asMode2(sqlText string) string {
 	return strings.ReplaceAll(sqlText, "@@lower_case_table_names", "2")
 }
 
-func (lowerCase2Db) LowerCaseTableNamesProbeSQL() string { return "SELECT 2" }
-
-func (d lowerCase2Db) SchemaColumnsSQL(schema string) string {
-	return asMode2(d.TargetSQL.SchemaColumnsSQL(schema))
-}
-
-func (d lowerCase2Db) SchemaRoutinesSQL(schema string) string {
-	return asMode2(d.TargetSQL.SchemaRoutinesSQL(schema))
-}
-
-func (d lowerCase2Db) SchemaHashSQL(schema string, setup [][]*string) (string, int, error) {
-	sqlText, columns, err := d.TargetSQL.SchemaHashSQL(schema, setup)
-	return asMode2(sqlText), columns, err
+// lowerCase2Queries evaluates MySQL's SQL as mode 2 on a case-preserving mode-0 server; Linux cannot run mode 2.
+func lowerCase2Queries() sqldb.Queries {
+	queries := Queries
+	queries.LowerCaseTableNamesProbe = "SELECT 2"
+	queries.SchemaColumns = func(schema string) string { return asMode2(Queries.SchemaColumns(schema)) }
+	queries.SchemaRoutines = func(schema string) string { return asMode2(Queries.SchemaRoutines(schema)) }
+	queries.SchemaHash = func(schema string, setup [][]*string) (string, int, error) {
+		sqlText, columns, err := Queries.SchemaHash(schema, setup)
+		return asMode2(sqlText), columns, err
+	}
+	return queries
 }
 
 func probeAsMode2(ctx context.Context, conn *sql.Conn, targetDb string) (*pb.CatalogRequest, error) {
@@ -166,7 +163,7 @@ func TestMySQLLowerCase2FoldsStoredCase(t *testing.T) {
 	t.Cleanup(func() { _, _ = admin.Exec("DROP DATABASE IF EXISTS " + quoteMySQL(mixed)) })
 	targettest.ExecRefetchSQL(t, conn, "CREATE TABLE "+quoteMySQL(mixed)+".`Users` (Id INT NOT NULL, EMail VARCHAR(64) NULL)")
 
-	bulk := targettest.IntrospectTarget(t, OpenPool, TargetSQL{}, probeAsMode2, targetConfig, mixed)
+	bulk := targettest.IntrospectTarget(t, OpenPool, Queries, probeAsMode2, targetConfig, mixed)
 	if got := bulk.GetDefaultSchemas(); !slices.Equal(got, []string{canonical}) {
 		t.Fatalf("DefaultSchemas = %v, want [%s]", got, canonical)
 	}
@@ -179,9 +176,9 @@ func TestMySQLLowerCase2FoldsStoredCase(t *testing.T) {
 
 	t.Run("refetch and hash find the stored case by its canonical name", func(t *testing.T) {
 		t.Skip("pending-name-fix: the mode-2 schema filter applies LOWER to a BINARY cast, which does not fold, so it matches no rows")
-		adapter := lowerCase2Db{}
-		targettest.AssertFragmentMatchesBulk(t, adapter, conn, "def", bulk, canonical)
-		if !bytes.Equal(targettest.TrustedRefetchHash(t, adapter, conn, canonical), targettest.TrustedRefetchHash(t, TargetSQL{}, conn, mixed)) {
+		queries := lowerCase2Queries()
+		targettest.AssertFragmentMatchesBulk(t, queries, conn, "def", bulk, canonical)
+		if !bytes.Equal(targettest.TrustedRefetchHash(t, queries, conn, canonical), targettest.TrustedRefetchHash(t, Queries, conn, mixed)) {
 			t.Fatalf("mode-2 hash of %q differs from the stored-case hash of %q", canonical, mixed)
 		}
 	})
@@ -205,7 +202,7 @@ func TestMySQLFragmentRowsUnderEachMode(t *testing.T) {
 		{"mode 2 refuses another schema", 2, "app", "Other", "Users", "EMail", nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := sqldb.FragmentColumnsFromRows(TargetSQL{}, tc.mode, tc.requested, row(tc.schema, tc.table, tc.colmn))
+			got, err := sqldb.FragmentColumnsFromRows(Queries, tc.mode, tc.requested, row(tc.schema, tc.table, tc.colmn))
 			if tc.want == nil {
 				if err == nil {
 					t.Fatalf("FragmentColumnsFromRows = %+v, want refused", got)
@@ -242,7 +239,7 @@ func TestMySQLNormalizeSystemSchemasByMode(t *testing.T) {
 		{2, "MySQL", "mysql"},
 		{2, "PERFORMANCE_SCHEMA", "performance_schema"},
 	} {
-		got := (TargetSQL{}).NormalizeColumns(tc.mode, []*analyzerpb.Column{{Schema: tc.schema, Table: "T", Column: "C"}})[0]
+		got := Queries.NormalizeColumns(tc.mode, []*analyzerpb.Column{{Schema: tc.schema, Table: "T", Column: "C"}})[0]
 		if got.GetSchema() != tc.want || got.GetColumn() != "c" {
 			t.Errorf("mode %d NormalizeColumns(%s.T.C) = %s.%s.%s, want schema %s, column c", tc.mode, tc.schema, got.GetSchema(), got.GetTable(), got.GetColumn(), tc.want)
 		}
@@ -267,12 +264,12 @@ func TestMySQLRefetchRefusesUnknownLowerCaseTableNames(t *testing.T) {
 			pushed := false
 			refetcher := sqldb.Refetcher{
 				Catalog: "def",
-				Db:      TargetSQL{},
+				Queries: Queries,
 				Probe: func(statement string, _ int) ([][]*string, error) {
 					switch statement {
-					case (TargetSQL{}).LowerCaseTableNamesProbeSQL():
+					case Queries.LowerCaseTableNamesProbe:
 						return tc.rows, tc.probe
-					case (TargetSQL{}).SchemaColumnsSQL("App"):
+					case Queries.SchemaColumns("App"):
 						return [][]*string{{targettest.Ptr("App"), targettest.Ptr("Users"), targettest.Ptr("Id"), targettest.Ptr("int"), targettest.Ptr("1"), targettest.Ptr("NO"), targettest.Ptr("def")}}, nil
 					}
 					return nil, nil

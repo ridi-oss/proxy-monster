@@ -6,7 +6,6 @@ package postgres
 import (
 	"crypto/tls"
 
-	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 	"github.com/ridi-oss/proxy-monster/goproxy/wire"
 )
@@ -17,13 +16,12 @@ type Server struct {
 	*wire.Server
 	config      spi.TargetConfig
 	client      spi.ControlPlane
-	queries     relay.Db
 	tlsProvider func() (*tls.Config, error)
 }
 
 // New constructs a PostgreSQL wire broker for one target DB datasource.
-func New(listen spi.Listen, config spi.TargetConfig, client spi.ControlPlane, queries relay.Db, tlsProvider func() (*tls.Config, error)) *Server {
-	s := &Server{config: config, client: client, queries: queries, tlsProvider: tlsProvider}
+func New(listen spi.Listen, config spi.TargetConfig, client spi.ControlPlane, tlsProvider func() (*tls.Config, error)) *Server {
+	s := &Server{config: config, client: client, tlsProvider: tlsProvider}
 	s.Server = wire.New(listen, "pgproxy", s.handleConn)
 	return s
 }

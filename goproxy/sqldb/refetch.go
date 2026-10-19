@@ -9,22 +9,21 @@ import (
 
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
-	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
 // Refetcher executes connection-local catalog commands through callback-injected held-target DB I/O.
 type Refetcher struct {
 	Catalog           string
-	Db                relay.Db
+	Queries           Queries
 	ConnectionID      []byte
 	BackendGeneration uint64
 	Probe             func(sql string, expectedColumns int) ([][]*string, error)
 	Push              func(*pb.SchemaFragmentPush) (uint64, error)
 }
 
-func NewRefetcher(queries relay.Db, connectionID []byte, generation uint64, probe func(string, int) ([][]*string, error), push func(*pb.SchemaFragmentPush) (uint64, error)) *Refetcher {
-	return &Refetcher{Db: queries, ConnectionID: connectionID, BackendGeneration: generation, Probe: probe, Push: push}
+func NewRefetcher(queries Queries, connectionID []byte, generation uint64, probe func(string, int) ([][]*string, error), push func(*pb.SchemaFragmentPush) (uint64, error)) *Refetcher {
+	return &Refetcher{Queries: queries, ConnectionID: connectionID, BackendGeneration: generation, Probe: probe, Push: push}
 }
 
 // Run executes one refetch. A failed hash probe degrades to a full fetch; a failed read, a failed push,
@@ -33,8 +32,8 @@ func (r *Refetcher) Run(cmd *pb.Refetch) error {
 	if cmd.GetSchema() == "" {
 		return errors.New("refetch command has blank schema")
 	}
-	if r.Db == nil {
-		return errors.New("refetcher has no database adapter")
+	if r.Queries.SchemaColumns == nil {
+		return errors.New("refetcher has no queries")
 	}
 	if r.Probe == nil {
 		return errors.New("refetcher has no probe callback")
@@ -51,14 +50,14 @@ func (r *Refetcher) Run(cmd *pb.Refetch) error {
 	}
 
 	var setupRows [][]*string
-	if setupSQL := r.Db.HashSetupProbeSQL(); setupSQL != "" {
-		rows, err := r.Probe(setupSQL, r.Db.HashSetupColumns())
+	if setupSQL := r.Queries.HashSetupProbe; setupSQL != "" {
+		rows, err := r.Probe(setupSQL, r.Queries.HashSetupColumns)
 		if err == nil {
 			setupRows = rows
 		}
 	}
 
-	hashSQL, hashColumns, hashSQLErr := r.Db.SchemaHashSQL(cmd.GetSchema(), setupRows)
+	hashSQL, hashColumns, hashSQLErr := r.Queries.SchemaHash(cmd.GetSchema(), setupRows)
 	h1, trusted1 := r.measureHash(hashSQL, hashColumns, hashSQLErr)
 	if trusted1 && len(cmd.GetIfHashDiffers()) > 0 && bytes.Equal(h1, cmd.GetIfHashDiffers()) {
 		_, err := r.Push(&pb.SchemaFragmentPush{
@@ -72,15 +71,15 @@ func (r *Refetcher) Run(cmd *pb.Refetch) error {
 		return err
 	}
 
-	rows, err := r.Probe(r.Db.SchemaColumnsSQL(cmd.GetSchema()), 7)
+	rows, err := r.Probe(r.Queries.SchemaColumns(cmd.GetSchema()), 7)
 	if err != nil {
 		return fmt.Errorf("introspecting schema %q: %w", cmd.GetSchema(), err)
 	}
-	columns, err := FragmentColumnsFromRows(r.Db, r.lowerCaseTableNames(), cmd.GetSchema(), rows)
+	columns, err := FragmentColumnsFromRows(r.Queries, r.lowerCaseTableNames(), cmd.GetSchema(), rows)
 	if err != nil {
 		return fmt.Errorf("mapping schema %q fragment: %w", cmd.GetSchema(), err)
 	}
-	routineRows, err := r.Probe(r.Db.SchemaRoutinesSQL(cmd.GetSchema()), 1)
+	routineRows, err := r.Probe(r.Queries.SchemaRoutines(cmd.GetSchema()), 1)
 	if err != nil {
 		return fmt.Errorf("introspecting schema %q routines: %w", cmd.GetSchema(), err)
 	}
@@ -110,18 +109,18 @@ func (r *Refetcher) Run(cmd *pb.Refetch) error {
 		Catalog:           r.Catalog,
 		ContentHash:       contentHash,
 		Columns:           columns,
-		Routines:          FoldFunctionNames(r.Db, routines),
+		Routines:          FoldFunctionNames(r.Queries, routines),
 		BackendGeneration: r.BackendGeneration,
 	})
 	return err
 }
 
-// lowerCaseTableNames probes the connection's live mode fresh (no cached state on Refetcher/Db —
+// lowerCaseTableNames probes the connection's live mode fresh (no cached state on Refetcher/Queries —
 // mirrors mysqlSchemaFilter's own live @@lower_case_table_names check in goproxy/db). "" from
 // LowerCaseTableNamesProbeSQL (non-MySQL, or a probe failure) returns 0, which NormalizeColumns
 // ignores for any dialect that doesn't fold at all.
 func (r *Refetcher) lowerCaseTableNames() int {
-	probeSQL := r.Db.LowerCaseTableNamesProbeSQL()
+	probeSQL := r.Queries.LowerCaseTableNamesProbe
 	if probeSQL == "" {
 		return 0
 	}
@@ -144,7 +143,7 @@ func (r *Refetcher) measureHash(sql string, expectedColumns int, sqlErr error) (
 	if err != nil {
 		return nil, false
 	}
-	hash, trusted, err := r.Db.SchemaHashFromRows(rows)
+	hash, trusted, err := r.Queries.SchemaHashFromRows(rows)
 	if err != nil {
 		return nil, false
 	}
@@ -169,7 +168,7 @@ func (r *Refetcher) RunAll(cmds []*pb.ProxyCommand, _ *spi.SessionObservation) e
 }
 
 // FragmentColumnsFromRows strictly maps seven-column information_schema rows into a canonical schema
-// fragment. Rows are folded via db.NormalizeColumns(lowerCaseTableNames, ...) — the SAME rule
+// fragment. Rows are folded via queries.NormalizeColumns(lowerCaseTableNames, ...) — the SAME rule
 // introspect's bulk catalog push uses — and every row's canonical schema must then equal the requested
 // schema's own canonical form. This is a self-consistency check (every row came back for the schema
 // that was actually asked for), not an authorization boundary, but its strictness now follows the
@@ -178,7 +177,7 @@ func (r *Refetcher) RunAll(cmds []*pb.ProxyCommand, _ *spi.SessionObservation) e
 // (case-insensitive lookup, case-preserving storage), so it's the only one where this tolerates a case
 // difference — Postgres and MySQL modes 0/1 require an exact match, same as before this normalized the
 // comparison at all. The column is the proto Column (enginepb.Column) used AS the data class.
-func FragmentColumnsFromRows(queries relay.Db, lowerCaseTableNames int, schema string, rows [][]*string) ([]*enginepb.Column, error) {
+func FragmentColumnsFromRows(queries Queries, lowerCaseTableNames int, schema string, rows [][]*string) ([]*enginepb.Column, error) {
 	raw := make([]*enginepb.Column, 0, len(rows))
 	for i, row := range rows {
 		if len(row) != 7 {

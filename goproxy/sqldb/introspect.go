@@ -17,7 +17,6 @@ import (
 
 	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
-	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 )
 
 // QueryTimeout bounds every introspection query. A full catalog scan of a large schema on a remote
@@ -46,7 +45,7 @@ type NamespaceProbe func(ctx context.Context, conn *sql.Conn, targetDb string) (
 
 // Introspect introspects the target's information_schema over a live connection and returns the catalog to
 // push to the control plane. DatasourceName is left blank — the caller (cp.PushCatalog) stamps it.
-func Introspect(ctx context.Context, db *sql.DB, queries relay.Db, probe NamespaceProbe, targetDb string) (*pb.CatalogRequest, error) {
+func Introspect(ctx context.Context, db *sql.DB, queries Queries, probe NamespaceProbe, targetDb string) (*pb.CatalogRequest, error) {
 	// Pin ONE physical connection for the whole introspection and verify it up front. The *sql.DB handle
 	// is a lazy pool: without pinning, each of probeVersion's two queries and the namespace/columns probes
 	// would independently dial the target, so a dead or misauthenticated target would incur several failed
@@ -87,7 +86,7 @@ func Introspect(ctx context.Context, db *sql.DB, queries relay.Db, probe Namespa
 	// (catalog storage, browse_catalog, Cedar Table::/Column:: EUIDs, column_classification, the
 	// per-connection schema-fragment pool normalized the same way in goproxy/db) ever sees raw
 	// introspected spelling; no caller decides whether/how to fold.
-	// The dialect's own relay.Db owns the fold, so this call site names no dialect. Only the MySQL
+	// The dialect's own Queries owns the fold, so this call site names no dialect. Only the MySQL
 	// namespace probe sets mysqlLowerCaseTableNames (the Postgres probe returns nil), and it carries the
 	// fold mode MySQL's NormalizeColumns is gated by; Postgres ignores the argument.
 	lctnMode := 0
@@ -134,10 +133,10 @@ func Introspect(ctx context.Context, db *sql.DB, queries relay.Db, probe Namespa
 
 type schemaNamePair struct{ schema, name string }
 
-func introspectRoutines(conn *sql.Conn, queries relay.Db, lctnMode int) ([]*analyzerpb.SchemaFunctions, error) {
+func introspectRoutines(conn *sql.Conn, queries Queries, lctnMode int) ([]*analyzerpb.SchemaFunctions, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), QueryTimeout)
 	defer cancel()
-	rows, err := conn.QueryContext(ctx, queries.RoutinesSQL())
+	rows, err := conn.QueryContext(ctx, queries.Routines)
 	if err != nil {
 		return nil, fmt.Errorf("introspect: routines query: %w", err)
 	}
@@ -160,7 +159,7 @@ func introspectRoutines(conn *sql.Conn, queries relay.Db, lctnMode int) ([]*anal
 
 // foldFunctionSchemas groups (schema, function) pairs by their canonical schema, folding the schema
 // through the dialect's NormalizeColumns and the function name through its FoldFunctionName.
-func foldFunctionSchemas(queries relay.Db, lctnMode int, pairs []schemaNamePair) []*analyzerpb.SchemaFunctions {
+func foldFunctionSchemas(queries Queries, lctnMode int, pairs []schemaNamePair) []*analyzerpb.SchemaFunctions {
 	if len(pairs) == 0 {
 		return nil
 	}
@@ -204,7 +203,7 @@ func groupBySchema(pairs []schemaNamePair) []*analyzerpb.SchemaFunctions {
 // discarding those parts — the fold decision is schema-name-only (verified empirically: stable
 // regardless of the table argument). One call folds the whole list, so a dialect that memoizes
 // per-(schema, table) work does it once here too.
-func normalizeSchemas(queries relay.Db, lctnMode int, schemas []string) []string {
+func normalizeSchemas(queries Queries, lctnMode int, schemas []string) []string {
 	placeholders := make([]*analyzerpb.Column, len(schemas))
 	for i, s := range schemas {
 		placeholders[i] = &analyzerpb.Column{Schema: s, Table: "_", Column: "_"}

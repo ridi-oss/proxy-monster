@@ -11,6 +11,7 @@ import (
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/targettest"
+	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
 )
 
 func TestMySqlRefetcherIntegration(t *testing.T) {
@@ -30,7 +31,7 @@ func TestMySqlRefetcherIntegration(t *testing.T) {
 	})
 	targettest.ExecRefetchSQL(t, conn, "CREATE TABLE "+quote(schema)+".base (a INT NOT NULL)")
 
-	queries := TargetSQL{}
+	queries := Queries
 	previous := targettest.TrustedRefetchHash(t, queries, conn, schema)
 	t.Run("unchanged", func(t *testing.T) {
 		push := targettest.RunRefetchIntegration(t, queries, conn, "def", schema, previous)
@@ -173,8 +174,8 @@ func TestMySqlRefetcherTruncationFallsBackToFullFetch(t *testing.T) {
 	}
 	targettest.ExecRefetchSQL(t, conn, "CREATE TABLE "+quote(schema)+".wide ("+strings.Join(definitions, ",")+")")
 
-	adapter := narrowMySqlHashDb{TargetSQL: TargetSQL{}}
-	hashSQL, hashColumns, err := adapter.SchemaHashSQL(schema, nil)
+	queries := narrowHashQueries()
+	hashSQL, hashColumns, err := queries.SchemaHash(schema, nil)
 	if err != nil {
 		t.Fatalf("narrow SchemaHashSQL: %v", err)
 	}
@@ -192,13 +193,13 @@ func TestMySqlRefetcherTruncationFallsBackToFullFetch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode truncated hash bytes: %v", err)
 	}
-	if decoded, trusted, err := adapter.SchemaHashFromRows(rows); err != nil || trusted || decoded != nil {
+	if decoded, trusted, err := queries.SchemaHashFromRows(rows); err != nil || trusted || decoded != nil {
 		t.Fatalf("truncated hash decode = %x, trusted=%v, err=%v; want untrusted", decoded, trusted, err)
 	}
 
 	pushes := make([]*pb.SchemaFragmentPush, 0, 2)
 	for i := 0; i < 2; i++ {
-		push := targettest.RunRefetchIntegration(t, adapter, conn, "def", schema, truncatedHash)
+		push := targettest.RunRefetchIntegration(t, queries, conn, "def", schema, truncatedHash)
 		if push.Unchanged {
 			t.Fatalf("run %d emitted Unchanged=true for matching truncated hash", i+1)
 		}
@@ -215,19 +216,19 @@ func TestMySqlRefetcherTruncationFallsBackToFullFetch(t *testing.T) {
 	}
 }
 
-// narrowMySqlHashDb narrows only the production query's SET_VAR numeric bound. The serialization,
+// narrowHashQueries narrows only the production query's SET_VAR numeric bound. The serialization,
 // result decoder, and Refetcher behavior remain the production implementations under test.
-type narrowMySqlHashDb struct {
-	TargetSQL
-}
-
-func (db narrowMySqlHashDb) SchemaHashSQL(schema string, setupRows [][]*string) (string, int, error) {
-	sqlText, columns, err := db.TargetSQL.SchemaHashSQL(schema, setupRows)
-	if err != nil {
-		return "", 0, err
+func narrowHashQueries() sqldb.Queries {
+	queries := Queries
+	queries.SchemaHash = func(schema string, setupRows [][]*string) (string, int, error) {
+		sqlText, columns, err := Queries.SchemaHash(schema, setupRows)
+		if err != nil {
+			return "", 0, err
+		}
+		if strings.Count(sqlText, "33554432") != 1 {
+			return "", 0, fmt.Errorf("production MySQL hash SQL has unexpected SET_VAR bound")
+		}
+		return strings.Replace(sqlText, "33554432", "1024", 1), columns, nil
 	}
-	if strings.Count(sqlText, "33554432") != 1 {
-		return "", 0, fmt.Errorf("production MySQL hash SQL has unexpected SET_VAR bound")
-	}
-	return strings.Replace(sqlText, "33554432", "1024", 1), columns, nil
+	return queries
 }

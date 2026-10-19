@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgproto3"
-	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 	"github.com/ridi-oss/proxy-monster/goproxy/wire"
 )
@@ -42,7 +41,6 @@ type sessionCore struct {
 	currentCatalog string
 	targetDb       *pgproto3.Frontend
 	authz          *spi.Authorizer
-	queries        relay.Db
 	lastTxStatus   byte
 	pendingDirty   bool
 	session        spi.SessionObservation
@@ -210,7 +208,6 @@ startupComplete:
 			currentCatalog: catalog,
 			targetDb:       targetDb,
 			authz:          authz,
-			queries:        s.queries,
 			lastTxStatus:   txStatus,
 			forward:        client.Send,
 			flushForward:   client.Flush,

@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/ridi-oss/proxy-monster/goproxy/mysql"
+	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
 
 	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
@@ -12,15 +13,14 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-type routinesQueryDb struct {
-	mysql.TargetSQL
-	query string
+func routinesQueries(query string) sqldb.Queries {
+	queries := mysql.Queries
+	queries.Routines = query
+	return queries
 }
 
-func (d routinesQueryDb) RoutinesSQL() string { return d.query }
-
 func runRoutinesQuery(query string, config spi.TargetConfig) (*pb.CatalogRequest, error) {
-	return runWith(mysql.OpenPool, routinesQueryDb{query: query}, mysql.ProbeNamespace, config)
+	return runWith(mysql.OpenPool, routinesQueries(query), mysql.ProbeNamespace, config)
 }
 
 func TestRoutinesObservation(t *testing.T) {
@@ -72,7 +72,7 @@ func TestRoutinesObservation(t *testing.T) {
 	} {
 		t.Run(name+" failure fails the whole catalog", func(t *testing.T) {
 			if _, err := runRoutinesQuery(query, config); err == nil {
-				t.Fatal("Run succeeded, want a routines failure")
+				t.Fatal("sqldb.Introspect succeeded, want a routines failure")
 			}
 		})
 	}

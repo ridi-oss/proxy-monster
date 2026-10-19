@@ -74,7 +74,7 @@ func TestProbeMySQLNamespaceRefusesUnknownLowerCaseTableNames(t *testing.T) {
 				return
 			}
 			if err != nil {
-				t.Fatalf("ProbeMySQLNamespace: %v", err)
+				t.Fatalf("mysql.ProbeNamespace: %v", err)
 			}
 			if catalog.MysqlLowerCaseTableNames == nil || int64(catalog.GetMysqlLowerCaseTableNames()) != tc.lctn.(int64) {
 				t.Fatalf("lower_case_table_names = %v, want %v", catalog.MysqlLowerCaseTableNames, tc.lctn)
@@ -103,9 +103,9 @@ func TestRunRefusesUnknownLowerCaseTableNames(t *testing.T) {
 				catalog.MysqlLowerCaseTableNames = tc.lctn
 				return catalog, nil
 			}
-			cat, err := runWith(mysql.OpenPool, mysql.TargetSQL{}, probe, spi.TargetConfig{Host: targetConfig.Host, Port: targetConfig.Port, Db: targetConfig.DB, User: targetConfig.User, Password: targetConfig.Password})
+			cat, err := runWith(mysql.OpenPool, mysql.Queries, probe, spi.TargetConfig{Host: targetConfig.Host, Port: targetConfig.Port, Db: targetConfig.DB, User: targetConfig.User, Password: targetConfig.Password})
 			if err == nil {
-				t.Fatalf("Run pushed a catalog of %d columns, want refused", len(cat.GetCatalog().GetColumns()))
+				t.Fatalf("sqldb.Introspect pushed a catalog of %d columns, want refused", len(cat.GetCatalog().GetColumns()))
 			}
 		})
 	}

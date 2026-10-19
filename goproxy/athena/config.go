@@ -37,12 +37,11 @@ type targetConfig struct {
 	database    string
 	advertise   string
 	contextPath string
-	target      spi.TargetDb
 }
 
 // configure reads PM_ATHENA_* (region also from AWS_REGION / AWS_DEFAULT_REGION, profile from AWS_PROFILE)
-// and takes the database from target.Db; credentials come from the SDK's default chain, never from PM_*.
-func configure(lookup func(string) (string, bool), target spi.TargetDb) (targetConfig, error) {
+// and takes the database from config.Db; credentials come from the SDK's default chain, never from PM_*.
+func configure(lookup func(string) (string, bool), config spi.TargetConfig) (targetConfig, error) {
 	get := func(key, fallback string) string {
 		value, ok := lookup(key)
 		if !ok {
@@ -55,10 +54,9 @@ func configure(lookup func(string) (string, bool), target spi.TargetDb) (targetC
 		profile:     get("AWS_PROFILE", ""),
 		workgroup:   get("PM_ATHENA_WORKGROUP", "primary"),
 		catalog:     get("PM_ATHENA_DEFAULT_CATALOG", "AwsDataCatalog"),
-		database:    strings.TrimSpace(target.Db),
+		database:    strings.TrimSpace(config.Db),
 		advertise:   get("PM_ADVERTISE_ADDR", ""),
 		contextPath: get("PM_ATHENA_CONTEXT_PATH", ":memory:"),
-		target:      target,
 	}
 	if cfg.region != "" && !regexp.MustCompile(`^[a-z]{2}(?:-[a-z0-9]+)+-[0-9]+$`).MatchString(cfg.region) {
 		return targetConfig{}, errors.New("athena: PM_ATHENA_REGION or AWS_REGION is required")

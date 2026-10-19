@@ -104,7 +104,7 @@ func tableDetailRun(
 	t *testing.T,
 	tableDetailClient *cp.Client,
 	tableDetailFake *tableDetailFakeCP,
-	tableDetailDb spi.Db,
+	tableDetailDb spi.Target,
 	tableDetailSessionID, catalog, schema, table string,
 ) *pb.ProxyTableDetailMsg {
 	t.Helper()
@@ -125,8 +125,8 @@ func tableDetailRun(
 	}
 }
 
-func tableDetailTargetDb(tableDetailDBTargetDb dbtest.TargetDb) spi.TargetDb {
-	return spi.TargetDb{
+func tableDetailTargetDb(tableDetailDBTargetDb dbtest.TargetDb) spi.TargetConfig {
+	return spi.TargetConfig{
 		Host:     tableDetailDBTargetDb.Host,
 		Port:     tableDetailDBTargetDb.Port,
 		Db:       tableDetailDBTargetDb.DB,

@@ -275,14 +275,14 @@ func startBrokerForDBSetup(t *testing.T, targetDb dbtest.TargetDb, database stri
 	if setup != nil {
 		setup(fake)
 	}
-	target := spi.TargetDb{
+	config := spi.TargetConfig{
 		Host:     targetDb.Host,
 		Port:     targetDb.Port,
 		Db:       database,
 		User:     targetDb.User,
 		Password: targetDb.Password,
 	}
-	server := postgres.New(spi.Listen{}, target, cpClient, db.PgDb{}, nil)
+	server := postgres.New(spi.Listen{}, config, cpClient, db.PgDb{}, nil)
 	return startBrokerServer(t, fake, server)
 }
 
@@ -291,14 +291,14 @@ func startBrokerTLS(t *testing.T) *brokerHarness {
 	targetDb := seedTargetDb(t)
 	fake, cpClient := startFakeCP(t)
 	tlsProvider := proxytls.NewReloading("../proxytls/testdata/ec.crt", "../proxytls/testdata/ec-sec1.key")
-	target := spi.TargetDb{
+	config := spi.TargetConfig{
 		Host:     targetDb.Host,
 		Port:     targetDb.Port,
 		Db:       "app",
 		User:     targetDb.User,
 		Password: targetDb.Password,
 	}
-	server := postgres.New(spi.Listen{}, target, cpClient, db.PgDb{}, tlsProvider.Current)
+	server := postgres.New(spi.Listen{}, config, cpClient, db.PgDb{}, tlsProvider.Current)
 	return startBrokerServer(t, fake, server)
 }
 

@@ -31,8 +31,8 @@ func startNamesBroker(t *testing.T, targetDb dbtest.TargetDb, seed *sql.DB, extr
 		}
 	}
 	fake, cpClient := startFakeCP(t)
-	target := spi.TargetDb{Host: targetDb.Host, Port: targetDb.Port, Db: targetDb.DB, User: targetDb.User, Password: targetDb.Password}
-	server := mysql.New(spi.Listen{}, target, cpClient, db.MySqlDb{}, nil)
+	config := spi.TargetConfig{Host: targetDb.Host, Port: targetDb.Port, Db: targetDb.DB, User: targetDb.User, Password: targetDb.Password}
+	server := mysql.New(spi.Listen{}, config, cpClient, db.MySqlDb{}, nil)
 	if err := server.Listen(); err != nil {
 		t.Fatalf("mysql.Listen: %v", err)
 	}

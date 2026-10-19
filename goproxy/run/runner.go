@@ -41,14 +41,14 @@ type runStream = spi.RunStream
 // table detail.
 type Runner struct {
 	client        spi.ControlPlane
-	target        spi.Db
+	target        spi.Target
 	queryTimeout  time.Duration
 	readTimeout   time.Duration
 	registerSlots chan struct{}
 	refreshBatch  atomic.Pointer[refreshBatch]
 }
 
-func NewRunner(client spi.ControlPlane, target spi.Db, queryTimeout time.Duration) *Runner {
+func NewRunner(client spi.ControlPlane, target spi.Target, queryTimeout time.Duration) *Runner {
 	if queryTimeout == 0 {
 		queryTimeout = defaultQueryTimeout
 	}
@@ -90,7 +90,7 @@ func (r *Runner) Run(open spi.RunOpen, draining <-chan struct{}) {
 		return
 	}
 
-	var sess spi.TargetDbSession
+	var sess spi.Session
 	guard := func(exec func() error) error {
 		cancelDone := make(chan struct{})
 		var timedOut atomic.Bool
@@ -210,12 +210,12 @@ func (r *Runner) Run(open spi.RunOpen, draining <-chan struct{}) {
 // the open is reaped in the background (see abort). A close or drain that lands just as the open completes
 // still fails the open (the post-completion re-check) so a live session is never installed on an abandoned
 // run or a departing proxy — the editor re-homes to the replacement rather than onto a stream about to die.
-func (r *Runner) openTargetDb(ctx context.Context, stream runStream, messages <-chan *pb.ControlRunMsg, draining <-chan struct{}, open spi.RunOpen, guard spi.ExecGuard) (spi.TargetDbSession, *enginepb.Namespace) {
+func (r *Runner) openTargetDb(ctx context.Context, stream runStream, messages <-chan *pb.ControlRunMsg, draining <-chan struct{}, open spi.RunOpen, guard spi.ExecGuard) (spi.Session, *enginepb.Namespace) {
 	openCtx, cancelOpen := context.WithCancel(ctx)
 	defer cancelOpen()
 
 	type openResult struct {
-		sess      spi.TargetDbSession
+		sess      spi.Session
 		namespace *enginepb.Namespace
 		err       error
 		errWhat   string
@@ -239,7 +239,7 @@ func (r *Runner) openTargetDb(ctx context.Context, stream runStream, messages <-
 	// The cancel unwinds the target DB dial/auth/catalog reads at once; a catalog push RPC to the control-plane
 	// is not cancellable here and runs to its own deadline, so the reap runs off the hot path rather than
 	// making the drain/close wait out that deadline (and the follow-on connection-release RPC).
-	abort := func() (spi.TargetDbSession, *enginepb.Namespace) {
+	abort := func() (spi.Session, *enginepb.Namespace) {
 		cancelOpen()
 		go func() {
 			res := <-done
@@ -336,7 +336,7 @@ func receiveRunMessages(ctx context.Context, stream runStream) <-chan *pb.Contro
 	return messages
 }
 
-func (r *Runner) cancelSession(sess spi.TargetDbSession) {
+func (r *Runner) cancelSession(sess spi.Session) {
 	if err := sess.Cancel(); err != nil {
 		slog.Warn("run query cancellation failed", "error", err)
 	}
@@ -348,7 +348,7 @@ func (r *Runner) closeConnection(sessionID string, connectionID []byte) {
 	}
 }
 
-func (r *Runner) handleQuery(sess spi.TargetDbSession, stream runStream, query *pb.RunQuery, guard spi.ExecGuard) bool {
+func (r *Runner) handleQuery(sess spi.Session, stream runStream, query *pb.RunQuery, guard spi.ExecGuard) bool {
 	maxRows := int(query.GetMaxRows())
 	if maxRows == 0 {
 		maxRows = defaultMaxRows
@@ -390,7 +390,7 @@ func (r *Runner) handleQuery(sess spi.TargetDbSession, stream runStream, query *
 }
 
 // sessionNamespace returns nil when the read fails or outlasts guard. Authorization never uses it.
-func sessionNamespace(sess spi.TargetDbSession, guard spi.ExecGuard) *enginepb.Namespace {
+func sessionNamespace(sess spi.Session, guard spi.ExecGuard) *enginepb.Namespace {
 	var catalog string
 	var searchPath []string
 	read := func() (err error) {

@@ -39,12 +39,12 @@ func TestDialTargetDbAuthIDAbortsOnContextCancel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse listener port: %v", err)
 	}
-	target := spi.TargetDb{Host: host, Port: port, User: "u", Password: "p", Db: "d"}
+	config := spi.TargetConfig{Host: host, Port: port, User: "u", Password: "p", Db: "d"}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	dialErr := make(chan error, 1)
 	go func() {
-		_, _, err := dialTargetDbAuthID(ctx, target, true)
+		_, _, err := dialTargetDbAuthID(ctx, config, true)
 		dialErr <- err
 	}()
 

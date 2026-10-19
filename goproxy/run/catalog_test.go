@@ -17,7 +17,7 @@ func TestRunnerCatalogIdentity(t *testing.T) {
 			fixture := test.seed(t)
 			catalog := "def"
 			if test.name == "postgres" {
-				catalog = fixture.runTarget.Db
+				catalog = fixture.runConfig.Db
 			}
 			fake, client := runStartFakeCP(t, runSessionID)
 			open := runOpen(fixture)

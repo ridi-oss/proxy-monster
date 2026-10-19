@@ -16,13 +16,13 @@ import (
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
-func namesDetailDb(t *testing.T, e *engines.Engine, target dbtest.TargetDb) spi.Db {
+func namesDetailDb(t *testing.T, e *engines.Engine, target dbtest.TargetDb) spi.Target {
 	t.Helper()
 	provider, err := dialects.For(e)
 	if err != nil {
 		t.Fatal(err)
 	}
-	targetDb, err := provider.NewDb(spi.TargetDb{Host: target.Host, Port: target.Port, Db: target.DB, User: target.User, Password: target.Password})
+	targetDb, err := provider.OpenTarget(spi.TargetConfig{Host: target.Host, Port: target.Port, Db: target.DB, User: target.User, Password: target.Password})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +40,7 @@ func namesExec(t *testing.T, database *sql.DB, statements ...string) {
 }
 
 // detailNames reads table detail and returns "schema.table" and its column names, or "" when not found.
-func detailNames(t *testing.T, targetDb spi.Db, catalog, schema, table string) (string, []string) {
+func detailNames(t *testing.T, targetDb spi.Target, catalog, schema, table string) (string, []string) {
 	t.Helper()
 	detail, err := targetDb.ReadTableDetail(context.Background(), &enginepb.ObjectRef{Catalog: catalog, Schema: schema, Table: table})
 	if err != nil {

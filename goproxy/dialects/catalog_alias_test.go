@@ -98,14 +98,14 @@ func TestPostgresCatalogThroughDatabaseAlias(t *testing.T) {
 		}
 	}
 	gateway, rewritten := dbtest.PostgresAlias(t, database, "advisory")
-	target := openDb(t, engines.Postgres, spi.TargetDb{Host: gateway.Host, Port: gateway.Port, Db: gateway.DB, User: gateway.User, Password: gateway.Password})
+	target := openDb(t, engines.Postgres, spi.TargetConfig{Host: gateway.Host, Port: gateway.Port, Db: gateway.DB, User: gateway.User, Password: gateway.Password})
 	catalog, err := target.Introspect(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	measured := catalog.GetCurrentCatalog()
-	if measured != database.DB || measured == target.TargetDb().Db {
-		t.Fatalf("measured/advisory catalog = %q/%q, want %q/advisory", measured, target.TargetDb().Db, database.DB)
+	if measured != database.DB || measured == target.Config().Db {
+		t.Fatalf("measured/advisory catalog = %q/%q, want %q/advisory", measured, target.Config().Db, database.DB)
 	}
 	for _, column := range catalog.GetCatalog().GetColumns() {
 		if column.GetCatalog() != measured {

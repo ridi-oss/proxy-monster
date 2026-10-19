@@ -183,14 +183,14 @@ func TestDialTargetDbCachingSHA2FullAuth(t *testing.T) {
 	}
 	t.Cleanup(func() { testHookCachingSHA2FullAuth = nil })
 
-	target := spi.TargetDb{
+	config := spi.TargetConfig{
 		Host:     targetDb.Host,
 		Port:     targetDb.Port,
 		Db:       targetDb.DB,
 		User:     user,
 		Password: password,
 	}
-	conn, greeting, err := dialTargetDbAuthID(context.Background(), target, true)
+	conn, greeting, err := dialTargetDbAuthID(context.Background(), config, true)
 	connID := greeting.ConnectionID
 	if err != nil {
 		t.Fatalf("dialTargetDbAuthID against caching_sha2 target DB: %v", err)

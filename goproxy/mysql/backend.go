@@ -43,8 +43,8 @@ var testHookCachingSHA2FullAuth func(viaPublicKey bool)
 // (RSA public-key over a plaintext link, cleartext over TLS) when the server's fast-auth cache misses.
 // CLIENT_SESSION_TRACK is required so text-protocol database changes arrive as protocol signals instead
 // of requiring an interposed SELECT DATABASE() that would corrupt ROW_COUNT/FOUND_ROWS diagnostics.
-func dialTargetDbAuth(target spi.TargetDb, mirrorDeprecateEOF bool) (net.Conn, error) {
-	conn, _, err := dialTargetDbAuthID(context.Background(), target, mirrorDeprecateEOF)
+func dialTargetDbAuth(config spi.TargetConfig, mirrorDeprecateEOF bool) (net.Conn, error) {
+	conn, _, err := dialTargetDbAuthID(context.Background(), config, mirrorDeprecateEOF)
 	return conn, err
 }
 
@@ -52,9 +52,9 @@ func dialTargetDbAuth(target spi.TargetDb, mirrorDeprecateEOF bool) (net.Conn, e
 // (deadline-bounded) auth exchange runs, an AfterFunc closes the conn on cancel so a blocked read unwinds at
 // once. On the run path ctx is the target-DB open context, so a run the control-plane already closed does not
 // finish a target-DB handshake nobody is waiting for; the wire path passes a background ctx (never cancelled).
-func dialTargetDbAuthID(ctx context.Context, target spi.TargetDb, mirrorDeprecateEOF bool) (net.Conn, mysqlwire.Greeting, error) {
+func dialTargetDbAuthID(ctx context.Context, config spi.TargetConfig, mirrorDeprecateEOF bool) (net.Conn, mysqlwire.Greeting, error) {
 	dialer := net.Dialer{Timeout: targetDbHandshakeTimeout}
-	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(target.Host, strconv.Itoa(target.Port)))
+	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(config.Host, strconv.Itoa(config.Port)))
 	if err != nil {
 		return nil, mysqlwire.Greeting{}, err
 	}
@@ -96,12 +96,12 @@ func dialTargetDbAuthID(ctx context.Context, target spi.TargetDb, mirrorDeprecat
 		return nil, mysqlwire.Greeting{}, err
 	}
 	scramble := greeting.Scramble
-	authResp, err := targetDbAuthResponse(plugin, target.Password, scramble)
+	authResp, err := targetDbAuthResponse(plugin, config.Password, scramble)
 	if err != nil {
 		return nil, mysqlwire.Greeting{}, err
 	}
 	responseSeq := greetingSeq + 1
-	if target.TLS != nil {
+	if config.TLS != nil {
 		if greeting.Capabilities&mysqlwire.CapSSL == 0 {
 			return nil, mysqlwire.Greeting{}, errors.New("target DB does not offer TLS (CLIENT_SSL missing from its greeting)")
 		}
@@ -109,14 +109,14 @@ func dialTargetDbAuthID(ctx context.Context, target spi.TargetDb, mirrorDeprecat
 		if err := mysqlwire.WritePacket(conn, responseSeq, mysqlwire.SSLRequest(caps)); err != nil {
 			return nil, mysqlwire.Greeting{}, fmt.Errorf("write target-DB SSLRequest: %w", err)
 		}
-		tlsConn := tls.Client(conn, target.TLS)
+		tlsConn := tls.Client(conn, config.TLS)
 		if err := tlsConn.HandshakeContext(ctx); err != nil {
 			return nil, mysqlwire.Greeting{}, fmt.Errorf("target-DB TLS handshake: %w", err)
 		}
 		conn = tlsConn
 		responseSeq++
 	}
-	response := mysqlwire.TargetDbHandshakeResponse(caps, target.User, authResp, target.Db, plugin)
+	response := mysqlwire.TargetDbHandshakeResponse(caps, config.User, authResp, config.Db, plugin)
 	if err := mysqlwire.WritePacket(conn, responseSeq, response); err != nil {
 		return nil, mysqlwire.Greeting{}, fmt.Errorf("write target-DB handshake response: %w", err)
 	}
@@ -148,7 +148,7 @@ func dialTargetDbAuthID(ctx context.Context, target spi.TargetDb, mirrorDeprecat
 			}
 			plugin = switchPlugin
 			scramble = switchScramble
-			resp, err := targetDbAuthResponse(plugin, target.Password, scramble)
+			resp, err := targetDbAuthResponse(plugin, config.Password, scramble)
 			if err != nil {
 				return nil, mysqlwire.Greeting{}, err
 			}
@@ -159,7 +159,7 @@ func dialTargetDbAuthID(ctx context.Context, target spi.TargetDb, mirrorDeprecat
 			if plugin != targetDbPluginCachingSHA2 {
 				return nil, mysqlwire.Greeting{}, fmt.Errorf("unexpected AuthMoreData for plugin %s", plugin)
 			}
-			if err := handleCachingSHA2MoreData(conn, seq, authPayload, target.Password, scramble); err != nil {
+			if err := handleCachingSHA2MoreData(conn, seq, authPayload, config.Password, scramble); err != nil {
 				return nil, mysqlwire.Greeting{}, err
 			}
 		default:
@@ -552,10 +552,10 @@ func mysqlSession(namespace []string, ansiQuotes bool) spi.SessionObservation {
 	}
 }
 
-func cancelTargetDbQuery(target spi.TargetDb, connID uint32) error {
+func cancelTargetDbQuery(config spi.TargetConfig, connID uint32) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	conn, _, err := dialTargetDbAuthID(ctx, target, true)
+	conn, _, err := dialTargetDbAuthID(ctx, config, true)
 	if err != nil {
 		return err
 	}

@@ -21,9 +21,9 @@ func quoteMySQL(identifier string) string {
 	return "`" + strings.ReplaceAll(identifier, "`", "``") + "`"
 }
 
-func introspectTarget(t *testing.T, open func(spi.TargetDb) (*sql.DB, error), adapter relay.Db, probe introspect.NamespaceProbe, target dbtest.TargetDb, database string) *pb.CatalogRequest {
+func introspectTarget(t *testing.T, open func(spi.TargetConfig) (*sql.DB, error), adapter relay.Db, probe introspect.NamespaceProbe, target dbtest.TargetDb, database string) *pb.CatalogRequest {
 	t.Helper()
-	pool, err := open(spi.TargetDb{Host: target.Host, Port: target.Port, Db: database, User: target.User, Password: target.Password})
+	pool, err := open(spi.TargetConfig{Host: target.Host, Port: target.Port, Db: database, User: target.User, Password: target.Password})
 	if err != nil {
 		t.Fatalf("open target: %v", err)
 	}

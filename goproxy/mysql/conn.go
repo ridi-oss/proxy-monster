@@ -159,9 +159,9 @@ func (s *Server) handleConn(clientConn net.Conn) {
 	}()
 	slog.Info("authenticated mysql client", "client", clientConn.RemoteAddr().String(), "principal", identity.Principal, "roles", identity.Roles)
 
-	targetDbConn, targetGreeting, err := dialTargetDbAuthID(context.Background(), s.targetDb, deprecateEOF)
+	targetDbConn, targetGreeting, err := dialTargetDbAuthID(context.Background(), s.config, deprecateEOF)
 	if err != nil {
-		slog.Warn("mysql target DB unavailable", "host", s.targetDb.Host, "port", s.targetDb.Port, "error", err)
+		slog.Warn("mysql target DB unavailable", "host", s.config.Host, "port", s.config.Port, "error", err)
 		_ = mysqlwire.WritePacket(clientConn, tokenSeq+1, mysqlwire.ErrPacketState(
 			1045,
 			"08004",
@@ -171,7 +171,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 	}
 	targetDbConn = s.WrapTargetDbConn(targetDbConn)
 	defer targetDbConn.Close()
-	cancelQuery := func() { _ = cancelTargetDbQuery(s.targetDb, targetGreeting.ConnectionID) }
+	cancelQuery := func() { _ = cancelTargetDbQuery(s.config, targetGreeting.ConnectionID) }
 
 	preparedStmts := make(map[uint32]preparedStmt)
 	if handshake.Database != "" {

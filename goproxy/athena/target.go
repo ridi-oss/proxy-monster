@@ -51,9 +51,9 @@ func newTarget(ctx context.Context, cfg targetConfig, awsCfg aws.Config, transpo
 	return &target{config: cfg, api: api, endpoint: endpoint, sign: signAWS(identity, cfg.region), transport: transport, identity: identity, binding: identity.targetBinding(cfg, endpoint), contexts: contexts}, nil
 }
 
-func (t *target) TargetDb() spi.TargetDb {
+func (t *target) Config() spi.TargetConfig {
 	u, _ := url.Parse(t.endpoint)
-	return spi.TargetDb{Host: u.Hostname(), Port: 443, Db: t.config.database}
+	return spi.TargetConfig{Host: u.Hostname(), Port: 443, Db: t.config.database}
 }
 
 // ConnectionInfo publishes what a client needs to reach this datasource: the HTTPS endpoint and the scope

@@ -8,8 +8,8 @@ import (
 
 type engineProvider struct{ engine *engines.Engine }
 
-func (p engineProvider) Engine() *engines.Engine    { return p.engine }
-func (p engineProvider) NewDb(TargetDb) (Db, error) { return nil, nil }
+func (p engineProvider) Engine() *engines.Engine                 { return p.engine }
+func (p engineProvider) OpenTarget(TargetConfig) (Target, error) { return nil, nil }
 
 func TestNewRegistryRejectsUnknownAndDuplicateEngines(t *testing.T) {
 	copied := *engines.MySQL

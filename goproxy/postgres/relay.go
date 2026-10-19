@@ -269,7 +269,7 @@ func resultCapError(dec *spi.Decision, relayed spi.RelayStats, rowBytes int64) *
 
 func (s *Server) cancelCappedQuery(sess *session) {
 	if sess.keyData.ProcessID != 0 {
-		_ = sendCancelRequest(s.targetDb, sess.keyData.ProcessID, sess.keyData.SecretKey)
+		_ = sendCancelRequest(s.config, sess.keyData.ProcessID, sess.keyData.SecretKey)
 	}
 }
 

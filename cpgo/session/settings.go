@@ -3,6 +3,7 @@ package session
 import (
 	"fmt"
 	"math"
+	"net/url"
 	"strconv"
 	"strings"
 )
@@ -20,6 +21,15 @@ type Settings struct {
 	ResultKey bool
 	// WebOrigin prefixes redirects into the console when it is served from another origin.
 	WebOrigin string
+
+	// MCPResource is PM_MCP_RESOURCE in its canonical form, the resource every MCP token is bound to.
+	MCPResource string
+	// SessionWindowSeconds caps how long a pmon login renews its wire token before logging in again.
+	SessionWindowSeconds int64
+	// ElevatedScopeTTL is how long a pmon login's scopes beyond mcp:read and mcp:query last.
+	ElevatedScopeTTL int64
+	// MCPAccessTTL is an MCP access token's lifetime.
+	MCPAccessTTL int64
 
 	AbsoluteSeconds, IdleSeconds, SlideSeconds   int64
 	IdleWarnLeadSeconds, AbsoluteWarnLeadSeconds int64
@@ -78,4 +88,30 @@ func (s Settings) WebRedirect(path string) string {
 		return path
 	}
 	return strings.TrimRight(strings.TrimSpace(s.WebOrigin), "/") + path
+}
+
+// WebBase is the console's origin for links pmon prints: PM_WEB_ORIGIN, else this server's own origin.
+func (s Settings) WebBase() string {
+	if origin := strings.TrimRight(strings.TrimSpace(s.WebOrigin), "/"); origin != "" {
+		return origin
+	}
+	return strings.TrimSuffix(s.MCPResource, "/mcp")
+}
+
+// CanonicalResource is Kotlin's canonicalMcpResource for a URI it accepted: lowercase scheme and host, path /mcp.
+func CanonicalResource(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return raw
+	}
+	return strings.ToLower(u.Scheme) + "://" + strings.ToLower(u.Host) + "/mcp"
+}
+
+// ClampSeconds is a token lifetime: def when raw is not an integer, then clamped to [60s, 24h].
+func ClampSeconds(raw string, def int64) int64 {
+	v, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		v = def
+	}
+	return min(max(v, 60), 24*3600)
 }

@@ -1,7 +1,10 @@
 package com.ridi.oss.proxymonster.controlplane
 
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
+import com.ridi.oss.proxymonster.controlplane.support.daemonLiveness
+import com.ridi.oss.proxymonster.controlplane.support.daemonWithinWindow
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
+import com.ridi.oss.proxymonster.controlplane.support.seedDaemonSession
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -135,8 +138,8 @@ class PrincipalSessionStoreDbTest {
     @Test
     fun `newest web session displaces only same-principal web siblings`() {
         val principal = "displaced@example.com"
-        val daemonA = store.create(principal, "displace-daemon-a", null, 7200, 600).row
-        val daemonB = store.create(principal, "displace-daemon-b", null, 7200, 600).row
+        val daemonA = dataSource.seedDaemonSession(principal, 7200, 600)
+        val daemonB = dataSource.seedDaemonSession(principal, 7200, 600)
         val bystander = store.mintWeb(
             "bystander@example.com",
             null,
@@ -156,11 +159,9 @@ class PrincipalSessionStoreDbTest {
         assertEquals("bystander@example.com", assertNotNull(store.resolveWeb(bystander, "bystander-device")).principal)
 
         for (daemon in listOf(daemonA, daemonB)) {
-            val unchanged = assertNotNull(store.getById(daemon.id))
-            assertEquals(LIVENESS_ACTIVE, unchanged.livenessStatus)
-            assertTrue(unchanged.sessionExpiresAt.isAfter(Instant.now()))
+            assertEquals(LIVENESS_ACTIVE, dataSource.daemonLiveness(daemon))
         }
-        assertTrue(store.withinWindow(principal))
+        assertTrue(dataSource.daemonWithinWindow(principal))
     }
 
     @Test
@@ -311,8 +312,8 @@ class PrincipalSessionStoreDbTest {
 
     @Test
     fun `resolve web requires both live clocks and excludes daemon rows`() {
-        val daemon = store.create("daemon@example.com", "handle", null, 7200, 600)
-        assertNull(store.resolveWeb(daemon.row.id, "device-a"))
+        val daemon = dataSource.seedDaemonSession("daemon@example.com", 7200, 600)
+        assertNull(store.resolveWeb(daemon, "device-a"))
 
         val idleExpired = store.mintWeb(
             "idle-expired@example.com",
@@ -361,7 +362,7 @@ class PrincipalSessionStoreDbTest {
         assertTrue(store.endWeb(webId, ENDED_SIGNED_OUT))
         assertEquals(ENDED_SIGNED_OUT, store.webEndedReason(webId))
 
-        val daemonId = store.create("reason-daemon@example.com", "reason-daemon", null, 7200, 600).row.id
+        val daemonId = dataSource.seedDaemonSession("reason-daemon@example.com", 7200, 600)
         assertNull(store.webEndedReason(daemonId))
         assertNull(store.webEndedReason(-1))
     }

@@ -1,7 +1,5 @@
 package com.ridi.oss.proxymonster.controlplane
 
-import com.cedarpolicy.value.IpAddress
-import com.ridi.oss.proxymonster.auth.OAuthAuthorizationStore
 import com.ridi.oss.proxymonster.controlplane.authz.Authz
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzContext
@@ -11,8 +9,6 @@ import com.ridi.oss.proxymonster.controlplane.authz.CedarSchema
 import com.ridi.oss.proxymonster.controlplane.authz.authorizeWithContext
 import com.ridi.oss.proxymonster.controlplane.authz.cedarPolicyRoutes
 import com.ridi.oss.proxymonster.controlplane.authz.contextTagLint
-import com.ridi.oss.proxymonster.controlplane.management.AuditActor
-import com.ridi.oss.proxymonster.controlplane.management.AuditSource
 import com.ridi.oss.proxymonster.controlplane.management.DatasourceManagementService
 import com.ridi.oss.proxymonster.controlplane.management.IdentityManagementService
 import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
@@ -21,9 +17,7 @@ import com.ridi.oss.proxymonster.controlplane.notify.installNotifications
 import com.ridi.oss.proxymonster.controlplane.source.GitHubAdapter
 import com.ridi.oss.proxymonster.controlplane.source.GitHubSourceFlow
 import com.ridi.oss.proxymonster.controlplane.source.PrincipalDirectory
-import com.ridi.oss.proxymonster.controlplane.management.ManagementException
 import com.ridi.oss.proxymonster.controlplane.management.PolicyManagementService
-import com.ridi.oss.proxymonster.controlplane.management.auditEntity
 import com.ridi.oss.proxymonster.controlplane.mcp.installMcp
 import com.ridi.oss.proxymonster.controlplane.mcp.instanceInfoRoute
 import com.ridi.oss.proxymonster.controlplane.mcp.mcpConnectRoute
@@ -32,25 +26,18 @@ import com.ridi.oss.proxymonster.controlplane.oauth.McpPendingAuthorization
 import com.ridi.oss.proxymonster.controlplane.oauth.OAuthError
 import com.ridi.oss.proxymonster.controlplane.oauth.installMcpOAuthProtocolGuard
 import com.ridi.oss.proxymonster.controlplane.oauth.mcpOAuthRoutes
-import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.Application
 import io.ktor.server.application.ApplicationStopped
-import io.ktor.server.application.ApplicationCall
 import io.ktor.server.application.install
-import io.ktor.server.auth.Authentication
-import io.ktor.server.auth.authenticate
 import io.ktor.server.auth.principal
 import io.ktor.server.auth.session
 import io.ktor.server.plugins.calllogging.CallLogging
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.plugins.statuspages.StatusPages
-import io.ktor.server.request.contentLength
 import io.ktor.server.request.receive
-import io.ktor.server.request.receiveNullable
 import io.ktor.server.request.path
-import io.ktor.server.response.header
 import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
@@ -58,7 +45,6 @@ import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
 import io.ktor.server.sessions.SessionTransportTransformerMessageAuthentication
 import io.ktor.server.sessions.Sessions
-import io.ktor.server.sessions.clear
 import io.ktor.server.sessions.get
 import io.ktor.server.sessions.cookie
 import io.ktor.server.sessions.set
@@ -373,7 +359,7 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
         { accessService }, sourceAdapter,
     )
 
-    val deviceLoginStore = DeviceLoginStore(dataSource, resultCrypto)
+    val deviceLoginStore = DeviceLoginStore(dataSource)
     val principalSessionStore = PrincipalSessionStore(
         dataSource,
         resultCrypto,
@@ -447,22 +433,6 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
             cookie.extensions["SameSite"] = "Lax"
             cookie.maxAgeInSeconds = config.webSessionAbsoluteSeconds
             serializer = webSessionSerializer
-            transform(
-                SessionTransportTransformerMessageAuthentication(
-                    config.sessionSecret.toByteArray(),
-                ),
-            )
-        }
-        // Short-lived signed cookie proving the browser viewed the /device page for a specific user_code —
-        // the only channel that binds a device login to SSO, so a raw /auth/oidc/login link can't approve a
-        // handle the user never confirmed (device-phishing defense).
-        cookie<DeviceVerifySession>(DEVICE_VERIFY_COOKIE) {
-            cookie.path = "/"
-            cookie.httpOnly = true
-            cookie.secure = config.mcpIssuer.startsWith("https://")
-            cookie.extensions["SameSite"] = "Lax"
-            cookie.maxAgeInSeconds = 600 // ~10 min — matches the device-login TTL
-            serializer = jsonSessionSerializer()
             transform(
                 SessionTransportTransformerMessageAuthentication(
                     config.sessionSecret.toByteArray(),
@@ -555,17 +525,6 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
         // OAuth 2.1/CIMD authorization-server routes share this process, origin, DB pool, OIDC login,
         // and signed user session with the control plane. There is no service-to-service auth hop.
         mcpOAuthRoutes(config, dataSource, principalSessionStore, core.authAudit)
-
-        // CLI/daemon login surface: /auth/device/start + /poll (pmon), the /device verification page + its
-        // SSO/debug choices, and /auth/session/renew (docs/auth-model.md "CLI / daemon login").
-        deviceSessionRoutes(
-            config, deviceLoginStore, principalSessionStore,
-            tokenStore, userGroupStore, core.authAudit, this@module.environment.log, core.clock,
-        )
-        pmonLogoutRoute(config, principalSessionStore, core.authAudit)
-        pmonMcpTokenRoute(
-            config, principalSessionStore, userGroupStore, OAuthAuthorizationStore(dataSource), core.authAudit, core.clock,
-        )
 
         // SCIM 2.0 provisioning (docs/auth-model.md "SCIM 2.0 provisioning") — bearer+TLS gated,
         // not a user session. principalSessionStore is passed so a SCIM deprovision durably closes the

@@ -71,6 +71,8 @@ type ControlPlane interface {
 	// AuthorizeRequest asks whether one operation with no SQL behind it (a catalog or table-metadata read,
 	// an Athena API call) is allowed.
 	AuthorizeRequest(context.Context, *pb.RequestAuthorization) (*pb.RequestAuthorizationResult, error)
+	Register(registrationEngine enginepb.Engine, host string, port int, dbName string, tags []string, advertiseAddr string, advertiseCertChain *string, wireTLS bool, connectionInfo *pb.ConnectionInfo, description *string) error
+	PushCatalog(*pb.CatalogRequest) error
 	ValidateToken(token, clientAddr string) (Identity, error)
 	CloseConnection(connectionID []byte) error
 	OpenRunStream(context.Context) (RunStream, error)
@@ -198,8 +200,8 @@ type Provider interface {
 }
 
 // Db is one open target database. It owns its connection pool and answers everything the proxy core asks of
-// a target: the catalog scan, a table's detail, the wire server, and a dedicated run session. Boot, the
-// reconciler, and the runners hold a Db and never see a connection string or a *sql.DB.
+// a target: the catalog scan, a table's detail, the wire server, and a dedicated run session. Boot and the
+// Runner hold a Db and never see a connection string or a *sql.DB.
 type Db interface {
 	TargetDb() TargetDb
 	// ConnectionInfo is the nonsecret client-facing metadata published at Register: an endpoint plus the

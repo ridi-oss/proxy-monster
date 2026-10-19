@@ -130,14 +130,7 @@ func Run(registry spi.Registry) error {
 		slog.Info("proxy TLS disabled — plaintext (trusted tailnet only); set PM_TLS_CERT + PM_TLS_KEY to enable")
 	}
 
-	reconciler := newDatasourceReconciler(
-		client,
-		cfg,
-		targetDb,
-		provider.Engine(),
-		certChain,
-		maxResyncConcurrency,
-	)
+	runner := run.NewRunner(client, targetDb, cfg.QueryTimeout)
 	// Track in-flight run executions with the same drain primitive the wire server uses, so shutdown lets an
 	// executing editor/approval query finish and idle sessions return. Every open still dials back (spawns
 	// Run): a refusal would strand the control-plane, which has already committed this proxy for the request
@@ -149,7 +142,7 @@ func Run(registry spi.Registry) error {
 	defer eventsCancel() // covers the early serve-error return; the drain path cancels explicitly (idempotent)
 	eventsDone := make(chan struct{})
 	// A wire-protocol version skew is fatal: refuse to start rather than attach and stall the run channel.
-	if err := reconciler.registerAndPushCatalog(); err != nil {
+	if err := runner.RegisterAndPushCatalog(cfg, provider.Engine(), certChain); err != nil {
 		slog.Error("refusing to start — deploy the proxy and control-plane from the same server-v* release", "error", err)
 		return err
 	}
@@ -160,21 +153,21 @@ func Run(registry spi.Registry) error {
 			func() {
 				// A re-register (reconnect) that finds a now-incompatible control-plane is equally fatal:
 				// exit so the supervisor replaces this proxy rather than run against a version it cannot speak.
-				if err := reconciler.tryRegisterAndPushCatalog(); err != nil {
+				if err := runner.TryRegisterAndPushCatalog(cfg, provider.Engine(), certChain); err != nil {
 					slog.Error("control-plane became version-incompatible on reconnect — exiting", "error", err)
 					os.Exit(1)
 				}
 			},
-			func() { reconciler.refreshCatalog() },
+			func() { runner.RefreshCatalog() },
 			func(open spi.RunOpen) {
 				runs.Add()
 				go func() {
 					defer runs.Done()
-					run.NewRunner(client, targetDb, cfg.QueryTimeout).Run(open, runs.Signal())
+					runner.Run(open, runs.Signal())
 				}()
 			},
 			func(sessionID string, table *enginepb.ObjectRef) {
-				go run.NewTableDetailRunner(client, targetDb).Run(sessionID, table)
+				go runner.RunTableDetail(sessionID, table)
 			},
 		)
 		// A version rejection on the events stream is fatal even when a resync Register races to a still-
@@ -191,7 +184,7 @@ func Run(registry spi.Registry) error {
 			case <-eventsCtx.Done():
 				return
 			case <-time.After(ambientRefreshInterval):
-				reconciler.refreshCatalog()
+				runner.RefreshCatalog()
 			}
 		}
 	}()

@@ -1,4 +1,4 @@
-package boot
+package run
 
 import (
 	"context"
@@ -10,60 +10,39 @@ import (
 	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	"github.com/ridi-oss/proxy-monster/goproxy/config"
 	"github.com/ridi-oss/proxy-monster/goproxy/cp"
-	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
 const bootRegisterAttempts = 3
 const maxResyncConcurrency = 1
-
-type datasourceReconciler struct {
-	client        *cp.Client
-	cfg           *config.Config
-	targetDb      spi.Db
-	engine        *engines.Engine
-	certChain     func() *string
-	registerSlots chan struct{}
-	refreshBatch  atomic.Pointer[refreshBatch]
-}
 
 type refreshBatch struct {
 	done chan struct{}
 	ok   bool
 }
 
-func newDatasourceReconciler(client *cp.Client, cfg *config.Config, targetDb spi.Db, engine *engines.Engine, certChain func() *string, resyncConcurrency int) *datasourceReconciler {
-	return &datasourceReconciler{
-		client:        client,
-		cfg:           cfg,
-		targetDb:      targetDb,
-		engine:        engine,
-		certChain:     certChain,
-		registerSlots: make(chan struct{}, resyncConcurrency),
-	}
-}
-
-func (d *datasourceReconciler) tryRegisterAndPushCatalog() error {
+// TryRegisterAndPushCatalog is RegisterAndPushCatalog unless another attempt is already running.
+func (r *Runner) TryRegisterAndPushCatalog(cfg *config.Config, engine *engines.Engine, certChain func() *string) error {
 	var err error
-	if !tryRun(d.registerSlots, func() { err = d.registerAndPushCatalog() }) {
+	if !tryRun(r.registerSlots, func() { err = r.RegisterAndPushCatalog(cfg, engine, certChain) }) {
 		slog.Debug("skipping register/push catalog; another attempt is already in progress")
 	}
 	return err
 }
 
-// registerAndPushCatalog registers the datasource and pushes its catalog, retrying transient failures. A
+// RegisterAndPushCatalog registers the datasource and pushes its catalog, retrying transient failures. A
 // control-plane protocol-version mismatch is permanent, so it is the only error returned to make boot or a
 // reconnect exit; all other failures leave the proxy running fail-closed until the next resync can recover.
-func (d *datasourceReconciler) registerAndPushCatalog() error {
+func (r *Runner) RegisterAndPushCatalog(cfg *config.Config, engine *engines.Engine, certChain func() *string) error {
 	for attempt := 0; attempt < bootRegisterAttempts; attempt++ {
-		target := d.targetDb.TargetDb()
-		err := d.client.Register(d.engine.Proto, target.Host, target.Port, target.Db, d.cfg.DatasourceTags, d.cfg.AdvertiseAddr, d.certChain(), d.cfg.TLSEnabled(), d.targetDb.ConnectionInfo(), &d.cfg.DatasourceDescription)
+		target := r.target.TargetDb()
+		err := r.client.Register(engine.Proto, target.Host, target.Port, target.Db, cfg.DatasourceTags, cfg.AdvertiseAddr, certChain(), cfg.TLSEnabled(), r.target.ConnectionInfo(), &cfg.DatasourceDescription)
 		if errors.Is(err, cp.ErrIncompatibleControlPlane) {
 			return err
 		}
 		if err != nil {
 			slog.Warn("datasource registration failed", "attempt", attempt+1, "of", bootRegisterAttempts, "error", err)
-		} else if d.refreshCatalog() {
-			slog.Info("datasource registered + catalog pushed", "datasource", d.cfg.DatasourceName)
+		} else if r.RefreshCatalog() {
+			slog.Info("datasource registered + catalog pushed", "datasource", cfg.DatasourceName)
 			return nil
 		}
 		if attempt < bootRegisterAttempts-1 {
@@ -76,14 +55,15 @@ func (d *datasourceReconciler) registerAndPushCatalog() error {
 	return nil
 }
 
-func (d *datasourceReconciler) refreshCatalog() bool {
-	return runMergedRefresh(&d.refreshBatch, d.refreshCatalogNow)
+// RefreshCatalog introspects the target and pushes the catalog; concurrent callers share one refresh.
+func (r *Runner) RefreshCatalog() bool {
+	return runMergedRefresh(&r.refreshBatch, r.refreshCatalogNow)
 }
 
-func (d *datasourceReconciler) refreshCatalogNow() bool {
-	catalog, err := d.targetDb.Introspect(context.Background())
+func (r *Runner) refreshCatalogNow() bool {
+	catalog, err := r.target.Introspect(context.Background())
 	if err == nil {
-		err = d.client.PushCatalog(catalog)
+		err = r.client.PushCatalog(catalog)
 	}
 
 	if err != nil {

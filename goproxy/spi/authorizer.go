@@ -100,7 +100,7 @@ func (a *Authorizer) SetNamespace(namespace []string) {
 }
 
 // AuthzInput is one statement to authorize plus the probe callbacks the protocol wires up. The protocol
-// runs its Db's probe SQL on the target DB and parses the result. The Authorizer calls ProbeSession only when
+// runs its probe SQL on the target DB and parses the result. The Authorizer calls ProbeSession only when
 // its cache is dirty, and ProbeTempColumns only when the protocol supplies it (the PG temp overlay).
 type AuthzInput struct {
 	SQL              string

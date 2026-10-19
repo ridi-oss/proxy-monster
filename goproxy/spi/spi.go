@@ -1,4 +1,4 @@
-// Package spi defines the dependency-free contracts between the proxy core and per-dialect leaves.
+// Package spi defines the dependency-free contracts between the proxy core and the per-engine packages.
 package spi
 
 import (

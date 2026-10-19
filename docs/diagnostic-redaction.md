@@ -262,9 +262,10 @@ allowed statement).
 ## The redact predicate
 
 The analyzer (Go) decides what a statement could leak; the control-plane
-(Kotlin) only authorizes it. Per engine (`engine.DiagnosticLeakKeys`), the
-analyzer emits `StatementFacts.diagnostic_leak_columns`: the referenced columns,
-plus — PostgreSQL writes only — the whole target row, because
+(Kotlin) only authorizes it. Per engine (`DiagnosticLeakKeys` in
+`analyzer/engines`), the analyzer emits
+`StatementFacts.diagnostic_leak_columns`: the referenced columns, plus —
+PostgreSQL writes only — the whole target row, because
 `INSERT INTO users (id) VALUES (1)` can fail with
 `DETAIL: Failing row contains (1, 010-1234-5678, …)`.
 

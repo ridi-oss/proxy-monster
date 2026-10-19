@@ -5,9 +5,10 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
+
 	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
-	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
 	"github.com/ridi-oss/sqlglot-go/dialects"
 	"google.golang.org/protobuf/proto"
 )

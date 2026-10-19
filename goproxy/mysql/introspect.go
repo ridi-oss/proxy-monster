@@ -1,12 +1,12 @@
 package mysql
 
 import (
-	// The named import both registers the "mysql" driver and gives mysqldriver.Config for DSN-free construction.
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
 
+	// The named import both registers the "mysql" driver and gives mysqldriver.Config for DSN-free construction.
 	mysqldriver "github.com/go-sql-driver/mysql"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"

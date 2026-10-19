@@ -1,5 +1,10 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import org.junit.jupiter.api.AfterEach
+import io.ktor.server.application.Application
+import io.ktor.client.plugins.defaultRequest
+import io.ktor.client.engine.cio.CIO
+import com.ridi.oss.proxymonster.controlplane.support.CpGoStack
 import com.ridi.oss.proxymonster.controlplane.management.auditEntity
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
@@ -36,10 +41,26 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class WebSessionRoutesDbTest {
-    private fun io.ktor.server.testing.ApplicationTestBuilder.sessionClient(): HttpClient = createClient {
+    private val stacks = mutableListOf<CpGoStack>()
+
+    @AfterEach
+    fun closeStacks() {
+        stacks.forEach { it.close() }
+        stacks.clear()
+    }
+
+    /** The control plane behind cp-go for the current test, closed after it. */
+    private fun stack(config: Config, core: ControlPlaneCore, database: String, configure: Application.() -> Unit = {}) {
+        stacks += CpGoStack(config, core, database, configure = configure)
+    }
+
+    private fun sessionClient(): HttpClient = stacks.last().client()
+
+    /** A client that keeps no cookies, for replaying one by hand. */
+    private fun bareClient(): HttpClient = HttpClient(CIO) {
         expectSuccess = false
-        install(HttpCookies)
         install(ClientContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
+        defaultRequest { url(stacks.last().baseUrl) }
     }
 
     private suspend fun assertReason(response: HttpResponse, reason: String) {
@@ -98,10 +119,11 @@ class WebSessionRoutesDbTest {
     @Test
     fun `auth config exposes default session UX timings`() = testApplication {
         requireDockerOrSkip()
-        val dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_auth_config_defaults"))
+        val database = SharedPostgres.freshDatabase("pm_auth_config_defaults")
+        val dataSource = SharedPostgres.hikari(database)
         Flyway.configure().dataSource(dataSource).load().migrate()
         val config = Config.fromEnv { null }.copy(dbUrl = "", dbUser = "", dbPassword = "")
-        application { module(config, ControlPlaneCore(dataSource)) }
+        stack(config, ControlPlaneCore(dataSource), database)
 
         val response = sessionClient().get("/auth/config")
         assertEquals(HttpStatusCode.OK, response.status)
@@ -124,12 +146,13 @@ class WebSessionRoutesDbTest {
     @Test
     fun `auth config normalizes a mixed-unit absolute cap to minutes`() = testApplication {
         requireDockerOrSkip()
-        val dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_auth_config_minutes"))
+        val database = SharedPostgres.freshDatabase("pm_auth_config_minutes")
+        val dataSource = SharedPostgres.hikari(database)
         Flyway.configure().dataSource(dataSource).load().migrate()
         val config = Config.fromEnv { name ->
             if (name == "PM_WEB_SESSION_ABSOLUTE") "1h30m" else null
         }.copy(dbUrl = "", dbUser = "", dbPassword = "")
-        application { module(config, ControlPlaneCore(dataSource)) }
+        stack(config, ControlPlaneCore(dataSource), database)
 
         val response = sessionClient().get("/auth/config").body<AuthConfigResponse>()
         assertEquals(90L, response.session.absoluteCapAmount)
@@ -139,14 +162,14 @@ class WebSessionRoutesDbTest {
     @Test
     fun `debug login resolves through the database and logout ends the row`() = testApplication {
         requireDockerOrSkip()
-        val dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_web_routes"))
+        val database = SharedPostgres.freshDatabase("pm_web_routes")
+        val dataSource = SharedPostgres.hikari(database)
         Flyway.configure().dataSource(dataSource).load().migrate()
         val config = Config.fromEnv { name ->
             if (name == "PM_WEB_SESSION_ABSOLUTE") "90s" else null
         }.copy(dbUrl = "", dbUser = "", dbPassword = "")
         val core = ControlPlaneCore(dataSource)
-        application {
-            module(config, core)
+        stack(config, core, database) {
             routing {
                 serverGet("/test/protected") {
                     call.requireApi() ?: return@serverGet
@@ -154,11 +177,7 @@ class WebSessionRoutesDbTest {
                 }
             }
         }
-        val client = createClient {
-            expectSuccess = false
-            install(HttpCookies)
-            install(ClientContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
-        }
+        val client = sessionClient()
 
         // A claimed role must EXIST: the debug login persists the claim as real `principal_role` rows, so a
         // name with no `app_role` behind it is rejected rather than accepted and quietly ignored. `system:auditor`
@@ -262,7 +281,7 @@ class WebSessionRoutesDbTest {
             }
         }
         assertEquals(HttpStatusCode.Unauthorized, client.get("/auth/me").status)
-        val replay = createClient { expectSuccess = false }.get("/auth/me") {
+        val replay = bareClient().get("/auth/me") {
             header(HttpHeaders.Cookie, signedCookie)
         }
         assertEquals(HttpStatusCode.Unauthorized, replay.status)
@@ -271,10 +290,11 @@ class WebSessionRoutesDbTest {
     @Test
     fun `conditional logout ends only the session id observed by the client`() = testApplication {
         requireDockerOrSkip()
-        val dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_web_conditional_logout"))
+        val database = SharedPostgres.freshDatabase("pm_web_conditional_logout")
+        val dataSource = SharedPostgres.hikari(database)
         Flyway.configure().dataSource(dataSource).load().migrate()
         val config = Config.fromEnv { null }.copy(dbUrl = "", dbUser = "", dbPassword = "")
-        application { module(config, ControlPlaneCore(dataSource)) }
+        stack(config, ControlPlaneCore(dataSource), database)
         val client = sessionClient()
 
         client.post("/auth/debug") {
@@ -339,10 +359,11 @@ class WebSessionRoutesDbTest {
     @Test
     fun `logging out of an idle-expired session still records the termination`() = testApplication {
         requireDockerOrSkip()
-        val dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_web_idle_logout"))
+        val database = SharedPostgres.freshDatabase("pm_web_idle_logout")
+        val dataSource = SharedPostgres.hikari(database)
         Flyway.configure().dataSource(dataSource).load().migrate()
         val config = Config.fromEnv { null }.copy(dbUrl = "", dbUser = "", dbPassword = "")
-        application { module(config, ControlPlaneCore(dataSource)) }
+        stack(config, ControlPlaneCore(dataSource), database)
         val client = sessionClient()
 
         client.post("/auth/debug") {
@@ -381,11 +402,11 @@ class WebSessionRoutesDbTest {
     @Test
     fun `expired and ended web rows fail closed`() = testApplication {
         requireDockerOrSkip()
-        val dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_web_fail_closed"))
+        val database = SharedPostgres.freshDatabase("pm_web_fail_closed")
+        val dataSource = SharedPostgres.hikari(database)
         Flyway.configure().dataSource(dataSource).load().migrate()
         val config = Config.fromEnv().copy(dbUrl = "", dbUser = "", dbPassword = "")
-        application {
-            module(config, ControlPlaneCore(dataSource))
+        stack(config, ControlPlaneCore(dataSource), database) {
             routing {
                 serverGet("/test/protected") {
                     call.requireApi() ?: return@serverGet
@@ -393,11 +414,7 @@ class WebSessionRoutesDbTest {
                 }
             }
         }
-        val client = createClient {
-            expectSuccess = false
-            install(HttpCookies)
-            install(ClientContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
-        }
+        val client = sessionClient()
         client.post("/auth/debug") {
             headers.append(HttpHeaders.ContentType, ContentType.Application.Json.toString())
             setBody(DebugLogin("missing@example.com"))
@@ -428,11 +445,11 @@ class WebSessionRoutesDbTest {
     @Test
     fun `session observation and ordinary authenticated routes never slide idle while heartbeat does`() = testApplication {
         requireDockerOrSkip()
-        val dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_web_status"))
+        val database = SharedPostgres.freshDatabase("pm_web_status")
+        val dataSource = SharedPostgres.hikari(database)
         Flyway.configure().dataSource(dataSource).load().migrate()
         val config = Config.fromEnv { null }.copy(dbUrl = "", dbUser = "", dbPassword = "")
-        application {
-            module(config, ControlPlaneCore(dataSource))
+        stack(config, ControlPlaneCore(dataSource), database) {
             routing {
                 serverGet("/api/test/protected") {
                     call.requireApi() ?: return@serverGet
@@ -441,10 +458,7 @@ class WebSessionRoutesDbTest {
             }
         }
         val client = sessionClient()
-        val freshClient = createClient {
-            expectSuccess = false
-            install(ClientContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
-        }
+        val freshClient = bareClient()
 
         assertReason(freshClient.get("/auth/session/status"), "none")
         assertReason(freshClient.get("/auth/me"), "none")
@@ -510,10 +524,11 @@ class WebSessionRoutesDbTest {
     @Test
     fun `session status and me surface displacement and bind mismatch reasons`() = testApplication {
         requireDockerOrSkip()
-        val dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_web_status_reasons"))
+        val database = SharedPostgres.freshDatabase("pm_web_status_reasons")
+        val dataSource = SharedPostgres.hikari(database)
         Flyway.configure().dataSource(dataSource).load().migrate()
         val config = Config.fromEnv { null }.copy(dbUrl = "", dbUser = "", dbPassword = "")
-        application { module(config, ControlPlaneCore(dataSource)) }
+        stack(config, ControlPlaneCore(dataSource), database)
         val firstClient = sessionClient()
         val secondClient = sessionClient()
 
@@ -536,10 +551,7 @@ class WebSessionRoutesDbTest {
         assertReason(firstClient.get("/auth/me"), "displaced")
         assertReason(firstClient.post("/auth/session/heartbeat"), "displaced")
 
-        val replayClient = createClient {
-            expectSuccess = false
-            install(ClientContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
-        }
+        val replayClient = bareClient()
         assertReason(
             replayClient.get("/auth/session/status") { header(HttpHeaders.Cookie, capturedSession) },
             "displaced",
@@ -559,10 +571,7 @@ class WebSessionRoutesDbTest {
             }
         }
         val wrongDevice = "${DEVICE_COOKIE}=00000000-0000-0000-0000-000000000000"
-        val bindReplay = createClient {
-            expectSuccess = false
-            install(ClientContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
-        }
+        val bindReplay = bareClient()
         assertReason(
             bindReplay.get("/auth/session/status") {
                 header(HttpHeaders.Cookie, "$boundSession; $wrongDevice")
@@ -640,11 +649,11 @@ class WebSessionRoutesDbTest {
     @Test
     fun `a pre-cutover principal-roles cookie fails closed to unauthenticated`() = testApplication {
         requireDockerOrSkip()
-        val dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_web_legacy_cookie"))
+        val database = SharedPostgres.freshDatabase("pm_web_legacy_cookie")
+        val dataSource = SharedPostgres.hikari(database)
         Flyway.configure().dataSource(dataSource).load().migrate()
         val config = Config.fromEnv().copy(dbUrl = "", dbUser = "", dbPassword = "")
-        application {
-            module(config, ControlPlaneCore(dataSource))
+        stack(config, ControlPlaneCore(dataSource), database) {
             routing {
                 // Reproduce a pre-cutover {principal, roles} session cookie: HMAC-valid under the same
                 // key, but a value that is not a known storage tracker id.
@@ -658,11 +667,7 @@ class WebSessionRoutesDbTest {
                 }
             }
         }
-        val client = createClient {
-            expectSuccess = false
-            install(HttpCookies)
-            install(ClientContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
-        }
+        val client = sessionClient()
         client.get("/test/forge-legacy")
         // A valid HMAC over a wrong-shape payload must be treated as unauthenticated, never a 500.
         assertEquals(HttpStatusCode.Unauthorized, client.get("/auth/me").status)

@@ -22,7 +22,6 @@ type Env struct {
 	St        dbtest.Store
 	Srv       *httptest.Server
 	Forwarded []string
-	Ended     []string
 	Authz     fakeAuthz
 }
 
@@ -123,6 +122,8 @@ type Config struct {
 	Cedar bool
 	// Edges is PM_TRUSTED_PROXIES; "127.0.0.1" makes the test client a trusted edge.
 	Edges []string
+	// AuthDebugOff turns the debug login off.
+	AuthDebugOff bool
 }
 
 func SetupConfig(t *testing.T, c Config) *Env {
@@ -140,14 +141,15 @@ func SetupConfig(t *testing.T, c Config) *Env {
 		e.Forwarded = append(e.Forwarded, r.Method+" "+r.URL.Path)
 		w.WriteHeader(http.StatusTeapot)
 	})
+	settings := dbtest.Settings()
+	settings.AuthDebug = !c.AuthDebugOff
 	mux := http.NewServeMux()
 	routes.Register(mux, e.St.Pool, api.Gate{
-		Sessions:      session.NewResolver(e.St.Pool, dbtest.Secret),
-		EndMismatched: func(r *http.Request) { e.Ended = append(e.Ended, r.Header.Get("Cookie")) },
-		Edges:         front.ParseTrustedEdges(c.Edges),
-		AuthDebug:     true,
-		Authz:         decider,
-		Kotlin:        &e.Authz,
+		Sessions:  session.NewResolver(e.St.Pool, settings),
+		Edges:     front.ParseTrustedEdges(c.Edges),
+		AuthDebug: settings.AuthDebug,
+		Authz:     decider,
+		Kotlin:    &e.Authz,
 	})
 	e.Srv = httptest.NewServer(front.Route(mux, forward))
 	t.Cleanup(e.Srv.Close)
@@ -195,4 +197,16 @@ func (e *Env) Count(t *testing.T, sql string, args ...any) int {
 		t.Fatal(err)
 	}
 	return n
+}
+
+func (e *Env) EndedReason(t *testing.T, key string) string {
+	t.Helper()
+	var reason *string
+	if err := e.St.Pool.QueryRow(context.Background(), `SELECT ended_reason FROM principal_session WHERE session_key = $1`, key).Scan(&reason); err != nil {
+		t.Fatal(err)
+	}
+	if reason == nil {
+		return ""
+	}
+	return *reason
 }

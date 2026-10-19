@@ -48,15 +48,14 @@ type config struct {
 	GitHub         githubConfig   `embed:"" prefix:"github-"`
 	BridgePort     int            `env:"PM_CP_GO_GRPC_PORT" default:"0" help:"Loopback port the Kotlin control plane calls Go on; 0 picks a free one. Set it, and the child's PM_CP_GO_GRPC_ADDR, with PM_CP_ATTACH."`
 	// Shared with the Kotlin child, which reads them from the environment, so they are never flags.
-	DBURL         string `kong:"-"`
-	DBUser        string `kong:"-"`
-	DBPassword    string `kong:"-"`
-	SessionSecret string `kong:"-"`
-	AuthDebug     bool   `kong:"-"`
+	DBURL      string `kong:"-"`
+	DBUser     string `kong:"-"`
+	DBPassword string `kong:"-"`
 	// InternalToken authenticates cp-go to the child; generated per boot unless attaching.
 	InternalToken string `kong:"-"`
 	// UserAttributes is PM_OIDC_USER_ATTRIBUTES, which Kotlin declares only when OIDC login is configured.
-	UserAttributes string `kong:"-"`
+	UserAttributes string           `kong:"-"`
+	Session        session.Settings `kong:"-"`
 }
 
 func envOr(key, def string) string {
@@ -66,16 +65,57 @@ func envOr(key, def string) string {
 	return def
 }
 
+// sessionSettings reads the web-session settings as Kotlin's Config does, refusing a duration Kotlin refuses.
+func sessionSettings() (session.Settings, error) {
+	s := session.Settings{
+		Secret:      envOr("PM_SESSION_SECRET", "dev-insecure-session-secret-change-me"),
+		AuthDebug:   envOr("PM_AUTH_DEBUG", "true") == "true",
+		Secure:      strings.HasPrefix(envOr("PM_MCP_RESOURCE", "http://127.0.0.1:8080/mcp"), "https://"),
+		ResultKey:   os.Getenv("PM_RESULT_KEY") != "",
+		OIDCEnabled: oidcConfigured(),
+	}
+	for _, d := range []struct {
+		env string
+		def int64
+		dst *int64
+	}{
+		{"PM_WEB_SESSION_ABSOLUTE", 7200, &s.AbsoluteSeconds},
+		{"PM_WEB_SESSION_IDLE", 900, &s.IdleSeconds},
+		{"PM_WEB_SESSION_SLIDE", 120, &s.SlideSeconds},
+		{"PM_WEB_SESSION_IDLE_WARN_LEAD", 60, &s.IdleWarnLeadSeconds},
+		{"PM_WEB_SESSION_ABSOLUTE_WARN_LEAD", 300, &s.AbsoluteWarnLeadSeconds},
+		{"PM_WEB_SESSION_HEARTBEAT", 90, &s.HeartbeatSeconds},
+	} {
+		*d.dst = d.def
+		if raw := os.Getenv(d.env); raw != "" {
+			v, err := session.ParseDuration(raw)
+			if err != nil {
+				return s, fmt.Errorf("%s: %w", d.env, err)
+			}
+			*d.dst = v
+		}
+	}
+	return s, nil
+}
+
+func oidcConfigured() bool {
+	return os.Getenv("PM_OIDC_ISSUER") != "" && os.Getenv("PM_OIDC_CLIENT_ID") != "" &&
+		os.Getenv("PM_OIDC_CLIENT_SECRET") != "" && os.Getenv("PM_OIDC_REDIRECT_URI") != ""
+}
+
 func main() {
 	var cfg config
 	kong.Parse(&cfg, kong.Name("cp-go"), kong.Description("proxy-monster control plane front door."))
 	cfg.DBURL = envOr("PM_DB_URL", "jdbc:postgresql://localhost:5432/proxymonster")
 	cfg.DBUser = envOr("PM_DB_USER", "proxymonster")
 	cfg.DBPassword = envOr("PM_DB_PASSWORD", "proxymonster")
-	cfg.SessionSecret = envOr("PM_SESSION_SECRET", "dev-insecure-session-secret-change-me")
-	cfg.AuthDebug = envOr("PM_AUTH_DEBUG", "true") == "true"
 	cfg.InternalToken = os.Getenv("PM_CP_INTERNAL_TOKEN")
-	if os.Getenv("PM_OIDC_ISSUER") != "" && os.Getenv("PM_OIDC_CLIENT_ID") != "" && os.Getenv("PM_OIDC_CLIENT_SECRET") != "" && os.Getenv("PM_OIDC_REDIRECT_URI") != "" {
+	var err error
+	if cfg.Session, err = sessionSettings(); err != nil {
+		slog.Error("cp-go: " + err.Error())
+		os.Exit(1)
+	}
+	if oidcConfigured() {
 		cfg.UserAttributes = os.Getenv("PM_OIDC_USER_ATTRIBUTES")
 	}
 	cfg.GitHub.AppID = strings.TrimSpace(os.Getenv("PM_GITHUB_APP_ID"))
@@ -170,12 +210,11 @@ func run(ctx context.Context, cfg config) int {
 	serve := func(edges front.TrustedEdges) http.Handler {
 		mux := http.NewServeMux()
 		routes.Register(mux, pool, api.Gate{
-			Sessions:      session.NewResolver(pool, cfg.SessionSecret),
-			EndMismatched: api.KotlinSessionCheck(httpUpstream),
-			Edges:         edges,
-			AuthDebug:     cfg.AuthDebug,
-			Authz:         authz.NewDecider(pool, schema),
-			Kotlin:        kotlin,
+			Sessions:  session.NewResolver(pool, cfg.Session),
+			Edges:     edges,
+			AuthDebug: cfg.Session.AuthDebug,
+			Authz:     authz.NewDecider(pool, schema),
+			Kotlin:    kotlin,
 		})
 		h := front.Route(mux, front.NewHTTP(httpUpstream, edges))
 		if web != nil {

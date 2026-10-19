@@ -62,7 +62,7 @@ func (m *RowMasker) Apply(values []*string) []*string {
 	return masked
 }
 
-// ---- Control-plane decision (the Decider maps the wire enum to a string Action + fail-closes) ----
+// ---- Control-plane decision (the DecisionClient maps the wire enum to a string Action + fail-closes) ----
 
 // Decision is the control plane's enforcement verdict for one statement. Mirrors WireDecision in
 // controlplane.proto. Masks and AfterStatement are the proto types (pb.ColumnMask / pb.ProxyCommand) used
@@ -210,10 +210,9 @@ type DecideRequest struct {
 	CheckTargetError func(sql string) (*TargetError, error)
 }
 
-// Decider performs the per-query control-plane decision. It is injected so the engine is unit-testable;
-// the real implementation is the gRPC client, tests supply a fake. The implementation maps the proto
-// verdict by name (unknown / unspecified -> DENY) so the engine never sees an ambiguous Action.
-type Decider interface {
+// DecisionClient asks the control plane for one statement's decision; tests supply a fake. The implementation
+// maps the proto verdict by name (unknown / unspecified -> DENY) so the engine never sees an ambiguous Action.
+type DecisionClient interface {
 	Decide(req DecideRequest) DecisionOutcome
 }
 
@@ -341,10 +340,10 @@ func (Fail) isVerdict()    {}
 // ---- The engine ----
 
 // QueryEngine runs one connection's relay. It holds ONLY a namespace cache (invalidated by protocol
-// signals via MarkNamespaceDirty, never by inspecting SQL). It is created with an injected Decider and
+// signals via MarkNamespaceDirty, never by inspecting SQL). It is created with an injected DecisionClient and
 // never touches sockets — the protocol supplies probe I/O via callbacks.
 type QueryEngine struct {
-	decider      Decider
+	client       DecisionClient
 	session      SessionObservation
 	nsDirty      bool
 	sanitizeDiag bool
@@ -355,8 +354,8 @@ type QueryEngine struct {
 
 // NewQueryEngine creates the per-connection engine. The namespace starts dirty so the first query
 // probes it.
-func NewQueryEngine(decider Decider) *QueryEngine {
-	return &QueryEngine{decider: decider, nsDirty: true}
+func NewQueryEngine(client DecisionClient) *QueryEngine {
+	return &QueryEngine{client: client, nsDirty: true}
 }
 
 // MarkNamespaceDirty invalidates the cached namespace. The protocol calls this when an authoritative
@@ -446,7 +445,7 @@ func (e *QueryEngine) Authorize(in AuthzInput) Verdict {
 		}
 	}
 
-	out := e.decider.Decide(DecideRequest{
+	out := e.client.Decide(DecideRequest{
 		Session:          e.session.Clone(),
 		Token:            in.Token,
 		SQL:              in.SQL,

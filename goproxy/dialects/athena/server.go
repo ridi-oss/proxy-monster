@@ -34,7 +34,7 @@ var errAuthorizationUnavailable = errors.New("athena: request authorization is u
 type nativeServer struct {
 	target      *target
 	listen      spi.Listen
-	client      spi.EnforcementClient
+	client      spi.ControlPlane
 	tlsProvider func() (*tls.Config, error)
 	mu          sync.Mutex
 	server      *http.Server

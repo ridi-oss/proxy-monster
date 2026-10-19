@@ -72,14 +72,6 @@ type CompletionReport struct {
 	DurationMs    int64
 }
 
-// CompletionReporter emits a best-effort post-relay completion report to the control plane. The native-wire
-// gRPC client implements it; tests inject a fake. The implementation is expected to be self-contained
-// best-effort — it logs its own failures and never returns an error, because a lost completion only
-// degrades the audit monitor's volume signal and must never affect the client session.
-type CompletionReporter interface {
-	ReportCompletion(CompletionReport)
-}
-
 // RelayStatus reduces a relay's terminal condition to the completion status vocabulary. clean reports
 // whether the result set terminated normally (a target-DB OK/EOF, not a target-DB error); err is any transport
 // or protocol fault that tore the relay down. Anything that is not a clean, error-free completion is an
@@ -98,7 +90,7 @@ func RelayStatus(clean bool, err error) string {
 // sequential dump script must not outrun its own budget. No report is sent for a statement that was never
 // relayed (dec nil) or whose decision carries no audit id (DecisionID 0, a fail-closed path); the channel is
 // then already closed.
-func EmitCompletion(reporter CompletionReporter, dec *Decision, stats RelayStats, status string, start time.Time) <-chan struct{} {
+func EmitCompletion(reporter interface{ ReportCompletion(CompletionReport) }, dec *Decision, stats RelayStats, status string, start time.Time) <-chan struct{} {
 	done := make(chan struct{})
 	if reporter == nil || dec == nil || dec.DecisionID == 0 {
 		close(done)

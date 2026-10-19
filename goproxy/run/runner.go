@@ -40,12 +40,12 @@ type runStream = spi.RunStream
 type targetDbFactory func(ctx context.Context, token string, connectionID []byte, guard engine.ExecGuard, defaultSchema string) (spi.TargetDbSession, error)
 
 type Runner struct {
-	client       spi.RunClient
+	client       spi.ControlPlane
 	factory      targetDbFactory
 	queryTimeout time.Duration
 }
 
-func NewRunner(client spi.RunClient, targetDb spi.Db, queryTimeout time.Duration) *Runner {
+func NewRunner(client spi.ControlPlane, targetDb spi.Db, queryTimeout time.Duration) *Runner {
 	if queryTimeout == 0 {
 		queryTimeout = defaultQueryTimeout
 	}

@@ -16,13 +16,13 @@ import (
 type Server struct {
 	*wire.Server
 	targetDb    spi.TargetDb
-	client      spi.EnforcementClient
+	client      spi.ControlPlane
 	db          engine.Db
 	tlsProvider func() (*tls.Config, error)
 }
 
 // New constructs a PostgreSQL wire broker for one target DB datasource.
-func New(listen spi.Listen, targetDb spi.TargetDb, client spi.EnforcementClient, dbImpl engine.Db, tlsProvider func() (*tls.Config, error)) *Server {
+func New(listen spi.Listen, targetDb spi.TargetDb, client spi.ControlPlane, dbImpl engine.Db, tlsProvider func() (*tls.Config, error)) *Server {
 	s := &Server{targetDb: targetDb, client: client, db: dbImpl, tlsProvider: tlsProvider}
 	s.Server = wire.New(listen, "pgproxy", s.handleConn)
 	return s

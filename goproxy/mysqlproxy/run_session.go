@@ -26,7 +26,7 @@ type RunSession struct {
 	guard        engine.ExecGuard
 }
 
-func NewRunSession(ctx context.Context, target spi.TargetDb, db engine.Db, client spi.SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration, defaultSchema string) (*RunSession, error) {
+func NewRunSession(ctx context.Context, target spi.TargetDb, db engine.Db, client spi.ControlPlane, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration, defaultSchema string) (*RunSession, error) {
 	if defaultSchema != "" {
 		target.Db = defaultSchema
 	}

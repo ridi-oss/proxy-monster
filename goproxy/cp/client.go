@@ -104,7 +104,7 @@ func defaultEventLoopTimings() eventLoopTimings {
 	}
 }
 
-// Client is the proxy's gRPC client to the control plane. It satisfies engine.Decider.
+// Client is the proxy's gRPC client to the control plane. It implements spi.ControlPlane.
 type Client struct {
 	conn           *grpc.ClientConn
 	stub           pb.ControlPlaneClient
@@ -305,7 +305,7 @@ func decisionFromWire(d *pb.WireDecision) ([]*pb.ProxyCommand, *engine.Decision)
 	}
 }
 
-// Decide satisfies engine.Decider: it re-sends the same raw request after mechanically satisfying at
+// Decide implements engine.DecisionClient: it re-sends the same raw request after mechanically satisfying at
 // most three before_decide command rounds. Every failure path yields a non-empty Err (fail closed).
 func (c *Client) Decide(req engine.DecideRequest) engine.DecisionOutcome {
 	temps := make([]*pb.TempColumn, 0, len(req.TempColumns))
@@ -693,13 +693,7 @@ func (c *Client) OpenTableDetailStream(ctx context.Context) (spi.TableDetailStre
 	return c.TableDetailExec(ctx)
 }
 
-var (
-	_ engine.Decider            = (*Client)(nil)
-	_ engine.CompletionReporter = (*Client)(nil)
-	_ spi.EnforcementClient     = (*Client)(nil)
-	_ spi.RunClient             = (*Client)(nil)
-	_ spi.TableDetailClient     = (*Client)(nil)
-)
+var _ spi.ControlPlane = (*Client)(nil)
 
 // DatasourceName is the one datasource this client fronts.
 func (c *Client) DatasourceName() string { return c.datasourceName }

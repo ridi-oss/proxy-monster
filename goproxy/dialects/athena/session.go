@@ -16,14 +16,14 @@ import (
 // it obtains for a statement. The native server opens one per submission; the editor holds one per run.
 type enforcementSession struct {
 	target       *target
-	client       spi.SessionClient
+	client       spi.ControlPlane
 	token        string
 	connectionID []byte
 	engine       *engine.QueryEngine
 	refetcher    *refetcher
 }
 
-func (t *target) newEnforcementSession(client spi.SessionClient, token string, connectionID []byte) (*enforcementSession, error) {
+func (t *target) newEnforcementSession(client spi.ControlPlane, token string, connectionID []byte) (*enforcementSession, error) {
 	refetcher, err := t.newRefetcher(connectionID, client.PushSchemaFragment)
 	if err != nil {
 		return nil, err
@@ -69,7 +69,7 @@ func (s *enforcementSession) close(client interface{ CloseConnection([]byte) err
 
 // completion reports the wire task's outcome; Athena executes asynchronously, so an accepted submission is
 // the proxy's execution boundary and row volume is unknown.
-func completion(reporter engine.CompletionReporter, decision *engine.Decision, status string, start time.Time) {
+func completion(reporter spi.ControlPlane, decision *engine.Decision, status string, start time.Time) {
 	engine.EmitCompletion(reporter, decision, engine.RelayStats{}, status, start)
 }
 

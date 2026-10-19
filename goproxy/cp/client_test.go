@@ -244,8 +244,6 @@ func TestRegisterUnspecifiedEngineRejectedBeforeRPC(t *testing.T) {
 	}
 }
 
-var _ engine.Decider = (*Client)(nil)
-
 type fakeControlPlane struct {
 	pb.UnimplementedControlPlaneServer
 

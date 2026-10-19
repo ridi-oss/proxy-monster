@@ -43,7 +43,7 @@ func (Provider) NewDb(target spi.TargetDb) (spi.Db, error) {
 	return newTarget(ctx, cfg, awsCfg, transport)
 }
 
-func (t *target) NewWireServer(listen spi.Listen, client spi.EnforcementClient, tlsProvider func() (*tls.Config, error)) spi.WireServer {
+func (t *target) NewWireServer(listen spi.Listen, client spi.ControlPlane, tlsProvider func() (*tls.Config, error)) spi.WireServer {
 	return &nativeServer{target: t, listen: listen, client: client, tlsProvider: tlsProvider}
 }
 

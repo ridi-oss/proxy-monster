@@ -16,7 +16,7 @@ import (
 func (requestClient) DatasourceName() string { return "athena-dev" }
 
 type requestClient struct {
-	spi.EnforcementClient
+	spi.ControlPlane
 	authorize func(*pb.RequestAuthorization, *enginepb.AthenaNativeDescriptor) (*pb.RequestAuthorizationResult, error)
 }
 

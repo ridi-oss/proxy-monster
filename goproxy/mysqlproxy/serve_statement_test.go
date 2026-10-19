@@ -20,7 +20,7 @@ func (runTestDecider) Decide(engine.DecideRequest) engine.DecisionOutcome {
 	return engine.DecisionOutcome{Decision: &engine.Decision{Action: "ALLOW"}}
 }
 
-func scriptedMySQLRun(t *testing.T, decider engine.Decider, maxRows int, response []byte) (*RunSession, <-chan string) {
+func scriptedMySQLRun(t *testing.T, decider engine.DecisionClient, maxRows int, response []byte) (*RunSession, <-chan string) {
 	t.Helper()
 	client, server := net.Pipe()
 	t.Cleanup(func() { _ = client.Close(); _ = server.Close() })

@@ -12,12 +12,12 @@ import (
 
 // TableDetailRunner runs one short-lived, proxy-dialed table-detail session.
 type TableDetailRunner struct {
-	client   spi.TableDetailClient
+	client   spi.ControlPlane
 	targetDb spi.Db
 }
 
 // NewTableDetailRunner constructs a table-detail runner for one datasource target.
-func NewTableDetailRunner(client spi.TableDetailClient, targetDb spi.Db) *TableDetailRunner {
+func NewTableDetailRunner(client spi.ControlPlane, targetDb spi.Db) *TableDetailRunner {
 	return &TableDetailRunner{client: client, targetDb: targetDb}
 }
 

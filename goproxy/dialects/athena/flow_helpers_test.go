@@ -23,7 +23,7 @@ import (
 func (*flowClient) DatasourceName() string { return "athena-dev" }
 
 type flowClient struct {
-	spi.EnforcementClient
+	spi.ControlPlane
 	mu          sync.Mutex
 	principal   string
 	verdict     *pb.Verdict

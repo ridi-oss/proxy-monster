@@ -61,39 +61,19 @@ type TableDetailStream interface {
 	Recv() (*pb.ControlTableDetailMsg, error)
 }
 
-// SessionClient is the control-plane capability a held target-DB session needs. The concrete gRPC client
-// implements it, while tests can inject a fake without pulling that implementation into the SPI.
-type SessionClient interface {
-	engine.Decider
+// ControlPlane is the proxy's client to the control plane. cp.Client implements it; a test fake embeds it
+// and overrides only the methods its test calls.
+type ControlPlane interface {
+	engine.DecisionClient
 	PushSchemaFragment(*pb.SchemaFragmentPush) (uint64, error)
-}
-
-// EnforcementClient is the complete control-plane capability used by a native-wire server. It adds the
-// post-relay completion report (engine.CompletionReporter) that only the native-wire path emits — the
-// editor path streams to the control plane, which records its own completion, so SessionClient omits it.
-// RequestAuthorizer asks the control plane whether one metadata request (a catalog or table-metadata read
-// with no SQL session behind it) is allowed. The proxy only forwards the verdict; it never decides itself.
-type RequestAuthorizer interface {
+	// ReportCompletion is best effort: a lost report degrades the audit volume signal, never the session.
+	ReportCompletion(engine.CompletionReport)
+	// AuthorizeRequest asks whether one operation with no SQL behind it (a catalog or table-metadata read,
+	// an Athena API call) is allowed.
 	AuthorizeRequest(context.Context, *pb.RequestAuthorization) (*pb.RequestAuthorizationResult, error)
-}
-
-type EnforcementClient interface {
-	RequestAuthorizer
-	SessionClient
-	engine.CompletionReporter
 	ValidateToken(token, clientAddr string) (Identity, error)
 	CloseConnection(connectionID []byte) error
-}
-
-// RunClient is the control-plane capability used by the dialect-neutral runner.
-type RunClient interface {
-	SessionClient
 	OpenRunStream(context.Context) (RunStream, error)
-	CloseConnection(connectionID []byte) error
-}
-
-// TableDetailClient is the control-plane capability used by the dialect-neutral table-detail runner.
-type TableDetailClient interface {
 	OpenTableDetailStream(context.Context) (TableDetailStream, error)
 }
 
@@ -227,11 +207,11 @@ type Db interface {
 	ConnectionInfo() *pb.ConnectionInfo
 	Introspect(ctx context.Context) (*pb.CatalogRequest, error)
 	ReadTableDetail(ctx context.Context, table *enginepb.ObjectRef) (*TableDetail, error)
-	NewWireServer(listen Listen, client EnforcementClient, tlsProvider func() (*tls.Config, error)) WireServer
+	NewWireServer(listen Listen, client ControlPlane, tlsProvider func() (*tls.Config, error)) WireServer
 	// NewRunSession dials and authenticates the target DB. ctx is the target-DB open context: cancelling it aborts
 	// an in-flight dial/auth so a run the control-plane already closed does not finish a target-DB handshake.
 	// A non-empty defaultSchema opens the session in that schema; empty keeps the target's default.
-	NewRunSession(ctx context.Context, client SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration, defaultSchema string) (TargetDbSession, error)
+	NewRunSession(ctx context.Context, client ControlPlane, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration, defaultSchema string) (TargetDbSession, error)
 	Close() error
 }
 

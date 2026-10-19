@@ -35,7 +35,7 @@ type runSession struct {
 	cancel  context.CancelFunc
 }
 
-func (t *target) NewRunSession(_ context.Context, client spi.SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.TargetDbSession, error) {
+func (t *target) NewRunSession(_ context.Context, client spi.ControlPlane, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.TargetDbSession, error) {
 	// Every Athena query names the configured database, so a run cannot open anywhere else.
 	if defaultSchema != "" && defaultSchema != t.config.database {
 		return nil, fmt.Errorf("athena run cannot open in database %q: the target is configured for %q", defaultSchema, t.config.database)

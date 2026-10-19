@@ -79,6 +79,10 @@ func sessionSettings() (session.Settings, error) {
 		ResultKey:   os.Getenv("PM_RESULT_KEY") != "",
 		WebOrigin:   os.Getenv("PM_WEB_ORIGIN"),
 		OIDCEnabled: oidcConfigured(),
+
+		MCPResource:      session.CanonicalResource(envOr("PM_MCP_RESOURCE", "http://127.0.0.1:8080/mcp")),
+		ElevatedScopeTTL: session.ClampSeconds(os.Getenv("PM_ELEVATED_SCOPE_TTL"), 3600),
+		MCPAccessTTL:     session.ClampSeconds(os.Getenv("PM_OAUTH_ACCESS_TTL"), 600),
 	}
 	for _, d := range []struct {
 		env string
@@ -91,6 +95,7 @@ func sessionSettings() (session.Settings, error) {
 		{"PM_WEB_SESSION_IDLE_WARN_LEAD", 60, &s.IdleWarnLeadSeconds},
 		{"PM_WEB_SESSION_ABSOLUTE_WARN_LEAD", 300, &s.AbsoluteWarnLeadSeconds},
 		{"PM_WEB_SESSION_HEARTBEAT", 90, &s.HeartbeatSeconds},
+		{"PM_SESSION_WINDOW", 7200, &s.SessionWindowSeconds},
 	} {
 		*d.dst = d.def
 		if raw := os.Getenv(d.env); raw != "" {

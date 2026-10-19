@@ -1,16 +1,21 @@
 package com.ridi.oss.proxymonster.controlplane
 
-import com.ridi.oss.proxymonster.controlplane.grpc.ControlPlaneGrpcService
+import com.ridi.oss.proxymonster.controlplane.support.CpGoStack
 import com.ridi.oss.proxymonster.controlplane.support.MCP_TEST_JSON
+import com.ridi.oss.proxymonster.controlplane.support.PmonMcpTokenResponse
+import com.ridi.oss.proxymonster.controlplane.support.RenewSessionResponse
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
-import com.ridi.oss.proxymonster.controlplane.support.installControlPlane
+import com.ridi.oss.proxymonster.controlplane.support.bearerPost
 import com.ridi.oss.proxymonster.controlplane.support.mcpCall
 import com.ridi.oss.proxymonster.controlplane.support.mcpRaw
 import com.ridi.oss.proxymonster.controlplane.support.mcpTestConfig
 import com.ridi.oss.proxymonster.controlplane.support.ok
 import com.ridi.oss.proxymonster.controlplane.support.pmonLogin
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
+import com.ridi.oss.proxymonster.controlplane.support.testLoginRoute
+import com.ridi.oss.proxymonster.grpc.ControlPlaneGrpcKt
 import com.ridi.oss.proxymonster.grpc.validateTokenRequest
+import io.grpc.ManagedChannel
 import io.grpc.Status
 import io.grpc.StatusException
 import io.ktor.client.HttpClient
@@ -18,35 +23,35 @@ import io.ktor.client.request.delete
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.post
-import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
-import io.ktor.server.testing.testApplication
+import io.ktor.server.routing.routing
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.flywaydb.core.Flyway
+import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import javax.sql.DataSource
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
-import com.ridi.oss.proxymonster.controlplane.support.CpGoStack
-import org.junit.jupiter.api.AfterAll
 
-/** `POST /auth/session/logout`: pmon ends its daemon session on the server, with every token it minted. */
+/** `POST /auth/session/logout` on cp-go: pmon ends its daemon session on the server, with every token it minted. */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class PmonLogoutDbTest {
     private lateinit var dataSource: DataSource
     private lateinit var core: ControlPlaneCore
-    private lateinit var grpc: ControlPlaneGrpcService
     private lateinit var datasource: Datasource
-    private lateinit var cpGo: CpGoStack
-    private val config = mcpTestConfig()
+    private lateinit var stack: CpGoStack
+    private lateinit var channel: ManagedChannel
+    private lateinit var grpc: ControlPlaneGrpcKt.ControlPlaneCoroutineStub
+    private val config = mcpTestConfig().copy(mcpResource = "http://127.0.0.1/mcp")
     private val seq = AtomicInteger()
 
     @BeforeAll
@@ -56,18 +61,16 @@ class PmonLogoutDbTest {
         dataSource = SharedPostgres.hikari(database)
         Flyway.configure().dataSource(dataSource).load().migrate()
         core = ControlPlaneCore(dataSource)
-        grpc = ControlPlaneGrpcService(core)
         datasource = core.datasourceStore.create(DatasourceInput("pmon-logout-ds", "postgres"))
-        cpGo = CpGoStack(config, core, database)
+        stack = CpGoStack(config, core, database, withGrpc = true) { routing { testLoginRoute(PrincipalSessionStore(dataSource, null), config) } }
+        channel = stack.channel()
+        grpc = ControlPlaneGrpcKt.ControlPlaneCoroutineStub(channel)
     }
 
     @AfterAll
-    fun tearDown() {
-        if (::cpGo.isInitialized) cpGo.close()
-    }
-
-    private suspend fun HttpClient.bearerPost(path: String, renewalToken: String): HttpResponse = post(path) {
-        header(HttpHeaders.Authorization, "Bearer $renewalToken")
+    fun teardown() {
+        if (::channel.isInitialized) channel.shutdownNow().awaitTermination(5, TimeUnit.SECONDS)
+        if (::stack.isInitialized) stack.close()
     }
 
     private suspend fun HttpClient.mint(renewalToken: String): PmonMcpTokenResponse {
@@ -76,8 +79,11 @@ class PmonLogoutDbTest {
         return MCP_TEST_JSON.decodeFromString(res.bodyAsText())
     }
 
-    private fun wireValid(token: String): Boolean = try {
-        runBlocking { grpc.validateToken(validateTokenRequest { this.token = token; datasourceName = datasource.name; clientAddr = "127.0.0.1" }) }
+    private suspend fun validate(token: String) =
+        grpc.validateToken(validateTokenRequest { this.token = token; datasourceName = datasource.name; clientAddr = "127.0.0.1" })
+
+    private suspend fun wireValid(token: String): Boolean = try {
+        validate(token)
         true
     } catch (e: StatusException) {
         assertEquals(Status.Code.UNAUTHENTICATED, e.status.code)
@@ -85,8 +91,8 @@ class PmonLogoutDbTest {
     }
 
     @Test
-    fun `logout refuses renew and the exchange, and revokes the login's wire and MCP tokens`() = testApplication {
-        val client = installControlPlane(config, core)
+    fun `logout refuses renew and the exchange, and revokes the login's wire and MCP tokens`() = runBlocking<Unit> {
+        val client = stack.client()
         val caller = principal()
         val login = client.pmonLogin(caller)
         val renewed = MCP_TEST_JSON.decodeFromString<RenewSessionResponse>(
@@ -114,10 +120,10 @@ class PmonLogoutDbTest {
     }
 
     @Test
-    fun `a replaced login keeps its open connections but opens no new one`() = testApplication {
-        val client = installControlPlane(config, core)
+    fun `a replaced login keeps its open connections but opens no new one`() = runBlocking<Unit> {
+        val client = stack.client()
         val login = client.pmonLogin(principal())
-        val pmon = cpGo.client()
+        val pmon = stack.client()
         val discover = suspend { pmon.get("/api/datasources") { header(HttpHeaders.Authorization, "Bearer ${login.token}") }.status }
         assertEquals(HttpStatusCode.OK, discover())
         val mcp = client.mint(login.renewalToken)
@@ -133,12 +139,12 @@ class PmonLogoutDbTest {
     }
 
     @Test
-    fun `revoking the pmon consent on the web ends the pmon login`() = testApplication {
-        val client = installControlPlane(config, core)
+    fun `revoking the pmon consent on the web ends the pmon login`() = runBlocking<Unit> {
+        val client = stack.client()
         val login = client.pmonLogin(principal())
         val mcp = client.mint(login.renewalToken)
         val listed = MCP_TEST_JSON.parseToJsonElement(client.get("/oauth/consents").bodyAsText()).jsonObject
-        val consent = listed["consents"]!!.jsonArray.map { it.jsonObject }.single { it["clientId"]!!.jsonPrimitive.content == PMON_MCP_CLIENT_ID }
+        val consent = listed["consents"]!!.jsonArray.map { it.jsonObject }.single { it["clientId"]!!.jsonPrimitive.content == "pmon" }
 
         val revoke = client.delete("/oauth/consents/${consent["id"]!!.jsonPrimitive.content}") {
             header("X-PM-CSRF", listed["csrfToken"]!!.jsonPrimitive.content)
@@ -147,12 +153,13 @@ class PmonLogoutDbTest {
 
         assertEquals(HttpStatusCode.Unauthorized, client.mcpRaw(mcp.accessToken, "get_my_permissions").status)
         assertEquals(HttpStatusCode.Unauthorized, client.bearerPost("/auth/session/mcp-token", login.renewalToken).status, "pmon cannot mint it back")
+        assertEquals(HttpStatusCode.Unauthorized, client.bearerPost("/auth/session/renew", login.renewalToken).status)
         assertEquals(false, wireValid(login.token))
     }
 
     @Test
-    fun `logout is idempotent, reveals nothing, and is audited once without the token`() = testApplication {
-        val client = installControlPlane(config, core)
+    fun `logout is idempotent, reveals nothing, and is audited once without the token`() = runBlocking<Unit> {
+        val client = stack.client()
         val caller = principal()
         val login = client.pmonLogin(caller)
         repeat(2) { assertEquals(HttpStatusCode.NoContent, client.bearerPost("/auth/session/logout", login.renewalToken).status) }
@@ -169,9 +176,7 @@ class PmonLogoutDbTest {
         for (secret in listOf(login.renewalToken, login.token)) {
             assertEquals(0L, count("SELECT count(*) FROM audit_event WHERE statement LIKE ? OR detail LIKE ? OR resource LIKE ?", "%$secret%", "%$secret%", "%$secret%"))
         }
-        assertFailsWith<StatusException> {
-            runBlocking { grpc.validateToken(validateTokenRequest { token = login.token; datasourceName = datasource.name; clientAddr = "127.0.0.1" }) }
-        }
+        assertFailsWith<StatusException> { validate(login.token) }
     }
 
     private fun count(sql: String, vararg args: String): Long = dataSource.connection.use { c ->

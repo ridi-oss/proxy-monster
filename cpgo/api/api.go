@@ -88,6 +88,13 @@ var (
 	CodeNotConnectable        = Code{"datasource.not_connectable", http.StatusForbidden}
 	CodeNoWireCert            = Code{"datasource.no_wire_cert", http.StatusNotFound}
 	CodeDeprovisioned         = Code{"auth.principal_deprovisioned", http.StatusForbidden}
+	CodeNoScopes              = Code{"device.no_scopes", http.StatusBadRequest}
+	CodeUnknownScope          = Code{"device.unknown_scope", http.StatusBadRequest}
+	CodeUnknownLogin          = Code{"device.unknown_or_expired_login", http.StatusBadRequest}
+	CodeLoginCompleted        = Code{"device.login_already_completed", http.StatusBadRequest}
+	CodeMissingRenewalToken   = Code{"auth.missing_renewal_token", http.StatusUnauthorized}
+	CodeWindowExpired         = Code{"auth.session_window_expired", http.StatusUnauthorized}
+	CodeScopesExpired         = Code{"auth.scopes_expired", http.StatusForbidden}
 	CodeOIDCNotConfigured     = Code{"common.oidc_not_configured", http.StatusNotImplemented}
 	CodeInvalidRequesterIP    = Code{"auth.invalid_requester_ip", http.StatusBadRequest}
 	CodeInvalidEngine         = Code{"datasource.invalid_engine", http.StatusBadRequest}

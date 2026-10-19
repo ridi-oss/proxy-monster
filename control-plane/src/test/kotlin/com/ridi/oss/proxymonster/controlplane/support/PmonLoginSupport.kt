@@ -1,40 +1,56 @@
 package com.ridi.oss.proxymonster.controlplane.support
 
-import com.ridi.oss.proxymonster.controlplane.DeviceConfirmAck
-import com.ridi.oss.proxymonster.controlplane.DevicePollResult
-import com.ridi.oss.proxymonster.controlplane.DeviceStartResponse
 import io.ktor.client.HttpClient
 import io.ktor.client.request.get
+import io.ktor.client.request.header
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
+import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
-import java.time.Clock
-import java.time.Duration
-import java.time.Instant
-import java.time.ZoneId
-import java.time.ZoneOffset
 import kotlin.test.assertEquals
 
-/** A clock a test moves by hand. */
-class TestClock(@Volatile var now: Instant = Instant.now()) : Clock() {
-    override fun instant(): Instant = now
-    override fun getZone(): ZoneId = ZoneOffset.UTC
-    override fun withZone(zone: ZoneId): Clock = this
-    fun advance(by: Duration) { now = now.plus(by) }
-}
+@Serializable
+data class DeviceStartResponse(
+    val verificationUri: String,
+    val verificationUriComplete: String,
+    val userCode: String,
+    val handle: String,
+    val interval: Int,
+)
+
+@Serializable
+data class DeviceConfirmAck(val ok: Boolean = true, val scopes: List<String> = emptyList(), val elevatedTtlSeconds: Long? = null)
+
+@Serializable
+data class DevicePollResult(
+    val token: String,
+    val expiresAt: String,
+    val principal: String,
+    val sessionExpiresAt: String,
+    val renewalToken: String,
+    val scopes: List<String> = emptyList(),
+    val elevatedUntil: String? = null,
+)
+
+@Serializable
+data class RenewSessionResponse(val token: String, val expiresAt: String)
+
+@Serializable
+data class PmonMcpTokenResponse(val accessToken: String, val expiresAt: String, val scope: String)
 
 suspend fun HttpClient.deviceStart(scopes: List<String>?): HttpResponse = post("/auth/device/start") {
     contentType(ContentType.Application.Json)
     setBody(
         buildJsonObject {
-            if (scopes != null) putJsonArray("scopes") { scopes.forEach { add(kotlinx.serialization.json.JsonPrimitive(it)) } }
+            if (scopes != null) putJsonArray("scopes") { scopes.forEach { add(JsonPrimitive(it)) } }
         }.toString(),
     )
 }
@@ -57,4 +73,8 @@ suspend fun HttpClient.pmonLogin(principal: String, scopes: List<String>? = null
     val poll = post("/auth/device/poll") { contentType(ContentType.Application.Json); setBody("""{"handle":"${started.handle}"}""") }
     assertEquals(HttpStatusCode.OK, poll.status, poll.bodyAsText())
     return MCP_TEST_JSON.decodeFromString(poll.bodyAsText())
+}
+
+suspend fun HttpClient.bearerPost(path: String, secret: String): HttpResponse = post(path) {
+    header(HttpHeaders.Authorization, "Bearer $secret")
 }

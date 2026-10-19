@@ -341,6 +341,31 @@ func TestOIDCWebSession(t *testing.T) {
 		}
 	})
 
+	t.Run("device login", func(t *testing.T) {
+		settings := dbtest.Settings()
+		settings.WebOrigin = "https://console.example"
+		e, fake, crypto, _ := setupOIDCWith(t, "openid email offline_access", true, settings, nil)
+		started := e.Browser(t).StartDevice(`{}`)
+		b := e.Browser(t)
+		returnTo := "/device?user_code=" + started.UserCode
+		if loc := login(t, e, fake, b, "alice@example.com", returnTo).Header.Get("Location"); loc != "https://console.example"+returnTo {
+			t.Fatalf("SSO returned to %s", loc)
+		}
+		b.Expect(http.MethodPost, "/auth/device/confirm", `{"userCode":"`+started.UserCode+`"}`, http.StatusOK, "")
+		if loc := b.AuthorizeDevice(started.UserCode); loc != "https://console.example/device/success" {
+			t.Fatalf("approve went to %s", loc)
+		}
+		var (
+			status, principal string
+			enc               []byte
+		)
+		if err := e.St.Pool.QueryRow(ctx, `SELECT status, principal, refresh_token_enc FROM device_login WHERE handle = $1`, started.Handle).Scan(&status, &principal, &enc); err != nil {
+			t.Fatal(err)
+		}
+		if refresh, err := crypto.Decrypt(enc); status != "APPROVED" || principal != "alice@example.com" || err != nil || refresh != "rt-alice@example.com" {
+			t.Fatalf("device login %s %s %q %v", status, principal, refresh, err)
+		}
+	})
 }
 
 func TestLivenessSweep(t *testing.T) {

@@ -4,6 +4,10 @@ import org.junit.jupiter.api.AfterEach
 import io.ktor.client.plugins.defaultRequest
 import com.zaxxer.hikari.HikariDataSource
 import com.ridi.oss.proxymonster.controlplane.support.CpGoStack
+import com.ridi.oss.proxymonster.controlplane.support.DeviceStartResponse
+import com.ridi.oss.proxymonster.controlplane.support.MCP_TEST_JSON
+import io.ktor.client.statement.bodyAsText
+import kotlinx.coroutines.runBlocking
 import com.nimbusds.jose.JWSAlgorithm
 import com.nimbusds.jose.JWSHeader
 import com.nimbusds.jose.crypto.RSASSASigner
@@ -242,17 +246,15 @@ class OidcWebSessionDbTest {
         val role = policyStore.createRole(RoleInput("oidc-device-role"))
         policyStore.createAssignment(RoleAssignmentInput(principal, role.id))
 
-        // A pmon login already in flight: a PENDING device_login row keyed by a user_code (as /auth/device/start makes).
-        val deviceStore = DeviceLoginStore(dataSource, ResultCrypto(ByteArray(32) { it.toByte() }))
-        val started = deviceStore.createPending(intervalSec = 2, ttlSeconds = 3600, expiresAt = Instant.now().plusSeconds(600))
-        val userCode = started.userCode!!
-
         val stack = stack(
             config("openid email offline_access", resultKey = ByteArray(32) { it.toByte() })
                 .copy(webOrigin = "https://console.example"),
             dataSource,
         )
         val client = stack.client()
+        // A pmon login already in flight, started by the daemon.
+        val started = startDeviceLogin(stack)
+        val userCode = started.userCode
 
         // The unauthenticated /device page sends this exact continuation through the login page.
         val returnTo = "/device?user_code=${userCode.encodeURLParameter()}"
@@ -285,14 +287,14 @@ class OidcWebSessionDbTest {
         assertEquals(HttpStatusCode.Found, approve.status)
         assertEquals("https://console.example/device/success", approve.headers[HttpHeaders.Location])
 
-        val approved = deviceStore.get(started.handle)!!
+        val approved = deviceRow(dataSource, started.handle)
         assertEquals("APPROVED", approved.status)
         assertEquals(principal, approved.principal, "approved for the SSO principal, never a debug default")
         // The approving session's IdP refresh token must ride onto the device login, or the daemon session
         // minted at poll has nothing for its timer-driven IdP-liveness revalidation to run.
         assertEquals(
             "web-refresh-secret",
-            deviceStore.decryptRefresh(approved),
+            approved.refreshEnc?.let { String(ResultCrypto(ByteArray(32) { it.toByte() }).decrypt(it)) },
             "the IdP refresh token is carried onto the device login for daemon IdP-liveness",
         )
     }
@@ -308,11 +310,9 @@ class OidcWebSessionDbTest {
         val role = policyStore.createRole(RoleInput("oidc-phish-role"))
         policyStore.createAssignment(RoleAssignmentInput(principal, role.id))
 
-        val deviceStore = DeviceLoginStore(dataSource)
-        val started = deviceStore.createPending(intervalSec = 2, ttlSeconds = 3600, expiresAt = Instant.now().plusSeconds(600))
-
         val stack = stack(config("openid email", resultKey = ByteArray(32) { it.toByte() }), dataSource)
         val client = stack.client()
+        val started = startDeviceLogin(stack)
 
         // The phishing shape: the victim is handed an authorize link for the ATTACKER's code and logs in
         // normally — but never confirmed that code on /device, so there is no verify cookie in this browser.
@@ -321,13 +321,28 @@ class OidcWebSessionDbTest {
         nonce.set(assertNotNull(query["nonce"]))
         assertEquals(HttpStatusCode.Found, client.get("/auth/oidc/callback?code=ok&state=${assertNotNull(query["state"])}").status)
 
-        val authorize = client.get("/auth/device/authorize?user_code=${started.userCode!!.encodeURLParameter()}")
+        val authorize = client.get("/auth/device/authorize?user_code=${started.userCode.encodeURLParameter()}")
         assertEquals(HttpStatusCode.Found, authorize.status)
         assertTrue(
             authorize.headers[HttpHeaders.Location]!!.startsWith("/device"),
             "an unconfirmed authorize bounces to the device page, got ${authorize.headers[HttpHeaders.Location]}",
         )
-        assertEquals("PENDING", deviceStore.get(started.handle)!!.status, "the attacker's handle is NOT approved by a victim's login")
+        assertEquals("PENDING", deviceRow(dataSource, started.handle).status, "the attacker's handle is NOT approved by a victim's login")
+    }
+
+    private fun startDeviceLogin(stack: CpGoStack): DeviceStartResponse = runBlocking {
+        val start = stack.client().post("/auth/device/start") { contentType(ContentType.Application.Json); setBody("{}") }
+        assertEquals(HttpStatusCode.OK, start.status)
+        MCP_TEST_JSON.decodeFromString<DeviceStartResponse>(start.bodyAsText())
+    }
+
+    private class DeviceRow(val status: String, val principal: String?, val refreshEnc: ByteArray?)
+
+    private fun deviceRow(dataSource: DataSource, handle: String): DeviceRow = dataSource.connection.use { c ->
+        c.prepareStatement("SELECT status, principal, refresh_token_enc FROM device_login WHERE handle = ?").use { ps ->
+            ps.setString(1, handle)
+            ps.executeQuery().use { rs -> assertTrue(rs.next()); DeviceRow(rs.getString(1), rs.getString(2), rs.getBytes(3)) }
+        }
     }
 
     private fun verifyCallback(

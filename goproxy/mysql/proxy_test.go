@@ -23,7 +23,6 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	"github.com/ridi-oss/proxy-monster/goproxy/cp"
-	"github.com/ridi-oss/proxy-monster/goproxy/db"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/mysql"
@@ -305,7 +304,7 @@ func startBrokerTLS(t *testing.T) *brokerHarness {
 // plaintext (every existing test); a non-nil one advertises CLIENT_SSL and requires TLS.
 func startBrokerWithTLS(t *testing.T, tlsProvider func() (*tls.Config, error)) *brokerHarness {
 	t.Helper()
-	return startBrokerConfigured(t, tlsProvider, db.MySqlDb{})
+	return startBrokerConfigured(t, tlsProvider, mysql.TargetSQL{})
 }
 
 func startBrokerConfigured(t *testing.T, tlsProvider func() (*tls.Config, error), queries relay.Db) *brokerHarness {
@@ -394,7 +393,7 @@ func TestProxyProtocolPortReportsTheHeaderSourceAsClientAddr(t *testing.T) {
 	h := startBrokerListening(t, spi.Listen{
 		ProxyProtocolPort: proxyPort,
 		TrustedProxies:    []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")},
-	}, nil, db.MySqlDb{})
+	}, nil, mysql.TargetSQL{})
 	h.fake.decideFn = func(*pb.DecisionRequest) (*pb.WireDecision, error) {
 		return wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW, DecisionId: 1}), nil
 	}
@@ -489,8 +488,8 @@ func TestOnOpenFailureRefusesConnectionAndClosesCPState(t *testing.T) {
 		queries relay.Db
 		setup   func(*fakeControlPlane)
 	}{
-		{"introspection", failingColumnsDb{MySqlDb: db.MySqlDb{}}, func(*fakeControlPlane) {}},
-		{"push", db.MySqlDb{}, func(fake *fakeControlPlane) {
+		{"introspection", failingColumnsDb{TargetSQL: mysql.TargetSQL{}}, func(*fakeControlPlane) {}},
+		{"push", mysql.TargetSQL{}, func(fake *fakeControlPlane) {
 			fake.setPushError(status.Error(codes.Unavailable, "catalog unavailable"))
 		}},
 	} {
@@ -518,7 +517,7 @@ func TestOnOpenFailureRefusesConnectionAndClosesCPState(t *testing.T) {
 }
 
 // failingColumnsDb preserves the real MySQL hash probes but makes the mandatory full introspection fail.
-type failingColumnsDb struct{ db.MySqlDb }
+type failingColumnsDb struct{ mysql.TargetSQL }
 
 func (failingColumnsDb) SchemaColumnsSQL(string) string {
 	return "SELECT * FROM pm_missing_schema_fragment_table"
@@ -867,8 +866,8 @@ func assertFragmentColumn(t *testing.T, fragment *pb.SchemaFragmentPush, schema,
 func schemaHash(t *testing.T, schema string) []byte {
 	t.Helper()
 	targetDb := dbtest.OpenMySQL(t, primarySchema)
-	dbImpl := db.MySqlDb{}
-	query, _, err := dbImpl.SchemaHashSQL(schema, nil)
+	queries := mysql.TargetSQL{}
+	query, _, err := queries.SchemaHashSQL(schema, nil)
 	if err != nil {
 		t.Fatalf("SchemaHashSQL: %v", err)
 	}
@@ -878,7 +877,7 @@ func schemaHash(t *testing.T, schema string) []byte {
 		t.Fatalf("schema hash query: %v", err)
 	}
 	rows := [][]*string{{&hash, stringPtr(fmt.Sprint(produced)), stringPtr(fmt.Sprint(count))}}
-	decoded, trusted, err := dbImpl.SchemaHashFromRows(rows)
+	decoded, trusted, err := queries.SchemaHashFromRows(rows)
 	if err != nil || !trusted {
 		t.Fatalf("SchemaHashFromRows = (%x, %v, %v), want trusted", decoded, trusted, err)
 	}

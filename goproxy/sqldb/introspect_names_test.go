@@ -1,4 +1,4 @@
-package sqldb
+package sqldb_test
 
 import (
 	"context"
@@ -8,9 +8,11 @@ import (
 	"io"
 	"testing"
 
+	"github.com/ridi-oss/proxy-monster/goproxy/mysql"
+	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
+
 	"google.golang.org/protobuf/proto"
 
-	"github.com/ridi-oss/proxy-monster/goproxy/db"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
@@ -65,10 +67,10 @@ func TestProbeMySQLNamespaceRefusesUnknownLowerCaseTableNames(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer conn.Close()
-			catalog, err := ProbeMySQLNamespace(context.Background(), conn, "App")
+			catalog, err := sqldb.ProbeMySQLNamespace(context.Background(), conn, "App")
 			if !tc.ok {
 				if err == nil {
-					t.Fatalf("ProbeMySQLNamespace = %+v, want refused", catalog)
+					t.Fatalf("sqldb.ProbeMySQLNamespace = %+v, want refused", catalog)
 				}
 				return
 			}
@@ -95,14 +97,14 @@ func TestRunRefusesUnknownLowerCaseTableNames(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			probe := func(ctx context.Context, conn *sql.Conn, target string) (*pb.CatalogRequest, error) {
-				catalog, err := ProbeMySQLNamespace(ctx, conn, target)
+				catalog, err := sqldb.ProbeMySQLNamespace(ctx, conn, target)
 				if err != nil {
 					return nil, err
 				}
 				catalog.MysqlLowerCaseTableNames = tc.lctn
 				return catalog, nil
 			}
-			cat, err := runWith(OpenMySQLTarget, db.MySqlDb{}, probe, spi.TargetConfig{Host: targetConfig.Host, Port: targetConfig.Port, Db: targetConfig.DB, User: targetConfig.User, Password: targetConfig.Password})
+			cat, err := runWith(sqldb.OpenMySQLTarget, mysql.TargetSQL{}, probe, spi.TargetConfig{Host: targetConfig.Host, Port: targetConfig.Port, Db: targetConfig.DB, User: targetConfig.User, Password: targetConfig.Password})
 			if err == nil {
 				t.Fatalf("Run pushed a catalog of %d columns, want refused", len(cat.GetCatalog().GetColumns()))
 			}

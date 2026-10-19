@@ -247,34 +247,21 @@ class SlackSocketMode(
                 val threadTs = event.str("thread_ts")?.takeIf { it != ts } ?: return
                 val user = event.str("user") ?: return
                 val (principal, name) = resolveAuthor(user)
-                val text = event.str("text").orEmpty()
-                val users = mentionedUsers(text)
-                val mentions = users.filterKeys { it != user }.values.mapNotNull { it.first }
-                val body = SlackMarkup.plainText(text, users.mapValues { it.value.second })
-                SlackThreadMessage(SlackThreadMessage.Kind.NEW, channel, ts, threadTs, principal, name, body, mentions)
+                val text = event.str("text")
+                val mentioned = MENTION.findAll(text.orEmpty()).map { it.groupValues[1] }.filter { it != user }.distinct().toList()
+                val mentions = mentioned.mapNotNull { runCatching { userInfo(it) }.getOrNull()?.let(::principalOf) }
+                SlackThreadMessage(SlackThreadMessage.Kind.NEW, channel, ts, threadTs, principal, name, text, mentions)
             }
             "message_changed" -> {
                 val edited = event["message"]?.jsonObject ?: return
                 if (edited.fromBot()) return
-                val ts = edited.str("ts") ?: return
-                val text = edited.str("text").orEmpty()
-                val usernames = mentionedUsers(text).mapValues { it.value.second }
-                SlackThreadMessage(SlackThreadMessage.Kind.EDITED, channel, ts, text = SlackMarkup.plainText(text, usernames))
+                SlackThreadMessage(SlackThreadMessage.Kind.EDITED, channel, edited.str("ts") ?: return, text = edited.str("text"))
             }
             "message_deleted" -> SlackThreadMessage(SlackThreadMessage.Kind.DELETED, channel, event.str("deleted_ts") ?: return)
             else -> return
         }
         onMessage(message)
     }
-
-    /** Each Slack user the text @-mentions, with their active principal and Slack username; a failed lookup is (null, null). */
-    private suspend fun mentionedUsers(text: String): Map<String, Pair<String?, String?>> =
-        SlackMarkup.mentionedIds(text).associateWith { id ->
-            runCatching {
-                val user = userInfo(id)
-                user?.let(::principalOf) to user?.get("name")?.jsonPrimitive?.content
-            }.getOrDefault(null to null)
-        }
 
     private suspend fun resolveAuthor(slackUserId: String): Pair<String?, String?> {
         val user = userInfo(slackUserId) ?: return null to null
@@ -338,6 +325,8 @@ class SlackSocketMode(
         minOf(BACKOFF_CAP_MS, BACKOFF_BASE_MS shl minOf(failures, 6))
 
     companion object {
+        // A user mention in message text: <@U123> or <@U123|name>.
+        private val MENTION = Regex("<@([UW][A-Z0-9_]+)(?:\\|[^>]*)?>")
         private const val RECONNECT_DELAY_MS = 1_000L
         private const val BACKOFF_BASE_MS = 2_000L
         private const val BACKOFF_CAP_MS = 120_000L

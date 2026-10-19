@@ -1,10 +1,12 @@
-package sqldb
+package sqldb_test
 
 import (
 	"testing"
 
+	"github.com/ridi-oss/proxy-monster/goproxy/mysql"
+	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
+
 	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
-	"github.com/ridi-oss/proxy-monster/goproxy/db"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
@@ -12,14 +14,14 @@ import (
 )
 
 type routinesQueryDb struct {
-	db.MySqlDb
+	mysql.TargetSQL
 	query string
 }
 
 func (d routinesQueryDb) RoutinesSQL() string { return d.query }
 
 func runRoutinesQuery(query string, config spi.TargetConfig) (*pb.CatalogRequest, error) {
-	return runWith(OpenMySQLTarget, routinesQueryDb{query: query}, ProbeMySQLNamespace, config)
+	return runWith(sqldb.OpenMySQLTarget, routinesQueryDb{query: query}, sqldb.ProbeMySQLNamespace, config)
 }
 
 func TestRoutinesObservation(t *testing.T) {

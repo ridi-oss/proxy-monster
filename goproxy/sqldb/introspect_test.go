@@ -1,4 +1,4 @@
-package sqldb
+package sqldb_test
 
 import (
 	"context"
@@ -7,6 +7,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ridi-oss/proxy-monster/goproxy/mysql"
+	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
 
 	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/db"
@@ -33,20 +36,20 @@ const (
 
 // runMySQL and runPostgres open a pool on target and introspect it the way the dialect's Db does.
 func runMySQL(config spi.TargetConfig) (*pb.CatalogRequest, error) {
-	return runWith(OpenMySQLTarget, db.MySqlDb{}, ProbeMySQLNamespace, config)
+	return runWith(sqldb.OpenMySQLTarget, mysql.TargetSQL{}, sqldb.ProbeMySQLNamespace, config)
 }
 
 func runPostgres(config spi.TargetConfig) (*pb.CatalogRequest, error) {
-	return runWith(OpenPostgresTarget, db.PgDb{}, ProbePostgresNamespace, config)
+	return runWith(sqldb.OpenPostgresTarget, db.PgDb{}, sqldb.ProbePostgresNamespace, config)
 }
 
-func runWith(open func(spi.TargetConfig) (*sql.DB, error), queries relay.Db, probe NamespaceProbe, config spi.TargetConfig) (*pb.CatalogRequest, error) {
+func runWith(open func(spi.TargetConfig) (*sql.DB, error), queries relay.Db, probe sqldb.NamespaceProbe, config spi.TargetConfig) (*pb.CatalogRequest, error) {
 	pool, err := open(config)
 	if err != nil {
 		return nil, err
 	}
 	defer pool.Close()
-	return Introspect(context.Background(), pool, queries, probe, config.Db)
+	return sqldb.Introspect(context.Background(), pool, queries, probe, config.Db)
 }
 
 // TestRunPinsOneConnectionOnDeadTarget is the regression test for the pinned-connection fix.
@@ -97,7 +100,7 @@ func TestRunPinsOneConnectionOnDeadTarget(t *testing.T) {
 	config := spi.TargetConfig{Host: "127.0.0.1", Port: addr.Port, Db: "appdb", User: "svc", Password: "pw"}
 
 	// Baseline: the dials a single connection acquisition costs against this dead target.
-	baseDB, err := OpenMySQLTarget(config)
+	baseDB, err := sqldb.OpenMySQLTarget(config)
 	if err != nil {
 		t.Fatalf("openTarget: %v", err)
 	}

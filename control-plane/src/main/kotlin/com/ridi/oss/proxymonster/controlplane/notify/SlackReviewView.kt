@@ -36,7 +36,7 @@ internal class SlackReviewView(private val catalog: MessageCatalog, private val 
         val req = d.request
         val query = req.kind == "QUERY"
         // Measured after escaping, which is what Slack counts.
-        val sql = SlackMarkup.escape(req.sql.orEmpty()).replace("```", "``​`")
+        val sql = escape(req.sql.orEmpty()).replace("```", "``​`")
         val complete = !query || (sql.isNotEmpty() && sql.length <= STATEMENT_LIMIT)
         val actions = buildList {
             if (d.canDecide) {
@@ -56,22 +56,22 @@ internal class SlackReviewView(private val catalog: MessageCatalog, private val 
         }.distinct()
         return view(locale) {
             add(section(catalog.text("modal.summary", locale, mapOf(
-                "requester" to SlackMarkup.escape(req.principal),
-                "datasource" to SlackMarkup.escape(req.datasourceName ?: if (req.kind == "QUERY") "—" else catalog.text("field.any_datasource", locale)),
-                "role" to SlackMarkup.escape(req.roleName ?: "—"),
+                "requester" to escape(req.principal),
+                "datasource" to escape(req.datasourceName ?: if (req.kind == "QUERY") "—" else catalog.text("field.any_datasource", locale)),
+                "role" to escape(req.roleName ?: "—"),
                 "status" to req.status.lowercase(),
             ))))
             when (req.kind) {
                 "QUERY" -> add(section("```" + sql.take(STATEMENT_LIMIT) + "```"))
                 "ROLE" -> add(section(catalog.text("modal.role", locale, mapOf(
-                    "role" to SlackMarkup.escape(req.roleName ?: "—"),
-                    "datasource" to SlackMarkup.escape(req.datasourceName ?: catalog.text("field.any_datasource", locale)),
+                    "role" to escape(req.roleName ?: "—"),
+                    "datasource" to escape(req.datasourceName ?: catalog.text("field.any_datasource", locale)),
                     "duration" to renderer.duration(req.requestedDurationSec, locale),
                 ))))
-                else -> add(section(catalog.text("modal.rate_reset", locale, mapOf("rate" to SlackMarkup.escape(req.denyReason ?: "—")))))
+                else -> add(section(catalog.text("modal.rate_reset", locale, mapOf("rate" to escape(req.denyReason ?: "—")))))
             }
             if (!complete) add(context(catalog.text("field.statement_hidden_note", locale)))
-            req.reason?.takeIf { it.isNotBlank() }?.let { add(section("> " + SlackMarkup.escape(it.take(500)).replace("\n", "\n> "))) }
+            req.reason?.takeIf { it.isNotBlank() }?.let { add(section("> " + escape(it.take(500)).replace("\n", "\n> "))) }
             if (actions.isEmpty()) add(context(catalog.text("modal.no_actions", locale)))
             add(
                 buildJsonObject {
@@ -130,6 +130,8 @@ internal class SlackReviewView(private val catalog: MessageCatalog, private val 
         put("type", "context")
         putJsonArray("elements") { add(buildJsonObject { put("type", "mrkdwn"); put("text", text) }) }
     }
+
+    private fun escape(s: String) = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
     private companion object {
         // A section's text caps at 3000 characters, with room left for the code fence.

@@ -76,7 +76,6 @@ class MockSlack private constructor() : AutoCloseable {
         // Nullable so a test can OMIT the field entirely (an older workspace / partial response), not just
         // set it false.
         val emailConfirmed: Boolean? = true,
-        val name: String? = null,
     )
 
     /** users.info: the profile a Slack user id resolves to; absent → user_not_found. */
@@ -203,7 +202,6 @@ class MockSlack private constructor() : AutoCloseable {
             else buildString {
                 append("""{"ok":true,"user":{"id":"$user","deleted":${u.deleted},"is_bot":${u.isBot}""")
                 if (u.emailConfirmed != null) append(""","is_email_confirmed":${u.emailConfirmed}""")
-                if (u.name != null) append(""","name":"${u.name}"""")
                 append(""","profile":{""")
                 if (u.email != null) append(""""email":"${u.email}"""")
                 append("}}}")

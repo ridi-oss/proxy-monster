@@ -88,14 +88,18 @@ class SlackTransport(
         // The renderer leaves requester/decidedBy unescaped because they arrive as a resolved `<@id>` mention.
         // On the fallback branches (a non-email principal, or a lookup miss) the raw principal reaches the
         // mrkdwn section, so it must be escaped here — an IdP/SCIM principal can contain `<`, `>`, or `&`.
-        if (!principal.contains('@')) return SlackMarkup.escape(principal)
+        if (!principal.contains('@')) return escapeMrkdwn(principal)
         // A mention is best-effort: a transient lookup failure falls back to the plain identity rather than
         // failing the whole delivery (addressOf's transient DOES retry — the mention alone must not).
         val userId = runCatching { call("users.lookupByEmail", mapOf("email" to principal)) }.getOrNull()
-            ?.get("user")?.jsonObject?.get("id")?.jsonPrimitive?.contentOrNullSafe() ?: return SlackMarkup.escape(principal)
+            ?.get("user")?.jsonObject?.get("id")?.jsonPrimitive?.contentOrNullSafe() ?: return escapeMrkdwn(principal)
         userIdCache[principal] = userId
         return "<@$userId>"
     }
+
+    /** Escape the three characters Slack mrkdwn reads as structure, so an interpolated identity cannot forge a
+     *  `<…|link>`, a `<!mention>`, or an entity. Mirrors NotificationRenderer's escape for the fields it owns. */
+    private fun escapeMrkdwn(s: String): String = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
     /** The message with every principal it NAMES (the requester, the decider, the notified approvers) resolved
      *  to a Slack mention. A mention in the requester's own DM, where the approvers are not members, renders as

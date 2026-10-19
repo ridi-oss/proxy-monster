@@ -15,11 +15,11 @@ import (
 	"github.com/ridi-oss/proxy-monster/goproxy/athena"
 	"github.com/ridi-oss/proxy-monster/goproxy/db"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
-	"github.com/ridi-oss/proxy-monster/goproxy/introspect"
 	"github.com/ridi-oss/proxy-monster/goproxy/mysql"
 	"github.com/ridi-oss/proxy-monster/goproxy/postgres"
 	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
+	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
 )
 
 const tableDetailConnectTimeout = 5 * time.Second
@@ -29,7 +29,7 @@ type sqlProvider struct {
 	engine *engines.Engine
 	db     relay.Db
 	open   func(spi.TargetConfig) (*sql.DB, error)
-	probe  introspect.NamespaceProbe
+	probe  sqldb.NamespaceProbe
 	// catalog reads the connection's current catalog; MySQL pins "def", Postgres asks the server.
 	catalog    func(context.Context, *sql.Conn) (string, error)
 	readDetail func(*sql.Conn, string, string) (*spi.TableDetail, error)
@@ -64,7 +64,7 @@ func (d *sqlDb) Config() spi.TargetConfig { return d.config }
 func (d *sqlDb) ConnectionInfo() *pb.ConnectionInfo { return &pb.ConnectionInfo{Endpoint: d.endpoint} }
 
 func (d *sqlDb) Introspect(ctx context.Context) (*pb.CatalogRequest, error) {
-	return introspect.Run(ctx, d.pool, d.provider.db, d.provider.probe, d.config.Db)
+	return sqldb.Introspect(ctx, d.pool, d.provider.db, d.provider.probe, d.config.Db)
 }
 
 func (d *sqlDb) ReadTableDetail(ctx context.Context, table *enginepb.ObjectRef) (*spi.TableDetail, error) {
@@ -118,8 +118,8 @@ var registry = spi.MustRegistry(
 	sqlProvider{
 		engine:     engines.MySQL,
 		db:         db.MySqlDb{},
-		open:       introspect.OpenMySQLTarget,
-		probe:      introspect.ProbeMySQLNamespace,
+		open:       sqldb.OpenMySQLTarget,
+		probe:      sqldb.ProbeMySQLNamespace,
 		catalog:    func(context.Context, *sql.Conn) (string, error) { return "def", nil },
 		readDetail: readMySQLTableDetail,
 		newServer: func(listen spi.Listen, config spi.TargetConfig, client spi.ControlPlane, db relay.Db, tlsProvider func() (*tls.Config, error)) spi.WireServer {
@@ -132,9 +132,9 @@ var registry = spi.MustRegistry(
 	sqlProvider{
 		engine:     engines.Postgres,
 		db:         db.PgDb{},
-		open:       introspect.OpenPostgresTarget,
-		probe:      introspect.ProbePostgresNamespace,
-		catalog:    introspect.ReadPostgresCatalog,
+		open:       sqldb.OpenPostgresTarget,
+		probe:      sqldb.ProbePostgresNamespace,
+		catalog:    sqldb.ReadPostgresCatalog,
 		readDetail: readPostgresTableDetail,
 		newServer: func(listen spi.Listen, config spi.TargetConfig, client spi.ControlPlane, db relay.Db, tlsProvider func() (*tls.Config, error)) spi.WireServer {
 			return postgres.New(listen, config, client, db, tlsProvider)

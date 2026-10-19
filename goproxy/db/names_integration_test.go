@@ -12,25 +12,25 @@ import (
 	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
-	"github.com/ridi-oss/proxy-monster/goproxy/introspect"
 	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
+	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
 )
 
 func quoteMySQL(identifier string) string {
 	return "`" + strings.ReplaceAll(identifier, "`", "``") + "`"
 }
 
-func introspectTarget(t *testing.T, open func(spi.TargetConfig) (*sql.DB, error), adapter relay.Db, probe introspect.NamespaceProbe, target dbtest.TargetDb, database string) *pb.CatalogRequest {
+func introspectTarget(t *testing.T, open func(spi.TargetConfig) (*sql.DB, error), adapter relay.Db, probe sqldb.NamespaceProbe, target dbtest.TargetDb, database string) *pb.CatalogRequest {
 	t.Helper()
 	pool, err := open(spi.TargetConfig{Host: target.Host, Port: target.Port, Db: database, User: target.User, Password: target.Password})
 	if err != nil {
 		t.Fatalf("open target: %v", err)
 	}
 	defer pool.Close()
-	catalog, err := introspect.Run(context.Background(), pool, adapter, probe, database)
+	catalog, err := sqldb.Introspect(context.Background(), pool, adapter, probe, database)
 	if err != nil {
-		t.Fatalf("introspect.Run(%q): %v", database, err)
+		t.Fatalf("sqldb.Introspect(%q): %v", database, err)
 	}
 	return catalog
 }
@@ -108,7 +108,7 @@ func TestMySQLLowerCase0KeepsSchemaAndTableCase(t *testing.T) {
 	execRefetchSQL(t, conn, "CREATE TABLE "+quoteMySQL(upper)+".`users` (id INT NOT NULL, Note VARCHAR(64) NULL)")
 	execRefetchSQL(t, conn, "CREATE TABLE "+quoteMySQL(lower)+".`users` (id INT NOT NULL, email VARCHAR(64) NULL)")
 
-	bulk := introspectTarget(t, introspect.OpenMySQLTarget, MySqlDb{}, introspect.ProbeMySQLNamespace, target, upper)
+	bulk := introspectTarget(t, sqldb.OpenMySQLTarget, MySqlDb{}, sqldb.ProbeMySQLNamespace, target, upper)
 	if got := bulk.GetDefaultSchemas(); !slices.Equal(got, []string{upper}) {
 		t.Fatalf("DefaultSchemas = %v, want [%s]", got, upper)
 	}
@@ -150,7 +150,7 @@ func TestMySQLLowerCase1FoldsSchemaAndTable(t *testing.T) {
 	execRefetchSQL(t, conn, "CREATE TABLE "+quoteMySQL(mixed)+".`Users` (Id INT NOT NULL, EMail VARCHAR(64) NULL)")
 	execRefetchSQL(t, conn, "CREATE FUNCTION "+quoteMySQL(mixed)+".`AddTax` (amount INT) RETURNS INT DETERMINISTIC RETURN amount")
 
-	bulk := introspectTarget(t, introspect.OpenMySQLTarget, MySqlDb{}, introspect.ProbeMySQLNamespace, target, mixed)
+	bulk := introspectTarget(t, sqldb.OpenMySQLTarget, MySqlDb{}, sqldb.ProbeMySQLNamespace, target, mixed)
 	if got := bulk.GetDefaultSchemas(); !slices.Equal(got, []string{canonical}) {
 		t.Fatalf("DefaultSchemas = %v, want [%s]", got, canonical)
 	}
@@ -214,7 +214,7 @@ func (d lowerCase2Db) SchemaHashSQL(schema string, setup [][]*string) (string, i
 }
 
 func probeAsMode2(ctx context.Context, conn *sql.Conn, targetDb string) (*pb.CatalogRequest, error) {
-	catalog, err := introspect.ProbeMySQLNamespace(ctx, conn, targetDb)
+	catalog, err := sqldb.ProbeMySQLNamespace(ctx, conn, targetDb)
 	if err != nil {
 		return nil, err
 	}
@@ -234,7 +234,7 @@ func TestMySQLLowerCase2FoldsStoredCase(t *testing.T) {
 	t.Cleanup(func() { _, _ = admin.Exec("DROP DATABASE IF EXISTS " + quoteMySQL(mixed)) })
 	execRefetchSQL(t, conn, "CREATE TABLE "+quoteMySQL(mixed)+".`Users` (Id INT NOT NULL, EMail VARCHAR(64) NULL)")
 
-	bulk := introspectTarget(t, introspect.OpenMySQLTarget, MySqlDb{}, probeAsMode2, target, mixed)
+	bulk := introspectTarget(t, sqldb.OpenMySQLTarget, MySqlDb{}, probeAsMode2, target, mixed)
 	if got := bulk.GetDefaultSchemas(); !slices.Equal(got, []string{canonical}) {
 		t.Fatalf("DefaultSchemas = %v, want [%s]", got, canonical)
 	}
@@ -375,7 +375,7 @@ func TestPostgresQuotedNamesStayDistinct(t *testing.T) {
 		}
 	}
 
-	bulk := introspectTarget(t, introspect.OpenPostgresTarget, PgDb{}, introspect.ProbePostgresNamespace, target, name)
+	bulk := introspectTarget(t, sqldb.OpenPostgresTarget, PgDb{}, sqldb.ProbePostgresNamespace, target, name)
 	if got := bulk.GetDefaultSchemas(); !slices.Equal(got, []string{"pg_catalog", "Sales", "public"}) {
 		t.Errorf("DefaultSchemas = %v, want [pg_catalog Sales public]", got)
 	}

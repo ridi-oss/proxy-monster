@@ -483,7 +483,7 @@ func (c *Client) PushCatalog(catalog *pb.CatalogRequest) error {
 	if err != nil {
 		return fmt.Errorf("cp: push catalog for %q: %w", c.datasourceName, err)
 	}
-	// Paired with introspect.Run's phase breakdown, this closes the refresh cycle: a slow refresh is
+	// Paired with sqldb.Introspect's phase breakdown, this closes the refresh cycle: a slow refresh is
 	// either the target DB scan or this push, and the two logs together say which.
 	slog.Info("pushed catalog", "datasource", c.datasourceName, "columns", ack.GetColumns(),
 		"push_ms", time.Since(started).Milliseconds())

@@ -14,8 +14,8 @@ import (
 
 	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
-	"github.com/ridi-oss/proxy-monster/goproxy/introspect"
 	"github.com/ridi-oss/proxy-monster/goproxy/relay"
+	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
 )
 
 const hashTestTimeout = 30 * time.Second
@@ -314,7 +314,7 @@ func verifyPostgresHashAndFragment(t *testing.T, database *sql.DB, wantCrypto bo
 	if err != nil {
 		t.Fatalf("Postgres fragment mapping: %v", err)
 	}
-	catalog, err := introspect.ReadPostgresCatalog(context.Background(), conn)
+	catalog, err := sqldb.ReadPostgresCatalog(context.Background(), conn)
 	if err != nil {
 		t.Fatalf("Postgres catalog probe: %v", err)
 	}

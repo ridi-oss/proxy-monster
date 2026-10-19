@@ -1,4 +1,4 @@
-package introspect
+package sqldb
 
 import (
 	"crypto/tls"

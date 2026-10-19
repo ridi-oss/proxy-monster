@@ -1,4 +1,4 @@
-package introspect
+package sqldb
 
 import (
 	"context"
@@ -46,7 +46,7 @@ func runWith(open func(spi.TargetConfig) (*sql.DB, error), dbImpl relay.Db, prob
 		return nil, err
 	}
 	defer pool.Close()
-	return Run(context.Background(), pool, dbImpl, probe, config.Db)
+	return Introspect(context.Background(), pool, dbImpl, probe, config.Db)
 }
 
 // TestRunPinsOneConnectionOnDeadTarget is the regression test for the pinned-connection fix.

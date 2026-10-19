@@ -1,4 +1,4 @@
-package db
+package postgres
 
 import (
 	"bytes"
@@ -28,7 +28,7 @@ func TestPostgresQuotedNamesStayDistinct(t *testing.T) {
 		}
 	}
 
-	bulk := targettest.IntrospectTarget(t, sqldb.OpenPostgresTarget, PgDb{}, sqldb.ProbePostgresNamespace, targetConfig, name)
+	bulk := targettest.IntrospectTarget(t, sqldb.OpenPostgresTarget, TargetSQL{}, sqldb.ProbePostgresNamespace, targetConfig, name)
 	if got := bulk.GetDefaultSchemas(); !slices.Equal(got, []string{"pg_catalog", "Sales", "public"}) {
 		t.Errorf("DefaultSchemas = %v, want [pg_catalog Sales public]", got)
 	}
@@ -43,9 +43,9 @@ func TestPostgresQuotedNamesStayDistinct(t *testing.T) {
 	}
 
 	conn := targettest.PinConn(t, database)
-	targettest.AssertFragmentMatchesBulk(t, PgDb{}, conn, name, bulk, "Sales")
-	targettest.AssertFragmentMatchesBulk(t, PgDb{}, conn, name, bulk, "sales")
-	if bytes.Equal(targettest.TrustedRefetchHash(t, PgDb{}, conn, "Sales"), targettest.TrustedRefetchHash(t, PgDb{}, conn, "sales")) {
+	targettest.AssertFragmentMatchesBulk(t, TargetSQL{}, conn, name, bulk, "Sales")
+	targettest.AssertFragmentMatchesBulk(t, TargetSQL{}, conn, name, bulk, "sales")
+	if bytes.Equal(targettest.TrustedRefetchHash(t, TargetSQL{}, conn, "Sales"), targettest.TrustedRefetchHash(t, TargetSQL{}, conn, "sales")) {
 		t.Fatal(`schemas "Sales" and sales hash identically`)
 	}
 }

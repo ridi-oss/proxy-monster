@@ -13,7 +13,6 @@ import (
 	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/athena"
-	"github.com/ridi-oss/proxy-monster/goproxy/db"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/mysql"
 	"github.com/ridi-oss/proxy-monster/goproxy/postgres"
@@ -131,7 +130,7 @@ var registry = spi.MustRegistry(
 	},
 	sqlProvider{
 		engine:     engines.Postgres,
-		queries:    db.PgDb{},
+		queries:    postgres.TargetSQL{},
 		open:       sqldb.OpenPostgresTarget,
 		probe:      sqldb.ProbePostgresNamespace,
 		catalog:    sqldb.ReadPostgresCatalog,

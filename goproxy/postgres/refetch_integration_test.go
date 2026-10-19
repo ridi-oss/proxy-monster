@@ -1,4 +1,4 @@
-package db
+package postgres
 
 import (
 	"bytes"
@@ -43,8 +43,8 @@ func TestPostgresRefetcherIntegration(t *testing.T) {
 			targettest.ExecRefetchSQL(t, conn, "CREATE SCHEMA "+quote(schema))
 			targettest.ExecRefetchSQL(t, conn, "CREATE TABLE "+quote(schema)+".base (a INTEGER NOT NULL)")
 
-			adapter := PgDb{}
-			previous := targettest.TrustedRefetchHash(t, adapter, conn, schema)
+			queries := TargetSQL{}
+			previous := targettest.TrustedRefetchHash(t, queries, conn, schema)
 			wantHashLength := 16
 			if mode.crypto {
 				wantHashLength = 32
@@ -53,7 +53,7 @@ func TestPostgresRefetcherIntegration(t *testing.T) {
 				t.Fatalf("initial hash length = %d, want %d", len(previous), wantHashLength)
 			}
 			t.Run("unchanged", func(t *testing.T) {
-				push := targettest.RunRefetchIntegration(t, adapter, conn, databaseName, schema, previous)
+				push := targettest.RunRefetchIntegration(t, queries, conn, databaseName, schema, previous)
 				if !push.Unchanged || len(push.Columns) != 0 || !bytes.Equal(push.ContentHash, previous) {
 					t.Fatalf("unchanged push = %+v, want hash-only unchanged push", push)
 				}
@@ -62,14 +62,14 @@ func TestPostgresRefetcherIntegration(t *testing.T) {
 				otherSchema := targettest.UniqueFixtureName("pm_refetch_pg_schema")
 				targettest.ExecRefetchSQL(t, conn, "CREATE SCHEMA "+quote(otherSchema))
 				targettest.ExecRefetchSQL(t, conn, "CREATE TABLE "+quote(otherSchema)+".base (a INTEGER NOT NULL)")
-				current := targettest.TrustedRefetchHash(t, adapter, conn, otherSchema)
+				current := targettest.TrustedRefetchHash(t, queries, conn, otherSchema)
 				if len(current) != wantHashLength {
 					t.Fatalf("schema-field hash length = %d, want %d", len(current), wantHashLength)
 				}
 				if bytes.Equal(current, previous) {
 					t.Fatalf("byte-identical tables in distinct schemas collided: %x", current)
 				}
-				push := targettest.RunRefetchIntegration(t, adapter, conn, databaseName, otherSchema, previous)
+				push := targettest.RunRefetchIntegration(t, queries, conn, databaseName, otherSchema, previous)
 				targettest.AssertFullRefetch(t, push, current, databaseName, []*analyzerpb.Column{
 					{Schema: otherSchema, Table: "base", Column: "a", DataType: "integer", Ordinal: 1},
 				}, nil)
@@ -168,14 +168,14 @@ func TestPostgresRefetcherIntegration(t *testing.T) {
 						targettest.ExecRefetchSQL(t, conn, step.before)
 					}
 					targettest.ExecRefetchSQL(t, conn, step.statement)
-					current := targettest.TrustedRefetchHash(t, adapter, conn, schema)
+					current := targettest.TrustedRefetchHash(t, queries, conn, schema)
 					if len(current) != wantHashLength {
 						t.Fatalf("mutated hash length = %d, want %d", len(current), wantHashLength)
 					}
 					if bytes.Equal(current, previous) {
 						t.Fatalf("mutation did not change trusted hash: %x", current)
 					}
-					push := targettest.RunRefetchIntegration(t, adapter, conn, databaseName, schema, previous)
+					push := targettest.RunRefetchIntegration(t, queries, conn, databaseName, schema, previous)
 					targettest.AssertFullRefetch(t, push, current, databaseName, step.columns, step.routines)
 					previous = current
 				})

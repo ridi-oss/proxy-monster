@@ -21,7 +21,6 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 
 	"github.com/ridi-oss/proxy-monster/goproxy/cp"
-	"github.com/ridi-oss/proxy-monster/goproxy/db"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/postgres"
@@ -282,7 +281,7 @@ func startBrokerForDBSetup(t *testing.T, targetConfig dbtest.TargetDb, database 
 		User:     targetConfig.User,
 		Password: targetConfig.Password,
 	}
-	server := postgres.New(spi.Listen{}, config, cpClient, db.PgDb{}, nil)
+	server := postgres.New(spi.Listen{}, config, cpClient, postgres.TargetSQL{}, nil)
 	return startBrokerServer(t, fake, server)
 }
 
@@ -298,7 +297,7 @@ func startBrokerTLS(t *testing.T) *brokerHarness {
 		User:     targetConfig.User,
 		Password: targetConfig.Password,
 	}
-	server := postgres.New(spi.Listen{}, config, cpClient, db.PgDb{}, tlsProvider.Current)
+	server := postgres.New(spi.Listen{}, config, cpClient, postgres.TargetSQL{}, tlsProvider.Current)
 	return startBrokerServer(t, fake, server)
 }
 

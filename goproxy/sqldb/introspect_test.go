@@ -8,11 +8,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ridi-oss/proxy-monster/goproxy/postgres"
+
 	"github.com/ridi-oss/proxy-monster/goproxy/mysql"
 	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
 
 	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
-	"github.com/ridi-oss/proxy-monster/goproxy/db"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/relay"
@@ -40,7 +41,7 @@ func runMySQL(config spi.TargetConfig) (*pb.CatalogRequest, error) {
 }
 
 func runPostgres(config spi.TargetConfig) (*pb.CatalogRequest, error) {
-	return runWith(sqldb.OpenPostgresTarget, db.PgDb{}, sqldb.ProbePostgresNamespace, config)
+	return runWith(sqldb.OpenPostgresTarget, postgres.TargetSQL{}, sqldb.ProbePostgresNamespace, config)
 }
 
 func runWith(open func(spi.TargetConfig) (*sql.DB, error), queries relay.Db, probe sqldb.NamespaceProbe, config spi.TargetConfig) (*pb.CatalogRequest, error) {

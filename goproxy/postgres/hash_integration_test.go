@@ -1,4 +1,4 @@
-package db
+package postgres
 
 import (
 	"context"
@@ -60,8 +60,8 @@ func verifyPostgresHashAndFragment(t *testing.T, database *sql.DB, wantCrypto bo
 		t.Fatalf("pin Postgres connection: %v", err)
 	}
 	defer conn.Close()
-	db := PgDb{}
-	setupRows, err := targettest.QueryStrings(conn, db.HashSetupProbeSQL(), db.HashSetupColumns())
+	queries := TargetSQL{}
+	setupRows, err := targettest.QueryStrings(conn, queries.HashSetupProbeSQL(), queries.HashSetupColumns())
 	if err != nil {
 		t.Fatalf("pgcrypto setup probe: %v", err)
 	}
@@ -79,7 +79,7 @@ func verifyPostgresHashAndFragment(t *testing.T, database *sql.DB, wantCrypto bo
 	}
 	measure := func(schema string) []byte {
 		t.Helper()
-		hashSQL, columns, err := db.SchemaHashSQL(schema, setupRows)
+		hashSQL, columns, err := queries.SchemaHashSQL(schema, setupRows)
 		if err != nil {
 			t.Fatalf("SchemaHashSQL(%q): %v", schema, err)
 		}
@@ -93,7 +93,7 @@ func verifyPostgresHashAndFragment(t *testing.T, database *sql.DB, wantCrypto bo
 		if err != nil {
 			t.Fatalf("Postgres hash query for %q: %v\n%s", schema, err, hashSQL)
 		}
-		hash, trusted, err := db.SchemaHashFromRows(rows)
+		hash, trusted, err := queries.SchemaHashFromRows(rows)
 		if err != nil || !trusted {
 			t.Fatalf("Postgres hash decode for %q = %x, trusted=%v, err=%v, rows=%#v", schema, hash, trusted, err, rows)
 		}
@@ -113,11 +113,11 @@ func verifyPostgresHashAndFragment(t *testing.T, database *sql.DB, wantCrypto bo
 	if !wantCrypto && len(first) != 16 {
 		t.Fatalf("md5 hash length = %d, want 16", len(first))
 	}
-	rows, err := targettest.QueryStrings(conn, db.SchemaColumnsSQL(schema), 7)
+	rows, err := targettest.QueryStrings(conn, queries.SchemaColumnsSQL(schema), 7)
 	if err != nil {
 		t.Fatalf("Postgres fragment query: %v", err)
 	}
-	fragment, err := sqldb.FragmentColumnsFromRows(db, 0, schema, rows)
+	fragment, err := sqldb.FragmentColumnsFromRows(queries, 0, schema, rows)
 	if err != nil {
 		t.Fatalf("Postgres fragment mapping: %v", err)
 	}

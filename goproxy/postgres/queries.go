@@ -2,7 +2,7 @@
 // context (namespace probe SQL, temp-overlay support), plus each dialect's NormalizeColumns
 // specialization (analyzer/engines.NormalizeRelation — Go-to-Go, no SQL driver, no cgo). No enforcement
 // logic, no state machine.
-package db
+package postgres
 
 import (
 	"encoding/hex"
@@ -14,12 +14,12 @@ import (
 	"github.com/ridi-oss/sqlglot-go/dialects"
 )
 
-// PgDb is the relay.Db adapter for Postgres.
-type PgDb struct{}
+// TargetSQL is PostgreSQL's relay.Db.
+type TargetSQL struct{}
 
 // NamespaceProbeSQL yields one JSON observation containing the connection's effective search_path,
 // visible non-pg_catalog overloads of polymorphic builtins, and pg_catalog.xid type visibility.
-func (PgDb) NamespaceProbeSQL() string {
+func (TargetSQL) NamespaceProbeSQL() string {
 	return `SELECT pg_catalog.json_build_object(
   'search_path', pg_catalog.current_schemas(true),
   'shadowed_functions', COALESCE((
@@ -38,14 +38,14 @@ func (PgDb) NamespaceProbeSQL() string {
 )::pg_catalog.text`
 }
 
-func (PgDb) FoldFunctionName(name string) string {
+func (TargetSQL) FoldFunctionName(name string) string {
 	return dialects.Postgres().FoldIdentifierName(name, false)
 }
 
-func (PgDb) SupportsTempOverlay() bool { return true }
+func (TargetSQL) SupportsTempOverlay() bool { return true }
 
 // TempColumnsProbeSQL is the session-temp overlay probe.
-func (PgDb) TempColumnsProbeSQL() string {
+func (TargetSQL) TempColumnsProbeSQL() string {
 	return `SELECT n.nspname, c.relname, a.attname, pg_catalog.format_type(a.atttypid, a.atttypmod), a.attnum, pg_catalog.current_database()
 FROM pg_catalog.pg_attribute a
 JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
@@ -55,45 +55,45 @@ WHERE n.nspname LIKE 'pg_temp%' AND pg_catalog.pg_table_is_visible(c.oid)
 ORDER BY c.relname, a.attnum`
 }
 
-func (PgDb) HashSetupProbeSQL() string {
+func (TargetSQL) HashSetupProbeSQL() string {
 	return `SELECT n.nspname
 FROM pg_catalog.pg_extension e
 JOIN pg_catalog.pg_namespace n ON n.oid = e.extnamespace
 WHERE e.extname = 'pgcrypto'`
 }
-func (PgDb) HashSetupColumns() int { return 1 }
+func (TargetSQL) HashSetupColumns() int { return 1 }
 
 // LowerCaseTableNamesProbeSQL: Postgres has no such concept — NormalizeColumns is an identity function
 // regardless of the mode argument.
-func (PgDb) LowerCaseTableNamesProbeSQL() string { return "" }
+func (TargetSQL) LowerCaseTableNamesProbeSQL() string { return "" }
 
 // NormalizeColumns is an identity function: Postgres never folds — a quoted-vs-unquoted identifier
 // pair is genuinely two distinct columns, and introspection already reports each one's real, resolved
 // spelling (analyzer/engines.NormalizeRelation's contract for any non-MySQL dialect).
-func (PgDb) NormalizeColumns(_ int, columns []*analyzerpb.Column) []*analyzerpb.Column {
+func (TargetSQL) NormalizeColumns(_ int, columns []*analyzerpb.Column) []*analyzerpb.Column {
 	return columns
 }
 
-func (PgDb) RoutinesSQL() string {
+func (TargetSQL) RoutinesSQL() string {
 	return `SELECT n.nspname, p.proname FROM pg_catalog.pg_proc p
 JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace`
 }
 
-func (PgDb) SchemaRoutinesSQL(schema string) string {
+func (TargetSQL) SchemaRoutinesSQL(schema string) string {
 	return fmt.Sprintf(`SELECT p.proname FROM pg_catalog.pg_proc p
 JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
 WHERE n.nspname = pg_catalog.convert_from('%s'::pg_catalog.bytea, 'UTF8')
 ORDER BY p.proname::pg_catalog.text COLLATE "C"`, pgByteaLiteral(schema))
 }
 
-func (PgDb) SchemaColumnsSQL(schema string) string {
+func (TargetSQL) SchemaColumnsSQL(schema string) string {
 	return fmt.Sprintf(`SELECT table_schema, table_name, column_name, data_type, ordinal_position, is_nullable, table_catalog
 FROM information_schema.columns
 WHERE table_schema = pg_catalog.convert_from('%s'::pg_catalog.bytea, 'UTF8')
 ORDER BY table_name::pg_catalog.text COLLATE "C", ordinal_position, column_name::pg_catalog.text COLLATE "C"`, pgByteaLiteral(schema))
 }
 
-func (PgDb) SchemaHashSQL(schema string, setupRows [][]*string) (string, int, error) {
+func (TargetSQL) SchemaHashSQL(schema string, setupRows [][]*string) (string, int, error) {
 	aggregate := `COALESCE(pg_catalog.string_agg(row_blob, '' ORDER BY tn::pg_catalog.text COLLATE "C", op, cn::pg_catalog.text COLLATE "C"), '')`
 	hashExpr := "pg_catalog.md5(" + aggregate + ")"
 	if len(setupRows) == 1 && len(setupRows[0]) == 1 && setupRows[0][0] != nil && *setupRows[0][0] != "" {
@@ -124,7 +124,7 @@ FROM (
 ) AS serialized_rows`, hashExpr, pgByteaLiteral(schema), pgByteaLiteral(schema)), 3, nil
 }
 
-func (PgDb) SchemaHashFromRows(rows [][]*string) ([]byte, bool, error) {
+func (TargetSQL) SchemaHashFromRows(rows [][]*string) ([]byte, bool, error) {
 	if len(rows) != 1 || len(rows[0]) != 3 || rows[0][0] == nil || rows[0][1] == nil || rows[0][2] == nil {
 		return nil, false, nil
 	}

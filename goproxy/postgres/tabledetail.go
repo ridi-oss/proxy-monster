@@ -350,8 +350,3 @@ func postgresReferentialAction(value *string) (*string, error) {
 	}
 	return &action, nil
 }
-
-// ReadTableDetail reads one PostgreSQL table's detail.
-func ReadTableDetail(conn *sql.Conn, schema, table string) (*spi.TableDetail, error) {
-	return readPostgresTableDetail(conn, schema, table)
-}

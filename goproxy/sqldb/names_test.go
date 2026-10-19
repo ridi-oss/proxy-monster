@@ -1,4 +1,4 @@
-package dialects_test
+package sqldb_test
 
 import (
 	"context"
@@ -11,14 +11,13 @@ import (
 
 	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
-	"github.com/ridi-oss/proxy-monster/goproxy/dialects"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
 func namesDetailTarget(t *testing.T, e *engines.Engine, targetConfig dbtest.TargetDb) spi.Target {
 	t.Helper()
-	provider, err := dialects.For(e)
+	provider, err := registry.For(e)
 	if err != nil {
 		t.Fatal(err)
 	}

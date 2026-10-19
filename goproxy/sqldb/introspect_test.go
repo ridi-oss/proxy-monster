@@ -347,12 +347,3 @@ func TestIntrospectPostgres(t *testing.T) {
 		}
 	})
 }
-
-func contains(ss []string, want string) bool {
-	for _, s := range ss {
-		if s == want {
-			return true
-		}
-	}
-	return false
-}

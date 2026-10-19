@@ -1,0 +1,63 @@
+package postgres
+
+import (
+	"context"
+	"crypto/tls"
+	"database/sql"
+	"time"
+
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
+	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
+	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	"github.com/ridi-oss/proxy-monster/goproxy/spi"
+	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
+)
+
+// Provider is PostgreSQL's spi.Provider.
+type Provider struct{}
+
+func (Provider) Engine() *engines.Engine { return engines.Postgres }
+
+func (Provider) OpenTarget(config spi.TargetConfig) (spi.Target, error) {
+	pool, info, err := sqldb.OpenPool(OpenPool, config)
+	if err != nil {
+		return nil, err
+	}
+	return &target{config: config, pool: pool, info: info}, nil
+}
+
+// target is one open PostgreSQL target; its pool serves introspection and table detail.
+type target struct {
+	config spi.TargetConfig
+	pool   *sql.DB
+	info   *pb.ConnectionInfo
+}
+
+func (t *target) Config() spi.TargetConfig { return t.config }
+
+func (t *target) ConnectionInfo() *pb.ConnectionInfo { return t.info }
+
+func (t *target) Introspect(ctx context.Context) (*pb.CatalogRequest, error) {
+	return sqldb.Introspect(ctx, t.pool, Queries, ProbeNamespace, t.config.Db)
+}
+
+func (t *target) ReadTableDetail(ctx context.Context, table *enginepb.ObjectRef) (*spi.TableDetail, error) {
+	return sqldb.ReadTableDetail(ctx, t.pool, engines.Postgres, ReadCatalog, readPostgresTableDetail, table)
+}
+
+func (t *target) NewWireServer(listen spi.Listen, client spi.ControlPlane, tlsProvider func() (*tls.Config, error)) spi.WireServer {
+	return New(listen, t.config, client, tlsProvider)
+}
+
+func (t *target) NewRunSession(ctx context.Context, authz *spi.Authorizer, guard spi.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.Session, error) {
+	return NewRunSession(ctx, t.config, authz, guard, readTimeout, defaultSchema)
+}
+
+func (t *target) Close() error { return t.pool.Close() }
+
+var (
+	_ spi.Provider   = Provider{}
+	_ spi.Target     = (*target)(nil)
+	_ spi.Session    = (*RunSession)(nil)
+	_ spi.WireServer = (*Server)(nil)
+)

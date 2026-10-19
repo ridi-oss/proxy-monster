@@ -1,4 +1,4 @@
-package dialects_test
+package sqldb_test
 
 import (
 	"context"
@@ -9,16 +9,19 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ridi-oss/proxy-monster/goproxy/athena"
+	"github.com/ridi-oss/proxy-monster/goproxy/mysql"
+	"github.com/ridi-oss/proxy-monster/goproxy/postgres"
+
 	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 
-	"github.com/ridi-oss/proxy-monster/goproxy/dialects"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
 func TestRegistryProviderContracts(t *testing.T) {
-	registry := dialects.Registry()
+	registry := registry
 	for _, test := range []struct {
 		name   string
 		engine *engines.Engine
@@ -83,7 +86,7 @@ func TestRegistryIntrospectDelegates(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			provider, _ := dialects.For(test.engine)
+			provider, _ := registry.For(test.engine)
 			target, err := provider.OpenTarget(spi.TargetConfig{Host: test.targetConfig.Host, Port: test.targetConfig.Port, Db: test.targetConfig.DB, User: test.targetConfig.User, Password: test.targetConfig.Password})
 			if err != nil {
 				t.Fatal(err)
@@ -103,7 +106,7 @@ func TestRegistryIntrospectDelegates(t *testing.T) {
 func TestNewWireServerStartsExpectedProtocol(t *testing.T) {
 	for _, e := range []*engines.Engine{engines.MySQL, engines.Postgres} {
 		t.Run(e.WireName, func(t *testing.T) {
-			provider, _ := dialects.For(e)
+			provider, _ := registry.For(e)
 			target, err := provider.OpenTarget(spi.TargetConfig{})
 			if err != nil {
 				t.Fatal(err)
@@ -193,7 +196,7 @@ func TestCatalogRefreshObservesNewConnectionDefaults(t *testing.T) {
 
 func openTarget(t *testing.T, e *engines.Engine, config spi.TargetConfig) spi.Target {
 	t.Helper()
-	provider, err := dialects.For(e)
+	provider, err := registry.For(e)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,3 +207,5 @@ func openTarget(t *testing.T, e *engines.Engine, config spi.TargetConfig) spi.Ta
 	t.Cleanup(func() { _ = target.Close() })
 	return target
 }
+
+var registry = spi.MustRegistry(athena.Provider{}, mysql.Provider{}, postgres.Provider{})

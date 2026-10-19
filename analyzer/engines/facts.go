@@ -993,11 +993,6 @@ func isAccountObjectDDL(root exp.Expression) bool {
 	return false
 }
 
-// schemaQualifierCandidates collects every schema the statement names, so a caller holding a partial
-// catalog can fetch the ones it lacks. The names are the target DB's own spelling — EmitFacts folds the
-// statement's identifiers before this runs — because a candidate is used to look that schema up: MySQL
-// under lower_case_table_names=1 reports information_schema lowercase, so an unfolded `GOODS_STORE`
-// would match nothing.
 // namedUnprovedRelation errs toward a match: names fold, and an unqualified one tries every search-path schema.
 func namedUnprovedRelation(root exp.Expression, namespace NamespaceConfig) (tableID, bool) {
 	if len(namespace.UnprovedRelations) == 0 {
@@ -1028,6 +1023,11 @@ func foldedTableID(catalog, schema, table string) tableID {
 	return tableID{catalog: strings.ToLower(catalog), schema: strings.ToLower(schema), table: strings.ToLower(table)}
 }
 
+// schemaQualifierCandidates collects every schema the statement names, so a caller holding a partial
+// catalog can fetch the ones it lacks. The names are the target DB's own spelling — EmitFacts folds the
+// statement's identifiers before this runs — because a candidate is used to look that schema up: MySQL
+// under lower_case_table_names=1 reports information_schema lowercase, so an unfolded `GOODS_STORE`
+// would match nothing.
 func schemaQualifierCandidates(root exp.Expression) []string {
 	set := map[string]bool{}
 	for _, table := range root.FindAll(exp.KindTable) {

@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ridi-oss/proxy-monster/goproxy/db"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/mysql"
@@ -32,7 +31,7 @@ func startNamesBroker(t *testing.T, targetConfig dbtest.TargetDb, seed *sql.DB, 
 	}
 	fake, cpClient := startFakeCP(t)
 	config := spi.TargetConfig{Host: targetConfig.Host, Port: targetConfig.Port, Db: targetConfig.DB, User: targetConfig.User, Password: targetConfig.Password}
-	server := mysql.New(spi.Listen{}, config, cpClient, db.MySqlDb{}, nil)
+	server := mysql.New(spi.Listen{}, config, cpClient, mysql.TargetSQL{}, nil)
 	if err := server.Listen(); err != nil {
 		t.Fatalf("mysql.Listen: %v", err)
 	}

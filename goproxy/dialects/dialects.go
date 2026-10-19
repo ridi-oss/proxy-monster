@@ -117,7 +117,7 @@ var registry = spi.MustRegistry(
 	athena.Provider{},
 	sqlProvider{
 		engine:     engines.MySQL,
-		queries:    db.MySqlDb{},
+		queries:    mysql.TargetSQL{},
 		open:       sqldb.OpenMySQLTarget,
 		probe:      sqldb.ProbeMySQLNamespace,
 		catalog:    func(context.Context, *sql.Conn) (string, error) { return "def", nil },

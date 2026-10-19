@@ -17,7 +17,6 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
@@ -106,7 +105,7 @@ func TestDecisionFromWire(t *testing.T) {
 		if commands != nil {
 			t.Fatalf("commands = %+v, want nil", commands)
 		}
-		want := &relay.Decision{
+		want := &spi.Decision{
 			Action:              "MASK",
 			DecisionID:          42,
 			MaxRows:             500,
@@ -224,7 +223,7 @@ func TestValidateTokenAndDecideUnreachable(t *testing.T) {
 	if _, err := c.ValidateToken("token", ""); err == nil {
 		t.Fatal("ValidateToken against unreachable control plane succeeded")
 	}
-	out := c.Decide(relay.DecideRequest{Token: "token", SQL: "SELECT 1"})
+	out := c.Decide(spi.DecideRequest{Token: "token", SQL: "SELECT 1"})
 	if !out.IsErr() || out.Err == "" {
 		t.Fatalf("Decide = %+v, want non-empty fail-closed error", out)
 	}
@@ -438,8 +437,8 @@ func TestDecideMapsRequestAndRetriesBeforeDecide(t *testing.T) {
 	}}
 	c := startFakeControlPlane(t, fake)
 	var run [][]*pb.ProxyCommand
-	request := relay.DecideRequest{
-		Session: relay.SessionObservation{
+	request := spi.DecideRequest{
+		Session: spi.SessionObservation{
 			Namespace: []string{"public", "app"},
 			SessionObservation: &enginepb.SessionObservation{Engine: &enginepb.SessionObservation_Postgres{Postgres: &enginepb.PostgresSession{
 				ShadowedFunctions: []string{"unnest"}, FunctionShadowingObserved: true, SystemXidVisible: proto.Bool(true),
@@ -448,9 +447,9 @@ func TestDecideMapsRequestAndRetriesBeforeDecide(t *testing.T) {
 		Token:        "raw-token",
 		SQL:          "SELECT 1",
 		ClientAddr:   "10.0.0.9:5555",
-		TempColumns:  []relay.TempColumn{{Schema: "pg_temp_3", Table: "t", Column: "c", SqlType: "text", Ordinal: 5}},
+		TempColumns:  []spi.TempColumn{{Schema: "pg_temp_3", Table: "t", Column: "c", SqlType: "text", Ordinal: 5}},
 		ConnectionID: []byte("0123456789abcdef"),
-		RunCommands: func(commands []*pb.ProxyCommand, _ *relay.SessionObservation) error {
+		RunCommands: func(commands []*pb.ProxyCommand, _ *spi.SessionObservation) error {
 			run = append(run, commands)
 			return nil
 		},
@@ -497,12 +496,12 @@ func TestDecideRunsTheTargetErrorCheck(t *testing.T) {
 		wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW, DecisionId: 7, ForwardTargetError: true}),
 	}}
 	c := startFakeControlPlane(t, fake)
-	observed := &relay.TargetError{Code: "1064", Message: []byte{0xff}}
+	observed := &spi.TargetError{Code: "1064", Message: []byte{0xff}}
 	var checked []string
-	out := c.Decide(relay.DecideRequest{
+	out := c.Decide(spi.DecideRequest{
 		SQL:          "SELECT $$",
 		ConnectionID: []byte("0123456789abcdef"),
-		CheckTargetError: func(sql string) (*relay.TargetError, error) {
+		CheckTargetError: func(sql string) (*spi.TargetError, error) {
 			checked = append(checked, sql)
 			return observed, nil
 		},
@@ -522,7 +521,7 @@ func TestDecideRunsTheTargetErrorCheck(t *testing.T) {
 
 	t.Run("missing checker", func(t *testing.T) {
 		c := startFakeControlPlane(t, &fakeControlPlane{decideResp: wireBefore(check)})
-		out := c.Decide(relay.DecideRequest{})
+		out := c.Decide(spi.DecideRequest{})
 		if !out.IsErr() || !strings.Contains(out.Err, "no checker") {
 			t.Fatalf("Decide = %+v", out)
 		}
@@ -532,8 +531,8 @@ func TestDecideRunsTheTargetErrorCheck(t *testing.T) {
 func TestDecideOmitsUnobservedPostgresTypeVisibility(t *testing.T) {
 	fake := &fakeControlPlane{}
 	c := startFakeControlPlane(t, fake)
-	out := c.Decide(relay.DecideRequest{
-		Session: relay.SessionObservation{
+	out := c.Decide(spi.DecideRequest{
+		Session: spi.SessionObservation{
 			Namespace:          []string{"public"},
 			SessionObservation: &enginepb.SessionObservation{Engine: &enginepb.SessionObservation_Postgres{Postgres: &enginepb.PostgresSession{FunctionShadowingObserved: true}}},
 		},
@@ -558,14 +557,14 @@ func TestDecideOmitsUnobservedPostgresTypeVisibility(t *testing.T) {
 func TestDecideBeforeDecideFailures(t *testing.T) {
 	t.Run("missing runner", func(t *testing.T) {
 		c := startFakeControlPlane(t, &fakeControlPlane{decideResp: wireBefore(refetch("app", nil))})
-		out := c.Decide(relay.DecideRequest{})
+		out := c.Decide(spi.DecideRequest{})
 		if !out.IsErr() || !strings.Contains(out.Err, "no runner") {
 			t.Fatalf("Decide = %+v", out)
 		}
 	})
 	t.Run("runner error", func(t *testing.T) {
 		c := startFakeControlPlane(t, &fakeControlPlane{decideResp: wireBefore(refetch("app", nil))})
-		out := c.Decide(relay.DecideRequest{RunCommands: func([]*pb.ProxyCommand, *relay.SessionObservation) error { return errors.New("probe failed") }})
+		out := c.Decide(spi.DecideRequest{RunCommands: func([]*pb.ProxyCommand, *spi.SessionObservation) error { return errors.New("probe failed") }})
 		if !out.IsErr() || !strings.Contains(out.Err, "probe failed") {
 			t.Fatalf("Decide = %+v", out)
 		}
@@ -574,7 +573,7 @@ func TestDecideBeforeDecideFailures(t *testing.T) {
 		fake := &fakeControlPlane{decideResp: wireBefore(refetch("app", nil))}
 		c := startFakeControlPlane(t, fake)
 		runs := 0
-		out := c.Decide(relay.DecideRequest{RunCommands: func([]*pb.ProxyCommand, *relay.SessionObservation) error { runs++; return nil }})
+		out := c.Decide(spi.DecideRequest{RunCommands: func([]*pb.ProxyCommand, *spi.SessionObservation) error { runs++; return nil }})
 		if !out.IsErr() || !strings.Contains(out.Err, "4 times") {
 			t.Fatalf("Decide = %+v", out)
 		}

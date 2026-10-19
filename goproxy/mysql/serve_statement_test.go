@@ -11,16 +11,17 @@ import (
 
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/relay"
+	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 	"github.com/ridi-oss/proxy-monster/mysqlwire"
 )
 
 type runTestDecider struct{}
 
-func (runTestDecider) Decide(relay.DecideRequest) relay.DecisionOutcome {
-	return relay.DecisionOutcome{Decision: &relay.Decision{Action: "ALLOW"}}
+func (runTestDecider) Decide(spi.DecideRequest) spi.DecisionOutcome {
+	return spi.DecisionOutcome{Decision: &spi.Decision{Action: "ALLOW"}}
 }
 
-func scriptedMySQLRun(t *testing.T, decider relay.DecisionClient, maxRows int, response []byte) (*RunSession, <-chan string) {
+func scriptedMySQLRun(t *testing.T, decider spi.DecisionClient, maxRows int, response []byte) (*RunSession, <-chan string) {
 	t.Helper()
 	client, server := net.Pipe()
 	t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
@@ -58,7 +59,7 @@ func scriptedMySQLRun(t *testing.T, decider relay.DecisionClient, maxRows int, r
 	return s, writes
 }
 
-func runMySQLStatement(t *testing.T, maxRows int, response []byte) (relay.StatementResult, error, []string) {
+func runMySQLStatement(t *testing.T, maxRows int, response []byte) (spi.StatementResult, error, []string) {
 	t.Helper()
 	s, writes := scriptedMySQLRun(t, runTestDecider{}, maxRows, response)
 	result, err := s.ServeStatement("SELECT 1", maxRows)
@@ -143,7 +144,7 @@ func TestRunStatementMySQLCapturesRawAndRedactedTargetDbError(t *testing.T) {
 }
 
 func TestTextResultCollectorRejectsMalformedRowWidth(t *testing.T) {
-	result := relay.StatementResult{Rows: make([][]*string, 0)}
+	result := spi.StatementResult{Rows: make([][]*string, 0)}
 	collect := textResultCollector{budget: relay.RowBudget{MaxRows: 1}, result: &result}
 	if err := collect.onColumns(2); err != nil {
 		t.Fatal(err)
@@ -155,7 +156,7 @@ func TestTextResultCollectorRejectsMalformedRowWidth(t *testing.T) {
 }
 
 func TestTextResultCollectorDisplaysBinaryValuesAsHex(t *testing.T) {
-	result := relay.StatementResult{Rows: make([][]*string, 0)}
+	result := spi.StatementResult{Rows: make([][]*string, 0)}
 	collect := textResultCollector{budget: relay.RowBudget{MaxRows: 1}, result: &result}
 	if err := collect.onColumns(2); err != nil {
 		t.Fatal(err)
@@ -183,7 +184,7 @@ func TestTextResultCollectorHexesBitAndGeometry(t *testing.T) {
 	// BIT (0x10) and GEOMETRY (0xff) carry a binary charset; their bytes must always render as hex like every
 	// other binary column, even when a value happens to be valid UTF-8 (e.g. BIT(1) = 0x01) — otherwise it
 	// would reach the UI as an invisible control character.
-	result := relay.StatementResult{Rows: make([][]*string, 0)}
+	result := spi.StatementResult{Rows: make([][]*string, 0)}
 	collect := textResultCollector{budget: relay.RowBudget{MaxRows: 1}, result: &result}
 	if err := collect.onColumns(2); err != nil {
 		t.Fatal(err)
@@ -209,7 +210,7 @@ func TestTextResultCollectorHexesBitAndGeometry(t *testing.T) {
 func TestTextResultCollectorHexesNonUTF8Fallback(t *testing.T) {
 	// A cell whose bytes are not valid UTF-8 must be hexed even when its column is not classified binary, so
 	// an unnamed or future binary type cannot revive the proto3-string marshal failure.
-	result := relay.StatementResult{Rows: make([][]*string, 0)}
+	result := spi.StatementResult{Rows: make([][]*string, 0)}
 	collect := textResultCollector{budget: relay.RowBudget{MaxRows: 1}, result: &result}
 	if err := collect.onColumns(1); err != nil {
 		t.Fatal(err)
@@ -229,7 +230,7 @@ func TestTextResultCollectorHexesNonUTF8Fallback(t *testing.T) {
 
 func TestTextResultCollectorLeavesMaskedBinaryValuesMasked(t *testing.T) {
 	ordinal := int32(0)
-	result := relay.StatementResult{Rows: make([][]*string, 0)}
+	result := spi.StatementResult{Rows: make([][]*string, 0)}
 	collect := textResultCollector{
 		budget: relay.RowBudget{MaxRows: 1},
 		result: &result,
@@ -275,7 +276,7 @@ func mysqlColumnDef(name string, charset uint16, typ byte) []byte {
 
 func TestTextResultCollectorMaskUnboundBeforeRows(t *testing.T) {
 	ordinal := int32(3)
-	result := relay.StatementResult{Rows: make([][]*string, 0)}
+	result := spi.StatementResult{Rows: make([][]*string, 0)}
 	collect := textResultCollector{budget: relay.RowBudget{MaxRows: 1}, result: &result, masks: []*pb.ColumnMask{{Ordinal: &ordinal}}}
 	err := collect.onColumns(1)
 	if !errors.Is(err, relay.ErrMaskUnbound) || len(result.Rows) != 0 {

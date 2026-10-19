@@ -23,10 +23,10 @@ type RunSession struct {
 	connectionID []byte
 	qe           *relay.QueryEngine
 	ref          *relay.Refetcher
-	guard        relay.ExecGuard
+	guard        spi.ExecGuard
 }
 
-func NewRunSession(ctx context.Context, target spi.TargetDb, db relay.Db, client spi.ControlPlane, token string, connectionID []byte, guard relay.ExecGuard, readTimeout time.Duration, defaultSchema string) (*RunSession, error) {
+func NewRunSession(ctx context.Context, target spi.TargetDb, db relay.Db, client spi.ControlPlane, token string, connectionID []byte, guard spi.ExecGuard, readTimeout time.Duration, defaultSchema string) (*RunSession, error) {
 	if defaultSchema != "" {
 		target.Db = defaultSchema
 	}
@@ -64,14 +64,14 @@ func (s *RunSession) OnOpen(ctx context.Context, cmds []*pb.ProxyCommand) error 
 	return s.ref.RunAll(cmds, nil)
 }
 
-func (s *RunSession) ServeStatement(sql string, maxRows int) (result relay.StatementResult, err error) {
+func (s *RunSession) ServeStatement(sql string, maxRows int) (result spi.StatementResult, err error) {
 	result.Decision, result.Denied, err = relay.ServeStatement(s.qe, relay.AuthzInput{
 		SQL:          sql,
 		Token:        s.token,
 		ConnectionID: s.connectionID,
-		ProbeSession: func() (relay.SessionObservation, error) { return probeSession(s.conn, true) },
+		ProbeSession: func() (spi.SessionObservation, error) { return probeSession(s.conn, true) },
 		RunCommands:  s.ref.RunAll,
-	}, s.ref, s.guard, func(toSend string, masks []*pb.ColumnMask, dec *relay.Decision) (clean bool, runErr error) {
+	}, s.ref, s.guard, func(toSend string, masks []*pb.ColumnMask, dec *spi.Decision) (clean bool, runErr error) {
 		payload := mysqlwire.ComQueryPayload(toSend)
 		if len(payload) >= mysqlwire.MaxPacketPayload {
 			return false, errors.New("query exceeds the maximum MySQL packet payload")

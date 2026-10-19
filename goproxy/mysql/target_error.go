@@ -7,7 +7,7 @@ import (
 	"io"
 	"strconv"
 
-	"github.com/ridi-oss/proxy-monster/goproxy/relay"
+	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 	"github.com/ridi-oss/proxy-monster/mysqlwire"
 )
 
@@ -18,7 +18,7 @@ const (
 )
 
 // checkTargetError prepares sql on the target without executing it and returns the target's ERR packet.
-func checkTargetError(targetDb io.ReadWriter, deprecateEOF bool, sql string) (*relay.TargetError, error) {
+func checkTargetError(targetDb io.ReadWriter, deprecateEOF bool, sql string) (*spi.TargetError, error) {
 	preparePayload := mysqlwire.ComStmtPreparePayload(sql)
 	if len(preparePayload) >= maxPacketPayload {
 		return nil, nil
@@ -46,12 +46,12 @@ func checkTargetError(targetDb io.ReadWriter, deprecateEOF bool, sql string) (*r
 	if essno == erUnsupportedPS {
 		return nil, nil
 	}
-	return &relay.TargetError{Code: strconv.Itoa(int(essno)), Message: errPayload}, nil
+	return &spi.TargetError{Code: strconv.Itoa(int(essno)), Message: errPayload}, nil
 }
 
 // writeDeny answers a denied statement: the target's error when the decision forwards one, else the
 // proxy's deny. forwarded reports the former, which completes as a target error.
-func writeDeny(client io.Writer, seq byte, dec *relay.Decision, redact func([]byte) []byte) (forwarded bool, err error) {
+func writeDeny(client io.Writer, seq byte, dec *spi.Decision, redact func([]byte) []byte) (forwarded bool, err error) {
 	if dec != nil && dec.TargetError != nil {
 		if payload, ok := dec.TargetError.Message.([]byte); ok {
 			// A prepare runs nothing, so its syntax error holds client text, fixed text, or object names.

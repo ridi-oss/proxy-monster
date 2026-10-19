@@ -8,15 +8,16 @@ import (
 	"time"
 
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
 func serveInput() AuthzInput {
-	return AuthzInput{SQL: "SELECT 1", ProbeSession: func() (SessionObservation, error) { return SessionObservation{Namespace: []string{"app"}}, nil }}
+	return AuthzInput{SQL: "SELECT 1", ProbeSession: func() (spi.SessionObservation, error) { return spi.SessionObservation{Namespace: []string{"app"}}, nil }}
 }
 
 func TestServeStatementFailHasNoDecision(t *testing.T) {
-	qe := NewQueryEngine(&fakeDecider{outcome: DecisionOutcome{Err: "unreachable"}})
-	dec, denied, err := ServeStatement(qe, serveInput(), nil, nil, func(string, []*pb.ColumnMask, *Decision) (bool, error) {
+	qe := NewQueryEngine(&fakeDecider{outcome: spi.DecisionOutcome{Err: "unreachable"}})
+	dec, denied, err := ServeStatement(qe, serveInput(), nil, nil, func(string, []*pb.ColumnMask, *spi.Decision) (bool, error) {
 		t.Fatal("run called for Fail")
 		return false, nil
 	})
@@ -27,9 +28,9 @@ func TestServeStatementFailHasNoDecision(t *testing.T) {
 }
 
 func TestServeStatementDenySkipsRun(t *testing.T) {
-	want := &Decision{Action: "DENY", DenyReason: "policy"}
-	qe := NewQueryEngine(&fakeDecider{outcome: DecisionOutcome{Decision: want}})
-	dec, denied, err := ServeStatement(qe, serveInput(), nil, nil, func(string, []*pb.ColumnMask, *Decision) (bool, error) {
+	want := &spi.Decision{Action: "DENY", DenyReason: "policy"}
+	qe := NewQueryEngine(&fakeDecider{outcome: spi.DecisionOutcome{Decision: want}})
+	dec, denied, err := ServeStatement(qe, serveInput(), nil, nil, func(string, []*pb.ColumnMask, *spi.Decision) (bool, error) {
 		t.Fatal("run called for Deny")
 		return false, nil
 	})
@@ -39,10 +40,10 @@ func TestServeStatementDenySkipsRun(t *testing.T) {
 }
 
 func TestServeStatementRunErrorRetainsDecision(t *testing.T) {
-	want := &Decision{Action: "ALLOW"}
+	want := &spi.Decision{Action: "ALLOW"}
 	runErr := errors.New("target DB failed")
-	qe := NewQueryEngine(&fakeDecider{outcome: DecisionOutcome{Decision: want}})
-	dec, denied, err := ServeStatement(qe, serveInput(), nil, nil, func(string, []*pb.ColumnMask, *Decision) (bool, error) {
+	qe := NewQueryEngine(&fakeDecider{outcome: spi.DecisionOutcome{Decision: want}})
+	dec, denied, err := ServeStatement(qe, serveInput(), nil, nil, func(string, []*pb.ColumnMask, *spi.Decision) (bool, error) {
 		return false, runErr
 	})
 	if dec != want || denied || !errors.Is(err, runErr) {
@@ -73,9 +74,9 @@ func TestServeStatementRefetchesOnlyAfterCleanCompletion(t *testing.T) {
 	}{{"clean", true, 4}, {"target-DB error response", false, 0}} {
 		t.Run(tc.name, func(t *testing.T) {
 			calls := 0
-			decision := &Decision{Action: "ALLOW", AfterStatement: []*pb.ProxyCommand{&pb.ProxyCommand{Command: &pb.ProxyCommand_Refetch{Refetch: &pb.Refetch{Catalog: "def", Schema: "app"}}}}}
-			qe := NewQueryEngine(&fakeDecider{outcome: DecisionOutcome{Decision: decision}})
-			_, _, err := ServeStatement(qe, serveInput(), newRef(&calls), nil, func(string, []*pb.ColumnMask, *Decision) (bool, error) {
+			decision := &spi.Decision{Action: "ALLOW", AfterStatement: []*pb.ProxyCommand{&pb.ProxyCommand{Command: &pb.ProxyCommand_Refetch{Refetch: &pb.Refetch{Catalog: "def", Schema: "app"}}}}}
+			qe := NewQueryEngine(&fakeDecider{outcome: spi.DecisionOutcome{Decision: decision}})
+			_, _, err := ServeStatement(qe, serveInput(), newRef(&calls), nil, func(string, []*pb.ColumnMask, *spi.Decision) (bool, error) {
 				return tc.clean, nil
 			})
 			if err != nil || calls != tc.want {
@@ -88,9 +89,9 @@ func TestServeStatementRefetchesOnlyAfterCleanCompletion(t *testing.T) {
 func TestServeStatementGuardWrapsOnlyRun(t *testing.T) {
 	var events []string
 	in := serveInput()
-	in.ProbeSession = func() (SessionObservation, error) {
+	in.ProbeSession = func() (spi.SessionObservation, error) {
 		events = append(events, "authorize")
-		return SessionObservation{Namespace: []string{"app"}}, nil
+		return spi.SessionObservation{Namespace: []string{"app"}}, nil
 	}
 	qe := NewQueryEngine(&fakeDecider{outcome: okOutcome("ALLOW", nil)})
 	guard := func(exec func() error) error {
@@ -99,7 +100,7 @@ func TestServeStatementGuardWrapsOnlyRun(t *testing.T) {
 		events = append(events, "guard-exit")
 		return err
 	}
-	_, _, err := ServeStatement(qe, in, nil, guard, func(string, []*pb.ColumnMask, *Decision) (bool, error) {
+	_, _, err := ServeStatement(qe, in, nil, guard, func(string, []*pb.ColumnMask, *spi.Decision) (bool, error) {
 		events = append(events, "run")
 		return true, nil
 	})
@@ -115,17 +116,17 @@ func TestServeStatementGuardWrapsOnlyRun(t *testing.T) {
 func TestDecisionPageRowsAndCapBinds(t *testing.T) {
 	for _, test := range []struct {
 		name       string
-		decision   *Decision
+		decision   *spi.Decision
 		clientRows int
 		wantRows   int
 		wantBinds  bool
 	}{
 		{name: "nil decision leaves the client page size", clientRows: 500, wantRows: 500},
-		{name: "uncapped verdict", decision: &Decision{}, clientRows: 500, wantRows: 500},
-		{name: "cap below the page size binds", decision: &Decision{MaxRows: 100}, clientRows: 500, wantRows: 100, wantBinds: true},
-		{name: "page size below the cap is a page end", decision: &Decision{MaxRows: 100}, clientRows: 50, wantRows: 50},
-		{name: "equal cap and page size binds", decision: &Decision{MaxRows: 100}, clientRows: 100, wantRows: 100, wantBinds: true},
-		{name: "unpaged caller takes the cap", decision: &Decision{MaxRows: 100}, wantRows: 100, wantBinds: true},
+		{name: "uncapped verdict", decision: &spi.Decision{}, clientRows: 500, wantRows: 500},
+		{name: "cap below the page size binds", decision: &spi.Decision{MaxRows: 100}, clientRows: 500, wantRows: 100, wantBinds: true},
+		{name: "page size below the cap is a page end", decision: &spi.Decision{MaxRows: 100}, clientRows: 50, wantRows: 50},
+		{name: "equal cap and page size binds", decision: &spi.Decision{MaxRows: 100}, clientRows: 100, wantRows: 100, wantBinds: true},
+		{name: "unpaged caller takes the cap", decision: &spi.Decision{MaxRows: 100}, wantRows: 100, wantBinds: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if got := test.decision.PageRows(test.clientRows); got != test.wantRows {
@@ -139,17 +140,17 @@ func TestDecisionPageRowsAndCapBinds(t *testing.T) {
 }
 
 func TestDecisionCapExceededNamesTheCrossedBound(t *testing.T) {
-	dec := &Decision{MaxRows: 2, MaxBytes: 100}
-	if got := dec.CapExceeded(RelayStats{Rows: 1, Bytes: 10}, 10); got != "" {
+	dec := &spi.Decision{MaxRows: 2, MaxBytes: 100}
+	if got := dec.CapExceeded(spi.RelayStats{Rows: 1, Bytes: 10}, 10); got != "" {
 		t.Fatalf("CapExceeded = %q, want it to fit", got)
 	}
-	if got := dec.CapExceeded(RelayStats{Rows: 2, Bytes: 10}, 10); got != "proxy-monster: result exceeds the row cap (2 rows); request unbounded access" {
+	if got := dec.CapExceeded(spi.RelayStats{Rows: 2, Bytes: 10}, 10); got != "proxy-monster: result exceeds the row cap (2 rows); request unbounded access" {
 		t.Fatalf("row bound message = %q", got)
 	}
-	if got := dec.CapExceeded(RelayStats{Rows: 1, Bytes: 95}, 10); got != "proxy-monster: result exceeds the byte cap (100 bytes); request unbounded access" {
+	if got := dec.CapExceeded(spi.RelayStats{Rows: 1, Bytes: 95}, 10); got != "proxy-monster: result exceeds the byte cap (100 bytes); request unbounded access" {
 		t.Fatalf("byte bound message = %q", got)
 	}
-	if got := (*Decision)(nil).CapExceeded(RelayStats{Rows: 9}, 9); got != "" {
+	if got := (*spi.Decision)(nil).CapExceeded(spi.RelayStats{Rows: 9}, 9); got != "" {
 		t.Fatalf("nil decision = %q, want uncapped", got)
 	}
 }
@@ -179,10 +180,10 @@ func TestRowBudgetAdmitsUntilItsBoundThenRefusesEveryLaterRow(t *testing.T) {
 	}
 	// The row bound can be the caller's own page size, so it only counts as a cap when the verdict's is
 	// at or below it; the byte bound is the verdict's alone.
-	if rows.CapTruncated(&Decision{MaxRows: 100}, 2) {
+	if rows.CapTruncated(&spi.Decision{MaxRows: 100}, 2) {
 		t.Fatal("a page end under a looser verdict cap is not a cap truncation")
 	}
-	if !rows.CapTruncated(&Decision{MaxRows: 2}, 2) {
+	if !rows.CapTruncated(&spi.Decision{MaxRows: 2}, 2) {
 		t.Fatal("a verdict cap at the page size IS a cap truncation")
 	}
 }
@@ -194,7 +195,7 @@ func TestAuthorizeWaitsForPendingCompletion(t *testing.T) {
 	reporter := &blockingReporter{release: release}
 	decider := &fakeDecider{outcome: okOutcome("ALLOW", nil)}
 	qe := NewQueryEngine(decider)
-	qe.AwaitCompletion(EmitCompletion(reporter, &Decision{DecisionID: 7}, RelayStats{Rows: 3}, StatusOK, time.Now()))
+	qe.AwaitCompletion(EmitCompletion(reporter, &spi.Decision{DecisionID: 7}, spi.RelayStats{Rows: 3}, StatusOK, time.Now()))
 
 	decided := make(chan struct{})
 	go func() {
@@ -216,7 +217,7 @@ func TestAuthorizeWaitsForPendingCompletion(t *testing.T) {
 		t.Fatalf("reports = %d, want 1", got)
 	}
 	// A nil decision emits nothing and must not block the next Decide.
-	qe.AwaitCompletion(EmitCompletion(reporter, nil, RelayStats{}, StatusOK, time.Now()))
+	qe.AwaitCompletion(EmitCompletion(reporter, nil, spi.RelayStats{}, StatusOK, time.Now()))
 	qe.Authorize(serveInput())
 }
 
@@ -225,7 +226,7 @@ type blockingReporter struct {
 	reports atomic.Int32
 }
 
-func (r *blockingReporter) ReportCompletion(CompletionReport) {
+func (r *blockingReporter) ReportCompletion(spi.CompletionReport) {
 	<-r.release
 	r.reports.Add(1)
 }

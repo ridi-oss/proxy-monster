@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/ridi-oss/proxy-monster/goproxy/relay"
+	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 	"github.com/ridi-oss/proxy-monster/goproxy/wire"
 )
 
@@ -44,8 +45,8 @@ type sessionCore struct {
 	db             relay.Db
 	lastTxStatus   byte
 	pendingDirty   bool
-	session        relay.SessionObservation
-	tempOverlay    []relay.TempColumn
+	session        spi.SessionObservation
+	tempOverlay    []spi.TempColumn
 	forward        func(pgproto3.BackendMessage)
 	flushForward   func() error
 }

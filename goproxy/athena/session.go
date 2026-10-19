@@ -39,8 +39,8 @@ func (s *enforcementSession) onOpen(commands []*pb.ProxyCommand) error {
 func (s *enforcementSession) authorize(sql, clientAddr string, parameters []string, maxRows int) relay.Verdict {
 	return s.engine.Authorize(relay.AuthzInput{
 		SQL: sql, Token: s.token, ClientAddr: clientAddr, ConnectionID: s.connectionID,
-		ProbeSession: func() (relay.SessionObservation, error) {
-			return relay.SessionObservation{
+		ProbeSession: func() (spi.SessionObservation, error) {
+			return spi.SessionObservation{
 				CurrentCatalog: s.target.catalogIdentity(), Namespace: []string{s.target.config.database},
 				SessionObservation: &enginepb.SessionObservation{Engine: &enginepb.SessionObservation_Athena{Athena: &enginepb.AthenaSqlContext{Workgroup: s.target.config.workgroup, ExecutionParameters: parameters, MaxRows: uint32(max(maxRows, 0))}}},
 			}, nil
@@ -51,7 +51,7 @@ func (s *enforcementSession) authorize(sql, clientAddr string, parameters []stri
 
 // submittedQuery is the text and parameters the proxy sends: the control plane's rewrite and the parameter
 // list that goes with it when present, else the client's own.
-func submittedQuery(sql string, parameters []string, decision *relay.Decision) (string, []string) {
+func submittedQuery(sql string, parameters []string, decision *spi.Decision) (string, []string) {
 	if decision != nil && decision.RewrittenSQL != nil {
 		sql = *decision.RewrittenSQL
 	}
@@ -69,8 +69,8 @@ func (s *enforcementSession) close(client interface{ CloseConnection([]byte) err
 
 // completion reports the wire task's outcome; Athena executes asynchronously, so an accepted submission is
 // the proxy's execution boundary and row volume is unknown.
-func completion(reporter spi.ControlPlane, decision *relay.Decision, status string, start time.Time) {
-	relay.EmitCompletion(reporter, decision, relay.RelayStats{}, status, start)
+func completion(reporter spi.ControlPlane, decision *spi.Decision, status string, start time.Time) {
+	relay.EmitCompletion(reporter, decision, spi.RelayStats{}, status, start)
 }
 
 var errRunCanceled = errors.New("athena: query execution was canceled")

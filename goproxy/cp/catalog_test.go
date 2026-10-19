@@ -4,13 +4,13 @@ import (
 	"testing"
 
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
-	"github.com/ridi-oss/proxy-monster/goproxy/relay"
+	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
 func TestDecideCarriesCatalogs(t *testing.T) {
 	fake := &fakeControlPlane{}
 	client := startFakeControlPlane(t, fake)
-	result := client.Decide(relay.DecideRequest{Session: relay.SessionObservation{CurrentCatalog: "catalog"}, TempColumns: []relay.TempColumn{{Catalog: "catalog", Schema: "temp", Table: "t", Column: "c"}}})
+	result := client.Decide(spi.DecideRequest{Session: spi.SessionObservation{CurrentCatalog: "catalog"}, TempColumns: []spi.TempColumn{{Catalog: "catalog", Schema: "temp", Table: "t", Column: "c"}}})
 	if result.IsErr() {
 		t.Fatal(result.Err)
 	}

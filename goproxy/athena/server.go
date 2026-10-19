@@ -108,7 +108,7 @@ type nativeRequest struct {
 	requestBody []byte
 	// SQL submission state, set only for StartQueryExecution.
 	session   *enforcementSession
-	decision  *relay.Decision
+	decision  *spi.Decision
 	submitted []byte
 	tokened   bool
 	started   time.Time

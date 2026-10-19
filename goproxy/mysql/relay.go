@@ -9,6 +9,7 @@ import (
 
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/relay"
+	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 	"github.com/ridi-oss/proxy-monster/mysqlwire"
 )
 
@@ -39,7 +40,7 @@ var (
 type resultHooks struct {
 	// Cap, when non-nil, bounds how much of this result may reach the client; OnCapExceeded fires once when
 	// the bound is first crossed, so the relay can cancel the statement on the target.
-	Cap           *relay.Decision
+	Cap           *spi.Decision
 	OnCapExceeded func()
 	Sink          func(seq byte, payload []byte) error
 	OnColumns     func(int) error
@@ -57,7 +58,7 @@ type resultHooks struct {
 	// Stats, when non-nil, tallies result volume as rows stream: one row per logical data row and the
 	// target DB row-packet payload bytes (including continuation fragments of an oversized row). It measures
 	// target DB data volume, not the post-mask relayed size, so a masked result reports the same volume signal.
-	Stats *relay.RelayStats
+	Stats *spi.RelayStats
 }
 
 // relayResultSet consumes one complete COM_QUERY text result for both wire relay and in-memory collection.
@@ -68,7 +69,7 @@ func relayResultSet(targetDb io.Reader, deprecateEOF bool, h resultHooks) (clean
 	var capped error
 	stats := h.Stats
 	if stats == nil {
-		stats = &relay.RelayStats{}
+		stats = &spi.RelayStats{}
 	}
 	// Reports whether one more row of rowBytes crosses the cap, latching the terminator and cancelling the
 	// target statement the first time it does.
@@ -356,14 +357,14 @@ func relayQueryResponseTracked(
 	deprecateEOF bool,
 	masks []*pb.ColumnMask,
 	redactErr func([]byte) []byte,
-	dec *relay.Decision,
+	dec *spi.Decision,
 	cancel func(),
 	seqBase byte,
 	moreResults bool,
-) (bool, relay.RelayStats, byte, error) {
+) (bool, spi.RelayStats, byte, error) {
 	columnCount := 0
 	var masker *relay.RowMasker
-	var stats relay.RelayStats
+	var stats spi.RelayStats
 
 	var onFirst func(int) error
 	var rewrite func([]byte) ([]byte, error)

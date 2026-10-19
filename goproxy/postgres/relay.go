@@ -13,6 +13,7 @@ import (
 	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/relay"
+	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
 var (
@@ -164,7 +165,7 @@ func (c *sessionCore) streamResult(masks []*pb.ColumnMask, opts streamOpts, emit
 type rowsCollector struct {
 	expected int
 	budget   relay.RowBudget
-	result   *relay.StatementResult
+	result   *spi.StatementResult
 	failed   error
 }
 
@@ -255,7 +256,7 @@ func firstErr(errs ...error) error {
 
 // resultCapError is the 57014 a client sees INSTEAD of the capped statement's own terminator — the same
 // SQLSTATE PostgreSQL itself sends for a cancelled query. Nil while the next row still fits.
-func resultCapError(dec *relay.Decision, relayed relay.RelayStats, rowBytes int64) *pgproto3.ErrorResponse {
+func resultCapError(dec *spi.Decision, relayed spi.RelayStats, rowBytes int64) *pgproto3.ErrorResponse {
 	message := dec.CapExceeded(relayed, rowBytes)
 	if message == "" {
 		return nil
@@ -377,13 +378,13 @@ type queryResult struct {
 func (s *Server) serveQuery(sess *session, sql string, mode relayMode) (queryResult, error) {
 	ref := s.refetcher(sess, false)
 	start := time.Now()
-	var relayStats relay.RelayStats
+	var relayStats spi.RelayStats
 	relayStatus := relay.StatusError
 	var result queryResult
 	in := sess.authzInput(sql, sess.token, sess.clientAddr, sess.connectionID, ref.RunAll)
-	in.CheckTargetError = func(sql string) (*relay.TargetError, error) { return s.checkTargetErrorAndSync(sess, sql) }
+	in.CheckTargetError = func(sql string) (*spi.TargetError, error) { return s.checkTargetErrorAndSync(sess, sql) }
 	decision, denied, err := relay.ServeStatement(sess.qe, in, ref, nil,
-		func(toSend string, masks []*pb.ColumnMask, dec *relay.Decision) (bool, error) {
+		func(toSend string, masks []*pb.ColumnMask, dec *spi.Decision) (bool, error) {
 			sess.targetDb.Send(&pgproto3.Query{String: toSend})
 			if err := sess.targetDb.Flush(); err != nil {
 				return false, err
@@ -471,7 +472,7 @@ func (s *Server) serveQuery(sess *session, sql string, mode relayMode) (queryRes
 			if mode == relayQuery {
 				sess.client.Send(&pgproto3.ReadyForQuery{TxStatus: sess.lastTxStatus})
 			}
-			sess.qe.AwaitCompletion(relay.EmitCompletion(s.client, decision, relay.RelayStats{}, relay.StatusError, start))
+			sess.qe.AwaitCompletion(relay.EmitCompletion(s.client, decision, spi.RelayStats{}, relay.StatusError, start))
 			return queryResult{stop: true}, sess.client.Flush()
 		}
 	}

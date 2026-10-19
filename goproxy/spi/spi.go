@@ -14,7 +14,6 @@ import (
 	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
-	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 )
 
 // TargetDb is the per-datasource target-DB connection details (the service-account broker target).
@@ -64,10 +63,10 @@ type TableDetailStream interface {
 // ControlPlane is the proxy's client to the control plane. cp.Client implements it; a test fake embeds it
 // and overrides only the methods its test calls.
 type ControlPlane interface {
-	relay.DecisionClient
+	DecisionClient
 	PushSchemaFragment(*pb.SchemaFragmentPush) (uint64, error)
 	// ReportCompletion is best effort: a lost report degrades the audit volume signal, never the session.
-	ReportCompletion(relay.CompletionReport)
+	ReportCompletion(CompletionReport)
 	// AuthorizeRequest asks whether one operation with no SQL behind it (a catalog or table-metadata read,
 	// an Athena API call) is allowed.
 	AuthorizeRequest(context.Context, *pb.RequestAuthorization) (*pb.RequestAuthorizationResult, error)
@@ -98,7 +97,7 @@ type Listen struct {
 
 // TargetDbSession is one dedicated run target-DB session.
 type TargetDbSession interface {
-	ServeStatement(sql string, maxRows int) (relay.StatementResult, error)
+	ServeStatement(sql string, maxRows int) (StatementResult, error)
 	// OnOpen runs the on-open catalog fetch. ctx is the target-DB open context: if the control-plane closes the
 	// run (or the proxy drains) while the fetch is in flight, ctx is cancelled and the in-flight target-DB read
 	// unwinds at once (a catalog push RPC to the control-plane still runs to its own deadline).
@@ -213,7 +212,7 @@ type Db interface {
 	// NewRunSession dials and authenticates the target DB. ctx is the target-DB open context: cancelling it aborts
 	// an in-flight dial/auth so a run the control-plane already closed does not finish a target-DB handshake.
 	// A non-empty defaultSchema opens the session in that schema; empty keeps the target's default.
-	NewRunSession(ctx context.Context, client ControlPlane, token string, connectionID []byte, guard relay.ExecGuard, readTimeout time.Duration, defaultSchema string) (TargetDbSession, error)
+	NewRunSession(ctx context.Context, client ControlPlane, token string, connectionID []byte, guard ExecGuard, readTimeout time.Duration, defaultSchema string) (TargetDbSession, error)
 	Close() error
 }
 

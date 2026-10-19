@@ -27,7 +27,7 @@ const (
 type runSession struct {
 	target  *target
 	session *enforcementSession
-	guard   relay.ExecGuard
+	guard   spi.ExecGuard
 	timeout time.Duration
 	mu      sync.Mutex
 	current string
@@ -35,7 +35,7 @@ type runSession struct {
 	cancel  context.CancelFunc
 }
 
-func (t *target) NewRunSession(_ context.Context, client spi.ControlPlane, token string, connectionID []byte, guard relay.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.TargetDbSession, error) {
+func (t *target) NewRunSession(_ context.Context, client spi.ControlPlane, token string, connectionID []byte, guard spi.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.TargetDbSession, error) {
 	// Every Athena query names the configured database, so a run cannot open anywhere else.
 	if defaultSchema != "" && defaultSchema != t.config.database {
 		return nil, fmt.Errorf("athena run cannot open in database %q: the target is configured for %q", defaultSchema, t.config.database)
@@ -60,7 +60,7 @@ func (s *runSession) Namespace() (string, []string, error) {
 	return s.target.config.catalog, []string{s.target.config.database}, nil
 }
 
-func (s *runSession) ServeStatement(sql string, maxRows int) (result relay.StatementResult, err error) {
+func (s *runSession) ServeStatement(sql string, maxRows int) (result spi.StatementResult, err error) {
 	verdict := s.session.authorize(sql, "", nil, maxRows)
 	var proceed relay.Proceed
 	switch v := verdict.(type) {

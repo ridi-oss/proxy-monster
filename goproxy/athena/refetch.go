@@ -14,7 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/athena/types"
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
-	"github.com/ridi-oss/proxy-monster/goproxy/relay"
+	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 	"github.com/ridi-oss/proxy-monster/goproxy/wire"
 )
 
@@ -43,7 +43,7 @@ const maxPreparedDefinitions = 8
 // RunAll executes a command list: a Refetch re-measures a database from Glue; a FetchAthenaPreparedDefinition
 // reads the named prepared statement from the workgroup and appends it to session's Athena scope, so the
 // re-sent decision carries it. Any other arm fails closed.
-func (r *refetcher) RunAll(commands []*pb.ProxyCommand, session *relay.SessionObservation) error {
+func (r *refetcher) RunAll(commands []*pb.ProxyCommand, session *spi.SessionObservation) error {
 	for i, command := range commands {
 		switch {
 		case command.GetRefetch() != nil:
@@ -129,7 +129,7 @@ func fragmentHash(columns []*enginepb.Column) ([]byte, error) {
 // prepared statements and appends the result to session's Athena scope; the analyzer never trusts a
 // definition the client supplied. The fetch must name the request's workgroup, must not repeat one already
 // held, and the scope holds at most maxPreparedDefinitions per decision.
-func (t *target) fetchPreparedDefinitionInto(fetch *enginepb.FetchAthenaPreparedDefinition, session *relay.SessionObservation) error {
+func (t *target) fetchPreparedDefinitionInto(fetch *enginepb.FetchAthenaPreparedDefinition, session *spi.SessionObservation) error {
 	if fetch.GetWorkgroup() == "" || fetch.GetName() == "" {
 		return errors.New("blank prepared definition selector")
 	}

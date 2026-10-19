@@ -2,6 +2,8 @@ package relay
 
 import (
 	"time"
+
+	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
 // Completion statuses reported after a statement's result is relayed. A clean result is StatusOK; a
@@ -13,19 +15,6 @@ const (
 	StatusError    = "error"
 	StatusCanceled = "canceled"
 )
-
-// RelayStats is the running result-volume tally for one statement: the number of data rows that reached
-// the client and the byte size of that row data. Rows catch "many records"; bytes catch "few wide rows /
-// big blob". It is both the audit signal for the mass-export rule and — as the relay accumulates it — what
-// the verdict's result caps are measured against ([Decision.CapExceeded]).
-type RelayStats struct {
-	Rows  int64
-	Bytes int64
-}
-
-func (s RelayStats) Plus(other RelayStats) RelayStats {
-	return RelayStats{Rows: s.Rows + other.Rows, Bytes: s.Bytes + other.Bytes}
-}
 
 // RowBudget bounds an in-memory result collection (the run channel's paged reads) the way [RelayStats]
 // plus a [Decision] bounds a wire relay. A zero MaxRows/MaxBytes is uncapped on that dimension.
@@ -58,18 +47,8 @@ func (b *RowBudget) Admit(collected int, rowBytes int64) bool {
 
 // CapTruncated reports whether the VERDICT's cap, not the caller's [clientRows] page size, is why this
 // budget left rows out.
-func (b *RowBudget) CapTruncated(dec *Decision, clientRows int) bool {
+func (b *RowBudget) CapTruncated(dec *spi.Decision, clientRows int) bool {
 	return b.Overflowed && (b.ByteCapped || dec.CapBinds(clientRows))
-}
-
-// CompletionReport is the proxy's post-relay result-volume signal for one statement, correlated to its
-// decision by DecisionID (the audit id the Decide response carried). It mirrors the proto CompletionReport.
-type CompletionReport struct {
-	DecisionID    int64
-	RowsReturned  int64
-	BytesReturned int64
-	Status        string
-	DurationMs    int64
 }
 
 // RelayStatus reduces a relay's terminal condition to the completion status vocabulary. clean reports
@@ -90,13 +69,13 @@ func RelayStatus(clean bool, err error) string {
 // sequential dump script must not outrun its own budget. No report is sent for a statement that was never
 // relayed (dec nil) or whose decision carries no audit id (DecisionID 0, a fail-closed path); the channel is
 // then already closed.
-func EmitCompletion(reporter interface{ ReportCompletion(CompletionReport) }, dec *Decision, stats RelayStats, status string, start time.Time) <-chan struct{} {
+func EmitCompletion(reporter interface{ ReportCompletion(spi.CompletionReport) }, dec *spi.Decision, stats spi.RelayStats, status string, start time.Time) <-chan struct{} {
 	done := make(chan struct{})
 	if reporter == nil || dec == nil || dec.DecisionID == 0 {
 		close(done)
 		return done
 	}
-	report := CompletionReport{
+	report := spi.CompletionReport{
 		DecisionID:    dec.DecisionID,
 		RowsReturned:  stats.Rows,
 		BytesReturned: stats.Bytes,

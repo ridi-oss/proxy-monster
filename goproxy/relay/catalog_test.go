@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
 func TestQueryEngineCachesCatalogWithNamespace(t *testing.T) {
@@ -11,9 +12,9 @@ func TestQueryEngineCachesCatalogWithNamespace(t *testing.T) {
 	query := NewQueryEngine(decider)
 	catalog := "one"
 	probes := 0
-	input := AuthzInput{ProbeSession: func() (SessionObservation, error) {
+	input := AuthzInput{ProbeSession: func() (spi.SessionObservation, error) {
 		probes++
-		return SessionObservation{CurrentCatalog: catalog, Namespace: []string{"schema"}}, nil
+		return spi.SessionObservation{CurrentCatalog: catalog, Namespace: []string{"schema"}}, nil
 	}}
 	query.Authorize(input)
 	catalog = "two"

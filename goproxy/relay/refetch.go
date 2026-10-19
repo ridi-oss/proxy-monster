@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
 // Refetcher executes connection-local catalog commands through callback-injected held-target DB I/O.
@@ -152,7 +153,7 @@ func (r *Refetcher) measureHash(sql string, expectedColumns int, sqlErr error) (
 // RunAll executes a command list on the held connection. The SQL engines answer only the Refetch arm; any
 // other command is unknown here and fails closed. session is unused: nothing a refetch fetches changes the
 // per-statement session facts.
-func (r *Refetcher) RunAll(cmds []*pb.ProxyCommand, _ *SessionObservation) error {
+func (r *Refetcher) RunAll(cmds []*pb.ProxyCommand, _ *spi.SessionObservation) error {
 	for i, cmd := range cmds {
 		refetch := cmd.GetRefetch()
 		if refetch == nil {

@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgproto3"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/relay"
+	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
 func ptr(s string) *string { return &s }
@@ -50,7 +51,7 @@ func (s *RunSession) execute(sql string, maxRows int) ([]string, [][]*string, in
 	if err := s.targetDb.Flush(); err != nil {
 		return nil, nil, 0, err
 	}
-	result := relay.StatementResult{Rows: make([][]*string, 0)}
+	result := spi.StatementResult{Rows: make([][]*string, 0)}
 	collector := rowsCollector{budget: relay.RowBudget{MaxRows: maxRows}, result: &result}
 	targetDbErr, streamErr := s.streamResult(nil, streamOpts{extended: true}, collector.emit)
 	err = firstErr(targetDbErr, streamErr, collector.failed)

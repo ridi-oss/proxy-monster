@@ -210,7 +210,7 @@ func (r *Runner) Run(open spi.RunOpen, draining <-chan struct{}) {
 // the open is reaped in the background (see abort). A close or drain that lands just as the open completes
 // still fails the open (the post-completion re-check) so a live session is never installed on an abandoned
 // run or a departing proxy — the editor re-homes to the replacement rather than onto a stream about to die.
-func (r *Runner) openTargetDb(ctx context.Context, stream runStream, messages <-chan *pb.ControlRunMsg, draining <-chan struct{}, open spi.RunOpen, guard relay.ExecGuard) (spi.TargetDbSession, *enginepb.Namespace) {
+func (r *Runner) openTargetDb(ctx context.Context, stream runStream, messages <-chan *pb.ControlRunMsg, draining <-chan struct{}, open spi.RunOpen, guard spi.ExecGuard) (spi.TargetDbSession, *enginepb.Namespace) {
 	openCtx, cancelOpen := context.WithCancel(ctx)
 	defer cancelOpen()
 
@@ -348,7 +348,7 @@ func (r *Runner) closeConnection(sessionID string, connectionID []byte) {
 	}
 }
 
-func (r *Runner) handleQuery(sess spi.TargetDbSession, stream runStream, query *pb.RunQuery, guard relay.ExecGuard) bool {
+func (r *Runner) handleQuery(sess spi.TargetDbSession, stream runStream, query *pb.RunQuery, guard spi.ExecGuard) bool {
 	maxRows := int(query.GetMaxRows())
 	if maxRows == 0 {
 		maxRows = defaultMaxRows
@@ -390,7 +390,7 @@ func (r *Runner) handleQuery(sess spi.TargetDbSession, stream runStream, query *
 }
 
 // sessionNamespace returns nil when the read fails or outlasts guard. Authorization never uses it.
-func sessionNamespace(sess spi.TargetDbSession, guard relay.ExecGuard) *enginepb.Namespace {
+func sessionNamespace(sess spi.TargetDbSession, guard spi.ExecGuard) *enginepb.Namespace {
 	var catalog string
 	var searchPath []string
 	read := func() (err error) {
@@ -410,7 +410,7 @@ func sessionNamespace(sess spi.TargetDbSession, guard relay.ExecGuard) *enginepb
 	return &enginepb.Namespace{Catalog: catalog, SearchPath: searchPath}
 }
 
-func sendDecision(stream runStream, decision *relay.Decision) bool {
+func sendDecision(stream runStream, decision *spi.Decision) bool {
 	if decision == nil {
 		return false
 	}

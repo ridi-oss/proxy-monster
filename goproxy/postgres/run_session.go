@@ -22,11 +22,11 @@ type RunSession struct {
 	token        string
 	connectionID []byte
 	ref          *relay.Refetcher
-	guard        relay.ExecGuard
+	guard        spi.ExecGuard
 	poisoned     bool
 }
 
-func NewRunSession(ctx context.Context, target spi.TargetDb, db relay.Db, client spi.ControlPlane, token string, connectionID []byte, guard relay.ExecGuard, readTimeout time.Duration, defaultSchema string) (*RunSession, error) {
+func NewRunSession(ctx context.Context, target spi.TargetDb, db relay.Db, client spi.ControlPlane, token string, connectionID []byte, guard spi.ExecGuard, readTimeout time.Duration, defaultSchema string) (*RunSession, error) {
 	var extra map[string]string
 	if defaultSchema != "" {
 		extra = map[string]string{"search_path": `"` + strings.ReplaceAll(defaultSchema, `"`, `""`) + `"`}
@@ -71,13 +71,13 @@ func (s *RunSession) OnOpen(ctx context.Context, cmds []*pb.ProxyCommand) error 
 	return s.ref.RunAll(cmds, nil)
 }
 
-func (s *RunSession) ServeStatement(sql string, maxRows int) (result relay.StatementResult, err error) {
+func (s *RunSession) ServeStatement(sql string, maxRows int) (result spi.StatementResult, err error) {
 	if s.poisoned {
 		return result, errors.New("run session is unusable after a prior protocol error")
 	}
 	result.Decision, result.Denied, err = relay.ServeStatement(s.qe,
 		s.authzInput(sql, s.token, "", s.connectionID, s.ref.RunAll), s.ref, s.guard,
-		func(toSend string, masks []*pb.ColumnMask, dec *relay.Decision) (bool, error) {
+		func(toSend string, masks []*pb.ColumnMask, dec *spi.Decision) (bool, error) {
 			pageRows := dec.PageRows(maxRows)
 			max, runErr := executeMaxRows(pageRows)
 			if runErr != nil {

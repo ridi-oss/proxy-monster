@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgproto3"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/relay"
+	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
 // isCleanExecuteTerminal reports whether an extended-protocol Execute ended without a target-DB error: a
@@ -35,12 +36,12 @@ type preparedStatement struct {
 // portal SQL against that snapshot, and no decision is ever stored.
 type boundPortal struct {
 	sql     string
-	session relay.SessionObservation
-	temps   []relay.TempColumn
+	session spi.SessionObservation
+	temps   []spi.TempColumn
 	binary  bool
 	// Volume already relayed from this portal. A suspended portal resumes on a further Execute, so the cap
 	// is measured against the portal's whole output rather than restarting with each page.
-	relayed relay.RelayStats
+	relayed spi.RelayStats
 }
 
 func (s *Server) renderExtendedVerdict(sess *session, verdict relay.Verdict) (relay.Proceed, bool, error) {
@@ -54,7 +55,7 @@ func (s *Server) renderExtendedVerdict(sess *session, verdict relay.Verdict) (re
 			if targetErr, ok := verdict.Decision.TargetError.Message.(*pgproto3.ErrorResponse); ok {
 				sess.skipToSync = true
 				forwardTargetError(sess, targetErr)
-				sess.qe.AwaitCompletion(relay.EmitCompletion(s.client, verdict.Decision, relay.RelayStats{}, relay.StatusError, time.Now()))
+				sess.qe.AwaitCompletion(relay.EmitCompletion(s.client, verdict.Decision, spi.RelayStats{}, relay.StatusError, time.Now()))
 				return relay.Proceed{}, false, sess.client.Flush()
 			}
 		}
@@ -118,7 +119,7 @@ func (s *Server) handleParse(sess *session, message *pgproto3.Parse) error {
 	sess.qe.MarkNamespaceDirty()
 	sess.pendingDirty = false
 	in := sess.authzInput(message.Query, sess.token, sess.clientAddr, sess.connectionID, s.refetcher(sess, true).RunAll)
-	in.CheckTargetError = func(sql string) (*relay.TargetError, error) {
+	in.CheckTargetError = func(sql string) (*spi.TargetError, error) {
 		return s.checkTargetError(sess, sql, message.ParameterOIDs)
 	}
 	verdict := sess.qe.Authorize(in)
@@ -338,32 +339,32 @@ func (s *Server) runExtendedProbe(sess *session, sql string, expectedColumns int
 
 // probeBindContext captures the namespace, function visibility, and temporary columns PostgreSQL will
 // bind the next portal under.
-func (s *Server) probeBindContext(sess *session) (relay.SessionObservation, []relay.TempColumn, error) {
+func (s *Server) probeBindContext(sess *session) (spi.SessionObservation, []spi.TempColumn, error) {
 	if sess.lastTxStatus == 'E' {
 		// Aborted transaction: both injected probes would fail with 25P02 and block an extended-protocol
 		// ROLLBACK's Bind. Reuse the last context snapshot (symmetric with handleQuery / handleParse).
-		return sess.session.Clone(), append([]relay.TempColumn{}, sess.tempOverlay...), nil
+		return sess.session.Clone(), append([]spi.TempColumn{}, sess.tempOverlay...), nil
 	}
 	namespaceRows, err := s.runExtendedProbe(sess, s.db.NamespaceProbeSQL(), 1)
 	if err != nil {
-		return relay.SessionObservation{}, nil, fmt.Errorf("target-DB namespace probe: %w", err)
+		return spi.SessionObservation{}, nil, fmt.Errorf("target-DB namespace probe: %w", err)
 	}
 	observed, err := sessionFromRows(namespaceRows)
 	if err != nil {
-		return relay.SessionObservation{}, nil, err
+		return spi.SessionObservation{}, nil, err
 	}
 	observed.CurrentCatalog = sess.currentCatalog
 	sess.session = observed.Clone()
 
 	tempRows, err := s.runExtendedProbe(sess, s.db.TempColumnsProbeSQL(), 6)
 	if err != nil {
-		return relay.SessionObservation{}, nil, fmt.Errorf("target DB temp-column probe: %w", err)
+		return spi.SessionObservation{}, nil, fmt.Errorf("target DB temp-column probe: %w", err)
 	}
 	temps, err := tempColumnsFromRows(tempRows)
 	if err != nil {
-		return relay.SessionObservation{}, nil, err
+		return spi.SessionObservation{}, nil, err
 	}
-	sess.tempOverlay = append([]relay.TempColumn{}, temps...)
+	sess.tempOverlay = append([]spi.TempColumn{}, temps...)
 	return observed, temps, nil
 }
 
@@ -382,11 +383,11 @@ func (s *Server) handleExecute(sess *session, message *pgproto3.Execute) error {
 		ClientAddr:   sess.clientAddr,
 		ConnectionID: sess.connectionID,
 		RunCommands:  s.refetcher(sess, true).RunAll,
-		ProbeSession: func() (relay.SessionObservation, error) { return portal.session.Clone(), nil },
-		ProbeTempColumns: func() ([]relay.TempColumn, error) {
+		ProbeSession: func() (spi.SessionObservation, error) { return portal.session.Clone(), nil },
+		ProbeTempColumns: func() ([]spi.TempColumn, error) {
 			return portal.temps, nil
 		},
-		CheckTargetError: func(sql string) (*relay.TargetError, error) { return s.checkTargetError(sess, sql, nil) },
+		CheckTargetError: func(sql string) (*spi.TargetError, error) { return s.checkTargetError(sess, sql, nil) },
 	})
 	sess.qe.MarkNamespaceDirty()
 	proceed, allowed, err := s.renderExtendedVerdict(sess, verdict)
@@ -415,7 +416,7 @@ func (s *Server) handleExecute(sess *session, message *pgproto3.Execute) error {
 	if err := sess.targetDb.Flush(); err != nil {
 		return err
 	}
-	var relayStats relay.RelayStats
+	var relayStats spi.RelayStats
 	terminal, err := s.relayExecuteStream(sess, masks, &relayStats, portal.relayed, proceed.Decision)
 	// A re-Bind of the same name replaces this entry, which is what resets the tally for a new portal.
 	portal.relayed = portal.relayed.Plus(relayStats)
@@ -450,7 +451,7 @@ func nullOnlyMasks(masks []*pb.ColumnMask) bool {
 
 // carried is the volume earlier Executes already drew from this portal; stats stays this Execute's own
 // tally so each page audits its own completion.
-func (s *Server) relayExecuteStream(sess *session, masks []*pb.ColumnMask, stats *relay.RelayStats, carried relay.RelayStats, dec *relay.Decision) (pgproto3.BackendMessage, error) {
+func (s *Server) relayExecuteStream(sess *session, masks []*pb.ColumnMask, stats *spi.RelayStats, carried spi.RelayStats, dec *spi.Decision) (pgproto3.BackendMessage, error) {
 	var masker *relay.RowMasker
 	var capped *pgproto3.ErrorResponse
 	bufferedFrames := 0

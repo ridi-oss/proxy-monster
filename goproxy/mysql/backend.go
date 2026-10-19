@@ -370,7 +370,7 @@ type textResultCollector struct {
 	budget                   relay.RowBudget
 	masks                    []*pb.ColumnMask
 	columnDefs               []mysqlwire.ColumnDefinition
-	result                   *relay.StatementResult
+	result                   *spi.StatementResult
 	masker                   *relay.RowMasker
 	targetDbErr, affectedErr error
 }
@@ -508,7 +508,7 @@ func runInternalQuery(targetDb net.Conn, deprecateEOF bool, sql string, expected
 	if err := mysqlwire.WritePacket(targetDb, 0, mysqlwire.ComQueryPayload(sql)); err != nil {
 		return nil, err
 	}
-	result := relay.StatementResult{Rows: make([][]*string, 0)}
+	result := spi.StatementResult{Rows: make([][]*string, 0)}
 	collect := textResultCollector{expected: expectedColumns, result: &result}
 	_, _, err := relayResultSet(targetDb, deprecateEOF, collect.hooks())
 	if err != nil {
@@ -536,16 +536,16 @@ func probeNamespace(targetDb net.Conn, deprecateEOF bool) (namespace []string, a
 
 // probeSession runs the pre-statement session probe and packages its result as the engine's
 // SessionObservation, so every wire/editor call site shares one probe→engine conversion.
-func probeSession(targetDb net.Conn, deprecateEOF bool) (relay.SessionObservation, error) {
+func probeSession(targetDb net.Conn, deprecateEOF bool) (spi.SessionObservation, error) {
 	namespace, ansiQuotes, err := probeNamespace(targetDb, deprecateEOF)
 	if err != nil {
-		return relay.SessionObservation{}, err
+		return spi.SessionObservation{}, err
 	}
 	return mysqlSession(namespace, ansiQuotes), nil
 }
 
-func mysqlSession(namespace []string, ansiQuotes bool) relay.SessionObservation {
-	return relay.SessionObservation{
+func mysqlSession(namespace []string, ansiQuotes bool) spi.SessionObservation {
+	return spi.SessionObservation{
 		CurrentCatalog:     "def",
 		Namespace:          namespace,
 		SessionObservation: &enginepb.SessionObservation{Engine: &enginepb.SessionObservation_Mysql{Mysql: &enginepb.MySqlSession{AnsiQuotes: ansiQuotes}}},

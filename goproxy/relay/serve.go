@@ -4,21 +4,8 @@ import (
 	"fmt"
 
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
-
-// StatementResult is the protocol-neutral result of serving one authorized statement.
-type StatementResult struct {
-	Decision     *Decision
-	Denied       bool
-	Columns      []string
-	Rows         [][]*string
-	RowsAffected int
-	// The verdict's result cap, not the caller's page size, ended this result.
-	TruncatedByCap bool
-}
-
-// ExecGuard optionally wraps only target-DB execution. Authorization and catalog probes run outside it.
-type ExecGuard func(exec func() error) error
 
 // FailError is a mechanical authorization failure that has no control-plane decision to report.
 type FailError struct{ Message string }
@@ -43,9 +30,9 @@ func ServeStatement(
 	qe *QueryEngine,
 	in AuthzInput,
 	ref *Refetcher,
-	guard ExecGuard,
-	run func(toSend string, masks []*pb.ColumnMask, dec *Decision) (clean bool, err error),
-) (dec *Decision, denied bool, err error) {
+	guard spi.ExecGuard,
+	run func(toSend string, masks []*pb.ColumnMask, dec *spi.Decision) (clean bool, err error),
+) (dec *spi.Decision, denied bool, err error) {
 	verdict := qe.Authorize(in)
 	var proceed Proceed
 	switch verdict := verdict.(type) {

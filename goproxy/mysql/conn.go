@@ -14,6 +14,7 @@ import (
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/relay"
+	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 	"github.com/ridi-oss/proxy-monster/goproxy/wire"
 	"github.com/ridi-oss/proxy-monster/mysqlwire"
 	"google.golang.org/protobuf/proto"
@@ -256,7 +257,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 			// when serve returns closed.
 			serve := func(sql string, seqBase byte, more bool) (lastSeq byte, stop, closed bool) {
 				start := time.Now()
-				var relayStats relay.RelayStats
+				var relayStats spi.RelayStats
 				relayStatus := relay.StatusError
 				stop = true
 				decision, denied, serveErr := relay.ServeStatement(qe, relay.AuthzInput{
@@ -264,12 +265,12 @@ func (s *Server) handleConn(clientConn net.Conn) {
 					Token:        token,
 					ClientAddr:   clientAddr,
 					ConnectionID: identity.ConnectionID,
-					ProbeSession: func() (relay.SessionObservation, error) { return probeSession(targetDbConn, deprecateEOF) },
+					ProbeSession: func() (spi.SessionObservation, error) { return probeSession(targetDbConn, deprecateEOF) },
 					RunCommands:  refetcher.RunAll,
-					CheckTargetError: func(sql string) (*relay.TargetError, error) {
+					CheckTargetError: func(sql string) (*spi.TargetError, error) {
 						return checkTargetError(targetDbConn, deprecateEOF, sql)
 					},
-				}, refetcher, nil, func(toSend string, masks []*pb.ColumnMask, dec *relay.Decision) (bool, error) {
+				}, refetcher, nil, func(toSend string, masks []*pb.ColumnMask, dec *spi.Decision) (bool, error) {
 					queryPayload := mysqlwire.ComQueryPayload(toSend)
 					if len(queryPayload) >= maxPacketPayload {
 						if err := mysqlwire.WritePacket(clientConn, seqBase+1, mysqlwire.ErrPacketState(
@@ -321,7 +322,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 				}
 				return lastSeq, stop, false
 			}
-			batch := splitBatch(multiStatements, sql, targetGreeting.ServerVersion, func() (relay.SessionObservation, error) {
+			batch := splitBatch(multiStatements, sql, targetGreeting.ServerVersion, func() (spi.SessionObservation, error) {
 				return probeSession(targetDbConn, deprecateEOF)
 			})
 			if batch == nil {
@@ -379,7 +380,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 			sql := string(payload[1:])
 			var frozen []string
 			var frozenAnsiQuotes bool
-			proceed, allowed, err := s.authorize(qe, clientConn, targetDbConn, deprecateEOF, seq, sql, token, clientAddr, identity.ConnectionID, refetcher.RunAll, func() (relay.SessionObservation, error) {
+			proceed, allowed, err := s.authorize(qe, clientConn, targetDbConn, deprecateEOF, seq, sql, token, clientAddr, identity.ConnectionID, refetcher.RunAll, func() (spi.SessionObservation, error) {
 				obs, err := probeSession(targetDbConn, deprecateEOF)
 				if err == nil {
 					frozen = append([]string{}, obs.Namespace...)
@@ -469,7 +470,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 			// namespace rather than live session state, then dirty the engine cache immediately so it cannot
 			// leak into the next statement's decision.
 			qe.MarkNamespaceDirty()
-			proceed, allowed, err := s.authorize(qe, clientConn, targetDbConn, deprecateEOF, seq, ps.sql, token, clientAddr, identity.ConnectionID, refetcher.RunAll, func() (relay.SessionObservation, error) {
+			proceed, allowed, err := s.authorize(qe, clientConn, targetDbConn, deprecateEOF, seq, ps.sql, token, clientAddr, identity.ConnectionID, refetcher.RunAll, func() (spi.SessionObservation, error) {
 				return mysqlSession(ps.namespace, ps.ansiQuotes), nil
 			})
 			qe.MarkNamespaceDirty()
@@ -581,8 +582,8 @@ func (s *Server) authorize(
 	seq byte,
 	sql, token, clientAddr string,
 	connectionID []byte,
-	runCommands func([]*pb.ProxyCommand, *relay.SessionObservation) error,
-	probeSession func() (relay.SessionObservation, error),
+	runCommands func([]*pb.ProxyCommand, *spi.SessionObservation) error,
+	probeSession func() (spi.SessionObservation, error),
 ) (relay.Proceed, bool, error) {
 	verdict := qe.Authorize(relay.AuthzInput{
 		SQL:          sql,
@@ -591,7 +592,7 @@ func (s *Server) authorize(
 		ConnectionID: connectionID,
 		ProbeSession: probeSession,
 		RunCommands:  runCommands,
-		CheckTargetError: func(sql string) (*relay.TargetError, error) {
+		CheckTargetError: func(sql string) (*spi.TargetError, error) {
 			return checkTargetError(targetDbConn, deprecateEOF, sql)
 		},
 	})
@@ -609,7 +610,7 @@ func (s *Server) authorize(
 		start := time.Now()
 		forwarded, err := writeDeny(clientConn, seq, v.Decision, errRedactor(qe))
 		if forwarded {
-			qe.AwaitCompletion(relay.EmitCompletion(s.client, v.Decision, relay.RelayStats{}, relay.StatusError, start))
+			qe.AwaitCompletion(relay.EmitCompletion(s.client, v.Decision, spi.RelayStats{}, relay.StatusError, start))
 		}
 		return relay.Proceed{}, false, err
 	case relay.Proceed:
@@ -688,7 +689,7 @@ func mysqlNamespace(schema string) []string {
 
 // splitBatch cuts a multi-statement query into its statements when the client enabled them, or returns nil
 // to serve sql as one, which the analyzer denies if it holds several.
-func splitBatch(enabled bool, sql, version string, observe func() (relay.SessionObservation, error)) []string {
+func splitBatch(enabled bool, sql, version string, observe func() (spi.SessionObservation, error)) []string {
 	if !enabled || !strings.Contains(strings.TrimRight(sql, "; \t\r\n"), ";") {
 		return nil
 	}

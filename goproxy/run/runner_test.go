@@ -12,6 +12,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ridi-oss/proxy-monster/goproxy/athena"
+	"github.com/ridi-oss/proxy-monster/goproxy/mysql"
+	"github.com/ridi-oss/proxy-monster/goproxy/postgres"
+
 	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -20,7 +24,6 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/ridi-oss/proxy-monster/goproxy/cp"
-	"github.com/ridi-oss/proxy-monster/goproxy/dialects"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/run"
@@ -1824,9 +1827,9 @@ func runSeedPostgres(t *testing.T) runEngineFixture {
 
 func mustTarget(t *testing.T, e *engines.Engine, config spi.TargetConfig) spi.Target {
 	t.Helper()
-	provider, err := dialects.For(e)
+	provider, err := registry.For(e)
 	if err != nil {
-		t.Fatalf("dialects.For(%s): %v", e.WireName, err)
+		t.Fatalf("registry.For(%s): %v", e.WireName, err)
 	}
 	target, err := provider.OpenTarget(config)
 	if err != nil {
@@ -2188,3 +2191,5 @@ func runExpectNoServing(t *testing.T, fake *runFakeCP) {
 	default:
 	}
 }
+
+var registry = spi.MustRegistry(athena.Provider{}, mysql.Provider{}, postgres.Provider{})

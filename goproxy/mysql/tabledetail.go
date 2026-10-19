@@ -413,8 +413,3 @@ func tableDetailRelations(grouped map[sqldb.RelationIdentity]*sqldb.RelationAccu
 	}
 	return relations
 }
-
-// ReadTableDetail reads one MySQL table's detail.
-func ReadTableDetail(conn *sql.Conn, schema, table string) (*spi.TableDetail, error) {
-	return readMySQLTableDetail(conn, schema, table)
-}

@@ -281,7 +281,7 @@ func startBrokerForDBSetup(t *testing.T, targetConfig dbtest.TargetDb, database 
 		User:     targetConfig.User,
 		Password: targetConfig.Password,
 	}
-	server := postgres.New(spi.Listen{}, config, cpClient, postgres.TargetSQL{}, nil)
+	server := postgres.New(spi.Listen{}, config, cpClient, nil)
 	return startBrokerServer(t, fake, server)
 }
 
@@ -297,7 +297,7 @@ func startBrokerTLS(t *testing.T) *brokerHarness {
 		User:     targetConfig.User,
 		Password: targetConfig.Password,
 	}
-	server := postgres.New(spi.Listen{}, config, cpClient, postgres.TargetSQL{}, tlsProvider.Current)
+	server := postgres.New(spi.Listen{}, config, cpClient, tlsProvider.Current)
 	return startBrokerServer(t, fake, server)
 }
 

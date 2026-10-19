@@ -1,9 +1,7 @@
 package sqldb
 
-import "github.com/ridi-oss/proxy-monster/goproxy/relay"
-
 // FoldFunctionNames folds like a call (MySQL `AddTax` -> `addtax`) and drops duplicates, keeping order.
-func FoldFunctionNames(queries relay.Db, names []string) []string {
+func FoldFunctionNames(queries Queries, names []string) []string {
 	if len(names) == 0 {
 		return nil
 	}

@@ -11,33 +11,27 @@ import (
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 )
 
-type refetchDb struct{}
-
-func (refetchDb) NamespaceProbeSQL() string   { return "namespace" }
-func (refetchDb) SupportsTempOverlay() bool   { return false }
-func (refetchDb) TempColumnsProbeSQL() string { return "" }
-func (refetchDb) HashSetupProbeSQL() string   { return "setup" }
-func (refetchDb) HashSetupColumns() int       { return 1 }
-func (refetchDb) SchemaHashSQL(schema string, _ [][]*string) (string, int, error) {
-	return "hash:" + schema, 1, nil
-}
-func (refetchDb) SchemaHashFromRows(rows [][]*string) ([]byte, bool, error) {
-	if len(rows) != 1 || len(rows[0]) != 1 || rows[0][0] == nil {
-		return nil, false, errors.New("bad hash rows")
-	}
-	if *rows[0][0] == "untrusted" {
-		return []byte("untrusted"), false, nil
-	}
-	return []byte(*rows[0][0]), true, nil
-}
-func (refetchDb) SchemaColumnsSQL(schema string) string  { return "columns:" + schema }
-func (refetchDb) RoutinesSQL() string                    { return "routines" }
-func (refetchDb) SchemaRoutinesSQL(schema string) string { return "routines:" + schema }
-func (refetchDb) LowerCaseTableNamesProbeSQL() string    { return "" }
-func (refetchDb) FoldFunctionName(name string) string    { return name }
-
-func (refetchDb) NormalizeColumns(_ int, columns []*analyzerpb.Column) []*analyzerpb.Column {
-	return columns
+// refetchQueries answers every query with a recognizable string.
+var refetchQueries = Queries{
+	HashSetupProbe:   "setup",
+	HashSetupColumns: 1,
+	SchemaHash: func(schema string, _ [][]*string) (string, int, error) {
+		return "hash:" + schema, 1, nil
+	},
+	SchemaHashFromRows: func(rows [][]*string) ([]byte, bool, error) {
+		if len(rows) != 1 || len(rows[0]) != 1 || rows[0][0] == nil {
+			return nil, false, errors.New("bad hash rows")
+		}
+		if *rows[0][0] == "untrusted" {
+			return []byte("untrusted"), false, nil
+		}
+		return []byte(*rows[0][0]), true, nil
+	},
+	SchemaColumns:    func(schema string) string { return "columns:" + schema },
+	Routines:         "routines",
+	SchemaRoutines:   func(schema string) string { return "routines:" + schema },
+	FoldFunctionName: func(name string) string { return name },
+	NormalizeColumns: func(_ int, columns []*analyzerpb.Column) []*analyzerpb.Column { return columns },
 }
 
 func ptr(s string) *string { return &s }
@@ -51,7 +45,7 @@ func TestRefetcherUnchangedOnHashMatch(t *testing.T) {
 	var pushed *pb.SchemaFragmentPush
 	r := Refetcher{
 		Catalog:           "def",
-		Db:                refetchDb{},
+		Queries:           refetchQueries,
 		ConnectionID:      []byte("0123456789abcdef"),
 		BackendGeneration: 7,
 		Probe: func(sql string, columns int) ([][]*string, error) {
@@ -82,7 +76,7 @@ func TestRefetcherUnconditionalFetch(t *testing.T) {
 	var pushed *pb.SchemaFragmentPush
 	r := Refetcher{
 		Catalog: "def",
-		Db:      refetchDb{},
+		Queries: refetchQueries,
 		Probe: func(sql string, columns int) ([][]*string, error) {
 			switch {
 			case sql == "setup":
@@ -112,32 +106,29 @@ func TestRefetcherUnconditionalFetch(t *testing.T) {
 	}
 }
 
-// normalizingRefetchDb proves Run wires the mode probe into NormalizeColumns (not that folding itself
-// is correct — that's covered by analyzer/engines's and goproxy/db's own tests). It records the mode it
-// was called with and uppercases every field, an arbitrary but easy-to-assert-on transform.
-type normalizingRefetchDb struct {
-	refetchDb
-	gotMode *int
-}
-
-func (d *normalizingRefetchDb) LowerCaseTableNamesProbeSQL() string { return "lctn" }
-func (d *normalizingRefetchDb) FoldFunctionName(name string) string { return name }
-
-func (d *normalizingRefetchDb) NormalizeColumns(mode int, columns []*analyzerpb.Column) []*analyzerpb.Column {
-	d.gotMode = &mode
-	out := make([]*analyzerpb.Column, len(columns))
-	for i, c := range columns {
-		out[i] = &analyzerpb.Column{Schema: strings.ToUpper(c.GetSchema()), Table: strings.ToUpper(c.GetTable()), Column: strings.ToUpper(c.GetColumn())}
+// normalizingQueries proves Run wires the mode probe into NormalizeColumns (not that folding itself is
+// correct — that's covered by analyzer/engines's and the engines' own tests). It records the mode it was
+// called with and uppercases every field, an arbitrary but easy-to-assert-on transform.
+func normalizingQueries(gotMode **int) Queries {
+	queries := refetchQueries
+	queries.LowerCaseTableNamesProbe = "lctn"
+	queries.NormalizeColumns = func(mode int, columns []*analyzerpb.Column) []*analyzerpb.Column {
+		*gotMode = &mode
+		out := make([]*analyzerpb.Column, len(columns))
+		for i, c := range columns {
+			out[i] = &analyzerpb.Column{Schema: strings.ToUpper(c.GetSchema()), Table: strings.ToUpper(c.GetTable()), Column: strings.ToUpper(c.GetColumn())}
+		}
+		return out
 	}
-	return out
+	return queries
 }
 
 func TestRefetcherProbesModeAndNormalizesBeforePush(t *testing.T) {
-	fakeDb := &normalizingRefetchDb{}
+	var gotMode *int
 	var pushed *pb.SchemaFragmentPush
 	r := Refetcher{
 		Catalog: "def",
-		Db:      fakeDb,
+		Queries: normalizingQueries(&gotMode),
 		Probe: func(sql string, columns int) ([][]*string, error) {
 			switch {
 			case sql == "lctn":
@@ -155,8 +146,8 @@ func TestRefetcherProbesModeAndNormalizesBeforePush(t *testing.T) {
 	if err := r.Run(&pb.Refetch{Schema: "app", Catalog: "def"}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if fakeDb.gotMode == nil || *fakeDb.gotMode != 2 {
-		t.Fatalf("NormalizeColumns called with mode %v, want 2 (from the lctn probe)", fakeDb.gotMode)
+	if gotMode == nil || *gotMode != 2 {
+		t.Fatalf("NormalizeColumns called with mode %v, want 2 (from the lctn probe)", gotMode)
 	}
 	if len(pushed.Columns) != 1 || pushed.Columns[0].GetSchema() != "APP" || pushed.Columns[0].GetTable() != "T" || pushed.Columns[0].GetColumn() != "C" {
 		t.Fatalf("pushed columns = %+v, want the NormalizeColumns-transformed (uppercased) fragment", pushed.Columns)
@@ -167,7 +158,7 @@ func TestRefetcherIncoherentHashesAreTerminal(t *testing.T) {
 	var hashCalls int
 	r := Refetcher{
 		Catalog: "def",
-		Db:      refetchDb{},
+		Queries: refetchQueries,
 		Probe: func(sql string, columns int) ([][]*string, error) {
 			if strings.HasPrefix(sql, "hash:") {
 				hashCalls++
@@ -200,7 +191,7 @@ func TestRefetcherUntrustedHashesUseNonce(t *testing.T) {
 			var pushed *pb.SchemaFragmentPush
 			r := Refetcher{
 				Catalog: "def",
-				Db:      refetchDb{},
+				Queries: refetchQueries,
 				Probe: func(sql string, columns int) ([][]*string, error) {
 					if sql == "setup" {
 						return nil, nil
@@ -233,13 +224,13 @@ func TestRefetcherUntrustedHashesUseNonce(t *testing.T) {
 
 func TestRefetcherTerminalErrors(t *testing.T) {
 	t.Run("blank schema", func(t *testing.T) {
-		r := Refetcher{Catalog: "def", Db: refetchDb{}, Probe: func(string, int) ([][]*string, error) { return nil, nil }, Push: func(*pb.SchemaFragmentPush) (uint64, error) { return 0, nil }}
+		r := Refetcher{Catalog: "def", Queries: refetchQueries, Probe: func(string, int) ([][]*string, error) { return nil, nil }, Push: func(*pb.SchemaFragmentPush) (uint64, error) { return 0, nil }}
 		if err := r.Run(&pb.Refetch{Catalog: "def"}); err == nil {
 			t.Fatal("Run succeeded, want blank-schema error")
 		}
 	})
 	t.Run("introspection", func(t *testing.T) {
-		r := Refetcher{Catalog: "def", Db: refetchDb{}, Probe: func(sql string, _ int) ([][]*string, error) {
+		r := Refetcher{Catalog: "def", Queries: refetchQueries, Probe: func(sql string, _ int) ([][]*string, error) {
 			if strings.HasPrefix(sql, "columns:") {
 				return nil, errors.New("introspection failed")
 			}
@@ -250,7 +241,7 @@ func TestRefetcherTerminalErrors(t *testing.T) {
 		}
 	})
 	t.Run("push", func(t *testing.T) {
-		r := Refetcher{Catalog: "def", Db: refetchDb{}, Probe: func(sql string, _ int) ([][]*string, error) {
+		r := Refetcher{Catalog: "def", Queries: refetchQueries, Probe: func(sql string, _ int) ([][]*string, error) {
 			if strings.HasPrefix(sql, "columns:") {
 				return fragmentRows("app"), nil
 			}
@@ -266,7 +257,7 @@ func TestRefetcherRunAllOrdersAndStops(t *testing.T) {
 	var pushed []string
 	r := Refetcher{
 		Catalog: "def",
-		Db:      refetchDb{},
+		Queries: refetchQueries,
 		Probe: func(sql string, _ int) ([][]*string, error) {
 			if strings.HasPrefix(sql, "columns:") {
 				return fragmentRows(strings.TrimPrefix(sql, "columns:")), nil
@@ -296,7 +287,7 @@ func TestRefetcherRunAllOrdersAndStops(t *testing.T) {
 func TestFragmentColumnsFromRowsStrict(t *testing.T) {
 	str := func(s string) *string { return &s }
 	valid := [][]*string{{str("app"), str("users"), str("id"), str("integer"), str("1"), str("NO"), str("db")}, {str("app"), str("users"), str("email"), str("text"), str("2"), str("YES"), str("db")}}
-	got, err := FragmentColumnsFromRows(refetchDb{}, 0, "app", valid)
+	got, err := FragmentColumnsFromRows(refetchQueries, 0, "app", valid)
 	if err != nil {
 		t.Fatalf("FragmentColumnsFromRows: %v", err)
 	}
@@ -317,7 +308,7 @@ func TestFragmentColumnsFromRowsStrict(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := FragmentColumnsFromRows(refetchDb{}, 0, "app", tc.rows); err == nil {
+			if _, err := FragmentColumnsFromRows(refetchQueries, 0, "app", tc.rows); err == nil {
 				t.Fatal("FragmentColumnsFromRows succeeded, want strict error")
 			}
 		})

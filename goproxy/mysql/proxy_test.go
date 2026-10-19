@@ -1,14 +1,17 @@
 package mysql_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"database/sql"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"net"
 	"net/netip"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -27,7 +30,6 @@ import (
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/mysql"
 	"github.com/ridi-oss/proxy-monster/goproxy/proxytls"
-	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 	"github.com/ridi-oss/proxy-monster/mysqlwire"
 )
@@ -289,11 +291,6 @@ func startBroker(t *testing.T) *brokerHarness {
 	return startBrokerWithTLS(t, nil)
 }
 
-func startBrokerWithDb(t *testing.T, queries relay.Db) *brokerHarness {
-	t.Helper()
-	return startBrokerConfigured(t, nil, queries)
-}
-
 func startBrokerTLS(t *testing.T) *brokerHarness {
 	t.Helper()
 	reloading := proxytls.NewReloading("../proxytls/testdata/ec.crt", "../proxytls/testdata/ec-sec1.key")
@@ -304,15 +301,15 @@ func startBrokerTLS(t *testing.T) *brokerHarness {
 // plaintext (every existing test); a non-nil one advertises CLIENT_SSL and requires TLS.
 func startBrokerWithTLS(t *testing.T, tlsProvider func() (*tls.Config, error)) *brokerHarness {
 	t.Helper()
-	return startBrokerConfigured(t, tlsProvider, mysql.TargetSQL{})
+	return startBrokerListening(t, spi.Listen{}, tlsProvider)
 }
 
-func startBrokerConfigured(t *testing.T, tlsProvider func() (*tls.Config, error), queries relay.Db) *brokerHarness {
+func startBrokerListening(t *testing.T, listen spi.Listen, tlsProvider func() (*tls.Config, error)) *brokerHarness {
 	t.Helper()
-	return startBrokerListening(t, spi.Listen{}, tlsProvider, queries)
+	return startBrokerRouted(t, listen, tlsProvider, func(config spi.TargetConfig) spi.TargetConfig { return config })
 }
 
-func startBrokerListening(t *testing.T, listen spi.Listen, tlsProvider func() (*tls.Config, error), queries relay.Db) *brokerHarness {
+func startBrokerRouted(t *testing.T, listen spi.Listen, tlsProvider func() (*tls.Config, error), route func(spi.TargetConfig) spi.TargetConfig) *brokerHarness {
 	t.Helper()
 	targetConfig := seedTargetDb(t)
 	fake, cpClient := startFakeCP(t)
@@ -323,7 +320,7 @@ func startBrokerListening(t *testing.T, listen spi.Listen, tlsProvider func() (*
 		User:     serviceUser,
 		Password: servicePassword,
 	}
-	server := mysql.New(listen, config, cpClient, queries, tlsProvider)
+	server := mysql.New(listen, route(config), cpClient, tlsProvider)
 	if err := server.Listen(); err != nil {
 		t.Fatalf("mysql.Listen: %v", err)
 	}
@@ -393,7 +390,7 @@ func TestProxyProtocolPortReportsTheHeaderSourceAsClientAddr(t *testing.T) {
 	h := startBrokerListening(t, spi.Listen{
 		ProxyProtocolPort: proxyPort,
 		TrustedProxies:    []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")},
-	}, nil, mysql.TargetSQL{})
+	}, nil)
 	h.fake.decideFn = func(*pb.DecisionRequest) (*pb.WireDecision, error) {
 		return wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW, DecisionId: 1}), nil
 	}
@@ -484,17 +481,17 @@ func TestOnOpenEqualHashPushesUnchangedWithoutColumns(t *testing.T) {
 
 func TestOnOpenFailureRefusesConnectionAndClosesCPState(t *testing.T) {
 	for _, test := range []struct {
-		name    string
-		queries relay.Db
-		setup   func(*fakeControlPlane)
+		name  string
+		route func(spi.TargetConfig) spi.TargetConfig
+		setup func(*fakeControlPlane)
 	}{
-		{"introspection", failingColumnsDb{TargetSQL: mysql.TargetSQL{}}, func(*fakeControlPlane) {}},
-		{"push", mysql.TargetSQL{}, func(fake *fakeControlPlane) {
+		{"introspection", dropOnSend(t, "information_schema.COLUMNS"), func(*fakeControlPlane) {}},
+		{"push", func(config spi.TargetConfig) spi.TargetConfig { return config }, func(fake *fakeControlPlane) {
 			fake.setPushError(status.Error(codes.Unavailable, "catalog unavailable"))
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			h := startBrokerWithDb(t, test.queries)
+			h := startBrokerRouted(t, spi.Listen{}, nil, test.route)
 			connectionID := []byte("openfail01234567")
 			h.fake.setValidateResponse(&pb.WireIdentity{
 				Principal:    "mysql-it@example.com",
@@ -516,11 +513,45 @@ func TestOnOpenFailureRefusesConnectionAndClosesCPState(t *testing.T) {
 	}
 }
 
-// failingColumnsDb preserves the real MySQL hash probes but makes the mandatory full introspection fail.
-type failingColumnsDb struct{ mysql.TargetSQL }
-
-func (failingColumnsDb) SchemaColumnsSQL(string) string {
-	return "SELECT * FROM pm_missing_schema_fragment_table"
+// dropOnSend relays to the target DB and closes both sides once the broker sends bytes containing marker.
+func dropOnSend(t *testing.T, marker string) func(spi.TargetConfig) spi.TargetConfig {
+	return func(config spi.TargetConfig) spi.TargetConfig {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = ln.Close() })
+		upstream := net.JoinHostPort(config.Host, strconv.Itoa(config.Port))
+		go func() {
+			for {
+				broker, err := ln.Accept()
+				if err != nil {
+					return
+				}
+				go func() {
+					defer broker.Close()
+					targetDb, err := net.Dial("tcp", upstream)
+					if err != nil {
+						return
+					}
+					defer targetDb.Close()
+					go func() { _, _ = io.Copy(broker, targetDb) }()
+					buf := make([]byte, 64<<10)
+					for {
+						n, err := broker.Read(buf)
+						if bytes.Contains(buf[:n], []byte(marker)) {
+							return
+						}
+						if _, werr := targetDb.Write(buf[:n]); werr != nil || err != nil {
+							return
+						}
+					}
+				}()
+			}
+		}()
+		config.Host, config.Port = "127.0.0.1", ln.Addr().(*net.TCPAddr).Port
+		return config
+	}
 }
 
 func TestFlaggedDDLRefetchesBeforeNextStatement(t *testing.T) {
@@ -866,8 +897,8 @@ func assertFragmentColumn(t *testing.T, fragment *pb.SchemaFragmentPush, schema,
 func schemaHash(t *testing.T, schema string) []byte {
 	t.Helper()
 	targetDb := dbtest.OpenMySQL(t, primarySchema)
-	queries := mysql.TargetSQL{}
-	query, _, err := queries.SchemaHashSQL(schema, nil)
+	queries := mysql.Queries
+	query, _, err := queries.SchemaHash(schema, nil)
 	if err != nil {
 		t.Fatalf("SchemaHashSQL: %v", err)
 	}
@@ -1464,7 +1495,7 @@ func TestLegacyEOFRelayRewriteAndPing(t *testing.T) {
 }
 
 func TestOversizedUnauthenticatedHandshakeIsRejectedWithoutBody(t *testing.T) {
-	server := mysql.New(spi.Listen{}, spi.TargetConfig{}, nil, nil, nil)
+	server := mysql.New(spi.Listen{}, spi.TargetConfig{}, nil, nil)
 	if err := server.Listen(); err != nil {
 		t.Fatalf("Listen: %v", err)
 	}

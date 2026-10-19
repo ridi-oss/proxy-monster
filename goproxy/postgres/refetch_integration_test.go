@@ -43,7 +43,7 @@ func TestPostgresRefetcherIntegration(t *testing.T) {
 			targettest.ExecRefetchSQL(t, conn, "CREATE SCHEMA "+quote(schema))
 			targettest.ExecRefetchSQL(t, conn, "CREATE TABLE "+quote(schema)+".base (a INTEGER NOT NULL)")
 
-			queries := TargetSQL{}
+			queries := Queries
 			previous := targettest.TrustedRefetchHash(t, queries, conn, schema)
 			wantHashLength := 16
 			if mode.crypto {

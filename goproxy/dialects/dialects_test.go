@@ -4,11 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	"net"
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 
 	"github.com/ridi-oss/proxy-monster/goproxy/dialects"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"

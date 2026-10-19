@@ -8,15 +8,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ridi-oss/proxy-monster/goproxy/postgres"
+	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
 
 	"github.com/ridi-oss/proxy-monster/goproxy/mysql"
-	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
+	"github.com/ridi-oss/proxy-monster/goproxy/postgres"
 
 	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
-	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
@@ -37,14 +36,14 @@ const (
 
 // runMySQL and runPostgres open a pool on target and introspect it the way the dialect's Db does.
 func runMySQL(config spi.TargetConfig) (*pb.CatalogRequest, error) {
-	return runWith(mysql.OpenPool, mysql.TargetSQL{}, mysql.ProbeNamespace, config)
+	return runWith(mysql.OpenPool, mysql.Queries, mysql.ProbeNamespace, config)
 }
 
 func runPostgres(config spi.TargetConfig) (*pb.CatalogRequest, error) {
-	return runWith(postgres.OpenPool, postgres.TargetSQL{}, postgres.ProbeNamespace, config)
+	return runWith(postgres.OpenPool, postgres.Queries, postgres.ProbeNamespace, config)
 }
 
-func runWith(open func(spi.TargetConfig) (*sql.DB, error), queries relay.Db, probe sqldb.NamespaceProbe, config spi.TargetConfig) (*pb.CatalogRequest, error) {
+func runWith(open func(spi.TargetConfig) (*sql.DB, error), queries sqldb.Queries, probe sqldb.NamespaceProbe, config spi.TargetConfig) (*pb.CatalogRequest, error) {
 	pool, err := open(config)
 	if err != nil {
 		return nil, err
@@ -61,8 +60,8 @@ func runWith(open func(spi.TargetConfig) (*sql.DB, error), queries relay.Db, pro
 //
 // database/sql retries a handshake failure internally (its bad-conn retry), so the raw dial count for a
 // single acquisition is an implementation detail we deliberately do NOT hard-code. Instead we measure the
-// baseline — the dials one bare db.Conn makes against this same dead target — and assert Run makes exactly
-// that many. Pre-fix (a dial per probe) Run would have dialed a multiple of the baseline. Needs no Docker.
+// baseline — the dials one bare db.Conn makes against this same dead target — and assert sqldb.Introspect makes exactly
+// that many. Pre-fix (a dial per probe) sqldb.Introspect would have dialed a multiple of the baseline. Needs no Docker.
 func TestRunPinsOneConnectionOnDeadTarget(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -119,14 +118,14 @@ func TestRunPinsOneConnectionOnDeadTarget(t *testing.T) {
 		t.Fatalf("baseline connection attempts = %d, want >= 1 (test listener not exercised)", baseline)
 	}
 
-	// Run must make exactly the baseline count — i.e. one connection acquisition for the whole refresh,
+	// sqldb.Introspect must make exactly the baseline count — i.e. one connection acquisition for the whole refresh,
 	// not one per probe query.
 	if _, runErr := runMySQL(config); runErr == nil {
-		t.Fatal("Run against a dead target = nil error, want a connection failure")
+		t.Fatal("sqldb.Introspect against a dead target = nil error, want a connection failure")
 	}
 	runCount := drainUntilQuiet()
 	if runCount != baseline {
-		t.Errorf("Run made %d connection attempts, want %d (one pinned connection, not one per probe)", runCount, baseline)
+		t.Errorf("sqldb.Introspect made %d connection attempts, want %d (one pinned connection, not one per probe)", runCount, baseline)
 	}
 }
 
@@ -242,7 +241,7 @@ func TestIntrospectMySQL(t *testing.T) {
 	t.Run("delimiter-bearing credentials authenticate (connector path, no DSN round-trip)", func(t *testing.T) {
 		cat, err := runMySQL(spi.TargetConfig{Host: targetConfig.Host, Port: targetConfig.Port, Db: itMySQLSchema, User: "svc:reader", Password: "p@s:s/w@rd"})
 		if err != nil {
-			t.Fatalf("Run with delimiter-bearing credentials: %v (FormatDSN round-trip would corrupt them)", err)
+			t.Fatalf("sqldb.Introspect with delimiter-bearing credentials: %v (FormatDSN round-trip would corrupt them)", err)
 		}
 		if got := cat.GetDefaultSchemas(); len(got) != 1 || got[0] != itMySQLSchema {
 			t.Errorf("DefaultSchemas = %v, want [%s]", got, itMySQLSchema)
@@ -254,7 +253,7 @@ func TestIntrospectMySQL(t *testing.T) {
 
 	t.Run("mixed-case column folds to canonical spelling", func(t *testing.T) {
 		// MySQL column names fold UNCONDITIONALLY (regardless of lower_case_table_names), so this
-		// proves normalizeColumns is wired into Run regardless of this shared container's configured
+		// proves normalizeColumns is wired into sqldb.Introspect regardless of this shared container's configured
 		// mode — a mixed-case CustomerID must come back canonical (lowercase), never verbatim.
 		if _, err := seed.Exec(`CREATE TABLE IF NOT EXISTS ` + itMySQLSchema + `.orders (id INT PRIMARY KEY, CustomerID INT NOT NULL)`); err != nil {
 			t.Fatalf("seed mixed-case column: %v", err)
@@ -338,7 +337,7 @@ func TestIntrospectPostgres(t *testing.T) {
 		// Auth failing here would flag broken url.UserPassword escaping of the special-char password.
 		cat, err := runPostgres(spi.TargetConfig{Host: targetConfig.Host, Port: targetConfig.Port, Db: targetConfig.DB, User: itPGRole, Password: "p@ss/w:rd"})
 		if err != nil {
-			t.Fatalf("Run with special-char credentials: %v (a naive DSN would mangle them)", err)
+			t.Fatalf("sqldb.Introspect with special-char credentials: %v (a naive DSN would mangle them)", err)
 		}
 		if !contains(cat.GetDefaultSchemas(), "public") || !contains(cat.GetDefaultSchemas(), "pg_catalog") {
 			t.Errorf("DefaultSchemas = %v, want to contain both public and pg_catalog", cat.GetDefaultSchemas())

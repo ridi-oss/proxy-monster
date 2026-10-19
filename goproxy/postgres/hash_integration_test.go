@@ -7,10 +7,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
+
 	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/targettest"
-	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
 )
 
 func TestPostgresSchemaHashIntegration(t *testing.T) {
@@ -60,8 +61,8 @@ func verifyPostgresHashAndFragment(t *testing.T, database *sql.DB, wantCrypto bo
 		t.Fatalf("pin Postgres connection: %v", err)
 	}
 	defer conn.Close()
-	queries := TargetSQL{}
-	setupRows, err := targettest.QueryStrings(conn, queries.HashSetupProbeSQL(), queries.HashSetupColumns())
+	queries := Queries
+	setupRows, err := targettest.QueryStrings(conn, queries.HashSetupProbe, queries.HashSetupColumns)
 	if err != nil {
 		t.Fatalf("pgcrypto setup probe: %v", err)
 	}
@@ -79,7 +80,7 @@ func verifyPostgresHashAndFragment(t *testing.T, database *sql.DB, wantCrypto bo
 	}
 	measure := func(schema string) []byte {
 		t.Helper()
-		hashSQL, columns, err := queries.SchemaHashSQL(schema, setupRows)
+		hashSQL, columns, err := queries.SchemaHash(schema, setupRows)
 		if err != nil {
 			t.Fatalf("SchemaHashSQL(%q): %v", schema, err)
 		}
@@ -113,7 +114,7 @@ func verifyPostgresHashAndFragment(t *testing.T, database *sql.DB, wantCrypto bo
 	if !wantCrypto && len(first) != 16 {
 		t.Fatalf("md5 hash length = %d, want 16", len(first))
 	}
-	rows, err := targettest.QueryStrings(conn, queries.SchemaColumnsSQL(schema), 7)
+	rows, err := targettest.QueryStrings(conn, queries.SchemaColumns(schema), 7)
 	if err != nil {
 		t.Fatalf("Postgres fragment query: %v", err)
 	}

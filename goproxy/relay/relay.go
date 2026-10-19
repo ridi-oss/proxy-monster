@@ -5,7 +5,6 @@ package relay
 import (
 	"errors"
 
-	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 )
 
@@ -84,45 +83,4 @@ func ParseEnfActionName(s string) pb.EnfAction {
 	default:
 		return pb.EnfAction_DENY
 	}
-}
-
-// Db is the DUMB per-database adapter: the few facts the relay needs to gather context and mechanically
-// refresh a connection-local schema fragment. No enforcement logic, no state machine.
-type Db interface {
-	// NamespaceProbeSQL is the query whose result yields the connection's effective namespace
-	// (PG: current_schemas(true) list; MySQL: SELECT DATABASE()).
-	NamespaceProbeSQL() string
-	// SupportsTempOverlay reports whether the connection can carry a session-temp overlay (PG only).
-	SupportsTempOverlay() bool
-	// TempColumnsProbeSQL is the temp-column overlay probe (PG only; "" when unsupported).
-	TempColumnsProbeSQL() string
-	// HashSetupProbeSQL locates optional engine-specific hash support (PG pgcrypto); empty means none.
-	HashSetupProbeSQL() string
-	HashSetupColumns() int
-	// SchemaHashSQL returns the DB-side hash query and its expected result width.
-	SchemaHashSQL(schema string, setupRows [][]*string) (sql string, columns int, err error)
-	// SchemaHashFromRows validates and decodes the hash query result.
-	SchemaHashFromRows(rows [][]*string) (hash []byte, trusted bool, err error)
-	// SchemaColumnsSQL returns the seven fragment columns (six information_schema fields, then the
-	// catalog) ordered by binary (table, ordinal, column).
-	SchemaColumnsSQL(schema string) string
-	// RoutinesSQL lists every routine as (schema, name), the whole-catalog counterpart of the
-	// per-schema SchemaRoutinesSQL.
-	RoutinesSQL() string
-	// SchemaRoutinesSQL returns the schema's routine names, one column; they are part of the same
-	// fragment and the same content hash as the columns.
-	SchemaRoutinesSQL(schema string) string
-	// LowerCaseTableNamesProbeSQL is the query whose single-row single-column result is MySQL's live
-	// lower_case_table_names mode ("" for a dialect with no such concept, e.g. Postgres — NormalizeColumns
-	// ignores the mode argument in that case).
-	LowerCaseTableNamesProbeSQL() string
-	// NormalizeColumns folds columns to their canonical spelling per the dialect's own rules — the
-	// analyzer's normalization (analyzer/engines.NormalizeRelation), gated by lowerCaseTableNames for
-	// MySQL, an identity function for Postgres. The refetch path calls this so the schema-fragment pool
-	// pushed to the control plane matches the same canonical spelling introspect's bulk catalog push
-	// uses — no caller decides whether/how to fold.
-	NormalizeColumns(lowerCaseTableNames int, columns []*enginepb.Column) []*enginepb.Column
-	// FoldFunctionName folds an introspected function name the way the analyzer resolves an
-	// unquoted call for this dialect.
-	FoldFunctionName(name string) string
 }

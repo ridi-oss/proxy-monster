@@ -17,7 +17,6 @@ import (
 	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
-	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
 	"google.golang.org/protobuf/proto"
@@ -95,7 +94,7 @@ func QueryStrings(conn *sql.Conn, statement string, expectedColumns int) ([][]*s
 	return result, nil
 }
 
-func IntrospectTarget(t *testing.T, open func(spi.TargetConfig) (*sql.DB, error), queries relay.Db, probe sqldb.NamespaceProbe, targetConfig dbtest.TargetDb, database string) *pb.CatalogRequest {
+func IntrospectTarget(t *testing.T, open func(spi.TargetConfig) (*sql.DB, error), queries sqldb.Queries, probe sqldb.NamespaceProbe, targetConfig dbtest.TargetDb, database string) *pb.CatalogRequest {
 	t.Helper()
 	pool, err := open(spi.TargetConfig{Host: targetConfig.Host, Port: targetConfig.Port, Db: database, User: targetConfig.User, Password: targetConfig.Password})
 	if err != nil {
@@ -149,7 +148,7 @@ func SchemaColumns(columns []*analyzerpb.Column, schema string) []*analyzerpb.Co
 }
 
 // AssertFragmentMatchesBulk requires a refetch of schema to equal the bulk catalog, and its hash to be stable.
-func AssertFragmentMatchesBulk(t *testing.T, queries relay.Db, conn *sql.Conn, catalog string, bulk *pb.CatalogRequest, schema string) {
+func AssertFragmentMatchesBulk(t *testing.T, queries sqldb.Queries, conn *sql.Conn, catalog string, bulk *pb.CatalogRequest, schema string) {
 	t.Helper()
 	want := SchemaColumns(bulk.GetCatalog().GetColumns(), schema)
 	if len(want) == 0 {
@@ -165,17 +164,17 @@ func AssertFragmentMatchesBulk(t *testing.T, queries relay.Db, conn *sql.Conn, c
 	}
 }
 
-func TrustedRefetchHash(t *testing.T, queries relay.Db, conn *sql.Conn, schema string) []byte {
+func TrustedRefetchHash(t *testing.T, queries sqldb.Queries, conn *sql.Conn, schema string) []byte {
 	t.Helper()
 	var setupRows [][]*string
-	if setupSQL := queries.HashSetupProbeSQL(); setupSQL != "" {
-		rows, err := QueryStrings(conn, setupSQL, queries.HashSetupColumns())
+	if setupSQL := queries.HashSetupProbe; setupSQL != "" {
+		rows, err := QueryStrings(conn, setupSQL, queries.HashSetupColumns)
 		if err != nil {
 			t.Fatalf("hash setup probe: %v", err)
 		}
 		setupRows = rows
 	}
-	hashSQL, columns, err := queries.SchemaHashSQL(schema, setupRows)
+	hashSQL, columns, err := queries.SchemaHash(schema, setupRows)
 	if err != nil {
 		t.Fatalf("SchemaHashSQL(%q): %v", schema, err)
 	}
@@ -190,14 +189,14 @@ func TrustedRefetchHash(t *testing.T, queries relay.Db, conn *sql.Conn, schema s
 	return hash
 }
 
-func RunRefetchIntegration(t *testing.T, queries relay.Db, conn *sql.Conn, catalog, schema string, ifHashDiffers []byte) *pb.SchemaFragmentPush {
+func RunRefetchIntegration(t *testing.T, queries sqldb.Queries, conn *sql.Conn, catalog, schema string, ifHashDiffers []byte) *pb.SchemaFragmentPush {
 	t.Helper()
 	connectionID := []byte("refetch-test-connection")
 	const generation = uint64(41)
 	var pushes []*pb.SchemaFragmentPush
 	refetcher := sqldb.Refetcher{
 		Catalog:           catalog,
-		Db:                queries,
+		Queries:           queries,
 		ConnectionID:      connectionID,
 		BackendGeneration: generation,
 		Probe: func(statement string, expectedColumns int) ([][]*string, error) {

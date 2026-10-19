@@ -8,10 +8,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
+
 	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/targettest"
-	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
 )
 
 func TestMySqlSchemaHashIntegration(t *testing.T) {
@@ -22,9 +23,9 @@ func TestMySqlSchemaHashIntegration(t *testing.T) {
 	}
 	defer conn.Close()
 
-	queries := TargetSQL{}
+	queries := Queries
 	lowerCaseTableNames := 0
-	if rows, err := targettest.QueryStrings(conn, queries.LowerCaseTableNamesProbeSQL(), 1); err == nil && len(rows) == 1 && len(rows[0]) == 1 && rows[0][0] != nil {
+	if rows, err := targettest.QueryStrings(conn, queries.LowerCaseTableNamesProbe, 1); err == nil && len(rows) == 1 && len(rows[0]) == 1 && rows[0][0] != nil {
 		if mode, err := strconv.Atoi(*rows[0][0]); err == nil {
 			lowerCaseTableNames = mode
 		}
@@ -46,7 +47,7 @@ func TestMySqlSchemaHashIntegration(t *testing.T) {
 	}
 	hash := func(schema string) []byte {
 		t.Helper()
-		sqlText, columns, err := queries.SchemaHashSQL(schema, nil)
+		sqlText, columns, err := queries.SchemaHash(schema, nil)
 		if err != nil {
 			t.Fatalf("SchemaHashSQL(%q): %v", schema, err)
 		}
@@ -65,7 +66,7 @@ func TestMySqlSchemaHashIntegration(t *testing.T) {
 	}
 	fragments := func(schema string) []*analyzerpb.Column {
 		t.Helper()
-		rows, err := targettest.QueryStrings(conn, queries.SchemaColumnsSQL(schema), 7)
+		rows, err := targettest.QueryStrings(conn, queries.SchemaColumns(schema), 7)
 		if err != nil {
 			t.Fatalf("fragment query for %q: %v", schema, err)
 		}

@@ -27,7 +27,7 @@ func TestPostgresQuotedNamesStayDistinct(t *testing.T) {
 		}
 	}
 
-	bulk := targettest.IntrospectTarget(t, OpenPool, TargetSQL{}, ProbeNamespace, targetConfig, name)
+	bulk := targettest.IntrospectTarget(t, OpenPool, Queries, ProbeNamespace, targetConfig, name)
 	if got := bulk.GetDefaultSchemas(); !slices.Equal(got, []string{"pg_catalog", "Sales", "public"}) {
 		t.Errorf("DefaultSchemas = %v, want [pg_catalog Sales public]", got)
 	}
@@ -42,9 +42,9 @@ func TestPostgresQuotedNamesStayDistinct(t *testing.T) {
 	}
 
 	conn := targettest.PinConn(t, database)
-	targettest.AssertFragmentMatchesBulk(t, TargetSQL{}, conn, name, bulk, "Sales")
-	targettest.AssertFragmentMatchesBulk(t, TargetSQL{}, conn, name, bulk, "sales")
-	if bytes.Equal(targettest.TrustedRefetchHash(t, TargetSQL{}, conn, "Sales"), targettest.TrustedRefetchHash(t, TargetSQL{}, conn, "sales")) {
+	targettest.AssertFragmentMatchesBulk(t, Queries, conn, name, bulk, "Sales")
+	targettest.AssertFragmentMatchesBulk(t, Queries, conn, name, bulk, "sales")
+	if bytes.Equal(targettest.TrustedRefetchHash(t, Queries, conn, "Sales"), targettest.TrustedRefetchHash(t, Queries, conn, "sales")) {
 		t.Fatal(`schemas "Sales" and sales hash identically`)
 	}
 }

@@ -16,7 +16,6 @@ import (
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/mysql"
 	"github.com/ridi-oss/proxy-monster/goproxy/postgres"
-	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
 )
@@ -26,14 +25,14 @@ const tableDetailConnectTimeout = 5 * time.Second
 // sqlProvider is a database/sql-backed dialect: MySQL and PostgreSQL differ only in the functions below.
 type sqlProvider struct {
 	engine  *engines.Engine
-	queries relay.Db
+	queries sqldb.Queries
 	open    func(spi.TargetConfig) (*sql.DB, error)
 	probe   sqldb.NamespaceProbe
 	// catalog reads the connection's current catalog; MySQL pins "def", Postgres asks the server.
 	catalog    func(context.Context, *sql.Conn) (string, error)
 	readDetail func(*sql.Conn, string, string) (*spi.TableDetail, error)
-	newServer  func(spi.Listen, spi.TargetConfig, spi.ControlPlane, relay.Db, func() (*tls.Config, error)) spi.WireServer
-	newSession func(context.Context, spi.TargetConfig, relay.Db, *spi.Authorizer, spi.ExecGuard, time.Duration, string) (spi.Session, error)
+	newServer  func(spi.Listen, spi.TargetConfig, spi.ControlPlane, func() (*tls.Config, error)) spi.WireServer
+	newSession func(context.Context, spi.TargetConfig, *spi.Authorizer, spi.ExecGuard, time.Duration, string) (spi.Session, error)
 }
 
 func (p sqlProvider) Engine() *engines.Engine { return p.engine }
@@ -103,11 +102,11 @@ func (d *sqlDb) ReadTableDetail(ctx context.Context, table *enginepb.ObjectRef) 
 }
 
 func (d *sqlDb) NewWireServer(listen spi.Listen, client spi.ControlPlane, tlsProvider func() (*tls.Config, error)) spi.WireServer {
-	return d.provider.newServer(listen, d.config, client, d.provider.queries, tlsProvider)
+	return d.provider.newServer(listen, d.config, client, tlsProvider)
 }
 
 func (d *sqlDb) NewRunSession(ctx context.Context, authz *spi.Authorizer, guard spi.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.Session, error) {
-	return d.provider.newSession(ctx, d.config, d.provider.queries, authz, guard, readTimeout, defaultSchema)
+	return d.provider.newSession(ctx, d.config, authz, guard, readTimeout, defaultSchema)
 }
 
 func (d *sqlDb) Close() error { return d.pool.Close() }
@@ -116,30 +115,30 @@ var registry = spi.MustRegistry(
 	athena.Provider{},
 	sqlProvider{
 		engine:     engines.MySQL,
-		queries:    mysql.TargetSQL{},
+		queries:    mysql.Queries,
 		open:       mysql.OpenPool,
 		probe:      mysql.ProbeNamespace,
 		catalog:    func(context.Context, *sql.Conn) (string, error) { return "def", nil },
 		readDetail: mysql.ReadTableDetail,
-		newServer: func(listen spi.Listen, config spi.TargetConfig, client spi.ControlPlane, queries relay.Db, tlsProvider func() (*tls.Config, error)) spi.WireServer {
-			return mysql.New(listen, config, client, queries, tlsProvider)
+		newServer: func(listen spi.Listen, config spi.TargetConfig, client spi.ControlPlane, tlsProvider func() (*tls.Config, error)) spi.WireServer {
+			return mysql.New(listen, config, client, tlsProvider)
 		},
-		newSession: func(ctx context.Context, config spi.TargetConfig, queries relay.Db, authz *spi.Authorizer, guard spi.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.Session, error) {
-			return mysql.NewRunSession(ctx, config, queries, authz, guard, readTimeout, defaultSchema)
+		newSession: func(ctx context.Context, config spi.TargetConfig, authz *spi.Authorizer, guard spi.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.Session, error) {
+			return mysql.NewRunSession(ctx, config, authz, guard, readTimeout, defaultSchema)
 		},
 	},
 	sqlProvider{
 		engine:     engines.Postgres,
-		queries:    postgres.TargetSQL{},
+		queries:    postgres.Queries,
 		open:       postgres.OpenPool,
 		probe:      postgres.ProbeNamespace,
 		catalog:    postgres.ReadCatalog,
 		readDetail: postgres.ReadTableDetail,
-		newServer: func(listen spi.Listen, config spi.TargetConfig, client spi.ControlPlane, queries relay.Db, tlsProvider func() (*tls.Config, error)) spi.WireServer {
-			return postgres.New(listen, config, client, queries, tlsProvider)
+		newServer: func(listen spi.Listen, config spi.TargetConfig, client spi.ControlPlane, tlsProvider func() (*tls.Config, error)) spi.WireServer {
+			return postgres.New(listen, config, client, tlsProvider)
 		},
-		newSession: func(ctx context.Context, config spi.TargetConfig, queries relay.Db, authz *spi.Authorizer, guard spi.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.Session, error) {
-			return postgres.NewRunSession(ctx, config, queries, authz, guard, readTimeout, defaultSchema)
+		newSession: func(ctx context.Context, config spi.TargetConfig, authz *spi.Authorizer, guard spi.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.Session, error) {
+			return postgres.NewRunSession(ctx, config, authz, guard, readTimeout, defaultSchema)
 		},
 	},
 )

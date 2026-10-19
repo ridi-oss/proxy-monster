@@ -7,25 +7,25 @@ import (
 
 	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
+	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
 	"github.com/ridi-oss/sqlglot-go/dialects"
 	"google.golang.org/protobuf/proto"
 )
 
-// TargetSQL is MySQL's relay.Db.
-type TargetSQL struct{}
+// Queries is the SQL the shared database/sql code runs on a MySQL target.
+var Queries = sqldb.Queries{
+	Routines:                 routinesSQL,
+	SchemaRoutines:           schemaRoutinesSQL,
+	SchemaColumns:            schemaColumnsSQL,
+	SchemaHash:               schemaHashSQL,
+	SchemaHashFromRows:       schemaHashFromRows,
+	LowerCaseTableNamesProbe: "SELECT @@lower_case_table_names",
+	NormalizeColumns:         normalizeColumns,
+	// MySQL routine and native names are case-insensitive regardless of lower_case_table_names.
+	FoldFunctionName: dialects.MySQLLower,
+}
 
-// NamespaceProbeSQL yields the connection's current database.
-func (TargetSQL) NamespaceProbeSQL() string { return "SELECT DATABASE()" }
-
-func (TargetSQL) SupportsTempOverlay() bool   { return false }
-func (TargetSQL) TempColumnsProbeSQL() string { return "" }
-func (TargetSQL) HashSetupProbeSQL() string   { return "" }
-func (TargetSQL) HashSetupColumns() int       { return 0 }
-
-// LowerCaseTableNamesProbeSQL yields the connection's live lower_case_table_names mode.
-func (TargetSQL) LowerCaseTableNamesProbeSQL() string { return "SELECT @@lower_case_table_names" }
-
-// NormalizeColumns folds each column to analyzer/engines's canonical MySQL spelling — the SAME
+// normalizeColumns folds each column to analyzer/engines's canonical MySQL spelling — the SAME
 // normalization introspect's bulk catalog push uses, so the schema-fragment pool this feeds
 // (goproxy/sqldb.Refetcher) and the persisted catalog never disagree on spelling.
 //
@@ -34,7 +34,7 @@ func (TargetSQL) LowerCaseTableNamesProbeSQL() string { return "SELECT @@lower_c
 // re-parsed the same two identifiers thousands of times: ~13s of CPU on a 4,390-column schema, enough
 // to push a catalog refetch past the control plane's run-open deadline and fail every query on the
 // datasource. The batched fold is O(distinct tables) parses instead of O(columns).
-func (TargetSQL) NormalizeColumns(lowerCaseTableNames int, columns []*analyzerpb.Column) []*analyzerpb.Column {
+func normalizeColumns(lowerCaseTableNames int, columns []*analyzerpb.Column) []*analyzerpb.Column {
 	schemas := make([]string, len(columns))
 	tables := make([]string, len(columns))
 	names := make([]string, len(columns))
@@ -49,9 +49,6 @@ func (TargetSQL) NormalizeColumns(lowerCaseTableNames int, columns []*analyzerpb
 	}
 	return out
 }
-
-// MySQL routine and native names are case-insensitive regardless of lower_case_table_names.
-func (TargetSQL) FoldFunctionName(name string) string { return dialects.MySQLLower(name) }
 
 // mysqlSchemaFilter renders the WHERE-clause comparison for schema (a possibly-canonical spelling —
 // see analyzer/engines.NormalizeRelation) against the live TABLE_SCHEMA. Mode 0 never folds schema names
@@ -69,16 +66,14 @@ func mysqlSchemaFilter(column, schema string) string {
 	)
 }
 
-// SchemaColumnsSQL returns one schema fragment without excluding system schemas.
-// RoutinesSQL lists (schema, name) for every stored function; mysql.func loadables have no schema and
+// schemaColumnsSQL returns one schema fragment without excluding system schemas.
+// routinesSQL lists (schema, name) for every stored function; mysql.func loadables have no schema and
 // are listed under "mysql".
-func (TargetSQL) RoutinesSQL() string {
-	return `SELECT ROUTINE_SCHEMA, ROUTINE_NAME FROM information_schema.ROUTINES WHERE ROUTINE_TYPE = 'FUNCTION'
+const routinesSQL = `SELECT ROUTINE_SCHEMA, ROUTINE_NAME FROM information_schema.ROUTINES WHERE ROUTINE_TYPE = 'FUNCTION'
 UNION ALL SELECT 'mysql', name FROM mysql.func`
-}
 
 // Ordered by binary name: the control plane compares pushed lists positionally.
-func (TargetSQL) SchemaRoutinesSQL(schema string) string {
+func schemaRoutinesSQL(schema string) string {
 	routines := fmt.Sprintf(`SELECT ROUTINE_NAME AS name FROM information_schema.ROUTINES WHERE ROUTINE_TYPE = 'FUNCTION' AND %s`, mysqlSchemaFilter("ROUTINE_SCHEMA", schema))
 	if schema == "mysql" {
 		routines += `
@@ -88,17 +83,17 @@ UNION ALL SELECT name FROM mysql.func`
 ORDER BY CAST(name AS BINARY)`
 }
 
-func (TargetSQL) SchemaColumnsSQL(schema string) string {
+func schemaColumnsSQL(schema string) string {
 	return fmt.Sprintf(`SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, DATA_TYPE, ORDINAL_POSITION, IS_NULLABLE, TABLE_CATALOG
 FROM information_schema.COLUMNS
 WHERE %s
 ORDER BY CAST(TABLE_NAME AS BINARY), ORDINAL_POSITION, CAST(COLUMN_NAME AS BINARY)`, mysqlSchemaFilter("TABLE_SCHEMA", schema))
 }
 
-// SchemaHashSQL hashes columns and routines as one row set; a routine is the row
+// schemaHashSQL hashes columns and routines as one row set; a routine is the row
 // (app, <empty table>, add_tax, function, 0, NO), which no real column row can equal. Returns hash,
 // aggregate length, row count. SET_VAR raises the GROUP_CONCAT limit for this statement only.
-func (TargetSQL) SchemaHashSQL(schema string, _ [][]*string) (string, int, error) {
+func schemaHashSQL(schema string, _ [][]*string) (string, int, error) {
 	return fmt.Sprintf(`SELECT /*+ SET_VAR(group_concat_max_len=33554432) */
   SHA2(COALESCE(GROUP_CONCAT(row_digest ORDER BY CAST(tn AS BINARY), op, CAST(cn AS BINARY) SEPARATOR ''), ''), 256),
   COALESCE(LENGTH(GROUP_CONCAT(row_digest ORDER BY CAST(tn AS BINARY), op, CAST(cn AS BINARY) SEPARATOR '')), 0),
@@ -134,7 +129,7 @@ func mysqlLoadableHashRows(schema string) string {
     SELECT 'mysql', '', name, 'function', 0, 'NO' FROM mysql.func`
 }
 
-func (TargetSQL) SchemaHashFromRows(rows [][]*string) ([]byte, bool, error) {
+func schemaHashFromRows(rows [][]*string) ([]byte, bool, error) {
 	if len(rows) != 1 || len(rows[0]) != 3 || rows[0][0] == nil || rows[0][1] == nil || rows[0][2] == nil {
 		return nil, false, nil
 	}

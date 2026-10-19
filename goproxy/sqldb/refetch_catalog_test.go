@@ -20,7 +20,7 @@ func TestRefetcherCatalogIdentity(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			probes := 0
 			var pushed *pb.SchemaFragmentPush
-			refetcher := Refetcher{Catalog: "def", Db: refetchDb{}, BackendGeneration: 7,
+			refetcher := Refetcher{Catalog: "def", Queries: refetchQueries, BackendGeneration: 7,
 				Probe: func(sql string, _ int) ([][]*string, error) {
 					probes++
 					if sql == "columns:schema" {

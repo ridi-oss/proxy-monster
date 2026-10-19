@@ -292,7 +292,7 @@ On a `MASK` verdict the control-plane sets `Verdict.unmaskable_permitted` when
 the datasource grants `exception.unmaskable`
 (`authorizeDatasourceAction(EXCEPTION_UNMASKABLE)`). The proxy relays the
 binary/prepared result unmasked only when that flag is set — checked in
-`goproxy/mysqlproxy/conn.go` and `goproxy/pgproxy/extended.go` — and otherwise
+`goproxy/mysql/conn.go` and `goproxy/pgproxy/extended.go` — and otherwise
 refuses fail-closed. MySQL binary/prepared-statement results and PostgreSQL
 binary-format results have a relay path; COPY and fast-path do not and stay
 denied even where policy permits `exception.unmaskable`. That is an honest

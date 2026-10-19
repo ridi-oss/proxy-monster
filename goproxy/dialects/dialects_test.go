@@ -23,7 +23,7 @@ func TestRegistryProviderContracts(t *testing.T) {
 		engine *engines.Engine
 		server string
 	}{
-		{"mysql", engines.MySQL, "*mysqlproxy.Server"},
+		{"mysql", engines.MySQL, "*mysql.Server"},
 		{"postgres", engines.Postgres, "*pgproxy.Server"},
 	} {
 		t.Run(test.name, func(t *testing.T) {

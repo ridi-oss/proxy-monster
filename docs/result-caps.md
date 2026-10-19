@@ -122,8 +122,8 @@ to the viewer's rates.
   ([policy-store.md](./policy-store.md));
   `audit_event (principal, datasource, ts) WHERE kind = 'completion'` indexed.
 - Proxy: `engine.Decision.MaxRows` / `MaxBytes` (0 = uncapped, negative denies);
-  `relayResultSet` (mysqlproxy) and `streamResult` (pgproxy) enforce; a PG
-  portal's volume accumulates across Executes.
+  `relayResultSet` (mysql) and `streamResult` (pgproxy) enforce; a PG portal's
+  volume accumulates across Executes.
 - Web: the editor's page sizes stop at the default cap; a capped or truncated
   result shows a notice; a spent-rate denial offers a request for a boost role.
 - auditmon: a cap hit is a completion with `outcome = error`; a spent rate is a

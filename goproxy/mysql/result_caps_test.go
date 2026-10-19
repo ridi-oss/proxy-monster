@@ -1,0 +1,253 @@
+package mysql_test
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"strings"
+	"testing"
+
+	mysqldriver "github.com/go-sql-driver/mysql"
+	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
+	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+)
+
+func seedCapRows(t *testing.T) {
+	t.Helper()
+	db := dbtest.OpenMySQL(t, primarySchema)
+	for _, query := range []string{
+		"DROP TABLE IF EXISTS cap_rows",
+		"CREATE TABLE cap_rows (id INT PRIMARY KEY, value VARCHAR(10) NOT NULL)",
+	} {
+		if _, err := db.Exec(query); err != nil {
+			t.Fatal(err)
+		}
+	}
+	values := make([]string, 10000)
+	for i := range values {
+		values[i] = fmt.Sprintf("(%d, 'xxxxxxxxxx')", i)
+	}
+	if _, err := db.Exec("INSERT INTO cap_rows VALUES " + strings.Join(values, ",")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func countCapRows(t *testing.T, rows *sql.Rows, queryErr error, want int, message string) {
+	t.Helper()
+	if queryErr != nil {
+		t.Fatalf("query: %v", queryErr)
+	}
+	defer rows.Close()
+	count := 0
+	for rows.Next() {
+		count++
+	}
+	if count != want {
+		t.Fatalf("delivered rows = %d, want %d (error %v)", count, want, rows.Err())
+	}
+	if message == "" {
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	var mysqlErr *mysqldriver.MySQLError
+	if !errors.As(rows.Err(), &mysqlErr) || mysqlErr.Number != 1317 || string(mysqlErr.SQLState[:]) != "70100" || mysqlErr.Message != message {
+		t.Fatalf("rows error = %v, want 1317/70100 %q", rows.Err(), message)
+	}
+}
+
+func TestResultCaps(t *testing.T) {
+	for _, tc := range []struct {
+		name                 string
+		maxRows, maxBytes    int64
+		prepared, unmaskable bool
+		want                 int
+		message              string
+	}{
+		{name: "rows", maxRows: 500, want: 500, message: "proxy-monster: result exceeds the row cap (500 rows); request unbounded access"},
+		{name: "bytes", maxBytes: 55, want: 5, message: "proxy-monster: result exceeds the byte cap (55 bytes); request unbounded access"},
+		{name: "prepared", maxRows: 500, prepared: true, want: 500, message: "proxy-monster: result exceeds the row cap (500 rows); request unbounded access"},
+		{name: "unmaskable", maxRows: 500, prepared: true, unmaskable: true, want: 500, message: "proxy-monster: result exceeds the row cap (500 rows); request unbounded access"},
+		{name: "unbounded", want: 10000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := startBroker(t)
+			seedCapRows(t)
+			h.fake.decideFn = func(*pb.DecisionRequest) (*pb.WireDecision, error) {
+				verdict := &pb.Verdict{Decision: pb.EnfAction_ALLOW, DecisionId: completionDecisionID, MaxRows: tc.maxRows, MaxBytes: tc.maxBytes}
+				if tc.unmaskable {
+					verdict.Decision = pb.EnfAction_MASK
+					verdict.UnmaskablePermitted = true
+				}
+				return wireVerdict(verdict), nil
+			}
+			ctx := context.Background()
+			conn, err := h.openDB(t, validToken).Conn(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			var rows *sql.Rows
+			if tc.prepared {
+				stmt, prepErr := conn.PrepareContext(ctx, "SELECT value FROM cap_rows WHERE id >= ?")
+				if prepErr != nil {
+					t.Fatal(prepErr)
+				}
+				defer stmt.Close()
+				rows, err = stmt.QueryContext(ctx, 0)
+			} else {
+				rows, err = conn.QueryContext(ctx, "SELECT value FROM cap_rows")
+			}
+			countCapRows(t, rows, err, tc.want, tc.message)
+			report := h.waitCompletions(t, 1)[0]
+			status := "ok"
+			if tc.message != "" {
+				status = "error"
+			}
+			if report.GetRowsReturned() != int64(tc.want) || report.GetStatus() != status || report.GetDecisionId() != completionDecisionID {
+				t.Fatalf("completion = %v", report)
+			}
+			if tc.name == "bytes" && report.GetBytesReturned() != 55 {
+				t.Fatalf("completion bytes = %d, want 55", report.GetBytesReturned())
+			}
+			var value int
+			if err := conn.QueryRowContext(ctx, "SELECT 42").Scan(&value); err != nil || value != 42 {
+				t.Fatalf("same connection SELECT 42 = %d, %v", value, err)
+			}
+		})
+	}
+}
+
+func TestResultCapPreservesTransaction(t *testing.T) {
+	h := startBroker(t)
+	seedCapRows(t)
+	h.fake.decideFn = func(*pb.DecisionRequest) (*pb.WireDecision, error) {
+		return wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW, DecisionId: completionDecisionID, MaxRows: 500}), nil
+	}
+	ctx := context.Background()
+	conn, err := h.openDB(t, validToken).Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec("INSERT INTO cap_rows VALUES (10000, 'pending')"); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := tx.Query("SELECT value FROM cap_rows")
+	countCapRows(t, rows, err, 500, "proxy-monster: result exceeds the row cap (500 rows); request unbounded access")
+	var value string
+	if err := tx.QueryRow("SELECT value FROM cap_rows WHERE id = 10000").Scan(&value); err != nil || value != "pending" {
+		t.Fatalf("uncommitted row = %q, %v", value, err)
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := conn.QueryRowContext(ctx, "SELECT COUNT(*) FROM cap_rows WHERE id = 10000").Scan(&count); err != nil || count != 0 {
+		t.Fatalf("rolled back row count = %d, %v", count, err)
+	}
+}
+
+// A cap ends the result, not the transaction: work before the capped SELECT still commits.
+func TestResultCapThenCommit(t *testing.T) {
+	h := startBroker(t)
+	seedCapRows(t)
+	h.fake.decideFn = func(*pb.DecisionRequest) (*pb.WireDecision, error) {
+		return wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW, DecisionId: completionDecisionID, MaxRows: 500}), nil
+	}
+	ctx := context.Background()
+	db := h.openDB(t, validToken)
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec("INSERT INTO cap_rows VALUES (10000, 'committed')"); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := tx.Query("SELECT value FROM cap_rows")
+	countCapRows(t, rows, err, 500, "proxy-monster: result exceeds the row cap (500 rows); request unbounded access")
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit after a capped result: %v", err)
+	}
+	// The harness pool holds one connection, so a second client is a second pool.
+	other, err := h.openDB(t, validToken).Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	var value string
+	if err := other.QueryRowContext(ctx, "SELECT value FROM cap_rows WHERE id = 10000").Scan(&value); err != nil || value != "committed" {
+		t.Fatalf("committed row from a second connection = %q, %v", value, err)
+	}
+}
+
+// A capped prepared statement stays usable: the same handle executes again and the drained cursor does
+// not bleed rows into the next execution.
+func TestResultCapPreparedReexecute(t *testing.T) {
+	h := startBroker(t)
+	seedCapRows(t)
+	h.fake.decideFn = func(*pb.DecisionRequest) (*pb.WireDecision, error) {
+		return wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW, DecisionId: completionDecisionID, MaxRows: 500}), nil
+	}
+	ctx := context.Background()
+	conn, err := h.openDB(t, validToken).Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	stmt, err := conn.PrepareContext(ctx, "SELECT value FROM cap_rows WHERE id >= ?")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stmt.Close()
+	rows, err := stmt.QueryContext(ctx, 0)
+	countCapRows(t, rows, err, 500, "proxy-monster: result exceeds the row cap (500 rows); request unbounded access")
+	rows, err = stmt.QueryContext(ctx, 9990)
+	countCapRows(t, rows, err, 10, "")
+	rows, err = stmt.QueryContext(ctx, 0)
+	countCapRows(t, rows, err, 500, "proxy-monster: result exceeds the row cap (500 rows); request unbounded access")
+	if reports := h.waitCompletions(t, 3); reports[1].GetRowsReturned() != 10 || reports[1].GetStatus() != "ok" {
+		t.Fatalf("middle completion = %v", reports[1])
+	}
+}
+
+// A spent rate is an ordinary policy denial on the wire; the session survives it and the next allowed
+// statement runs.
+func TestRateSpentDenyKeepsSession(t *testing.T) {
+	h := startBroker(t)
+	seedCapRows(t)
+	h.fake.decideFn = func(*pb.DecisionRequest) (*pb.WireDecision, error) {
+		return wireVerdict(&pb.Verdict{Decision: pb.EnfAction_DENY, DenyReason: "rate 10000/1h spent"}), nil
+	}
+	ctx := context.Background()
+	conn, err := h.openDB(t, validToken).Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_, err = conn.QueryContext(ctx, "SELECT value FROM cap_rows")
+	if err == nil || !strings.Contains(err.Error(), "Error 1142") || !strings.Contains(err.Error(), "proxy-monster denied: rate 10000/1h spent") {
+		t.Fatalf("spent-rate query error = %v, want 1142 naming the rate", err)
+	}
+	h.fake.mu.Lock()
+	h.fake.decideFn = func(*pb.DecisionRequest) (*pb.WireDecision, error) {
+		return wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW, DecisionId: completionDecisionID}), nil
+	}
+	h.fake.mu.Unlock()
+	var count int
+	if err := conn.QueryRowContext(ctx, "SELECT COUNT(*) FROM cap_rows").Scan(&count); err != nil || count != 10000 {
+		t.Fatalf("post-reset COUNT(*) = %d, %v", count, err)
+	}
+}

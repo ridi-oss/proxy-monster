@@ -29,7 +29,6 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
@@ -59,9 +58,8 @@ class PmonMcpTokenDbTest {
     @BeforeAll
     fun setUp() {
         requireDockerOrSkip()
-        val database = SharedPostgres.freshDatabase("pm_pmon_mcp_token")
+        val database = SharedPostgres.migratedDatabase("pm_pmon_mcp_token")
         dataSource = SharedPostgres.hikari(database)
-        Flyway.configure().dataSource(dataSource).load().migrate()
         core = ControlPlaneCore(dataSource)
         datasource = core.datasourceStore.create(DatasourceInput("pmon-mcp-ds", "postgres"))
         stack = CpGoStack(config, core, database) { routing { testLoginRoute(PrincipalSessionStore(dataSource, null), config) } }

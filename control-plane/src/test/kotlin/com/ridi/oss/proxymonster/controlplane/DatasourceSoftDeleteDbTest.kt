@@ -14,7 +14,6 @@ import com.ridi.oss.proxymonster.grpc.schemaFragmentPush
 import com.google.protobuf.ByteString
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.runBlocking
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
@@ -45,8 +44,7 @@ class DatasourceSoftDeleteDbTest {
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_ds_soft_delete"))
-        Flyway.configure().dataSource(dataSource).load().migrate()
+        dataSource = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_ds_soft_delete"))
         core = ControlPlaneCore(dataSource)
         store = core.datasourceStore
         datasources = DatasourceManagementService(

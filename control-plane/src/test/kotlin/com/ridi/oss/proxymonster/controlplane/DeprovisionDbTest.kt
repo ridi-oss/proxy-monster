@@ -11,7 +11,6 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
@@ -53,9 +52,8 @@ class DeprovisionDbTest {
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        val dbName = SharedPostgres.freshDatabase("pm_deprovision")
+        val dbName = SharedPostgres.migratedDatabase("pm_deprovision")
         ds = SharedPostgres.hikari(dbName)
-        Flyway.configure().dataSource(ds).load().migrate()
         tokenStore = TokenStore(ds)
         accessStore = AccessStore(ds)
         policyStore = PolicyStore(ds)

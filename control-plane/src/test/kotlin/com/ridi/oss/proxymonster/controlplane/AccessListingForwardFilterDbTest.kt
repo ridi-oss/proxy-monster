@@ -13,7 +13,6 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.server.routing.routing
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.TestInstance
@@ -46,9 +45,8 @@ class AccessListingForwardFilterDbTest {
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        val database = SharedPostgres.freshDatabase("pm_access_forward_filter")
+        val database = SharedPostgres.migratedDatabase("pm_access_forward_filter")
         dataSource = SharedPostgres.hikari(database)
-        Flyway.configure().dataSource(dataSource).load().migrate()
         core = ControlPlaneCore(dataSource)
 
         val sessionStore = PrincipalSessionStore(dataSource, null)

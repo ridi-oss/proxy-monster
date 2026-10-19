@@ -19,7 +19,6 @@ import io.ktor.server.routing.routing
 import io.ktor.server.testing.testApplication
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
@@ -208,8 +207,7 @@ class AuthAndIngestRoutesDbTest {
     }
 
     private fun migratedDatabase(prefix: String): DataSource {
-        val ds = SharedPostgres.hikari(SharedPostgres.freshDatabase(prefix))
-        Flyway.configure().dataSource(ds).load().migrate()
+        val ds = SharedPostgres.hikari(SharedPostgres.migratedDatabase(prefix))
         return ds
     }
 

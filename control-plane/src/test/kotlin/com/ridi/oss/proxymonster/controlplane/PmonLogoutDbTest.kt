@@ -31,7 +31,6 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
@@ -57,9 +56,8 @@ class PmonLogoutDbTest {
     @BeforeAll
     fun setUp() {
         requireDockerOrSkip()
-        val database = SharedPostgres.freshDatabase("pm_pmon_logout")
+        val database = SharedPostgres.migratedDatabase("pm_pmon_logout")
         dataSource = SharedPostgres.hikari(database)
-        Flyway.configure().dataSource(dataSource).load().migrate()
         core = ControlPlaneCore(dataSource)
         datasource = core.datasourceStore.create(DatasourceInput("pmon-logout-ds", "postgres"))
         stack = CpGoStack(config, core, database, withGrpc = true) { routing { testLoginRoute(PrincipalSessionStore(dataSource, null), config) } }

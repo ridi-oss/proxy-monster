@@ -24,7 +24,6 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
@@ -57,9 +56,8 @@ class RenewalWindowTest {
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        val database = SharedPostgres.freshDatabase("pm_renewal_window")
+        val database = SharedPostgres.migratedDatabase("pm_renewal_window")
         ds = SharedPostgres.hikari(database)
-        Flyway.configure().dataSource(ds).load().migrate()
         daemonSessionStore = PrincipalSessionStore(ds, null)
         tokenStore = TokenStore(ds)
         accessStore = AccessStore(ds)

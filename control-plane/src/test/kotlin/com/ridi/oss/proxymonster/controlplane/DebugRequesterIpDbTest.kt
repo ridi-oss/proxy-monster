@@ -30,7 +30,6 @@ import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.Test
 import javax.sql.DataSource
 import kotlin.test.assertEquals
@@ -135,8 +134,7 @@ class DebugRequesterIpDbTest {
     @Test
     fun `a debug login's simulated address replaces the observed peer on the decision path`() = testApplication {
         requireDockerOrSkip()
-        val dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_debug_requester_ip"))
-        Flyway.configure().dataSource(dataSource).load().migrate()
+        val dataSource = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_debug_requester_ip"))
         val config = Config.fromEnv { null }.copy(dbUrl = "", dbUser = "", dbPassword = "")
         val client = probe(config, ControlPlaneCore(dataSource))
 
@@ -168,8 +166,7 @@ class DebugRequesterIpDbTest {
     @Test
     fun `a malformed address is refused rather than silently ignored`() = testApplication {
         requireDockerOrSkip()
-        val dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_debug_requester_ip_bad"))
-        Flyway.configure().dataSource(dataSource).load().migrate()
+        val dataSource = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_debug_requester_ip_bad"))
         val config = Config.fromEnv { null }.copy(dbUrl = "", dbUser = "", dbPassword = "")
         val client = probe(config, ControlPlaneCore(dataSource))
 
@@ -223,8 +220,7 @@ class DebugRequesterIpDbTest {
     @Test
     fun `a simulated address changes a real Cedar decision through the derived tag`() = testApplication {
         requireDockerOrSkip()
-        val dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_debug_requester_ip_cedar"))
-        Flyway.configure().dataSource(dataSource).load().migrate()
+        val dataSource = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_debug_requester_ip_cedar"))
         val core = ControlPlaneCore(dataSource)
         core.datasourceStore.create(
             DatasourceInput(name = TAG_DS, engine = "postgres", host = "localhost", port = 5432, dbName = "app"),
@@ -267,8 +263,7 @@ class DebugRequesterIpDbTest {
     @Test
     fun `the stored address is inert once the debug bypass is off`() = runBlocking {
         requireDockerOrSkip()
-        val dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_debug_requester_ip_off"))
-        Flyway.configure().dataSource(dataSource).load().migrate()
+        val dataSource = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_debug_requester_ip_off"))
         val secret = "debug-requester-ip-test-secret-0123456789"
 
         fun config(authDebug: Boolean) = Config(

@@ -36,7 +36,6 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
 import kotlinx.serialization.json.put
 import io.ktor.server.routing.routing
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
@@ -60,9 +59,8 @@ class McpAdminParityToolsDbTest {
     @BeforeAll
     fun setUp() {
         requireDockerOrSkip()
-        val database = SharedPostgres.freshDatabase("pm_mcp_admin_parity")
+        val database = SharedPostgres.migratedDatabase("pm_mcp_admin_parity")
         dataSource = SharedPostgres.hikari(database)
-        Flyway.configure().dataSource(dataSource).load().migrate()
         core = ControlPlaneCore(dataSource)
         tokens = McpTokens(dataSource, config.mcpResource)
         cpGo = CpGoStack(config, core, database) { routing { testLoginRoute(PrincipalSessionStore(dataSource, null), config) } }

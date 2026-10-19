@@ -29,7 +29,6 @@ import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyStore
 import com.ridi.oss.proxymonster.controlplane.authz.RoleSource
 import com.ridi.oss.proxymonster.analyzer.pb.SchemaFunctions
 import com.ridi.oss.proxymonster.analyzer.pb.schemaFunctions
-import org.flywaydb.core.Flyway
 import com.ridi.oss.proxymonster.analyzer.pb.CatalogSnapshot
 import com.ridi.oss.proxymonster.analyzer.pb.Column
 import com.ridi.oss.proxymonster.analyzer.pb.catalogSnapshot
@@ -254,9 +253,8 @@ class EnforcementFixture(
 
         /** Build a control-plane store on a fresh migrated Postgres metadata database. */
         private fun metadataStores(): MetaStores {
-            val metaDb = SharedPostgres.freshDatabase("pm_meta")
+            val metaDb = SharedPostgres.migratedDatabase("pm_meta")
             val meta = SharedPostgres.hikari(metaDb)
-            Flyway.configure().dataSource(meta).load().migrate()
             return MetaStores(
                 meta, DatasourceStore(meta), PolicyStore(meta), AuditStore(meta), AccessStore(meta),
                 UserGroupStore(meta), CedarPolicyStore(meta), TokenStore(meta), PrincipalSessionStore(meta, null),

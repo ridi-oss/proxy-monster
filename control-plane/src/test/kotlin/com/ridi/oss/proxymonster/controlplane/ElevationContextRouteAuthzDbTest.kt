@@ -32,7 +32,6 @@ import io.ktor.server.sessions.set
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
 import kotlinx.serialization.json.Json
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.TestInstance
 import javax.sql.DataSource
@@ -94,9 +93,8 @@ class ElevationContextRouteAuthzDbTest {
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        val database = SharedPostgres.freshDatabase("pm_elev_route")
+        val database = SharedPostgres.migratedDatabase("pm_elev_route")
         dataSource = SharedPostgres.hikari(database)
-        Flyway.configure().dataSource(dataSource).load().migrate()
         core = ControlPlaneCore(dataSource)
         runExecService = RunExecService(core) // required by approvalRoutes; /execute reaches it (test b below)
         resultStore = QueryResultStore(dataSource, ResultCrypto(ByteArray(32) { it.toByte() }))

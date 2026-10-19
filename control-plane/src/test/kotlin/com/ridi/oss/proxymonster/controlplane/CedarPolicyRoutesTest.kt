@@ -28,7 +28,6 @@ import io.ktor.http.contentType
 import io.ktor.server.routing.routing
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
@@ -56,9 +55,8 @@ class CedarPolicyRoutesTest {
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        val database = SharedPostgres.freshDatabase("pm_cedar_policy_routes")
+        val database = SharedPostgres.migratedDatabase("pm_cedar_policy_routes")
         ds = SharedPostgres.hikari(database)
-        Flyway.configure().dataSource(ds).load().migrate()
         store = CedarPolicyStore(ds)
         sessionStore = PrincipalSessionStore(ds, null)
         // These routes are admin-gated, so the caller needs a real role: system:admin, which the seeded

@@ -6,7 +6,6 @@ import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.TestInstance
 import javax.sql.DataSource
@@ -35,8 +34,7 @@ class ApprovalLifecycleDbTest {
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_approval_lifecycle"))
-        Flyway.configure().dataSource(dataSource).load().migrate()
+        dataSource = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_approval_lifecycle"))
         core = ControlPlaneCore(dataSource)
         datasource = core.datasourceStore.create(
             DatasourceInput(name = "lifecycle-ds", engine = "postgres", host = "localhost", port = 5432, dbName = "app"),

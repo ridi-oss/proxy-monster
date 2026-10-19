@@ -4,7 +4,6 @@ import org.junit.jupiter.api.AfterAll
 import com.ridi.oss.proxymonster.controlplane.support.OidcProvisioner
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
@@ -33,9 +32,8 @@ class BootstrapAdminDbTest {
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        val database = SharedPostgres.freshDatabase("pm_bootstrap_admin")
+        val database = SharedPostgres.migratedDatabase("pm_bootstrap_admin")
         ds = SharedPostgres.hikari(database)
-        Flyway.configure().dataSource(ds).load().migrate()
         store = UserGroupStore(ds)
         accessStore = AccessStore(ds)
         roleResolver = RoleResolver(ds, store, accessStore)
@@ -177,8 +175,7 @@ class BootstrapAdminDbTest {
         //
         // Its own database: the class-scoped one is shared, and a sibling test provisions an admin
         // member into it, so "no members" only holds on an untouched store.
-        val fresh = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_bootstrap_seed_shape"))
-        Flyway.configure().dataSource(fresh).load().migrate()
+        val fresh = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_bootstrap_seed_shape"))
         val freshStore = UserGroupStore(fresh)
 
         val group = freshStore.listGroups().first { it.name == "system:admin" }

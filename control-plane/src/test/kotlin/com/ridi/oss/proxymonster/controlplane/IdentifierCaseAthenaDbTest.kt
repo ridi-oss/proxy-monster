@@ -6,7 +6,6 @@ import com.ridi.oss.proxymonster.controlplane.support.canonicalColumns
 import com.ridi.oss.proxymonster.controlplane.support.pushedColumn
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.grpc.Engine
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Disabled
 import org.junit.jupiter.api.Test
@@ -29,8 +28,7 @@ class IdentifierCaseAthenaDbTest {
     @BeforeAll
     fun setUp() {
         requireDockerOrSkip()
-        val metadata = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_names_athena"))
-        Flyway.configure().dataSource(metadata).load().migrate()
+        val metadata = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_names_athena"))
         store = DatasourceStore(metadata)
     }
 

@@ -8,7 +8,6 @@ import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.daemonWithinWindow
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.controlplane.support.seedDaemonSession
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
@@ -45,9 +44,8 @@ class UserAdminDeprovisionDbTest {
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        val dbName = SharedPostgres.freshDatabase("pm_user_admin_deprovision")
+        val dbName = SharedPostgres.migratedDatabase("pm_user_admin_deprovision")
         ds = SharedPostgres.hikari(dbName)
-        Flyway.configure().dataSource(ds).load().migrate()
         userGroupStore = UserGroupStore(ds)
         tokenStore = TokenStore(ds)
         accessStore = AccessStore(ds)

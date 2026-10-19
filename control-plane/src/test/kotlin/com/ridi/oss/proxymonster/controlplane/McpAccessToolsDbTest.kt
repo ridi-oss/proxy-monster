@@ -28,7 +28,6 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
 import kotlinx.serialization.json.put
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
@@ -59,9 +58,8 @@ class McpAccessToolsDbTest {
     @BeforeAll
     fun setUp() {
         requireDockerOrSkip()
-        val database = SharedPostgres.freshDatabase("pm_mcp_access_tools")
+        val database = SharedPostgres.migratedDatabase("pm_mcp_access_tools")
         dataSource = SharedPostgres.hikari(database)
-        Flyway.configure().dataSource(dataSource).load().migrate()
         core = ControlPlaneCore(dataSource)
         tokens = McpTokens(dataSource, config.mcpResource)
         roleId = core.policyStore.createRole(RoleInput(roleName)).id

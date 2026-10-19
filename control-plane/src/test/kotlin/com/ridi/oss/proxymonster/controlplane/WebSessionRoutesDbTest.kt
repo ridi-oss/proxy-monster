@@ -30,7 +30,6 @@ import io.ktor.server.routing.routing
 import io.ktor.server.sessions.SessionTransportTransformerMessageAuthentication
 import io.ktor.server.testing.testApplication
 import kotlinx.serialization.json.Json
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.Test
 import java.time.Instant
 import javax.sql.DataSource
@@ -119,9 +118,8 @@ class WebSessionRoutesDbTest {
     @Test
     fun `auth config exposes default session UX timings`() = testApplication {
         requireDockerOrSkip()
-        val database = SharedPostgres.freshDatabase("pm_auth_config_defaults")
+        val database = SharedPostgres.migratedDatabase("pm_auth_config_defaults")
         val dataSource = SharedPostgres.hikari(database)
-        Flyway.configure().dataSource(dataSource).load().migrate()
         val config = Config.fromEnv { null }.copy(dbUrl = "", dbUser = "", dbPassword = "")
         stack(config, ControlPlaneCore(dataSource), database)
 
@@ -146,9 +144,8 @@ class WebSessionRoutesDbTest {
     @Test
     fun `auth config normalizes a mixed-unit absolute cap to minutes`() = testApplication {
         requireDockerOrSkip()
-        val database = SharedPostgres.freshDatabase("pm_auth_config_minutes")
+        val database = SharedPostgres.migratedDatabase("pm_auth_config_minutes")
         val dataSource = SharedPostgres.hikari(database)
-        Flyway.configure().dataSource(dataSource).load().migrate()
         val config = Config.fromEnv { name ->
             if (name == "PM_WEB_SESSION_ABSOLUTE") "1h30m" else null
         }.copy(dbUrl = "", dbUser = "", dbPassword = "")
@@ -162,9 +159,8 @@ class WebSessionRoutesDbTest {
     @Test
     fun `debug login resolves through the database and logout ends the row`() = testApplication {
         requireDockerOrSkip()
-        val database = SharedPostgres.freshDatabase("pm_web_routes")
+        val database = SharedPostgres.migratedDatabase("pm_web_routes")
         val dataSource = SharedPostgres.hikari(database)
-        Flyway.configure().dataSource(dataSource).load().migrate()
         val config = Config.fromEnv { name ->
             if (name == "PM_WEB_SESSION_ABSOLUTE") "90s" else null
         }.copy(dbUrl = "", dbUser = "", dbPassword = "")
@@ -290,9 +286,8 @@ class WebSessionRoutesDbTest {
     @Test
     fun `conditional logout ends only the session id observed by the client`() = testApplication {
         requireDockerOrSkip()
-        val database = SharedPostgres.freshDatabase("pm_web_conditional_logout")
+        val database = SharedPostgres.migratedDatabase("pm_web_conditional_logout")
         val dataSource = SharedPostgres.hikari(database)
-        Flyway.configure().dataSource(dataSource).load().migrate()
         val config = Config.fromEnv { null }.copy(dbUrl = "", dbUser = "", dbPassword = "")
         stack(config, ControlPlaneCore(dataSource), database)
         val client = sessionClient()
@@ -359,9 +354,8 @@ class WebSessionRoutesDbTest {
     @Test
     fun `logging out of an idle-expired session still records the termination`() = testApplication {
         requireDockerOrSkip()
-        val database = SharedPostgres.freshDatabase("pm_web_idle_logout")
+        val database = SharedPostgres.migratedDatabase("pm_web_idle_logout")
         val dataSource = SharedPostgres.hikari(database)
-        Flyway.configure().dataSource(dataSource).load().migrate()
         val config = Config.fromEnv { null }.copy(dbUrl = "", dbUser = "", dbPassword = "")
         stack(config, ControlPlaneCore(dataSource), database)
         val client = sessionClient()
@@ -402,9 +396,8 @@ class WebSessionRoutesDbTest {
     @Test
     fun `expired and ended web rows fail closed`() = testApplication {
         requireDockerOrSkip()
-        val database = SharedPostgres.freshDatabase("pm_web_fail_closed")
+        val database = SharedPostgres.migratedDatabase("pm_web_fail_closed")
         val dataSource = SharedPostgres.hikari(database)
-        Flyway.configure().dataSource(dataSource).load().migrate()
         val config = Config.fromEnv().copy(dbUrl = "", dbUser = "", dbPassword = "")
         stack(config, ControlPlaneCore(dataSource), database) {
             routing {
@@ -445,9 +438,8 @@ class WebSessionRoutesDbTest {
     @Test
     fun `session observation and ordinary authenticated routes never slide idle while heartbeat does`() = testApplication {
         requireDockerOrSkip()
-        val database = SharedPostgres.freshDatabase("pm_web_status")
+        val database = SharedPostgres.migratedDatabase("pm_web_status")
         val dataSource = SharedPostgres.hikari(database)
-        Flyway.configure().dataSource(dataSource).load().migrate()
         val config = Config.fromEnv { null }.copy(dbUrl = "", dbUser = "", dbPassword = "")
         stack(config, ControlPlaneCore(dataSource), database) {
             routing {
@@ -524,9 +516,8 @@ class WebSessionRoutesDbTest {
     @Test
     fun `session status and me surface displacement and bind mismatch reasons`() = testApplication {
         requireDockerOrSkip()
-        val database = SharedPostgres.freshDatabase("pm_web_status_reasons")
+        val database = SharedPostgres.migratedDatabase("pm_web_status_reasons")
         val dataSource = SharedPostgres.hikari(database)
-        Flyway.configure().dataSource(dataSource).load().migrate()
         val config = Config.fromEnv { null }.copy(dbUrl = "", dbUser = "", dbPassword = "")
         stack(config, ControlPlaneCore(dataSource), database)
         val firstClient = sessionClient()
@@ -649,9 +640,8 @@ class WebSessionRoutesDbTest {
     @Test
     fun `a pre-cutover principal-roles cookie fails closed to unauthenticated`() = testApplication {
         requireDockerOrSkip()
-        val database = SharedPostgres.freshDatabase("pm_web_legacy_cookie")
+        val database = SharedPostgres.migratedDatabase("pm_web_legacy_cookie")
         val dataSource = SharedPostgres.hikari(database)
-        Flyway.configure().dataSource(dataSource).load().migrate()
         val config = Config.fromEnv().copy(dbUrl = "", dbUser = "", dbPassword = "")
         stack(config, ControlPlaneCore(dataSource), database) {
             routing {

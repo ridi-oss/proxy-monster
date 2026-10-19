@@ -4,7 +4,6 @@ import com.ridi.oss.proxymonster.grpc.runError
 
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
@@ -25,8 +24,7 @@ class QueryResultStoreDbTest {
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_qr"))
-        Flyway.configure().dataSource(dataSource).load().migrate()
+        dataSource = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_qr"))
         accessStore = AccessStore(dataSource)
         datasourceId = DatasourceStore(dataSource).create(
             DatasourceInput(name = "ds", engine = "postgres", host = "h", port = 5432, dbName = "d"),

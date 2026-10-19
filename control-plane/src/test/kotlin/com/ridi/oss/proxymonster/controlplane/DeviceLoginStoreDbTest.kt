@@ -23,7 +23,6 @@ import io.ktor.server.routing.routing
 import io.ktor.server.sessions.sessions
 import io.ktor.server.sessions.set
 import kotlinx.coroutines.runBlocking
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
@@ -42,8 +41,7 @@ class DeviceLoginStoreDbTest {
     @Test
     fun `purgeExpired removes only expired rows`() {
         requireDockerOrSkip()
-        val ds = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_device_login"))
-        Flyway.configure().dataSource(ds).load().migrate()
+        val ds = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_device_login"))
         ds.connection.use { c ->
             c.createStatement().use { st ->
                 st.execute(
@@ -71,9 +69,8 @@ class DeviceLoginStoreDbTest {
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        val database = SharedPostgres.freshDatabase("pm_device_login_routes")
+        val database = SharedPostgres.migratedDatabase("pm_device_login_routes")
         dataSource = SharedPostgres.hikari(database)
-        Flyway.configure().dataSource(dataSource).load().migrate()
         tokenStore = TokenStore(dataSource)
         val config = Config(
             httpPort = 0, dbUrl = "", dbUser = "", dbPassword = "", authDebug = true, secretToken = null,

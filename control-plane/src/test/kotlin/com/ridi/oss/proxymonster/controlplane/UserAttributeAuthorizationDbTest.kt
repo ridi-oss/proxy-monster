@@ -10,7 +10,6 @@ import com.ridi.oss.proxymonster.controlplane.authz.fromClaims
 import com.ridi.oss.proxymonster.controlplane.notify.RecipientResolver
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
@@ -31,8 +30,7 @@ class UserAttributeAuthorizationDbTest {
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        database = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_user_attributes"))
-        Flyway.configure().dataSource(database).load().migrate()
+        database = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_user_attributes"))
         CedarSchema.declareUserAttributes(declared)
         core = ControlPlaneCore(database)
         policy(

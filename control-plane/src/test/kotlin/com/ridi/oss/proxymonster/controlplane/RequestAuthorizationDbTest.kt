@@ -18,7 +18,6 @@ import io.grpc.Status
 import io.grpc.StatusException
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder
 import kotlinx.coroutines.runBlocking
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
@@ -43,8 +42,7 @@ class RequestAuthorizationDbTest {
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        database = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_request_authorization"))
-        Flyway.configure().dataSource(database).load().migrate()
+        database = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_request_authorization"))
         core = ControlPlaneCore(database)
         server = GrpcServer(0, ControlPlaneGrpcService(core), secretToken = null).also { it.start() }
         channel = NettyChannelBuilder.forAddress("localhost", server.boundPort).usePlaintext().build()

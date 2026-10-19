@@ -2,6 +2,7 @@ package com.ridi.oss.proxymonster.controlplane.support
 
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
+import org.flywaydb.core.Flyway
 import org.testcontainers.DockerClientFactory
 import org.testcontainers.containers.MySQLContainer
 import org.testcontainers.containers.PostgreSQLContainer
@@ -111,6 +112,21 @@ object SharedPostgres {
         val name = "${prefix}_${counter.incrementAndGet()}"
         adminConnection().use { c ->
             c.createStatement().use { it.executeUpdate("CREATE DATABASE \"$name\"") }
+        }
+        return name
+    }
+
+    private val migratedTemplate: String by lazy {
+        freshDatabase("pm_migrated_template").also { name ->
+            Flyway.configure().dataSource(jdbcUrlFor(name), container.username, container.password).load().migrate()
+        }
+    }
+
+    /** A fresh database already migrated to the latest control-plane schema, cloned from a once-migrated template. */
+    fun migratedDatabase(prefix: String): String {
+        val name = "${prefix}_${counter.incrementAndGet()}"
+        adminConnection().use { c ->
+            c.createStatement().use { it.executeUpdate("CREATE DATABASE \"$name\" TEMPLATE \"$migratedTemplate\"") }
         }
         return name
     }

@@ -15,7 +15,6 @@ import io.ktor.server.routing.routing
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
 import kotlinx.serialization.Serializable
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
@@ -51,9 +50,8 @@ class TokenRoutesDeactivationTest {
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        val database = SharedPostgres.freshDatabase("pm_tokroutes")
+        val database = SharedPostgres.migratedDatabase("pm_tokroutes")
         ds = SharedPostgres.hikari(database)
-        Flyway.configure().dataSource(ds).load().migrate()
         tokenStore = TokenStore(ds)
         accessStore = AccessStore(ds)
         daemonSessionStore = PrincipalSessionStore(ds, null)

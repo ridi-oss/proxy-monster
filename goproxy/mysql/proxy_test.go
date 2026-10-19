@@ -358,7 +358,7 @@ func (h *brokerHarness) openDBInDatabase(t *testing.T, token, database string) *
 
 // The proxy must forward the client's real socket address on ValidateToken so a rejected wire credential
 // is audited with its source. A blank field re-opens the audited-without-source gap; the token in that
-// field would leak the credential into the audit chain. (pgproxy plumbs the same value symmetrically.)
+// field would leak the credential into the audit chain. (postgres plumbs the same value symmetrically.)
 func TestValidateTokenCarriesClientAddr(t *testing.T) {
 	h := startBroker(t)
 	h.fake.decideFn = func(*pb.DecisionRequest) (*pb.WireDecision, error) {

@@ -1,4 +1,4 @@
-package pgproxy
+package postgres
 
 // pgSchemaMessages lists, per SQLSTATE, the primary messages (M) whose interpolations are schema names
 // only, from the PostgreSQL 16 and 17 backend message catalogs. A target DB message is kept verbatim only

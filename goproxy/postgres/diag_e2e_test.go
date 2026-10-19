@@ -1,4 +1,4 @@
-package pgproxy_test
+package postgres_test
 
 import (
 	"context"
@@ -11,7 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
-	"github.com/ridi-oss/proxy-monster/goproxy/pgproxy"
+	"github.com/ridi-oss/proxy-monster/goproxy/postgres"
 )
 
 // End-to-end proof, through the real proxy against a real PostgreSQL target DB, that a
@@ -233,7 +233,7 @@ func TestDiagnosticRedactionKeepsSchemaOnlyMessageEndToEnd(t *testing.T) {
 			t.Errorf("%s: SQLSTATE raw=%s %q redacted=%s, want %s", c.sql, raw.Code, raw.Message, got.Code, c.code)
 			continue
 		}
-		if !pgproxy.MatchesSchemaTemplate(c.code, c.template, raw.Message) {
+		if !postgres.MatchesSchemaTemplate(c.code, c.template, raw.Message) {
 			t.Errorf("%s: target DB message %q does not match template %q", c.sql, raw.Message, c.template)
 		}
 		if got.Message != raw.Message {
@@ -285,7 +285,7 @@ func TestPgSchemaMessagesCoveredEndToEnd(t *testing.T) {
 		covered[key] = true
 	}
 	allowlisted := map[[2]string]bool{}
-	for code, templates := range pgproxy.SchemaMessageTemplates() {
+	for code, templates := range postgres.SchemaMessageTemplates() {
 		for _, template := range templates {
 			key := [2]string{code, template}
 			allowlisted[key] = true

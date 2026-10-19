@@ -1,4 +1,4 @@
-package pgproxy_test
+package postgres_test
 
 import (
 	"context"
@@ -24,7 +24,7 @@ import (
 	"github.com/ridi-oss/proxy-monster/goproxy/db"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
-	"github.com/ridi-oss/proxy-monster/goproxy/pgproxy"
+	"github.com/ridi-oss/proxy-monster/goproxy/postgres"
 	"github.com/ridi-oss/proxy-monster/goproxy/proxytls"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
@@ -251,7 +251,7 @@ func seedTargetDb(t *testing.T) dbtest.TargetDb {
 type brokerHarness struct {
 	fake   *fakeControlPlane
 	addr   string
-	server *pgproxy.Server
+	server *postgres.Server
 }
 
 func startBroker(t *testing.T) *brokerHarness {
@@ -282,7 +282,7 @@ func startBrokerForDBSetup(t *testing.T, targetDb dbtest.TargetDb, database stri
 		User:     targetDb.User,
 		Password: targetDb.Password,
 	}
-	server := pgproxy.New(spi.Listen{}, target, cpClient, db.PgDb{}, nil)
+	server := postgres.New(spi.Listen{}, target, cpClient, db.PgDb{}, nil)
 	return startBrokerServer(t, fake, server)
 }
 
@@ -298,21 +298,21 @@ func startBrokerTLS(t *testing.T) *brokerHarness {
 		User:     targetDb.User,
 		Password: targetDb.Password,
 	}
-	server := pgproxy.New(spi.Listen{}, target, cpClient, db.PgDb{}, tlsProvider.Current)
+	server := postgres.New(spi.Listen{}, target, cpClient, db.PgDb{}, tlsProvider.Current)
 	return startBrokerServer(t, fake, server)
 }
 
-func startBrokerServer(t *testing.T, fake *fakeControlPlane, server *pgproxy.Server) *brokerHarness {
+func startBrokerServer(t *testing.T, fake *fakeControlPlane, server *postgres.Server) *brokerHarness {
 	t.Helper()
 	if err := server.Listen(); err != nil {
-		t.Fatalf("pgproxy.Listen: %v", err)
+		t.Fatalf("postgres.Listen: %v", err)
 	}
 	serveDone := make(chan error, 1)
 	go func() { serveDone <- server.Serve() }()
 	t.Cleanup(func() {
 		server.Shutdown()
 		if err := <-serveDone; err != nil {
-			t.Errorf("pgproxy.Serve: %v", err)
+			t.Errorf("postgres.Serve: %v", err)
 		}
 	})
 	return &brokerHarness{fake: fake, addr: server.Addr().String(), server: server}

@@ -329,7 +329,7 @@ func execTargetDbSet(conn net.Conn, sql string) error {
 // covers BOTH the connect-time and mid-session vectors: ANSI_QUOTES is OBSERVED and forwarded to the analyzer
 // (which parses "…" as the quoted identifier the target DB reads, so a masked column stays masked), while any
 // flag that is not parse-safe — a known parse-affecting one the analyzer cannot model or an unrecognized one
-// — fails the session closed (see classifyMySQLSqlMode's allowlist; mirrors pgproxy's
+// — fails the session closed (see classifyMySQLSqlMode's allowlist; mirrors postgres's
 // standard_conforming_strings guard). Because the proxy serves one statement at a time and sql_mode changes
 // only via a SET statement, the mode this probe observes is exactly the mode the next statement executes
 // under — no gap for a mid-session flip to slip a statement past the wrong analyzer mode. The trade-off is

@@ -1,4 +1,4 @@
-package pgproxy
+package postgres
 
 import "github.com/ridi-oss/proxy-monster/goproxy/engine"
 

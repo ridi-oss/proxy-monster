@@ -1,4 +1,4 @@
-package pgproxy
+package postgres
 
 import "net"
 

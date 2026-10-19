@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.36](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.35...server-v0.1.36) (2026-10-19)
+
+
+### Bug Fixes
+
+* **control-plane:** read a datasource's catalog once, not once per classification ([8673b25](https://github.com/ridi-oss/proxy-monster/commit/8673b25234cb75c58e5bdff969ca4cf5e99fcf72))
+
 ## [0.1.35](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.34...server-v0.1.35) (2026-10-19)
 
 

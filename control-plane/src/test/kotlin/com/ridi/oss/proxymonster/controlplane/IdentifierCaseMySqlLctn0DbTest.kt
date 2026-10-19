@@ -5,10 +5,8 @@ import com.ridi.oss.proxymonster.controlplane.support.NAME_SENTINEL
 import com.ridi.oss.proxymonster.controlplane.support.NameCaseStack
 import com.ridi.oss.proxymonster.controlplane.support.NameCaseTarget
 import com.ridi.oss.proxymonster.controlplane.support.SharedMySql
-import com.ridi.oss.proxymonster.controlplane.support.installControlPlane
 import com.ridi.oss.proxymonster.controlplane.support.login
 import com.ridi.oss.proxymonster.controlplane.support.mcpCall
-import com.ridi.oss.proxymonster.controlplane.support.mcpTestConfig
 import com.ridi.oss.proxymonster.controlplane.support.okResult
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import io.ktor.http.HttpStatusCode
@@ -21,6 +19,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
@@ -40,6 +39,11 @@ class IdentifierCaseMySqlLctn0DbTest {
         stack = NameCaseStack.create()
     }
 
+    @AfterAll
+    fun teardown() {
+        if (::stack.isInitialized) stack.close()
+    }
+
     private fun target(): NameCaseTarget = stack.mysql(SharedMySql) { st ->
         st.execute("CREATE TABLE `Users` (id BIGINT PRIMARY KEY, `Email` VARCHAR(64))")
         st.execute("INSERT INTO `Users` VALUES (1, '$NAME_SENTINEL')")
@@ -48,7 +52,7 @@ class IdentifierCaseMySqlLctn0DbTest {
     }.also { assertEquals(0, it.datasource.mysqlLowerCaseTableNames, "this suite must run against lower_case_table_names=0") }
 
     private fun classifyUsersOnly(column: String) = testApplication {
-        val client = installControlPlane(mcpTestConfig(), stack.core)
+        val client = stack.client()
         val t = target()
         client.login(NAME_ADMIN)
         assertEquals(HttpStatusCode.OK, t.httpClassify(client, t.schema, "Users", column).status)
@@ -66,7 +70,7 @@ class IdentifierCaseMySqlLctn0DbTest {
 
     @Test
     fun `classifying a table that does not exist is refused or visibly not attached`() = testApplication {
-        val client = installControlPlane(mcpTestConfig(), stack.core)
+        val client = stack.client()
         val t = target()
         val token = stack.adminToken()
         val result = t.mcpClassify(client, token, t.schema, "USERS", "email")
@@ -85,7 +89,7 @@ class IdentifierCaseMySqlLctn0DbTest {
             SharedMySql.executeAdmin("CREATE TABLE IF NOT EXISTS `$db`.`notes` (id BIGINT PRIMARY KEY)")
             SharedMySql.executeAdmin("GRANT SELECT ON `$db`.* TO '${SharedMySql.username()}'@'%'")
         }
-        val client = installControlPlane(mcpTestConfig(), stack.core)
+        val client = stack.client()
         val t = target()
         val columns = client.mcpCall(stack.adminToken(), "browse_catalog", buildJsonObject { put("datasource", t.datasource.name) })
             .okResult().jsonArray.map { it.jsonObject }

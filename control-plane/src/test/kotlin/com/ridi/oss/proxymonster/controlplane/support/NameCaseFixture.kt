@@ -7,6 +7,7 @@ import com.ridi.oss.proxymonster.controlplane.DatasourceInput
 import com.ridi.oss.proxymonster.controlplane.DecisionContext
 import com.ridi.oss.proxymonster.controlplane.MaskFn
 import com.ridi.oss.proxymonster.controlplane.MaskFnInput
+import com.ridi.oss.proxymonster.controlplane.PrincipalSessionStore
 import com.ridi.oss.proxymonster.controlplane.QueryResponse
 import com.ridi.oss.proxymonster.controlplane.RoleAssignmentInput
 import com.ridi.oss.proxymonster.controlplane.RoleInput
@@ -20,6 +21,7 @@ import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
 import io.ktor.http.ContentType
 import io.ktor.http.contentType
+import io.ktor.server.routing.routing
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
@@ -39,9 +41,13 @@ const val NAME_ADMIN = "name-admin@example.com"
 const val NAME_SENTINEL = "cleartext.sentinel@example.com"
 
 /** One control plane over a fresh metadata store, with an admin and a per-datasource reader role. */
-class NameCaseStack private constructor(val metadata: DataSource, val core: ControlPlaneCore) {
+class NameCaseStack private constructor(val metadata: DataSource, val core: ControlPlaneCore, private val database: String) : AutoCloseable {
     val maskFn: MaskFn = core.policyStore.createMaskFn(MaskFnInput("name-case-last4", "LAST_N"))
-    val tokens = McpTokens(metadata)
+    private val config = mcpTestConfig().copy(mcpResource = "http://127.0.0.1/mcp")
+    val tokens = McpTokens(metadata, config.mcpResource)
+    private val cpGo by lazy {
+        CpGoStack(config, core, database) { routing { testLoginRoute(PrincipalSessionStore(core.dataSource, null), config) } }
+    }
     private val counter = AtomicInteger()
 
     init {
@@ -52,6 +58,11 @@ class NameCaseStack private constructor(val metadata: DataSource, val core: Cont
     }
 
     fun adminToken(): String = tokens.token(NAME_ADMIN, ALL_MCP_SCOPES)
+
+    /** A client of the control plane as it runs: cp-go in front of Kotlin. */
+    fun client(): HttpClient = cpGo.client()
+
+    override fun close() = cpGo.close()
 
     fun mysql(server: SharedMySqlServer, setup: (Statement) -> Unit): NameCaseTarget {
         val database = server.freshDatabase("pm_names")
@@ -92,8 +103,9 @@ class NameCaseStack private constructor(val metadata: DataSource, val core: Cont
 
     companion object {
         fun create(): NameCaseStack {
-            val metadata = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_names_meta"))
-            return NameCaseStack(metadata, ControlPlaneCore(metadata))
+            val database = SharedPostgres.migratedDatabase("pm_names_meta")
+            val metadata = SharedPostgres.hikari(database)
+            return NameCaseStack(metadata, ControlPlaneCore(metadata), database)
         }
     }
 }

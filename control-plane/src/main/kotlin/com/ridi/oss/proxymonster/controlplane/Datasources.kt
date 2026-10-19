@@ -22,14 +22,11 @@ import com.ridi.oss.proxymonster.probe.TableDetail
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
-import io.ktor.server.request.receive
 import io.ktor.server.response.header
 import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
-import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
-import io.ktor.server.routing.put
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.serializer
@@ -145,9 +142,6 @@ data class ClassificationInput(
     val maskFnId: Long? = null,
     val catalog: String,
 )
-
-@Serializable
-data class ClassificationDelete(val schema: String? = null, val table: String, val column: String, val catalog: String)
 
 @Serializable
 data class TestResult(val ok: Boolean, val message: String)
@@ -930,31 +924,6 @@ fun Route.datasourceRoutes(
         }
         try {
             call.respond(management.getTableDetail(datasource.name, catalog, schema, table))
-        } catch (e: ManagementException) {
-            call.respondManagementError(e)
-        }
-    }
-    put("/api/datasources/{id}/classification") {
-        if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_DATASOURCES)) return@put
-        val id = call.idParam() ?: return@put call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        val input = call.receive<ClassificationInput>()
-        try {
-            call.respond(
-                management.setColumnClassification(
-                    id, input.schema, input.table, input.column, input.tags, input.maskFnId, call.auditActor(config), input.catalog,
-                ),
-            )
-        } catch (e: ManagementException) {
-            call.respondManagementError(e)
-        }
-    }
-    delete("/api/datasources/{id}/classification") {
-        if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_DATASOURCES)) return@delete
-        val id = call.idParam() ?: return@delete call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        val body = call.receive<ClassificationDelete>()
-        try {
-            management.clearColumnClassification(id, body.schema, body.table, body.column, call.auditActor(config), body.catalog)
-            call.respond(HttpStatusCode.NoContent)
         } catch (e: ManagementException) {
             call.respondManagementError(e)
         }

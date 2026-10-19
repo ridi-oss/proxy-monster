@@ -16,10 +16,12 @@ import (
 	"github.com/ridi-oss/proxy-monster/cpgo/routes/me"
 	"github.com/ridi-oss/proxy-monster/cpgo/routes/policies"
 	"github.com/ridi-oss/proxy-monster/cpgo/routes/tokens"
+	"github.com/ridi-oss/proxy-monster/cpgo/routes/websession"
 )
 
 // Register adds every Go-served route to mux.
 func Register(mux *http.ServeMux, pool *pgxpool.Pool, gate api.Gate) {
+	websession.Register(mux, pool, gate)
 	me.Register(mux, pool, gate)
 	auditlog.Register(mux, pool, gate)
 	policies.Register(mux, pool, gate)

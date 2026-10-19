@@ -81,11 +81,17 @@ func (d *Decider) load(ctx context.Context) (*cedar.PolicySet, []string, error) 
 // Roles is RoleResolver.resolve: direct assignments, live JIT grants and group roles; none for a
 // deactivated principal.
 func (d *Decider) Roles(ctx context.Context, principal string) ([]string, error) {
-	roles, err := db.New(d.pool).PrincipalRoles(ctx, principal)
+	return Roles(ctx, d.pool, principal)
+}
+
+// Roles is Decider.Roles for a caller that holds only a connection.
+func Roles(ctx context.Context, conn db.DBTX, principal string) ([]string, error) {
+	q := db.New(conn)
+	roles, err := q.PrincipalRoles(ctx, principal)
 	if err != nil {
 		return nil, err
 	}
-	deactivated, err := d.deactivated(ctx, principal)
+	deactivated, err := q.IsDeactivated(ctx, principal)
 	if err != nil || deactivated {
 		return nil, err
 	}

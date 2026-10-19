@@ -1,5 +1,8 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import org.junit.jupiter.api.AfterEach
+import com.zaxxer.hikari.HikariDataSource
+import com.ridi.oss.proxymonster.controlplane.support.CpGoStack
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzDecision
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzResource
@@ -74,28 +77,37 @@ class DebugRequesterIpDbTest {
      * route that runs a REAL Cedar decision through the two-pass tag derivation — the difference between
      * "the resolver returns the address" and "the address actually changes an authorization outcome".
      */
+    @Suppress("UnusedReceiverParameter")
     private fun ApplicationTestBuilder.probe(config: Config, core: ControlPlaneCore): HttpClient {
-        application {
-            module(config, core)
+        val database = (core.dataSource as HikariDataSource).jdbcUrl.substringAfterLast('/')
+        val edges = if (config.trustedProxies.isEmpty()) emptyMap() else mapOf("PM_TRUSTED_PROXIES" to "127.0.0.1")
+        // The Kotlin child behind cp-go trusts its loopback hop, as CpGoStack configures it.
+        val behindCpGo = config.copy(trustedProxies = setOf("127.0.0.1"))
+        val stack = CpGoStack(config, core, database, extraEnv = edges) {
             routing {
-                serverGet("/test/requester-ip") { call.respond(call.httpRequesterIp(config) ?: "-") }
+                serverGet("/test/requester-ip") { call.respond(call.httpRequesterIp(behindCpGo) ?: "-") }
                 serverGet("/test/tag-gated") {
                                 val decision = core.authz.authorizeWithContext(
                         call.parameters["principal"] ?: principal,
                         AuthzAction.TASK_APPROVE,
                         AuthzResource.ApprovalRequest(requester = "someone-else", datasourceName = TAG_DS),
-                        call.httpAuthzContext(config),
+                        call.httpAuthzContext(behindCpGo),
                         TAG_DS,
                     )
                     call.respond(if (decision is AuthzDecision.Deny) "DENY" else "ALLOW")
                 }
             }
         }
-        return createClient {
-            expectSuccess = false
-            install(HttpCookies)
-            install(ClientContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
-        }
+        stacks += stack
+        return stack.client()
+    }
+
+    private val stacks = mutableListOf<CpGoStack>()
+
+    @AfterEach
+    fun closeStacks() {
+        stacks.forEach { it.close() }
+        stacks.clear()
     }
 
     private suspend fun HttpClient.debugLogin(ip: String?) = post("/auth/debug") {

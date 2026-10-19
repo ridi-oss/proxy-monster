@@ -18,15 +18,15 @@ func TestUnauthenticated(t *testing.T) {
 	}
 }
 
-func TestDeviceMismatchIsEndedByKotlin(t *testing.T) {
+func TestDeviceMismatchEndsTheSession(t *testing.T) {
 	e := routetest.Setup(t)
 	c := e.St.WebSession(t, "alice@example.com", "k1", "dev-1")
 	status, body := e.Do(t, http.MethodGet, "/api/query-history", "", []*http.Cookie{c[0], {Name: "pm_did", Value: "dev-2"}})
 	if status != http.StatusUnauthorized || body != `{"code":"common.unauthenticated","params":{}}` {
 		t.Fatalf("status %d %s", status, body)
 	}
-	if len(e.Ended) != 1 || !strings.Contains(e.Ended[0], "pm_did=dev-2") || len(e.Forwarded) != 0 {
-		t.Fatalf("ended %v forwarded %v", e.Ended, e.Forwarded)
+	if reason := e.EndedReason(t, "k1"); reason != "DEVICE_BIND_MISMATCH" || strings.Join(e.Authz.Ended, ",") != "alice@example.com" || len(e.Forwarded) != 0 {
+		t.Fatalf("ended %q signalled %v forwarded %v", reason, e.Authz.Ended, e.Forwarded)
 	}
 }
 

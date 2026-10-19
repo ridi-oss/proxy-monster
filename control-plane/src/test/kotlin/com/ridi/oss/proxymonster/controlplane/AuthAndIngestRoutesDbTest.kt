@@ -48,8 +48,8 @@ class AuthAndIngestRoutesDbTest {
 
     @Test
     fun `auth me without a session is unauthenticated`() = testApplication {
-        application { module(config(), ControlPlaneCore(migratedDatabase("pm_auth_ingest_me"))) }
-        val client = wireClient()
+        val dataSource = migratedDatabase("pm_auth_ingest_me")
+        val client = cpGoClient(ControlPlaneCore(dataSource), dataSource)
 
         val response = client.get("/auth/me")
 
@@ -60,8 +60,8 @@ class AuthAndIngestRoutesDbTest {
 
     @Test
     fun `auth debug is a 404 endpoint when PM_AUTH_DEBUG is off`() = testApplication {
-        application { module(config(authDebug = false), ControlPlaneCore(migratedDatabase("pm_auth_ingest_debug"))) }
-        val client = wireClient()
+        val dataSource = migratedDatabase("pm_auth_ingest_debug")
+        val client = cpGoClient(ControlPlaneCore(dataSource), dataSource)
 
         val response = client.post("/auth/debug") {
             contentType(ContentType.Application.Json)

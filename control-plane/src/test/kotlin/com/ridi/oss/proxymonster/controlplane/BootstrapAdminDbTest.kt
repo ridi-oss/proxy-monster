@@ -1,5 +1,7 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import org.junit.jupiter.api.AfterAll
+import com.ridi.oss.proxymonster.controlplane.support.OidcProvisioner
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import org.flywaydb.core.Flyway
@@ -25,16 +27,35 @@ class BootstrapAdminDbTest {
     private lateinit var store: UserGroupStore
     private lateinit var accessStore: AccessStore
     private lateinit var roleResolver: RoleResolver
+    private lateinit var provisioner: OidcProvisioner
     private val adminMap = OidcGroupMapping(mapOf("proxy-monster-admin" to "system:admin"), "proxy-monster-")
 
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        ds = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_bootstrap_admin"))
+        val database = SharedPostgres.freshDatabase("pm_bootstrap_admin")
+        ds = SharedPostgres.hikari(database)
         Flyway.configure().dataSource(ds).load().migrate()
         store = UserGroupStore(ds)
         accessStore = AccessStore(ds)
         roleResolver = RoleResolver(ds, store, accessStore)
+        provisioner = OidcProvisioner(ControlPlaneCore(ds), database)
+    }
+
+    /** JIT provisioning, now done by cp-go: a real OIDC login with these claims, then the row it left. */
+    private fun UserGroupStore.provisionFromOidc(
+        principal: String,
+        email: String?,
+        idpGroups: List<String>,
+        mapping: OidcGroupMapping = OidcGroupMapping(emptyMap(), null),
+    ): AppUser {
+        provisioner.login(principal, email, idpGroups, mapping)
+        return checkNotNull(getUserByPrincipal(email ?: principal))
+    }
+
+    @AfterAll
+    fun closeProvisioner() {
+        if (::provisioner.isInitialized) provisioner.close()
     }
 
     @Test

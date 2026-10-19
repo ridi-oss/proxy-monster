@@ -51,3 +51,8 @@ func (b *Browser) SetDevice(device string) {
 	u, _ := url.Parse(b.e.Srv.URL)
 	b.Jar.SetCookies(u, []*http.Cookie{{Name: "pm_did", Value: device, Path: "/"}})
 }
+
+func (b *Browser) DebugLogin(principal string) {
+	b.t.Helper()
+	b.Expect(http.MethodPost, "/auth/debug", `{"principal":"`+principal+`"}`, http.StatusOK, "")
+}

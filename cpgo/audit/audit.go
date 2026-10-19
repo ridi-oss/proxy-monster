@@ -7,9 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ridi-oss/proxy-monster/auditmon/canon"
 	"github.com/ridi-oss/proxy-monster/cpgo/store/db"
@@ -61,15 +63,31 @@ type Actor struct {
 
 // Admin is ManagementAuditRecorder.record: a kind=admin event for a config change, on the change's tx.
 func Admin(ctx context.Context, tx pgx.Tx, actor Actor, action, resource, summary string) error {
-	return controlPlane(ctx, tx, "admin", "ALLOW", actor, action, resource, summary)
+	return controlPlane(ctx, tx, "admin", "ALLOW", "ALLOW", actor, action, resource, summary, nil)
 }
 
 // Auth is AuthAuditRecorder.success: a kind=auth event for a credential change, on the change's tx.
 func Auth(ctx context.Context, tx pgx.Tx, actor Actor, action, resource, summary string) error {
-	return controlPlane(ctx, tx, "auth", "SUCCESS", actor, action, resource, summary)
+	return controlPlane(ctx, tx, "auth", "ALLOW", "SUCCESS", actor, action, resource, summary, nil)
 }
 
-func controlPlane(ctx context.Context, tx pgx.Tx, kind, outcome string, actor Actor, action, resource, summary string) error {
+// AuthDetail is Auth with the event's detail (why it happened).
+func AuthDetail(ctx context.Context, tx pgx.Tx, actor Actor, action, resource, summary, detail string) error {
+	return controlPlane(ctx, tx, "auth", "ALLOW", "SUCCESS", actor, action, resource, summary, &detail)
+}
+
+// AuthFailure is AuthAuditRecorder.failureBestEffort: a rejected attempt recorded in its own transaction,
+// whose failure is logged and never changes the caller's answer.
+func AuthFailure(ctx context.Context, pool *pgxpool.Pool, actor Actor, action, resource, summary, detail string) {
+	err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		return controlPlane(ctx, tx, "auth", "DENY", "FAILURE", actor, action, resource, summary, &detail)
+	})
+	if err != nil {
+		slog.Warn("audit: best-effort auth failure insert failed", "action", action, "err", err)
+	}
+}
+
+func controlPlane(ctx context.Context, tx pgx.Tx, kind, decision, outcome string, actor Actor, action, resource, summary string, detail *string) error {
 	var addr *string
 	if actor.ClientAddr != "" {
 		addr = &actor.ClientAddr
@@ -81,7 +99,8 @@ func controlPlane(ctx context.Context, tx pgx.Tx, kind, outcome string, actor Ac
 		Datasource:    "control-plane",
 		ClientAddr:    addr,
 		Statement:     summary,
-		Decision:      "ALLOW",
+		Decision:      decision,
+		Detail:        detail,
 		Channel:       &actor.Channel,
 		AuthzAction:   &action,
 		AuthzResource: &resource,

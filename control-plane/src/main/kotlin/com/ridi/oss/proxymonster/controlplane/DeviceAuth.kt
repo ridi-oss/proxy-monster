@@ -50,6 +50,16 @@ data class DeviceStartResponse(
 @Serializable
 data class DevicePollInput(val handle: String)
 
+/**
+ * Short-lived signed cookie proving the browser confirmed the pmon login code on the web `/device` page for
+ * [userCode]. Set by `POST /auth/device/confirm`; `GET /auth/device/authorize` requires it, so an attacker's
+ * direct authorize link (no `/device` confirm) cannot approve a code the user never confirmed.
+ */
+const val DEVICE_VERIFY_COOKIE = "pm_device_verify"
+
+@Serializable
+data class DeviceVerifySession(val userCode: String, val webSessionId: Long)
+
 /** The web /device page confirms the human-seen code before any auth (POST /auth/device/confirm). */
 @Serializable
 data class DeviceConfirmInput(val userCode: String)

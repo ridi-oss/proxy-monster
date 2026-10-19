@@ -1,5 +1,9 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import org.junit.jupiter.api.AfterEach
+import io.ktor.client.plugins.defaultRequest
+import com.zaxxer.hikari.HikariDataSource
+import com.ridi.oss.proxymonster.controlplane.support.CpGoStack
 import com.nimbusds.jose.JWSAlgorithm
 import com.nimbusds.jose.JWSHeader
 import com.nimbusds.jose.crypto.RSASSASigner
@@ -173,13 +177,8 @@ class OidcWebSessionDbTest {
             }
         }
 
-        application { installOidcWebApp(config("openid email", resultKey = ByteArray(32) { it.toByte() }), dataSource) }
-        val client = createClient {
-            expectSuccess = false
-            followRedirects = false
-            install(HttpCookies)
-            install(DefaultRequest) { header("X-Forwarded-For", CALLER_ADDR) }
-        }
+        val stack = stack(config("openid email", resultKey = ByteArray(32) { it.toByte() }), dataSource)
+        val client = stack.client().config { defaultRequest { header("X-Forwarded-For", CALLER_ADDR) } }
 
         val login = client.get("/auth/oidc/login")
         val query = parseQueryString(assertNotNull(login.headers[HttpHeaders.Location]).substringAfter('?'))
@@ -248,14 +247,12 @@ class OidcWebSessionDbTest {
         val started = deviceStore.createPending(intervalSec = 2, ttlSeconds = 3600, expiresAt = Instant.now().plusSeconds(600))
         val userCode = started.userCode!!
 
-        application {
-            installOidcWebApp(
-                config("openid email offline_access", resultKey = ByteArray(32) { it.toByte() })
-                    .copy(webOrigin = "https://console.example"),
-                dataSource,
-            )
-        }
-        val client = createClient { expectSuccess = false; followRedirects = false; install(HttpCookies) }
+        val stack = stack(
+            config("openid email offline_access", resultKey = ByteArray(32) { it.toByte() })
+                .copy(webOrigin = "https://console.example"),
+            dataSource,
+        )
+        val client = stack.client()
 
         // The unauthenticated /device page sends this exact continuation through the login page.
         val returnTo = "/device?user_code=${userCode.encodeURLParameter()}"
@@ -314,8 +311,8 @@ class OidcWebSessionDbTest {
         val deviceStore = DeviceLoginStore(dataSource)
         val started = deviceStore.createPending(intervalSec = 2, ttlSeconds = 3600, expiresAt = Instant.now().plusSeconds(600))
 
-        application { installOidcWebApp(config("openid email", resultKey = ByteArray(32) { it.toByte() }), dataSource) }
-        val client = createClient { expectSuccess = false; followRedirects = false; install(HttpCookies) }
+        val stack = stack(config("openid email", resultKey = ByteArray(32) { it.toByte() }), dataSource)
+        val client = stack.client()
 
         // The phishing shape: the victim is handed an authorize link for the ATTACKER's code and logs in
         // normally — but never confirmed that code on /device, so there is no verify cookie in this browser.
@@ -353,13 +350,8 @@ class OidcWebSessionDbTest {
             policyStore.createAssignment(RoleAssignmentInput(principal, role.id))
         }
         val config = config(scopes, resultKey)
-        application { installOidcWebApp(config, dataSource) }
-        val client = createClient {
-            expectSuccess = false
-            followRedirects = false
-            install(HttpCookies)
-            install(DefaultRequest) { header("X-Forwarded-For", CALLER_ADDR) }
-        }
+        val stack = stack(config, dataSource)
+        val client = stack.client().config { defaultRequest { header("X-Forwarded-For", CALLER_ADDR) } }
 
         val login = client.get(
             if (returnTo == null) "/auth/oidc/login" else "/auth/oidc/login?return_to=${returnTo.encodeURLParameter()}",
@@ -455,52 +447,28 @@ class OidcWebSessionDbTest {
         }
     }
 
-    private fun Application.installOidcWebApp(config: Config, dataSource: DataSource) {
-        val http = oidcHttpClient()
+    private val stacks = mutableListOf<CpGoStack>()
+
+    @AfterEach
+    fun closeStacks() {
+        stacks.forEach { it.close() }
+        stacks.clear()
+    }
+
+    /** The control plane behind cp-go on [dataSource], with cp-go given the same OIDC settings as [config]. */
+    private fun stack(config: Config, dataSource: DataSource): CpGoStack {
         val oidc = requireNotNull(config.oidc)
-        val discovery = OidcDiscovery(http, oidc.issuer)
-        val validator = IdTokenValidator(discovery, oidc.issuer, oidc.clientId)
-        val store = PrincipalSessionStore(
-            dataSource,
-            config.resultKey?.let(::ResultCrypto),
-            config.webSessionIdleSeconds,
-            config.webSessionSlideSeconds,
+        val env = mapOf(
+            "PM_OIDC_ISSUER" to oidc.issuer,
+            "PM_OIDC_CLIENT_ID" to oidc.clientId,
+            "PM_OIDC_CLIENT_SECRET" to oidc.clientSecret,
+            "PM_OIDC_REDIRECT_URI" to oidc.redirectUri,
+            "PM_OIDC_SCOPES" to oidc.scopes,
+            "PM_OIDC_USER_ATTRIBUTES" to oidc.userAttributes.joinToString(",") { "${it.name}:${it.type.cedar}" },
+            "PM_TRUSTED_PROXIES" to "127.0.0.1",
         )
-        val userGroupStore = UserGroupStore(dataSource)
-        val roleResolver = RoleResolver(dataSource, userGroupStore, AccessStore(dataSource))
-        val deviceLoginStore = DeviceLoginStore(dataSource, config.resultKey?.let(::ResultCrypto))
-        attributes.put(PRINCIPAL_SESSION_STORE, store)
-        install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
-        install(Sessions) {
-            webSessionCookie(store, config.sessionSecret) {
-                cookie.maxAgeInSeconds = config.webSessionAbsoluteSeconds
-            }
-            cookie<OAuthStateSession>(OAUTH_STATE_COOKIE) {
-                serializer = jsonSessionSerializer()
-                transform(SessionTransportTransformerMessageAuthentication(config.sessionSecret.toByteArray()))
-            }
-            cookie<OAuthNonceSession>(OAUTH_NONCE_COOKIE) {
-                serializer = jsonSessionSerializer()
-                transform(SessionTransportTransformerMessageAuthentication(config.sessionSecret.toByteArray()))
-            }
-            cookie<DeviceVerifySession>(DEVICE_VERIFY_COOKIE) {
-                serializer = jsonSessionSerializer()
-                transform(SessionTransportTransformerMessageAuthentication(config.sessionSecret.toByteArray()))
-            }
-            // oidcRoutes clears this on every login and every callback, so it must be registered
-            // even when the IdP advertises no PKCE — an unregistered session name throws.
-            cookie<OAuthVerifierSession>(OAUTH_VERIFIER_COOKIE) {
-                serializer = jsonSessionSerializer()
-                transform(SessionTransportTransformerMessageAuthentication(config.sessionSecret.toByteArray()))
-            }
-        }
-        routing {
-            val authAudit = AuthAuditRecorder(AuditStore(dataSource))
-            oidcRoutes(config, discovery, validator, http, userGroupStore, roleResolver, store, authAudit, environment.log)
-            deviceSessionRoutes(
-                config, deviceLoginStore, store, TokenStore(dataSource), userGroupStore, authAudit, environment.log,
-            )
-        }
+        val database = (dataSource as HikariDataSource).jdbcUrl.substringAfterLast('/')
+        return CpGoStack(config, ControlPlaneCore(dataSource), database, extraEnv = env).also(stacks::add)
     }
 
     private fun config(scopes: String, resultKey: ByteArray?) = Config(
@@ -536,6 +504,7 @@ class OidcWebSessionDbTest {
             .issuer(issuer)
             .subject("oidc-user")
             .audience("oidc-web-client")
+            .issueTime(Date())
             .expirationTime(Date(System.currentTimeMillis() + 300_000))
             .claim("nonce", expectedNonce)
             .claim("email", callbackPrincipal.get())

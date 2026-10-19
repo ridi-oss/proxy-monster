@@ -174,7 +174,13 @@ class RenewalWindowTest {
         val client = createClient { install(ClientContentNegotiation) { json(Json { ignoreUnknownKeys = true }) } }
         val principal = "inactive-liveness@example.com"
         val created = daemonSessionStore.create(principal, "dvc_inactive", null, windowSeconds = 3600, ttlSeconds = 900)
-        daemonSessionStore.markCheck(created.row.id, LIVENESS_INACTIVE)
+        ds.connection.use { c ->
+            c.prepareStatement("UPDATE principal_session SET liveness_status = ? WHERE id = ?").use { ps ->
+                ps.setString(1, LIVENESS_INACTIVE)
+                ps.setLong(2, created.row.id)
+                ps.executeUpdate()
+            }
+        }
 
         val resp = client.post("/auth/session/renew") {
             header("Authorization", "Bearer ${created.renewalToken}")

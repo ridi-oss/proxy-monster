@@ -2,6 +2,7 @@ package com.ridi.oss.proxymonster.controlplane
 
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
+import com.ridi.oss.proxymonster.controlplane.support.seedOidcUser
 import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
@@ -95,11 +96,7 @@ class ScimUsersDbTest {
         // JIT-on-login provisions this principal first (source=OIDC), matching docs/auth-model.md's
         // "SCIM vs JIT" decision: "a JIT (source=OIDC) user is reconciled to SCIM when the IdP later
         // manages it via SCIM."
-        val jit = userGroupStore.provisionFromOidc(
-            principal = "reconcile-me@example.com",
-            email = "reconcile-me@example.com",
-            idpGroups = emptyList(),
-        )
+        val jit = userGroupStore.seedOidcUser("reconcile-me@example.com", "reconcile-me@example.com")
         assertEquals("OIDC", jit.source)
         assertNull(jit.externalId)
 

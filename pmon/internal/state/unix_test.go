@@ -12,6 +12,17 @@ import (
 	"testing"
 )
 
+// Under /tmp: t.TempDir in macOS's long TMPDIR pushes a socket path past the 100-byte limit.
+func shortTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("/tmp", "pmon-state-")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return dir
+}
+
 // The state directory holds bearer credentials and must stay owner-only.
 func TestEnsureDirIsOwnerOnly(t *testing.T) {
 	t.Setenv(dirEnv, filepath.Join(t.TempDir(), "nested", "proxy-monster"))
@@ -133,7 +144,7 @@ func TestSocketDirRefusesASymlink(t *testing.T) {
 func TestSocketPathAlwaysUsesFixedOwnerDirectory(t *testing.T) {
 	stateDir := filepath.Join(t.TempDir(), "proxy-monster")
 	t.Setenv(dirEnv, stateDir)
-	root := t.TempDir()
+	root := shortTempDir(t)
 
 	sock, err := socketPathAt(root)
 	if err != nil {
@@ -215,7 +226,7 @@ func TestSocketPathsPreserveReleasedLongLocation(t *testing.T) {
 	t.Chdir(root)
 	stateDir := filepath.Join(strings.Repeat("long-state-dir/", 10), "proxy-monster")
 	t.Setenv(dirEnv, stateDir)
-	tempRoot := t.TempDir()
+	tempRoot := shortTempDir(t)
 	t.Setenv("TMPDIR", tempRoot)
 
 	paths, err := SocketPaths()
@@ -237,7 +248,7 @@ func TestSocketPathsPreserveReleasedLongLocation(t *testing.T) {
 }
 
 func TestSocketPathsIncludeReleasedLocation(t *testing.T) {
-	stateDir := t.TempDir()
+	stateDir := shortTempDir(t)
 	t.Setenv(dirEnv, stateDir)
 
 	paths, err := SocketPaths()

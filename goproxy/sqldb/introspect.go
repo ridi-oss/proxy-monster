@@ -6,18 +6,11 @@ package sqldb
 
 import (
 	"context"
-	"crypto/tls"
 	"database/sql"
-	"database/sql/driver"
-	"errors"
 	"fmt"
 	"log/slog"
-	"net/url"
 	"strings"
 	"time"
-
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/stdlib"
 
 	// The named mysql import both registers the "mysql" driver (via init()) AND gives us mysql.Config
 	// for safe DSN construction, so no separate blank import is needed.
@@ -25,7 +18,6 @@ import (
 	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/relay"
-	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
 // QueryTimeout bounds every introspection query. A full catalog scan of a large schema on a remote
@@ -47,38 +39,6 @@ const ConnectTimeout = 5 * time.Second
 const columnsSQL = `SELECT table_catalog, table_schema, table_name, column_name, data_type, ordinal_position, is_nullable
 FROM information_schema.columns
 ORDER BY table_schema, table_name, ordinal_position`
-
-// OpenPostgresTarget opens a database/sql handle to a Postgres target.
-func OpenPostgresTarget(config spi.TargetConfig) (*sql.DB, error) {
-	// pgx has no socket-timeout DSN param; the per-query 30s context below carries that intent.
-	u := url.URL{
-		Scheme:   "postgres",
-		User:     url.UserPassword(config.User, config.Password),
-		Host:     fmt.Sprintf("%s:%d", config.Host, config.Port),
-		Path:     "/" + config.Db,
-		RawQuery: "connect_timeout=5&sslmode=disable",
-	}
-	return sql.OpenDB(pgConnector{dsn: u.String(), tls: config.TLS}), nil
-}
-
-// pgConnector parses at connect time, as sql.Open does, so an unusable target fails its first connect, not the open.
-type pgConnector struct {
-	dsn string
-	tls *tls.Config
-}
-
-func (c pgConnector) Connect(ctx context.Context) (driver.Conn, error) {
-	config, err := pgx.ParseConfig(c.dsn)
-	if err != nil {
-		return nil, fmt.Errorf("introspect: parsing postgres target config: %w", err)
-	}
-	if c.tls != nil {
-		config.TLSConfig = c.tls.Clone()
-	}
-	return stdlib.GetConnector(*config).Connect(ctx)
-}
-
-func (pgConnector) Driver() driver.Driver { return stdlib.GetDefaultDriver() }
 
 // NamespaceProbe reads the connection's effective namespace into a CatalogRequest: default_schemas, plus
 // MySQL's lower_case_table_names.
@@ -254,53 +214,6 @@ func normalizeSchemas(queries relay.Db, lctnMode int, schemas []string) []string
 		out[i] = c.GetSchema()
 	}
 	return out
-}
-
-// ReadPostgresCatalog returns current_database(); the catalog every fragment and temp column from this
-// connection is stamped with.
-func ReadPostgresCatalog(ctx context.Context, conn *sql.Conn) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, QueryTimeout)
-	defer cancel()
-	var catalog string
-	if err := conn.QueryRowContext(ctx, "SELECT pg_catalog.current_database()").Scan(&catalog); err != nil {
-		return "", fmt.Errorf("introspect: Postgres catalog probe: %w", err)
-	}
-	if catalog == "" {
-		return "", errors.New("introspect: Postgres connection has no current database")
-	}
-
-	return catalog, nil
-}
-
-// ProbePostgresNamespace captures the effective search_path.
-func ProbePostgresNamespace(ctx context.Context, conn *sql.Conn, _ string) (*pb.CatalogRequest, error) {
-	ctx, cancel := context.WithTimeout(ctx, QueryTimeout)
-	defer cancel()
-
-	catalog, err := ReadPostgresCatalog(ctx, conn)
-	if err != nil {
-		return nil, err
-	}
-
-	// This literal is UNQUALIFIED — deliberately distinct from the qualified namespace-probe form used
-	// elsewhere; do not swap it in here.
-	rows, err := conn.QueryContext(ctx, "SELECT unnest(current_schemas(true))")
-	if err != nil {
-		return nil, fmt.Errorf("introspect: Postgres namespace probe: %w", err)
-	}
-	defer rows.Close()
-	var schemas []string
-	for rows.Next() {
-		var schema string
-		if err := rows.Scan(&schema); err != nil {
-			return nil, fmt.Errorf("introspect: scanning Postgres namespace row: %w", err)
-		}
-		schemas = append(schemas, schema)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("introspect: Postgres namespace probe: %w", err)
-	}
-	return &pb.CatalogRequest{DefaultSchemas: schemas, CurrentCatalog: catalog}, nil
 }
 
 // introspectColumns runs columnsSQL on the pinned connection and scans every row into a *analyzerpb.Column.

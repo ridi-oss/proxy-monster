@@ -187,8 +187,6 @@ captured on the connection's own held target-DB connection (design:
   unanalyzable and denies. Cover a second catalog with a second datasource.
 - 🟡 A forwarded `GetQueryResults` page reports no row or byte volume; the audit
   completion covers the accepted submission only.
-- 🟡 A database containing a Glue view fails the catalog scan, so the datasource
-  does not register until the view is moved out of the crawled databases.
 
 ## Wire-cert distribution (direct clients and `pmon`)
 

@@ -1,4 +1,4 @@
-package db
+package postgres
 
 import (
 	"fmt"
@@ -13,14 +13,14 @@ import (
 
 func TestPgNormalizeColumnsIsIdentity(t *testing.T) {
 	in := []*analyzerpb.Column{{Schema: "Sales", Table: "OrderItems", Column: "CustomerID"}}
-	out := (PgDb{}).NormalizeColumns(0, in)
+	out := (TargetSQL{}).NormalizeColumns(0, in)
 	if len(out) != 1 || out[0] != in[0] {
-		t.Errorf("PgDb.NormalizeColumns must be an identity passthrough, got %+v", out)
+		t.Errorf("TargetSQL.NormalizeColumns must be an identity passthrough, got %+v", out)
 	}
 }
 
 func TestPgDbConstants(t *testing.T) {
-	p := PgDb{}
+	p := TargetSQL{}
 	namespaceSQL := p.NamespaceProbeSQL()
 	for _, fragment := range []string{
 		"pg_catalog.current_schemas(true)",
@@ -49,7 +49,7 @@ func TestPgDbConstants(t *testing.T) {
 }
 
 func TestPgSchemaHashSQL(t *testing.T) {
-	p := PgDb{}
+	p := TargetSQL{}
 	schema := "hostile'\\schema"
 	cryptoSQL, columns, err := p.SchemaHashSQL(schema, [][]*string{{targettest.Ptr(`crypto"schema`)}})
 	if err != nil {
@@ -104,7 +104,7 @@ func TestPgSchemaHashFromRows(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, trusted, err := (PgDb{}).SchemaHashFromRows(tc.rows)
+			_, trusted, err := (TargetSQL{}).SchemaHashFromRows(tc.rows)
 			if err != nil {
 				t.Fatalf("SchemaHashFromRows: %v", err)
 			}
@@ -115,27 +115,27 @@ func TestPgSchemaHashFromRows(t *testing.T) {
 	}
 }
 
-var _ relay.Db = PgDb{}
+var _ relay.Db = TargetSQL{}
 
 func TestFragmentColumnsFromRowsRefusesACaseDifferingSchema(t *testing.T) {
 	row := targettest.Rows("sales", "t", "c", "int", "1", "NO", "def")
-	if _, err := sqldb.FragmentColumnsFromRows(PgDb{}, 0, "Sales", row); err == nil {
+	if _, err := sqldb.FragmentColumnsFromRows(TargetSQL{}, 0, "Sales", row); err == nil {
 		t.Fatal("FragmentColumnsFromRows succeeded, want a strict mismatch on Postgres")
 	}
 }
 
 func TestFoldFunctionNameMatchesTheResolverFold(t *testing.T) {
 	// PostgreSQL folds ASCII only, so a non-ASCII upper-case letter keeps its spelling.
-	if got := (PgDb{}).FoldFunctionName("PG_Read_File"); got != "pg_read_file" {
+	if got := (TargetSQL{}).FoldFunctionName("PG_Read_File"); got != "pg_read_file" {
 		t.Fatalf("postgres fold = %q, want pg_read_file", got)
 	}
-	if got := (PgDb{}).FoldFunctionName("ÄBC"); got != "Äbc" {
+	if got := (TargetSQL{}).FoldFunctionName("ÄBC"); got != "Äbc" {
 		t.Fatalf("postgres must not fold non-ASCII: got %q, want Äbc", got)
 	}
 }
 
 func TestRoutinesSQLReadsPgProc(t *testing.T) {
-	if !strings.Contains(PgDb{}.RoutinesSQL(), "pg_catalog.pg_proc") {
-		t.Fatalf("RoutinesSQL = %q, want pg_proc", PgDb{}.RoutinesSQL())
+	if !strings.Contains(TargetSQL{}.RoutinesSQL(), "pg_catalog.pg_proc") {
+		t.Fatalf("RoutinesSQL = %q, want pg_proc", TargetSQL{}.RoutinesSQL())
 	}
 }

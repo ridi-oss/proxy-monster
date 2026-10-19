@@ -12,8 +12,8 @@ import (
 
 	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
+	"github.com/ridi-oss/proxy-monster/goproxy/athena"
 	"github.com/ridi-oss/proxy-monster/goproxy/db"
-	"github.com/ridi-oss/proxy-monster/goproxy/dialects/athena"
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/introspect"

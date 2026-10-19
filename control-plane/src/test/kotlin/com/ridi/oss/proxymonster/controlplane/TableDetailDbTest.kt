@@ -57,7 +57,6 @@ import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
@@ -102,8 +101,7 @@ class TableDetailDbTest {
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        metadata = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_table_detail_channel"))
-        Flyway.configure().dataSource(metadata).load().migrate()
+        metadata = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_table_detail_channel"))
         core = ControlPlaneCore(metadata)
         datasourceStore = core.datasourceStore
         policyStore = core.policyStore

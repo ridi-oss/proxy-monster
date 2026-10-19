@@ -12,7 +12,6 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
@@ -42,9 +41,8 @@ class ProvisionMergeDbTest {
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        val dbName = SharedPostgres.freshDatabase("pm_provision_merge")
+        val dbName = SharedPostgres.migratedDatabase("pm_provision_merge")
         ds = SharedPostgres.hikari(dbName)
-        Flyway.configure().dataSource(ds).load().migrate()
         store = UserGroupStore(ds)
         tokenStore = TokenStore(ds)
         accessStore = AccessStore(ds)

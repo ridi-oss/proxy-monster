@@ -12,7 +12,6 @@ import com.ridi.oss.proxymonster.controlplane.authz.RoleSource
 import com.ridi.oss.proxymonster.controlplane.authz.SystemPolicyImmutableException
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
@@ -37,8 +36,7 @@ class CedarPolicyOriginTest {
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        ds = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_cedar_policy_origin"))
-        Flyway.configure().dataSource(ds).load().migrate()
+        ds = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_cedar_policy_origin"))
         store = CedarPolicyStore(ds)
     }
 

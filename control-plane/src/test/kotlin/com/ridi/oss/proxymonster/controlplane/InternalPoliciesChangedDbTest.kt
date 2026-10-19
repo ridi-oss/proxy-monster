@@ -18,7 +18,6 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.server.routing.routing
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
@@ -35,8 +34,7 @@ class InternalPoliciesChangedDbTest {
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_internal_policies_changed"))
-        Flyway.configure().dataSource(dataSource).load().migrate()
+        dataSource = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_internal_policies_changed"))
         cedarPolicyStore = CedarPolicyStore(dataSource)
         authz = Authz(CedarEngine(cedarPolicyStore), cedarPolicyStore, RoleSource { emptySet() })
     }

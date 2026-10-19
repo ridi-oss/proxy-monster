@@ -5,7 +5,6 @@ import com.ridi.oss.proxymonster.controlplane.support.daemonLiveness
 import com.ridi.oss.proxymonster.controlplane.support.daemonWithinWindow
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.controlplane.support.seedDaemonSession
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
@@ -25,8 +24,7 @@ class DaemonSessionStoreDbTest {
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        ds = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_principal_session"))
-        Flyway.configure().dataSource(ds).load().migrate()
+        ds = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_principal_session"))
         store = PrincipalSessionStore(ds, ResultCrypto(ByteArray(32) { it.toByte() }))
     }
 

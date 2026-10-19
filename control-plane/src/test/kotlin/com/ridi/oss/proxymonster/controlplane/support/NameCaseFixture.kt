@@ -27,7 +27,6 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
-import org.flywaydb.core.Flyway
 import java.sql.DriverManager
 import java.sql.Statement
 import java.util.concurrent.atomic.AtomicInteger
@@ -93,8 +92,7 @@ class NameCaseStack private constructor(val metadata: DataSource, val core: Cont
 
     companion object {
         fun create(): NameCaseStack {
-            val metadata = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_names_meta"))
-            Flyway.configure().dataSource(metadata).load().migrate()
+            val metadata = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_names_meta"))
             return NameCaseStack(metadata, ControlPlaneCore(metadata))
         }
     }

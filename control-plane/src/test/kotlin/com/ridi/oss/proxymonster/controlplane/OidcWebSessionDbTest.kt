@@ -53,7 +53,6 @@ import io.ktor.server.sessions.Sessions
 import io.ktor.server.sessions.cookie
 import io.ktor.server.testing.testApplication
 import kotlinx.serialization.json.Json
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
@@ -156,8 +155,7 @@ class OidcWebSessionDbTest {
     @Test
     fun `a session mint failure after id_token validation is audited and leaves no session`() = testApplication {
         requireDockerOrSkip()
-        val dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_oidc_web"))
-        Flyway.configure().dataSource(dataSource).load().migrate()
+        val dataSource = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_oidc_web"))
         val principal = "oidc-mint-fail@example.com"
         callbackPrincipal.set(principal)
         val policyStore = PolicyStore(dataSource)
@@ -238,8 +236,7 @@ class OidcWebSessionDbTest {
     @Test
     fun `a device login authenticates via SSO before confirming and approving the handle`() = testApplication {
         requireDockerOrSkip()
-        val dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_oidc_web"))
-        Flyway.configure().dataSource(dataSource).load().migrate()
+        val dataSource = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_oidc_web"))
         val principal = "oidc-device@example.com"
         callbackPrincipal.set(principal)
         val policyStore = PolicyStore(dataSource)
@@ -302,8 +299,7 @@ class OidcWebSessionDbTest {
     @Test
     fun `a direct authorize link with no device-page confirm approves no handle`() = testApplication {
         requireDockerOrSkip()
-        val dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_oidc_web"))
-        Flyway.configure().dataSource(dataSource).load().migrate()
+        val dataSource = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_oidc_web"))
         val principal = "oidc-phish@example.com"
         callbackPrincipal.set(principal)
         val policyStore = PolicyStore(dataSource)
@@ -356,8 +352,7 @@ class OidcWebSessionDbTest {
         expectAttributes: String = "{}",
     ) = testApplication {
         requireDockerOrSkip()
-        val dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_oidc_web"))
-        Flyway.configure().dataSource(dataSource).load().migrate()
+        val dataSource = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_oidc_web"))
         callbackPrincipal.set(principal)
         if (seedRole) {
             val policyStore = PolicyStore(dataSource)

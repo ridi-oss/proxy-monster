@@ -16,7 +16,6 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.server.routing.routing
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
@@ -42,9 +41,8 @@ class DatasourceDetailRoutesDbTest {
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        val database = SharedPostgres.freshDatabase("pm_ds_detail_routes")
+        val database = SharedPostgres.migratedDatabase("pm_ds_detail_routes")
         dataSource = SharedPostgres.hikari(database)
-        Flyway.configure().dataSource(dataSource).load().migrate()
         core = ControlPlaneCore(dataSource)
         for ((name, cert) in listOf("dd-gated" to chain, "dd-bare" to null, "dd-other" to chain, "dd-gone" to chain)) {
             core.datasourceStore.register(

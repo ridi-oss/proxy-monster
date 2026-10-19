@@ -3,7 +3,6 @@ package com.ridi.oss.proxymonster.controlplane
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.controlplane.support.seedDaemonSession
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFails
@@ -18,8 +17,7 @@ class PrincipalSessionSchemaDbTest {
     @Test
     fun `the session table carries its indexes and a partial-unique session key`() {
         requireDockerOrSkip()
-        val dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_principal_session_schema"))
-        Flyway.configure().dataSource(dataSource).load().migrate()
+        val dataSource = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_principal_session_schema"))
 
         // Two daemon sessions, both with a NULL session_key — the partial index must let them coexist.
         val first = dataSource.seedDaemonSession("first@example.com", 7200, 60)

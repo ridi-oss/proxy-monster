@@ -14,7 +14,6 @@ import io.ktor.http.Url
 import io.ktor.http.parseQueryString
 import io.ktor.server.testing.testApplication
 import kotlinx.coroutines.delay
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
@@ -35,9 +34,8 @@ class OidcLoginRoutesDbTest {
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        val database = SharedPostgres.freshDatabase("pm_oidc_login_routes")
+        val database = SharedPostgres.migratedDatabase("pm_oidc_login_routes")
         dataSource = SharedPostgres.hikari(database)
-        Flyway.configure().dataSource(dataSource).load().migrate()
         core = ControlPlaneCore(dataSource)
         exec(
             """INSERT INTO app_role (name) VALUES ('oi-analyst');

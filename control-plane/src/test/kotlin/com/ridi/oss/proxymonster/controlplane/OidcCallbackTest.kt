@@ -37,7 +37,6 @@ import io.ktor.server.sessions.cookie
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
 import kotlinx.serialization.json.Json
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
@@ -143,9 +142,8 @@ class OidcCallbackTest {
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        database = SharedPostgres.freshDatabase("pm_oidc_callback")
+        database = SharedPostgres.migratedDatabase("pm_oidc_callback")
         dataSource = SharedPostgres.hikari(database)
-        Flyway.configure().dataSource(dataSource).load().migrate()
         userGroupStore = UserGroupStore(dataSource)
         roleResolver = RoleResolver(dataSource, userGroupStore, AccessStore(dataSource))
     }

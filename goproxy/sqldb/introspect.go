@@ -2,7 +2,7 @@
 // pushes to the control plane (docs/datasource-registration.md). The control plane never dials the
 // target; the proxy is the one side with a live connection and the credential that matters, so
 // introspection lives here.
-package introspect
+package sqldb
 
 import (
 	"context"
@@ -114,9 +114,9 @@ func (pgConnector) Driver() driver.Driver { return stdlib.GetDefaultDriver() }
 // MySQL's lower_case_table_names.
 type NamespaceProbe func(ctx context.Context, conn *sql.Conn, targetDb string) (*pb.CatalogRequest, error)
 
-// Run introspects the target's information_schema over a live connection and returns the catalog to
+// Introspect introspects the target's information_schema over a live connection and returns the catalog to
 // push to the control plane. DatasourceName is left blank — the caller (cp.PushCatalog) stamps it.
-func Run(ctx context.Context, db *sql.DB, dbImpl relay.Db, probe NamespaceProbe, targetDb string) (*pb.CatalogRequest, error) {
+func Introspect(ctx context.Context, db *sql.DB, dbImpl relay.Db, probe NamespaceProbe, targetDb string) (*pb.CatalogRequest, error) {
 	// Pin ONE physical connection for the whole introspection and verify it up front. The *sql.DB handle
 	// is a lazy pool: without pinning, each of probeVersion's two queries and the namespace/columns probes
 	// would independently dial the target, so a dead or misauthenticated target would incur several failed

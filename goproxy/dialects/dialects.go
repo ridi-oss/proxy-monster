@@ -17,7 +17,7 @@ import (
 	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/introspect"
-	"github.com/ridi-oss/proxy-monster/goproxy/mysqlproxy"
+	"github.com/ridi-oss/proxy-monster/goproxy/mysql"
 	"github.com/ridi-oss/proxy-monster/goproxy/pgproxy"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
@@ -123,10 +123,10 @@ var registry = spi.MustRegistry(
 		catalog:    func(context.Context, *sql.Conn) (string, error) { return "def", nil },
 		readDetail: readMySQLTableDetail,
 		newServer: func(listen spi.Listen, target spi.TargetDb, client spi.ControlPlane, db engine.Db, tlsProvider func() (*tls.Config, error)) spi.WireServer {
-			return mysqlproxy.New(listen, target, client, db, tlsProvider)
+			return mysql.New(listen, target, client, db, tlsProvider)
 		},
 		newSession: func(ctx context.Context, target spi.TargetDb, db engine.Db, client spi.ControlPlane, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.TargetDbSession, error) {
-			return mysqlproxy.NewRunSession(ctx, target, db, client, token, connectionID, guard, readTimeout, defaultSchema)
+			return mysql.NewRunSession(ctx, target, db, client, token, connectionID, guard, readTimeout, defaultSchema)
 		},
 	},
 	sqlProvider{
@@ -154,8 +154,8 @@ func For(e *engines.Engine) (spi.Provider, error) { return registry.For(e) }
 var (
 	_ spi.Provider        = sqlProvider{}
 	_ spi.Db              = (*sqlDb)(nil)
-	_ spi.TargetDbSession = (*mysqlproxy.RunSession)(nil)
+	_ spi.TargetDbSession = (*mysql.RunSession)(nil)
 	_ spi.TargetDbSession = (*pgproxy.RunSession)(nil)
-	_ spi.WireServer      = (*mysqlproxy.Server)(nil)
+	_ spi.WireServer      = (*mysql.Server)(nil)
 	_ spi.WireServer      = (*pgproxy.Server)(nil)
 )

@@ -98,7 +98,7 @@ keeps the rest:
   (see [Schema names pass, values never](#schema-names-pass-values-never)).
   Otherwise it is replaced with the code's canonical identity from a static
   table the proxy owns (`goproxy/pgproxy/diagcodes.go`,
-  `goproxy/mysqlproxy/diagcodes.go`) — PostgreSQL to the SQLSTATE condition name
+  `goproxy/mysql/diagcodes.go`) — PostgreSQL to the SQLSTATE condition name
   (`23514` → `check_violation`), falling back to the 2-char class name (`23` →
   `integrity_constraint_violation`) then a generic string; MySQL to the essno
   symbol (`1146` → `ER_NO_SUCH_TABLE`), generic fallback. It is looked up only
@@ -147,7 +147,7 @@ stripped as above.
 The allowlists are explicit tables, keyed by code and matched against the
 message template:
 
-- MySQL — `goproxy/mysqlproxy/diagschema.go`: essno → the English template from
+- MySQL — `goproxy/mysql/diagschema.go`: essno → the English template from
   `share/messages_to_clients.txt` of MySQL 8.0 and 8.4. A code is listed only
   when its template is schema-only in both series. The message must match the
   template, so a `SIGNAL` text under that essno, a non-English `lc_messages`, or
@@ -214,7 +214,7 @@ MySQL ERR packets keep essno + SQLSTATE and the schema-only message, or replace
 the message with the essno symbol; MySQL has no structured error fields.
 
 The strip runs where the target DB wire is decoded — the native relay
-(`goproxy/pgproxy/relay.go`, `goproxy/mysqlproxy/relay.go`, and the PostgreSQL
+(`goproxy/pgproxy/relay.go`, `goproxy/mysql/relay.go`, and the PostgreSQL
 extended-protocol `forwardError`/`forwardNotice` in
 `goproxy/pgproxy/diagnostics.go`) and the editor path.
 

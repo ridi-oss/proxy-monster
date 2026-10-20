@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
-	"os"
 	"regexp"
 	"strings"
 
@@ -27,6 +26,8 @@ type Config struct {
 	Audience string   `env:"PM_TAILNET_AUDIENCE" help:"Audience of the cloud ID token the federated identity trusts."`
 	AuthKey  string   `env:"PM_TAILNET_AUTH_KEY" help:"Auth key, when not logging in by federated identity."`
 	CertARN  string   `env:"PM_TAILNET_CERT_ARN" help:"Exportable ACM certificate to serve the console with. Empty uses Tailscale's certificate for the tailnet name."`
+
+	InstanceName string `env:"PM_INSTANCE_NAME" group:"kotlin" help:"Instance name; defaults to the first DNS label of the MCP resource host."`
 }
 
 // Enabled reports whether cp-go should join the tailnet.
@@ -51,11 +52,11 @@ func (c Config) Validate() error {
 }
 
 // NodeName is PM_TAILNET_HOSTNAME, or pmon-<instance name>, the name the MCP server is installed under.
-func (c Config) NodeName() string {
+func (c Config) NodeName(mcpResource string) string {
 	if c.Hostname != "" {
 		return c.Hostname
 	}
-	return "pmon-" + instanceName(os.Getenv("PM_INSTANCE_NAME"), os.Getenv("PM_MCP_RESOURCE"))
+	return "pmon-" + instanceName(c.InstanceName, mcpResource)
 }
 
 var notLabel = regexp.MustCompile(`[^a-z0-9]+`)
@@ -86,9 +87,9 @@ func instanceName(name, mcpResource string) string {
 
 // Join starts a node and waits until it is up. Its state lives in memory and the node is ephemeral, so each
 // start logs in again and a stopped task leaves no node behind.
-func Join(ctx context.Context, c Config) (*tsnet.Server, *ipnstate.Status, error) {
+func Join(ctx context.Context, c Config, hostname string) (*tsnet.Server, *ipnstate.Status, error) {
 	s := &tsnet.Server{
-		Hostname:      c.NodeName(),
+		Hostname:      hostname,
 		Store:         new(mem.Store),
 		Ephemeral:     true,
 		AdvertiseTags: c.Tags,

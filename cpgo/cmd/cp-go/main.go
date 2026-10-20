@@ -326,7 +326,8 @@ func run(ctx context.Context, cfg config) int {
 			case <-joinCtx.Done():
 			}
 		}()
-		host, closeNode, err := hostTailnet(joinCtx, ctx, cfg.Tailnet, handler, served)
+		nodeName := cfg.Tailnet.NodeName(cfg.MCPResource)
+		host, closeNode, err := hostTailnet(joinCtx, ctx, cfg.Tailnet, nodeName, handler, served)
 		cancelJoin()
 		if err != nil {
 			slog.Error("cp-go: " + err.Error())
@@ -335,7 +336,7 @@ func run(ctx context.Context, cfg config) int {
 		}
 		defer closeNode()
 		httpSrvs = append(httpSrvs, host)
-		slog.Info("cp-go: serving on the tailnet", "service", cfg.Tailnet.Service, "hostname", cfg.Tailnet.NodeName())
+		slog.Info("cp-go: serving on the tailnet", "service", cfg.Tailnet.Service, "hostname", nodeName)
 	}
 
 	code := 0
@@ -418,7 +419,7 @@ func startBridge(ctx context.Context, cfg config, token string, served chan<- er
 
 // hostTailnet joins the tailnet and serves the console there, with the ACM certificate when one is set,
 // kept fresh daily.
-func hostTailnet(startCtx, ctx context.Context, c tailnet.Config, handler http.Handler, served chan<- error) (*tailnet.Host, func(), error) {
+func hostTailnet(startCtx, ctx context.Context, c tailnet.Config, nodeName string, handler http.Handler, served chan<- error) (*tailnet.Host, func(), error) {
 	var cert *tailnet.Cert
 	if c.CertARN != "" {
 		var err error
@@ -427,7 +428,7 @@ func hostTailnet(startCtx, ctx context.Context, c tailnet.Config, handler http.H
 		}
 		go cert.KeepFresh(ctx, 24*time.Hour)
 	}
-	ts, st, err := tailnet.Join(startCtx, c)
+	ts, st, err := tailnet.Join(startCtx, c, nodeName)
 	if err != nil {
 		return nil, nil, err
 	}

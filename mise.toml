@@ -282,11 +282,11 @@ mkdir -p "$logs"
 echo "verify: logs in $logs"
 # The Go tests' fixed-name containers are otherwise shared with, and reaped by, other checkouts' runs.
 export PM_TEST_CONTAINER_SUFFIX="verify-$$-$(date +%s)"
-trap 'docker rm -f ${pg:-} ${mysql:-} $(docker ps -aq --filter "name=-$PM_TEST_CONTAINER_SUFFIX") >/dev/null 2>&1' EXIT
+trap 'docker rm -fv ${pg:-} ${mysql:-} $(docker ps -aq --filter "name=-$PM_TEST_CONTAINER_SUFFIX") >/dev/null 2>&1' EXIT
 # The JVM test forks share one database server per engine (TestDatabases.kt) instead of each starting its own.
 pg=$(docker run -d --rm -P -e POSTGRES_USER=test -e POSTGRES_PASSWORD=test -e POSTGRES_DB=test \
   "${PM_TEST_POSTGRES_IMAGE:-postgres:17}" postgres -c max_connections=2000) || exit 1
-trap 'exit 130' INT TERM
+trap 'kill $(jobs -p) 2>/dev/null; wait; exit 130' INT TERM
 # Durability only: one server takes every fork's DDL, which otherwise queues on its fsyncs.
 mysql=$(docker run -d --rm -P -e MYSQL_ROOT_PASSWORD=test -e MYSQL_USER=test -e MYSQL_PASSWORD=test -e MYSQL_DATABASE=test \
   "${PM_TEST_MYSQL_IMAGE:-mysql:8.4}" --max-connections=1000 --innodb-flush-log-at-trx-commit=2 --sync-binlog=0) || exit 1

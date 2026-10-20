@@ -73,6 +73,8 @@ class CpGoStack(
                 "PM_CP_CHILD_GRPC_PORT" to childGrpcPort.toString(),
                 "PM_HTTP_PORT" to httpPort.toString(),
                 "PM_GRPC_PORT" to grpcPort.toString(),
+                // A wildcard listener on macOS silently shares its port with another process's 127.0.0.1 one.
+                "PM_BIND_HOST" to "127.0.0.1",
             )
             process = ProcessBuilder(cpGoBinary())
                 .redirectErrorStream(true)

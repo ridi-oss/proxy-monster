@@ -41,6 +41,7 @@ import (
 type config struct {
 	HTTPPort       int            `env:"PM_HTTP_PORT" default:"8080" help:"Public HTTP port."`
 	GRPCPort       int            `env:"PM_GRPC_PORT" default:"9090" help:"Public gRPC port."`
+	BindHost       string         `env:"PM_BIND_HOST" help:"Address the public ports listen on; empty listens on every interface."`
 	TrustedProxies []string       `env:"PM_TRUSTED_PROXIES" sep:"," help:"Peers whose X-Forwarded-* headers are honored."`
 	WebURL         string         `env:"PM_WEB_URL" help:"Web console cp-go forwards non-control-plane paths to, e.g. http://web:3000. Empty serves only the control plane's paths."`
 	Child          string         `env:"PM_CP_CHILD" default:"/app/bin/control-plane" help:"Kotlin control plane start script."`
@@ -294,7 +295,7 @@ func run(ctx context.Context, cfg config) int {
 		return h
 	}
 	httpSrv := &http.Server{
-		Addr:              ":" + strconv.Itoa(cfg.HTTPPort),
+		Addr:              net.JoinHostPort(cfg.BindHost, strconv.Itoa(cfg.HTTPPort)),
 		Handler:           serve(front.ParseTrustedEdges(cfg.TrustedProxies)),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
@@ -306,7 +307,7 @@ func run(ctx context.Context, cfg config) int {
 		slog.Error("cp-go: listening for HTTP: " + err.Error())
 		return shutdownChild(kt)
 	}
-	grpcLn, err := net.Listen("tcp", ":"+strconv.Itoa(cfg.GRPCPort))
+	grpcLn, err := net.Listen("tcp", net.JoinHostPort(cfg.BindHost, strconv.Itoa(cfg.GRPCPort)))
 	if err != nil {
 		_ = httpLn.Close()
 		slog.Error("cp-go: listening for gRPC: " + err.Error())

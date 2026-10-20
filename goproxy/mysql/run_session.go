@@ -26,7 +26,8 @@ type RunSession struct {
 	guard  spi.ExecGuard
 }
 
-func NewRunSession(ctx context.Context, config spi.TargetConfig, authz *spi.Authorizer, guard spi.ExecGuard, readTimeout time.Duration, defaultSchema string) (*RunSession, error) {
+func (t *target) NewRunSession(ctx context.Context, authz *spi.Authorizer, guard spi.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.Session, error) {
+	config := t.config
 	if defaultSchema != "" {
 		config.Db = defaultSchema
 	}

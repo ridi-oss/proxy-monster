@@ -414,8 +414,8 @@ func (s *Server) quietRefetcher(sess *session) *sqldb.Refetcher {
 }
 
 func (s *Server) forwardCancelRequest(message *pgproto3.CancelRequest) {
-	if err := sendCancelRequest(s.config, message.ProcessID, message.SecretKey); err != nil {
-		slog.Warn("postgres CancelRequest forward failed", "host", s.config.Host, "port", s.config.Port, "error", err)
+	if err := sendCancelRequest(s.target.config, message.ProcessID, message.SecretKey); err != nil {
+		slog.Warn("postgres CancelRequest forward failed", "host", s.target.config.Host, "port", s.target.config.Port, "error", err)
 	}
 }
 

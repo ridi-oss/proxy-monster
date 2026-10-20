@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/tls"
 	"database/sql"
-	"time"
 
 	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
@@ -49,11 +48,7 @@ func (t *target) ReadTableDetail(ctx context.Context, table *enginepb.ObjectRef)
 func readCatalog(context.Context, *sql.Conn) (string, error) { return "def", nil }
 
 func (t *target) NewWireServer(listen spi.Listen, client spi.ControlPlane, tlsProvider func() (*tls.Config, error)) spi.WireServer {
-	return New(listen, t.config, client, tlsProvider)
-}
-
-func (t *target) NewRunSession(ctx context.Context, authz *spi.Authorizer, guard spi.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.Session, error) {
-	return NewRunSession(ctx, t.config, authz, guard, readTimeout, defaultSchema)
+	return newServer(listen, t, client, tlsProvider)
 }
 
 func (t *target) Close() error { return t.pool.Close() }

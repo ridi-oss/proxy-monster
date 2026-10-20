@@ -14,14 +14,14 @@ import (
 // graceful drain) plus this protocol's per-connection handler and its target DB/enforcement dependencies.
 type Server struct {
 	*wire.Server
-	config      spi.TargetConfig
+	target      *target
 	client      spi.ControlPlane
 	tlsProvider func() (*tls.Config, error)
 }
 
-// New constructs a PostgreSQL wire broker for one target DB datasource.
-func New(listen spi.Listen, config spi.TargetConfig, client spi.ControlPlane, tlsProvider func() (*tls.Config, error)) *Server {
-	s := &Server{config: config, client: client, tlsProvider: tlsProvider}
+// newServer constructs a PostgreSQL wire broker for one target DB datasource.
+func newServer(listen spi.Listen, target *target, client spi.ControlPlane, tlsProvider func() (*tls.Config, error)) *Server {
+	s := &Server{target: target, client: client, tlsProvider: tlsProvider}
 	s.Server = wire.New(listen, "pgproxy", s.handleConn)
 	return s
 }

@@ -1,5 +1,60 @@
 # Changelog
 
+## [0.1.37](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.36...server-v0.1.37) (2026-10-20)
+
+
+### Features
+
+* **cpgo:** serve the ReportCompletion RPC in Go ([6da3bff](https://github.com/ridi-oss/proxy-monster/commit/6da3bffd57aa7ea13035fd1e32636b5ef1350054))
+* **web:** link URLs in request comments, opening in a new tab ([f289b57](https://github.com/ridi-oss/proxy-monster/commit/f289b57932d6a39e939edb74491c9896505bcce8))
+
+
+### Bug Fixes
+
+* **goproxy:** catalog Athena views and untyped Glue tables like tables ([2cc9db2](https://github.com/ridi-oss/proxy-monster/commit/2cc9db251593f91c8fc9baee8d428e44fd93cdd3))
+* **notify:** show Slack replies as plain text, with mentions as usernames ([3e2e541](https://github.com/ridi-oss/proxy-monster/commit/3e2e541dd34e12cafea4d2c0b2809d4c75065ef3))
+
+
+### Refactoring
+
+* **cpgo:** parse the settings shared with the Kotlin child with kong ([0a8821c](https://github.com/ridi-oss/proxy-monster/commit/0a8821c259007502b8869f73545735884503a288))
+* **cpgo:** read the tailnet name and GitHub App key settings in main ([6cc84d0](https://github.com/ridi-oss/proxy-monster/commit/6cc84d0fd0d3a670806b5e85a88ae959b9724588))
+* **goproxy:** move dialects/athena to goproxy/athena ([835e294](https://github.com/ridi-oss/proxy-monster/commit/835e2943380bb21dfa83df057f41527f57073645))
+* **goproxy:** move introspect into a new sqldb package ([08de54f](https://github.com/ridi-oss/proxy-monster/commit/08de54f4a0ca5c8aafe2e9692c177c2a634ee5ab))
+* **goproxy:** move MySQL's introspection open and namespace probe into goproxy/mysql ([0b5b580](https://github.com/ridi-oss/proxy-monster/commit/0b5b58042a22fa4f379f354d42fd17ecc84ff401))
+* **goproxy:** move MySQL's SQL text and its tests into goproxy/mysql ([02c4493](https://github.com/ridi-oss/proxy-monster/commit/02c4493fde03e0cf79d58e342e33833eed9c0e75))
+* **goproxy:** move MySQL's table detail into goproxy/mysql ([5c0394a](https://github.com/ridi-oss/proxy-monster/commit/5c0394a629e47b0f67185b244b3ce3dae33d6f5e))
+* **goproxy:** move PostgreSQL's introspection open and namespace probe into goproxy/postgres ([c111195](https://github.com/ridi-oss/proxy-monster/commit/c1111958999a0f941e483fbe4103fc6f98116675))
+* **goproxy:** move PostgreSQL's SQL text and its tests into goproxy/postgres ([6f3ba23](https://github.com/ridi-oss/proxy-monster/commit/6f3ba233444a6e963b23f4ce1f8dbc5501dd97df))
+* **goproxy:** move PostgreSQL's table detail into goproxy/postgres ([3ce8255](https://github.com/ridi-oss/proxy-monster/commit/3ce825516b5b98e559221702372754020b4ba648))
+* **goproxy:** move QueryEngine from relay into spi ([251ddc9](https://github.com/ridi-oss/proxy-monster/commit/251ddc9c70b66b9bc262ee9c6cc7ac43c15c2ffa))
+* **goproxy:** move the decision contract types from relay into spi ([1dc64d5](https://github.com/ridi-oss/proxy-monster/commit/1dc64d553d768498410dc2dcada22bafe5914f43))
+* **goproxy:** move the schema-fragment refetcher into sqldb ([a6928af](https://github.com/ridi-oss/proxy-monster/commit/a6928af37df9d58c71ad2960a66d766d4e6f9a0c))
+* **goproxy:** move the shared table-detail helpers into sqldb ([2982227](https://github.com/ridi-oss/proxy-monster/commit/2982227662ae643e5c1217c1c07456cf7d044fd1))
+* **goproxy:** name the levels Target, TargetConfig and Session in spi ([a112b6c](https://github.com/ridi-oss/proxy-monster/commit/a112b6c091b2b31fd37b9b348806361a24e6ee4d))
+* **goproxy:** name variables after the types they hold ([d6fbaab](https://github.com/ridi-oss/proxy-monster/commit/d6fbaab2b8d2f0b0010bbb89fbb4bc9ae1b1912f))
+* **goproxy:** one control-plane client per proxy ([aa64375](https://github.com/ridi-oss/proxy-monster/commit/aa643757e667643bd82fb3db0756ab5d5eda8ca8))
+* **goproxy:** one ControlPlane interface for the control-plane client ([06ee0cb](https://github.com/ridi-oss/proxy-monster/commit/06ee0cb1c535151c5a052b65346ca041cd914207))
+* **goproxy:** one Runner joins the target and the control-plane client ([3aebb87](https://github.com/ridi-oss/proxy-monster/commit/3aebb87bc55db9676a08952b70556dc2f1408f99))
+* **goproxy:** one spi.Authorizer per connection, built by whoever opens it ([fce2259](https://github.com/ridi-oss/proxy-monster/commit/fce2259620589edc44e28cff1ef2c60db2db598b))
+* **goproxy:** rename package engine to relay ([d81db55](https://github.com/ridi-oss/proxy-monster/commit/d81db558459daca9dd29af8c9a75bd1aef73d480))
+* **goproxy:** rename package mysqlproxy to mysql ([044ccfa](https://github.com/ridi-oss/proxy-monster/commit/044ccfae767b78c037b283562fb128eb6dbda2d9))
+* **goproxy:** rename package pgproxy to postgres ([84edf61](https://github.com/ridi-oss/proxy-monster/commit/84edf616b8c5a9a51a7bcff113938ee62fffe068))
+* **goproxy:** rename spi.QueryEngine to spi.Authorizer ([71932e4](https://github.com/ridi-oss/proxy-monster/commit/71932e4b6f87fa3036eff6e0476f156e7f731c92))
+* **notify:** one Slack mrkdwn escape ([f0a9985](https://github.com/ridi-oss/proxy-monster/commit/f0a9985c59413bb8d06f9807501241fa758236f2))
+
+
+### Build & Dependencies
+
+* give verify its own test database servers ([393297d](https://github.com/ridi-oss/proxy-monster/commit/393297d76032358789984c5f6b3f8da7e82b50fc))
+* run verify's static, JVM and Go parts concurrently and size test forks from Docker ([088b5cd](https://github.com/ridi-oss/proxy-monster/commit/088b5cd93ea1b548cea9c42fcaba0669efa1c75f))
+* stop verify's parts on interrupt and remove its test containers' volumes ([2ae8279](https://github.com/ridi-oss/proxy-monster/commit/2ae827931ad1a2ec74e4a7573aa4adfb3e760f58))
+
+
+### Documentation
+
+* backlog retiring cp-go's Kotlin bridges once Kotlin is gone ([ecabda4](https://github.com/ridi-oss/proxy-monster/commit/ecabda4c8fed404b38ff6bbb26edacca68594b07))
+
 ## [0.1.36](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.35...server-v0.1.36) (2026-10-19)
 
 

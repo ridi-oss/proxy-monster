@@ -49,7 +49,7 @@ func sanitizeError(msg *pgproto3.ErrorResponse) *pgproto3.ErrorResponse {
 // forwardError sends a target DB ErrorResponse to the client, sanitized when the current decision has
 // diagnostic redaction set, otherwise verbatim.
 func forwardError(sess *session, msg *pgproto3.ErrorResponse) {
-	if sess.qe.SanitizeDiagnostics() {
+	if sess.authz.SanitizeDiagnostics() {
 		sess.client.Send(sanitizeError(msg))
 		return
 	}

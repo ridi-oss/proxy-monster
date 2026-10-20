@@ -16,17 +16,15 @@ import (
 
 type RunSession struct {
 	sessionCore
-	conn         net.Conn
-	keyData      pgproto3.BackendKeyData
-	target       spi.TargetDb
-	token        string
-	connectionID []byte
-	ref          *relay.Refetcher
-	guard        spi.ExecGuard
-	poisoned     bool
+	conn     net.Conn
+	keyData  pgproto3.BackendKeyData
+	target   spi.TargetDb
+	ref      *relay.Refetcher
+	guard    spi.ExecGuard
+	poisoned bool
 }
 
-func NewRunSession(ctx context.Context, target spi.TargetDb, db relay.Db, client spi.ControlPlane, token string, connectionID []byte, guard spi.ExecGuard, readTimeout time.Duration, defaultSchema string) (*RunSession, error) {
+func NewRunSession(ctx context.Context, target spi.TargetDb, db relay.Db, authz *spi.Authorizer, guard spi.ExecGuard, readTimeout time.Duration, defaultSchema string) (*RunSession, error) {
 	var extra map[string]string
 	if defaultSchema != "" {
 		extra = map[string]string{"search_path": `"` + strings.ReplaceAll(defaultSchema, `"`, `""`) + `"`}
@@ -45,20 +43,18 @@ func NewRunSession(ctx context.Context, target spi.TargetDb, db relay.Db, client
 		sessionCore: sessionCore{
 			currentCatalog: catalog,
 			targetDb:       pgproto3.NewFrontend(conn, conn),
-			qe:             spi.NewAuthorizer(client),
+			authz:          authz,
 			db:             db,
 			lastTxStatus:   txStatus,
 		},
-		conn:         conn,
-		keyData:      keyData,
-		target:       target,
-		token:        token,
-		connectionID: append([]byte(nil), connectionID...),
-		guard:        guard,
+		conn:    conn,
+		keyData: keyData,
+		target:  target,
+		guard:   guard,
 	}
-	s.ref = relay.NewRefetcher(db, s.connectionID, generation, func(sql string, expectedColumns int) ([][]*string, error) {
+	s.ref = relay.NewRefetcher(db, authz.ConnectionID(), generation, func(sql string, expectedColumns int) ([][]*string, error) {
 		return s.runProbe(sql, expectedColumns, true)
-	}, client.PushSchemaFragment)
+	}, authz.Client().PushSchemaFragment)
 	s.ref.Catalog = catalog
 	return s, nil
 }
@@ -75,8 +71,8 @@ func (s *RunSession) ServeStatement(sql string, maxRows int) (result spi.Stateme
 	if s.poisoned {
 		return result, errors.New("run session is unusable after a prior protocol error")
 	}
-	result.Decision, result.Denied, err = relay.ServeStatement(s.qe,
-		s.authzInput(sql, s.token, "", s.connectionID, s.ref.RunAll), s.ref, s.guard,
+	result.Decision, result.Denied, err = relay.ServeStatement(s.authz,
+		s.authzInput(sql, s.ref.RunAll), s.ref, s.guard,
 		func(toSend string, masks []*pb.ColumnMask, dec *spi.Decision) (bool, error) {
 			pageRows := dec.PageRows(maxRows)
 			max, runErr := executeMaxRows(pageRows)

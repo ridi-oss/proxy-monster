@@ -63,7 +63,9 @@ type TableDetailStream interface {
 // ControlPlane is the proxy's client to the control plane. cp.Client implements it; a test fake embeds it
 // and overrides only the methods its test calls.
 type ControlPlane interface {
-	DecisionClient
+	// Decide maps the proto verdict by name (unknown / unspecified -> DENY) so the Authorizer never sees an
+	// ambiguous Action.
+	Decide(DecideRequest) DecisionOutcome
 	PushSchemaFragment(*pb.SchemaFragmentPush) (uint64, error)
 	// ReportCompletion is best effort: a lost report degrades the audit volume signal, never the session.
 	ReportCompletion(CompletionReport)
@@ -212,7 +214,7 @@ type Db interface {
 	// NewRunSession dials and authenticates the target DB. ctx is the target-DB open context: cancelling it aborts
 	// an in-flight dial/auth so a run the control-plane already closed does not finish a target-DB handshake.
 	// A non-empty defaultSchema opens the session in that schema; empty keeps the target's default.
-	NewRunSession(ctx context.Context, client ControlPlane, token string, connectionID []byte, guard ExecGuard, readTimeout time.Duration, defaultSchema string) (TargetDbSession, error)
+	NewRunSession(ctx context.Context, authz *Authorizer, guard ExecGuard, readTimeout time.Duration, defaultSchema string) (TargetDbSession, error)
 	Close() error
 }
 

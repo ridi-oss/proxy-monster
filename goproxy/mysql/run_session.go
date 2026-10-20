@@ -16,17 +16,15 @@ import (
 )
 
 type RunSession struct {
-	conn         net.Conn
-	connID       uint32
-	target       spi.TargetDb
-	token        string
-	connectionID []byte
-	qe           *spi.Authorizer
-	ref          *relay.Refetcher
-	guard        spi.ExecGuard
+	conn   net.Conn
+	connID uint32
+	target spi.TargetDb
+	authz  *spi.Authorizer
+	ref    *relay.Refetcher
+	guard  spi.ExecGuard
 }
 
-func NewRunSession(ctx context.Context, target spi.TargetDb, db relay.Db, client spi.ControlPlane, token string, connectionID []byte, guard spi.ExecGuard, readTimeout time.Duration, defaultSchema string) (*RunSession, error) {
+func NewRunSession(ctx context.Context, target spi.TargetDb, db relay.Db, authz *spi.Authorizer, guard spi.ExecGuard, readTimeout time.Duration, defaultSchema string) (*RunSession, error) {
 	if defaultSchema != "" {
 		target.Db = defaultSchema
 	}
@@ -41,17 +39,15 @@ func NewRunSession(ctx context.Context, target spi.TargetDb, db relay.Db, client
 		return nil, errors.New("run backend generation out of range")
 	}
 	s := &RunSession{
-		conn:         conn,
-		connID:       greeting.ConnectionID,
-		target:       target,
-		token:        token,
-		connectionID: append([]byte(nil), connectionID...),
-		qe:           spi.NewAuthorizer(client),
-		guard:        guard,
+		conn:   conn,
+		connID: greeting.ConnectionID,
+		target: target,
+		authz:  authz,
+		guard:  guard,
 	}
-	s.ref = relay.NewRefetcher(db, s.connectionID, generation, func(sql string, expectedColumns int) ([][]*string, error) {
+	s.ref = relay.NewRefetcher(db, authz.ConnectionID(), generation, func(sql string, expectedColumns int) ([][]*string, error) {
 		return runInternalQuery(s.conn, true, sql, expectedColumns)
-	}, client.PushSchemaFragment)
+	}, authz.Client().PushSchemaFragment)
 	s.ref.Catalog = "def"
 	return s, nil
 }
@@ -65,10 +61,8 @@ func (s *RunSession) OnOpen(ctx context.Context, cmds []*pb.ProxyCommand) error 
 }
 
 func (s *RunSession) ServeStatement(sql string, maxRows int) (result spi.StatementResult, err error) {
-	result.Decision, result.Denied, err = relay.ServeStatement(s.qe, spi.AuthzInput{
+	result.Decision, result.Denied, err = relay.ServeStatement(s.authz, spi.AuthzInput{
 		SQL:          sql,
-		Token:        s.token,
-		ConnectionID: s.connectionID,
 		ProbeSession: func() (spi.SessionObservation, error) { return probeSession(s.conn, true) },
 		RunCommands:  s.ref.RunAll,
 	}, s.ref, s.guard, func(toSend string, masks []*pb.ColumnMask, dec *spi.Decision) (clean bool, runErr error) {
@@ -113,7 +107,7 @@ func (s *RunSession) ServeStatement(sql string, maxRows int) (result spi.Stateme
 			return sanitizeErrPacket(raw)
 		}
 		clean, _, relayErr := relayResultSet(s.conn, true, h)
-		s.qe.MarkNamespaceDirty()
+		s.authz.MarkNamespaceDirty()
 		resetErr := reset()
 		if relayErr != nil {
 			return false, relayErr

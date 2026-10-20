@@ -7,45 +7,21 @@ import (
 	"time"
 
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
-	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
-// enforcementSession is one control-plane connection: the catalog commands it must answer and the decision
-// it obtains for a statement. The native server opens one per submission; the editor holds one per run.
-type enforcementSession struct {
-	target       *target
-	client       spi.ControlPlane
-	token        string
-	connectionID []byte
-	engine       *spi.Authorizer
-	refetcher    *refetcher
-}
-
-func (t *target) newEnforcementSession(client spi.ControlPlane, token string, connectionID []byte) (*enforcementSession, error) {
-	refetcher, err := t.newRefetcher(connectionID, client.PushSchemaFragment)
-	if err != nil {
-		return nil, err
-	}
-	return &enforcementSession{target: t, client: client, token: token, connectionID: append([]byte(nil), connectionID...), engine: spi.NewAuthorizer(client), refetcher: refetcher}, nil
-}
-
-func (s *enforcementSession) onOpen(commands []*pb.ProxyCommand) error {
-	return s.refetcher.RunAll(commands, nil)
-}
-
 // authorize obtains the control plane's verdict for one statement in the target's fixed scope.
-func (s *enforcementSession) authorize(sql, clientAddr string, parameters []string, maxRows int) spi.Verdict {
-	return s.engine.Authorize(spi.AuthzInput{
-		SQL: sql, Token: s.token, ClientAddr: clientAddr, ConnectionID: s.connectionID,
+func (t *target) authorize(authz *spi.Authorizer, refetcher *refetcher, sql string, parameters []string, maxRows int) spi.Verdict {
+	return authz.Authorize(spi.AuthzInput{
+		SQL: sql,
 		ProbeSession: func() (spi.SessionObservation, error) {
 			return spi.SessionObservation{
-				CurrentCatalog: s.target.catalogIdentity(), Namespace: []string{s.target.config.database},
-				SessionObservation: &enginepb.SessionObservation{Engine: &enginepb.SessionObservation_Athena{Athena: &enginepb.AthenaSqlContext{Workgroup: s.target.config.workgroup, ExecutionParameters: parameters, MaxRows: uint32(max(maxRows, 0))}}},
+				CurrentCatalog: t.catalogIdentity(), Namespace: []string{t.config.database},
+				SessionObservation: &enginepb.SessionObservation{Engine: &enginepb.SessionObservation_Athena{Athena: &enginepb.AthenaSqlContext{Workgroup: t.config.workgroup, ExecutionParameters: parameters, MaxRows: uint32(max(maxRows, 0))}}},
 			}, nil
 		},
-		RunCommands: s.refetcher.RunAll,
+		RunCommands: refetcher.RunAll,
 	})
 }
 
@@ -59,12 +35,6 @@ func submittedQuery(sql string, parameters []string, decision *spi.Decision) (st
 		parameters = decision.Submission.GetAthena().GetExecutionParameters()
 	}
 	return sql, parameters
-}
-
-func (s *enforcementSession) close(client interface{ CloseConnection([]byte) error }) {
-	if client != nil {
-		_ = client.CloseConnection(s.connectionID)
-	}
 }
 
 // completion reports the wire task's outcome; Athena executes asynchronously, so an accepted submission is

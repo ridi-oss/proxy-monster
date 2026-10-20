@@ -180,7 +180,7 @@ func TestPostgresCatalogThroughDatabaseAlias(t *testing.T) {
 	})
 
 	t.Run("run session", func(t *testing.T) {
-		session, err := target.NewRunSession(ctx, client, "test-token", []byte("alias-run-000001"), nil, 10*time.Second, "")
+		session, err := target.NewRunSession(ctx, spi.NewAuthorizer(client, "test-token", []byte("alias-run-000001")), nil, 10*time.Second, "")
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -15,21 +15,21 @@ import (
 	"github.com/ridi-oss/proxy-monster/mysqlwire"
 )
 
-type runTestDecider struct{}
+type runTestDecider struct{ spi.ControlPlane }
 
 func (runTestDecider) Decide(spi.DecideRequest) spi.DecisionOutcome {
 	return spi.DecisionOutcome{Decision: &spi.Decision{Action: "ALLOW"}}
 }
 
-func scriptedMySQLRun(t *testing.T, decider spi.DecisionClient, maxRows int, response []byte) (*RunSession, <-chan string) {
+func scriptedMySQLRun(t *testing.T, decider spi.ControlPlane, maxRows int, response []byte) (*RunSession, <-chan string) {
 	t.Helper()
 	client, server := net.Pipe()
 	t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
 	_ = client.SetDeadline(time.Now().Add(5 * time.Second))
 	_ = server.SetDeadline(time.Now().Add(5 * time.Second))
-	qe := spi.NewAuthorizer(decider)
-	qe.SetNamespace([]string{"test"})
-	s := &RunSession{conn: client, qe: qe, ref: &relay.Refetcher{Catalog: "def"}}
+	authz := spi.NewAuthorizer(decider, "", nil)
+	authz.SetNamespace([]string{"test"})
+	s := &RunSession{conn: client, authz: authz, ref: &relay.Refetcher{Catalog: "def"}}
 	writes := make(chan string, 3)
 	go func() {
 		defer close(writes)

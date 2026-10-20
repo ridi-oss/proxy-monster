@@ -12,13 +12,12 @@ import (
 )
 
 type fakeDecider struct {
+	spi.ControlPlane
 	outcome spi.DecisionOutcome
-	calls   int
 	lastReq spi.DecideRequest
 }
 
 func (f *fakeDecider) Decide(req spi.DecideRequest) spi.DecisionOutcome {
-	f.calls++
 	f.lastReq = req
 	return f.outcome
 }
@@ -32,9 +31,9 @@ func serveInput() spi.AuthzInput {
 }
 
 func TestServeStatementFailHasNoDecision(t *testing.T) {
-	qe := spi.NewAuthorizer(&fakeDecider{outcome: spi.DecisionOutcome{Err: "unreachable"}})
-	dec, denied, err := ServeStatement(qe, serveInput(), nil, nil, func(string, []*pb.ColumnMask, *spi.Decision) (bool, error) {
-		t.Fatal("run called for spi.Fail")
+	authz := spi.NewAuthorizer(&fakeDecider{outcome: spi.DecisionOutcome{Err: "unreachable"}}, "", nil)
+	dec, denied, err := ServeStatement(authz, serveInput(), nil, nil, func(string, []*pb.ColumnMask, *spi.Decision) (bool, error) {
+		t.Fatal("run called for Fail")
 		return false, nil
 	})
 	var fail FailError
@@ -45,9 +44,9 @@ func TestServeStatementFailHasNoDecision(t *testing.T) {
 
 func TestServeStatementDenySkipsRun(t *testing.T) {
 	want := &spi.Decision{Action: "DENY", DenyReason: "policy"}
-	qe := spi.NewAuthorizer(&fakeDecider{outcome: spi.DecisionOutcome{Decision: want}})
-	dec, denied, err := ServeStatement(qe, serveInput(), nil, nil, func(string, []*pb.ColumnMask, *spi.Decision) (bool, error) {
-		t.Fatal("run called for spi.Deny")
+	authz := spi.NewAuthorizer(&fakeDecider{outcome: spi.DecisionOutcome{Decision: want}}, "", nil)
+	dec, denied, err := ServeStatement(authz, serveInput(), nil, nil, func(string, []*pb.ColumnMask, *spi.Decision) (bool, error) {
+		t.Fatal("run called for Deny")
 		return false, nil
 	})
 	if err != nil || !denied || dec != want {
@@ -58,8 +57,8 @@ func TestServeStatementDenySkipsRun(t *testing.T) {
 func TestServeStatementRunErrorRetainsDecision(t *testing.T) {
 	want := &spi.Decision{Action: "ALLOW"}
 	runErr := errors.New("target DB failed")
-	qe := spi.NewAuthorizer(&fakeDecider{outcome: spi.DecisionOutcome{Decision: want}})
-	dec, denied, err := ServeStatement(qe, serveInput(), nil, nil, func(string, []*pb.ColumnMask, *spi.Decision) (bool, error) {
+	authz := spi.NewAuthorizer(&fakeDecider{outcome: spi.DecisionOutcome{Decision: want}}, "", nil)
+	dec, denied, err := ServeStatement(authz, serveInput(), nil, nil, func(string, []*pb.ColumnMask, *spi.Decision) (bool, error) {
 		return false, runErr
 	})
 	if dec != want || denied || !errors.Is(err, runErr) {
@@ -91,8 +90,8 @@ func TestServeStatementRefetchesOnlyAfterCleanCompletion(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			calls := 0
 			decision := &spi.Decision{Action: "ALLOW", AfterStatement: []*pb.ProxyCommand{&pb.ProxyCommand{Command: &pb.ProxyCommand_Refetch{Refetch: &pb.Refetch{Catalog: "def", Schema: "app"}}}}}
-			qe := spi.NewAuthorizer(&fakeDecider{outcome: spi.DecisionOutcome{Decision: decision}})
-			_, _, err := ServeStatement(qe, serveInput(), newRef(&calls), nil, func(string, []*pb.ColumnMask, *spi.Decision) (bool, error) {
+			authz := spi.NewAuthorizer(&fakeDecider{outcome: spi.DecisionOutcome{Decision: decision}}, "", nil)
+			_, _, err := ServeStatement(authz, serveInput(), newRef(&calls), nil, func(string, []*pb.ColumnMask, *spi.Decision) (bool, error) {
 				return tc.clean, nil
 			})
 			if err != nil || calls != tc.want {
@@ -109,14 +108,14 @@ func TestServeStatementGuardWrapsOnlyRun(t *testing.T) {
 		events = append(events, "authorize")
 		return spi.SessionObservation{Namespace: []string{"app"}}, nil
 	}
-	qe := spi.NewAuthorizer(&fakeDecider{outcome: okOutcome("ALLOW", nil)})
+	authz := spi.NewAuthorizer(&fakeDecider{outcome: okOutcome("ALLOW", nil)}, "", nil)
 	guard := func(exec func() error) error {
 		events = append(events, "guard-enter")
 		err := exec()
 		events = append(events, "guard-exit")
 		return err
 	}
-	_, _, err := ServeStatement(qe, in, nil, guard, func(string, []*pb.ColumnMask, *spi.Decision) (bool, error) {
+	_, _, err := ServeStatement(authz, in, nil, guard, func(string, []*pb.ColumnMask, *spi.Decision) (bool, error) {
 		events = append(events, "run")
 		return true, nil
 	})
@@ -210,12 +209,12 @@ func TestAuthorizeWaitsForPendingCompletion(t *testing.T) {
 	release := make(chan struct{})
 	reporter := &blockingReporter{release: release}
 	decider := &fakeDecider{outcome: okOutcome("ALLOW", nil)}
-	qe := spi.NewAuthorizer(decider)
-	qe.AwaitCompletion(EmitCompletion(reporter, &spi.Decision{DecisionID: 7}, spi.RelayStats{Rows: 3}, StatusOK, time.Now()))
+	authz := spi.NewAuthorizer(decider, "", nil)
+	authz.AwaitCompletion(EmitCompletion(reporter, &spi.Decision{DecisionID: 7}, spi.RelayStats{Rows: 3}, StatusOK, time.Now()))
 
 	decided := make(chan struct{})
 	go func() {
-		qe.Authorize(serveInput())
+		authz.Authorize(serveInput())
 		close(decided)
 	}()
 	select {
@@ -233,8 +232,8 @@ func TestAuthorizeWaitsForPendingCompletion(t *testing.T) {
 		t.Fatalf("reports = %d, want 1", got)
 	}
 	// A nil decision emits nothing and must not block the next Decide.
-	qe.AwaitCompletion(EmitCompletion(reporter, nil, spi.RelayStats{}, StatusOK, time.Now()))
-	qe.Authorize(serveInput())
+	authz.AwaitCompletion(EmitCompletion(reporter, nil, spi.RelayStats{}, StatusOK, time.Now()))
+	authz.Authorize(serveInput())
 }
 
 type blockingReporter struct {

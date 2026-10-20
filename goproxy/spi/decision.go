@@ -160,14 +160,8 @@ type DecideRequest struct {
 	CheckTargetError func(sql string) (*TargetError, error)
 }
 
-// DecisionClient asks the control plane for one statement's decision; tests supply a fake. The implementation
-// maps the proto verdict by name (unknown / unspecified -> DENY) so the engine never sees an ambiguous Action.
-type DecisionClient interface {
-	Decide(req DecideRequest) DecisionOutcome
-}
-
 // SessionObservation is what the pre-statement probe returned: the connection's current catalog and
-// effective namespace plus the session facts the wire carries as-is. The engine caches it as one value and
+// effective namespace plus the session facts the wire carries as-is. The Authorizer caches it as one value and
 // the decision carries it whole, so every fact reaches the control plane from the same probe.
 type SessionObservation struct {
 	CurrentCatalog string

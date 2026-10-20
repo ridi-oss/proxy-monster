@@ -231,9 +231,9 @@ type runCapturingDb struct {
 	readTimeout chan time.Duration
 }
 
-func (p *runCapturingDb) NewRunSession(ctx context.Context, client spi.ControlPlane, token string, connectionID []byte, guard spi.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.TargetDbSession, error) {
+func (p *runCapturingDb) NewRunSession(ctx context.Context, authz *spi.Authorizer, guard spi.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.TargetDbSession, error) {
 	p.readTimeout <- readTimeout
-	return p.Db.NewRunSession(ctx, client, token, connectionID, guard, readTimeout, defaultSchema)
+	return p.Db.NewRunSession(ctx, authz, guard, readTimeout, defaultSchema)
 }
 
 // runSlowOpenProvider blocks the target DB dial until release is closed, modeling a slow open against a large
@@ -252,7 +252,7 @@ type runSlowOpenDb struct {
 	beforeDelegate func()
 }
 
-func (p *runSlowOpenDb) NewRunSession(ctx context.Context, client spi.ControlPlane, token string, connectionID []byte, guard spi.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.TargetDbSession, error) {
+func (p *runSlowOpenDb) NewRunSession(ctx context.Context, authz *spi.Authorizer, guard spi.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.TargetDbSession, error) {
 	if p.entered != nil {
 		p.enterOnce.Do(func() { close(p.entered) })
 	}
@@ -261,7 +261,7 @@ func (p *runSlowOpenDb) NewRunSession(ctx context.Context, client spi.ControlPla
 		if p.beforeDelegate != nil {
 			p.beforeDelegate()
 		}
-		return p.Db.NewRunSession(ctx, client, token, connectionID, guard, readTimeout, defaultSchema)
+		return p.Db.NewRunSession(ctx, authz, guard, readTimeout, defaultSchema)
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}

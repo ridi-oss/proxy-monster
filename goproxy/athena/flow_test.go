@@ -1,13 +1,12 @@
 package athena
 
 import (
+	"google.golang.org/protobuf/proto"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
-
-	"google.golang.org/protobuf/proto"
 
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"

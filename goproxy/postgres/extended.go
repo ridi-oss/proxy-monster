@@ -55,7 +55,7 @@ func (s *Server) renderExtendedVerdict(sess *session, verdict spi.Verdict) (spi.
 			if targetErr, ok := verdict.Decision.TargetError.Message.(*pgproto3.ErrorResponse); ok {
 				sess.skipToSync = true
 				forwardTargetError(sess, targetErr)
-				sess.qe.AwaitCompletion(relay.EmitCompletion(s.client, verdict.Decision, spi.RelayStats{}, relay.StatusError, time.Now()))
+				sess.authz.AwaitCompletion(relay.EmitCompletion(s.client, verdict.Decision, spi.RelayStats{}, relay.StatusError, time.Now()))
 				return spi.Proceed{}, false, sess.client.Flush()
 			}
 		}
@@ -116,13 +116,13 @@ func (s *Server) handleParse(sess *session, message *pgproto3.Parse) error {
 	// explicit transaction the probe can commit the batch's implicit transaction early; that is a
 	// deliberate fail-safe deviation (an extra probe, never a skipped one). In an aborted transaction,
 	// the probe fails and produces a fail-safe 58000 refusal before PostgreSQL's equivalent 25P02 Parse.
-	sess.qe.MarkNamespaceDirty()
+	sess.authz.MarkNamespaceDirty()
 	sess.pendingDirty = false
-	in := sess.authzInput(message.Query, sess.token, sess.clientAddr, sess.connectionID, s.refetcher(sess, true).RunAll)
+	in := sess.authzInput(message.Query, s.refetcher(sess, true).RunAll)
 	in.CheckTargetError = func(sql string) (*spi.TargetError, error) {
 		return s.checkTargetError(sess, sql, message.ParameterOIDs)
 	}
-	verdict := sess.qe.Authorize(in)
+	verdict := sess.authz.Authorize(in)
 	proceed, allowed, err := s.renderExtendedVerdict(sess, verdict)
 	if err != nil || !allowed {
 		return err
@@ -376,12 +376,9 @@ func (s *Server) handleExecute(sess *session, message *pgproto3.Execute) error {
 
 	// Re-decide the portal SQL under the context snapshotted when PostgreSQL bound it. A live probe here can
 	// diverge from the bound plan after post-Bind search_path drift and authorize a different resource.
-	sess.qe.MarkNamespaceDirty()
-	verdict := sess.qe.Authorize(spi.AuthzInput{
+	sess.authz.MarkNamespaceDirty()
+	verdict := sess.authz.Authorize(spi.AuthzInput{
 		SQL:          portal.sql,
-		Token:        sess.token,
-		ClientAddr:   sess.clientAddr,
-		ConnectionID: sess.connectionID,
 		RunCommands:  s.refetcher(sess, true).RunAll,
 		ProbeSession: func() (spi.SessionObservation, error) { return portal.session.Clone(), nil },
 		ProbeTempColumns: func() ([]spi.TempColumn, error) {
@@ -389,7 +386,7 @@ func (s *Server) handleExecute(sess *session, message *pgproto3.Execute) error {
 		},
 		CheckTargetError: func(sql string) (*spi.TargetError, error) { return s.checkTargetError(sess, sql, nil) },
 	})
-	sess.qe.MarkNamespaceDirty()
+	sess.authz.MarkNamespaceDirty()
 	proceed, allowed, err := s.renderExtendedVerdict(sess, verdict)
 	if err != nil || !allowed {
 		return err
@@ -424,7 +421,7 @@ func (s *Server) handleExecute(sess *session, message *pgproto3.Execute) error {
 	// Post-relay, best-effort completion for this extended-protocol Execute (no-op if unaudited). A
 	// CommandComplete / EmptyQueryResponse / PortalSuspended is a clean finish; an ErrorResponse or a
 	// transport fault is an error carrying the partial counts relayed before it.
-	sess.qe.AwaitCompletion(relay.EmitCompletion(s.client, proceed.Decision, relayStats, relay.RelayStatus(isCleanExecuteTerminal(terminal), err), start))
+	sess.authz.AwaitCompletion(relay.EmitCompletion(s.client, proceed.Decision, relayStats, relay.RelayStatus(isCleanExecuteTerminal(terminal), err), start))
 	if err != nil {
 		return err
 	}

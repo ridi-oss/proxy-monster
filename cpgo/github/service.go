@@ -55,12 +55,14 @@ func (s *Service) CompareCommits(ctx context.Context, in *pb.CompareCommitsReque
 	return &pb.CompareCommitsResponse{Relation: pb.CommitRelation(pb.CommitRelation_value[string(rel)])}, nil
 }
 
-func (s *Service) RequiredChecks(ctx context.Context, in *pb.RequiredChecksRequest) (*pb.RequiredChecksResponse, error) {
-	contexts, err := s.c.RequiredChecks(ctx, repoOf(in.GetRepo()), in.GetBranch())
+func (s *Service) ReadBranchRules(ctx context.Context, in *pb.BranchRulesRequest) (*pb.BranchRules, error) {
+	r, err := s.c.BranchRules(ctx, repoOf(in.GetRepo()), in.GetBranch())
 	if err != nil {
 		return nil, grpcError(err)
 	}
-	return &pb.RequiredChecksResponse{Contexts: contexts}, nil
+	return &pb.BranchRules{
+		Contexts: r.Contexts, Strict: r.Strict, ThreadResolution: r.ThreadResolution, MergeMethods: r.MergeMethods, Unchecked: r.Unchecked,
+	}, nil
 }
 
 func (s *Service) PostCheck(ctx context.Context, in *pb.PostCheckRequest) (*emptypb.Empty, error) {
@@ -166,9 +168,15 @@ func pullRequestPB(pr PullRequest) *pb.PullRequest {
 		HeadSha:     pr.HeadSHA,
 		BaseRef:     pr.BaseRef,
 		Author:      userPB(pr.Author),
+
+		Mergeable:         pr.Mergeable,
+		MergeState:        pr.MergeState,
+		CanBeRebased:      pr.CanBeRebased,
+		ReviewDecision:    pr.ReviewDecision,
+		UnresolvedThreads: int32(pr.UnresolvedThreads),
 	}
 	if a := pr.AutoMerge; a != nil {
-		out.AutoMerge = &pb.AutoMerge{EnabledBy: userPB(a.EnabledBy), EnabledAt: tsPB(a.EnabledAt)}
+		out.AutoMerge = &pb.AutoMerge{EnabledBy: userPB(a.EnabledBy), EnabledAt: tsPB(a.EnabledAt), MergeMethod: a.MergeMethod}
 	}
 	for _, r := range pr.Reviews {
 		out.Reviews = append(out.Reviews, &pb.Review{

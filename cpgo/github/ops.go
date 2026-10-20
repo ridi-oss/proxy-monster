@@ -3,6 +3,7 @@ package github
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -67,63 +68,162 @@ func (c *Client) CompareCommits(ctx context.Context, repo Repo, base, head strin
 	return "", fmt.Errorf("GitHub returned an unknown comparison status: %s", status)
 }
 
-// RequiredChecks is the status contexts branch's rulesets and branch protection require, cached for five minutes.
-func (c *Client) RequiredChecks(ctx context.Context, repo Repo, branch string) ([]string, error) {
+// BranchRules is what branch's rulesets and branch protection require of a pull request, cached for five minutes.
+// Branch protection shows only its required checks, so it is itself unchecked: its other settings need the
+// administration permission.
+func (c *Client) BranchRules(ctx context.Context, repo Repo, branch string) (BranchRules, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	key := strings.ToLower(repo.Owner+"/"+repo.Name) + "\x00" + branch
 	now := c.now()
-	if cached, ok := c.requiredChecks[key]; ok && now.Before(cached.at.Add(requiredChecksTTL)) {
-		return cached.contexts, nil
+	if cached, ok := c.branchRules[key]; ok && now.Before(cached.at.Add(branchRulesTTL)) {
+		return cached.rules, nil
 	}
+	var rules BranchRules
 	contexts := map[string]bool{}
 	err := c.withRepo(ctx, repo, func(inst *installation) error {
+		rules = BranchRules{}
 		clear(contexts)
-		for rule, err := range inst.rest.Repositories.ListRulesForBranchIter(ctx, repo.Owner, repo.Name, url.PathEscape(branch), &gh.ListOptions{PerPage: 100}) {
+		u := fmt.Sprintf("repos/%s/%s/rules/branches/%s?per_page=100", url.PathEscape(repo.Owner), url.PathEscape(repo.Name), url.PathEscape(branch))
+		for page := u; page != ""; {
+			req, err := inst.rest.NewRequest(ctx, "GET", page, nil)
+			if err != nil {
+				return err
+			}
+			// go-github drops rule types it does not know, so the rules are decoded here.
+			var list []branchRule
+			resp, err := inst.rest.Do(req, &list)
 			if isNotFound(err) {
 				break
 			}
 			if err != nil {
 				return err
 			}
-			if r, ok := rule.(*gh.RequiredStatusChecksBranchRule); ok {
-				for _, s := range r.Parameters.RequiredStatusChecks {
-					contexts[s.Context] = true
+			for _, r := range list {
+				if err := rules.add(r, contexts); err != nil {
+					return err
 				}
+			}
+			page = ""
+			if resp.NextPage != 0 {
+				page = u + "&page=" + strconv.Itoa(resp.NextPage)
 			}
 		}
 		// The branch endpoint needs only metadata read; its `/protection` sub-resource needs administration.
-		b, _, err := inst.rest.Repositories.GetBranch(ctx, repo.Owner, repo.Name, branch, 1)
+		req, err := inst.rest.NewRequest(ctx, "GET", fmt.Sprintf("repos/%s/%s/branches/%s",
+			url.PathEscape(repo.Owner), url.PathEscape(repo.Name), url.PathEscape(branch)), nil)
+		if err != nil {
+			return err
+		}
+		var b struct {
+			Protection struct {
+				Enabled bool `json:"enabled"`
+				Checks  struct {
+					Contexts []string `json:"contexts"`
+					Checks   []struct {
+						Context string `json:"context"`
+					} `json:"checks"`
+				} `json:"required_status_checks"`
+			} `json:"protection"`
+		}
+		_, err = inst.rest.Do(req, &b)
 		if isNotFound(err) {
 			return nil
 		}
 		if err != nil {
 			return err
 		}
-		if rsc := b.GetProtection().GetRequiredStatusChecks(); rsc != nil {
-			if rsc.Contexts != nil {
-				for _, s := range *rsc.Contexts {
-					contexts[s] = true
-				}
-			}
-			if rsc.Checks != nil {
-				for _, s := range *rsc.Checks {
-					contexts[s.Context] = true
-				}
-			}
+		if b.Protection.Enabled {
+			rules.Unchecked = append(rules.Unchecked, "branch_protection")
+		}
+		for _, s := range b.Protection.Checks.Contexts {
+			contexts[s] = true
+		}
+		for _, s := range b.Protection.Checks.Checks {
+			contexts[s.Context] = true
 		}
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return BranchRules{}, err
 	}
-	list := make([]string, 0, len(contexts))
+	rules.Contexts = make([]string, 0, len(contexts))
 	for s := range contexts {
-		list = append(list, s)
+		rules.Contexts = append(rules.Contexts, s)
 	}
-	slices.Sort(list)
-	c.requiredChecks[key] = cachedChecks{at: now, contexts: list}
-	return list, nil
+	slices.Sort(rules.Contexts)
+	slices.Sort(rules.Unchecked)
+	rules.Unchecked = slices.Compact(rules.Unchecked)
+	c.branchRules[key] = cachedRules{at: now, rules: rules}
+	return rules, nil
+}
+
+type branchRule struct {
+	Type       string          `json:"type"`
+	Parameters json.RawMessage `json:"parameters"`
+}
+
+// Rule types a merge cannot break: they guard pushes to the branch itself, or only request a review.
+var pushOnlyRules = []string{
+	"creation", "deletion", "non_fast_forward", "branch_name_pattern", "tag_name_pattern",
+	"file_path_restriction", "max_file_path_length", "file_extension_restriction", "max_file_size", "copilot_code_review",
+}
+
+func (r *BranchRules) add(rule branchRule, contexts map[string]bool) error {
+	switch rule.Type {
+	case "required_status_checks":
+		var p struct {
+			Checks []struct {
+				Context string `json:"context"`
+			} `json:"required_status_checks"`
+			Strict bool `json:"strict_required_status_checks_policy"`
+		}
+		if err := json.Unmarshal(rule.Parameters, &p); err != nil {
+			return fmt.Errorf("decode %s rule: %w", rule.Type, err)
+		}
+		for _, s := range p.Checks {
+			contexts[s.Context] = true
+		}
+		r.Strict = r.Strict || p.Strict
+	case "pull_request":
+		var p struct {
+			ThreadResolution bool     `json:"required_review_thread_resolution"`
+			MergeMethods     []string `json:"allowed_merge_methods"`
+			Approvals        int      `json:"required_approving_review_count"`
+			CodeOwners       bool     `json:"require_code_owner_review"`
+			Reviewers        []any    `json:"required_reviewers"`
+		}
+		if err := json.Unmarshal(rule.Parameters, &p); err != nil {
+			return fmt.Errorf("decode %s rule: %w", rule.Type, err)
+		}
+		r.ThreadResolution = r.ThreadResolution || p.ThreadResolution
+		if p.MergeMethods != nil {
+			r.allowMergeMethods(rule.Type, p.MergeMethods)
+		}
+		// With no approvals required, GitHub reports no review decision even while a code owner's review is missing.
+		if p.Approvals == 0 && (p.CodeOwners || len(p.Reviewers) > 0) {
+			r.Unchecked = append(r.Unchecked, rule.Type)
+		}
+	case "required_linear_history":
+		r.allowMergeMethods(rule.Type, []string{"squash", "rebase"})
+	default:
+		if !slices.Contains(pushOnlyRules, rule.Type) {
+			r.Unchecked = append(r.Unchecked, rule.Type)
+		}
+	}
+	return nil
+}
+
+// allowMergeMethods narrows the allowed methods; a rule that leaves none blocks every merge, so it is unchecked.
+func (r *BranchRules) allowMergeMethods(ruleType string, methods []string) {
+	if r.MergeMethods == nil {
+		r.MergeMethods = slices.Clone(methods)
+	} else {
+		r.MergeMethods = slices.DeleteFunc(r.MergeMethods, func(m string) bool { return !slices.Contains(methods, m) })
+	}
+	if len(r.MergeMethods) == 0 {
+		r.Unchecked = append(r.Unchecked, ruleType)
+	}
 }
 
 // PostCheck creates this App's check run on headSha, or updates the one it already has.

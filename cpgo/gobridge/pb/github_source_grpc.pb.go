@@ -26,7 +26,7 @@ const (
 	GitHubSource_ReadPullRequests_FullMethodName = "/proxymonster.cpgo.v1.GitHubSource/ReadPullRequests"
 	GitHubSource_ReadFile_FullMethodName         = "/proxymonster.cpgo.v1.GitHubSource/ReadFile"
 	GitHubSource_CompareCommits_FullMethodName   = "/proxymonster.cpgo.v1.GitHubSource/CompareCommits"
-	GitHubSource_RequiredChecks_FullMethodName   = "/proxymonster.cpgo.v1.GitHubSource/RequiredChecks"
+	GitHubSource_ReadBranchRules_FullMethodName  = "/proxymonster.cpgo.v1.GitHubSource/ReadBranchRules"
 	GitHubSource_PostCheck_FullMethodName        = "/proxymonster.cpgo.v1.GitHubSource/PostCheck"
 	GitHubSource_DismissReview_FullMethodName    = "/proxymonster.cpgo.v1.GitHubSource/DismissReview"
 	GitHubSource_PostComment_FullMethodName      = "/proxymonster.cpgo.v1.GitHubSource/PostComment"
@@ -44,7 +44,7 @@ type GitHubSourceClient interface {
 	ReadPullRequests(ctx context.Context, in *ReadPullRequestsRequest, opts ...grpc.CallOption) (*ReadPullRequestsResponse, error)
 	ReadFile(ctx context.Context, in *ReadFileRequest, opts ...grpc.CallOption) (*ReadFileResponse, error)
 	CompareCommits(ctx context.Context, in *CompareCommitsRequest, opts ...grpc.CallOption) (*CompareCommitsResponse, error)
-	RequiredChecks(ctx context.Context, in *RequiredChecksRequest, opts ...grpc.CallOption) (*RequiredChecksResponse, error)
+	ReadBranchRules(ctx context.Context, in *BranchRulesRequest, opts ...grpc.CallOption) (*BranchRules, error)
 	PostCheck(ctx context.Context, in *PostCheckRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	DismissReview(ctx context.Context, in *DismissReviewRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
 	// With a marker, edits the App's comment carrying it, or posts a new one.
@@ -91,10 +91,10 @@ func (c *gitHubSourceClient) CompareCommits(ctx context.Context, in *CompareComm
 	return out, nil
 }
 
-func (c *gitHubSourceClient) RequiredChecks(ctx context.Context, in *RequiredChecksRequest, opts ...grpc.CallOption) (*RequiredChecksResponse, error) {
+func (c *gitHubSourceClient) ReadBranchRules(ctx context.Context, in *BranchRulesRequest, opts ...grpc.CallOption) (*BranchRules, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(RequiredChecksResponse)
-	err := c.cc.Invoke(ctx, GitHubSource_RequiredChecks_FullMethodName, in, out, cOpts...)
+	out := new(BranchRules)
+	err := c.cc.Invoke(ctx, GitHubSource_ReadBranchRules_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -161,7 +161,7 @@ type GitHubSourceServer interface {
 	ReadPullRequests(context.Context, *ReadPullRequestsRequest) (*ReadPullRequestsResponse, error)
 	ReadFile(context.Context, *ReadFileRequest) (*ReadFileResponse, error)
 	CompareCommits(context.Context, *CompareCommitsRequest) (*CompareCommitsResponse, error)
-	RequiredChecks(context.Context, *RequiredChecksRequest) (*RequiredChecksResponse, error)
+	ReadBranchRules(context.Context, *BranchRulesRequest) (*BranchRules, error)
 	PostCheck(context.Context, *PostCheckRequest) (*emptypb.Empty, error)
 	DismissReview(context.Context, *DismissReviewRequest) (*emptypb.Empty, error)
 	// With a marker, edits the App's comment carrying it, or posts a new one.
@@ -187,8 +187,8 @@ func (UnimplementedGitHubSourceServer) ReadFile(context.Context, *ReadFileReques
 func (UnimplementedGitHubSourceServer) CompareCommits(context.Context, *CompareCommitsRequest) (*CompareCommitsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method CompareCommits not implemented")
 }
-func (UnimplementedGitHubSourceServer) RequiredChecks(context.Context, *RequiredChecksRequest) (*RequiredChecksResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method RequiredChecks not implemented")
+func (UnimplementedGitHubSourceServer) ReadBranchRules(context.Context, *BranchRulesRequest) (*BranchRules, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ReadBranchRules not implemented")
 }
 func (UnimplementedGitHubSourceServer) PostCheck(context.Context, *PostCheckRequest) (*emptypb.Empty, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method PostCheck not implemented")
@@ -280,20 +280,20 @@ func _GitHubSource_CompareCommits_Handler(srv interface{}, ctx context.Context, 
 	return interceptor(ctx, in, info, handler)
 }
 
-func _GitHubSource_RequiredChecks_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(RequiredChecksRequest)
+func _GitHubSource_ReadBranchRules_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BranchRulesRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(GitHubSourceServer).RequiredChecks(ctx, in)
+		return srv.(GitHubSourceServer).ReadBranchRules(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: GitHubSource_RequiredChecks_FullMethodName,
+		FullMethod: GitHubSource_ReadBranchRules_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(GitHubSourceServer).RequiredChecks(ctx, req.(*RequiredChecksRequest))
+		return srv.(GitHubSourceServer).ReadBranchRules(ctx, req.(*BranchRulesRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -408,8 +408,8 @@ var GitHubSource_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _GitHubSource_CompareCommits_Handler,
 		},
 		{
-			MethodName: "RequiredChecks",
-			Handler:    _GitHubSource_RequiredChecks_Handler,
+			MethodName: "ReadBranchRules",
+			Handler:    _GitHubSource_ReadBranchRules_Handler,
 		},
 		{
 			MethodName: "PostCheck",

@@ -184,10 +184,11 @@ const defaultChecks = `{"__typename":"CheckRun","name":"build","status":"COMPLET
   {"__typename":"StatusContext","context":"ci/legacy","state":"PENDING","isRequired":false}`
 
 type prOpts struct {
-	rollupOID  string
-	filesNext  string
-	checksNext string
-	checks     *string // nil: the default checks; pointer to "null": no rollup
+	rollupOID   string
+	filesNext   string
+	threadsNext string
+	checksNext  string
+	checks      *string // nil: the default checks; pointer to "null": no rollup
 }
 
 func nextCursor(c string) string {
@@ -212,7 +213,9 @@ func pr(number int, o prOpts) string {
 	}
 	return fmt.Sprintf(`{"state":"OPEN","merged":false,"mergedAt":null,"mergeCommit":null,"headRefOid":"sha1","baseRefName":"main",
   "author":{"login":"alice","databaseId":101},
-  "autoMergeRequest":{"enabledAt":"2026-10-09T00:10:00Z","enabledBy":{"login":"alice","databaseId":101}},
+  "autoMergeRequest":{"enabledAt":"2026-10-09T00:10:00Z","enabledBy":{"login":"alice","databaseId":101},"mergeMethod":"SQUASH"},
+  "isDraft":true,"mergeable":"MERGEABLE","canBeRebased":true,"mergeStateStatus":"BLOCKED","reviewDecision":"REVIEW_REQUIRED",
+  "reviewThreads":{"pageInfo":{"hasNextPage":%t,"endCursor":%s},"nodes":[{"isResolved":true},{"isResolved":false},{"isResolved":false}]},
   "reviews":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[
     {"databaseId":501,"state":"APPROVED","submittedAt":"2026-10-09T00:20:00Z","url":"https://github.com/acme/shop/pull/1#r501","commit":{"oid":"sha1"},"author":{"login":"bob","databaseId":102}},
     {"databaseId":502,"state":"DISMISSED","submittedAt":"2026-10-09T00:05:00Z","url":"https://github.com/acme/shop/pull/1#r502","author":{"login":"carol","databaseId":103}}]},
@@ -226,12 +229,13 @@ func pr(number int, o prOpts) string {
     {"commit":{"parents":{"totalCount":1},"author":{"email":"bob@acme.com","user":{"databaseId":102}}}},
     {"commit":{"parents":{"totalCount":2},"author":{"email":"merge@acme.com","user":{"databaseId":101}}}},
     {"commit":{"parents":{"totalCount":1},"author":{"email":"nouser@acme.com","user":null}}}]}}`,
-		o.filesNext != "", nextCursor(o.filesNext), o.rollupOID, rollup)
+		o.threadsNext != "", nextCursor(o.threadsNext), o.filesNext != "", nextCursor(o.filesNext), o.rollupOID, rollup)
 }
 
 func merged(number int) string {
 	return fmt.Sprintf(`{"state":"MERGED","merged":true,"mergedAt":"2026-10-08T12:00:00Z","mergeCommit":{"oid":"merge%d"},
   "headRefOid":"sha2","baseRefName":"main","author":null,"autoMergeRequest":null,
+  "isDraft":false,"mergeable":"UNKNOWN","canBeRebased":false,"mergeStateStatus":"UNKNOWN","reviewDecision":null,"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},
   "reviews":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"files":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},
   "commits":{"nodes":[{"commit":{"oid":"sha2","statusCheckRollup":null}}]},"authors":{"nodes":[]}}`, number)
 }

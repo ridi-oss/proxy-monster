@@ -170,6 +170,18 @@ For a PR that adds files, the control plane runs them when all of these hold:
   Any other check still running on the head also waits, so a branch that
   requires no checks does not run the SQL ahead of CI; a finished optional check
   does not block, whatever its conclusion;
+- GitHub would merge the PR once `query executed` passes. A PR approved by a
+  reviewer who is not the required code owner, one with conflicts, or one whose
+  branch is behind under a strict rule waits. The control plane reads GitHub's
+  `mergeable`, `mergeStateStatus` and `reviewDecision`. While `query executed`
+  is required, GitHub reports the PR as `BLOCKED` until it passes, so the
+  control plane also checks the ruleset rules behind that verdict: review
+  conversations resolved, the auto-merge method allowed (and, for a rebase, that
+  GitHub can rebase), and the head containing the base under a strict
+  status-check rule. A rule that can block a merge and that it does not check (a
+  merge queue, required deployments, signed commits, …) keeps the PR waiting,
+  named in the check's title. So does classic branch protection, which shows the
+  App only its required checks: protect the base with rulesets only;
 - the PR's head contains the scope's last merged run from the same repository.
   PR B branched before PR A's `0041` merged; B's `0042` may depend on the schema
   `0041` creates, and B's CI never ran on top of it

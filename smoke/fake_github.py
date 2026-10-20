@@ -93,7 +93,10 @@ class FakeGitHub:
             "mergeCommit": {"oid": pr["mergeCommit"]} if pr["mergeCommit"] else None,
             "headRefOid": pr["head"], "baseRefName": pr["base"],
             "author": user(pr["author"]),
-            "autoMergeRequest": {"enabledAt": pr["autoMerge"][2], "enabledBy": user(pr["autoMerge"][:2])} if pr["autoMerge"] else None,
+            "autoMergeRequest": {"enabledAt": pr["autoMerge"][2], "enabledBy": user(pr["autoMerge"][:2]), "mergeMethod": "SQUASH"}
+            if pr["autoMerge"] else None,
+            "isDraft": False, "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN", "canBeRebased": True, "reviewDecision": None,
+            "reviewThreads": {"pageInfo": {"hasNextPage": False}, "nodes": []},
             "reviews": {"pageInfo": {"hasNextPage": False}, "nodes": pr["reviews"]},
             "files": {"pageInfo": {"hasNextPage": False}, "nodes": [{"path": p, "changeType": "ADDED"} for p in pr["files"]]},
             "commits": {"nodes": [{"commit": {"oid": pr["head"], "statusCheckRollup": rollup}}]},

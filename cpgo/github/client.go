@@ -21,12 +21,12 @@ import (
 )
 
 const (
-	userAgent         = "proxy-monster"
-	rawAccept         = "application/vnd.github.raw+json"
-	commentPage       = 100
-	requiredChecksTTL = 5 * time.Minute
-	messageLimit      = 200
-	requestTimeout    = 30 * time.Second
+	userAgent      = "proxy-monster"
+	rawAccept      = "application/vnd.github.raw+json"
+	commentPage    = 100
+	branchRulesTTL = 5 * time.Minute
+	messageLimit   = 200
+	requestTimeout = 30 * time.Second
 )
 
 // Client is a GitHub App installed on the repositories' owners. All calls are serialized.
@@ -41,7 +41,7 @@ type Client struct {
 	mu             sync.Mutex
 	installationID map[string]int64
 	installations  map[int64]*installation
-	requiredChecks map[string]cachedChecks
+	branchRules    map[string]cachedRules
 	rateLimit      *RateLimit
 }
 
@@ -51,9 +51,9 @@ type installation struct {
 	gql  *githubv4.Client
 }
 
-type cachedChecks struct {
-	at       time.Time
-	contexts []string
+type cachedRules struct {
+	at    time.Time
+	rules BranchRules
 }
 
 func New(appID, apiURL string, signer Signer) (*Client, error) {
@@ -74,7 +74,7 @@ func New(appID, apiURL string, signer Signer) (*Client, error) {
 		now:            time.Now,
 		installationID: map[string]int64{},
 		installations:  map[int64]*installation{},
-		requiredChecks: map[string]cachedChecks{},
+		branchRules:    map[string]cachedRules{},
 	}
 	if c.apps, err = ghinstallation.NewAppsTransportWithOptions(statusTransport{c.transport, c}, id, ghinstallation.WithSigner(signer)); err != nil {
 		return nil, err

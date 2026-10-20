@@ -11,6 +11,7 @@ import com.ridi.oss.proxymonster.controlplane.notify.NotificationStore
 import com.ridi.oss.proxymonster.controlplane.notify.RecipientResolver
 import com.ridi.oss.proxymonster.controlplane.notify.StatementDisclosure
 import com.ridi.oss.proxymonster.controlplane.source.AutoMerge
+import com.ridi.oss.proxymonster.controlplane.source.BranchRules
 import com.ridi.oss.proxymonster.controlplane.source.Check
 import com.ridi.oss.proxymonster.controlplane.source.CheckConclusion
 import com.ridi.oss.proxymonster.controlplane.source.CheckStatus
@@ -961,7 +962,7 @@ class GitHubSourceFlowDbTest {
     fun `a required context absent from the rollup, or failed, waits for checks`() {
         val n = number()
         open(n, baseRef = "base$n")
-        adapter.requiredChecks["base$n"] = setOf("lint", GitHubSourceFlow.CHECK_NAME)
+        adapter.branchRules["base$n"] = BranchRules(setOf("lint", GitHubSourceFlow.CHECK_NAME))
         val req = file(n, schema(), listOf("db/c.sql" to "create table c (id int)")).single()
         readyToMerge(n)
         pollWithProxy()
@@ -1013,16 +1014,76 @@ class GitHubSourceFlowDbTest {
     }
 
     @Test
+    fun `an approved PR waits until GitHub would merge it`() {
+        val n = number()
+        open(n)
+        val req = file(n, schema(), listOf("db/c.sql" to "create table c (id int)")).single()
+        readyToMerge(n)
+        fun waitsOn(title: String, change: (PullRequest) -> PullRequest) {
+            update(n, change)
+            pollWithProxy()
+            assertEquals("APPROVED", status(req.id))
+            assertEquals(title, lastCheck(n).title)
+        }
+        waitsOn("Resolve the conflicts with the base branch") { it.copy(mergeable = "CONFLICTING") }
+        waitsOn("Waiting for GitHub to allow the merge") { it.copy(mergeable = "UNKNOWN") }
+        waitsOn("Update your branch") { it.copy(mergeable = "MERGEABLE", mergeState = "BEHIND") }
+        // An approval from someone other than a required code owner.
+        waitsOn("Waiting for the reviews the base branch requires") { it.copy(mergeState = "BLOCKED", reviewDecision = "REVIEW_REQUIRED") }
+        waitsOn("Waiting for GitHub to allow the merge") { it.copy(reviewDecision = "APPROVED") }
+
+        update(n) { it.copy(mergeState = "UNSTABLE") }
+        pollWithProxy()
+        assertEquals("EXECUTED", status(req.id))
+    }
+
+    @Test
+    fun `with its own check required, a blocked PR runs once every rule it can read allows the merge`() {
+        val n = number()
+        open(n, baseRef = "base$n")
+        val rules = BranchRules(
+            setOf(GitHubSourceFlow.CHECK_NAME), strict = true, threadResolution = true, mergeMethods = setOf("squash", "rebase"), unchecked = listOf("merge_queue"),
+        )
+        adapter.branchRules["base$n"] = rules
+        val req = file(n, schema(), listOf("db/c.sql" to "create table c (id int)")).single()
+        readyToMerge(n)
+        fun waitsOn(title: String, change: (PullRequest) -> PullRequest = { it }) {
+            update(n, change)
+            pollWithProxy()
+            assertEquals("APPROVED", status(req.id))
+            assertEquals(title, lastCheck(n).title)
+        }
+        waitsOn("Resolve the review conversations") { it.copy(mergeState = "BLOCKED", unresolvedThreads = 1) }
+        waitsOn("The base branch does not allow merging by merge; change the auto-merge method") {
+            it.copy(unresolvedThreads = 0, autoMerge = it.autoMerge!!.copy(mergeMethod = "MERGE"))
+        }
+        waitsOn("GitHub cannot rebase this pull request; change the auto-merge method or rebase it yourself") {
+            it.copy(autoMerge = it.autoMerge!!.copy(mergeMethod = "REBASE"), canBeRebased = false)
+        }
+        adapter.relations[Triple(repo, "base$n", "sha$n")] = CommitRelation.BEHIND
+        waitsOn("Update your branch") { it.copy(autoMerge = it.autoMerge!!.copy(mergeMethod = "SQUASH")) }
+        adapter.relations.remove(Triple(repo, "base$n", "sha$n"))
+        waitsOn("The base branch's merge_queue rule cannot be checked before the merge")
+        adapter.branchRules["base$n"] = rules.copy(unchecked = emptyList())
+        waitsOn("Waiting for GitHub to allow the merge") { it.copy(mergeState = "UNKNOWN") }
+        waitsOn("Waiting for GitHub to allow the merge") { it.copy(mergeState = "DIRTY") }
+        update(n) { it.copy(mergeState = "BLOCKED") }
+
+        pollWithProxy()
+        assertEquals("EXECUTED", status(req.id))
+    }
+
+    @Test
     fun `a failed required-checks lookup waits for checks`() {
         val n = number()
         open(n)
         val req = file(n, schema(), listOf("db/c.sql" to "create table c (id int)")).single()
         readyToMerge(n)
-        adapter.requiredChecksFail = true
+        adapter.branchRulesFail = true
         try {
             pollWithProxy()
         } finally {
-            adapter.requiredChecksFail = false
+            adapter.branchRulesFail = false
         }
         assertEquals("APPROVED", status(req.id))
         assertEquals("Waiting for other checks", lastCheck(n).title)

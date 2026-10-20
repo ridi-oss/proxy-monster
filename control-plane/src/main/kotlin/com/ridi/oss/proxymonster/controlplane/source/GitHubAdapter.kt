@@ -4,6 +4,7 @@ import com.google.protobuf.Timestamp
 import com.ridi.oss.proxymonster.controlplane.GitHubConfig
 import com.ridi.oss.proxymonster.controlplane.GitHubIdentityResolver
 import com.ridi.oss.proxymonster.cpgo.GitHubError
+import com.ridi.oss.proxymonster.cpgo.branchRulesRequest
 import com.ridi.oss.proxymonster.cpgo.GitHubSourceGrpcKt.GitHubSourceCoroutineStub
 import com.ridi.oss.proxymonster.cpgo.compareCommitsRequest
 import com.ridi.oss.proxymonster.cpgo.dismissReviewRequest
@@ -13,7 +14,6 @@ import com.ridi.oss.proxymonster.cpgo.postCommentRequest
 import com.ridi.oss.proxymonster.cpgo.readFileRequest
 import com.ridi.oss.proxymonster.cpgo.readPullRequestsRequest
 import com.ridi.oss.proxymonster.cpgo.repo
-import com.ridi.oss.proxymonster.cpgo.requiredChecksRequest
 import io.grpc.Channel
 import io.grpc.StatusException
 import io.grpc.protobuf.StatusProto
@@ -75,14 +75,14 @@ class GitHubAdapter(
         }.relation.name,
     )
 
-    override suspend fun requiredChecks(repo: Repo, branch: String): Set<String> = call {
-        stub.requiredChecks(
-            requiredChecksRequest {
+    override suspend fun branchRules(repo: Repo, branch: String): BranchRules = call {
+        stub.readBranchRules(
+            branchRulesRequest {
                 this.repo = repo.pb()
                 this.branch = branch
             },
         )
-    }.contextsList.toSet()
+    }.let { BranchRules(it.contextsList.toSet(), it.strict, it.threadResolution, it.mergeMethodsList.toSet(), it.uncheckedList) }
 
     override suspend fun postCheck(
         repo: Repo,
@@ -213,6 +213,11 @@ class GitHubAdapter(
             number = number,
             open = open,
             draft = draft,
+            mergeable = mergeable,
+            mergeState = mergeState,
+            reviewDecision = reviewDecision.ifEmpty { null },
+            unresolvedThreads = unresolvedThreads,
+            canBeRebased = canBeRebased,
             merged = merged,
             mergedAt = if (hasMergedAt()) mergedAt.instant() else null,
             mergeCommit = if (hasMergeCommit()) mergeCommit else null,
@@ -223,6 +228,7 @@ class GitHubAdapter(
                 AutoMerge(
                     if (autoMerge.hasEnabledBy()) autoMerge.enabledBy.model() else null,
                     if (autoMerge.hasEnabledAt()) autoMerge.enabledAt.instant() else null,
+                    autoMerge.mergeMethod.ifEmpty { null },
                 )
             } else {
                 null

@@ -41,7 +41,20 @@ data class ChangedFile(val path: String, val change: FileChange)
 
 data class CommitAuthor(val userId: String?, val email: String?, val merge: Boolean)
 
-data class AutoMerge(val enabledBy: SourceUser?, val enabledAt: Instant?)
+/** [mergeMethod] is GitHub's MERGE, SQUASH or REBASE. */
+data class AutoMerge(val enabledBy: SourceUser?, val enabledAt: Instant?, val mergeMethod: String? = null)
+
+/** What a base branch requires of a pull request before it merges. */
+data class BranchRules(
+    val contexts: Set<String> = emptySet(),
+    /** The head must contain the base branch. */
+    val strict: Boolean = false,
+    val threadResolution: Boolean = false,
+    /** Empty allows every method; otherwise lowercase GitHub names (merge, squash, rebase). */
+    val mergeMethods: Set<String> = emptySet(),
+    /** Rule types that can block a merge and that the flow does not evaluate. */
+    val unchecked: List<String> = emptyList(),
+)
 
 /** How a head commit relates to a base commit: AHEAD and IDENTICAL mean the head contains the base. */
 enum class CommitRelation { AHEAD, IDENTICAL, BEHIND, DIVERGED }
@@ -63,6 +76,12 @@ data class PullRequest(
     val checks: List<Check>?,
     val files: List<ChangedFile>,
     val commits: List<CommitAuthor> = emptyList(),
+    /** GitHub's MergeableState, MergeStateStatus and PullRequestReviewDecision; no decision when none is required. */
+    val mergeable: String = "MERGEABLE",
+    val mergeState: String = "CLEAN",
+    val reviewDecision: String? = null,
+    val unresolvedThreads: Int = 0,
+    val canBeRebased: Boolean = true,
 ) {
     /** The emails of [user]'s own non-merge commits. */
     fun commitEmailsBy(user: SourceUser): List<String> =
@@ -86,8 +105,7 @@ interface SourceAdapter {
 
     suspend fun compareCommits(repo: Repo, base: String, head: String): CommitRelation
 
-    /** The status contexts [branch]'s rulesets and branch protection require. */
-    suspend fun requiredChecks(repo: Repo, branch: String): Set<String>
+    suspend fun branchRules(repo: Repo, branch: String): BranchRules
 
     suspend fun postCheck(
         repo: Repo,

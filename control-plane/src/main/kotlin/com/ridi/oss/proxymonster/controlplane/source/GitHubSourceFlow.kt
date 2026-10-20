@@ -342,9 +342,10 @@ class GitHubSourceFlow(
             active.any { it.status == "PENDING" } -> pending(text("check.awaiting_approval", "path" to active.first { it.status == "PENDING" }.pullRequest?.path))
             pr.draft -> pending(text("check.waiting_draft"))
             pr.autoMerge == null -> pending(text("check.approved_enable_automerge"))
-            !checksGreen(pr, safely("read required checks") { adapter.requiredChecks(repo, pr.baseRef) }) ->
-                pending(text("check.waiting_checks"))
-            else -> null
+            else -> {
+                val rules = safely("read branch rules") { adapter.branchRules(repo, pr.baseRef) }
+                if (rules == null || !checksGreen(pr, rules.contexts)) pending(text("check.waiting_checks")) else mergeBlocked(repo, pr, rules)?.let(::pending)
+            }
         }
         if (blocked != null) return post(blocked)
 
@@ -436,14 +437,37 @@ class GitHubSourceFlow(
      * Every context [required] or the rollup marks required ran green on the head, and no other check is still
      * running: a branch that requires no checks would otherwise run the SQL before CI that may still fail.
      */
-    private fun checksGreen(pr: PullRequest, required: Set<String>?): Boolean {
-        val checks = pr.checks?.filter { it.name != CHECK_NAME }
-        if (checks == null || required == null) return false
+    private fun checksGreen(pr: PullRequest, required: Set<String>): Boolean {
+        val checks = pr.checks?.filter { it.name != CHECK_NAME } ?: return false
         if (checks.any { it.status != CheckStatus.COMPLETED }) return false
         val needed = (required + checks.filter { it.required }.map { it.name }) - CHECK_NAME
         return needed.all { name ->
             val runs = checks.filter { it.name == name }
             runs.isNotEmpty() && runs.all { it.conclusion in GREEN }
+        }
+    }
+
+    /**
+     * Why GitHub would refuse to merge [pr] once this flow's check passes, or null when it would merge. While that
+     * check is required, GitHub reports every such PR as blocked, so the rules behind that verdict are read here.
+     */
+    private suspend fun mergeBlocked(repo: Repo, pr: PullRequest, rules: BranchRules): String? {
+        val ownRequired = CHECK_NAME in rules.contexts || pr.checks.orEmpty().any { it.name == CHECK_NAME && it.required }
+        val method = pr.autoMerge?.mergeMethod?.lowercase()
+        return when {
+            pr.mergeable == "CONFLICTING" -> text("check.conflicts")
+            pr.mergeable != "MERGEABLE" -> text("check.waiting_mergeable")
+            pr.mergeState == "BEHIND" -> text("check.update_branch")
+            pr.reviewDecision != null && pr.reviewDecision != "APPROVED" -> text("check.waiting_reviews")
+            rules.threadResolution && pr.unresolvedThreads > 0 -> text("check.waiting_threads")
+            rules.mergeMethods.isNotEmpty() && method !in rules.mergeMethods -> text("check.merge_method", "method" to method)
+            method == "rebase" && !pr.canBeRebased -> text("check.cannot_rebase")
+            rules.strict && safely("compare with base") { adapter.compareCommits(repo, pr.baseRef, pr.headSha) }
+                .let { it != CommitRelation.AHEAD && it != CommitRelation.IDENTICAL } -> text("check.update_branch")
+            !ownRequired -> if (pr.mergeState in MERGEABLE_STATES) null else text("check.waiting_mergeable")
+            rules.unchecked.isNotEmpty() -> text("check.unchecked_rule", "rule" to rules.unchecked.joinToString(", "))
+            pr.mergeState != "BLOCKED" && pr.mergeState !in MERGEABLE_STATES -> text("check.waiting_mergeable")
+            else -> null
         }
     }
 
@@ -479,6 +503,7 @@ class GitHubSourceFlow(
         private val OPEN = setOf("PENDING", "APPROVED")
         private val DEAD = setOf(DELETED, CANCELLED, "REJECTED")
         private val GREEN = setOf(CheckConclusion.SUCCESS, CheckConclusion.NEUTRAL, CheckConclusion.SKIPPED)
+        private val MERGEABLE_STATES = setOf("CLEAN", "UNSTABLE", "HAS_HOOKS")
         private val COUNTED_REVIEWS = setOf(ReviewState.APPROVED, ReviewState.CHANGES_REQUESTED, ReviewState.DISMISSED)
 
         /** The web host for pull-request links: github.com for the public API, the server itself for GHES. */

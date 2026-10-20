@@ -164,8 +164,9 @@ func TestReadPullRequestsReadsEveryPRInOneQueryAndMapsEachField(t *testing.T) {
 
 	alice := &User{ID: "101", Login: "alice"}
 	want := PullRequest{
-		Number: 1, Open: true, HeadSHA: "sha1", BaseRef: "main", Author: alice,
-		AutoMerge: &AutoMerge{EnabledBy: alice, EnabledAt: ts("2026-10-09T00:10:00Z")},
+		Number: 1, Open: true, Draft: true, HeadSHA: "sha1", BaseRef: "main", Author: alice,
+		AutoMerge: &AutoMerge{EnabledBy: alice, EnabledAt: ts("2026-10-09T00:10:00Z"), MergeMethod: "SQUASH"},
+		Mergeable: "MERGEABLE", MergeState: "BLOCKED", CanBeRebased: true, ReviewDecision: "REVIEW_REQUIRED", UnresolvedThreads: 2,
 		Reviews: []Review{
 			{ID: "501", Reviewer: &User{"102", "bob"}, State: "APPROVED", SubmittedAt: ts("2026-10-09T00:20:00Z"), URL: "https://github.com/acme/shop/pull/1#r501", Commit: s("sha1")},
 			{ID: "502", Reviewer: &User{"103", "carol"}, State: "DISMISSED", SubmittedAt: ts("2026-10-09T00:05:00Z"), URL: "https://github.com/acme/shop/pull/1#r502"},
@@ -271,7 +272,7 @@ const (
 	branchPath = "/repos/acme/shop/branches/release%2F1"
 )
 
-func TestRequiredChecksMergeRulesetAndBranchProtectionContextsCachedForFiveMinutes(t *testing.T) {
+func TestBranchRulesMergeRulesetAndBranchProtectionContextsCachedForFiveMinutes(t *testing.T) {
 	f := newFake(t)
 	f.on("GET", rulesPath, ok(`[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"build"},{"context":"lint","integration_id":1}]}},
 		{"type":"pull_request","parameters":{}}]`))
@@ -280,8 +281,8 @@ func TestRequiredChecksMergeRulesetAndBranchProtectionContextsCachedForFiveMinut
 	want := []string{"build", "ci/legacy", "e2e", "lint"}
 	check := func(rules, branch int) {
 		t.Helper()
-		got, err := c.RequiredChecks(ctx, repo, "release/1")
-		if err != nil || !reflect.DeepEqual(got, want) {
+		got, err := c.BranchRules(ctx, repo, "release/1")
+		if err != nil || !reflect.DeepEqual(got.Contexts, want) {
 			t.Fatalf("got %v %v", got, err)
 		}
 		if len(f.to("GET", rulesPath)) != rules || len(f.to("GET", branchPath)) != branch {
@@ -305,8 +306,8 @@ func TestRulesetPagesAreReadUntilAShortPage(t *testing.T) {
 		return reply{status: 200, body: filler, link: rulesPath + "?per_page=100&page=2"}
 	}, ok(`[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"late"}]}}]`))
 	f.on("GET", branchPath, ok(`{"name":"release/1","protection":{"enabled":false}}`))
-	got, err := f.client(t).RequiredChecks(ctx, repo, "release/1")
-	if err != nil || !reflect.DeepEqual(got, []string{"late"}) {
+	got, err := f.client(t).BranchRules(ctx, repo, "release/1")
+	if err != nil || !reflect.DeepEqual(got.Contexts, []string{"late"}) {
 		t.Fatalf("got %v %v", got, err)
 	}
 	var pages []string
@@ -318,21 +319,52 @@ func TestRulesetPagesAreReadUntilAShortPage(t *testing.T) {
 	}
 }
 
-func TestAMissingBranchHasNoRequiredChecksAndAnyOtherErrorIsNotCached(t *testing.T) {
+func TestBranchRulesReadEveryRuleThatCanBlockAMerge(t *testing.T) {
+	f := newFake(t)
+	f.on("GET", rulesPath, ok(`[
+		{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":true,"required_status_checks":[{"context":"build"}]}},
+		{"type":"pull_request","parameters":{"required_review_thread_resolution":true,"allowed_merge_methods":["merge","squash"]}},
+		{"type":"required_linear_history"},
+		{"type":"pull_request","parameters":{"required_approving_review_count":0,"require_code_owner_review":true}},
+		{"type":"deletion"},{"type":"copilot_code_review","parameters":{}},{"type":"update","parameters":{}},
+		{"type":"commit_message_pattern","parameters":{"operator":"starts_with","pattern":"x"}},
+		{"type":"merge_queue","parameters":{}},{"type":"code_quality","parameters":{}},{"type":"merge_queue","parameters":{}}]`))
+	f.on("GET", branchPath, ok(`{"name":"release/1","protection":{"enabled":true}}`))
+	got, err := f.client(t).BranchRules(ctx, repo, "release/1")
+	want := BranchRules{
+		Contexts: []string{"build"}, Strict: true, ThreadResolution: true, MergeMethods: []string{"squash"},
+		Unchecked: []string{"branch_protection", "code_quality", "commit_message_pattern", "merge_queue", "pull_request", "update"},
+	}
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %+v %v", got, err)
+	}
+}
+
+func TestMergeMethodRulesThatAllowNoMethodAreUnchecked(t *testing.T) {
+	f := newFake(t)
+	f.on("GET", rulesPath, ok(`[{"type":"pull_request","parameters":{"allowed_merge_methods":["merge"]}},{"type":"required_linear_history"}]`))
+	f.on("GET", branchPath, ok(`{"name":"release/1","protection":{"enabled":false}}`))
+	got, err := f.client(t).BranchRules(ctx, repo, "release/1")
+	if err != nil || !reflect.DeepEqual(got.Unchecked, []string{"required_linear_history"}) {
+		t.Fatalf("got %+v %v", got, err)
+	}
+}
+
+func TestAMissingBranchHasNoRulesAndAnyOtherErrorIsNotCached(t *testing.T) {
 	f := newFake(t)
 	f.on("GET", rulesPath, status(404, `{"message":"Not Found"}`))
 	f.on("GET", branchPath, status(404, `{"message":"Not Found"}`))
-	got, err := f.client(t).RequiredChecks(ctx, repo, "release/1")
-	if err != nil || len(got) != 0 {
+	got, err := f.client(t).BranchRules(ctx, repo, "release/1")
+	if err != nil || !reflect.DeepEqual(got, BranchRules{Contexts: []string{}}) {
 		t.Fatalf("got %v %v", got, err)
 	}
 
 	c := f.client(t)
 	f.on("GET", branchPath, status(500, `{"message":"boom"}`), ok(`{"name":"release/1","protection":{"required_status_checks":{"contexts":["build"]}}}`))
-	_, err = c.RequiredChecks(ctx, repo, "release/1")
+	_, err = c.BranchRules(ctx, repo, "release/1")
 	wantKind(t, err, Server)
-	got, err = c.RequiredChecks(ctx, repo, "release/1")
-	if err != nil || !reflect.DeepEqual(got, []string{"build"}) {
+	got, err = c.BranchRules(ctx, repo, "release/1")
+	if err != nil || !reflect.DeepEqual(got.Contexts, []string{"build"}) {
 		t.Fatalf("got %v %v", got, err)
 	}
 }
@@ -354,6 +386,23 @@ func TestAFurtherPageOfFilesIsFetchedUntilComplete(t *testing.T) {
 	}
 	page := f.to("POST", "/graphql")[1].json(t)
 	if page["variables"].(map[string]any)["after"] != "c1" || !strings.Contains(page["query"].(string), "files(first: 100, after: $after)") {
+		t.Fatalf("page %v", page)
+	}
+}
+
+func TestAFurtherPageOfReviewThreadsIsFetchedUntilComplete(t *testing.T) {
+	f := newFake(t)
+	f.graphql(
+		ok(prResponse(pr(1, prOpts{threadsNext: "t1"}))),
+		ok(`{"data":{"rateLimit":`+rate+`,"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},
+			"nodes":[{"isResolved":true},{"isResolved":false}]}}}}}`),
+	)
+	got, err := f.client(t).ReadPullRequests(ctx, repo, []int{1})
+	if err != nil || got[1].UnresolvedThreads != 3 {
+		t.Fatalf("got %v %v", got[1].UnresolvedThreads, err)
+	}
+	page := f.to("POST", "/graphql")[1].json(t)
+	if page["variables"].(map[string]any)["after"] != "t1" || !strings.Contains(page["query"].(string), "reviewThreads(first: 100, after: $after)") {
 		t.Fatalf("page %v", page)
 	}
 }
@@ -691,8 +740,8 @@ func TestARenamedBranchRedirectIsFollowed(t *testing.T) {
 		return reply{status: 301, body: `{"message":"Moved Permanently"}`, header: map[string]string{"Location": f.srv.URL + "/repos/acme/shop/branches/release%2F2"}}
 	})
 	f.on("GET", "/repos/acme/shop/branches/release%2F2", ok(`{"name":"release/2","protection":{"required_status_checks":{"contexts":["build"]}}}`))
-	got, err := f.client(t).RequiredChecks(ctx, repo, "release/1")
-	if err != nil || !reflect.DeepEqual(got, []string{"build"}) {
+	got, err := f.client(t).BranchRules(ctx, repo, "release/1")
+	if err != nil || !reflect.DeepEqual(got.Contexts, []string{"build"}) {
 		t.Fatalf("got %v %v", got, err)
 	}
 }

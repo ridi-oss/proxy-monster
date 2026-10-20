@@ -554,7 +554,7 @@ func TestAnyGraphQLErrorFailsALookup(t *testing.T) {
 	f := newFake(t)
 	f.graphql(ok(`{"data":{"organization":null},"errors":[{"type":"FORBIDDEN","path":["organization"],"message":"no"}]}`))
 	_, err := f.client(t).ExternalIdentity(ctx, "acme", "alice")
-	if e := wantKind(t, err, GraphQL); e.Message != "POST /graphql -> GraphQL errors: no" {
+	if e := wantKind(t, err, GraphQL); e.Message != "POST /graphql -> GraphQL errors: FORBIDDEN at organization: no" {
 		t.Fatalf("message %q", e.Message)
 	}
 	f.graphql(ok(`{"data":{"user":null},"errors":[{"type":"NOT_FOUND","path":["user"],"message":"no"}]}`))
@@ -702,8 +702,9 @@ func TestAnErrorInsideAPresentPRFailsTheRead(t *testing.T) {
 	errAt := `"errors":[{"type":"SERVICE_UNAVAILABLE","path":["repository","pr0","reviews"],"message":"timeout"}]`
 	nullReviews := `{"data":{"rateLimit":` + rate + `,"repository":{"pr0":` + withoutReviews(pr(1, prOpts{})) + `}},` + errAt + `}`
 	f.graphql(ok(nullReviews))
-	if got, err := f.client(t).ReadPullRequests(ctx, repo, []int{1}); err == nil {
-		t.Fatalf("got %v, want an error", got)
+	_, err := f.client(t).ReadPullRequests(ctx, repo, []int{1})
+	if e := wantKind(t, err, GraphQL); e.Message != "POST /graphql -> GraphQL errors: SERVICE_UNAVAILABLE at repository.pr0.reviews: timeout" {
+		t.Fatalf("message %q", e.Message)
 	}
 
 	f.clear()

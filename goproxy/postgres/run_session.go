@@ -20,18 +20,18 @@ type RunSession struct {
 	sessionCore
 	conn     net.Conn
 	keyData  pgproto3.BackendKeyData
-	config   spi.TargetConfig
+	target   *target
 	ref      *sqldb.Refetcher
 	guard    spi.ExecGuard
 	poisoned bool
 }
 
-func NewRunSession(ctx context.Context, config spi.TargetConfig, authz *spi.Authorizer, guard spi.ExecGuard, readTimeout time.Duration, defaultSchema string) (*RunSession, error) {
+func (t *target) NewRunSession(ctx context.Context, authz *spi.Authorizer, guard spi.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.Session, error) {
 	var extra map[string]string
 	if defaultSchema != "" {
 		extra = map[string]string{"search_path": `"` + strings.ReplaceAll(defaultSchema, `"`, `""`) + `"`}
 	}
-	conn, _, keyData, txStatus, catalog, err := dialTargetDbAuthParams(ctx, config, extra)
+	conn, _, keyData, txStatus, catalog, err := dialTargetDbAuthParams(ctx, t.config, extra)
 	if err != nil {
 		return nil, err
 	}
@@ -50,7 +50,7 @@ func NewRunSession(ctx context.Context, config spi.TargetConfig, authz *spi.Auth
 		},
 		conn:    conn,
 		keyData: keyData,
-		config:  config,
+		target:  t,
 		guard:   guard,
 	}
 	s.ref = sqldb.NewRefetcher(Queries, authz.ConnectionID(), generation, func(sql string, expectedColumns int) ([][]*string, error) {
@@ -130,7 +130,7 @@ func (s *RunSession) Cancel() error {
 		_ = s.conn.Close()
 		return errors.New("cannot cancel: target DB did not provide a cancellation key")
 	}
-	if err := sendCancelRequest(s.config, s.keyData.ProcessID, s.keyData.SecretKey); err != nil {
+	if err := sendCancelRequest(s.target.config, s.keyData.ProcessID, s.keyData.SecretKey); err != nil {
 		_ = s.conn.Close()
 		return err
 	}

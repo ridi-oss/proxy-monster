@@ -42,7 +42,7 @@ class SlackSocketModeTest {
         slack = MockSlack.start()
         http = slackHttpClient()
         slack.usersById["U_CLICKER"] = MockSlack.SlackUser(email = "clicker@example.com")
-        slack.usersById["U_VALID"] = MockSlack.SlackUser(email = "valid@example.com")
+        slack.usersById["U_VALID"] = MockSlack.SlackUser(email = "valid@example.com", name = "valid")
         // The directory maps a verified Slack email to THAT user's principal — which is NOT the email itself
         // (a principal can be an OIDC subject id).
         principalByEmail["clicker@example.com"] = "okta|clicker"
@@ -110,19 +110,19 @@ class SlackSocketModeTest {
             messageEvent("m-reply", """{"type":"message","channel":"C1","ts":"4.0","thread_ts":"1.0","user":"U_CLICKER","text":"why? <@U_VALID> <@U_GONE|gone>"}"""),
         )
         slack.pushEnvelope(
-            messageEvent("m-edit", """{"type":"message","subtype":"message_changed","channel":"C1","message":{"ts":"4.0","user":"U_CLICKER","text":"why not?"}}"""),
+            messageEvent("m-edit", """{"type":"message","subtype":"message_changed","channel":"C1","message":{"ts":"4.0","user":"U_CLICKER","text":"why not, <@U_VALID>?"}}"""),
         )
         val reply = withTimeout(5_000) { messages.receive() }
         assertEquals(
             SlackThreadMessage(
-                SlackThreadMessage.Kind.NEW, "C1", "4.0", "1.0", "okta|clicker", "U_CLICKER", "why? <@U_VALID> <@U_GONE|gone>",
+                SlackThreadMessage.Kind.NEW, "C1", "4.0", "1.0", "okta|clicker", "U_CLICKER", "why? @valid @gone",
                 mentions = listOf("valid@example.com"),
             ),
             reply,
             "a mention of a Slack user with no active user is left out",
         )
         val edit = withTimeout(5_000) { messages.receive() }
-        assertEquals(SlackThreadMessage(SlackThreadMessage.Kind.EDITED, "C1", "4.0", text = "why not?"), edit)
+        assertEquals(SlackThreadMessage(SlackThreadMessage.Kind.EDITED, "C1", "4.0", text = "why not, @valid?"), edit)
     }
 
     @Test

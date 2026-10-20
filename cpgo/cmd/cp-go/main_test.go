@@ -92,7 +92,7 @@ func startFront(t *testing.T, opts ...func(*config)) (config, context.CancelFunc
 	// exits before serving, and a fresh set of ports is the fix.
 	for attempt := 1; ; attempt++ {
 		cfg := parseConfig(t)
-		cfg.HTTPPort, cfg.GRPCPort = freePort(t), freePort(t)
+		cfg.HTTPPort, cfg.GRPCPort, cfg.BindHost = freePort(t), freePort(t), "127.0.0.1"
 		cfg.Child, cfg.ChildHTTPPort, cfg.ChildGRPCPort = os.Args[0], freePort(t), freePort(t)
 		cfg.StartTimeout = 30 * time.Second
 		cfg.DBURL, cfg.DBUser, cfg.DBPassword = st.JDBCURL, st.User, st.Password

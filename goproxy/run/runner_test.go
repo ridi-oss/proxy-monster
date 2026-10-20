@@ -1397,7 +1397,11 @@ func TestRunnerDrainDoesNotStartAQueuedQuery(t *testing.T) {
 	// Drain, then hand the runner a query. A query racing in with the drain must not start a new statement on
 	// a departing proxy: the runner returns without a decision or rows, and the editor re-homes.
 	close(draining)
-	runSendQuery(fake, "SELECT 1", 20)
+	// The runner may already have exited and ended the stream, leaving no one to take the query.
+	select {
+	case fake.runCommands <- &pb.ControlRunMsg{Kind: &pb.ControlRunMsg_Query{Query: &pb.RunQuery{Sql: "SELECT 1", MaxRows: 20}}}:
+	case <-done:
+	}
 
 	runExpectSilence(t, fake, 500*time.Millisecond)
 	select {

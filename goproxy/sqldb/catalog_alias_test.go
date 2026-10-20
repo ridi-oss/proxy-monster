@@ -75,9 +75,6 @@ func (*aliasControlPlane) ReportCompletion(context.Context, *pb.CompletionReport
 }
 
 func TestPostgresCatalogThroughDatabaseAlias(t *testing.T) {
-	// The catalog read includes the function inventory, which takes tens of seconds on a CI runner.
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-	defer cancel()
 	database := dbtest.Postgres(t)
 	seed := dbtest.OpenPostgres(t, "")
 	schema := fmt.Sprintf("alias_catalog_%d", time.Now().UnixNano())
@@ -99,6 +96,10 @@ func TestPostgresCatalogThroughDatabaseAlias(t *testing.T) {
 	}
 	gateway, rewritten := dbtest.PostgresAlias(t, database, "advisory")
 	target := openTarget(t, engines.Postgres, spi.TargetConfig{Host: gateway.Host, Port: gateway.Port, Db: gateway.DB, User: gateway.User, Password: gateway.Password})
+	// After setup, which can include starting the shared container: the catalog read includes the function
+	// inventory, which takes tens of seconds on a CI runner.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
 	catalog, err := target.Introspect(ctx)
 	if err != nil {
 		t.Fatal(err)

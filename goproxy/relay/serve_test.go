@@ -11,14 +11,30 @@ import (
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
-func serveInput() AuthzInput {
-	return AuthzInput{SQL: "SELECT 1", ProbeSession: func() (spi.SessionObservation, error) { return spi.SessionObservation{Namespace: []string{"app"}}, nil }}
+type fakeDecider struct {
+	outcome spi.DecisionOutcome
+	calls   int
+	lastReq spi.DecideRequest
+}
+
+func (f *fakeDecider) Decide(req spi.DecideRequest) spi.DecisionOutcome {
+	f.calls++
+	f.lastReq = req
+	return f.outcome
+}
+
+func okOutcome(action string, masks []*pb.ColumnMask) spi.DecisionOutcome {
+	return spi.DecisionOutcome{Decision: &spi.Decision{Action: action, Masks: masks}}
+}
+
+func serveInput() spi.AuthzInput {
+	return spi.AuthzInput{SQL: "SELECT 1", ProbeSession: func() (spi.SessionObservation, error) { return spi.SessionObservation{Namespace: []string{"app"}}, nil }}
 }
 
 func TestServeStatementFailHasNoDecision(t *testing.T) {
-	qe := NewQueryEngine(&fakeDecider{outcome: spi.DecisionOutcome{Err: "unreachable"}})
+	qe := spi.NewQueryEngine(&fakeDecider{outcome: spi.DecisionOutcome{Err: "unreachable"}})
 	dec, denied, err := ServeStatement(qe, serveInput(), nil, nil, func(string, []*pb.ColumnMask, *spi.Decision) (bool, error) {
-		t.Fatal("run called for Fail")
+		t.Fatal("run called for spi.Fail")
 		return false, nil
 	})
 	var fail FailError
@@ -29,9 +45,9 @@ func TestServeStatementFailHasNoDecision(t *testing.T) {
 
 func TestServeStatementDenySkipsRun(t *testing.T) {
 	want := &spi.Decision{Action: "DENY", DenyReason: "policy"}
-	qe := NewQueryEngine(&fakeDecider{outcome: spi.DecisionOutcome{Decision: want}})
+	qe := spi.NewQueryEngine(&fakeDecider{outcome: spi.DecisionOutcome{Decision: want}})
 	dec, denied, err := ServeStatement(qe, serveInput(), nil, nil, func(string, []*pb.ColumnMask, *spi.Decision) (bool, error) {
-		t.Fatal("run called for Deny")
+		t.Fatal("run called for spi.Deny")
 		return false, nil
 	})
 	if err != nil || !denied || dec != want {
@@ -42,7 +58,7 @@ func TestServeStatementDenySkipsRun(t *testing.T) {
 func TestServeStatementRunErrorRetainsDecision(t *testing.T) {
 	want := &spi.Decision{Action: "ALLOW"}
 	runErr := errors.New("target DB failed")
-	qe := NewQueryEngine(&fakeDecider{outcome: spi.DecisionOutcome{Decision: want}})
+	qe := spi.NewQueryEngine(&fakeDecider{outcome: spi.DecisionOutcome{Decision: want}})
 	dec, denied, err := ServeStatement(qe, serveInput(), nil, nil, func(string, []*pb.ColumnMask, *spi.Decision) (bool, error) {
 		return false, runErr
 	})
@@ -75,7 +91,7 @@ func TestServeStatementRefetchesOnlyAfterCleanCompletion(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			calls := 0
 			decision := &spi.Decision{Action: "ALLOW", AfterStatement: []*pb.ProxyCommand{&pb.ProxyCommand{Command: &pb.ProxyCommand_Refetch{Refetch: &pb.Refetch{Catalog: "def", Schema: "app"}}}}}
-			qe := NewQueryEngine(&fakeDecider{outcome: spi.DecisionOutcome{Decision: decision}})
+			qe := spi.NewQueryEngine(&fakeDecider{outcome: spi.DecisionOutcome{Decision: decision}})
 			_, _, err := ServeStatement(qe, serveInput(), newRef(&calls), nil, func(string, []*pb.ColumnMask, *spi.Decision) (bool, error) {
 				return tc.clean, nil
 			})
@@ -93,7 +109,7 @@ func TestServeStatementGuardWrapsOnlyRun(t *testing.T) {
 		events = append(events, "authorize")
 		return spi.SessionObservation{Namespace: []string{"app"}}, nil
 	}
-	qe := NewQueryEngine(&fakeDecider{outcome: okOutcome("ALLOW", nil)})
+	qe := spi.NewQueryEngine(&fakeDecider{outcome: okOutcome("ALLOW", nil)})
 	guard := func(exec func() error) error {
 		events = append(events, "guard-enter")
 		err := exec()
@@ -194,7 +210,7 @@ func TestAuthorizeWaitsForPendingCompletion(t *testing.T) {
 	release := make(chan struct{})
 	reporter := &blockingReporter{release: release}
 	decider := &fakeDecider{outcome: okOutcome("ALLOW", nil)}
-	qe := NewQueryEngine(decider)
+	qe := spi.NewQueryEngine(decider)
 	qe.AwaitCompletion(EmitCompletion(reporter, &spi.Decision{DecisionID: 7}, spi.RelayStats{Rows: 3}, StatusOK, time.Now()))
 
 	decided := make(chan struct{})

@@ -27,20 +27,20 @@ func (e TargetDbError) Error() string { return e.Message }
 
 // ServeStatement authorizes, executes, and conditionally runs after-statement refetch commands.
 func ServeStatement(
-	qe *QueryEngine,
-	in AuthzInput,
+	qe *spi.QueryEngine,
+	in spi.AuthzInput,
 	ref *Refetcher,
 	guard spi.ExecGuard,
 	run func(toSend string, masks []*pb.ColumnMask, dec *spi.Decision) (clean bool, err error),
 ) (dec *spi.Decision, denied bool, err error) {
 	verdict := qe.Authorize(in)
-	var proceed Proceed
+	var proceed spi.Proceed
 	switch verdict := verdict.(type) {
-	case Fail:
+	case spi.Fail:
 		return nil, false, FailError{Message: verdict.Message}
-	case Deny:
+	case spi.Deny:
 		return verdict.Decision, true, nil
-	case Proceed:
+	case spi.Proceed:
 		proceed = verdict
 		dec = verdict.Decision
 	default:

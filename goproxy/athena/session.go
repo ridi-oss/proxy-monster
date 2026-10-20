@@ -19,7 +19,7 @@ type enforcementSession struct {
 	client       spi.ControlPlane
 	token        string
 	connectionID []byte
-	engine       *relay.QueryEngine
+	engine       *spi.QueryEngine
 	refetcher    *refetcher
 }
 
@@ -28,7 +28,7 @@ func (t *target) newEnforcementSession(client spi.ControlPlane, token string, co
 	if err != nil {
 		return nil, err
 	}
-	return &enforcementSession{target: t, client: client, token: token, connectionID: append([]byte(nil), connectionID...), engine: relay.NewQueryEngine(client), refetcher: refetcher}, nil
+	return &enforcementSession{target: t, client: client, token: token, connectionID: append([]byte(nil), connectionID...), engine: spi.NewQueryEngine(client), refetcher: refetcher}, nil
 }
 
 func (s *enforcementSession) onOpen(commands []*pb.ProxyCommand) error {
@@ -36,8 +36,8 @@ func (s *enforcementSession) onOpen(commands []*pb.ProxyCommand) error {
 }
 
 // authorize obtains the control plane's verdict for one statement in the target's fixed scope.
-func (s *enforcementSession) authorize(sql, clientAddr string, parameters []string, maxRows int) relay.Verdict {
-	return s.engine.Authorize(relay.AuthzInput{
+func (s *enforcementSession) authorize(sql, clientAddr string, parameters []string, maxRows int) spi.Verdict {
+	return s.engine.Authorize(spi.AuthzInput{
 		SQL: sql, Token: s.token, ClientAddr: clientAddr, ConnectionID: s.connectionID,
 		ProbeSession: func() (spi.SessionObservation, error) {
 			return spi.SessionObservation{
@@ -89,13 +89,13 @@ func withDeadline(parent context.Context, timeout time.Duration) (context.Contex
 	return context.WithTimeout(parent, timeout)
 }
 
-func verdictError(verdict relay.Verdict) error {
+func verdictError(verdict spi.Verdict) error {
 	switch v := verdict.(type) {
-	case relay.Fail:
+	case spi.Fail:
 		return relay.FailError{Message: v.Message}
-	case relay.Deny:
+	case spi.Deny:
 		return nil
-	case relay.Proceed:
+	case spi.Proceed:
 		return nil
 	default:
 		return relay.FailError{Message: fmt.Sprintf("unexpected authorization verdict %T", verdict)}

@@ -133,7 +133,7 @@ jobs:
           spctl -a -vv -t install dist/*.pkg
           ditto -x -k dist/*.zip "$RUNNER_TEMP/unzipped"
           spctl -a -vv -t exec "$RUNNER_TEMP/unzipped/Proxy Monster Desktop.app"
-          xcrun stapler validate "$RUNNER_TEMP/unzipped/Proxy Monster Desktop.app"
+          pmon/tray/stapler.sh validate "$RUNNER_TEMP/unzipped/Proxy Monster Desktop.app"
 
       - name: Remove the signing material
         if: always()

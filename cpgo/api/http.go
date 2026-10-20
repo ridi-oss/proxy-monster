@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"mime"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -56,6 +57,9 @@ func Truncate(s string, n int) string {
 	}
 	return s
 }
+
+// URLParameter is Ktor's String.encodeURLParameter: percent-encoding with %20 for a space.
+func URLParameter(s string) string { return strings.ReplaceAll(url.QueryEscape(s), "+", "%20") }
 
 // Found is Ktor's respondRedirect: a 302 with a Location and no body.
 func Found(w http.ResponseWriter, location string) {

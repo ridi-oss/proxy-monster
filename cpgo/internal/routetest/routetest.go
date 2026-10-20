@@ -15,6 +15,7 @@ import (
 	"github.com/ridi-oss/proxy-monster/cpgo/front"
 	"github.com/ridi-oss/proxy-monster/cpgo/internal/dbtest"
 	"github.com/ridi-oss/proxy-monster/cpgo/routes"
+	"github.com/ridi-oss/proxy-monster/cpgo/routes/oauth"
 	"github.com/ridi-oss/proxy-monster/cpgo/routes/oidc"
 	"github.com/ridi-oss/proxy-monster/cpgo/session"
 )
@@ -129,6 +130,8 @@ type Config struct {
 	Login oidc.Login
 	// Settings replaces dbtest.Settings.
 	Settings *session.Settings
+	// Clients resolves OAuth client metadata documents; nil fetches them over HTTPS.
+	Clients oauth.Resolver
 }
 
 func SetupConfig(t *testing.T, c Config) *Env {
@@ -153,6 +156,10 @@ func SetupConfig(t *testing.T, c Config) *Env {
 	if c.AuthDebugOff {
 		settings.AuthDebug = false
 	}
+	clients := c.Clients
+	if clients == nil {
+		clients = oauth.HTTPResolver{AllowSpecialUse: settings.AuthDebug}
+	}
 	mux := http.NewServeMux()
 	routes.Register(mux, e.St.Pool, api.Gate{
 		Sessions:  session.NewResolver(e.St.Pool, settings),
@@ -160,7 +167,7 @@ func SetupConfig(t *testing.T, c Config) *Env {
 		AuthDebug: settings.AuthDebug,
 		Authz:     decider,
 		Kotlin:    &e.Authz,
-	}, c.Login)
+	}, c.Login, clients)
 	e.Srv = httptest.NewServer(front.Route(mux, forward))
 	t.Cleanup(e.Srv.Close)
 	return e

@@ -21,11 +21,6 @@ import com.ridi.oss.proxymonster.controlplane.management.PolicyManagementService
 import com.ridi.oss.proxymonster.controlplane.mcp.installMcp
 import com.ridi.oss.proxymonster.controlplane.mcp.instanceInfoRoute
 import com.ridi.oss.proxymonster.controlplane.mcp.mcpConnectRoute
-import com.ridi.oss.proxymonster.controlplane.oauth.MCP_OAUTH_PENDING_COOKIE
-import com.ridi.oss.proxymonster.controlplane.oauth.McpPendingAuthorization
-import com.ridi.oss.proxymonster.controlplane.oauth.OAuthError
-import com.ridi.oss.proxymonster.controlplane.oauth.installMcpOAuthProtocolGuard
-import com.ridi.oss.proxymonster.controlplane.oauth.mcpOAuthRoutes
 import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.Application
@@ -415,13 +410,7 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
     install(StatusPages) {
         exception<Throwable> { call, cause ->
             call.application.environment.log.error("Unhandled exception", cause)
-            if (call.request.path().startsWith("/oauth/") ||
-                call.request.path() == "/.well-known/oauth-authorization-server"
-            ) {
-                call.respond(HttpStatusCode.InternalServerError, OAuthError("server_error"))
-            } else {
-                call.respondError(HttpStatusCode.InternalServerError, "common.fallback")
-            }
+            call.respondError(HttpStatusCode.InternalServerError, "common.fallback")
         }
     }
     install(SSE)
@@ -439,18 +428,7 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
                 ),
             )
         }
-        cookie<McpPendingAuthorization>(MCP_OAUTH_PENDING_COOKIE) {
-            cookie.path = "/"
-            cookie.httpOnly = true
-            cookie.secure = config.mcpIssuer.startsWith("https://")
-            cookie.maxAgeInSeconds = 600
-            cookie.extensions["SameSite"] = "Lax"
-            serializer = jsonSessionSerializer()
-            transform(SessionTransportTransformerMessageAuthentication(config.sessionSecret.toByteArray()))
-        }
     }
-
-    installMcpOAuthProtocolGuard()
 
     // MCPA transport adapters share these service instances with the REST surface and the one live core.
     val managementAudit = ManagementAuditRecorder(core.auditStore)
@@ -521,10 +499,6 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
                 ),
             )
         }
-
-        // OAuth 2.1/CIMD authorization-server routes share this process, origin, DB pool, OIDC login,
-        // and signed user session with the control plane. There is no service-to-service auth hop.
-        mcpOAuthRoutes(config, dataSource, principalSessionStore, core.authAudit)
 
         // SCIM 2.0 provisioning (docs/auth-model.md "SCIM 2.0 provisioning") — bearer+TLS gated,
         // not a user session. principalSessionStore is passed so a SCIM deprovision durably closes the

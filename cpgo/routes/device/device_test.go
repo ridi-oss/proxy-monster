@@ -15,6 +15,7 @@ import (
 
 	"github.com/ridi-oss/proxy-monster/cpgo/internal/routetest"
 	"github.com/ridi-oss/proxy-monster/cpgo/routes/device"
+	"github.com/ridi-oss/proxy-monster/cpgo/session"
 	"github.com/ridi-oss/proxy-monster/cpgo/store/db"
 )
 
@@ -111,11 +112,11 @@ func TestDeviceLogin(t *testing.T) {
 		WHERE ps.handle = $1 AND ps.kind = 'DAEMON' AND t.kind = 'SESSION' AND ps.renewal_token_hash = $2 AND t.token_hash = $3
 		  AND ps.refresh_token_enc = '\x0102' AND ps.ttl_seconds = 43200 AND ps.liveness_status = 'ACTIVE'
 		  AND ps.scopes = 'mcp:query mcp:read' AND ps.elevated_until IS NULL
-		  AND ps.absolute_expires_at > now() + interval '7100 seconds'`, s.Handle, device.SHA256Hex(r.RenewalToken), device.SHA256Hex(r.Token)); n != 1 {
+		  AND ps.absolute_expires_at > now() + interval '7100 seconds'`, s.Handle, session.TokenHash(r.RenewalToken), session.TokenHash(r.Token)); n != 1 {
 		t.Fatalf("minted sessions %d", n)
 	}
 	if n := e.Count(t, `SELECT count(*) FROM audit_event WHERE action = 'auth.device.mint' AND principal = 'alice@example.com'
-		AND resource = 'Token::"' || (SELECT id FROM proxy_token WHERE token_hash = $1) || '"'`, device.SHA256Hex(r.Token)); n != 1 {
+		AND resource = 'Token::"' || (SELECT id FROM proxy_token WHERE token_hash = $1) || '"'`, session.TokenHash(r.Token)); n != 1 {
 		t.Fatalf("mint audit rows %d", n)
 	}
 	for _, secret := range []string{s.Handle, r.Token, r.RenewalToken, "pmr_"} {
@@ -241,7 +242,7 @@ func TestSessionRenew(t *testing.T) {
 	resp, out := pmon.Bearer("/auth/session/renew", r.RenewalToken)
 	var renewed struct{ Token, ExpiresAt string }
 	if resp.StatusCode != http.StatusOK || json.Unmarshal([]byte(out), &renewed) != nil || renewed.Token == r.Token ||
-		e.Count(t, `SELECT count(*) FROM proxy_token WHERE token_hash = $1 AND expires_at BETWEEN now() + interval '590 seconds' AND now() + interval '600 seconds'`, device.SHA256Hex(renewed.Token)) != 1 {
+		e.Count(t, `SELECT count(*) FROM proxy_token WHERE token_hash = $1 AND expires_at BETWEEN now() + interval '590 seconds' AND now() + interval '600 seconds'`, session.TokenHash(renewed.Token)) != 1 {
 		t.Fatalf("renew: %d %s", resp.StatusCode, out)
 	}
 	if n := e.Count(t, `SELECT count(*) FROM audit_event WHERE action = 'auth.session.renew' AND channel = 'pmon' AND outcome = 'SUCCESS'
@@ -285,7 +286,7 @@ func TestPmonLogout(t *testing.T) {
 		t.Helper()
 		var hashes []string
 		for _, tok := range tokens {
-			hashes = append(hashes, device.SHA256Hex(tok))
+			hashes = append(hashes, session.TokenHash(tok))
 		}
 		return e.Count(t, `SELECT count(*) FROM proxy_token WHERE token_hash = ANY($1) AND revoked_at IS NULL`, hashes)
 	}
@@ -337,7 +338,7 @@ func TestPmonLogout(t *testing.T) {
 	if resp, _ := pmon.Do(http.MethodPost, "/auth/session/logout?replaced=true", "", "Authorization", "Bearer "+replaced.RenewalToken); resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("replaced logout: %d", resp.StatusCode)
 	}
-	if n := e.Count(t, `SELECT count(*) FROM proxy_token WHERE token_hash = $1 AND revoked_at IS NULL AND retired_at IS NOT NULL`, device.SHA256Hex(replaced.Token)); n != 1 {
+	if n := e.Count(t, `SELECT count(*) FROM proxy_token WHERE token_hash = $1 AND revoked_at IS NULL AND retired_at IS NOT NULL`, session.TokenHash(replaced.Token)); n != 1 {
 		t.Fatal("a replaced login's wire token must be retired, not revoked")
 	}
 	if n := e.Count(t, `SELECT count(*) FROM proxy_token WHERE principal = 'bob@example.com' AND kind = 'MCP_ACCESS' AND revoked_at IS NULL`) +
@@ -366,7 +367,7 @@ func TestPmonMCPToken(t *testing.T) {
 	}
 	if n := e.Count(t, `SELECT count(*) FROM proxy_token t JOIN oauth_consent c ON c.id = t.consent_id
 		WHERE t.token_hash = $1 AND t.kind = 'MCP_ACCESS' AND t.client_id = 'pmon' AND c.scope = t.scope
-		  AND t.resource = 'http://127.0.0.1:8080/mcp' AND t.principal_session_id IS NOT NULL`, device.SHA256Hex(m["accessToken"])); n != 1 {
+		  AND t.resource = 'http://127.0.0.1:8080/mcp' AND t.principal_session_id IS NOT NULL`, session.TokenHash(m["accessToken"])); n != 1 {
 		t.Fatal("the MCP token is not stored under its consent")
 	}
 	if n := e.Count(t, `SELECT count(*) FROM audit_event WHERE action = 'auth.session.mcp_token' AND detail = 'scope=mcp:policies:write mcp:query mcp:read'`); n != 1 {
@@ -382,7 +383,7 @@ func TestPmonMCPToken(t *testing.T) {
 		t.Fatalf("near the window's end: %d %s", status, out)
 	} else if expires, err := time.Parse(time.RFC3339Nano, m["expiresAt"]); err != nil || e.Count(t, `SELECT count(*) FROM proxy_token t
 		JOIN principal_session ps ON ps.id = t.principal_session_id WHERE t.token_hash = $1 AND t.expires_at = ps.elevated_until
-		AND ps.elevated_until = $2`, device.SHA256Hex(m["accessToken"]), expires) != 1 {
+		AND ps.elevated_until = $2`, session.TokenHash(m["accessToken"]), expires) != 1 {
 		t.Fatalf("an elevated MCP token minted near the window's end does not expire with it: %s", m["expiresAt"])
 	}
 	e.Exec(t, `UPDATE principal_session SET elevated_until = now() - interval '1 second' WHERE kind = 'DAEMON'`)
@@ -493,7 +494,7 @@ func TestSessionRenewAfterDeactivation(t *testing.T) {
 	if status, out := setActive(alice, "alice@example.com", false); status != http.StatusOK {
 		t.Fatalf("deactivate: %d %s", status, out)
 	}
-	if n := e.Count(t, `SELECT count(*) FROM proxy_token WHERE token_hash = $1 AND revoked_at IS NOT NULL`, device.SHA256Hex(renewed)); n != 1 {
+	if n := e.Count(t, `SELECT count(*) FROM proxy_token WHERE token_hash = $1 AND revoked_at IS NOT NULL`, session.TokenHash(renewed)); n != 1 {
 		t.Fatal("deactivation left the renewed token live")
 	}
 	for _, secret := range []string{first.RenewalToken, second.RenewalToken} {
@@ -529,7 +530,7 @@ func TestSessionRenewAfterDeactivation(t *testing.T) {
 		t.Fatalf("deactivation answered %d while another holder had the principal's lock", status)
 	case <-time.After(300 * time.Millisecond):
 	}
-	if n := e.Count(t, `SELECT count(*) FROM proxy_token WHERE token_hash = $1 AND revoked_at IS NULL`, device.SHA256Hex(login.Token)); n != 1 {
+	if n := e.Count(t, `SELECT count(*) FROM proxy_token WHERE token_hash = $1 AND revoked_at IS NULL`, session.TokenHash(login.Token)); n != 1 {
 		t.Fatal("the token was revoked while the teardown waited for the lock")
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -538,7 +539,7 @@ func TestSessionRenewAfterDeactivation(t *testing.T) {
 	if status := <-done; status != http.StatusOK {
 		t.Fatalf("deactivate after the lock released: %d", status)
 	}
-	if n := e.Count(t, `SELECT count(*) FROM proxy_token WHERE token_hash = $1 AND revoked_at IS NOT NULL`, device.SHA256Hex(login.Token)); n != 1 {
+	if n := e.Count(t, `SELECT count(*) FROM proxy_token WHERE token_hash = $1 AND revoked_at IS NOT NULL`, session.TokenHash(login.Token)); n != 1 {
 		t.Fatal("the teardown did not revoke the token once it got the lock")
 	}
 }
@@ -552,7 +553,7 @@ func TestDaemonQueriesSkipWebRows(t *testing.T) {
 	if err := e.St.Pool.QueryRow(ctx, `SELECT id FROM principal_session WHERE kind = 'WEB' AND principal = 'alice@example.com' AND ended_at IS NULL`).Scan(&web); err != nil {
 		t.Fatal(err)
 	}
-	e.Exec(t, `UPDATE principal_session SET renewal_token_hash = $1, ttl_seconds = 900 WHERE id = $2`, device.SHA256Hex("pmr_web"), web)
+	e.Exec(t, `UPDATE principal_session SET renewal_token_hash = $1, ttl_seconds = 900 WHERE id = $2`, session.TokenHash("pmr_web"), web)
 	q := db.New(e.St.Pool)
 	if _, err := q.DaemonSession(ctx, web); !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("a WEB row resolved as a daemon session: %v", err)
@@ -565,12 +566,12 @@ func TestDaemonQueriesSkipWebRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	if n := e.Count(t, `SELECT count(*) FROM principal_session WHERE renewal_token_hash = $1 AND liveness_status = 'INACTIVE' AND absolute_expires_at <= now()`,
-		device.SHA256Hex(r.RenewalToken)); n != 1 {
+		session.TokenHash(r.RenewalToken)); n != 1 {
 		t.Fatal("the daemon session was not closed")
 	}
 	if n := e.Count(t, `SELECT count(*) FROM principal_session WHERE id = $1 AND ended_at IS NULL AND liveness_status = 'ACTIVE' AND absolute_expires_at > now()`, web) +
 		e.Count(t, `SELECT count(*) FROM principal_session WHERE renewal_token_hash = $1 AND liveness_status = 'ACTIVE' AND absolute_expires_at > now()`,
-			device.SHA256Hex(bystander.RenewalToken)); n != 2 {
+			session.TokenHash(bystander.RenewalToken)); n != 2 {
 		t.Fatal("closing a principal's daemon sessions touched a web session or another principal")
 	}
 }

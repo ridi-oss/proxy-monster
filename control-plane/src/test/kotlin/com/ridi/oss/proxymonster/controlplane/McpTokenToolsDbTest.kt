@@ -9,7 +9,7 @@ import ch.qos.logback.classic.spi.ILoggingEvent
 import ch.qos.logback.core.read.ListAppender
 import com.ridi.oss.proxymonster.controlplane.management.AuditActor
 import com.ridi.oss.proxymonster.controlplane.management.AuditSource
-import com.ridi.oss.proxymonster.controlplane.oauth.MCPA_SCOPES
+import com.ridi.oss.proxymonster.controlplane.management.McpCapabilityRegistry
 import com.ridi.oss.proxymonster.controlplane.support.McpTokens
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.errorCode
@@ -200,7 +200,7 @@ class McpTokenToolsDbTest {
         assertEquals("mcp.insufficient_scope", mcpResult(response.bodyAsText()).errorCode())
         assertEquals(0, core.tokenStore.list(caller).size)
 
-        assertTrue("mcp:tokens" in MCPA_SCOPES)
+        assertTrue("mcp:tokens" in McpCapabilityRegistry.supportedScopes)
         for (path in listOf("/.well-known/oauth-authorization-server", "/.well-known/oauth-protected-resource/mcp")) {
             val scopes = parseJson(client.get(path).bodyAsText()).jsonObject.getValue("scopes_supported").jsonArray.map { it.jsonPrimitive.content }
             assertContains(scopes, "mcp:tokens", path)

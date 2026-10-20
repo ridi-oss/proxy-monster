@@ -32,6 +32,7 @@ import (
 	"github.com/ridi-oss/proxy-monster/cpgo/grpcsvc"
 	"github.com/ridi-oss/proxy-monster/cpgo/idp"
 	"github.com/ridi-oss/proxy-monster/cpgo/routes"
+	"github.com/ridi-oss/proxy-monster/cpgo/routes/oauth"
 	"github.com/ridi-oss/proxy-monster/cpgo/routes/oidc"
 	"github.com/ridi-oss/proxy-monster/cpgo/session"
 	"github.com/ridi-oss/proxy-monster/cpgo/store"
@@ -67,6 +68,8 @@ type config struct {
 	ResultKey           string `env:"PM_RESULT_KEY" hidden:"" group:"kotlin" help:"Base64 AES-256 key for stored results and refresh tokens."`
 	ElevatedScopeTTL    string `env:"PM_ELEVATED_SCOPE_TTL" default:"3600" group:"kotlin" help:"Seconds MCP scopes beyond read and query last after approval."`
 	OAuthAccessTTL      string `env:"PM_OAUTH_ACCESS_TTL" name:"oauth-access-ttl" default:"600" group:"kotlin" help:"Seconds an MCP access token lasts."`
+	OAuthRefreshTTL     string `env:"PM_OAUTH_REFRESH_TTL" name:"oauth-refresh-ttl" default:"21600" group:"kotlin" help:"Seconds an MCP refresh token lasts."`
+	OAuthAutoConsent    bool   `env:"PM_OAUTH_DEBUG_AUTO_CONSENT" name:"oauth-debug-auto-consent" default:"true" negatable:"" group:"kotlin" help:"Under PM_AUTH_DEBUG, authorize MCP clients without the consent page."`
 	SessionWindow       string `env:"PM_SESSION_WINDOW" default:"7200" group:"kotlin" help:"Wire session window: seconds, or h/m/s as in 1h30m."`
 	WebAbsolute         string `env:"PM_WEB_SESSION_ABSOLUTE" default:"7200" group:"kotlin" help:"Web session lifetime."`
 	WebIdle             string `env:"PM_WEB_SESSION_IDLE" default:"900" group:"kotlin" help:"Web session idle timeout."`
@@ -130,6 +133,9 @@ func sessionSettings(c config) (session.Settings, error) {
 		MCPResource:      session.CanonicalResource(c.MCPResource),
 		ElevatedScopeTTL: session.ClampSeconds(c.ElevatedScopeTTL, 3600),
 		MCPAccessTTL:     session.ClampSeconds(c.OAuthAccessTTL, 600),
+		MCPRefreshTTL:    session.ClampSeconds(c.OAuthRefreshTTL, 21600),
+
+		OAuthDebugAutoConsent: c.OAuthAutoConsent,
 	}
 	for _, d := range []struct {
 		env, raw string
@@ -287,7 +293,7 @@ func run(ctx context.Context, cfg config) int {
 			AuthDebug: cfg.Session.AuthDebug,
 			Authz:     authz.NewDecider(pool, cfg.Schema),
 			Kotlin:    kotlin,
-		}, login)
+		}, login, oauth.HTTPResolver{AllowSpecialUse: cfg.Session.AuthDebug})
 		h := front.Route(mux, front.NewHTTP(httpUpstream, edges))
 		if cfg.Web != nil {
 			h = front.Split(h, front.NewHTTP(cfg.Web, edges))

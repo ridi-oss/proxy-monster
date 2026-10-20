@@ -1,9 +1,5 @@
 package com.ridi.oss.proxymonster.controlplane
 
-import com.ridi.oss.proxymonster.auth.AuthorizationCodeInput
-import com.ridi.oss.proxymonster.auth.ConsumeAuthorizationCodeInput
-import com.ridi.oss.proxymonster.auth.OAuthAuthorizationStore
-import com.ridi.oss.proxymonster.auth.pkceS256
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
 import com.ridi.oss.proxymonster.grpc.Engine
 import com.ridi.oss.proxymonster.controlplane.management.DatasourceManagementService
@@ -12,6 +8,7 @@ import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
 import com.ridi.oss.proxymonster.controlplane.management.McpCapabilityRegistry
 import com.ridi.oss.proxymonster.controlplane.management.PolicyManagementService
 import com.ridi.oss.proxymonster.controlplane.mcp.installMcp
+import com.ridi.oss.proxymonster.controlplane.support.McpTokens
 import com.ridi.oss.proxymonster.controlplane.support.pushedColumn
 import com.ridi.oss.proxymonster.analyzer.pb.catalogSnapshot
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
@@ -63,14 +60,14 @@ import kotlin.test.assertTrue
 class McpServerDbTest {
     private lateinit var dataSource: DataSource
     private lateinit var core: ControlPlaneCore
-    private lateinit var oauth: OAuthAuthorizationStore
+    private lateinit var mcpTokens: McpTokens
 
     @BeforeAll
     fun setUp() {
         requireDockerOrSkip()
         dataSource = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_mcp_server"))
         core = ControlPlaneCore(dataSource)
-        oauth = OAuthAuthorizationStore(dataSource)
+        mcpTokens = McpTokens(dataSource, RESOURCE)
     }
 
     @AfterAll
@@ -1314,17 +1311,7 @@ class McpServerDbTest {
         TEST_JSON.parseToJsonElement(body).jsonObject.getValue("result").jsonObject
             .getValue("structuredContent").jsonObject
 
-    private fun token(principal: String, scopes: Set<String>): String {
-        val consent = oauth.rememberConsent(principal, CLIENT_ID, RESOURCE, scopes)
-        val code = oauth.createAuthorizationCode(
-            AuthorizationCodeInput(CLIENT_ID, principal, REDIRECT_URI, RESOURCE, scopes, CHALLENGE, consentId = consent.id),
-        )
-        return assertNotNull(
-            oauth.consumeAuthorizationCode(
-                ConsumeAuthorizationCodeInput(code, CLIENT_ID, REDIRECT_URI, RESOURCE, VERIFIER, 600, 3_600),
-            ),
-        ).accessToken
-    }
+    private fun token(principal: String, scopes: Set<String>): String = mcpTokens.token(principal, scopes)
 
     private fun grantRole(principal: String, roleName: String) {
         dataSource.connection.use { connection ->
@@ -1434,9 +1421,5 @@ class McpServerDbTest {
         val TEST_JSON = Json { ignoreUnknownKeys = true; encodeDefaults = true }
         const val RESOURCE = "http://localhost/mcp"
         const val METADATA_URI = "http://localhost/.well-known/oauth-protected-resource/mcp"
-        const val CLIENT_ID = "https://client.example/mcp.json"
-        const val REDIRECT_URI = "http://127.0.0.1:43110/callback"
-        val VERIFIER = "m".repeat(43)
-        val CHALLENGE = pkceS256(VERIFIER)
     }
 }

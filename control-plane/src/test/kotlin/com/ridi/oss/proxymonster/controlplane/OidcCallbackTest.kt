@@ -5,9 +5,9 @@ import io.ktor.client.plugins.defaultRequest
 import io.ktor.client.engine.cio.CIO
 import com.ridi.oss.proxymonster.controlplane.support.FakeOidcIdp
 import com.ridi.oss.proxymonster.controlplane.support.CpGoStack
-import com.ridi.oss.proxymonster.auth.isValidPkceChallenge
-import com.ridi.oss.proxymonster.auth.isValidPkceVerifier
-import com.ridi.oss.proxymonster.auth.pkceS256
+import com.ridi.oss.proxymonster.controlplane.support.isValidPkceChallenge
+import com.ridi.oss.proxymonster.controlplane.support.isValidPkceVerifier
+import com.ridi.oss.proxymonster.controlplane.support.pkceS256
 import com.ridi.oss.proxymonster.controlplane.management.auditEntity
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip

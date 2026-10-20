@@ -333,31 +333,6 @@ func (q *Queries) MintMcpAccessToken(ctx context.Context, arg MintMcpAccessToken
 	return id, err
 }
 
-const pmonConsent = `-- name: PmonConsent :one
-INSERT INTO oauth_consent (principal, client_id, resource, scope) VALUES ($1, $2, $3, $4)
-ON CONFLICT (principal, client_id, resource, scope) WHERE revoked_at IS NULL DO UPDATE SET updated_at = now()
-RETURNING id
-`
-
-type PmonConsentParams struct {
-	Principal string
-	ClientID  string
-	Resource  string
-	Scope     string
-}
-
-func (q *Queries) PmonConsent(ctx context.Context, arg PmonConsentParams) (int64, error) {
-	row := q.db.QueryRow(ctx, pmonConsent,
-		arg.Principal,
-		arg.ClientID,
-		arg.Resource,
-		arg.Scope,
-	)
-	var id int64
-	err := row.Scan(&id)
-	return id, err
-}
-
 const retireSessionTokens = `-- name: RetireSessionTokens :exec
 UPDATE proxy_token SET retired_at = now()
 WHERE principal_session_id = $1 AND kind = 'SESSION' AND revoked_at IS NULL AND retired_at IS NULL
@@ -408,6 +383,31 @@ WHERE c.id = ANY($1::bigint[]) AND c.revoked_at IS NULL
 func (q *Queries) RevokeOrphanConsents(ctx context.Context, ids []int64) error {
 	_, err := q.db.Exec(ctx, revokeOrphanConsents, ids)
 	return err
+}
+
+const upsertConsent = `-- name: UpsertConsent :one
+INSERT INTO oauth_consent (principal, client_id, resource, scope) VALUES ($1, $2, $3, $4)
+ON CONFLICT (principal, client_id, resource, scope) WHERE revoked_at IS NULL DO UPDATE SET updated_at = now()
+RETURNING id
+`
+
+type UpsertConsentParams struct {
+	Principal string
+	ClientID  string
+	Resource  string
+	Scope     string
+}
+
+func (q *Queries) UpsertConsent(ctx context.Context, arg UpsertConsentParams) (int64, error) {
+	row := q.db.QueryRow(ctx, upsertConsent,
+		arg.Principal,
+		arg.ClientID,
+		arg.Resource,
+		arg.Scope,
+	)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
 }
 
 const webSessionRefreshToken = `-- name: WebSessionRefreshToken :one

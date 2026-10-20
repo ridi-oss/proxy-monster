@@ -415,7 +415,7 @@ func Save(c *Config) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmpPath, p)
+	return rename(tmpPath, p)
 }
 
 // LoggedIn reports whether the server carries credentials the daemon can broker with.

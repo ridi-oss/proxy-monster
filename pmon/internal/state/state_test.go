@@ -74,7 +74,7 @@ func TestUpdateConcurrentWritersDoNotLoseUpdates(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			_ = Update(func(c *Config) error {
+			err := Update(func(c *Config) error {
 				if c.Servers[DefaultServer] == nil {
 					c.Servers[DefaultServer] = &Server{Ports: map[string]int{}}
 				}
@@ -82,6 +82,9 @@ func TestUpdateConcurrentWritersDoNotLoseUpdates(t *testing.T) {
 				c.LocalPassword = "pw"
 				return nil
 			})
+			if err != nil {
+				t.Errorf("Update %d: %v", i, err)
+			}
 		}(i)
 	}
 	wg.Wait()
@@ -96,6 +99,34 @@ func TestUpdateConcurrentWritersDoNotLoseUpdates(t *testing.T) {
 	if cfg.LocalPassword != "pw" {
 		t.Errorf("password not persisted: %q", cfg.LocalPassword)
 	}
+}
+
+func TestUpdateSucceedsWhileAReaderHasTheConfigOpen(t *testing.T) {
+	isolate(t)
+	if err := Update(func(c *Config) error { c.LocalPassword = "pw"; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	var readers sync.WaitGroup
+	readers.Add(1)
+	go func() {
+		defer readers.Done()
+		for {
+			select {
+			case <-done:
+				return
+			default:
+				_, _ = Load()
+			}
+		}
+	}()
+	for i := range 200 {
+		if err := Update(func(c *Config) error { c.Default = fmt.Sprint(i); return nil }); err != nil {
+			t.Errorf("Update %d: %v", i, err)
+		}
+	}
+	close(done)
+	readers.Wait()
 }
 
 func TestEnsureLocalPasswordIsGeneratedOnceAndStable(t *testing.T) {

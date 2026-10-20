@@ -20,6 +20,28 @@ before a release that touches this flow. CI runs the `github` leg of
 
 A full run takes about 20 minutes and leaves its tables in the target database.
 
+`configs.py` checks that the run waits until GitHub would merge, under
+base-branch configurations it sets up itself. Each scenario's base branch gets
+its own ruleset, and the branches it merges into carry back into `main` at the
+end.
+
+| Scenario | Base branch configuration                | What it checks                                  |
+| -------- | ---------------------------------------- | ----------------------------------------------- |
+| C1       | `query executed` required                | a draft waits until it is marked ready          |
+| C2       | `query executed` required                | an optional check still running holds the run   |
+| C3       | one approving review required            | a missing review holds the run                  |
+| C4       | code-owner review with no approval count | the rule is unchecked and holds the run         |
+| C5       | `query executed` required                | a conflict with the base holds the run          |
+| C6       | strict status checks                     | a branch behind the base waits for an update    |
+| C7       | conversation resolution required         | an unresolved review thread holds the run       |
+| C8       | only rebase merges allowed               | a squash auto-merge holds the run               |
+| C9       | signed commits required                  | a rule the gate does not evaluate holds the run |
+| C10      | classic branch protection                | classic protection holds the run                |
+
+It takes about 30 minutes. It mints the App's token from `PM_GITHUB_E2E_APP_KEY`
+(default `~/.cache/proxy-monster/github-e2e/app-key.pem`) to post a check run of
+its own.
+
 ## Setup
 
 You need a target MySQL the control plane registers through a wire proxy (a
@@ -63,6 +85,7 @@ Its state lives in `~/.cache/proxy-monster/github-e2e` (`--state-dir`).
 ```sh
 source ~/.cache/proxy-monster/github-e2e/run.env
 python3 smoke/github/run.py
+python3 smoke/github/configs.py
 ```
 
 `PM_GITHUB_E2E_APPROVER` is the principal that approves (default

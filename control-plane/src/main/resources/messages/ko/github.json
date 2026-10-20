@@ -5,6 +5,7 @@
     "awaiting_approval": "{path} 승인 대기 중",
     "approved_enable_automerge": "승인됨 — 자동 머지를 켜면 실행 후 머지됩니다",
     "waiting_checks": "다른 체크를 기다리는 중",
+    "waiting_draft": "풀 리퀘스트가 리뷰 준비 상태가 되기를 기다리는 중",
     "waiting_merge": "#{pr} 머지를 기다리는 중",
     "update_branch": "브랜치를 최신으로 업데이트하세요",
     "update_branch_behind": "브랜치를 업데이트하세요 — #{pr}이(가) 먼저 머지되었습니다",

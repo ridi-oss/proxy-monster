@@ -212,6 +212,7 @@ class GitHubAdapter(
         fun PullRequestPb.model() = PullRequest(
             number = number,
             open = open,
+            draft = draft,
             merged = merged,
             mergedAt = if (hasMergedAt()) mergedAt.instant() else null,
             mergeCommit = if (hasMergeCommit()) mergeCommit else null,

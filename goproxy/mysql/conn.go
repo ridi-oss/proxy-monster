@@ -143,7 +143,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 	clientConn = s.WrapClientConn(clientConn)
 	token := mysqlwire.ParseClearPassword(tokenPayload)
 	clientAddr := clientConn.RemoteAddr().String()
-	identity, err := s.client.ValidateToken(token, clientAddr)
+	authz, identity, err := spi.Authenticate(s.client, token, clientAddr)
 	if err != nil {
 		_ = mysqlwire.WritePacket(clientConn, tokenSeq+1, mysqlwire.ErrPacketState(
 			1045,
@@ -153,7 +153,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 		return
 	}
 	defer func() {
-		if err := s.client.CloseConnection(identity.ConnectionID); err != nil {
+		if err := authz.Close(); err != nil {
 			slog.Warn("failed to close mysql control-plane connection", "error", err)
 		}
 	}()
@@ -173,7 +173,6 @@ func (s *Server) handleConn(clientConn net.Conn) {
 	defer targetDbConn.Close()
 	cancelQuery := func() { _ = cancelTargetDbQuery(s.targetDb, targetGreeting.ConnectionID) }
 
-	qe := spi.NewAuthorizer(s.client)
 	preparedStmts := make(map[uint32]preparedStmt)
 	if handshake.Database != "" {
 		// The client selected a database at connect time. Switching the current database is not a gated
@@ -196,7 +195,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 			return
 		}
 		// The current database changed; the next query re-probes the namespace.
-		qe.MarkNamespaceDirty()
+		authz.MarkNamespaceDirty()
 	}
 
 	generation, ok := wire.NextBackendGeneration()
@@ -260,11 +259,8 @@ func (s *Server) handleConn(clientConn net.Conn) {
 				var relayStats spi.RelayStats
 				relayStatus := relay.StatusError
 				stop = true
-				decision, denied, serveErr := relay.ServeStatement(qe, spi.AuthzInput{
+				decision, denied, serveErr := relay.ServeStatement(authz, spi.AuthzInput{
 					SQL:          sql,
-					Token:        token,
-					ClientAddr:   clientAddr,
-					ConnectionID: identity.ConnectionID,
 					ProbeSession: func() (spi.SessionObservation, error) { return probeSession(targetDbConn, deprecateEOF) },
 					RunCommands:  refetcher.RunAll,
 					CheckTargetError: func(sql string) (*spi.TargetError, error) {
@@ -285,30 +281,30 @@ func (s *Server) handleConn(clientConn net.Conn) {
 					if err := mysqlwire.WritePacket(targetDbConn, 0, queryPayload); err != nil {
 						return false, err
 					}
-					clean, stats, last, err := relayQueryResponseTracked(clientConn, targetDbConn, deprecateEOF, masks, errRedactor(qe), dec, cancelQuery, seqBase, more)
+					clean, stats, last, err := relayQueryResponseTracked(clientConn, targetDbConn, deprecateEOF, masks, errRedactor(authz), dec, cancelQuery, seqBase, more)
 					relayStats = stats
 					relayStatus = relay.RelayStatus(clean, err)
 					if err != nil {
 						return false, err
 					}
-					qe.MarkNamespaceDirty()
+					authz.MarkNamespaceDirty()
 					lastSeq, stop = last, !clean
 					return clean, nil
 				})
 				if denied && serveErr == nil {
-					forwarded, err := writeDeny(clientConn, seqBase, decision, errRedactor(qe))
+					forwarded, err := writeDeny(clientConn, seqBase, decision, errRedactor(authz))
 					if err != nil {
 						return 0, true, true
 					}
 					if forwarded {
-						qe.AwaitCompletion(relay.EmitCompletion(s.client, decision, relayStats, relay.StatusError, start))
+						authz.AwaitCompletion(relay.EmitCompletion(s.client, decision, relayStats, relay.StatusError, start))
 					}
 					return lastSeq, stop, false
 				}
 				// Post-relay, best-effort completion: only a relayed (Proceed) statement reports. A DENY relayed
 				// nothing, and EmitCompletion additionally no-ops for a decision with no audit id.
 				if !denied {
-					qe.AwaitCompletion(relay.EmitCompletion(s.client, decision, relayStats, relayStatus, start))
+					authz.AwaitCompletion(relay.EmitCompletion(s.client, decision, relayStats, relayStatus, start))
 				}
 				if serveErr != nil {
 					var fail relay.FailError
@@ -353,7 +349,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 				}
 				continue
 			}
-			result, err := relaySingleResponse(clientConn, targetDbConn, seq, []byte{mysqlwire.ComSetOption, mysqlwire.OptionMultiStatementsOff, 0}, errRedactor(qe))
+			result, err := relaySingleResponse(clientConn, targetDbConn, seq, []byte{mysqlwire.ComSetOption, mysqlwire.OptionMultiStatementsOff, 0}, errRedactor(authz))
 			if err != nil {
 				return
 			}
@@ -365,22 +361,22 @@ func (s *Server) handleConn(clientConn net.Conn) {
 			// Switching the current database is not a gated action. Relay COM_INIT_DB mechanically to the
 			// target DB and forward its OK/ERR verbatim; the control plane enforces subsequent queries under
 			// the new namespace via Decide. The database changed, so re-probe the namespace on the next query.
-			if _, err := relaySingleResponse(clientConn, targetDbConn, seq, payload, errRedactor(qe)); err != nil {
+			if _, err := relaySingleResponse(clientConn, targetDbConn, seq, payload, errRedactor(authz)); err != nil {
 				return
 			}
-			qe.MarkNamespaceDirty()
+			authz.MarkNamespaceDirty()
 
 		case mysqlwire.ComPing:
-			if _, err := relaySingleResponse(clientConn, targetDbConn, seq, payload, errRedactor(qe)); err != nil {
+			if _, err := relaySingleResponse(clientConn, targetDbConn, seq, payload, errRedactor(authz)); err != nil {
 				return
 			}
 
 		case mysqlwire.ComStmtPrepare:
-			qe.MarkNamespaceDirty()
+			authz.MarkNamespaceDirty()
 			sql := string(payload[1:])
 			var frozen []string
 			var frozenAnsiQuotes bool
-			proceed, allowed, err := s.authorize(qe, clientConn, targetDbConn, deprecateEOF, seq, sql, token, clientAddr, identity.ConnectionID, refetcher.RunAll, func() (spi.SessionObservation, error) {
+			proceed, allowed, err := s.authorize(authz, clientConn, targetDbConn, deprecateEOF, seq, sql, refetcher.RunAll, func() (spi.SessionObservation, error) {
 				obs, err := probeSession(targetDbConn, deprecateEOF)
 				if err == nil {
 					frozen = append([]string{}, obs.Namespace...)
@@ -433,14 +429,14 @@ func (s *Server) handleConn(clientConn net.Conn) {
 			if err := mysqlwire.WritePacket(targetDbConn, 0, toSend); err != nil {
 				return
 			}
-			stmtID, prepared, err := relayStmtPrepareResponse(clientConn, targetDbConn, deprecateEOF, errRedactor(qe))
+			stmtID, prepared, err := relayStmtPrepareResponse(clientConn, targetDbConn, deprecateEOF, errRedactor(authz))
 			if err != nil {
 				return
 			}
 			if prepared {
 				preparedStmts[stmtID] = preparedStmt{sql: sentSQL, namespace: frozen, ansiQuotes: frozenAnsiQuotes}
 			}
-			qe.MarkNamespaceDirty()
+			authz.MarkNamespaceDirty()
 
 		case mysqlwire.ComStmtExecute:
 			id, parseErr := mysqlwire.StmtID(payload)
@@ -469,11 +465,11 @@ func (s *Server) handleConn(clientConn net.Conn) {
 			// MySQL executes the statement in its prepare-time database. Re-decide against that frozen
 			// namespace rather than live session state, then dirty the engine cache immediately so it cannot
 			// leak into the next statement's decision.
-			qe.MarkNamespaceDirty()
-			proceed, allowed, err := s.authorize(qe, clientConn, targetDbConn, deprecateEOF, seq, ps.sql, token, clientAddr, identity.ConnectionID, refetcher.RunAll, func() (spi.SessionObservation, error) {
+			authz.MarkNamespaceDirty()
+			proceed, allowed, err := s.authorize(authz, clientConn, targetDbConn, deprecateEOF, seq, ps.sql, refetcher.RunAll, func() (spi.SessionObservation, error) {
 				return mysqlSession(ps.namespace, ps.ansiQuotes), nil
 			})
-			qe.MarkNamespaceDirty()
+			authz.MarkNamespaceDirty()
 			if err != nil {
 				return
 			}
@@ -508,9 +504,9 @@ func (s *Server) handleConn(clientConn net.Conn) {
 			if err := mysqlwire.WritePacket(targetDbConn, 0, payload); err != nil {
 				return
 			}
-			ok, stats, _, err := relayQueryResponseTracked(clientConn, targetDbConn, deprecateEOF, nil, errRedactor(qe), proceed.Decision, cancelQuery, 0, false)
+			ok, stats, _, err := relayQueryResponseTracked(clientConn, targetDbConn, deprecateEOF, nil, errRedactor(authz), proceed.Decision, cancelQuery, 0, false)
 			// Post-relay, best-effort completion for this binary-protocol EXECUTE (no-op if unaudited).
-			qe.AwaitCompletion(relay.EmitCompletion(s.client, proceed.Decision, stats, relay.RelayStatus(ok, err), start))
+			authz.AwaitCompletion(relay.EmitCompletion(s.client, proceed.Decision, stats, relay.RelayStatus(ok, err), start))
 			if err != nil {
 				return
 			}
@@ -550,7 +546,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 				}
 				continue
 			}
-			if _, err := relaySingleResponse(clientConn, targetDbConn, seq, payload, errRedactor(qe)); err != nil {
+			if _, err := relaySingleResponse(clientConn, targetDbConn, seq, payload, errRedactor(authz)); err != nil {
 				return
 			}
 
@@ -576,20 +572,16 @@ func (s *Server) handleConn(clientConn net.Conn) {
 }
 
 func (s *Server) authorize(
-	qe *spi.Authorizer,
+	authz *spi.Authorizer,
 	clientConn, targetDbConn net.Conn,
 	deprecateEOF bool,
 	seq byte,
-	sql, token, clientAddr string,
-	connectionID []byte,
+	sql string,
 	runCommands func([]*pb.ProxyCommand, *spi.SessionObservation) error,
 	probeSession func() (spi.SessionObservation, error),
 ) (spi.Proceed, bool, error) {
-	verdict := qe.Authorize(spi.AuthzInput{
+	verdict := authz.Authorize(spi.AuthzInput{
 		SQL:          sql,
-		Token:        token,
-		ClientAddr:   clientAddr,
-		ConnectionID: connectionID,
 		ProbeSession: probeSession,
 		RunCommands:  runCommands,
 		CheckTargetError: func(sql string) (*spi.TargetError, error) {
@@ -608,9 +600,9 @@ func (s *Server) authorize(
 		return spi.Proceed{}, false, errors.New("mysqlproxy: authorization failed mechanically")
 	case spi.Deny:
 		start := time.Now()
-		forwarded, err := writeDeny(clientConn, seq, v.Decision, errRedactor(qe))
+		forwarded, err := writeDeny(clientConn, seq, v.Decision, errRedactor(authz))
 		if forwarded {
-			qe.AwaitCompletion(relay.EmitCompletion(s.client, v.Decision, spi.RelayStats{}, relay.StatusError, start))
+			authz.AwaitCompletion(relay.EmitCompletion(s.client, v.Decision, spi.RelayStats{}, relay.StatusError, start))
 		}
 		return spi.Proceed{}, false, err
 	case spi.Proceed:

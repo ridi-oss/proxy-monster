@@ -41,7 +41,7 @@ func postgresProtocolNegotiation(startup *pgproto3.StartupMessage) *pgproto3.Neg
 type sessionCore struct {
 	currentCatalog string
 	targetDb       *pgproto3.Frontend
-	qe             *spi.Authorizer
+	authz          *spi.Authorizer
 	db             relay.Db
 	lastTxStatus   byte
 	pendingDirty   bool
@@ -57,9 +57,6 @@ type session struct {
 	clientConn   net.Conn
 	targetDbConn net.Conn
 	keyData      pgproto3.BackendKeyData
-	token        string
-	clientAddr   string
-	connectionID []byte
 	backendGen   uint64
 	statements   map[string]preparedStatement
 	portals      map[string]boundPortal
@@ -181,12 +178,12 @@ startupComplete:
 		return
 	}
 
-	identity, err := s.client.ValidateToken(password.Password, rawClientConn.RemoteAddr().String())
+	authz, identity, err := spi.Authenticate(s.client, password.Password, rawClientConn.RemoteAddr().String())
 	if err != nil {
 		_ = sendError(client, "FATAL", "28000", "proxy-monster: invalid or expired token", false, 0)
 		return
 	}
-	defer func() { _ = s.client.CloseConnection(identity.ConnectionID) }()
+	defer func() { _ = authz.Close() }()
 	slog.Info("authenticated postgres client", "client", rawClientConn.RemoteAddr().String(), "principal", identity.Principal, "roles", identity.Roles)
 
 	targetDbConn, parameters, keyData, txStatus, catalog, err := dialTargetDbAuth(context.Background(), s.targetDb)
@@ -212,7 +209,7 @@ startupComplete:
 		sessionCore: sessionCore{
 			currentCatalog: catalog,
 			targetDb:       targetDb,
-			qe:             spi.NewAuthorizer(s.client),
+			authz:          authz,
 			db:             s.db,
 			lastTxStatus:   txStatus,
 			forward:        client.Send,
@@ -222,9 +219,6 @@ startupComplete:
 		clientConn:   clientIO,
 		targetDbConn: targetDbConn,
 		keyData:      keyData,
-		token:        password.Password,
-		clientAddr:   rawClientConn.RemoteAddr().String(),
-		connectionID: append([]byte(nil), identity.ConnectionID...),
 		backendGen:   backendGen,
 		statements:   make(map[string]preparedStatement),
 		portals:      make(map[string]boundPortal),

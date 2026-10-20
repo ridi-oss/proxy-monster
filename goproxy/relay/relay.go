@@ -1,10 +1,5 @@
-// Package engine is the proxy's single stateless enforcement relay. It makes NO enforcement
-// decisions — every allow / deny / mask is the control plane's call via the Decide RPC (Cedar). The
-// engine only: gathers the context the control plane needs (the connection's namespace + session-temp
-// columns), calls Decide, and reduces the control plane's verdict to an instruction a dumb protocol
-// applies (deny / relay / mask). It fails closed ONLY on mechanical impossibility (the control plane
-// is unreachable, or a returned mask cannot be bound to the result columns). Databases and protocols
-// are dumb adapters around this engine.
+// Package relay is what every wire protocol shares around spi.Authorizer: serving a statement under its verdict,
+// masking result rows, and reporting the completion.
 package relay
 
 import (
@@ -59,7 +54,7 @@ func (m *RowMasker) Apply(values []*string) []*string {
 	return masked
 }
 
-// ---- Control-plane decision (the DecisionClient maps the wire enum to a string Action + fail-closes) ----
+// ---- Control-plane decision (the control-plane client maps the wire enum to a string Action + fail-closes) ----
 
 // RedactedDiagnosticMessage is the single generic string that replaces every target-DB diagnostic message on
 // a diagnostic-redacted connection. It carries no stored value; the proxy keeps only the

@@ -117,14 +117,14 @@ func (c *sessionCore) streamResult(masks []*pb.ColumnMask, opts streamOpts, emit
 				r := sanitizeError(message)
 				targetDbErr = &pgTargetDbErr{message: message.Message, redacted: r.Severity + ": " + r.Code + " " + r.Message}
 			}
-			if c.qe != nil && c.qe.SanitizeDiagnostics() {
+			if c.authz != nil && c.authz.SanitizeDiagnostics() {
 				message = sanitizeError(message)
 				out = message
 			}
 		case *pgproto3.ParameterStatus:
 			data = false
-			if message.Name == "search_path" && c.qe != nil {
-				c.qe.MarkNamespaceDirty()
+			if message.Name == "search_path" && c.authz != nil {
+				c.authz.MarkNamespaceDirty()
 			}
 			if cause := guardParameterStatusValue(message.Name, message.Value); cause != nil && !fail(cause) {
 				return targetDbErr, err
@@ -381,9 +381,9 @@ func (s *Server) serveQuery(sess *session, sql string, mode relayMode) (queryRes
 	var relayStats spi.RelayStats
 	relayStatus := relay.StatusError
 	var result queryResult
-	in := sess.authzInput(sql, sess.token, sess.clientAddr, sess.connectionID, ref.RunAll)
+	in := sess.authzInput(sql, ref.RunAll)
 	in.CheckTargetError = func(sql string) (*spi.TargetError, error) { return s.checkTargetErrorAndSync(sess, sql) }
-	decision, denied, err := relay.ServeStatement(sess.qe, in, ref, nil,
+	decision, denied, err := relay.ServeStatement(sess.authz, in, ref, nil,
 		func(toSend string, masks []*pb.ColumnMask, dec *spi.Decision) (bool, error) {
 			sess.targetDb.Send(&pgproto3.Query{String: toSend})
 			if err := sess.targetDb.Flush(); err != nil {
@@ -454,7 +454,7 @@ func (s *Server) serveQuery(sess *session, sql string, mode relayMode) (queryRes
 	// Post-relay, best-effort completion: only a relayed (Proceed) statement reports. A DENY relayed
 	// nothing, and EmitCompletion additionally no-ops for a decision with no audit id.
 	if !denied {
-		sess.qe.AwaitCompletion(relay.EmitCompletion(s.client, decision, relayStats, relayStatus, start))
+		sess.authz.AwaitCompletion(relay.EmitCompletion(s.client, decision, relayStats, relayStatus, start))
 	}
 	if err != nil {
 		var fail relay.FailError
@@ -472,7 +472,7 @@ func (s *Server) serveQuery(sess *session, sql string, mode relayMode) (queryRes
 			if mode == relayQuery {
 				sess.client.Send(&pgproto3.ReadyForQuery{TxStatus: sess.lastTxStatus})
 			}
-			sess.qe.AwaitCompletion(relay.EmitCompletion(s.client, decision, spi.RelayStats{}, relay.StatusError, start))
+			sess.authz.AwaitCompletion(relay.EmitCompletion(s.client, decision, spi.RelayStats{}, relay.StatusError, start))
 			return queryResult{stop: true}, sess.client.Flush()
 		}
 	}
@@ -537,7 +537,7 @@ func guardParameterStatusValue(name, value string) error {
 func (s *Server) guardParameterStatus(sess *session, message *pgproto3.ParameterStatus) error {
 	sess.client.Send(message)
 	if message.Name == "search_path" {
-		sess.qe.MarkNamespaceDirty()
+		sess.authz.MarkNamespaceDirty()
 	}
 	if err := guardParameterStatusValue(message.Name, message.Value); err != nil {
 		return mapWireStreamError(sess, err)

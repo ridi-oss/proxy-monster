@@ -337,8 +337,8 @@ func withMoreResults(payload []byte, eof bool) ([]byte, error) {
 // errRedactor returns the ERR-packet redactor for the current decision — sanitizeErrPacket when the control
 // plane latched diagnostic redaction for this statement, else nil (relay the ERR verbatim). It is the single
 // gate every target-DB-ERR relay path passes through. See docs/diagnostic-redaction.md.
-func errRedactor(qe *spi.Authorizer) func([]byte) []byte {
-	if qe != nil && qe.SanitizeDiagnostics() {
+func errRedactor(authz *spi.Authorizer) func([]byte) []byte {
+	if authz != nil && authz.SanitizeDiagnostics() {
 		return sanitizeErrPacket
 	}
 	return nil

@@ -29,12 +29,12 @@ type refetcher struct {
 	push         func(*pb.SchemaFragmentPush) (uint64, error)
 }
 
-func (t *target) newRefetcher(connectionID []byte, push func(*pb.SchemaFragmentPush) (uint64, error)) (*refetcher, error) {
+func (t *target) newRefetcher(authz *spi.Authorizer) (*refetcher, error) {
 	generation, ok := wire.NextBackendGeneration()
 	if !ok {
 		return nil, errors.New("athena: backend generation out of range")
 	}
-	return &refetcher{target: t, connectionID: append([]byte(nil), connectionID...), generation: generation, push: push}, nil
+	return &refetcher{target: t, connectionID: authz.ConnectionID(), generation: generation, push: authz.Client().PushSchemaFragment}, nil
 }
 
 // maxPreparedDefinitions bounds the definitions one decision may accumulate across its before-decide rounds.

@@ -356,18 +356,15 @@ func (c *sessionCore) collectProbe(expectedColumns int, quiet bool) ([][]*string
 	return result.Rows, nil
 }
 
-func (c *sessionCore) authzInput(sql, token, clientAddr string, connectionID []byte, runCommands func([]*pb.ProxyCommand, *spi.SessionObservation) error) spi.AuthzInput {
+func (c *sessionCore) authzInput(sql string, runCommands func([]*pb.ProxyCommand, *spi.SessionObservation) error) spi.AuthzInput {
 	// In an aborted transaction the probe below returns the session's last snapshot instead of querying.
 	if c.pendingDirty {
-		c.qe.MarkNamespaceDirty()
+		c.authz.MarkNamespaceDirty()
 		c.pendingDirty = false
 	}
 	return spi.AuthzInput{
-		SQL:          sql,
-		Token:        token,
-		ClientAddr:   clientAddr,
-		ConnectionID: connectionID,
-		RunCommands:  runCommands,
+		SQL:         sql,
+		RunCommands: runCommands,
 		ProbeSession: func() (spi.SessionObservation, error) {
 			// Postgres never reports MysqlAnsiQuotes: it has no ANSI_QUOTES mode, and its string-lexing
 			// divergence (standard_conforming_strings) fails the connection closed at the relay instead.
@@ -402,13 +399,13 @@ func (s *Server) refetcher(sess *session, extended bool) *relay.Refetcher {
 			return s.runExtendedProbe(sess, sql, expectedColumns)
 		}
 	}
-	refetcher := relay.NewRefetcher(s.db, sess.connectionID, sess.backendGen, probe, s.client.PushSchemaFragment)
+	refetcher := relay.NewRefetcher(s.db, sess.authz.ConnectionID(), sess.backendGen, probe, s.client.PushSchemaFragment)
 	refetcher.Catalog = sess.currentCatalog
 	return refetcher
 }
 
 func (s *Server) quietRefetcher(sess *session) *relay.Refetcher {
-	refetcher := relay.NewRefetcher(s.db, sess.connectionID, sess.backendGen, func(sql string, expectedColumns int) ([][]*string, error) {
+	refetcher := relay.NewRefetcher(s.db, sess.authz.ConnectionID(), sess.backendGen, func(sql string, expectedColumns int) ([][]*string, error) {
 		return sess.sessionCore.runProbe(sql, expectedColumns, true)
 	}, s.client.PushSchemaFragment)
 	refetcher.Catalog = sess.currentCatalog

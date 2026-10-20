@@ -5,13 +5,14 @@ import (
 	"testing"
 
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
 func TestRunSessionSubmitsPollsReadsAndMasks(t *testing.T) {
 	aws := newFakeAthena()
 	target := testTarget(t, aws.handle)
 	client := &flowClient{principal: "alice", verdict: maskVerdict(), completed: make(chan struct{}, 8)}
-	session, err := target.NewRunSession(context.Background(), client, "login-alice", []byte("0123456789abcdef"), nil, 0, "")
+	session, err := target.NewRunSession(context.Background(), spi.NewAuthorizer(client, "login-alice", []byte("0123456789abcdef")), nil, 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +54,7 @@ func TestRunSessionAppliesTheVerdictRowCap(t *testing.T) {
 	verdict.MaxRows = 1
 	aws.resultPage = `{"ResultSet":{"ResultSetMetadata":{"ColumnInfo":[{"Name":"email","Type":"varchar"},{"Name":"n","Type":"bigint"}]},"Rows":[{"Data":[{"VarCharValue":"email"},{"VarCharValue":"n"}]},{"Data":[{"VarCharValue":"a@example.test"},{"VarCharValue":"1"}]},{"Data":[{"VarCharValue":"b@example.test"},{"VarCharValue":"2"}]}]},"UpdateCount":0}`
 	client := &flowClient{principal: "alice", verdict: verdict, completed: make(chan struct{}, 8)}
-	session, err := target.NewRunSession(context.Background(), client, "login-alice", []byte("0123456789abcdef"), nil, 0, "")
+	session, err := target.NewRunSession(context.Background(), spi.NewAuthorizer(client, "login-alice", []byte("0123456789abcdef")), nil, 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,10 +74,10 @@ func TestRunSessionAppliesTheVerdictRowCap(t *testing.T) {
 func TestRunSessionRejectsAForeignDefaultSchema(t *testing.T) {
 	target := testTarget(t, newFakeAthena().handle)
 	client := &flowClient{principal: "alice", verdict: maskVerdict(), completed: make(chan struct{}, 8)}
-	if _, err := target.NewRunSession(context.Background(), client, "login-alice", []byte("0123456789abcdef"), nil, 0, "other"); err == nil {
+	if _, err := target.NewRunSession(context.Background(), spi.NewAuthorizer(client, "login-alice", []byte("0123456789abcdef")), nil, 0, "other"); err == nil {
 		t.Fatal("NewRunSession opened in a database other than the configured one")
 	}
-	session, err := target.NewRunSession(context.Background(), client, "login-alice", []byte("0123456789abcdef"), nil, 0, "example")
+	session, err := target.NewRunSession(context.Background(), spi.NewAuthorizer(client, "login-alice", []byte("0123456789abcdef")), nil, 0, "example")
 	if err != nil {
 		t.Fatalf("NewRunSession in the configured database: %v", err)
 	}

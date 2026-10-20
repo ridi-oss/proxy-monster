@@ -222,7 +222,7 @@ func (r *Runner) openTargetDb(ctx context.Context, stream runStream, messages <-
 	}
 	done := make(chan openResult, 1)
 	go func() {
-		sess, err := r.target.NewRunSession(openCtx, r.client, open.Token, open.ConnectionID, guard, r.readTimeout, open.DefaultSchema)
+		sess, err := r.target.NewRunSession(openCtx, spi.NewAuthorizer(r.client, open.Token, open.ConnectionID), guard, r.readTimeout, open.DefaultSchema)
 		if err != nil {
 			done <- openResult{err: err, errWhat: "target-DB connection failed: "}
 			return

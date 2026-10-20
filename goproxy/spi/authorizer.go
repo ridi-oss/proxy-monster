@@ -6,7 +6,7 @@ import (
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 )
 
-// ---- The verdict the engine hands back to the protocol ----
+// ---- The verdict the Authorizer hands back to the protocol ----
 
 // Verdict is the control plane's decision reduced to what the dumb protocol must do.
 type Verdict interface{ isVerdict() }
@@ -15,7 +15,7 @@ type Verdict interface{ isVerdict() }
 type Deny struct{ Decision *Decision }
 
 // Proceed: forward SQL (RewrittenSQL if non-nil, else the client's original). When Masks is non-empty
-// the protocol MUST mask those result columns via NewRowMasker; a mask that fails to bind is a
+// the protocol MUST mask those result columns via relay.NewRowMasker; a mask that fails to bind is a
 // mechanical failure and the protocol fails closed.
 type Proceed struct {
 	Decision     *Decision
@@ -30,13 +30,16 @@ func (Deny) isVerdict()    {}
 func (Proceed) isVerdict() {}
 func (Fail) isVerdict()    {}
 
-// ---- The engine ----
+// ---- The Authorizer ----
 
 // Authorizer runs one connection's relay. It holds ONLY a namespace cache (invalidated by protocol
-// signals via MarkNamespaceDirty, never by inspecting SQL). It is created with an injected DecisionClient and
-// never touches sockets — the protocol supplies probe I/O via callbacks.
+// signals via MarkNamespaceDirty, never by inspecting SQL). It never touches sockets; the protocol supplies
+// probe I/O via callbacks.
 type Authorizer struct {
-	client       DecisionClient
+	client       ControlPlane
+	token        string
+	clientAddr   string
+	connectionID []byte
 	session      SessionObservation
 	nsDirty      bool
 	sanitizeDiag bool
@@ -45,11 +48,30 @@ type Authorizer struct {
 	pendingCompletion <-chan struct{}
 }
 
-// NewAuthorizer creates the per-connection engine. The namespace starts dirty so the first query
+// NewAuthorizer creates the Authorizer for one connection. The namespace starts dirty so the first query
 // probes it.
-func NewAuthorizer(client DecisionClient) *Authorizer {
-	return &Authorizer{client: client, nsDirty: true}
+func NewAuthorizer(client ControlPlane, token string, connectionID []byte) *Authorizer {
+	return &Authorizer{client: client, token: token, connectionID: append([]byte(nil), connectionID...), nsDirty: true}
 }
+
+// Authenticate validates a wire client's token and opens the Authorizer for the connection it opened. The
+// caller closes the connection with Close.
+func Authenticate(client ControlPlane, token, clientAddr string) (*Authorizer, Identity, error) {
+	identity, err := client.ValidateToken(token, clientAddr)
+	if err != nil {
+		return nil, Identity{}, err
+	}
+	authz := NewAuthorizer(client, token, identity.ConnectionID)
+	authz.clientAddr = clientAddr
+	return authz, identity, nil
+}
+
+// Close ends the connection on the control plane.
+func (a *Authorizer) Close() error { return a.client.CloseConnection(a.connectionID) }
+
+func (a *Authorizer) ConnectionID() []byte { return a.connectionID }
+
+func (a *Authorizer) Client() ControlPlane { return a.client }
 
 // MarkNamespaceDirty invalidates the cached namespace. The protocol calls this when an authoritative
 // target DB signal says the namespace may have changed but does not include its new value, never by
@@ -78,13 +100,10 @@ func (a *Authorizer) SetNamespace(namespace []string) {
 }
 
 // AuthzInput is one statement to authorize plus the probe callbacks the protocol wires up. The protocol
-// runs its Db's probe SQL on the target DB and parses the result. The engine calls ProbeSession only when
+// runs its Db's probe SQL on the target DB and parses the result. The Authorizer calls ProbeSession only when
 // its cache is dirty, and ProbeTempColumns only when the protocol supplies it (the PG temp overlay).
 type AuthzInput struct {
 	SQL              string
-	Token            string
-	ClientAddr       string
-	ConnectionID     []byte
 	ProbeSession     func() (SessionObservation, error)
 	ProbeTempColumns func() ([]TempColumn, error)
 	RunCommands      func([]*pb.ProxyCommand, *SessionObservation) error
@@ -122,11 +141,11 @@ func (a *Authorizer) Authorize(in AuthzInput) Verdict {
 
 	out := a.client.Decide(DecideRequest{
 		Session:          a.session.Clone(),
-		Token:            in.Token,
+		Token:            a.token,
 		SQL:              in.SQL,
-		ClientAddr:       in.ClientAddr,
+		ClientAddr:       a.clientAddr,
 		TempColumns:      temps,
-		ConnectionID:     in.ConnectionID,
+		ConnectionID:     a.connectionID,
 		RunCommands:      in.RunCommands,
 		CheckTargetError: in.CheckTargetError,
 	})

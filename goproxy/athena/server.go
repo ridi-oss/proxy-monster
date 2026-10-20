@@ -107,7 +107,8 @@ type nativeRequest struct {
 	principal   string
 	requestBody []byte
 	// SQL submission state, set only for StartQueryExecution.
-	session   *enforcementSession
+	authz     *spi.Authorizer
+	refetcher *refetcher
 	decision  *spi.Decision
 	submitted []byte
 	tokened   bool
@@ -286,23 +287,25 @@ func (c *nativeRequest) admitSubmission(envelope *Envelope) (*Envelope, error) {
 		return nil, err
 	}
 	// The control plane pinned the scope: any other workgroup or database was already a scope violation.
-	identity, err := c.server.client.ValidateToken(c.token, c.clientAddr)
+	authz, identity, err := spi.Authenticate(c.server.client, c.token, c.clientAddr)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrUnauthorized, err)
 	}
 	if identity.Principal != c.principal {
+		_ = authz.Close()
 		return nil, ErrUnauthorized
 	}
-	session, err := c.server.target.newEnforcementSession(c.server.client, c.token, identity.ConnectionID)
+	refetcher, err := c.server.target.newRefetcher(authz)
 	if err != nil {
+		_ = authz.Close()
 		return nil, err
 	}
-	c.session = session
-	if err := session.onOpen(identity.OnOpen); err != nil {
+	c.authz, c.refetcher = authz, refetcher
+	if err := refetcher.RunAll(identity.OnOpen, nil); err != nil {
 		return nil, err
 	}
 	c.started = time.Now()
-	verdict := session.authorize(scope.query, c.clientAddr, scope.parameters, 0)
+	verdict := c.server.target.authorize(authz, refetcher, scope.query, scope.parameters, 0)
 	switch v := verdict.(type) {
 	case spi.Fail:
 		return nil, relay.FailError{Message: v.Message}
@@ -429,7 +432,7 @@ func (c *nativeRequest) observe(status int, body []byte) ([]*enginepb.AthenaReso
 // associate binds the execution AWS returned to the decision it was submitted under. A stable-token retry
 // AWS matched to an existing execution binds only when that execution's context is already the same one.
 func (c *nativeRequest) associate(status int, body []byte) ([]byte, error) {
-	if c.decision == nil || c.session == nil {
+	if c.decision == nil || c.authz == nil {
 		return nil, ErrUnauthorized
 	}
 	if status != http.StatusOK {
@@ -476,24 +479,24 @@ func (c *nativeRequest) associate(status int, body []byte) ([]byte, error) {
 	return body, nil
 }
 
-// settle reports the accepted submission and, for a catalog-changing statement, keeps the enforcement session
+// settle reports the accepted submission and, for a catalog-changing statement, keeps the connection
 // until the execution finishes so its after-statement refetches run; Athena executes asynchronously and a
 // client need not poll.
 func (c *nativeRequest) settle(id string) {
-	decision, session := c.decision, c.session
+	decision, authz, refetcher := c.decision, c.authz, c.refetcher
 	c.complete("ok")
 	if len(decision.AfterStatement) == 0 {
 		return
 	}
-	c.session = nil
+	c.authz, c.refetcher = nil, nil
 	go func() {
-		defer session.close(c.server.client)
+		defer func() { _ = authz.Close() }()
 		ctx, cancel := context.WithTimeout(context.Background(), afterStatementTimeout)
 		defer cancel()
 		if _, err := c.server.target.awaitExecution(ctx, id); err != nil {
 			return
 		}
-		if err := session.refetcher.RunAll(decision.AfterStatement, nil); err != nil {
+		if err := refetcher.RunAll(decision.AfterStatement, nil); err != nil {
 			slog.Warn("athena: catalog refresh after statement failed", "execution_id", id, "error", err)
 		}
 	}()
@@ -662,7 +665,7 @@ func (c *nativeRequest) fail(w http.ResponseWriter, err error) {
 
 // complete reports a submission's outcome once; later calls are no-ops.
 func (c *nativeRequest) complete(status string) {
-	if c.decision == nil || c.session == nil {
+	if c.decision == nil || c.authz == nil {
 		return
 	}
 	completion(c.server.client, c.decision, status, c.started)
@@ -670,9 +673,9 @@ func (c *nativeRequest) complete(status string) {
 }
 
 func (c *nativeRequest) release() {
-	if c.session != nil {
-		c.session.close(c.server.client)
-		c.session = nil
+	if c.authz != nil {
+		_ = c.authz.Close()
+		c.authz, c.refetcher = nil, nil
 	}
 }
 

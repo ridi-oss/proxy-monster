@@ -104,7 +104,7 @@ func defaultEventLoopTimings() eventLoopTimings {
 	}
 }
 
-// Client is the proxy's gRPC client to the control plane. It satisfies spi.DecisionClient.
+// Client is the proxy's gRPC client to the control plane. It satisfies spi.ControlPlane.
 type Client struct {
 	conn           *grpc.ClientConn
 	stub           pb.ControlPlaneClient
@@ -305,7 +305,7 @@ func decisionFromWire(d *pb.WireDecision) ([]*pb.ProxyCommand, *spi.Decision) {
 	}
 }
 
-// Decide implements spi.DecisionClient: it re-sends the same raw request after mechanically satisfying at
+// Decide implements spi.ControlPlane: it re-sends the same raw request after mechanically satisfying at
 // most three before_decide command rounds. Every failure path yields a non-empty Err (fail closed).
 func (c *Client) Decide(req spi.DecideRequest) spi.DecisionOutcome {
 	temps := make([]*pb.TempColumn, 0, len(req.TempColumns))

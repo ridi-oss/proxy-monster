@@ -26,7 +26,7 @@ type RunSession struct {
 	guard  spi.ExecGuard
 }
 
-func NewRunSession(ctx context.Context, config spi.TargetConfig, db relay.Db, authz *spi.Authorizer, guard spi.ExecGuard, readTimeout time.Duration, defaultSchema string) (*RunSession, error) {
+func NewRunSession(ctx context.Context, config spi.TargetConfig, queries relay.Db, authz *spi.Authorizer, guard spi.ExecGuard, readTimeout time.Duration, defaultSchema string) (*RunSession, error) {
 	if defaultSchema != "" {
 		config.Db = defaultSchema
 	}
@@ -47,7 +47,7 @@ func NewRunSession(ctx context.Context, config spi.TargetConfig, db relay.Db, au
 		authz:  authz,
 		guard:  guard,
 	}
-	s.ref = sqldb.NewRefetcher(db, authz.ConnectionID(), generation, func(sql string, expectedColumns int) ([][]*string, error) {
+	s.ref = sqldb.NewRefetcher(queries, authz.ConnectionID(), generation, func(sql string, expectedColumns int) ([][]*string, error) {
 		return runInternalQuery(s.conn, true, sql, expectedColumns)
 	}, authz.Client().PushSchemaFragment)
 	s.ref.Catalog = "def"

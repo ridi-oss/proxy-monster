@@ -21,14 +21,14 @@ func quoteMySQL(identifier string) string {
 	return "`" + strings.ReplaceAll(identifier, "`", "``") + "`"
 }
 
-func introspectTarget(t *testing.T, open func(spi.TargetConfig) (*sql.DB, error), adapter relay.Db, probe sqldb.NamespaceProbe, target dbtest.TargetDb, database string) *pb.CatalogRequest {
+func introspectTarget(t *testing.T, open func(spi.TargetConfig) (*sql.DB, error), queries relay.Db, probe sqldb.NamespaceProbe, targetConfig dbtest.TargetDb, database string) *pb.CatalogRequest {
 	t.Helper()
-	pool, err := open(spi.TargetConfig{Host: target.Host, Port: target.Port, Db: database, User: target.User, Password: target.Password})
+	pool, err := open(spi.TargetConfig{Host: targetConfig.Host, Port: targetConfig.Port, Db: database, User: targetConfig.User, Password: targetConfig.Password})
 	if err != nil {
 		t.Fatalf("open target: %v", err)
 	}
 	defer pool.Close()
-	catalog, err := sqldb.Introspect(context.Background(), pool, adapter, probe, database)
+	catalog, err := sqldb.Introspect(context.Background(), pool, queries, probe, database)
 	if err != nil {
 		t.Fatalf("sqldb.Introspect(%q): %v", database, err)
 	}
@@ -74,24 +74,24 @@ func schemaColumns(columns []*analyzerpb.Column, schema string) []*analyzerpb.Co
 }
 
 // assertFragmentMatchesBulk requires a refetch of schema to equal the bulk catalog, and its hash to be stable.
-func assertFragmentMatchesBulk(t *testing.T, adapter relay.Db, conn *sql.Conn, catalog string, bulk *pb.CatalogRequest, schema string) {
+func assertFragmentMatchesBulk(t *testing.T, queries relay.Db, conn *sql.Conn, catalog string, bulk *pb.CatalogRequest, schema string) {
 	t.Helper()
 	want := schemaColumns(bulk.GetCatalog().GetColumns(), schema)
 	if len(want) == 0 {
 		t.Fatalf("bulk catalog has no columns under schema %q", schema)
 	}
-	push := runRefetchIntegration(t, adapter, conn, catalog, schema, nil)
+	push := runRefetchIntegration(t, queries, conn, catalog, schema, nil)
 	if got := schemaColumns(push.GetColumns(), schema); !equalColumns(got, want) || len(push.GetColumns()) != len(want) {
 		t.Fatalf("refetch %q columns = %+v\nwant bulk %+v", schema, push.GetColumns(), want)
 	}
-	again := runRefetchIntegration(t, adapter, conn, catalog, schema, push.GetContentHash())
+	again := runRefetchIntegration(t, queries, conn, catalog, schema, push.GetContentHash())
 	if !again.GetUnchanged() || !bytes.Equal(again.GetContentHash(), push.GetContentHash()) {
 		t.Fatalf("refetch %q with its own hash = %+v, want unchanged", schema, again)
 	}
 }
 
 func TestMySQLLowerCase0KeepsSchemaAndTableCase(t *testing.T) {
-	target := dbtest.MySQL(t)
+	targetConfig := dbtest.MySQL(t)
 	admin := dbtest.OpenMySQL(t, "")
 	conn := pinConn(t, admin)
 	if mode := mysqlMode(t, conn); mode != 0 {
@@ -108,7 +108,7 @@ func TestMySQLLowerCase0KeepsSchemaAndTableCase(t *testing.T) {
 	execRefetchSQL(t, conn, "CREATE TABLE "+quoteMySQL(upper)+".`users` (id INT NOT NULL, Note VARCHAR(64) NULL)")
 	execRefetchSQL(t, conn, "CREATE TABLE "+quoteMySQL(lower)+".`users` (id INT NOT NULL, email VARCHAR(64) NULL)")
 
-	bulk := introspectTarget(t, sqldb.OpenMySQLTarget, MySqlDb{}, sqldb.ProbeMySQLNamespace, target, upper)
+	bulk := introspectTarget(t, sqldb.OpenMySQLTarget, MySqlDb{}, sqldb.ProbeMySQLNamespace, targetConfig, upper)
 	if got := bulk.GetDefaultSchemas(); !slices.Equal(got, []string{upper}) {
 		t.Fatalf("DefaultSchemas = %v, want [%s]", got, upper)
 	}
@@ -136,7 +136,7 @@ func TestMySQLLowerCase0KeepsSchemaAndTableCase(t *testing.T) {
 }
 
 func TestMySQLLowerCase1FoldsSchemaAndTable(t *testing.T) {
-	target := dbtest.MySQLLowerCase1(t)
+	targetConfig := dbtest.MySQLLowerCase1(t)
 	admin := dbtest.OpenMySQLLowerCase1(t, "")
 	conn := pinConn(t, admin)
 	if mode := mysqlMode(t, conn); mode != 1 {
@@ -150,7 +150,7 @@ func TestMySQLLowerCase1FoldsSchemaAndTable(t *testing.T) {
 	execRefetchSQL(t, conn, "CREATE TABLE "+quoteMySQL(mixed)+".`Users` (Id INT NOT NULL, EMail VARCHAR(64) NULL)")
 	execRefetchSQL(t, conn, "CREATE FUNCTION "+quoteMySQL(mixed)+".`AddTax` (amount INT) RETURNS INT DETERMINISTIC RETURN amount")
 
-	bulk := introspectTarget(t, sqldb.OpenMySQLTarget, MySqlDb{}, sqldb.ProbeMySQLNamespace, target, mixed)
+	bulk := introspectTarget(t, sqldb.OpenMySQLTarget, MySqlDb{}, sqldb.ProbeMySQLNamespace, targetConfig, mixed)
 	if got := bulk.GetDefaultSchemas(); !slices.Equal(got, []string{canonical}) {
 		t.Fatalf("DefaultSchemas = %v, want [%s]", got, canonical)
 	}
@@ -224,7 +224,7 @@ func probeAsMode2(ctx context.Context, conn *sql.Conn, targetDb string) (*pb.Cat
 }
 
 func TestMySQLLowerCase2FoldsStoredCase(t *testing.T) {
-	target := dbtest.MySQL(t)
+	targetConfig := dbtest.MySQL(t)
 	admin := dbtest.OpenMySQL(t, "")
 	conn := pinConn(t, admin)
 	mixed := uniqueFixtureName("PmNamesMode2")
@@ -234,7 +234,7 @@ func TestMySQLLowerCase2FoldsStoredCase(t *testing.T) {
 	t.Cleanup(func() { _, _ = admin.Exec("DROP DATABASE IF EXISTS " + quoteMySQL(mixed)) })
 	execRefetchSQL(t, conn, "CREATE TABLE "+quoteMySQL(mixed)+".`Users` (Id INT NOT NULL, EMail VARCHAR(64) NULL)")
 
-	bulk := introspectTarget(t, sqldb.OpenMySQLTarget, MySqlDb{}, probeAsMode2, target, mixed)
+	bulk := introspectTarget(t, sqldb.OpenMySQLTarget, MySqlDb{}, probeAsMode2, targetConfig, mixed)
 	if got := bulk.GetDefaultSchemas(); !slices.Equal(got, []string{canonical}) {
 		t.Fatalf("DefaultSchemas = %v, want [%s]", got, canonical)
 	}
@@ -358,10 +358,10 @@ func TestMySQLRefetchRefusesUnknownLowerCaseTableNames(t *testing.T) {
 }
 
 func TestPostgresQuotedNamesStayDistinct(t *testing.T) {
-	target := dbtest.Postgres(t)
+	targetConfig := dbtest.Postgres(t)
 	admin := dbtest.OpenPostgres(t, "")
 	name := uniqueFixtureName("pm_names_pg")
-	database := createPostgresRefetchDatabase(t, admin, target, name)
+	database := createPostgresRefetchDatabase(t, admin, targetConfig, name)
 	for _, statement := range []string{
 		`CREATE SCHEMA "Sales"`,
 		`CREATE SCHEMA sales`,
@@ -375,7 +375,7 @@ func TestPostgresQuotedNamesStayDistinct(t *testing.T) {
 		}
 	}
 
-	bulk := introspectTarget(t, sqldb.OpenPostgresTarget, PgDb{}, sqldb.ProbePostgresNamespace, target, name)
+	bulk := introspectTarget(t, sqldb.OpenPostgresTarget, PgDb{}, sqldb.ProbePostgresNamespace, targetConfig, name)
 	if got := bulk.GetDefaultSchemas(); !slices.Equal(got, []string{"pg_catalog", "Sales", "public"}) {
 		t.Errorf("DefaultSchemas = %v, want [pg_catalog Sales public]", got)
 	}

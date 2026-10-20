@@ -248,7 +248,7 @@ func startFakeCP(t *testing.T) (*fakeControlPlane, *cp.Client) {
 
 func seedTargetDb(t *testing.T) dbtest.TargetDb {
 	t.Helper()
-	targetDb := dbtest.MySQL(t)
+	targetConfig := dbtest.MySQL(t)
 	seed := dbtest.OpenMySQL(t, "")
 	statements := []string{
 		"CREATE DATABASE IF NOT EXISTS " + primarySchema,
@@ -276,7 +276,7 @@ func seedTargetDb(t *testing.T) dbtest.TargetDb {
 			t.Fatalf("seed statement %q: %v", statement, err)
 		}
 	}
-	return targetDb
+	return targetConfig
 }
 
 type brokerHarness struct {
@@ -290,9 +290,9 @@ func startBroker(t *testing.T) *brokerHarness {
 	return startBrokerWithTLS(t, nil)
 }
 
-func startBrokerWithDb(t *testing.T, dbImpl relay.Db) *brokerHarness {
+func startBrokerWithDb(t *testing.T, queries relay.Db) *brokerHarness {
 	t.Helper()
-	return startBrokerConfigured(t, nil, dbImpl)
+	return startBrokerConfigured(t, nil, queries)
 }
 
 func startBrokerTLS(t *testing.T) *brokerHarness {
@@ -308,23 +308,23 @@ func startBrokerWithTLS(t *testing.T, tlsProvider func() (*tls.Config, error)) *
 	return startBrokerConfigured(t, tlsProvider, db.MySqlDb{})
 }
 
-func startBrokerConfigured(t *testing.T, tlsProvider func() (*tls.Config, error), dbImpl relay.Db) *brokerHarness {
+func startBrokerConfigured(t *testing.T, tlsProvider func() (*tls.Config, error), queries relay.Db) *brokerHarness {
 	t.Helper()
-	return startBrokerListening(t, spi.Listen{}, tlsProvider, dbImpl)
+	return startBrokerListening(t, spi.Listen{}, tlsProvider, queries)
 }
 
-func startBrokerListening(t *testing.T, listen spi.Listen, tlsProvider func() (*tls.Config, error), dbImpl relay.Db) *brokerHarness {
+func startBrokerListening(t *testing.T, listen spi.Listen, tlsProvider func() (*tls.Config, error), queries relay.Db) *brokerHarness {
 	t.Helper()
-	targetDb := seedTargetDb(t)
+	targetConfig := seedTargetDb(t)
 	fake, cpClient := startFakeCP(t)
 	config := spi.TargetConfig{
-		Host:     targetDb.Host,
-		Port:     targetDb.Port,
+		Host:     targetConfig.Host,
+		Port:     targetConfig.Port,
 		Db:       primarySchema,
 		User:     serviceUser,
 		Password: servicePassword,
 	}
-	server := mysql.New(listen, config, cpClient, dbImpl, tlsProvider)
+	server := mysql.New(listen, config, cpClient, queries, tlsProvider)
 	if err := server.Listen(); err != nil {
 		t.Fatalf("mysql.Listen: %v", err)
 	}
@@ -485,9 +485,9 @@ func TestOnOpenEqualHashPushesUnchangedWithoutColumns(t *testing.T) {
 
 func TestOnOpenFailureRefusesConnectionAndClosesCPState(t *testing.T) {
 	for _, test := range []struct {
-		name   string
-		dbImpl relay.Db
-		setup  func(*fakeControlPlane)
+		name    string
+		queries relay.Db
+		setup   func(*fakeControlPlane)
 	}{
 		{"introspection", failingColumnsDb{MySqlDb: db.MySqlDb{}}, func(*fakeControlPlane) {}},
 		{"push", db.MySqlDb{}, func(fake *fakeControlPlane) {
@@ -495,7 +495,7 @@ func TestOnOpenFailureRefusesConnectionAndClosesCPState(t *testing.T) {
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			h := startBrokerWithDb(t, test.dbImpl)
+			h := startBrokerWithDb(t, test.queries)
 			connectionID := []byte("openfail01234567")
 			h.fake.setValidateResponse(&pb.WireIdentity{
 				Principal:    "mysql-it@example.com",

@@ -345,7 +345,7 @@ func (s *Server) probeBindContext(sess *session) (spi.SessionObservation, []spi.
 		// ROLLBACK's Bind. Reuse the last context snapshot (symmetric with handleQuery / handleParse).
 		return sess.session.Clone(), append([]spi.TempColumn{}, sess.tempOverlay...), nil
 	}
-	namespaceRows, err := s.runExtendedProbe(sess, s.db.NamespaceProbeSQL(), 1)
+	namespaceRows, err := s.runExtendedProbe(sess, s.queries.NamespaceProbeSQL(), 1)
 	if err != nil {
 		return spi.SessionObservation{}, nil, fmt.Errorf("target-DB namespace probe: %w", err)
 	}
@@ -356,7 +356,7 @@ func (s *Server) probeBindContext(sess *session) (spi.SessionObservation, []spi.
 	observed.CurrentCatalog = sess.currentCatalog
 	sess.session = observed.Clone()
 
-	tempRows, err := s.runExtendedProbe(sess, s.db.TempColumnsProbeSQL(), 6)
+	tempRows, err := s.runExtendedProbe(sess, s.queries.TempColumnsProbeSQL(), 6)
 	if err != nil {
 		return spi.SessionObservation{}, nil, fmt.Errorf("target DB temp-column probe: %w", err)
 	}

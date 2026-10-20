@@ -220,7 +220,7 @@ func (f *runFakeCP) runSetFragmentPushError(err error) {
 
 type runEngineFixture struct {
 	runEngine    *engines.Engine
-	runDb        spi.Target
+	runTarget    spi.Target
 	runConfig    spi.TargetConfig
 	runTable     string
 	runNamespace []string
@@ -368,7 +368,7 @@ func TestRunnerMalformedOpen(t *testing.T) {
 			fake, client := runStartFakeCP(t, test.open.SessionID)
 			done := make(chan struct{})
 			go func() {
-				run.NewRunner(client, fixture.runDb, 0).Run(test.open, nil)
+				run.NewRunner(client, fixture.runTarget, 0).Run(test.open, nil)
 				close(done)
 			}()
 			// The stream sends its run id (RunReady) the instant it opens, before the open is validated, so even
@@ -1331,7 +1331,7 @@ func TestRunnerDrainReturnsWhenIdle(t *testing.T) {
 	draining := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
-		run.NewRunner(client, fixture.runDb, 0).Run(runOpen(fixture), draining)
+		run.NewRunner(client, fixture.runTarget, 0).Run(runOpen(fixture), draining)
 		close(done)
 	}()
 
@@ -1353,7 +1353,7 @@ func TestRunnerDrainLetsInFlightStatementFinish(t *testing.T) {
 	draining := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
-		run.NewRunner(client, fixture.runDb, 0).Run(runOpen(fixture), draining)
+		run.NewRunner(client, fixture.runTarget, 0).Run(runOpen(fixture), draining)
 		close(done)
 	}()
 
@@ -1385,7 +1385,7 @@ func TestRunnerDrainDoesNotStartAQueuedQuery(t *testing.T) {
 	draining := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
-		run.NewRunner(client, fixture.runDb, 0).Run(runOpen(fixture), draining)
+		run.NewRunner(client, fixture.runTarget, 0).Run(runOpen(fixture), draining)
 		close(done)
 	}()
 
@@ -1411,11 +1411,11 @@ func TestRunnerDrainDoesNotStartAQueuedQuery(t *testing.T) {
 func TestRunnerSendsRunReadyBeforeTargetDbOpenAndHeartbeats(t *testing.T) {
 	fixture := runSeedMySQL(t)
 	release := make(chan struct{})
-	fixture.runDb = &runSlowOpenDb{Target: fixture.runDb, release: release}
+	fixture.runTarget = &runSlowOpenDb{Target: fixture.runTarget, release: release}
 	fake, client := runStartFakeCP(t, runSessionID)
 	done := make(chan struct{})
 	go func() {
-		run.NewRunner(client, fixture.runDb, 0).Run(runOpen(fixture), nil)
+		run.NewRunner(client, fixture.runTarget, 0).Run(runOpen(fixture), nil)
 		close(done)
 	}()
 
@@ -1467,11 +1467,11 @@ func TestRunnerSendsRunReadyBeforeTargetDbOpenAndHeartbeats(t *testing.T) {
 func TestRunnerCloseDuringTargetDbOpenAbortsTargetDb(t *testing.T) {
 	fixture := runSeedMySQL(t)
 	entered := make(chan struct{})
-	fixture.runDb = &runSlowOpenDb{Target: fixture.runDb, release: make(chan struct{}), entered: entered}
+	fixture.runTarget = &runSlowOpenDb{Target: fixture.runTarget, release: make(chan struct{}), entered: entered}
 	fake, client := runStartFakeCP(t, runSessionID)
 	done := make(chan struct{})
 	go func() {
-		run.NewRunner(client, fixture.runDb, 0).Run(runOpen(fixture), nil)
+		run.NewRunner(client, fixture.runTarget, 0).Run(runOpen(fixture), nil)
 		close(done)
 	}()
 
@@ -1494,12 +1494,12 @@ func TestRunnerCloseDuringTargetDbOpenAbortsTargetDb(t *testing.T) {
 func TestRunnerDrainDuringTargetDbOpenAbortsTargetDb(t *testing.T) {
 	fixture := runSeedMySQL(t)
 	entered := make(chan struct{})
-	fixture.runDb = &runSlowOpenDb{Target: fixture.runDb, release: make(chan struct{}), entered: entered}
+	fixture.runTarget = &runSlowOpenDb{Target: fixture.runTarget, release: make(chan struct{}), entered: entered}
 	fake, client := runStartFakeCP(t, runSessionID)
 	draining := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
-		run.NewRunner(client, fixture.runDb, 0).Run(runOpen(fixture), draining)
+		run.NewRunner(client, fixture.runTarget, 0).Run(runOpen(fixture), draining)
 		close(done)
 	}()
 
@@ -1527,15 +1527,15 @@ func TestRunnerDrainAsTargetDbOpenCompletesInstallsNoSession(t *testing.T) {
 	release := make(chan struct{})
 	draining := make(chan struct{})
 	var drainOnce sync.Once
-	fixture.runDb = &runSlowOpenDb{
-		Target:         fixture.runDb,
+	fixture.runTarget = &runSlowOpenDb{
+		Target:         fixture.runTarget,
 		release:        release,
 		beforeDelegate: func() { drainOnce.Do(func() { close(draining) }) },
 	}
 	fake, client := runStartFakeCP(t, runSessionID)
 	done := make(chan struct{})
 	go func() {
-		run.NewRunner(client, fixture.runDb, 0).Run(runOpen(fixture), draining)
+		run.NewRunner(client, fixture.runTarget, 0).Run(runOpen(fixture), draining)
 		close(done)
 	}()
 
@@ -1572,7 +1572,7 @@ func TestRunnerCloseDuringRealDialAbortsIt(t *testing.T) {
 	fake, client := runStartFakeCP(t, runSessionID)
 	done := make(chan struct{})
 	go func() {
-		run.NewRunner(client, mustDb(t, engines.MySQL, stall.config), 0).Run(runStallOpen(), nil)
+		run.NewRunner(client, mustTarget(t, engines.MySQL, stall.config), 0).Run(runStallOpen(), nil)
 		close(done)
 	}()
 
@@ -1599,7 +1599,7 @@ func TestRunnerDrainDuringRealDialAbortsIt(t *testing.T) {
 	draining := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
-		run.NewRunner(client, mustDb(t, engines.MySQL, stall.config), 0).Run(runStallOpen(), draining)
+		run.NewRunner(client, mustTarget(t, engines.MySQL, stall.config), 0).Run(runStallOpen(), draining)
 		close(done)
 	}()
 
@@ -1636,8 +1636,8 @@ func TestRunnerCloseInFlightCancelsTargetDb(t *testing.T) {
 
 func TestRunnerPassesQueryTimeoutPlusGraceToRunSession(t *testing.T) {
 	fixture := runSeedMySQL(t)
-	capturing := &runCapturingDb{Target: fixture.runDb, readTimeout: make(chan time.Duration, 1)}
-	fixture.runDb = capturing
+	capturing := &runCapturingDb{Target: fixture.runTarget, readTimeout: make(chan time.Duration, 1)}
+	fixture.runTarget = capturing
 	fake, client := runStartFakeCP(t, runSessionID)
 	waitDone := runLaunchWithTimeout(t, fake, client, fixture, 17*time.Second)
 
@@ -1679,7 +1679,7 @@ func runLaunchOpen(t *testing.T, fake *runFakeCP, client *cp.Client, fixture run
 
 func runLaunchOpenConfigured(t *testing.T, fake *runFakeCP, client *cp.Client, fixture runEngineFixture, open spi.RunOpen, queryTimeout time.Duration, configure func(*run.Runner)) func() {
 	t.Helper()
-	runner := run.NewRunner(client, fixture.runDb, queryTimeout)
+	runner := run.NewRunner(client, fixture.runTarget, queryTimeout)
 	if configure != nil {
 		configure(runner)
 	}
@@ -1762,7 +1762,7 @@ func runStartFakeCP(t *testing.T, datasourceName string) (*runFakeCP, *cp.Client
 
 func runSeedMySQL(t *testing.T) runEngineFixture {
 	t.Helper()
-	targetDb := dbtest.MySQL(t)
+	targetConfig := dbtest.MySQL(t)
 	seed := dbtest.OpenMySQL(t, "")
 	statements := []string{
 		"CREATE DATABASE IF NOT EXISTS " + runMySQLSchema,
@@ -1782,12 +1782,12 @@ func runSeedMySQL(t *testing.T) runEngineFixture {
 	}
 	runSeedRows(t, seed, "INSERT INTO "+runMySQLSchema+".pm_run_rows (id, secret) VALUES ")
 	config := spi.TargetConfig{
-		Host: targetDb.Host, Port: targetDb.Port, Db: runMySQLSchema,
+		Host: targetConfig.Host, Port: targetConfig.Port, Db: runMySQLSchema,
 		User: runMySQLService, Password: runMySQLServicePwd,
 	}
 	return runEngineFixture{
 		runEngine:    engines.MySQL,
-		runDb:        mustDb(t, engines.MySQL, config),
+		runTarget:    mustTarget(t, engines.MySQL, config),
 		runConfig:    config,
 		runTable:     runMySQLSchema + ".pm_run_rows",
 		runNamespace: []string{runMySQLSchema},
@@ -1796,7 +1796,7 @@ func runSeedMySQL(t *testing.T) runEngineFixture {
 
 func runSeedPostgres(t *testing.T) runEngineFixture {
 	t.Helper()
-	targetDb := dbtest.Postgres(t)
+	targetConfig := dbtest.Postgres(t)
 	seed := dbtest.OpenPostgres(t, "")
 	statements := []string{
 		"CREATE SCHEMA IF NOT EXISTS " + runPGSchema,
@@ -1810,30 +1810,30 @@ func runSeedPostgres(t *testing.T) runEngineFixture {
 	}
 	runSeedRows(t, seed, "INSERT INTO "+runPGSchema+".pm_run_rows (id, secret) VALUES ")
 	config := spi.TargetConfig{
-		Host: targetDb.Host, Port: targetDb.Port, Db: targetDb.DB,
-		User: targetDb.User, Password: targetDb.Password,
+		Host: targetConfig.Host, Port: targetConfig.Port, Db: targetConfig.DB,
+		User: targetConfig.User, Password: targetConfig.Password,
 	}
 	return runEngineFixture{
 		runEngine:    engines.Postgres,
-		runDb:        mustDb(t, engines.Postgres, config),
+		runTarget:    mustTarget(t, engines.Postgres, config),
 		runConfig:    config,
 		runTable:     runPGSchema + ".pm_run_rows",
 		runNamespace: []string{"pg_catalog", "public"},
 	}
 }
 
-func mustDb(t *testing.T, e *engines.Engine, config spi.TargetConfig) spi.Target {
+func mustTarget(t *testing.T, e *engines.Engine, config spi.TargetConfig) spi.Target {
 	t.Helper()
 	provider, err := dialects.For(e)
 	if err != nil {
 		t.Fatalf("dialects.For(%s): %v", e.WireName, err)
 	}
-	targetDb, err := provider.OpenTarget(config)
+	target, err := provider.OpenTarget(config)
 	if err != nil {
 		t.Fatalf("OpenTarget(%s): %v", e.WireName, err)
 	}
-	t.Cleanup(func() { _ = targetDb.Close() })
-	return targetDb
+	t.Cleanup(func() { _ = target.Close() })
+	return target
 }
 
 func runSeedRows(t *testing.T, seed *sql.DB, prefix string) {

@@ -42,7 +42,7 @@ type sessionCore struct {
 	currentCatalog string
 	targetDb       *pgproto3.Frontend
 	authz          *spi.Authorizer
-	db             relay.Db
+	queries        relay.Db
 	lastTxStatus   byte
 	pendingDirty   bool
 	session        spi.SessionObservation
@@ -210,7 +210,7 @@ startupComplete:
 			currentCatalog: catalog,
 			targetDb:       targetDb,
 			authz:          authz,
-			db:             s.db,
+			queries:        s.queries,
 			lastTxStatus:   txStatus,
 			forward:        client.Send,
 			flushForward:   client.Flush,

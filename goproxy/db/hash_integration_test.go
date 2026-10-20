@@ -206,7 +206,7 @@ func TestMySqlSchemaHashIntegration(t *testing.T) {
 }
 
 func TestPostgresSchemaHashIntegration(t *testing.T) {
-	targetDb := dbtest.Postgres(t)
+	targetConfig := dbtest.Postgres(t)
 	admin := dbtest.OpenPostgres(t, "")
 
 	createDatabase := func(t *testing.T, name string) *sql.DB {
@@ -220,7 +220,7 @@ func TestPostgresSchemaHashIntegration(t *testing.T) {
 		t.Cleanup(func() {
 			_, _ = admin.Exec(`DROP DATABASE IF EXISTS "` + name + `" WITH (FORCE)`)
 		})
-		return openPostgresDatabase(t, targetDb, name)
+		return openPostgresDatabase(t, targetConfig, name)
 	}
 
 	t.Run("pgcrypto in public", func(t *testing.T) {
@@ -363,9 +363,9 @@ func verifyPostgresHashAndFragment(t *testing.T, database *sql.DB, wantCrypto bo
 	mutate("drop table", "DROP TABLE "+quote(matrixSchema)+".renamed_table")
 }
 
-func openPostgresDatabase(t *testing.T, targetDb dbtest.TargetDb, name string) *sql.DB {
+func openPostgresDatabase(t *testing.T, targetConfig dbtest.TargetDb, name string) *sql.DB {
 	t.Helper()
-	database, err := sql.Open("pgx", targetDb.PostgresDSN(name))
+	database, err := sql.Open("pgx", targetConfig.PostgresDSN(name))
 	if err != nil {
 		t.Fatalf("open Postgres database %s: %v", name, err)
 	}

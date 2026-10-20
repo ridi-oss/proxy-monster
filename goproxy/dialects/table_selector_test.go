@@ -26,7 +26,7 @@ func TestMySQLQualifiedPublicSchemaIsLiteral(t *testing.T) {
 			}
 		})
 	}
-	target := openDb(t, engines.MySQL, spi.TargetConfig{Host: database.Host, Port: database.Port, Db: "app", User: database.User, Password: database.Password})
+	target := openTarget(t, engines.MySQL, spi.TargetConfig{Host: database.Host, Port: database.Port, Db: "app", User: database.User, Password: database.Password})
 	if _, err := target.ReadTableDetail(context.Background(), &enginepb.ObjectRef{Schema: "app", Table: "users"}); err == nil {
 		t.Fatal("blank catalog was answered")
 	}

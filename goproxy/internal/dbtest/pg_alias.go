@@ -17,7 +17,7 @@ import (
 )
 
 // PostgresAlias rewrites only the startup database; authentication and query traffic reach the real server unchanged.
-func PostgresAlias(t testing.TB, target TargetDb, alias string) (TargetDb, *atomic.Uint64) {
+func PostgresAlias(t testing.TB, targetConfig TargetDb, alias string) (TargetDb, *atomic.Uint64) {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -59,7 +59,7 @@ func PostgresAlias(t testing.TB, target TargetDb, alias string) (TargetDb, *atom
 			go func() {
 				defer workers.Done()
 				defer untrack(client)
-				startup, err := aliasStartup(client, alias, target.DB)
+				startup, err := aliasStartup(client, alias, targetConfig.DB)
 				if err != nil {
 					if ctx.Err() == nil && !errors.Is(err, io.EOF) {
 						t.Errorf("alias startup: %v", err)
@@ -67,7 +67,7 @@ func PostgresAlias(t testing.TB, target TargetDb, alias string) (TargetDb, *atom
 					return
 				}
 				dialer := net.Dialer{Timeout: 5 * time.Second}
-				upstream, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(target.Host, strconv.Itoa(target.Port)))
+				upstream, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(targetConfig.Host, strconv.Itoa(targetConfig.Port)))
 				if err != nil {
 					if ctx.Err() == nil {
 						t.Errorf("alias target dial: %v", err)
@@ -106,7 +106,7 @@ func PostgresAlias(t testing.TB, target TargetDb, alias string) (TargetDb, *atom
 		workers.Wait()
 	})
 	address := listener.Addr().(*net.TCPAddr)
-	return TargetDb{Host: address.IP.String(), Port: address.Port, DB: alias, User: target.User, Password: target.Password}, rewritten
+	return TargetDb{Host: address.IP.String(), Port: address.Port, DB: alias, User: targetConfig.User, Password: targetConfig.Password}, rewritten
 }
 
 func aliasStartup(client net.Conn, alias, database string) ([]byte, error) {

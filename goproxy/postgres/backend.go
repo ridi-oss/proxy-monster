@@ -250,7 +250,7 @@ func (c *sessionCore) probeCurrentCatalog() (string, error) {
 }
 
 func (c *sessionCore) probeSession() (spi.SessionObservation, error) {
-	rows, err := c.runProbe(c.db.NamespaceProbeSQL(), 1, false)
+	rows, err := c.runProbe(c.queries.NamespaceProbeSQL(), 1, false)
 	if err != nil {
 		return spi.SessionObservation{}, fmt.Errorf("target-DB namespace probe: %w", err)
 	}
@@ -296,7 +296,7 @@ func sessionFromRows(rows [][]*string) (spi.SessionObservation, error) {
 }
 
 func (c *sessionCore) probeTempColumns() ([]spi.TempColumn, error) {
-	rows, err := c.runProbe(c.db.TempColumnsProbeSQL(), 6, false)
+	rows, err := c.runProbe(c.queries.TempColumnsProbeSQL(), 6, false)
 	if err != nil {
 		return nil, fmt.Errorf("target DB temp-column probe: %w", err)
 	}
@@ -400,13 +400,13 @@ func (s *Server) refetcher(sess *session, extended bool) *sqldb.Refetcher {
 			return s.runExtendedProbe(sess, sql, expectedColumns)
 		}
 	}
-	refetcher := sqldb.NewRefetcher(s.db, sess.authz.ConnectionID(), sess.backendGen, probe, s.client.PushSchemaFragment)
+	refetcher := sqldb.NewRefetcher(s.queries, sess.authz.ConnectionID(), sess.backendGen, probe, s.client.PushSchemaFragment)
 	refetcher.Catalog = sess.currentCatalog
 	return refetcher
 }
 
 func (s *Server) quietRefetcher(sess *session) *sqldb.Refetcher {
-	refetcher := sqldb.NewRefetcher(s.db, sess.authz.ConnectionID(), sess.backendGen, func(sql string, expectedColumns int) ([][]*string, error) {
+	refetcher := sqldb.NewRefetcher(s.queries, sess.authz.ConnectionID(), sess.backendGen, func(sql string, expectedColumns int) ([][]*string, error) {
 		return sess.sessionCore.runProbe(sql, expectedColumns, true)
 	}, s.client.PushSchemaFragment)
 	refetcher.Catalog = sess.currentCatalog

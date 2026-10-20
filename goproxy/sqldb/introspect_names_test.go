@@ -84,7 +84,7 @@ func TestProbeMySQLNamespaceRefusesUnknownLowerCaseTableNames(t *testing.T) {
 
 func TestRunRefusesUnknownLowerCaseTableNames(t *testing.T) {
 	t.Skip("pending-name-fix: introspect folds an unreported or out-of-range lower_case_table_names as 0")
-	targetDb := dbtest.MySQL(t)
+	targetConfig := dbtest.MySQL(t)
 	for _, tc := range []struct {
 		name string
 		lctn *int32
@@ -102,7 +102,7 @@ func TestRunRefusesUnknownLowerCaseTableNames(t *testing.T) {
 				catalog.MysqlLowerCaseTableNames = tc.lctn
 				return catalog, nil
 			}
-			cat, err := runWith(OpenMySQLTarget, db.MySqlDb{}, probe, spi.TargetConfig{Host: targetDb.Host, Port: targetDb.Port, Db: targetDb.DB, User: targetDb.User, Password: targetDb.Password})
+			cat, err := runWith(OpenMySQLTarget, db.MySqlDb{}, probe, spi.TargetConfig{Host: targetConfig.Host, Port: targetConfig.Port, Db: targetConfig.DB, User: targetConfig.User, Password: targetConfig.Password})
 			if err == nil {
 				t.Fatalf("Run pushed a catalog of %d columns, want refused", len(cat.GetCatalog().GetColumns()))
 			}

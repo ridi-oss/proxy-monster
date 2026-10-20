@@ -10,7 +10,7 @@ import (
 )
 
 func TestSearchPathKeepsQuotedCase(t *testing.T) {
-	targetDb := dbtest.Postgres(t)
+	targetConfig := dbtest.Postgres(t)
 	seed := dbtest.OpenPostgres(t, "")
 	for _, statement := range []string{
 		`CREATE SCHEMA IF NOT EXISTS "PmNamesSales"`,
@@ -22,7 +22,7 @@ func TestSearchPathKeepsQuotedCase(t *testing.T) {
 			t.Fatalf("seed %q: %v", statement, err)
 		}
 	}
-	h := startBrokerForDB(t, targetDb, "app")
+	h := startBrokerForDB(t, targetConfig, "app")
 	conn, err := h.connect(t, validToken, true)
 	if err != nil {
 		t.Fatalf("connect: %v", err)

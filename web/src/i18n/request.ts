@@ -15,6 +15,7 @@ const NAMESPACES = {
   Nav: 'nav',
   Login: 'login',
   Device: 'device',
+  Consent: 'consent',
   Session: 'session',
   Query: 'query',
   Workflows: 'workflows',

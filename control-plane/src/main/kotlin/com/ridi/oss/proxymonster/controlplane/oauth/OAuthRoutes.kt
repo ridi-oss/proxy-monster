@@ -26,7 +26,6 @@ import com.ridi.oss.proxymonster.controlplane.management.AuditActor
 import com.ridi.oss.proxymonster.controlplane.management.auditEntity
 import com.ridi.oss.proxymonster.controlplane.userSession
 import com.ridi.oss.proxymonster.controlplane.webSession
-import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.encodeURLParameter
@@ -39,7 +38,6 @@ import io.ktor.server.request.receiveParameters
 import io.ktor.server.response.header
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondRedirect
-import io.ktor.server.response.respondText
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
@@ -50,8 +48,6 @@ import io.ktor.server.sessions.sessions
 import io.ktor.server.sessions.set
 import kotlinx.serialization.Serializable
 import java.sql.Connection
-import java.util.Locale
-import java.util.ResourceBundle
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 import javax.sql.DataSource
@@ -104,6 +100,16 @@ private data class AuthorizationServerMetadata(
 )
 
 @Serializable
+private data class PendingConsent(
+    val clientName: String,
+    val clientId: String,
+    val redirectUri: String,
+    val loopback: Boolean,
+    val scopes: List<String>,
+    val csrf: String,
+)
+
+@Serializable
 private data class ConsentListResponse(
     val consents: List<OAuthConsent>,
     val csrfToken: String,
@@ -127,6 +133,7 @@ fun Route.mcpOAuthRoutes(
     cimdResolver: CimdResolver = HttpCimdResolver(productionChecks = !config.authDebug),
 ) {
     val store = OAuthAuthorizationStore(dataSource)
+    val consentPage = config.webRedirectTarget("/consent")
     get("/.well-known/oauth-authorization-server") {
         call.respond(
             AuthorizationServerMetadata(
@@ -214,7 +221,7 @@ fun Route.mcpOAuthRoutes(
                     }
                 issueAuthorizationCode(call, pending, consent.id, store, cimdResolver)
             } else {
-                renderConsent(call, pending, metadata.client_name, metadata.client_id)
+                call.respondRedirect(consentPage)
             }
             return@get
         }
@@ -229,7 +236,7 @@ fun Route.mcpOAuthRoutes(
             // return to /oauth/resume. No service call or service credential exists between them.
             call.respondRedirect("/auth/oidc/login?return_to=${"/oauth/resume".encodeURLParameter()}")
         } else {
-            continueAuthorization(call, pending, store, cimdResolver)
+            continueAuthorization(call, pending, store, cimdResolver, consentPage)
         }
     }
 
@@ -259,7 +266,31 @@ fun Route.mcpOAuthRoutes(
         }
         val authenticated = pending.copy(principal = principal, csrf = randomSecret("csrf_", 18))
         call.sessions.set(MCP_OAUTH_PENDING_COOKIE, authenticated)
-        continueAuthorization(call, authenticated, store, cimdResolver)
+        continueAuthorization(call, authenticated, store, cimdResolver, consentPage)
+    }
+
+    get("/oauth/pending") {
+        val pending = call.sessions.get<McpPendingAuthorization>()
+        val principal = pending?.principal
+        if (pending == null || principal == null || call.userSession()?.principal != principal) {
+            call.respond(HttpStatusCode.BadRequest, OAuthError("invalid_request")); return@get
+        }
+        val scopes = pending.scope.split(' ').filter(String::isNotBlank)
+        val metadata = runCatching {
+            cimdResolver.resolve(pending.clientId).also { it.validateRequest(pending.redirectUri, scopes.toSet()) }
+        }.getOrElse {
+            call.respond(HttpStatusCode.BadRequest, OAuthError("invalid_client")); return@get
+        }
+        call.respond(
+            PendingConsent(
+                clientName = metadata.client_name,
+                clientId = metadata.client_id,
+                redirectUri = pending.redirectUri,
+                loopback = isLoopbackRedirectHost(requireNotNull(validatedRedirectUri(pending.redirectUri).host)),
+                scopes = scopes,
+                csrf = pending.csrf,
+            ),
+        )
     }
 
     post("/oauth/consent") {
@@ -439,6 +470,7 @@ private suspend fun continueAuthorization(
     pending: McpPendingAuthorization,
     store: OAuthAuthorizationStore,
     resolver: CimdResolver,
+    consentPage: String,
 ) {
     val principal = requireNotNull(pending.principal)
     val scopes = pending.scope.split(' ').filter(String::isNotBlank).toSet()
@@ -446,7 +478,7 @@ private suspend fun continueAuthorization(
     metadata.validateRequest(pending.redirectUri, scopes)
     val consent = store.findActiveConsent(principal, pending.clientId, pending.resource, scopes)
     if (consent != null) issueAuthorizationCode(call, pending, consent.id, store, resolver)
-    else renderConsent(call, pending, metadata.client_name, metadata.client_id)
+    else call.respondRedirect(consentPage)
 }
 
 private suspend fun issueAuthorizationCode(
@@ -473,53 +505,6 @@ private suspend fun issueAuthorizationCode(
     call.sessions.clear(MCP_OAUTH_PENDING_COOKIE)
     call.respondRedirect(oauthRedirect(pending.redirectUri, mapOf("code" to code, "state" to pending.state)))
 }
-
-private suspend fun renderConsent(
-    call: ApplicationCall,
-    pending: McpPendingAuthorization,
-    clientName: String,
-    clientId: String,
-) {
-    val bundle = localizedBundle(call)
-    val scopes = pending.scope.split(' ').filter(String::isNotBlank).joinToString("<br>") { scope ->
-        val label = "consent.scope.$scope".takeIf(bundle::containsKey)?.let(bundle::getString)
-        if (label == null) escapeHtml(scope) else "${escapeHtml(label)} (${escapeHtml(scope)})"
-    }
-    val redirect = validatedRedirectUri(pending.redirectUri)
-    val redirectDisclosure = escapeHtml(pending.redirectUri)
-    val loopbackWarning = if (isLoopbackRedirectHost(requireNotNull(redirect.host))) {
-        "<p><strong>${escapeHtml(bundle.getString("consent.localhost_warning"))}</strong></p>"
-    } else {
-        ""
-    }
-    call.response.header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'")
-    call.response.header("X-Content-Type-Options", "nosniff")
-    call.response.header("Referrer-Policy", "no-referrer")
-    call.respondText(
-        """<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(bundle.getString("consent.title"))}</title></head>
-           <body><h1>${escapeHtml(bundle.getString("consent.title"))}</h1>
-           <p>${escapeHtml(bundle.getString("consent.client"))}: ${escapeHtml(clientName)}</p>
-           <p>${escapeHtml(bundle.getString("consent.client_id"))}: ${escapeHtml(clientId)}</p>
-           <p>${escapeHtml(bundle.getString("consent.redirect"))}: $redirectDisclosure</p>
-           $loopbackWarning
-           <p>${escapeHtml(bundle.getString("consent.scopes"))}:<br>$scopes</p>
-           <form method="post" action="/oauth/consent">
-           <input type="hidden" name="csrf" value="${escapeHtml(pending.csrf)}">
-           <button name="decision" value="approve">${escapeHtml(bundle.getString("consent.approve"))}</button>
-           <button name="decision" value="deny">${escapeHtml(bundle.getString("consent.deny"))}</button>
-           </form></body></html>""".trimIndent(),
-        ContentType.Text.Html,
-    )
-}
-
-private fun localizedBundle(call: ApplicationCall): ResourceBundle {
-    val preferred = call.request.headers["Accept-Language"]?.lowercase().orEmpty()
-    val locale = if (preferred.startsWith("ko")) Locale.KOREAN else Locale.ENGLISH
-    return ResourceBundle.getBundle("authorization_messages", locale)
-}
-
-private fun escapeHtml(value: String): String = value.replace("&", "&amp;").replace("<", "&lt;")
-    .replace(">", "&gt;").replace("\"", "&quot;").replace("'", "&#39;")
 
 private fun oauthRedirect(uri: String, values: Map<String, String>): String = buildString {
     append(uri)

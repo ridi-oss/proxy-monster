@@ -31,7 +31,9 @@ import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import kotlin.test.fail
 
-private const val WINDOW_MILLIS = 1_000L
+// Three DDLs must land inside one window even on a loaded CI runner.
+private const val WINDOW_MILLIS = CONFIG_CATALOG_REFRESH_WINDOW_MILLIS
+private const val SETTLE_MILLIS = WINDOW_MILLIS + 1_000L
 
 abstract class ConfigCatalogRefreshDbContract {
     protected abstract fun createEnforcement(): EnforcementFixture
@@ -92,7 +94,7 @@ abstract class ConfigCatalogRefreshDbContract {
         try {
             withTimeout(5_000) { while (ds.name !in fixture.core.proxyEventsHub.attached()) delay(20) }
             body()
-            delay(WINDOW_MILLIS * 2)
+            delay(SETTLE_MILLIS)
         } finally {
             proxy.cancel()
             withTimeout(5_000) { while (ds.name in fixture.core.proxyEventsHub.attached()) delay(20) }
@@ -164,7 +166,7 @@ abstract class ConfigCatalogRefreshDbContract {
                     held.autoCommit = false
                     val opened = open(held)
                     runDdl(held, opened, "CREATE TABLE ${table(name)} (id BIGINT)")
-                    delay(WINDOW_MILLIS * 2)
+                    delay(SETTLE_MILLIS)
                     val commit = decide(opened, "COMMIT")
                     assertEquals(EnfAction.ALLOW, commit.ctx.action, commit.ctx.denyReason)
                     assertEquals(listOf(schema()), commit.afterStatement.map { it.schema }, "COMMIT re-measures the DDL's schema")
@@ -192,7 +194,7 @@ abstract class ConfigCatalogRefreshDbContract {
                     assertEquals(EnfAction.ALLOW, rollback.ctx.action, rollback.ctx.denyReason)
                     assertEquals(emptyList(), rollback.afterStatement)
                     held.rollback()
-                    delay(WINDOW_MILLIS * 2)
+                    delay(SETTLE_MILLIS)
                     val commit = decide(opened, "COMMIT")
                     assertEquals(emptyList(), commit.afterStatement, "ROLLBACK cleared the connection's DDL")
                 }
@@ -252,7 +254,7 @@ abstract class ConfigCatalogRefreshDbContract {
         val name = "cfgref_detached_${System.nanoTime()}"
         try {
             target().use { held -> runDdl(held, open(held), "CREATE TABLE ${table(name)} (id BIGINT)") }
-            delay(WINDOW_MILLIS * 2)
+            delay(SETTLE_MILLIS)
         } finally {
             dropTables(name)
         }

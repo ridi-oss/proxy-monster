@@ -10,6 +10,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -124,10 +125,27 @@ func (r *Resolver) trackerID(req *http.Request) (string, bool) {
 // WirePrincipal resolves a native wire token (SESSION or USER, not retired) the way Kotlin's
 // resolveActiveToken does for HTTP discovery, or "" when it is not a live one or its principal is deactivated.
 func (r *Resolver) WirePrincipal(ctx context.Context, token string) (string, error) {
-	sum := sha256.Sum256([]byte(token))
-	principal, err := db.New(r.pool).WirePrincipal(ctx, hex.EncodeToString(sum[:]))
+	principal, err := db.New(r.pool).WirePrincipal(ctx, TokenHash(token))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", nil
 	}
 	return principal, err
+}
+
+// TokenHash is how proxy_token stores a token: hex SHA-256.
+func TokenHash(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}
+
+// CanonicalScopes is the stored scope form: trimmed, non-empty, sorted, distinct, space-joined.
+func CanonicalScopes(scopes []string) string {
+	var out []string
+	for _, s := range scopes {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	slices.Sort(out)
+	return strings.Join(slices.Compact(out), " ")
 }

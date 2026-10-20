@@ -1,6 +1,5 @@
 package com.ridi.oss.proxymonster.controlplane
 
-import com.ridi.oss.proxymonster.auth.clampTtlSeconds
 import com.ridi.oss.proxymonster.controlplane.authz.UserAttribute
 import java.net.URI
 

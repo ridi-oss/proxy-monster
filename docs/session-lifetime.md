@@ -303,6 +303,6 @@ the server (derived from env) as props — single source of truth.
 - `kind` is the only fork. Single-session, idle, device-bind, and popup re-auth
   are all `WEB`-only invariants; `DAEMON` stays multi-session. No behavior
   branches on anything but `kind`.
-- MCP OAuth co-hosting reuses `pm_session` (`oauth/OAuthRoutes.kt`,
-  `oauth/Cimd.kt`) and resolves through the server-side session. Its own
-  `PM_OAUTH_ACCESS_TTL` / `REFRESH_TTL` are separate and unchanged.
+- MCP OAuth co-hosting reuses `pm_session` (`cpgo/routes/oauth`) and resolves
+  through the server-side session. Its own `PM_OAUTH_ACCESS_TTL` / `REFRESH_TTL`
+  are separate and unchanged.

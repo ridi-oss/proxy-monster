@@ -194,7 +194,7 @@ var sharedEnv = map[string]string{
 	"PM_DB_URL": "jdbc:postgresql://db.example/pm", "PM_DB_USER": "pm-user", "PM_DB_PASSWORD": "pm-password",
 	"PM_SESSION_SECRET": "a-session-secret-of-at-least-32-chars", "PM_SECRET_TOKEN": "secret-token", "PM_AUTH_DEBUG": "false",
 	"PM_MCP_RESOURCE": "https://pm.example.com/mcp", "PM_INSTANCE_NAME": "pm", "PM_WEB_ORIGIN": "https://web.example.com", "PM_RESULT_KEY": "result-key",
-	"PM_ELEVATED_SCOPE_TTL": "1800", "PM_OAUTH_ACCESS_TTL": "300", "PM_SESSION_WINDOW": "3h",
+	"PM_ELEVATED_SCOPE_TTL": "1800", "PM_OAUTH_ACCESS_TTL": "300", "PM_OAUTH_REFRESH_TTL": "7200", "PM_OAUTH_DEBUG_AUTO_CONSENT": "false", "PM_SESSION_WINDOW": "3h",
 	"PM_WEB_SESSION_ABSOLUTE": "4h", "PM_WEB_SESSION_IDLE": "10m", "PM_WEB_SESSION_SLIDE": "1m",
 	"PM_WEB_SESSION_IDLE_WARN_LEAD": "30", "PM_WEB_SESSION_ABSOLUTE_WARN_LEAD": "2m", "PM_WEB_SESSION_HEARTBEAT": "45",
 	"PM_OIDC_ISSUER": "https://idp.example.com", "PM_OIDC_CLIENT_ID": "client", "PM_OIDC_CLIENT_SECRET": "client-secret",
@@ -238,7 +238,7 @@ func TestTheChildGetsEverySharedSettingGoParsed(t *testing.T) {
 	}
 	wantSession := session.Settings{
 		Secret: "a-session-secret-of-at-least-32-chars", Secure: true, ResultKey: true, WebOrigin: "https://web.example.com",
-		OIDCEnabled: true, MCPResource: "https://pm.example.com/mcp", ElevatedScopeTTL: 1800, MCPAccessTTL: 300,
+		OIDCEnabled: true, MCPResource: "https://pm.example.com/mcp", ElevatedScopeTTL: 1800, MCPAccessTTL: 300, MCPRefreshTTL: 7200,
 		SessionWindowSeconds: 3 * 3600, AbsoluteSeconds: 4 * 3600, IdleSeconds: 600, SlideSeconds: 60,
 		IdleWarnLeadSeconds: 30, AbsoluteWarnLeadSeconds: 120, HeartbeatSeconds: 45,
 	}
@@ -270,6 +270,7 @@ func TestTheChildGetsGosDefaultsAndFlags(t *testing.T) {
 		"PM_DB_URL=jdbc:postgresql://flag/pm", "PM_DB_USER=from-env", "PM_DB_PASSWORD=proxymonster",
 		"PM_SESSION_SECRET=dev-insecure-session-secret-change-me", "PM_AUTH_DEBUG=false",
 		"PM_MCP_RESOURCE=http://127.0.0.1:8080/mcp", "PM_ELEVATED_SCOPE_TTL=3600", "PM_OAUTH_ACCESS_TTL=600",
+		"PM_OAUTH_REFRESH_TTL=21600", "PM_OAUTH_DEBUG_AUTO_CONSENT=true",
 		"PM_SESSION_WINDOW=7200", "PM_WEB_SESSION_ABSOLUTE=7200", "PM_WEB_SESSION_IDLE=900", "PM_WEB_SESSION_SLIDE=120",
 		"PM_WEB_SESSION_IDLE_WARN_LEAD=60", "PM_WEB_SESSION_ABSOLUTE_WARN_LEAD=300", "PM_WEB_SESSION_HEARTBEAT=90",
 		"PM_OIDC_SCOPES=openid profile email groups offline_access", "PM_IDP_RECHECK_INTERVAL=300",

@@ -1,9 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane.support
 
-import com.ridi.oss.proxymonster.auth.AuthorizationCodeInput
-import com.ridi.oss.proxymonster.auth.ConsumeAuthorizationCodeInput
-import com.ridi.oss.proxymonster.auth.OAuthAuthorizationStore
-import com.ridi.oss.proxymonster.auth.pkceS256
+import com.ridi.oss.proxymonster.auth.sha256Hex
 import com.ridi.oss.proxymonster.controlplane.Config
 import com.ridi.oss.proxymonster.controlplane.ControlPlaneCore
 import com.ridi.oss.proxymonster.controlplane.PrincipalSessionStore
@@ -37,7 +34,6 @@ import io.ktor.server.testing.ApplicationTestBuilder
 import java.util.concurrent.atomic.AtomicInteger
 import javax.sql.DataSource
 import kotlin.test.assertEquals
-import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
@@ -57,9 +53,6 @@ import kotlinx.serialization.json.put
 
 const val MCP_TEST_RESOURCE = "http://localhost/mcp"
 private const val CLIENT_ID = "https://client.example/mcp.json"
-private const val REDIRECT_URI = "http://127.0.0.1:43110/callback"
-private val VERIFIER = "m".repeat(43)
-private val CHALLENGE = pkceS256(VERIFIER)
 private val rpcIds = AtomicInteger()
 
 val MCP_TEST_JSON = Json { ignoreUnknownKeys = true; encodeDefaults = true }
@@ -86,20 +79,30 @@ fun mcpTestConfig(resultKey: ByteArray? = null) = Config(
     trustedProxies = setOf("localhost"),
 )
 
-/** Mints real MCP access tokens through the OAuth store, as the consent flow would. */
-class McpTokens(dataSource: DataSource, private val resource: String = MCP_TEST_RESOURCE) {
-    private val oauth = OAuthAuthorizationStore(dataSource)
-
+/** Writes MCP access tokens the way cp-go's consent flow leaves them: a live consent and an access token under it. */
+class McpTokens(private val dataSource: DataSource, private val resource: String = MCP_TEST_RESOURCE) {
     fun token(principal: String, scopes: Set<String>): String {
-        val consent = oauth.rememberConsent(principal, CLIENT_ID, resource, scopes)
-        val code = oauth.createAuthorizationCode(
-            AuthorizationCodeInput(CLIENT_ID, principal, REDIRECT_URI, resource, scopes, CHALLENGE, consentId = consent.id),
-        )
-        return assertNotNull(
-            oauth.consumeAuthorizationCode(
-                ConsumeAuthorizationCodeInput(code, CLIENT_ID, REDIRECT_URI, resource, VERIFIER, 600, 3_600),
-            ),
-        ).accessToken
+        val scope = scopes.toSortedSet().joinToString(" ")
+        val token = "pma_" + java.util.UUID.randomUUID()
+        dataSource.connection.use { c ->
+            val consent = c.prepareStatement(
+                """INSERT INTO oauth_consent (principal, client_id, resource, scope) VALUES (?, ?, ?, ?)
+                   ON CONFLICT (principal, client_id, resource, scope) WHERE revoked_at IS NULL DO UPDATE SET updated_at = now()
+                   RETURNING id""",
+            ).use { ps ->
+                listOf(principal, CLIENT_ID, resource, scope).forEachIndexed { i, v -> ps.setString(i + 1, v) }
+                ps.executeQuery().use { rs -> rs.next(); rs.getLong(1) }
+            }
+            c.prepareStatement(
+                """INSERT INTO proxy_token (token_hash, kind, principal, roles, expires_at, resource, client_id, scope, refresh_family, consent_id)
+                   VALUES (?, 'MCP_ACCESS', ?, '[]'::jsonb, now() + interval '10 minutes', ?, ?, ?, ?, ?)""",
+            ).use { ps ->
+                listOf(sha256Hex(token), principal, resource, CLIENT_ID, scope, "pmf_$token").forEachIndexed { i, v -> ps.setString(i + 1, v) }
+                ps.setLong(7, consent)
+                ps.executeUpdate()
+            }
+        }
+        return token
     }
 }
 

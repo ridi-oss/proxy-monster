@@ -143,11 +143,10 @@ Okta remains the user identity provider, not the MCP authorization server.
 The MCP spec makes the MCP endpoint an OAuth resource server and requires a
 discoverable authorization server. Okta cannot be that authorization server
 because it does not expose the required client-registration flow, so the OAuth
-routes are co-hosted inside the control plane in the
-`com.ridi.oss.proxymonster.controlplane.oauth` package (`OAuthRoutes.kt`). They
-use CIMD for MCP client registration, reuse the existing control-plane
-login/session, and issue proxy-monster's own short-lived, resource-bound access
-and refresh tokens. There is no RFC 7591 DCR endpoint.
+routes are co-hosted inside the control plane in cp-go's `cpgo/routes/oauth`
+package. They use CIMD for MCP client registration, reuse the existing
+control-plane login/session, and issue proxy-monster's own short-lived,
+resource-bound access and refresh tokens. There is no RFC 7591 DCR endpoint.
 
 ### Endpoints and ownership
 

@@ -15,6 +15,21 @@ function errorText(err: unknown, fallback: string): string {
   return err instanceof Error ? err.message : fallback
 }
 
+const URL_RE = /(https?:\/\/[^\s<>"]*[^\s<>".,;:!?)\]'])/
+
+/** Comment text with each http(s) URL as a link that opens in a new tab. */
+export function Linkified({ text }: { text: string }) {
+  return text.split(URL_RE).map((part, i) =>
+    i % 2 === 1 ? (
+      <a key={i} href={part} target="_blank" rel="noopener noreferrer" className="underline">
+        {part}
+      </a>
+    ) : (
+      part
+    ),
+  )
+}
+
 function EventLine({ event, onRequest }: { event: RequestEvent; onRequest: boolean }) {
   const t = useTranslations('Workflows')
   const when = new Date(event.createdAt).toLocaleString()
@@ -36,7 +51,7 @@ function EventLine({ event, onRequest }: { event: RequestEvent; onRequest: boole
         {event.deleted ? (
           <p className="text-muted-foreground text-sm italic">{t('timeline.deleted')}</p>
         ) : (
-          event.body && <p className="text-sm whitespace-pre-wrap break-words">{event.body}</p>
+          event.body && <p className="text-sm whitespace-pre-wrap break-words"><Linkified text={event.body} /></p>
         )}
       </li>
     )

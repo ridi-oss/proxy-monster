@@ -320,8 +320,8 @@ func TestStreamResultTargetDbErrStaysProxyInternalWithBothForms(t *testing.T) {
 	// streamResult also serves internal catalog probes/refetches (collectProbe), so its error must NOT be
 	// relay.TargetDbError — only RunSession.ServeStatement promotes the statement's OWN ERR. Otherwise a
 	// probe failure would be surfaced to a viewer as the query's error detail.
-	var eng relay.TargetDbError
-	if errors.As(targetDbErr, &eng) {
+	var targetErr relay.TargetDbError
+	if errors.As(targetDbErr, &targetErr) {
 		t.Fatal("streamResult tagged an ErrorResponse as relay.TargetDbError; a probe error would leak as error detail")
 	}
 	// It still carries BOTH forms for the statement site to promote: the raw message and the value-free strip.

@@ -98,7 +98,7 @@ func TestPostgresCatalogThroughDatabaseAlias(t *testing.T) {
 		}
 	}
 	gateway, rewritten := dbtest.PostgresAlias(t, database, "advisory")
-	target := openDb(t, engines.Postgres, spi.TargetConfig{Host: gateway.Host, Port: gateway.Port, Db: gateway.DB, User: gateway.User, Password: gateway.Password})
+	target := openTarget(t, engines.Postgres, spi.TargetConfig{Host: gateway.Host, Port: gateway.Port, Db: gateway.DB, User: gateway.User, Password: gateway.Password})
 	catalog, err := target.Introspect(ctx)
 	if err != nil {
 		t.Fatal(err)

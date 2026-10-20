@@ -55,7 +55,7 @@ func Run(registry spi.Registry) error {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	provider := cfg.Provider
-	targetDb, err := provider.OpenTarget(spi.TargetConfig{
+	target, err := provider.OpenTarget(spi.TargetConfig{
 		Host:     cfg.TargetHost,
 		Port:     cfg.TargetPort,
 		Db:       cfg.TargetDb,
@@ -66,7 +66,7 @@ func Run(registry spi.Registry) error {
 	if err != nil {
 		return fmt.Errorf("failed to open target: %w", err)
 	}
-	defer targetDb.Close()
+	defer target.Close()
 
 	// Build the client-facing TLS config BEFORE registering, so the proxy can advertise the certificate chain
 	// a client should trust alongside its address. certChain is re-read at every (re)register, so a rotated
@@ -130,7 +130,7 @@ func Run(registry spi.Registry) error {
 		slog.Info("proxy TLS disabled — plaintext (trusted tailnet only); set PM_TLS_CERT + PM_TLS_KEY to enable")
 	}
 
-	runner := run.NewRunner(client, targetDb, cfg.QueryTimeout)
+	runner := run.NewRunner(client, target, cfg.QueryTimeout)
 	// Track in-flight run executions with the same drain primitive the wire server uses, so shutdown lets an
 	// executing editor/approval query finish and idle sessions return. Every open still dials back (spawns
 	// Run): a refusal would strand the control-plane, which has already committed this proxy for the request
@@ -189,7 +189,7 @@ func Run(registry spi.Registry) error {
 		}
 	}()
 
-	server := targetDb.NewWireServer(cfg.Listen(), client, tlsProvider)
+	server := target.NewWireServer(cfg.Listen(), client, tlsProvider)
 	slog.Info("starting proxy-monster data plane", "engine", cfg.EngineName, "control_plane", cfg.ControlPlaneGrpcTarget)
 
 	serveErr := make(chan error, 1)

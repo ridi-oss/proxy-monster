@@ -204,7 +204,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 	if !ok {
 		return
 	}
-	refetcher := sqldb.NewRefetcher(s.db, identity.ConnectionID, generation, func(sql string, expectedColumns int) ([][]*string, error) {
+	refetcher := sqldb.NewRefetcher(s.queries, identity.ConnectionID, generation, func(sql string, expectedColumns int) ([][]*string, error) {
 		return runInternalQuery(targetDbConn, deprecateEOF, sql, expectedColumns)
 	}, s.client.PushSchemaFragment)
 	refetcher.Catalog = "def"

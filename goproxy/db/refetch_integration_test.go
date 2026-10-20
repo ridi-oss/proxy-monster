@@ -152,7 +152,7 @@ func TestMySqlRefetcherIntegration(t *testing.T) {
 }
 
 func TestPostgresRefetcherIntegration(t *testing.T) {
-	targetDb := dbtest.Postgres(t)
+	targetConfig := dbtest.Postgres(t)
 	admin := dbtest.OpenPostgres(t, "")
 
 	modes := []struct {
@@ -165,7 +165,7 @@ func TestPostgresRefetcherIntegration(t *testing.T) {
 	for _, mode := range modes {
 		t.Run(mode.name, func(t *testing.T) {
 			databaseName := uniqueFixtureName("pm_refetch_pg")
-			database := createPostgresRefetchDatabase(t, admin, targetDb, databaseName)
+			database := createPostgresRefetchDatabase(t, admin, targetConfig, databaseName)
 			if mode.crypto {
 				if _, err := database.Exec("CREATE EXTENSION pgcrypto"); err != nil {
 					t.Fatalf("CREATE EXTENSION pgcrypto: %v", err)
@@ -408,17 +408,17 @@ func (db narrowMySqlHashDb) SchemaHashSQL(schema string, setupRows [][]*string) 
 	return strings.Replace(sqlText, "33554432", "1024", 1), columns, nil
 }
 
-func trustedRefetchHash(t *testing.T, adapter relay.Db, conn *sql.Conn, schema string) []byte {
+func trustedRefetchHash(t *testing.T, queries relay.Db, conn *sql.Conn, schema string) []byte {
 	t.Helper()
 	var setupRows [][]*string
-	if setupSQL := adapter.HashSetupProbeSQL(); setupSQL != "" {
-		rows, err := queryStrings(conn, setupSQL, adapter.HashSetupColumns())
+	if setupSQL := queries.HashSetupProbeSQL(); setupSQL != "" {
+		rows, err := queryStrings(conn, setupSQL, queries.HashSetupColumns())
 		if err != nil {
 			t.Fatalf("hash setup probe: %v", err)
 		}
 		setupRows = rows
 	}
-	hashSQL, columns, err := adapter.SchemaHashSQL(schema, setupRows)
+	hashSQL, columns, err := queries.SchemaHashSQL(schema, setupRows)
 	if err != nil {
 		t.Fatalf("SchemaHashSQL(%q): %v", schema, err)
 	}
@@ -426,21 +426,21 @@ func trustedRefetchHash(t *testing.T, adapter relay.Db, conn *sql.Conn, schema s
 	if err != nil {
 		t.Fatalf("hash query for %q: %v\n%s", schema, err, hashSQL)
 	}
-	hash, trusted, err := adapter.SchemaHashFromRows(rows)
+	hash, trusted, err := queries.SchemaHashFromRows(rows)
 	if err != nil || !trusted {
 		t.Fatalf("hash for %q = %x, trusted=%v, err=%v, rows=%#v", schema, hash, trusted, err, rows)
 	}
 	return hash
 }
 
-func runRefetchIntegration(t *testing.T, adapter relay.Db, conn *sql.Conn, catalog, schema string, ifHashDiffers []byte) *pb.SchemaFragmentPush {
+func runRefetchIntegration(t *testing.T, queries relay.Db, conn *sql.Conn, catalog, schema string, ifHashDiffers []byte) *pb.SchemaFragmentPush {
 	t.Helper()
 	connectionID := []byte("refetch-test-connection")
 	const generation = uint64(41)
 	var pushes []*pb.SchemaFragmentPush
 	refetcher := sqldb.Refetcher{
 		Catalog:           catalog,
-		Db:                adapter,
+		Db:                queries,
 		ConnectionID:      connectionID,
 		BackendGeneration: generation,
 		Probe: func(statement string, expectedColumns int) ([][]*string, error) {
@@ -489,7 +489,7 @@ func execRefetchSQL(t *testing.T, conn *sql.Conn, statement string) {
 	}
 }
 
-func createPostgresRefetchDatabase(t *testing.T, admin *sql.DB, targetDb dbtest.TargetDb, name string) *sql.DB {
+func createPostgresRefetchDatabase(t *testing.T, admin *sql.DB, targetConfig dbtest.TargetDb, name string) *sql.DB {
 	t.Helper()
 	if _, err := admin.Exec(`DROP DATABASE IF EXISTS "` + name + `" WITH (FORCE)`); err != nil {
 		t.Fatalf("drop database %s: %v", name, err)
@@ -500,5 +500,5 @@ func createPostgresRefetchDatabase(t *testing.T, admin *sql.DB, targetDb dbtest.
 	t.Cleanup(func() {
 		_, _ = admin.Exec(`DROP DATABASE IF EXISTS "` + name + `" WITH (FORCE)`)
 	})
-	return openPostgresDatabase(t, targetDb, name)
+	return openPostgresDatabase(t, targetConfig, name)
 }

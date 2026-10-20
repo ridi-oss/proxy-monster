@@ -14,14 +14,14 @@ import (
 	"github.com/ridi-oss/proxy-monster/goproxy/targettls"
 )
 
-func tlsOnlyTarget(t *testing.T, config *tls.Config) spi.TargetConfig {
+func tlsOnlyConfig(t *testing.T, config *tls.Config) spi.TargetConfig {
 	t.Helper()
 	db := dbtest.PostgresTLS(t)
 	return spi.TargetConfig{Host: db.Host, Port: db.Port, Db: db.DB, User: db.User, Password: db.Password, TLS: config}
 }
 
 func TestTargetDbTLSVerifyFull(t *testing.T) {
-	cfg := tlsOnlyTarget(t, nil)
+	cfg := tlsOnlyConfig(t, nil)
 	config, err := targettls.Config(targettls.VerifyFull, dbtest.TLSCAFile(), cfg.Host)
 	if err != nil {
 		t.Fatal(err)
@@ -64,7 +64,7 @@ func TestTargetDbTLSVerifyFull(t *testing.T) {
 }
 
 func TestTargetDbTLSRejectsHostnameMismatch(t *testing.T) {
-	cfg := tlsOnlyTarget(t, nil)
+	cfg := tlsOnlyConfig(t, nil)
 	config, err := targettls.Config(targettls.VerifyFull, dbtest.TLSCAFile(), "not-the-san.example")
 	if err != nil {
 		t.Fatal(err)
@@ -77,7 +77,7 @@ func TestTargetDbTLSRejectsHostnameMismatch(t *testing.T) {
 }
 
 func TestTargetDbTLSRequire(t *testing.T) {
-	cfg := tlsOnlyTarget(t, nil)
+	cfg := tlsOnlyConfig(t, nil)
 	config, err := targettls.Config(targettls.Require, "", cfg.Host)
 	if err != nil {
 		t.Fatal(err)
@@ -91,14 +91,14 @@ func TestTargetDbTLSRequire(t *testing.T) {
 }
 
 func TestTargetDbTLSPlaintextIsRefused(t *testing.T) {
-	_, _, _, _, _, err := dialTargetDbAuth(context.Background(), tlsOnlyTarget(t, nil))
+	_, _, _, _, _, err := dialTargetDbAuth(context.Background(), tlsOnlyConfig(t, nil))
 	if err == nil || !strings.Contains(err.Error(), "pg_hba.conf") {
 		t.Fatalf("plaintext dial to a hostssl-only target = %v, want a pg_hba rejection", err)
 	}
 }
 
 func TestTargetDbTLSRejectsUntrustedCertificate(t *testing.T) {
-	cfg := tlsOnlyTarget(t, nil)
+	cfg := tlsOnlyConfig(t, nil)
 	config, err := targettls.Config(targettls.VerifyFull, "rds", cfg.Host)
 	if err != nil {
 		t.Fatal(err)
@@ -121,7 +121,7 @@ func TestTargetDbTLSRefusedByPlaintextServer(t *testing.T) {
 
 // A Cloud SQL per-instance certificate names no DNS host, so verify-ca must pass on the chain alone.
 func TestTargetDbTLSVerifyCAIgnoresHostname(t *testing.T) {
-	cfg := tlsOnlyTarget(t, nil)
+	cfg := tlsOnlyConfig(t, nil)
 	config, err := targettls.Config(targettls.VerifyCA, dbtest.TLSCAFile(), "my-project:my-instance")
 	if err != nil {
 		t.Fatal(err)

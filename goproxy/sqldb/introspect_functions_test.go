@@ -23,7 +23,7 @@ func runRoutinesQuery(query string, config spi.TargetConfig) (*pb.CatalogRequest
 }
 
 func TestRoutinesObservation(t *testing.T) {
-	targetDb := dbtest.MySQL(t)
+	targetConfig := dbtest.MySQL(t)
 	seed := dbtest.OpenMySQL(t, "")
 	const schema = "it_routines_observation"
 	for _, sql := range []string{
@@ -34,7 +34,7 @@ func TestRoutinesObservation(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	config := spi.TargetConfig{Host: targetDb.Host, Port: targetDb.Port, Db: schema, User: targetDb.User, Password: targetDb.Password}
+	config := spi.TargetConfig{Host: targetConfig.Host, Port: targetConfig.Port, Db: schema, User: targetConfig.User, Password: targetConfig.Password}
 	t.Run("routines fold and group by schema", func(t *testing.T) {
 		catalog, err := runRoutinesQuery("SELECT 'app', 'LOOKUP' UNION ALL SELECT 'app', 'lookup' UNION ALL SELECT 'mysql', 'PLUGIN_FN'", config)
 		if err != nil {

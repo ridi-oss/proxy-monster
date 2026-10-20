@@ -116,7 +116,7 @@ type NamespaceProbe func(ctx context.Context, conn *sql.Conn, targetDb string) (
 
 // Introspect introspects the target's information_schema over a live connection and returns the catalog to
 // push to the control plane. DatasourceName is left blank — the caller (cp.PushCatalog) stamps it.
-func Introspect(ctx context.Context, db *sql.DB, dbImpl relay.Db, probe NamespaceProbe, targetDb string) (*pb.CatalogRequest, error) {
+func Introspect(ctx context.Context, db *sql.DB, queries relay.Db, probe NamespaceProbe, targetDb string) (*pb.CatalogRequest, error) {
 	// Pin ONE physical connection for the whole introspection and verify it up front. The *sql.DB handle
 	// is a lazy pool: without pinning, each of probeVersion's two queries and the namespace/columns probes
 	// would independently dial the target, so a dead or misauthenticated target would incur several failed
@@ -165,12 +165,12 @@ func Introspect(ctx context.Context, db *sql.DB, dbImpl relay.Db, probe Namespac
 		lctnMode = int(catalog.GetMysqlLowerCaseTableNames())
 	}
 	phase = time.Now()
-	columns = dbImpl.NormalizeColumns(lctnMode, columns)
-	catalog.DefaultSchemas = normalizeSchemas(dbImpl, lctnMode, catalog.DefaultSchemas)
+	columns = queries.NormalizeColumns(lctnMode, columns)
+	catalog.DefaultSchemas = normalizeSchemas(queries, lctnMode, catalog.DefaultSchemas)
 	normalizeMs := time.Since(phase).Milliseconds()
 
 	phase = time.Now()
-	routines, err := introspectRoutines(conn, dbImpl, lctnMode)
+	routines, err := introspectRoutines(conn, queries, lctnMode)
 	if err != nil {
 		return nil, err
 	}
@@ -204,10 +204,10 @@ func Introspect(ctx context.Context, db *sql.DB, dbImpl relay.Db, probe Namespac
 
 type schemaNamePair struct{ schema, name string }
 
-func introspectRoutines(conn *sql.Conn, dbImpl relay.Db, lctnMode int) ([]*analyzerpb.SchemaFunctions, error) {
+func introspectRoutines(conn *sql.Conn, queries relay.Db, lctnMode int) ([]*analyzerpb.SchemaFunctions, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
 	defer cancel()
-	rows, err := conn.QueryContext(ctx, dbImpl.RoutinesSQL())
+	rows, err := conn.QueryContext(ctx, queries.RoutinesSQL())
 	if err != nil {
 		return nil, fmt.Errorf("introspect: routines query: %w", err)
 	}
@@ -225,12 +225,12 @@ func introspectRoutines(conn *sql.Conn, dbImpl relay.Db, lctnMode int) ([]*analy
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("introspect: routines query: %w", err)
 	}
-	return foldFunctionSchemas(dbImpl, lctnMode, pairs), nil
+	return foldFunctionSchemas(queries, lctnMode, pairs), nil
 }
 
 // foldFunctionSchemas groups (schema, function) pairs by their canonical schema, folding the schema
 // through the dialect's NormalizeColumns and the function name through its FoldFunctionName.
-func foldFunctionSchemas(dbImpl relay.Db, lctnMode int, pairs []schemaNamePair) []*analyzerpb.SchemaFunctions {
+func foldFunctionSchemas(queries relay.Db, lctnMode int, pairs []schemaNamePair) []*analyzerpb.SchemaFunctions {
 	if len(pairs) == 0 {
 		return nil
 	}
@@ -238,10 +238,10 @@ func foldFunctionSchemas(dbImpl relay.Db, lctnMode int, pairs []schemaNamePair) 
 	for i, p := range pairs {
 		placeholders[i] = &analyzerpb.Column{Schema: p.schema, Table: "_", Column: "_"}
 	}
-	folded := dbImpl.NormalizeColumns(lctnMode, placeholders)
+	folded := queries.NormalizeColumns(lctnMode, placeholders)
 	grouped := make([]schemaNamePair, len(pairs))
 	for i, p := range pairs {
-		grouped[i] = schemaNamePair{schema: folded[i].GetSchema(), name: dbImpl.FoldFunctionName(p.name)}
+		grouped[i] = schemaNamePair{schema: folded[i].GetSchema(), name: queries.FoldFunctionName(p.name)}
 	}
 	return groupBySchema(grouped)
 }
@@ -274,13 +274,13 @@ func groupBySchema(pairs []schemaNamePair) []*analyzerpb.SchemaFunctions {
 // discarding those parts — the fold decision is schema-name-only (verified empirically: stable
 // regardless of the table argument). One call folds the whole list, so a dialect that memoizes
 // per-(schema, table) work does it once here too.
-func normalizeSchemas(dbImpl relay.Db, lctnMode int, schemas []string) []string {
+func normalizeSchemas(queries relay.Db, lctnMode int, schemas []string) []string {
 	placeholders := make([]*analyzerpb.Column, len(schemas))
 	for i, s := range schemas {
 		placeholders[i] = &analyzerpb.Column{Schema: s, Table: "_", Column: "_"}
 	}
 	out := make([]string, len(schemas))
-	for i, c := range dbImpl.NormalizeColumns(lctnMode, placeholders) {
+	for i, c := range queries.NormalizeColumns(lctnMode, placeholders) {
 		out[i] = c.GetSchema()
 	}
 	return out

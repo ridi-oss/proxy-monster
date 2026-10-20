@@ -16,7 +16,7 @@ import (
 
 const namesSchema = "PmNamesMixed"
 
-func startNamesBroker(t *testing.T, targetDb dbtest.TargetDb, seed *sql.DB, extraSchemas ...string) *brokerHarness {
+func startNamesBroker(t *testing.T, targetConfig dbtest.TargetDb, seed *sql.DB, extraSchemas ...string) *brokerHarness {
 	t.Helper()
 	for _, schema := range append([]string{namesSchema}, extraSchemas...) {
 		for _, statement := range []string{
@@ -31,7 +31,7 @@ func startNamesBroker(t *testing.T, targetDb dbtest.TargetDb, seed *sql.DB, extr
 		}
 	}
 	fake, cpClient := startFakeCP(t)
-	config := spi.TargetConfig{Host: targetDb.Host, Port: targetDb.Port, Db: targetDb.DB, User: targetDb.User, Password: targetDb.Password}
+	config := spi.TargetConfig{Host: targetConfig.Host, Port: targetConfig.Port, Db: targetConfig.DB, User: targetConfig.User, Password: targetConfig.Password}
 	server := mysql.New(spi.Listen{}, config, cpClient, db.MySqlDb{}, nil)
 	if err := server.Listen(); err != nil {
 		t.Fatalf("mysql.Listen: %v", err)

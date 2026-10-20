@@ -20,14 +20,14 @@ type Server struct {
 	*wire.Server
 	config      spi.TargetConfig
 	client      spi.ControlPlane
-	db          relay.Db
+	queries     relay.Db
 	tlsProvider func() (*tls.Config, error)
 	connID      atomic.Uint32
 }
 
 // New constructs a MySQL wire broker for one target DB datasource.
-func New(listen spi.Listen, config spi.TargetConfig, client spi.ControlPlane, dbImpl relay.Db, tlsProvider func() (*tls.Config, error)) *Server {
-	s := &Server{config: config, client: client, db: dbImpl, tlsProvider: tlsProvider}
+func New(listen spi.Listen, config spi.TargetConfig, client spi.ControlPlane, queries relay.Db, tlsProvider func() (*tls.Config, error)) *Server {
+	s := &Server{config: config, client: client, queries: queries, tlsProvider: tlsProvider}
 	s.Server = wire.New(listen, "mysqlproxy", s.handleConn)
 	return s
 }

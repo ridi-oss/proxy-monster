@@ -55,8 +55,8 @@ func TestAuthorizeReducesControlPlaneVerdict(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			dec := &fakeDecider{outcome: c.outcome}
-			e := NewAuthorizer(dec, "", nil)
-			got := e.Authorize(AuthzInput{SQL: "SELECT 1", ProbeSession: staticNamespace([]string{"app"}, new(int))})
+			authz := NewAuthorizer(dec, "", nil)
+			got := authz.Authorize(AuthzInput{SQL: "SELECT 1", ProbeSession: staticNamespace([]string{"app"}, new(int))})
 			if reflect.TypeOf(got) != reflect.TypeOf(c.want) {
 				t.Fatalf("verdict type: got %T, want %T", got, c.want)
 			}
@@ -69,20 +69,20 @@ func TestAuthorizeReducesControlPlaneVerdict(t *testing.T) {
 
 func TestAuthorizeSanitizeDiagnosticsIsPerDecision(t *testing.T) {
 	dec := &fakeDecider{outcome: DecisionOutcome{Decision: &Decision{Action: "ALLOW", SanitizeDiagnostics: true}}}
-	e := NewAuthorizer(dec, "", nil)
-	if e.SanitizeDiagnostics() {
+	authz := NewAuthorizer(dec, "", nil)
+	if authz.SanitizeDiagnostics() {
 		t.Fatal("must start clear")
 	}
-	e.Authorize(AuthzInput{SQL: "SELECT 1", ProbeSession: staticNamespace([]string{"app"}, new(int))})
-	if !e.SanitizeDiagnostics() {
+	authz.Authorize(AuthzInput{SQL: "SELECT 1", ProbeSession: staticNamespace([]string{"app"}, new(int))})
+	if !authz.SanitizeDiagnostics() {
 		t.Fatal("a decision with SanitizeDiagnostics=true must set it")
 	}
 	// Per-decision, NOT monotonic: a later decision that does not request redaction clears it. This is what
 	// lets a MySQL ALLOW after a MASK relay its diagnostics verbatim (the control plane decides fresh each
 	// Decide; an ALLOW MySQL query cannot leak a protected value through a diagnostic).
 	dec.outcome = DecisionOutcome{Decision: &Decision{Action: "ALLOW", SanitizeDiagnostics: false}}
-	e.Authorize(AuthzInput{SQL: "SELECT 2", ProbeSession: staticNamespace([]string{"app"}, new(int))})
-	if e.SanitizeDiagnostics() {
+	authz.Authorize(AuthzInput{SQL: "SELECT 2", ProbeSession: staticNamespace([]string{"app"}, new(int))})
+	if authz.SanitizeDiagnostics() {
 		t.Fatal("a later decision with SanitizeDiagnostics=false must clear it (per-decision, not latched)")
 	}
 }
@@ -91,9 +91,9 @@ func TestAuthorizeSanitizeDiagnosticsStaysClearWhenNeverRequested(t *testing.T) 
 	// A decision that never requests redaction (e.g. a system:development datasource, or a MySQL ALLOW)
 	// leaves diagnostics relaying verbatim for debugging.
 	dec := &fakeDecider{outcome: okOutcome("ALLOW", nil)}
-	e := NewAuthorizer(dec, "", nil)
-	e.Authorize(AuthzInput{SQL: "SELECT 1", ProbeSession: staticNamespace([]string{"app"}, new(int))})
-	if e.SanitizeDiagnostics() {
+	authz := NewAuthorizer(dec, "", nil)
+	authz.Authorize(AuthzInput{SQL: "SELECT 1", ProbeSession: staticNamespace([]string{"app"}, new(int))})
+	if authz.SanitizeDiagnostics() {
 		t.Fatal("must stay clear when no decision requests redaction")
 	}
 }
@@ -132,8 +132,8 @@ func TestAuthorizePassesConnectionCatalogCallbacks(t *testing.T) {
 
 func TestAuthorizeNamespaceProbeFailureFailsClosed(t *testing.T) {
 	dec := &fakeDecider{outcome: okOutcome("ALLOW", nil)}
-	e := NewAuthorizer(dec, "", nil)
-	got := e.Authorize(AuthzInput{SQL: "SELECT 1", ProbeSession: func() (SessionObservation, error) { return SessionObservation{}, errors.New("boom") }})
+	authz := NewAuthorizer(dec, "", nil)
+	got := authz.Authorize(AuthzInput{SQL: "SELECT 1", ProbeSession: func() (SessionObservation, error) { return SessionObservation{}, errors.New("boom") }})
 	if _, ok := got.(Fail); !ok {
 		t.Fatalf("want Fail on namespace probe error, got %T", got)
 	}
@@ -144,17 +144,17 @@ func TestAuthorizeNamespaceProbeFailureFailsClosed(t *testing.T) {
 
 func TestNamespaceCachedUntilDirty(t *testing.T) {
 	dec := &fakeDecider{outcome: okOutcome("ALLOW", nil)}
-	e := NewAuthorizer(dec, "", nil)
+	authz := NewAuthorizer(dec, "", nil)
 	probes := 0
 	in := AuthzInput{SQL: "SELECT 1", ProbeSession: staticNamespace([]string{"app"}, &probes)}
 
-	e.Authorize(in)
-	e.Authorize(in)
+	authz.Authorize(in)
+	authz.Authorize(in)
 	if probes != 1 {
 		t.Fatalf("namespace should be probed once and cached; probes=%d", probes)
 	}
-	e.MarkNamespaceDirty()
-	e.Authorize(in)
+	authz.MarkNamespaceDirty()
+	authz.Authorize(in)
 	if probes != 2 {
 		t.Fatalf("dirty namespace should re-probe; probes=%d", probes)
 	}
@@ -163,9 +163,9 @@ func TestNamespaceCachedUntilDirty(t *testing.T) {
 	}
 
 	observed := []string{"other"}
-	e.SetNamespace(observed)
+	authz.SetNamespace(observed)
 	observed[0] = "mutated"
-	e.Authorize(in)
+	authz.Authorize(in)
 	if probes != 2 {
 		t.Fatalf("observed namespace should avoid a probe; probes=%d", probes)
 	}
@@ -173,8 +173,8 @@ func TestNamespaceCachedUntilDirty(t *testing.T) {
 		t.Fatalf("Decide got observed namespace %v", dec.lastReq.Session.Namespace)
 	}
 
-	e.SetNamespace([]string{})
-	e.Authorize(in)
+	authz.SetNamespace([]string{})
+	authz.Authorize(in)
 	if probes != 2 {
 		t.Fatalf("observed empty namespace should avoid a probe; probes=%d", probes)
 	}
@@ -185,19 +185,19 @@ func TestNamespaceCachedUntilDirty(t *testing.T) {
 
 func TestMysqlAnsiQuotesForwardedAndCached(t *testing.T) {
 	dec := &fakeDecider{outcome: okOutcome("ALLOW", nil)}
-	e := NewAuthorizer(dec, "", nil)
+	authz := NewAuthorizer(dec, "", nil)
 	probes := 0
 	in := AuthzInput{SQL: `SELECT "card_number" FROM cards`, ProbeSession: func() (SessionObservation, error) {
 		probes++
 		return SessionObservation{Namespace: []string{"app"}, SessionObservation: &analyzerpb.SessionObservation{Engine: &analyzerpb.SessionObservation_Mysql{Mysql: &analyzerpb.MySqlSession{AnsiQuotes: true}}}}, nil
 	}}
 
-	e.Authorize(in)
+	authz.Authorize(in)
 	if !dec.lastReq.Session.GetMysql().GetAnsiQuotes() {
 		t.Fatal("an observed ANSI_QUOTES session must be forwarded to Decide")
 	}
 	// The observation rides the namespace cache: a second authorize without a re-probe reuses it.
-	e.Authorize(in)
+	authz.Authorize(in)
 	if probes != 1 {
 		t.Fatalf("ANSI_QUOTES observation should ride the namespace cache; probes=%d", probes)
 	}
@@ -207,11 +207,11 @@ func TestMysqlAnsiQuotesForwardedAndCached(t *testing.T) {
 
 	// Per-probe, not latched: a later probe that no longer observes ANSI_QUOTES clears the forwarded flag,
 	// so a mid-session flip back to the default mode is decided under the default lexer.
-	e.MarkNamespaceDirty()
+	authz.MarkNamespaceDirty()
 	in.ProbeSession = func() (SessionObservation, error) {
 		return SessionObservation{Namespace: []string{"app"}, SessionObservation: &analyzerpb.SessionObservation{Engine: &analyzerpb.SessionObservation_Mysql{Mysql: &analyzerpb.MySqlSession{AnsiQuotes: false}}}}, nil
 	}
-	e.Authorize(in)
+	authz.Authorize(in)
 	if dec.lastReq.Session.GetMysql().GetAnsiQuotes() {
 		t.Fatal("a probe that no longer observes ANSI_QUOTES must clear the forwarded flag")
 	}
@@ -219,7 +219,7 @@ func TestMysqlAnsiQuotesForwardedAndCached(t *testing.T) {
 
 func TestPostgresLookupStateForwardedAndCached(t *testing.T) {
 	dec := &fakeDecider{outcome: okOutcome("ALLOW", nil)}
-	e := NewAuthorizer(dec, "", nil)
+	authz := NewAuthorizer(dec, "", nil)
 	probes := 0
 	observations := []SessionObservation{
 		{
@@ -244,17 +244,17 @@ func TestPostgresLookupStateForwardedAndCached(t *testing.T) {
 		},
 	}
 
-	e.Authorize(in)
+	authz.Authorize(in)
 	if !proto.Equal(dec.lastReq.Session.SessionObservation, observations[0].SessionObservation) {
 		t.Fatalf("first Decide session = %+v, want observed [unnest] and visible xid", dec.lastReq.Session)
 	}
-	e.Authorize(in)
+	authz.Authorize(in)
 	if probes != 1 || !proto.Equal(dec.lastReq.Session.SessionObservation, observations[0].SessionObservation) {
 		t.Fatalf("cached session probes/request = %d/%+v", probes, dec.lastReq.Session)
 	}
 
-	e.MarkNamespaceDirty()
-	e.Authorize(in)
+	authz.MarkNamespaceDirty()
+	authz.Authorize(in)
 	if probes != 2 || !proto.Equal(dec.lastReq.Session.SessionObservation, observations[1].SessionObservation) {
 		t.Fatalf("re-probed session probes/request = %d/%+v", probes, dec.lastReq.Session)
 	}
@@ -285,8 +285,8 @@ func TestTempOverlayOnlyWhenProvided(t *testing.T) {
 
 func TestTempProbeIsBestEffort(t *testing.T) {
 	dec := &fakeDecider{outcome: okOutcome("ALLOW", nil)}
-	e := NewAuthorizer(dec, "", nil)
-	got := e.Authorize(AuthzInput{
+	authz := NewAuthorizer(dec, "", nil)
+	got := authz.Authorize(AuthzInput{
 		SQL:              "SELECT 1",
 		ProbeSession:     staticNamespace([]string{"public"}, new(int)),
 		ProbeTempColumns: func() ([]TempColumn, error) { return nil, errors.New("temp probe failed") },

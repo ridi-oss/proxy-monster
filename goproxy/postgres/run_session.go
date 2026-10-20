@@ -26,7 +26,7 @@ type RunSession struct {
 	poisoned bool
 }
 
-func NewRunSession(ctx context.Context, config spi.TargetConfig, db relay.Db, authz *spi.Authorizer, guard spi.ExecGuard, readTimeout time.Duration, defaultSchema string) (*RunSession, error) {
+func NewRunSession(ctx context.Context, config spi.TargetConfig, queries relay.Db, authz *spi.Authorizer, guard spi.ExecGuard, readTimeout time.Duration, defaultSchema string) (*RunSession, error) {
 	var extra map[string]string
 	if defaultSchema != "" {
 		extra = map[string]string{"search_path": `"` + strings.ReplaceAll(defaultSchema, `"`, `""`) + `"`}
@@ -46,7 +46,7 @@ func NewRunSession(ctx context.Context, config spi.TargetConfig, db relay.Db, au
 			currentCatalog: catalog,
 			targetDb:       pgproto3.NewFrontend(conn, conn),
 			authz:          authz,
-			db:             db,
+			queries:        queries,
 			lastTxStatus:   txStatus,
 		},
 		conn:    conn,
@@ -54,7 +54,7 @@ func NewRunSession(ctx context.Context, config spi.TargetConfig, db relay.Db, au
 		config:  config,
 		guard:   guard,
 	}
-	s.ref = sqldb.NewRefetcher(db, authz.ConnectionID(), generation, func(sql string, expectedColumns int) ([][]*string, error) {
+	s.ref = sqldb.NewRefetcher(queries, authz.ConnectionID(), generation, func(sql string, expectedColumns int) ([][]*string, error) {
 		return s.runProbe(sql, expectedColumns, true)
 	}, authz.Client().PushSchemaFragment)
 	s.ref.Catalog = catalog

@@ -35,15 +35,15 @@ func TestRegistryProviderContracts(t *testing.T) {
 				t.Errorf("Engine() = %s, want %s", provider.Engine().WireName, test.engine.WireName)
 			}
 			config := spi.TargetConfig{Host: "target", Port: 1234, Db: "app", User: "service", Password: "secret"}
-			targetDb, err := provider.OpenTarget(config)
+			target, err := provider.OpenTarget(config)
 			if err != nil {
 				t.Fatalf("OpenTarget: %v", err)
 			}
-			defer targetDb.Close()
-			if targetDb.Config() != config {
-				t.Fatalf("Config() = %+v, want %+v", targetDb.Config(), config)
+			defer target.Close()
+			if target.Config() != config {
+				t.Fatalf("Config() = %+v, want %+v", target.Config(), config)
 			}
-			server := targetDb.NewWireServer(spi.Listen{}, nil, nil)
+			server := target.NewWireServer(spi.Listen{}, nil, nil)
 			if reflect.TypeOf(server).String() != test.server {
 				t.Errorf("NewWireServer() type = %T, want %s", server, test.server)
 			}
@@ -59,13 +59,13 @@ func TestRegistryProviderContracts(t *testing.T) {
 
 func TestRegistryIntrospectDelegates(t *testing.T) {
 	for _, test := range []struct {
-		name   string
-		engine *engines.Engine
-		target dbtest.TargetDb
-		assert func(*testing.T, *pb.CatalogRequest)
+		name         string
+		engine       *engines.Engine
+		targetConfig dbtest.TargetDb
+		assert       func(*testing.T, *pb.CatalogRequest)
 	}{
 		{
-			name: "mysql", engine: engines.MySQL, target: dbtest.MySQL(t),
+			name: "mysql", engine: engines.MySQL, targetConfig: dbtest.MySQL(t),
 			assert: func(t *testing.T, catalog *pb.CatalogRequest) {
 				if len(catalog.DefaultSchemas) != 1 || catalog.DefaultSchemas[0] != dbtest.MySQL(t).DB || catalog.MysqlLowerCaseTableNames == nil {
 					t.Fatalf("Introspect = %v/%v, want current database plus case mode", catalog.DefaultSchemas, catalog.MysqlLowerCaseTableNames)
@@ -73,7 +73,7 @@ func TestRegistryIntrospectDelegates(t *testing.T) {
 			},
 		},
 		{
-			name: "postgres", engine: engines.Postgres, target: dbtest.Postgres(t),
+			name: "postgres", engine: engines.Postgres, targetConfig: dbtest.Postgres(t),
 			assert: func(t *testing.T, catalog *pb.CatalogRequest) {
 				if catalog.MysqlLowerCaseTableNames != nil || !contains(catalog.DefaultSchemas, "public") || !contains(catalog.DefaultSchemas, "pg_catalog") {
 					t.Fatalf("Introspect = %v/%v, want PostgreSQL search path and nil case mode", catalog.DefaultSchemas, catalog.MysqlLowerCaseTableNames)
@@ -83,14 +83,14 @@ func TestRegistryIntrospectDelegates(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			provider, _ := dialects.For(test.engine)
-			targetDb, err := provider.OpenTarget(spi.TargetConfig{Host: test.target.Host, Port: test.target.Port, Db: test.target.DB, User: test.target.User, Password: test.target.Password})
+			target, err := provider.OpenTarget(spi.TargetConfig{Host: test.targetConfig.Host, Port: test.targetConfig.Port, Db: test.targetConfig.DB, User: test.targetConfig.User, Password: test.targetConfig.Password})
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer targetDb.Close()
+			defer target.Close()
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
-			catalog, err := targetDb.Introspect(ctx)
+			catalog, err := target.Introspect(ctx)
 			if err != nil {
 				t.Fatalf("Introspect: %v", err)
 			}
@@ -103,12 +103,12 @@ func TestNewWireServerStartsExpectedProtocol(t *testing.T) {
 	for _, e := range []*engines.Engine{engines.MySQL, engines.Postgres} {
 		t.Run(e.WireName, func(t *testing.T) {
 			provider, _ := dialects.For(e)
-			targetDb, err := provider.OpenTarget(spi.TargetConfig{})
+			target, err := provider.OpenTarget(spi.TargetConfig{})
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer targetDb.Close()
-			server := targetDb.NewWireServer(spi.Listen{}, nil, nil)
+			defer target.Close()
+			server := target.NewWireServer(spi.Listen{}, nil, nil)
 			starter, ok := server.(interface {
 				Listen() error
 				Serve() error
@@ -170,7 +170,7 @@ func TestCatalogRefreshObservesNewConnectionDefaults(t *testing.T) {
 	if _, err := seed.Exec("ALTER ROLE " + role + " SET search_path TO public"); err != nil {
 		t.Fatal(err)
 	}
-	target := openDb(t, engines.Postgres, spi.TargetConfig{Host: database.Host, Port: database.Port, Db: database.DB, User: role, Password: "test-secret"})
+	target := openTarget(t, engines.Postgres, spi.TargetConfig{Host: database.Host, Port: database.Port, Db: database.DB, User: role, Password: "test-secret"})
 	first, err := target.Introspect(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -190,16 +190,16 @@ func TestCatalogRefreshObservesNewConnectionDefaults(t *testing.T) {
 	}
 }
 
-func openDb(t *testing.T, e *engines.Engine, config spi.TargetConfig) spi.Target {
+func openTarget(t *testing.T, e *engines.Engine, config spi.TargetConfig) spi.Target {
 	t.Helper()
 	provider, err := dialects.For(e)
 	if err != nil {
 		t.Fatal(err)
 	}
-	targetDb, err := provider.OpenTarget(config)
+	target, err := provider.OpenTarget(config)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = targetDb.Close() })
-	return targetDb
+	t.Cleanup(func() { _ = target.Close() })
+	return target
 }

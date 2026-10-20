@@ -162,7 +162,7 @@ func TestRelayResultSetRejectsFragmentedColumnDefinitionForCollector(t *testing.
 // fast-auth cache has never seen it and MUST demand full authentication — a successful dial therefore
 // necessarily ran the RSA public-key path, which the test hook confirms directly.
 func TestDialTargetDbCachingSHA2FullAuth(t *testing.T) {
-	targetDb := dbtest.MySQL(t)
+	targetConfig := dbtest.MySQL(t)
 	seed := dbtest.OpenMySQL(t, "")
 
 	user := fmt.Sprintf("it_csha2_%d", time.Now().UnixNano())
@@ -170,7 +170,7 @@ func TestDialTargetDbCachingSHA2FullAuth(t *testing.T) {
 	if _, err := seed.Exec("CREATE USER '" + user + "'@'%' IDENTIFIED WITH caching_sha2_password BY '" + password + "'"); err != nil {
 		t.Fatalf("create caching_sha2 user: %v", err)
 	}
-	if _, err := seed.Exec("GRANT SELECT ON " + targetDb.DB + ".* TO '" + user + "'@'%'"); err != nil {
+	if _, err := seed.Exec("GRANT SELECT ON " + targetConfig.DB + ".* TO '" + user + "'@'%'"); err != nil {
 		t.Fatalf("grant caching_sha2 user: %v", err)
 	}
 	t.Cleanup(func() { _, _ = seed.Exec("DROP USER IF EXISTS '" + user + "'@'%'") })
@@ -184,9 +184,9 @@ func TestDialTargetDbCachingSHA2FullAuth(t *testing.T) {
 	t.Cleanup(func() { testHookCachingSHA2FullAuth = nil })
 
 	config := spi.TargetConfig{
-		Host:     targetDb.Host,
-		Port:     targetDb.Port,
-		Db:       targetDb.DB,
+		Host:     targetConfig.Host,
+		Port:     targetConfig.Port,
+		Db:       targetConfig.DB,
 		User:     user,
 		Password: password,
 	}

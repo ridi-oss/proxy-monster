@@ -226,7 +226,7 @@ func startFakeCP(t *testing.T) (*fakeControlPlane, *cp.Client) {
 
 func seedTargetDb(t *testing.T) dbtest.TargetDb {
 	t.Helper()
-	targetDb := dbtest.Postgres(t)
+	targetConfig := dbtest.Postgres(t)
 	seed := dbtest.OpenPostgres(t, "")
 	statements := []string{
 		"CREATE SCHEMA IF NOT EXISTS " + primarySchema,
@@ -245,7 +245,7 @@ func seedTargetDb(t *testing.T) dbtest.TargetDb {
 			t.Fatalf("seed statement %q: %v", statement, err)
 		}
 	}
-	return targetDb
+	return targetConfig
 }
 
 type brokerHarness struct {
@@ -256,31 +256,31 @@ type brokerHarness struct {
 
 func startBroker(t *testing.T) *brokerHarness {
 	t.Helper()
-	targetDb := seedTargetDb(t)
-	return startBrokerForDB(t, targetDb, "app")
+	targetConfig := seedTargetDb(t)
+	return startBrokerForDB(t, targetConfig, "app")
 }
 
 // startBrokerForDB starts a broker whose service-account target points at a specific target database, so a
 // test can exercise a session created under that database's stored GUC defaults (e.g. ALTER DATABASE ...
 // SET standard_conforming_strings=off). The client's requested database is irrelevant — the proxy always
 // dials its configured target.
-func startBrokerForDB(t *testing.T, targetDb dbtest.TargetDb, database string) *brokerHarness {
+func startBrokerForDB(t *testing.T, targetConfig dbtest.TargetDb, database string) *brokerHarness {
 	t.Helper()
-	return startBrokerForDBSetup(t, targetDb, database, nil)
+	return startBrokerForDBSetup(t, targetConfig, database, nil)
 }
 
-func startBrokerForDBSetup(t *testing.T, targetDb dbtest.TargetDb, database string, setup func(*fakeControlPlane)) *brokerHarness {
+func startBrokerForDBSetup(t *testing.T, targetConfig dbtest.TargetDb, database string, setup func(*fakeControlPlane)) *brokerHarness {
 	t.Helper()
 	fake, cpClient := startFakeCP(t)
 	if setup != nil {
 		setup(fake)
 	}
 	config := spi.TargetConfig{
-		Host:     targetDb.Host,
-		Port:     targetDb.Port,
+		Host:     targetConfig.Host,
+		Port:     targetConfig.Port,
 		Db:       database,
-		User:     targetDb.User,
-		Password: targetDb.Password,
+		User:     targetConfig.User,
+		Password: targetConfig.Password,
 	}
 	server := postgres.New(spi.Listen{}, config, cpClient, db.PgDb{}, nil)
 	return startBrokerServer(t, fake, server)
@@ -288,15 +288,15 @@ func startBrokerForDBSetup(t *testing.T, targetDb dbtest.TargetDb, database stri
 
 func startBrokerTLS(t *testing.T) *brokerHarness {
 	t.Helper()
-	targetDb := seedTargetDb(t)
+	targetConfig := seedTargetDb(t)
 	fake, cpClient := startFakeCP(t)
 	tlsProvider := proxytls.NewReloading("../proxytls/testdata/ec.crt", "../proxytls/testdata/ec-sec1.key")
 	config := spi.TargetConfig{
-		Host:     targetDb.Host,
-		Port:     targetDb.Port,
+		Host:     targetConfig.Host,
+		Port:     targetConfig.Port,
 		Db:       "app",
-		User:     targetDb.User,
-		Password: targetDb.Password,
+		User:     targetConfig.User,
+		Password: targetConfig.Password,
 	}
 	server := postgres.New(spi.Listen{}, config, cpClient, db.PgDb{}, tlsProvider.Current)
 	return startBrokerServer(t, fake, server)
@@ -1184,7 +1184,7 @@ func TestNonUTF8ClientEncodingFailsClosed(t *testing.T) {
 // suite-shared container persists across parallel test packages — mutating the "app" default would race
 // them.
 func TestUnsafeStartupStandardConformingStringsFailsClosed(t *testing.T) {
-	targetDb := dbtest.Postgres(t)
+	targetConfig := dbtest.Postgres(t)
 	admin := dbtest.OpenPostgres(t, "")
 	const unsafeDB = "pm_it_scs_off"
 	if _, err := admin.Exec("DROP DATABASE IF EXISTS " + unsafeDB); err != nil {
@@ -1198,7 +1198,7 @@ func TestUnsafeStartupStandardConformingStringsFailsClosed(t *testing.T) {
 		t.Fatalf("set unsafe startup default: %v", err)
 	}
 
-	h := startBrokerForDB(t, targetDb, unsafeDB)
+	h := startBrokerForDB(t, targetConfig, unsafeDB)
 	conn, err := h.connect(t, validToken, true)
 	if err == nil {
 		_ = conn.Close(context.Background())
@@ -1213,10 +1213,10 @@ func TestUnsafeStartupStandardConformingStringsFailsClosed(t *testing.T) {
 }
 
 func TestDisconnectAfterDDLDoesNotAffectSiblingConnection(t *testing.T) {
-	targetDb := seedTargetDb(t)
+	targetConfig := seedTargetDb(t)
 	connectionIDs := [][]byte{[]byte("session-one-0001"), []byte("session-two-0002")}
 	var minted int
-	h := startBrokerForDBSetup(t, targetDb, "app", func(fake *fakeControlPlane) {
+	h := startBrokerForDBSetup(t, targetConfig, "app", func(fake *fakeControlPlane) {
 		fake.setValidateFunc(func(*pb.ValidateTokenRequest) (*pb.WireIdentity, error) {
 			if minted >= len(connectionIDs) {
 				return nil, status.Error(codes.Internal, "too many sessions")
@@ -1293,8 +1293,8 @@ func eventIndexPG(events []string, target string, occurrence int) int {
 }
 
 func TestOnOpenRunsBeforeFirstReadyAndCloseConnectionRunsOnce(t *testing.T) {
-	targetDb := seedTargetDb(t)
-	h := startBrokerForDBSetup(t, targetDb, "app", func(fake *fakeControlPlane) {
+	targetConfig := seedTargetDb(t)
+	h := startBrokerForDBSetup(t, targetConfig, "app", func(fake *fakeControlPlane) {
 		fake.setOnOpen(&pb.ProxyCommand{
 			Command: &pb.ProxyCommand_Refetch{Refetch: &pb.Refetch{Schema: primarySchema, Catalog: "app"}},
 		})
@@ -1317,8 +1317,8 @@ func TestOnOpenRunsBeforeFirstReadyAndCloseConnectionRunsOnce(t *testing.T) {
 }
 
 func TestOnOpenPushFailureRefusesConnectionAndClosesControlPlaneState(t *testing.T) {
-	targetDb := seedTargetDb(t)
-	h := startBrokerForDBSetup(t, targetDb, "app", func(fake *fakeControlPlane) {
+	targetConfig := seedTargetDb(t)
+	h := startBrokerForDBSetup(t, targetConfig, "app", func(fake *fakeControlPlane) {
 		fake.setOnOpen(&pb.ProxyCommand{
 			Command: &pb.ProxyCommand_Refetch{Refetch: &pb.Refetch{Schema: primarySchema, Catalog: "app"}},
 		})

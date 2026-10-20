@@ -23,8 +23,8 @@ type Refetcher struct {
 	Push              func(*pb.SchemaFragmentPush) (uint64, error)
 }
 
-func NewRefetcher(db relay.Db, connectionID []byte, generation uint64, probe func(string, int) ([][]*string, error), push func(*pb.SchemaFragmentPush) (uint64, error)) *Refetcher {
-	return &Refetcher{Db: db, ConnectionID: connectionID, BackendGeneration: generation, Probe: probe, Push: push}
+func NewRefetcher(queries relay.Db, connectionID []byte, generation uint64, probe func(string, int) ([][]*string, error), push func(*pb.SchemaFragmentPush) (uint64, error)) *Refetcher {
+	return &Refetcher{Db: queries, ConnectionID: connectionID, BackendGeneration: generation, Probe: probe, Push: push}
 }
 
 // Run executes one refetch. A failed hash probe degrades to a full fetch; a failed read, a failed push,
@@ -178,7 +178,7 @@ func (r *Refetcher) RunAll(cmds []*pb.ProxyCommand, _ *spi.SessionObservation) e
 // (case-insensitive lookup, case-preserving storage), so it's the only one where this tolerates a case
 // difference — Postgres and MySQL modes 0/1 require an exact match, same as before this normalized the
 // comparison at all. The column is the proto Column (enginepb.Column) used AS the data class.
-func FragmentColumnsFromRows(db relay.Db, lowerCaseTableNames int, schema string, rows [][]*string) ([]*enginepb.Column, error) {
+func FragmentColumnsFromRows(queries relay.Db, lowerCaseTableNames int, schema string, rows [][]*string) ([]*enginepb.Column, error) {
 	raw := make([]*enginepb.Column, 0, len(rows))
 	for i, row := range rows {
 		if len(row) != 7 {
@@ -213,8 +213,8 @@ func FragmentColumnsFromRows(db relay.Db, lowerCaseTableNames int, schema string
 		})
 	}
 
-	canonicalSchema := db.NormalizeColumns(lowerCaseTableNames, []*enginepb.Column{{Schema: schema, Table: "_", Column: "_"}})[0].GetSchema()
-	columns := db.NormalizeColumns(lowerCaseTableNames, raw)
+	canonicalSchema := queries.NormalizeColumns(lowerCaseTableNames, []*enginepb.Column{{Schema: schema, Table: "_", Column: "_"}})[0].GetSchema()
+	columns := queries.NormalizeColumns(lowerCaseTableNames, raw)
 	for i, column := range columns {
 		if column.GetSchema() != canonicalSchema {
 			return nil, fmt.Errorf("fragment row %d schema %q does not match requested schema %q (canonical %q vs %q)",

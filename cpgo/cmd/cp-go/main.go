@@ -87,6 +87,10 @@ type config struct {
 	Session session.Settings `kong:"-"`
 	// OIDC is nil unless OIDC login is on.
 	OIDC *idp.Config `kong:"-"`
+	// Web is nil when PM_WEB_URL is empty.
+	Web    *url.URL      `kong:"-"`
+	Schema *authz.Schema `kong:"-"`
+	Crypto *idp.Crypto   `kong:"-"`
 }
 
 // kotlinEnv is the group:"kotlin" settings as parsed here, so the child uses the values Go uses wherever they
@@ -171,10 +175,7 @@ func main() {
 	var cfg config
 	kong.Parse(&cfg, kong.Name("cp-go"), kong.Description("proxy-monster control plane front door."),
 		kong.ExplicitGroups([]kong.Group{{Key: "kotlin", Title: "Shared with the Kotlin control plane"}}))
-	var err error
-	if cfg.Session, err = sessionSettings(cfg); err == nil {
-		cfg.OIDC, err = oidcSettings(cfg)
-	}
+	cfg, err := settle(cfg)
 	if err != nil {
 		slog.Error("cp-go: " + err.Error())
 		os.Exit(1)
@@ -185,48 +186,47 @@ func main() {
 	os.Exit(code)
 }
 
-// run serves until ctx ends or the child exits, and returns the process exit code.
-func run(ctx context.Context, cfg config) int {
-	if err := cfg.Tailnet.Validate(); err != nil {
-		slog.Error("cp-go: " + err.Error())
-		return 1
+// settle checks the parsed settings and fills the fields derived from them.
+func settle(c config) (config, error) {
+	if c.Attach && c.InternalToken == "" {
+		return c, errors.New("PM_CP_ATTACH needs PM_CP_INTERNAL_TOKEN, set to the same value for the Kotlin control plane")
 	}
-	var web *url.URL
-	if cfg.WebURL != "" {
-		u, err := url.Parse(cfg.WebURL)
+	if c.WebURL != "" {
+		u, err := url.Parse(c.WebURL)
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-			slog.Error(fmt.Sprintf("cp-go: PM_WEB_URL must be an http(s) URL, got %q", cfg.WebURL))
-			return 1
+			return c, fmt.Errorf("PM_WEB_URL must be an http(s) URL, got %q", c.WebURL)
 		}
-		web = u
+		c.Web = u
+	}
+	var err error
+	if c.Session, err = sessionSettings(c); err != nil {
+		return c, err
+	}
+	if c.OIDC, err = oidcSettings(c); err != nil {
+		return c, err
 	}
 	// Kotlin declares PM_OIDC_USER_ATTRIBUTES only with OIDC login on.
 	userAttributes := ""
-	if cfg.OIDC != nil {
-		userAttributes = cfg.OIDCUserAttributes
+	if c.OIDC != nil {
+		userAttributes = c.OIDCUserAttributes
 	}
 	attrs, err := authz.ParseUserAttributes(userAttributes)
-	var schema *authz.Schema
-	if err == nil {
-		schema, err = authz.NewSchema(attrs)
-	}
 	if err != nil {
-		slog.Error("cp-go: " + err.Error())
-		return 1
+		return c, err
 	}
-	crypto, err := idp.NewCrypto(cfg.ResultKey)
-	if err != nil {
-		slog.Error("cp-go: " + err.Error())
-		return 1
+	if c.Schema, err = authz.NewSchema(attrs); err != nil {
+		return c, err
 	}
+	c.Crypto, err = idp.NewCrypto(c.ResultKey)
+	return c, err
+}
+
+// run serves cfg, as settle returns it, until ctx ends or the child exits, and returns the process exit code.
+func run(ctx context.Context, cfg config) int {
 	var kt *child.Child
 	var exited <-chan struct{}
 	internalToken := cfg.InternalToken
 	if internalToken == "" {
-		if cfg.Attach {
-			slog.Error("cp-go: PM_CP_ATTACH needs PM_CP_INTERNAL_TOKEN, set to the same value for the Kotlin control plane")
-			return 1
-		}
 		internalToken = rand.Text()
 	}
 	// Before the child starts, so its first call into Go finds the bridge.
@@ -273,10 +273,10 @@ func run(ctx context.Context, cfg config) int {
 
 	kotlin := bridge.New(httpUpstream, internalToken)
 	resolver := session.NewResolver(pool, cfg.Session)
-	login := oidc.Login{Crypto: crypto, Schema: schema}
+	login := oidc.Login{Crypto: cfg.Crypto, Schema: cfg.Schema}
 	if cfg.OIDC != nil {
 		login.Provider = idp.NewProvider(*cfg.OIDC)
-		go oidc.Liveness{Pool: pool, Sessions: resolver, Kotlin: kotlin, Provider: login.Provider, Crypto: crypto, Schema: schema}.Run(ctx)
+		go oidc.Liveness{Pool: pool, Sessions: resolver, Kotlin: kotlin, Provider: login.Provider, Crypto: cfg.Crypto, Schema: cfg.Schema}.Run(ctx)
 	}
 	serve := func(edges front.TrustedEdges) http.Handler {
 		mux := http.NewServeMux()
@@ -284,12 +284,12 @@ func run(ctx context.Context, cfg config) int {
 			Sessions:  resolver,
 			Edges:     edges,
 			AuthDebug: cfg.Session.AuthDebug,
-			Authz:     authz.NewDecider(pool, schema),
+			Authz:     authz.NewDecider(pool, cfg.Schema),
 			Kotlin:    kotlin,
 		}, login)
 		h := front.Route(mux, front.NewHTTP(httpUpstream, edges))
-		if web != nil {
-			h = front.Split(h, front.NewHTTP(web, edges))
+		if cfg.Web != nil {
+			h = front.Split(h, front.NewHTTP(cfg.Web, edges))
 		}
 		return h
 	}

@@ -91,14 +91,17 @@ func startFront(t *testing.T, opts ...func(*config)) (config, context.CancelFunc
 	// freePort releases its port before run binds it, so another process can take it in between; run then
 	// exits before serving, and a fresh set of ports is the fix.
 	for attempt := 1; ; attempt++ {
-		cfg := config{
-			HTTPPort: freePort(t), GRPCPort: freePort(t),
-			Child: os.Args[0], ChildHTTPPort: freePort(t), ChildGRPCPort: freePort(t),
-			StartTimeout: 30 * time.Second,
-			DBURL:        st.JDBCURL, DBUser: st.User, DBPassword: st.Password,
-		}
+		cfg := parseConfig(t)
+		cfg.HTTPPort, cfg.GRPCPort = freePort(t), freePort(t)
+		cfg.Child, cfg.ChildHTTPPort, cfg.ChildGRPCPort = os.Args[0], freePort(t), freePort(t)
+		cfg.StartTimeout = 30 * time.Second
+		cfg.DBURL, cfg.DBUser, cfg.DBPassword = st.JDBCURL, st.User, st.Password
 		for _, o := range opts {
 			o(&cfg)
+		}
+		cfg, err := settle(cfg)
+		if err != nil {
+			t.Fatal(err)
 		}
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan int, 1)
@@ -277,5 +280,38 @@ func TestTheChildGetsGosDefaultsAndFlags(t *testing.T) {
 	}
 	if o, err := oidcSettings(cfg); err != nil || o != nil {
 		t.Fatalf("oidc with no settings: %v %v", o, err)
+	}
+}
+
+func TestSettleRefusesBadSettings(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{nil, ""},
+		{[]string{"--web-url=ftp://web"}, "PM_WEB_URL must be an http(s) URL"},
+		{[]string{"--attach"}, "PM_CP_ATTACH needs PM_CP_INTERNAL_TOKEN"},
+		{[]string{"--web-idle=soon"}, "PM_WEB_SESSION_IDLE"},
+		{[]string{"--idp-recheck-interval=0"}, "PM_IDP_RECHECK_INTERVAL"},
+		{[]string{"--result-key=not-base64"}, "PM_RESULT_KEY"},
+	} {
+		_, err := settle(parseConfig(t, tc.args...))
+		switch {
+		case tc.want == "" && err != nil:
+			t.Errorf("%v: %v", tc.args, err)
+		case tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)):
+			t.Errorf("%v: got %v, want %q", tc.args, err, tc.want)
+		}
+	}
+}
+
+func TestParseRefusesBadTailnetSettings(t *testing.T) {
+	var cfg config
+	k, err := kong.New(&cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := k.Parse([]string{"--tailnet-service=console", "--tailnet-auth-key=k"}); err == nil || !strings.Contains(err.Error(), "must start with svc:") {
+		t.Fatalf("got %v", err)
 	}
 }

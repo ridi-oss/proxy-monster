@@ -41,7 +41,7 @@ func postgresProtocolNegotiation(startup *pgproto3.StartupMessage) *pgproto3.Neg
 type sessionCore struct {
 	currentCatalog string
 	targetDb       *pgproto3.Frontend
-	qe             *spi.QueryEngine
+	qe             *spi.Authorizer
 	db             relay.Db
 	lastTxStatus   byte
 	pendingDirty   bool
@@ -212,7 +212,7 @@ startupComplete:
 		sessionCore: sessionCore{
 			currentCatalog: catalog,
 			targetDb:       targetDb,
-			qe:             spi.NewQueryEngine(s.client),
+			qe:             spi.NewAuthorizer(s.client),
 			db:             s.db,
 			lastTxStatus:   txStatus,
 			forward:        client.Send,

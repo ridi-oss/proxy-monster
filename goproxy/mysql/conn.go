@@ -173,7 +173,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 	defer targetDbConn.Close()
 	cancelQuery := func() { _ = cancelTargetDbQuery(s.targetDb, targetGreeting.ConnectionID) }
 
-	qe := spi.NewQueryEngine(s.client)
+	qe := spi.NewAuthorizer(s.client)
 	preparedStmts := make(map[uint32]preparedStmt)
 	if handshake.Database != "" {
 		// The client selected a database at connect time. Switching the current database is not a gated
@@ -576,7 +576,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 }
 
 func (s *Server) authorize(
-	qe *spi.QueryEngine,
+	qe *spi.Authorizer,
 	clientConn, targetDbConn net.Conn,
 	deprecateEOF bool,
 	seq byte,

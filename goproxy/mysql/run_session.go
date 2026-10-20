@@ -21,7 +21,7 @@ type RunSession struct {
 	target       spi.TargetDb
 	token        string
 	connectionID []byte
-	qe           *spi.QueryEngine
+	qe           *spi.Authorizer
 	ref          *relay.Refetcher
 	guard        spi.ExecGuard
 }
@@ -46,7 +46,7 @@ func NewRunSession(ctx context.Context, target spi.TargetDb, db relay.Db, client
 		target:       target,
 		token:        token,
 		connectionID: append([]byte(nil), connectionID...),
-		qe:           spi.NewQueryEngine(client),
+		qe:           spi.NewAuthorizer(client),
 		guard:        guard,
 	}
 	s.ref = relay.NewRefetcher(db, s.connectionID, generation, func(sql string, expectedColumns int) ([][]*string, error) {

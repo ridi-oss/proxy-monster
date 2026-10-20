@@ -27,7 +27,7 @@ func scriptedMySQLRun(t *testing.T, decider spi.DecisionClient, maxRows int, res
 	t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
 	_ = client.SetDeadline(time.Now().Add(5 * time.Second))
 	_ = server.SetDeadline(time.Now().Add(5 * time.Second))
-	qe := spi.NewQueryEngine(decider)
+	qe := spi.NewAuthorizer(decider)
 	qe.SetNamespace([]string{"test"})
 	s := &RunSession{conn: client, qe: qe, ref: &relay.Refetcher{Catalog: "def"}}
 	writes := make(chan string, 3)

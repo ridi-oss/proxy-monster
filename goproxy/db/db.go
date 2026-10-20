@@ -1,4 +1,4 @@
-// Package db is the DUMB per-database adapter set: the few facts spi.QueryEngine needs to gather
+// Package db is the DUMB per-database adapter set: the few facts spi.Authorizer needs to gather
 // context (namespace probe SQL, temp-overlay support), plus each dialect's NormalizeColumns
 // specialization (analyzer/engines.NormalizeRelation — Go-to-Go, no SQL driver, no cgo). No enforcement
 // logic, no state machine.

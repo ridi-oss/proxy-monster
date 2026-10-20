@@ -19,7 +19,7 @@ type enforcementSession struct {
 	client       spi.ControlPlane
 	token        string
 	connectionID []byte
-	engine       *spi.QueryEngine
+	engine       *spi.Authorizer
 	refetcher    *refetcher
 }
 
@@ -28,7 +28,7 @@ func (t *target) newEnforcementSession(client spi.ControlPlane, token string, co
 	if err != nil {
 		return nil, err
 	}
-	return &enforcementSession{target: t, client: client, token: token, connectionID: append([]byte(nil), connectionID...), engine: spi.NewQueryEngine(client), refetcher: refetcher}, nil
+	return &enforcementSession{target: t, client: client, token: token, connectionID: append([]byte(nil), connectionID...), engine: spi.NewAuthorizer(client), refetcher: refetcher}, nil
 }
 
 func (s *enforcementSession) onOpen(commands []*pb.ProxyCommand) error {

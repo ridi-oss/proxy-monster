@@ -288,7 +288,7 @@ re-gate per viewer at view (above).
 The control plane carries the per-decision result as
 `Verdict.sanitize_diagnostics` — an imperative command the proxy executes
 mechanically, not a statement-meaning flag. The engine applies it to that
-statement (`QueryEngine.SanitizeDiagnostics()`), so the stateless relay is
+statement (`Authorizer.SanitizeDiagnostics()`), so the stateless relay is
 preserved.
 
 ## Monitoring probe

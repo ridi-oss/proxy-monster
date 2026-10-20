@@ -16,7 +16,7 @@ service GitHubSource {
   rpc ReadPullRequests(ReadPullRequestsRequest) returns (ReadPullRequestsResponse);
   rpc ReadFile(ReadFileRequest) returns (ReadFileResponse);
   rpc CompareCommits(CompareCommitsRequest) returns (CompareCommitsResponse);
-  rpc RequiredChecks(RequiredChecksRequest) returns (RequiredChecksResponse);
+  rpc ReadBranchRules(BranchRulesRequest) returns (BranchRules);
   rpc PostCheck(PostCheckRequest) returns (google.protobuf.Empty);
   rpc DismissReview(DismissReviewRequest) returns (google.protobuf.Empty);
   // With a marker, edits the App's comment carrying it, or posts a new one.
@@ -141,6 +141,8 @@ message CommitAuthor {
 message AutoMerge {
   SourceUser enabled_by = 1;
   google.protobuf.Timestamp enabled_at = 2;
+  // MERGE, SQUASH or REBASE.
+  string merge_method = 3;
 }
 
 message PullRequest {
@@ -158,6 +160,13 @@ message PullRequest {
   repeated ChangedFile files = 12;
   repeated CommitAuthor commits = 13;
   bool draft = 14;
+  // GitHub's MergeableState, MergeStateStatus and PullRequestReviewDecision; review_decision is empty when the
+  // base branch requires no review.
+  string mergeable = 15;
+  string merge_state = 16;
+  string review_decision = 17;
+  int32 unresolved_threads = 18;
+  bool can_be_rebased = 19;
 }
 
 message ReadPullRequestsRequest {
@@ -191,13 +200,21 @@ message CompareCommitsResponse {
   CommitRelation relation = 1;
 }
 
-message RequiredChecksRequest {
+message BranchRulesRequest {
   Repo repo = 1;
   string branch = 2;
 }
 
-message RequiredChecksResponse {
+// What a branch's rulesets and branch protection require of a pull request before it merges.
+message BranchRules {
   repeated string contexts = 1;
+  // The head must contain the base branch.
+  bool strict = 2;
+  bool thread_resolution = 3;
+  // Empty allows every method; otherwise lowercase GitHub names (merge, squash, rebase).
+  repeated string merge_methods = 4;
+  // Rule types that can block a merge and that the flow does not evaluate.
+  repeated string unchecked = 5;
 }
 
 message PostCheckRequest {

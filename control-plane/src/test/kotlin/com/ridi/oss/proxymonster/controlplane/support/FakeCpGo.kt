@@ -9,6 +9,8 @@ import com.ridi.oss.proxymonster.controlplane.GitHubIdentityResolver
 import com.ridi.oss.proxymonster.controlplane.source.GitHubAdapter
 import com.ridi.oss.proxymonster.controlplane.source.PrincipalDirectory
 import com.ridi.oss.proxymonster.controlplane.source.PullRequest
+import com.ridi.oss.proxymonster.cpgo.BranchRules
+import com.ridi.oss.proxymonster.cpgo.BranchRulesRequest
 import com.ridi.oss.proxymonster.cpgo.CompareCommitsRequest
 import com.ridi.oss.proxymonster.cpgo.CompareCommitsResponse
 import com.ridi.oss.proxymonster.cpgo.DismissReviewRequest
@@ -21,8 +23,6 @@ import com.ridi.oss.proxymonster.cpgo.ReadFileRequest
 import com.ridi.oss.proxymonster.cpgo.ReadFileResponse
 import com.ridi.oss.proxymonster.cpgo.ReadPullRequestsRequest
 import com.ridi.oss.proxymonster.cpgo.ReadPullRequestsResponse
-import com.ridi.oss.proxymonster.cpgo.RequiredChecksRequest
-import com.ridi.oss.proxymonster.cpgo.RequiredChecksResponse
 import com.ridi.oss.proxymonster.cpgo.VerifiedEmailsResponse
 import com.ridi.oss.proxymonster.cpgo.autoMerge
 import com.ridi.oss.proxymonster.cpgo.changedFile
@@ -60,7 +60,7 @@ internal class FakeCpGo : AutoCloseable {
     var readPullRequests: (ReadPullRequestsRequest) -> ReadPullRequestsResponse = { unrouted() }
     var readFile: (ReadFileRequest) -> ReadFileResponse = { unrouted() }
     var compareCommits: (CompareCommitsRequest) -> CompareCommitsResponse = { unrouted() }
-    var requiredChecks: (RequiredChecksRequest) -> RequiredChecksResponse = { unrouted() }
+    var branchRules: (BranchRulesRequest) -> BranchRules = { unrouted() }
     var postCheck: (PostCheckRequest) -> Empty = { unrouted() }
     var dismissReview: (DismissReviewRequest) -> Empty = { unrouted() }
     var postComment: (PostCommentRequest) -> Empty = { unrouted() }
@@ -78,7 +78,7 @@ internal class FakeCpGo : AutoCloseable {
         override suspend fun readPullRequests(request: ReadPullRequestsRequest) = record(request, readPullRequests)
         override suspend fun readFile(request: ReadFileRequest) = record(request, readFile)
         override suspend fun compareCommits(request: CompareCommitsRequest) = record(request, compareCommits)
-        override suspend fun requiredChecks(request: RequiredChecksRequest) = record(request, requiredChecks)
+        override suspend fun readBranchRules(request: BranchRulesRequest) = record(request, branchRules)
         override suspend fun postCheck(request: PostCheckRequest) = record(request, postCheck)
         override suspend fun dismissReview(request: DismissReviewRequest) = record(request, dismissReview)
         override suspend fun postComment(request: PostCommentRequest) = record(request, postComment)
@@ -140,6 +140,7 @@ private fun SourceUserModel.pb() = sourceUser {
 internal fun cpGoPullRequest(pr: PullRequest): PullRequestPb = pullRequest {
     number = pr.number
     open = pr.open
+    draft = pr.draft
     merged = pr.merged
     pr.mergedAt?.let { mergedAt = it.pb() }
     pr.mergeCommit?.let { mergeCommit = it }
@@ -150,8 +151,14 @@ internal fun cpGoPullRequest(pr: PullRequest): PullRequestPb = pullRequest {
         autoMerge = autoMerge {
             a.enabledBy?.let { enabledBy = it.pb() }
             a.enabledAt?.let { enabledAt = it.pb() }
+            a.mergeMethod?.let { mergeMethod = it }
         }
     }
+    mergeable = pr.mergeable
+    mergeState = pr.mergeState
+    pr.reviewDecision?.let { reviewDecision = it }
+    unresolvedThreads = pr.unresolvedThreads
+    canBeRebased = pr.canBeRebased
     for (r in pr.reviews) {
         reviews += review {
             id = r.id

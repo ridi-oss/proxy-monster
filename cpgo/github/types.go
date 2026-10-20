@@ -45,25 +45,40 @@ type CommitAuthor struct {
 }
 
 type AutoMerge struct {
-	EnabledBy *User      `json:"enabledBy"`
-	EnabledAt *time.Time `json:"enabledAt"`
+	EnabledBy   *User      `json:"enabledBy"`
+	EnabledAt   *time.Time `json:"enabledAt"`
+	MergeMethod string     `json:"mergeMethod"`
+}
+
+// BranchRules is what a branch's rulesets and branch protection require of a pull request before it merges.
+type BranchRules struct {
+	Contexts         []string `json:"contexts"`
+	Strict           bool     `json:"strict"`
+	ThreadResolution bool     `json:"threadResolution"`
+	MergeMethods     []string `json:"mergeMethods"` // nil allows every method
+	Unchecked        []string `json:"unchecked"`    // merge-time rule types this package does not evaluate
 }
 
 type PullRequest struct {
-	Number      int            `json:"number"`
-	Open        bool           `json:"open"`
-	Draft       bool           `json:"draft"`
-	Merged      bool           `json:"merged"`
-	MergedAt    *time.Time     `json:"mergedAt"`
-	MergeCommit *string        `json:"mergeCommit"`
-	HeadSHA     string         `json:"headSha"`
-	BaseRef     string         `json:"baseRef"`
-	Author      *User          `json:"author"`
-	AutoMerge   *AutoMerge     `json:"autoMerge"`
-	Reviews     []Review       `json:"reviews"`
-	Checks      []Check        `json:"checks"` // nil when the head commit's rollup could not be read
-	Files       []ChangedFile  `json:"files"`
-	Commits     []CommitAuthor `json:"commits"`
+	Number            int            `json:"number"`
+	Open              bool           `json:"open"`
+	Draft             bool           `json:"draft"`
+	Merged            bool           `json:"merged"`
+	MergedAt          *time.Time     `json:"mergedAt"`
+	MergeCommit       *string        `json:"mergeCommit"`
+	HeadSHA           string         `json:"headSha"`
+	BaseRef           string         `json:"baseRef"`
+	Author            *User          `json:"author"`
+	AutoMerge         *AutoMerge     `json:"autoMerge"`
+	Reviews           []Review       `json:"reviews"`
+	Checks            []Check        `json:"checks"` // nil when the head commit's rollup could not be read
+	Files             []ChangedFile  `json:"files"`
+	Commits           []CommitAuthor `json:"commits"`
+	Mergeable         string         `json:"mergeable"`
+	MergeState        string         `json:"mergeState"`
+	CanBeRebased      bool           `json:"canBeRebased"`
+	ReviewDecision    string         `json:"reviewDecision"`
+	UnresolvedThreads int            `json:"unresolvedThreads"`
 }
 
 type RateLimit struct {

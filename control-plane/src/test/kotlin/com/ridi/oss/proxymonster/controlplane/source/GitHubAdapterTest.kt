@@ -6,6 +6,8 @@ import com.ridi.oss.proxymonster.controlplane.GitHubIdentityResolver
 import com.ridi.oss.proxymonster.controlplane.support.FakeCpGo
 import com.ridi.oss.proxymonster.controlplane.support.cpGoPullRequest
 import com.ridi.oss.proxymonster.controlplane.support.pb
+import com.ridi.oss.proxymonster.cpgo.BranchRulesRequest
+import com.ridi.oss.proxymonster.cpgo.branchRules as branchRulesPb
 import com.ridi.oss.proxymonster.cpgo.CompareCommitsRequest
 import com.ridi.oss.proxymonster.cpgo.DismissReviewRequest
 import com.ridi.oss.proxymonster.cpgo.GitHubError
@@ -14,14 +16,12 @@ import com.ridi.oss.proxymonster.cpgo.PostCheckRequest
 import com.ridi.oss.proxymonster.cpgo.PostCommentRequest
 import com.ridi.oss.proxymonster.cpgo.ReadFileRequest
 import com.ridi.oss.proxymonster.cpgo.ReadPullRequestsRequest
-import com.ridi.oss.proxymonster.cpgo.RequiredChecksRequest
 import com.ridi.oss.proxymonster.cpgo.compareCommitsResponse
 import com.ridi.oss.proxymonster.cpgo.externalIdentityResponse
 import com.ridi.oss.proxymonster.cpgo.gitHubError
 import com.ridi.oss.proxymonster.cpgo.rateLimit
 import com.ridi.oss.proxymonster.cpgo.readFileResponse
 import com.ridi.oss.proxymonster.cpgo.readPullRequestsResponse
-import com.ridi.oss.proxymonster.cpgo.requiredChecksResponse
 import com.ridi.oss.proxymonster.cpgo.verifiedEmailsResponse
 import io.grpc.Status
 import io.grpc.protobuf.StatusProto
@@ -48,8 +48,8 @@ class GitHubAdapterTest {
     fun close() = cpGo.close()
 
     private val open = PullRequest(
-        number = 1, open = true, merged = false, mergedAt = null, headSha = "sha1", baseRef = "main", author = alice,
-        autoMerge = AutoMerge(alice, Instant.parse("2026-10-09T00:10:00Z")),
+        number = 1, open = true, draft = true, merged = false, mergedAt = null, headSha = "sha1", baseRef = "main", author = alice,
+        autoMerge = AutoMerge(alice, Instant.parse("2026-10-09T00:10:00Z"), "SQUASH"),
         reviews = listOf(Review("501", SourceUser("102", "bob"), ReviewState.APPROVED, Instant.parse("2026-10-09T00:20:00Z"), "u", "sha1")),
         checks = listOf(
             Check("build", true, CheckStatus.COMPLETED, CheckConclusion.SUCCESS),
@@ -57,6 +57,8 @@ class GitHubAdapterTest {
         ),
         files = listOf(ChangedFile("sql/new.sql", FileChange.ADDED)),
         commits = listOf(CommitAuthor("101", "alice@acme.com", merge = false), CommitAuthor(null, null, merge = true)),
+        mergeable = "MERGEABLE", mergeState = "BLOCKED", reviewDecision = "REVIEW_REQUIRED", unresolvedThreads = 2,
+        canBeRebased = false,
     )
     private val merged = open.copy(
         number = 2, open = false, merged = true, mergedAt = Instant.parse("2026-10-08T12:00:00Z"), mergeCommit = "merge2",
@@ -113,7 +115,14 @@ class GitHubAdapterTest {
     fun `each operation sends its arguments to cp-go`() {
         cpGo.readFile = { readFileResponse { content = ByteString.copyFrom(byteArrayOf(1, 2, 3)) } }
         cpGo.compareCommits = { compareCommitsResponse { relation = CommitRelationPb.DIVERGED } }
-        cpGo.requiredChecks = { requiredChecksResponse { contexts += listOf("build", "lint") } }
+        cpGo.branchRules = {
+            branchRulesPb {
+                contexts += listOf("build", "lint")
+                strict = true
+                mergeMethods += "squash"
+                unchecked += "merge_queue"
+            }
+        }
         cpGo.postCheck = { Empty.getDefaultInstance() }
         cpGo.dismissReview = { Empty.getDefaultInstance() }
         cpGo.postComment = { Empty.getDefaultInstance() }
@@ -121,7 +130,10 @@ class GitHubAdapterTest {
 
         assertContentEquals(byteArrayOf(1, 2, 3), runBlocking { a.readFile(repo, "feature/x", "sql/a b.sql") })
         assertEquals(CommitRelation.DIVERGED, runBlocking { a.compareCommits(repo, "aaa", "bbb") })
-        assertEquals(setOf("build", "lint"), runBlocking { a.requiredChecks(repo, "release/1") })
+        assertEquals(
+            BranchRules(setOf("build", "lint"), strict = true, mergeMethods = setOf("squash"), unchecked = listOf("merge_queue")),
+            runBlocking { a.branchRules(repo, "release/1") },
+        )
         runBlocking { a.postCheck(repo, "sha1", "proxy-monster", CheckStatus.IN_PROGRESS, null, "Running", "Checking SQL") }
         runBlocking { a.postCheck(repo, "sha1", "proxy-monster", CheckStatus.COMPLETED, CheckConclusion.SKIPPED, "No SQL", "") }
         runBlocking { a.dismissReview(repo, 1, "501", "SQL changed") }
@@ -130,7 +142,7 @@ class GitHubAdapterTest {
 
         cpGo.requestsOf<ReadFileRequest>().single().let { assertEquals(Triple("acme", "feature/x", "sql/a b.sql"), Triple(it.repo.owner, it.ref, it.path)) }
         cpGo.requestsOf<CompareCommitsRequest>().single().let { assertEquals("aaa" to "bbb", it.base to it.head) }
-        assertEquals("release/1", cpGo.requestsOf<RequiredChecksRequest>().single().branch)
+        assertEquals("release/1", cpGo.requestsOf<BranchRulesRequest>().single().branch)
         val checks = cpGo.requestsOf<PostCheckRequest>()
         assertEquals(CheckStatusPb.IN_PROGRESS to CheckConclusionPb.CHECK_CONCLUSION_UNSPECIFIED, checks[0].status to checks[0].conclusion)
         assertEquals(CheckStatusPb.COMPLETED to CheckConclusionPb.SKIPPED, checks[1].status to checks[1].conclusion)

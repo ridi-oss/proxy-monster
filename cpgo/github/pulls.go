@@ -57,6 +57,11 @@ type reviewsPage struct {
 	Nodes    []reviewNode
 }
 
+type threadsPage struct {
+	PageInfo pageInfo
+	Nodes    []struct{ IsResolved bool }
+}
+
 type fileNode struct {
 	Path       *string
 	ChangeType string
@@ -111,13 +116,19 @@ type prNode struct {
 	BaseRefName      *string
 	Author           *actor
 	AutoMergeRequest *struct {
-		EnabledAt *time.Time
-		EnabledBy *userRef
+		EnabledAt   *time.Time
+		EnabledBy   *userRef
+		MergeMethod string
 	}
-	Reviews *reviewsPage `graphql:"reviews(first: 100)"`
-	Files   *filesPage   `graphql:"files(first: 100)"`
-	Commits headCommit   `graphql:"commits(last: 1)"`
-	Authors struct {
+	Mergeable        string
+	MergeStateStatus string
+	CanBeRebased     bool
+	ReviewDecision   *string
+	ReviewThreads    *threadsPage `graphql:"reviewThreads(first: 100)"`
+	Reviews          *reviewsPage `graphql:"reviews(first: 100)"`
+	Files            *filesPage   `graphql:"files(first: 100)"`
+	Commits          headCommit   `graphql:"commits(last: 1)"`
+	Authors          struct {
 		Nodes []struct {
 			Commit *struct {
 				Parents struct{ TotalCount int }
@@ -328,6 +339,22 @@ func (c *Client) readPullRequest(ctx context.Context, inst *installation, repo R
 		}
 		files, p = append(files, next.Files.Nodes...), next.Files.PageInfo
 	}
+	if node.ReviewThreads == nil {
+		return PullRequest{}, fmt.Errorf("GitHub returned no review threads for a pull request")
+	}
+	threads := node.ReviewThreads.Nodes
+	for p := node.ReviewThreads.PageInfo; p.HasNextPage; {
+		next, err := page[struct {
+			ReviewThreads *threadsPage `graphql:"reviewThreads(first: 100, after: $after)"`
+		}](ctx, c, inst, repo, number, cursor(p))
+		if err != nil {
+			return PullRequest{}, err
+		}
+		if next.ReviewThreads == nil {
+			return PullRequest{}, fmt.Errorf("GitHub returned no review threads page")
+		}
+		threads, p = append(threads, next.ReviewThreads.Nodes...), next.ReviewThreads.PageInfo
+	}
 	checks, err := c.readChecks(ctx, inst, repo, number, headSHA, node.Commits)
 	if err != nil {
 		return PullRequest{}, err
@@ -348,12 +375,24 @@ func (c *Client) readPullRequest(ctx context.Context, inst *installation, repo R
 		Checks:   checks,
 		Files:    []ChangedFile{},
 		Commits:  []CommitAuthor{},
+
+		Mergeable:    node.Mergeable,
+		MergeState:   node.MergeStateStatus,
+		CanBeRebased: node.CanBeRebased,
+	}
+	if node.ReviewDecision != nil {
+		pr.ReviewDecision = *node.ReviewDecision
+	}
+	for _, t := range threads {
+		if !t.IsResolved {
+			pr.UnresolvedThreads++
+		}
 	}
 	if node.MergeCommit != nil {
 		pr.MergeCommit = &node.MergeCommit.OID
 	}
 	if a := node.AutoMergeRequest; a != nil {
-		pr.AutoMerge = &AutoMerge{EnabledBy: refUser(a.EnabledBy), EnabledAt: a.EnabledAt}
+		pr.AutoMerge = &AutoMerge{EnabledBy: refUser(a.EnabledBy), EnabledAt: a.EnabledAt, MergeMethod: a.MergeMethod}
 	}
 	for _, r := range reviews {
 		if r.DatabaseID == nil {

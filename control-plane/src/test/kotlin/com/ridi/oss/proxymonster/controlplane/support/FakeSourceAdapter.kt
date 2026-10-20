@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane.support
 
+import com.ridi.oss.proxymonster.controlplane.source.BranchRules
 import com.ridi.oss.proxymonster.controlplane.source.CheckConclusion
 import com.ridi.oss.proxymonster.controlplane.source.CheckStatus
 import com.ridi.oss.proxymonster.controlplane.source.CommitRelation
@@ -40,11 +41,11 @@ class FakeSourceAdapter : SourceAdapter {
     val comments: MutableList<Comment> = Collections.synchronizedList(ArrayList())
     val upserts: MutableList<Comment> = Collections.synchronizedList(ArrayList())
 
-    /** Base branch → the contexts it requires; absent is none. */
-    val requiredChecks: MutableMap<String, Set<String>> = Collections.synchronizedMap(HashMap())
+    /** Base branch → its rules; absent requires nothing. */
+    val branchRules: MutableMap<String, BranchRules> = Collections.synchronizedMap(HashMap())
 
-    /** When set, reading the required checks throws. */
-    @Volatile var requiredChecksFail = false
+    /** When set, reading the branch rules throws. */
+    @Volatile var branchRulesFail = false
 
     /** (repo, base, head) → relation; absent is [CommitRelation.AHEAD]. */
     val relations: MutableMap<Triple<Repo, String, String>, CommitRelation> = Collections.synchronizedMap(HashMap())
@@ -59,9 +60,9 @@ class FakeSourceAdapter : SourceAdapter {
     override suspend fun compareCommits(repo: Repo, base: String, head: String): CommitRelation =
         relations[Triple(repo, base, head)] ?: CommitRelation.AHEAD
 
-    override suspend fun requiredChecks(repo: Repo, branch: String): Set<String> {
-        if (requiredChecksFail) error("required checks unavailable")
-        return requiredChecks[branch].orEmpty()
+    override suspend fun branchRules(repo: Repo, branch: String): BranchRules {
+        if (branchRulesFail) error("branch rules unavailable")
+        return branchRules[branch] ?: BranchRules()
     }
 
     override suspend fun postCheck(

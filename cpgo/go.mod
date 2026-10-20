@@ -16,6 +16,7 @@ require (
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/moby/moby/api v1.55.0
 	github.com/pires/go-proxyproto v0.8.1
+	github.com/ridi-oss/proxy-monster/analyzer v0.0.0-00010101000000-000000000000
 	github.com/ridi-oss/proxy-monster/auditmon v0.0.0-00010101000000-000000000000
 	github.com/shurcooL/githubv4 v0.0.0-20260209031235-2402fdf4a9ed
 	github.com/testcontainers/testcontainers-go v0.44.0
@@ -174,6 +175,9 @@ require (
 	honnef.co/go/tools v0.7.0 // indirect
 )
 
-// auditmon/canon is the audit hash both writers produce; resolve it from source so the GOWORK=off image
-// build (control-plane/Dockerfile copies ../auditmon in) matches the workspace.
+// auditmon/canon is the audit hash both writers produce, and analyzer/probe/pb holds the shared proto types;
+// resolve both from source so the GOWORK=off image build (control-plane/Dockerfile copies them in) matches
+// the workspace.
 replace github.com/ridi-oss/proxy-monster/auditmon => ../auditmon
+
+replace github.com/ridi-oss/proxy-monster/analyzer => ../analyzer

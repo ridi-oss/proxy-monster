@@ -29,6 +29,7 @@ import (
 	"github.com/ridi-oss/proxy-monster/cpgo/front"
 	"github.com/ridi-oss/proxy-monster/cpgo/gobridge"
 	bridgepb "github.com/ridi-oss/proxy-monster/cpgo/gobridge/pb"
+	"github.com/ridi-oss/proxy-monster/cpgo/grpcsvc"
 	"github.com/ridi-oss/proxy-monster/cpgo/idp"
 	"github.com/ridi-oss/proxy-monster/cpgo/routes"
 	"github.com/ridi-oss/proxy-monster/cpgo/routes/oidc"
@@ -58,6 +59,7 @@ type config struct {
 	DBPassword string `env:"PM_DB_PASSWORD" default:"proxymonster" hidden:"" group:"kotlin" help:"Control-plane store password."`
 
 	SessionSecret       string `env:"PM_SESSION_SECRET" default:"dev-insecure-session-secret-change-me" hidden:"" group:"kotlin" help:"Signs the session cookies."`
+	SecretToken         string `env:"PM_SECRET_TOKEN" hidden:"" group:"kotlin" help:"Shared secret the data-plane proxy sends on every gRPC call."`
 	AuthDebug           bool   `env:"PM_AUTH_DEBUG" default:"true" negatable:"" group:"kotlin" help:"Offer POST /auth/debug, a login as any principal. Never in production."`
 	MCPResource         string `env:"PM_MCP_RESOURCE" default:"http://127.0.0.1:8080/mcp" group:"kotlin" help:"Public URL of the MCP endpoint; its origin is the control plane's."`
 	WebOrigin           string `env:"PM_WEB_ORIGIN" group:"kotlin" help:"Origin of the web console when it is not the control plane's."`
@@ -296,7 +298,8 @@ func run(ctx context.Context, cfg config) int {
 		Handler:           serve(front.ParseTrustedEdges(cfg.TrustedProxies)),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	grpcSrv := front.NewGRPC(conn)
+	grpcSrv := front.NewGRPC(conn, grpc.UnaryInterceptor(grpcsvc.SecretToken(cfg.SecretToken)))
+	grpcsvc.Register(grpcSrv, pool)
 
 	httpLn, err := net.Listen("tcp", httpSrv.Addr)
 	if err != nil {

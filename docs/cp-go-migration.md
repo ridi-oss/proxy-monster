@@ -12,7 +12,9 @@ Status: phases 0–2 done; phases 3–5 in progress (Go decides Cedar for the ro
 it serves; roles, mask functions, policies, JIT access requests, users, groups,
 datasource read, wire cert, create, edit and delete, and wire tokens run on Go);
 phase 6 in progress (web sessions, OIDC login, the IdP recheck, pmon's device
-login and its daemon session run on Go); phases 7–8 not started.
+login and its daemon session run on Go); phase 7 in progress (the
+`ReportCompletion` RPC runs on Go, every other RPC is forwarded); phase 8 not
+started.
 
 ## Shape
 

@@ -15,6 +15,7 @@ set -euo pipefail
 
 NAME="$(basename "$1")"
 APP="$(cd "$(dirname "$1")" && pwd)/$NAME"
+STAPLER="$(cd "$(dirname "$0")" && pwd)/stapler.sh"
 OUT="$2"
 : "${VERSION:?VERSION is required}"
 mkdir -p "$OUT"
@@ -42,7 +43,7 @@ notarize() {
 ditto -c -k --keepParent "$APP" "$ZIP"
 if [ -n "${NOTARY_KEY_PATH:-}" ]; then
     notarize "$ZIP"
-    xcrun stapler staple "$APP"
+    "$STAPLER" staple "$APP"
     rm "$ZIP"
     ditto -c -k --keepParent "$APP" "$ZIP"
 fi
@@ -83,7 +84,7 @@ else
 fi
 if [ -n "${NOTARY_KEY_PATH:-}" ]; then
     notarize "$PKG"
-    xcrun stapler staple "$PKG"
+    "$STAPLER" staple "$PKG"
 fi
 
 echo "packaged:"

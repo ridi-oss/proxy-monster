@@ -15,4 +15,4 @@ export function proxy(request: NextRequest) {
   return NextResponse.rewrite(`${cpUrl.replace(/\/$/, '')}${pathname}${search}`)
 }
 
-export const config = { matcher: ['/api/:path*', '/auth/:path*'] }
+export const config = { matcher: ['/api/:path*', '/auth/:path*', '/oauth/:path*'] }

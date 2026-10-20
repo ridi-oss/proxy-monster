@@ -17,6 +17,7 @@ import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.controlplane.support.verifyAuditChain
 import com.ridi.oss.proxymonster.controlplane.support.webSessionCookie
+import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation as ClientContentNegotiation
 import io.ktor.client.plugins.cookies.HttpCookies
@@ -50,6 +51,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
@@ -229,7 +231,12 @@ class OAuthRoutesDbTest {
     @Test
     fun `consent discloses redirect destination and warns for loopback clients`() = testApplication {
         application { oauthTestModule(config().copy(mcpDebugAutoConsent = false), dataSource, resolver()) }
-        val response = client.get("/oauth/authorize") {
+        val browser = createClient {
+            expectSuccess = false
+            followRedirects = false
+            install(HttpCookies)
+        }
+        val response = browser.get("/oauth/authorize") {
             parameter("response_type", "code")
             parameter("client_id", CLIENT_ID)
             parameter("redirect_uri", REDIRECT_URI)
@@ -241,10 +248,16 @@ class OAuthRoutesDbTest {
             parameter("principal", "mcp-debug@example.com")
         }
 
-        assertEquals(HttpStatusCode.OK, response.status)
-        val body = response.bodyAsText()
-        assertContains(body, REDIRECT_URI)
-        assertContains(body, "Verify that you started the local client")
+        assertEquals(HttpStatusCode.Found, response.status)
+        assertEquals("/consent", response.headers[HttpHeaders.Location])
+        val pending = browser.pendingConsent()
+        assertEquals(REDIRECT_URI, pending["redirectUri"]?.jsonPrimitive?.content)
+        assertEquals("true", pending["loopback"]?.jsonPrimitive?.content)
+        assertEquals("Test MCP Client", pending["clientName"]?.jsonPrimitive?.content)
+        assertEquals(listOf("mcp:read"), pending["scopes"]?.jsonArray?.map { it.jsonPrimitive.content })
+
+        val stranger = createClient { expectSuccess = false }
+        assertEquals(HttpStatusCode.BadRequest, stranger.get("/oauth/pending").status)
     }
 
     @Test
@@ -269,8 +282,9 @@ class OAuthRoutesDbTest {
             parameter("code_challenge_method", "S256")
         }
 
-        assertEquals(HttpStatusCode.OK, response.status)
-        assertContains(response.bodyAsText(), "Test MCP Client")
+        assertEquals(HttpStatusCode.Found, response.status)
+        assertEquals("/consent", response.headers[HttpHeaders.Location])
+        assertEquals("Test MCP Client", client.pendingConsent()["clientName"]?.jsonPrimitive?.content)
 
         dataSource.connection.use { c ->
             c.prepareStatement(
@@ -355,10 +369,8 @@ class OAuthRoutesDbTest {
         // This test helper establishes exactly the shared UserSession that a successful OIDC callback sets.
         assertEquals(HttpStatusCode.NoContent, browser.post("/test/login/resume-user@example.com").status)
         val consent = browser.get("/oauth/resume")
-        assertEquals(HttpStatusCode.OK, consent.status)
-        val csrf = Regex("""name="csrf" value="([^"]+)"""")
-            .find(consent.bodyAsText())?.groupValues?.get(1)
-        assertNotNull(csrf)
+        assertEquals(HttpStatusCode.Found, consent.status)
+        val csrf = browser.pendingConsent()["csrf"]!!.jsonPrimitive.content
 
         val approved = browser.submitForm(
             "/oauth/consent",
@@ -475,10 +487,8 @@ class OAuthRoutesDbTest {
             parameter("code_challenge_method", "S256")
             parameter("principal", principal)
         }
-        assertEquals(HttpStatusCode.OK, consentPage.status)
-        val csrf = assertNotNull(
-            Regex("""name="csrf" value="([^"]+)"""").find(consentPage.bodyAsText())?.groupValues?.get(1),
-        )
+        assertEquals(HttpStatusCode.Found, consentPage.status)
+        val csrf = client.pendingConsent()["csrf"]!!.jsonPrimitive.content
 
         assertEquals(0, authEvents(AUTH_OAUTH_CONSENT, principal).size)
         val approved = client.submitForm(
@@ -716,8 +726,8 @@ class OAuthRoutesDbTest {
                 parameter("code_challenge_method", "S256")
                 parameter("principal", principal)
             }
-            assertEquals(HttpStatusCode.OK, page.status)
-            val csrf = assertNotNull(Regex("""name="csrf" value="([^"]+)"""").find(page.bodyAsText())?.groupValues?.get(1))
+            assertEquals(HttpStatusCode.Found, page.status)
+            val csrf = client.pendingConsent()["csrf"]!!.jsonPrimitive.content
             val approved = client.submitForm("/oauth/consent", Parameters.build { append("csrf", csrf); append("decision", "approve") })
             assertEquals(HttpStatusCode.Found, approved.status)
         }
@@ -731,6 +741,12 @@ class OAuthRoutesDbTest {
             "a manual re-consent for an existing active grant must not write a second consent event",
         )
         verifyAuditChain(dataSource)
+    }
+
+    private suspend fun HttpClient.pendingConsent(): JsonObject {
+        val pending = get("/oauth/pending")
+        assertEquals(HttpStatusCode.OK, pending.status)
+        return Json.parseToJsonElement(pending.bodyAsText()).jsonObject
     }
 
     /** Count of MCP tokens the test client holds — asserts a rejected grant minted none. */

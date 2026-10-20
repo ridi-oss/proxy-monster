@@ -156,7 +156,8 @@ and refresh tokens. There is no RFC 7591 DCR endpoint.
 | --- | --- | --- | --- |
 | Control plane | `GET /.well-known/oauth-protected-resource` and `.../oauth-protected-resource/mcp` | RFC 9728 | Resource metadata; `resource` = exact `/mcp` URI; `authorization_servers` = the same origin. Path-insertion form for the `/mcp` resource, root as fallback. |
 | Control plane | `GET /.well-known/oauth-authorization-server` | RFC 8414 | AS metadata: authorization, token, and revocation endpoints; PKCE `S256`; authorization-code + refresh grants; supported scopes. No DCR `registration_endpoint`. |
-| Control plane | `GET /oauth/authorize` | OAuth 2.1 + CIMD | Treat the HTTPS CIMD URL as `client_id`, validate it, require PKCE `S256`, reuse `pm_session` or the existing OIDC login, then render consent. |
+| Control plane | `GET /oauth/authorize` | OAuth 2.1 + CIMD | Treat the HTTPS CIMD URL as `client_id`, validate it, require PKCE `S256`, reuse `pm_session` or the existing OIDC login, then redirect to the web console's `/consent` page unless a consent is remembered. |
+| Control plane | `GET /oauth/pending`, `POST /oauth/consent` | proxy-monster | The `/consent` page reads the signed-in user's pending request (client, redirect URI, scopes, CSRF token) and posts the user's decision, which redirects back to the client. |
 | Control plane | `POST /oauth/token` | OAuth 2.1 | Code→token exchange (verifies PKCE) and one-time refresh-token rotation. |
 | Control plane | `POST /oauth/revoke` | RFC 7009 | Revoke an access or refresh token. |
 | Control plane | `GET /oauth/consents`, `DELETE /oauth/consents/{id}` | Shared-session API/UI | List and revoke remembered client consent; revocation also invalidates that client's refresh-token chain for the principal. |

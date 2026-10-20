@@ -151,9 +151,10 @@ port internal (nothing in the code enforces either):
   `/auth/session/renew` to re-mint its wire token, and `/api/datasources` to
   discover what it can broker — all under prefixes the web already rewrites, so
   they can reach the CP through the console or beside it. MCP clients reach
-  `/mcp`, `/oauth/*`, and the `/.well-known/oauth-*` discovery documents, which
-  the web does not rewrite. A browser approves the device code on the console's
-  `/device` page, which the web serves itself.
+  `/mcp` and the `/.well-known/oauth-*` discovery documents, which the web does
+  not rewrite, and `/oauth/*`, which it does. The browser approves an MCP client
+  on the console's `/consent` page. A browser approves the device code on the
+  console's `/device` page, which the web serves itself.
 
 The CP's own HTTP surface therefore does not have to be a separate public
 hostname. Three topologies work, and the choice is about how many public names

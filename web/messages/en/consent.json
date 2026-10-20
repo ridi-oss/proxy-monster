@@ -1,0 +1,20 @@
+{
+  "title": "Authorize MCP client",
+  "client": "Client",
+  "clientId": "Client ID",
+  "redirect": "Redirect destination",
+  "localhostWarning": "This client redirects to this computer. Verify that you started the local client before authorizing.",
+  "scopes": "Requested access",
+  "approve": "Authorize",
+  "deny": "Deny",
+  "expired": "This authorization request is invalid or has expired. Start the sign-in again from your MCP client.",
+  "scope": {
+    "mcp_read": "Read datasources, policies, roles, users and groups, the audit log, your own tokens and your permissions",
+    "mcp_datasources_write": "Change column classifications",
+    "mcp_policies_write": "Change policies, roles and mask functions",
+    "mcp_identity_write": "Change users, groups and role assignments",
+    "mcp_query": "Run queries as you, request approvals and access, and read your query history",
+    "mcp_approvals_write": "Approve, reject and run query approvals, decide access requests and revoke access grants as you",
+    "mcp_tokens": "Create and revoke your database connection tokens"
+  }
+}

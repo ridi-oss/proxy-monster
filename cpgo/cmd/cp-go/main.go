@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"reflect"
 	"strconv"
 	"strings"
 	"syscall"
@@ -49,116 +50,132 @@ type config struct {
 	Tailnet        tailnet.Config `embed:"" prefix:"tailnet-"`
 	GitHub         githubConfig   `embed:"" prefix:"github-"`
 	BridgePort     int            `env:"PM_CP_GO_GRPC_PORT" default:"0" help:"Loopback port the Kotlin control plane calls Go on; 0 picks a free one. Set it, and the child's PM_CP_GO_GRPC_ADDR, with PM_CP_ATTACH."`
-	// Shared with the Kotlin child, which reads them from the environment, so they are never flags.
-	DBURL      string `kong:"-"`
-	DBUser     string `kong:"-"`
-	DBPassword string `kong:"-"`
-	// InternalToken authenticates cp-go to the child; generated per boot unless attaching.
-	InternalToken string `kong:"-"`
-	// UserAttributes is PM_OIDC_USER_ATTRIBUTES, which Kotlin declares only when OIDC login is configured.
-	UserAttributes string           `kong:"-"`
-	Session        session.Settings `kong:"-"`
-	// OIDC is nil unless all four PM_OIDC_* settings are present.
-	OIDC      *idp.Config `kong:"-"`
-	ResultKey string      `kong:"-"`
+	InternalToken  string         `env:"PM_CP_INTERNAL_TOKEN" hidden:"" help:"Token cp-go and the Kotlin control plane share; generated per boot unless attaching."`
+
+	// The Kotlin child reads these too; kotlinEnv hands it the values parsed here.
+	DBURL      string `env:"PM_DB_URL" name:"db-url" default:"jdbc:postgresql://localhost:5432/proxymonster" group:"kotlin" help:"Control-plane store, as a JDBC URL."`
+	DBUser     string `env:"PM_DB_USER" default:"proxymonster" group:"kotlin" help:"Control-plane store user."`
+	DBPassword string `env:"PM_DB_PASSWORD" default:"proxymonster" hidden:"" group:"kotlin" help:"Control-plane store password."`
+
+	SessionSecret       string `env:"PM_SESSION_SECRET" default:"dev-insecure-session-secret-change-me" hidden:"" group:"kotlin" help:"Signs the session cookies."`
+	AuthDebug           bool   `env:"PM_AUTH_DEBUG" default:"true" negatable:"" group:"kotlin" help:"Offer POST /auth/debug, a login as any principal. Never in production."`
+	MCPResource         string `env:"PM_MCP_RESOURCE" default:"http://127.0.0.1:8080/mcp" group:"kotlin" help:"Public URL of the MCP endpoint; its origin is the control plane's."`
+	WebOrigin           string `env:"PM_WEB_ORIGIN" group:"kotlin" help:"Origin of the web console when it is not the control plane's."`
+	ResultKey           string `env:"PM_RESULT_KEY" hidden:"" group:"kotlin" help:"Base64 AES-256 key for stored results and refresh tokens."`
+	ElevatedScopeTTL    string `env:"PM_ELEVATED_SCOPE_TTL" default:"3600" group:"kotlin" help:"Seconds MCP scopes beyond read and query last after approval."`
+	OAuthAccessTTL      string `env:"PM_OAUTH_ACCESS_TTL" name:"oauth-access-ttl" default:"600" group:"kotlin" help:"Seconds an MCP access token lasts."`
+	SessionWindow       string `env:"PM_SESSION_WINDOW" default:"7200" group:"kotlin" help:"Wire session window: seconds, or h/m/s as in 1h30m."`
+	WebAbsolute         string `env:"PM_WEB_SESSION_ABSOLUTE" default:"7200" group:"kotlin" help:"Web session lifetime."`
+	WebIdle             string `env:"PM_WEB_SESSION_IDLE" default:"900" group:"kotlin" help:"Web session idle timeout."`
+	WebSlide            string `env:"PM_WEB_SESSION_SLIDE" default:"120" group:"kotlin" help:"How often a web session's idle clock is renewed."`
+	WebIdleWarnLead     string `env:"PM_WEB_SESSION_IDLE_WARN_LEAD" default:"60" group:"kotlin" help:"Warn this long before the idle timeout."`
+	WebAbsoluteWarnLead string `env:"PM_WEB_SESSION_ABSOLUTE_WARN_LEAD" default:"300" group:"kotlin" help:"Warn this long before the session lifetime ends."`
+	WebHeartbeat        string `env:"PM_WEB_SESSION_HEARTBEAT" default:"90" group:"kotlin" help:"Web session heartbeat interval."`
+
+	OIDCIssuer         string `env:"PM_OIDC_ISSUER" group:"kotlin" help:"OIDC issuer; OIDC login is on when the issuer, client ID, client secret, and redirect URI are set."`
+	OIDCClientID       string `env:"PM_OIDC_CLIENT_ID" group:"kotlin" help:"OIDC client ID."`
+	OIDCClientSecret   string `env:"PM_OIDC_CLIENT_SECRET" hidden:"" group:"kotlin" help:"OIDC client secret."`
+	OIDCRedirectURI    string `env:"PM_OIDC_REDIRECT_URI" group:"kotlin" help:"OIDC redirect URI, the control plane's /auth/oidc/callback."`
+	OIDCScopes         string `env:"PM_OIDC_SCOPES" default:"openid profile email groups offline_access" group:"kotlin" help:"OIDC scopes requested at login."`
+	OIDCGroupMap       string `env:"PM_OIDC_GROUP_MAP" group:"kotlin" help:"IdP groups mapped to local groups, e.g. idp-admins=system:admin."`
+	OIDCGroupPrefix    string `env:"PM_OIDC_GROUP_PREFIX" group:"kotlin" help:"Prefix stripped from unmapped IdP groups."`
+	OIDCUserAttributes string `env:"PM_OIDC_USER_ATTRIBUTES" group:"kotlin" help:"id_token claims kept as Cedar User attributes; read only with OIDC login on."`
+	IdPRecheck         string `env:"PM_IDP_RECHECK_INTERVAL" name:"idp-recheck-interval" default:"300" group:"kotlin" help:"Seconds between IdP liveness rechecks of each session."`
+
+	Session session.Settings `kong:"-"`
+	// OIDC is nil unless OIDC login is on.
+	OIDC *idp.Config `kong:"-"`
 }
 
-func envOr(key, def string) string {
-	if v, ok := os.LookupEnv(key); ok {
-		return v
+// kotlinEnv is the group:"kotlin" settings as parsed here, so the child uses the values Go uses wherever they
+// came from. An empty string leaves the child's environment as it is.
+func (c config) kotlinEnv() []string {
+	var env []string
+	var walk func(reflect.Value)
+	walk = func(v reflect.Value) {
+		for i := range v.NumField() {
+			f, fv := v.Type().Field(i), v.Field(i)
+			switch {
+			case fv.Kind() == reflect.Struct:
+				walk(fv)
+			case f.Tag.Get("group") != "kotlin":
+			case fv.Kind() == reflect.Bool:
+				env = append(env, f.Tag.Get("env")+"="+strconv.FormatBool(fv.Bool()))
+			case fv.String() != "":
+				env = append(env, f.Tag.Get("env")+"="+fv.String())
+			}
+		}
 	}
-	return def
+	walk(reflect.ValueOf(c))
+	return env
 }
 
-// sessionSettings reads the web-session settings as Kotlin's Config does, refusing a duration Kotlin refuses.
-func sessionSettings() (session.Settings, error) {
+// sessionSettings is the web-session settings as Kotlin's Config reads them, refusing a duration Kotlin refuses.
+func sessionSettings(c config) (session.Settings, error) {
 	s := session.Settings{
-		Secret:      envOr("PM_SESSION_SECRET", "dev-insecure-session-secret-change-me"),
-		AuthDebug:   envOr("PM_AUTH_DEBUG", "true") == "true",
-		Secure:      strings.HasPrefix(envOr("PM_MCP_RESOURCE", "http://127.0.0.1:8080/mcp"), "https://"),
-		ResultKey:   os.Getenv("PM_RESULT_KEY") != "",
-		WebOrigin:   os.Getenv("PM_WEB_ORIGIN"),
-		OIDCEnabled: oidcConfigured(),
+		Secret:      c.SessionSecret,
+		AuthDebug:   c.AuthDebug,
+		Secure:      strings.HasPrefix(c.MCPResource, "https://"),
+		ResultKey:   c.ResultKey != "",
+		WebOrigin:   c.WebOrigin,
+		OIDCEnabled: c.oidcConfigured(),
 
-		MCPResource:      session.CanonicalResource(envOr("PM_MCP_RESOURCE", "http://127.0.0.1:8080/mcp")),
-		ElevatedScopeTTL: session.ClampSeconds(os.Getenv("PM_ELEVATED_SCOPE_TTL"), 3600),
-		MCPAccessTTL:     session.ClampSeconds(os.Getenv("PM_OAUTH_ACCESS_TTL"), 600),
+		MCPResource:      session.CanonicalResource(c.MCPResource),
+		ElevatedScopeTTL: session.ClampSeconds(c.ElevatedScopeTTL, 3600),
+		MCPAccessTTL:     session.ClampSeconds(c.OAuthAccessTTL, 600),
 	}
 	for _, d := range []struct {
-		env string
-		def int64
-		dst *int64
+		env, raw string
+		dst      *int64
 	}{
-		{"PM_WEB_SESSION_ABSOLUTE", 7200, &s.AbsoluteSeconds},
-		{"PM_WEB_SESSION_IDLE", 900, &s.IdleSeconds},
-		{"PM_WEB_SESSION_SLIDE", 120, &s.SlideSeconds},
-		{"PM_WEB_SESSION_IDLE_WARN_LEAD", 60, &s.IdleWarnLeadSeconds},
-		{"PM_WEB_SESSION_ABSOLUTE_WARN_LEAD", 300, &s.AbsoluteWarnLeadSeconds},
-		{"PM_WEB_SESSION_HEARTBEAT", 90, &s.HeartbeatSeconds},
-		{"PM_SESSION_WINDOW", 7200, &s.SessionWindowSeconds},
+		{"PM_WEB_SESSION_ABSOLUTE", c.WebAbsolute, &s.AbsoluteSeconds},
+		{"PM_WEB_SESSION_IDLE", c.WebIdle, &s.IdleSeconds},
+		{"PM_WEB_SESSION_SLIDE", c.WebSlide, &s.SlideSeconds},
+		{"PM_WEB_SESSION_IDLE_WARN_LEAD", c.WebIdleWarnLead, &s.IdleWarnLeadSeconds},
+		{"PM_WEB_SESSION_ABSOLUTE_WARN_LEAD", c.WebAbsoluteWarnLead, &s.AbsoluteWarnLeadSeconds},
+		{"PM_WEB_SESSION_HEARTBEAT", c.WebHeartbeat, &s.HeartbeatSeconds},
+		{"PM_SESSION_WINDOW", c.SessionWindow, &s.SessionWindowSeconds},
 	} {
-		*d.dst = d.def
-		if raw := os.Getenv(d.env); raw != "" {
-			v, err := session.ParseDuration(raw)
-			if err != nil {
-				return s, fmt.Errorf("%s: %w", d.env, err)
-			}
-			*d.dst = v
+		v, err := session.ParseDuration(d.raw)
+		if err != nil {
+			return s, fmt.Errorf("%s: %w", d.env, err)
 		}
+		*d.dst = v
 	}
 	return s, nil
 }
 
-// oidcSettings is the OIDC client Kotlin's Config reads, nil when OIDC login is not configured.
-func oidcSettings() (*idp.Config, error) {
-	c := &idp.Config{
-		Issuer: os.Getenv("PM_OIDC_ISSUER"), ClientID: os.Getenv("PM_OIDC_CLIENT_ID"),
-		ClientSecret: os.Getenv("PM_OIDC_CLIENT_SECRET"), RedirectURI: os.Getenv("PM_OIDC_REDIRECT_URI"),
-		Scopes: envOr("PM_OIDC_SCOPES", "openid profile email groups offline_access"), RecheckInterval: 300 * time.Second,
-		Groups: idp.ParseGroupMapping(os.Getenv("PM_OIDC_GROUP_MAP"), os.Getenv("PM_OIDC_GROUP_PREFIX")),
+// oidcSettings is the OIDC client Kotlin's Config reads, nil when OIDC login is off.
+func oidcSettings(c config) (*idp.Config, error) {
+	n, err := strconv.ParseInt(c.IdPRecheck, 10, 64)
+	if err != nil || n <= 0 {
+		return nil, fmt.Errorf("PM_IDP_RECHECK_INTERVAL must be a positive number of seconds: %q", c.IdPRecheck)
 	}
-	if v := os.Getenv("PM_IDP_RECHECK_INTERVAL"); v != "" {
-		n, err := strconv.ParseInt(v, 10, 64)
-		if err != nil || n <= 0 {
-			return nil, fmt.Errorf("PM_IDP_RECHECK_INTERVAL must be a positive number of seconds: %q", v)
-		}
-		c.RecheckInterval = time.Duration(n) * time.Second
-	}
-	if !oidcConfigured() {
+	if !c.oidcConfigured() {
 		return nil, nil
 	}
-	return c, nil
+	return &idp.Config{
+		Issuer: c.OIDCIssuer, ClientID: c.OIDCClientID, ClientSecret: c.OIDCClientSecret, RedirectURI: c.OIDCRedirectURI,
+		Scopes: c.OIDCScopes, RecheckInterval: time.Duration(n) * time.Second,
+		Groups: idp.ParseGroupMapping(c.OIDCGroupMap, c.OIDCGroupPrefix),
+	}, nil
 }
 
-func oidcConfigured() bool {
-	return os.Getenv("PM_OIDC_ISSUER") != "" && os.Getenv("PM_OIDC_CLIENT_ID") != "" &&
-		os.Getenv("PM_OIDC_CLIENT_SECRET") != "" && os.Getenv("PM_OIDC_REDIRECT_URI") != ""
+func (c config) oidcConfigured() bool {
+	return c.OIDCIssuer != "" && c.OIDCClientID != "" && c.OIDCClientSecret != "" && c.OIDCRedirectURI != ""
 }
 
 func main() {
 	var cfg config
-	kong.Parse(&cfg, kong.Name("cp-go"), kong.Description("proxy-monster control plane front door."))
-	cfg.DBURL = envOr("PM_DB_URL", "jdbc:postgresql://localhost:5432/proxymonster")
-	cfg.DBUser = envOr("PM_DB_USER", "proxymonster")
-	cfg.DBPassword = envOr("PM_DB_PASSWORD", "proxymonster")
-	cfg.InternalToken = os.Getenv("PM_CP_INTERNAL_TOKEN")
+	kong.Parse(&cfg, kong.Name("cp-go"), kong.Description("proxy-monster control plane front door."),
+		kong.ExplicitGroups([]kong.Group{{Key: "kotlin", Title: "Shared with the Kotlin control plane"}}))
 	var err error
-	if cfg.Session, err = sessionSettings(); err == nil {
-		cfg.OIDC, err = oidcSettings()
+	if cfg.Session, err = sessionSettings(cfg); err == nil {
+		cfg.OIDC, err = oidcSettings(cfg)
 	}
 	if err != nil {
 		slog.Error("cp-go: " + err.Error())
 		os.Exit(1)
-	}
-	cfg.ResultKey = os.Getenv("PM_RESULT_KEY")
-	if oidcConfigured() {
-		cfg.UserAttributes = os.Getenv("PM_OIDC_USER_ATTRIBUTES")
-	}
-	cfg.GitHub.AppID = strings.TrimSpace(os.Getenv("PM_GITHUB_APP_ID"))
-	// Normalized as the Kotlin control plane normalizes it for its web links.
-	cfg.GitHub.APIURL = strings.TrimSpace(os.Getenv("PM_GITHUB_API_URL"))
-	if cfg.GitHub.APIURL == "" {
-		cfg.GitHub.APIURL = "https://api.github.com"
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	code := run(ctx, cfg)
@@ -181,7 +198,12 @@ func run(ctx context.Context, cfg config) int {
 		}
 		web = u
 	}
-	attrs, err := authz.ParseUserAttributes(cfg.UserAttributes)
+	// Kotlin declares PM_OIDC_USER_ATTRIBUTES only with OIDC login on.
+	userAttributes := ""
+	if cfg.OIDC != nil {
+		userAttributes = cfg.OIDCUserAttributes
+	}
+	attrs, err := authz.ParseUserAttributes(userAttributes)
 	var schema *authz.Schema
 	if err == nil {
 		schema, err = authz.NewSchema(attrs)
@@ -214,7 +236,7 @@ func run(ctx context.Context, cfg config) int {
 	}
 	// Closed after drain has stopped the child, which may still call Go while it drains.
 	defer goBridge.Close()
-	childEnv := append(withoutKeys(os.Environ()), goBridge.Env())
+	childEnv := append(append(withoutKeys(os.Environ()), cfg.kotlinEnv()...), goBridge.Env())
 	if !cfg.Attach {
 		if kt, err = child.Start(cfg.Child, cfg.ChildHTTPPort, cfg.ChildGRPCPort, internalToken, childEnv); err != nil {
 			slog.Error("cp-go: " + err.Error())

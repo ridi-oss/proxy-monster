@@ -52,6 +52,7 @@ type AutoMerge struct {
 type PullRequest struct {
 	Number      int            `json:"number"`
 	Open        bool           `json:"open"`
+	Draft       bool           `json:"draft"`
 	Merged      bool           `json:"merged"`
 	MergedAt    *time.Time     `json:"mergedAt"`
 	MergeCommit *string        `json:"mergeCommit"`

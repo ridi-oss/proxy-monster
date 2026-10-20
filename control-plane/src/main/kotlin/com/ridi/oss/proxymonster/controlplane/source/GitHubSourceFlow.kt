@@ -340,6 +340,7 @@ class GitHubSourceFlow(
                 Triple(CheckStatus.COMPLETED, CheckConclusion.FAILURE, text("check.cannot_run"))
             active.any { it.status == "EXECUTING" } -> pending(text("check.running", "path" to active.first { it.status == "EXECUTING" }.pullRequest?.path))
             active.any { it.status == "PENDING" } -> pending(text("check.awaiting_approval", "path" to active.first { it.status == "PENDING" }.pullRequest?.path))
+            pr.draft -> pending(text("check.waiting_draft"))
             pr.autoMerge == null -> pending(text("check.approved_enable_automerge"))
             !checksGreen(pr, safely("read required checks") { adapter.requiredChecks(repo, pr.baseRef) }) ->
                 pending(text("check.waiting_checks"))
@@ -431,14 +432,18 @@ class GitHubSourceFlow(
             .groupBy { it.reviewer!!.id }
             .mapValues { (_, reviews) -> reviews.maxBy { it.submittedAt ?: Instant.EPOCH } }
 
-    /** Every context [required] or the rollup marks required, other than this check, ran green on the head. */
+    /**
+     * Every context [required] or the rollup marks required ran green on the head, and no other check is still
+     * running: a branch that requires no checks would otherwise run the SQL before CI that may still fail.
+     */
     private fun checksGreen(pr: PullRequest, required: Set<String>?): Boolean {
-        val checks = pr.checks
+        val checks = pr.checks?.filter { it.name != CHECK_NAME }
         if (checks == null || required == null) return false
+        if (checks.any { it.status != CheckStatus.COMPLETED }) return false
         val needed = (required + checks.filter { it.required }.map { it.name }) - CHECK_NAME
         return needed.all { name ->
             val runs = checks.filter { it.name == name }
-            runs.isNotEmpty() && runs.all { it.status == CheckStatus.COMPLETED && it.conclusion in GREEN }
+            runs.isNotEmpty() && runs.all { it.conclusion in GREEN }
         }
     }
 

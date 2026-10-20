@@ -159,6 +159,7 @@ func pullRequestPB(pr PullRequest) *pb.PullRequest {
 	out := &pb.PullRequest{
 		Number:      int32(pr.Number),
 		Open:        pr.Open,
+		Draft:       pr.Draft,
 		Merged:      pr.Merged,
 		MergedAt:    tsPB(pr.MergedAt),
 		MergeCommit: pr.MergeCommit,

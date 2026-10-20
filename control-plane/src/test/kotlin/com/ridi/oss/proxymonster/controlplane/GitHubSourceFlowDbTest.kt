@@ -980,6 +980,39 @@ class GitHubSourceFlowDbTest {
     }
 
     @Test
+    fun `a check still running waits even when nothing is required, and a failed optional one does not`() {
+        val n = number()
+        open(n)
+        val req = file(n, schema(), listOf("db/c.sql" to "create table c (id int)")).single()
+        readyToMerge(n)
+        val test = Check("test", required = false, status = CheckStatus.IN_PROGRESS, conclusion = null)
+        update(n) { it.copy(checks = listOf(test)) }
+        pollWithProxy()
+        assertEquals("APPROVED", status(req.id))
+        assertEquals("Waiting for other checks", lastCheck(n).title)
+
+        update(n) { it.copy(checks = listOf(test.copy(status = CheckStatus.COMPLETED, conclusion = CheckConclusion.FAILURE))) }
+        pollWithProxy()
+        assertEquals("EXECUTED", status(req.id))
+    }
+
+    @Test
+    fun `an approved draft waits until it is marked ready`() {
+        val n = number()
+        open(n)
+        update(n) { it.copy(draft = true) }
+        val req = file(n, schema(), listOf("db/c.sql" to "create table c (id int)")).single()
+        readyToMerge(n)
+        pollWithProxy()
+        assertEquals("APPROVED", status(req.id))
+        assertEquals("Waiting for the pull request to be marked ready for review", lastCheck(n).title)
+
+        update(n) { it.copy(draft = false) }
+        pollWithProxy()
+        assertEquals("EXECUTED", status(req.id))
+    }
+
+    @Test
     fun `a failed required-checks lookup waits for checks`() {
         val n = number()
         open(n)

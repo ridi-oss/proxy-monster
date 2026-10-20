@@ -101,6 +101,7 @@ type headCommit struct {
 
 type prNode struct {
 	State       string
+	IsDraft     bool
 	Merged      *bool
 	MergedAt    *time.Time
 	MergeCommit *struct {
@@ -337,6 +338,7 @@ func (c *Client) readPullRequest(ctx context.Context, inst *installation, repo R
 	pr := PullRequest{
 		Number:   number,
 		Open:     node.State == "OPEN",
+		Draft:    node.IsDraft,
 		Merged:   node.Merged != nil && *node.Merged,
 		MergedAt: node.MergedAt,
 		HeadSHA:  headSHA,

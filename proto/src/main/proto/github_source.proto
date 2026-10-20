@@ -157,6 +157,7 @@ message PullRequest {
   Checks checks = 11;
   repeated ChangedFile files = 12;
   repeated CommitAuthor commits = 13;
+  bool draft = 14;
 }
 
 message ReadPullRequestsRequest {

@@ -154,6 +154,8 @@ For a PR that adds files, the control plane runs them when all of these hold:
 - every scope's latest filing is for the PR's current head. Alice pushes a fix
   to `0042`; until the Action files that push, the control plane has not seen
   the new `0042`, so the old one must not run;
+- the PR is not a draft. Workflows that skip drafts have not run yet, so no
+  check would hold the SQL back;
 - auto-merge is enabled on the PR;
 - every request in the current set is approved: per scope, the newest request
   for each path in that scope's latest filing;
@@ -164,7 +166,10 @@ For a PR that adds files, the control plane runs them when all of these hold:
   and those the check rollup marks required. A context missing from the rollup,
   a missing rollup, or a failed lookup keeps the PR pending. `lint` still
   running, or a required context no workflow has reported yet, is not green: the
-  PR could not merge, and SQL that ran would sit on the target without `main`;
+  PR could not merge, and SQL that ran would sit on the target without `main`.
+  Any other check still running on the head also waits, so a branch that
+  requires no checks does not run the SQL ahead of CI; a finished optional check
+  does not block, whatever its conclusion;
 - the PR's head contains the scope's last merged run from the same repository.
   PR B branched before PR A's `0041` merged; B's `0042` may depend on the schema
   `0041` creates, and B's CI never ran on top of it

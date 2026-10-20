@@ -49,6 +49,7 @@ enum class CommitRelation { AHEAD, IDENTICAL, BEHIND, DIVERGED }
 data class PullRequest(
     val number: Int,
     val open: Boolean,
+    val draft: Boolean = false,
     val merged: Boolean,
     val mergedAt: Instant?,
     /** The merge commit once [merged]. */

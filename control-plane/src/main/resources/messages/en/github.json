@@ -5,6 +5,7 @@
     "awaiting_approval": "Waiting for approval of {path}",
     "approved_enable_automerge": "Approved — enable auto-merge to run and merge",
     "waiting_checks": "Waiting for other checks",
+    "waiting_draft": "Waiting for the pull request to be marked ready for review",
     "waiting_merge": "Waiting for #{pr} to merge",
     "update_branch": "Update your branch",
     "update_branch_behind": "Update your branch — #{pr} merged first",

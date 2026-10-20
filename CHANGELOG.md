@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.1.38](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.37...server-v0.1.38) (2026-10-20)
+
+
+### Bug Fixes
+
+* **control-plane:** run a PR's SQL only when GitHub would merge it ([4666ee4](https://github.com/ridi-oss/proxy-monster/commit/4666ee462422ac96734f479d5906a6c4585a3d3a))
+* **control-plane:** wait for running checks and drafts before running a PR's SQL ([7333ec0](https://github.com/ridi-oss/proxy-monster/commit/7333ec0760eda14160f190b655b806391556a1d9))
+
+
+### Refactoring
+
+* **cpgo:** check every setting before run starts anything ([1cb0342](https://github.com/ridi-oss/proxy-monster/commit/1cb0342f68212c7df6b59eddf5c16141b33773d5))
+* **goproxy:** give mysql and postgres their own Provider and target ([da9867f](https://github.com/ridi-oss/proxy-monster/commit/da9867f03f0e0943fa8b7623c678859baddf9a74))
+* **goproxy:** replace the relay.Db interface with the sqldb.Queries struct ([2e91deb](https://github.com/ridi-oss/proxy-monster/commit/2e91debcd9b02a83e59fa96ffa7f64c79d4065b7))
+* **goproxy:** the mysql and postgres Server and RunSession hold their target ([7b77160](https://github.com/ridi-oss/proxy-monster/commit/7b77160a9944816181d86bc298c89729dfbaf51d))
+* **goproxy:** update package docs, docs and comments for the new paths ([a8c7988](https://github.com/ridi-oss/proxy-monster/commit/a8c7988f5b7c08cbd1086de4805e26efe023e86e))
+
 ## [0.1.37](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.36...server-v0.1.37) (2026-10-20)
 
 

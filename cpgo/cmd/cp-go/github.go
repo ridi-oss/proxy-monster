@@ -16,6 +16,9 @@ type githubConfig struct {
 	APIURL   string `env:"PM_GITHUB_API_URL" name:"api-url" default:"https://api.github.com" group:"kotlin" help:"GitHub API base URL, for GitHub Enterprise."`
 	KMSKeyID string `env:"PM_GITHUB_APP_KMS_KEY_ID" help:"AWS KMS key (ID, ARN, or alias) holding the App's private key, used in place of a PEM."`
 	CAFile   string `env:"PM_GITHUB_CA_FILE" help:"PEM CA certificates trusted for the GitHub API besides the system ones."`
+	// Withheld from the Kotlin child; hidden so a key is never suggested as a command-line flag.
+	PrivateKey     string `env:"PM_GITHUB_APP_PRIVATE_KEY" hidden:"" help:"The App's private key, PEM."`
+	PrivateKeyFile string `env:"PM_GITHUB_APP_PRIVATE_KEY_FILE" hidden:"" help:"File holding the App's private key, PEM."`
 }
 
 // githubKeyEnv is read by cp-go alone and withheld from the Kotlin child.
@@ -23,7 +26,7 @@ var githubKeyEnv = []string{"PM_GITHUB_APP_PRIVATE_KEY", "PM_GITHUB_APP_PRIVATE_
 
 // newGitHub is the GitHubSource service when PM_GITHUB_APP_ID is set, nil otherwise.
 func newGitHub(ctx context.Context, cfg githubConfig) (*github.Service, error) {
-	pemText, pemFile := os.Getenv("PM_GITHUB_APP_PRIVATE_KEY"), os.Getenv("PM_GITHUB_APP_PRIVATE_KEY_FILE")
+	pemText, pemFile := cfg.PrivateKey, cfg.PrivateKeyFile
 	sources := 0
 	for _, v := range []string{pemText, pemFile, cfg.KMSKeyID} {
 		if strings.TrimSpace(v) != "" {

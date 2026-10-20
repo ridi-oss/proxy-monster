@@ -32,12 +32,10 @@ func TestValidate(t *testing.T) {
 }
 
 func TestNodeName(t *testing.T) {
-	if got := (Config{Hostname: "console-node"}).NodeName(); got != "console-node" {
+	if got := (Config{Hostname: "console-node"}).NodeName("https://pm.example.com/mcp"); got != "console-node" {
 		t.Errorf("an explicit hostname became %q", got)
 	}
-	t.Setenv("PM_INSTANCE_NAME", "")
-	t.Setenv("PM_MCP_RESOURCE", "https://pm.example.com/mcp")
-	if got := (Config{}).NodeName(); got != "pmon-pm" {
+	if got := (Config{}).NodeName("https://pm.example.com/mcp"); got != "pmon-pm" {
 		t.Errorf("default hostname %q, want pmon-pm", got)
 	}
 }

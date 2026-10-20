@@ -35,9 +35,10 @@ func testPEM(t *testing.T) string {
 }
 
 func TestRunServesTheGitHubAppToTheChildWithoutItsKey(t *testing.T) {
-	t.Setenv("PM_GITHUB_APP_PRIVATE_KEY", testPEM(t))
+	key := testPEM(t)
+	t.Setenv("PM_GITHUB_APP_PRIVATE_KEY", key)
 	cfg, cancel, _ := startFront(t, func(c *config) {
-		c.GitHub = githubConfig{AppID: "1", APIURL: "http://127.0.0.1:1"}
+		c.GitHub = githubConfig{AppID: "1", APIURL: "http://127.0.0.1:1", PrivateKey: key}
 	})
 	defer cancel()
 
@@ -77,25 +78,16 @@ func TestRunServesTheGitHubAppToTheChildWithoutItsKey(t *testing.T) {
 }
 
 func TestStartBridgeRefusesAnAmbiguousOrMisplacedKey(t *testing.T) {
-	for name, tc := range map[string]struct {
-		cfg config
-		env map[string]string
-	}{
-		"a key without an App ID": {env: map[string]string{"PM_GITHUB_APP_PRIVATE_KEY": "x"}},
-		"two keys":                {cfg: config{GitHub: githubConfig{AppID: "1", KMSKeyID: "alias/k"}}, env: map[string]string{"PM_GITHUB_APP_PRIVATE_KEY": "x"}},
-		"no key":                  {cfg: config{GitHub: githubConfig{AppID: "1"}}},
-		"attach without a port":   {cfg: config{Attach: true, GitHub: githubConfig{AppID: "1"}}, env: map[string]string{"PM_GITHUB_APP_PRIVATE_KEY": testPEM(t)}},
-		"a malformed PEM":         {cfg: config{GitHub: githubConfig{AppID: "1"}}, env: map[string]string{"PM_GITHUB_APP_PRIVATE_KEY": "x"}},
-		"a non-numeric App ID":    {cfg: config{GitHub: githubConfig{AppID: "app"}}, env: map[string]string{"PM_GITHUB_APP_PRIVATE_KEY": testPEM(t)}},
+	for name, cfg := range map[string]config{
+		"a key without an App ID": {GitHub: githubConfig{PrivateKey: "x"}},
+		"two keys":                {GitHub: githubConfig{AppID: "1", KMSKeyID: "alias/k", PrivateKey: "x"}},
+		"no key":                  {GitHub: githubConfig{AppID: "1"}},
+		"attach without a port":   {Attach: true, GitHub: githubConfig{AppID: "1", PrivateKey: testPEM(t)}},
+		"a malformed PEM":         {GitHub: githubConfig{AppID: "1", PrivateKey: "x"}},
+		"a non-numeric App ID":    {GitHub: githubConfig{AppID: "app", PrivateKey: testPEM(t)}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			for _, k := range githubKeyEnv {
-				t.Setenv(k, "")
-			}
-			for k, v := range tc.env {
-				t.Setenv(k, v)
-			}
-			if s, err := startBridge(context.Background(), tc.cfg, "t", make(chan error, 1)); err == nil {
+			if s, err := startBridge(context.Background(), cfg, "t", make(chan error, 1)); err == nil {
 				_ = s.Close()
 				t.Fatal("want an error")
 			}
@@ -124,11 +116,10 @@ func callBridge() string {
 }
 
 func TestTheBridgeOutlastsTheChildsDrain(t *testing.T) {
-	t.Setenv("PM_GITHUB_APP_PRIVATE_KEY", testPEM(t))
 	result := filepath.Join(t.TempDir(), "call")
 	t.Setenv("CPGO_FAKE_CHILD_CALL_ON_TERM", result)
 	_, cancel, done := startFront(t, func(c *config) {
-		c.GitHub = githubConfig{AppID: "1", APIURL: "http://127.0.0.1:1"}
+		c.GitHub = githubConfig{AppID: "1", APIURL: "http://127.0.0.1:1", PrivateKey: testPEM(t)}
 	})
 	cancel()
 	select {

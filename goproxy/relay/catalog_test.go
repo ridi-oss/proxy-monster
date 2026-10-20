@@ -4,30 +4,7 @@ import (
 	"testing"
 
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
-	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
-
-func TestQueryEngineCachesCatalogWithNamespace(t *testing.T) {
-	decider := &fakeDecider{outcome: okOutcome("ALLOW", nil)}
-	query := NewQueryEngine(decider)
-	catalog := "one"
-	probes := 0
-	input := AuthzInput{ProbeSession: func() (spi.SessionObservation, error) {
-		probes++
-		return spi.SessionObservation{CurrentCatalog: catalog, Namespace: []string{"schema"}}, nil
-	}}
-	query.Authorize(input)
-	catalog = "two"
-	query.Authorize(input)
-	if decider.lastReq.Session.CurrentCatalog != "one" || probes != 1 {
-		t.Fatal("catalog was not cached with namespace")
-	}
-	query.MarkNamespaceDirty()
-	query.Authorize(input)
-	if decider.lastReq.Session.CurrentCatalog != "two" || probes != 2 {
-		t.Fatal("dirty namespace did not refresh catalog")
-	}
-}
 
 func TestRefetcherCatalogIdentity(t *testing.T) {
 	for _, test := range []struct {

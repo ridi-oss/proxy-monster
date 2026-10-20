@@ -44,19 +44,19 @@ type boundPortal struct {
 	relayed spi.RelayStats
 }
 
-func (s *Server) renderExtendedVerdict(sess *session, verdict relay.Verdict) (relay.Proceed, bool, error) {
+func (s *Server) renderExtendedVerdict(sess *session, verdict spi.Verdict) (spi.Proceed, bool, error) {
 	switch verdict := verdict.(type) {
-	case relay.Fail:
+	case spi.Fail:
 		sess.skipToSync, sess.abortAtSync = true, true
 		err := sendError(sess.client, "ERROR", "58000", "proxy-monster: "+verdict.Message, false, 0)
-		return relay.Proceed{}, false, err
-	case relay.Deny:
+		return spi.Proceed{}, false, err
+	case spi.Deny:
 		if verdict.Decision != nil && verdict.Decision.TargetError != nil {
 			if targetErr, ok := verdict.Decision.TargetError.Message.(*pgproto3.ErrorResponse); ok {
 				sess.skipToSync = true
 				forwardTargetError(sess, targetErr)
 				sess.qe.AwaitCompletion(relay.EmitCompletion(s.client, verdict.Decision, spi.RelayStats{}, relay.StatusError, time.Now()))
-				return relay.Proceed{}, false, sess.client.Flush()
+				return spi.Proceed{}, false, sess.client.Flush()
 			}
 		}
 		reason := "policy"
@@ -65,11 +65,11 @@ func (s *Server) renderExtendedVerdict(sess *session, verdict relay.Verdict) (re
 		}
 		sess.skipToSync, sess.abortAtSync = true, true
 		err := sendError(sess.client, "ERROR", "42501", "proxy-monster denied: "+reason, false, 0)
-		return relay.Proceed{}, false, err
-	case relay.Proceed:
+		return spi.Proceed{}, false, err
+	case spi.Proceed:
 		return verdict, true, nil
 	default:
-		return relay.Proceed{}, false, errors.New("pgproxy: engine returned an unknown verdict")
+		return spi.Proceed{}, false, errors.New("pgproxy: engine returned an unknown verdict")
 	}
 }
 
@@ -377,7 +377,7 @@ func (s *Server) handleExecute(sess *session, message *pgproto3.Execute) error {
 	// Re-decide the portal SQL under the context snapshotted when PostgreSQL bound it. A live probe here can
 	// diverge from the bound plan after post-Bind search_path drift and authorize a different resource.
 	sess.qe.MarkNamespaceDirty()
-	verdict := sess.qe.Authorize(relay.AuthzInput{
+	verdict := sess.qe.Authorize(spi.AuthzInput{
 		SQL:          portal.sql,
 		Token:        sess.token,
 		ClientAddr:   sess.clientAddr,

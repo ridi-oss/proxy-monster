@@ -62,14 +62,14 @@ func (s *runSession) Namespace() (string, []string, error) {
 
 func (s *runSession) ServeStatement(sql string, maxRows int) (result spi.StatementResult, err error) {
 	verdict := s.session.authorize(sql, "", nil, maxRows)
-	var proceed relay.Proceed
+	var proceed spi.Proceed
 	switch v := verdict.(type) {
-	case relay.Fail:
+	case spi.Fail:
 		return result, relay.FailError{Message: v.Message}
-	case relay.Deny:
+	case spi.Deny:
 		result.Decision, result.Denied = v.Decision, true
 		return result, nil
-	case relay.Proceed:
+	case spi.Proceed:
 		proceed = v
 		result.Decision = v.Decision
 	default:

@@ -304,12 +304,12 @@ func (c *nativeRequest) admitSubmission(envelope *Envelope) (*Envelope, error) {
 	c.started = time.Now()
 	verdict := session.authorize(scope.query, c.clientAddr, scope.parameters, 0)
 	switch v := verdict.(type) {
-	case relay.Fail:
+	case spi.Fail:
 		return nil, relay.FailError{Message: v.Message}
-	case relay.Deny:
+	case spi.Deny:
 		// A DENY relays nothing: the control plane already failed its task inline, so no completion follows.
 		return nil, &denied{reason: v.Decision.DenyReason}
-	case relay.Proceed:
+	case spi.Proceed:
 		c.decision = v.Decision
 	default:
 		return nil, relay.FailError{Message: fmt.Sprintf("unexpected authorization verdict %T", verdict)}

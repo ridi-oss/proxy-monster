@@ -1,4 +1,4 @@
-package relay
+package spi
 
 import (
 	"errors"
@@ -9,58 +9,29 @@ import (
 
 	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
-	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
-type fakeDb struct {
-	nsProbeSQL   string
-	tempOverlay  bool
-	tempProbeSQL string
-}
-
-func (f fakeDb) NamespaceProbeSQL() string   { return f.nsProbeSQL }
-func (f fakeDb) SupportsTempOverlay() bool   { return f.tempOverlay }
-func (f fakeDb) TempColumnsProbeSQL() string { return f.tempProbeSQL }
-func (f fakeDb) HashSetupProbeSQL() string   { return "" }
-func (f fakeDb) HashSetupColumns() int       { return 0 }
-func (f fakeDb) SchemaHashSQL(string, [][]*string) (string, int, error) {
-	return "hash", 1, nil
-}
-func (f fakeDb) SchemaHashFromRows([][]*string) ([]byte, bool, error) { return nil, false, nil }
-func (f fakeDb) SchemaColumnsSQL(string) string                       { return "columns" }
-func (f fakeDb) RoutinesSQL() string                                  { return "routines" }
-func (f fakeDb) SchemaRoutinesSQL(string) string                      { return "routines" }
-func (f fakeDb) LowerCaseTableNamesProbeSQL() string                  { return "" }
-func (f fakeDb) FoldFunctionName(name string) string                  { return name }
-
-func (f fakeDb) NormalizeColumns(_ int, columns []*analyzerpb.Column) []*analyzerpb.Column {
-	return columns
-}
-
-var mysqlDb = fakeDb{nsProbeSQL: "SELECT DATABASE()"}
-var pgDb = fakeDb{nsProbeSQL: "probe", tempOverlay: true, tempProbeSQL: "temps"}
-
 type fakeDecider struct {
-	outcome spi.DecisionOutcome
+	outcome DecisionOutcome
 	calls   int
-	lastReq spi.DecideRequest
+	lastReq DecideRequest
 }
 
-func (f *fakeDecider) Decide(req spi.DecideRequest) spi.DecisionOutcome {
+func (f *fakeDecider) Decide(req DecideRequest) DecisionOutcome {
 	f.calls++
 	f.lastReq = req
 	return f.outcome
 }
 
-func okOutcome(action string, masks []*pb.ColumnMask) spi.DecisionOutcome {
-	return spi.DecisionOutcome{Decision: &spi.Decision{Action: action, Masks: masks}}
+func okOutcome(action string, masks []*pb.ColumnMask) DecisionOutcome {
+	return DecisionOutcome{Decision: &Decision{Action: action, Masks: masks}}
 }
 
 // staticNamespace returns a probe callback that yields ns (no ANSI_QUOTES) and counts its calls.
-func staticNamespace(ns []string, calls *int) func() (spi.SessionObservation, error) {
-	return func() (spi.SessionObservation, error) {
+func staticNamespace(ns []string, calls *int) func() (SessionObservation, error) {
+	return func() (SessionObservation, error) {
 		*calls++
-		return spi.SessionObservation{Namespace: ns}, nil
+		return SessionObservation{Namespace: ns}, nil
 	}
 }
 
@@ -68,14 +39,14 @@ func TestAuthorizeReducesControlPlaneVerdict(t *testing.T) {
 	masks := []*pb.ColumnMask{{Column: "ssn", Kind: "FIXED", Ordinal: proto.Int32(1)}}
 	cases := []struct {
 		name    string
-		outcome spi.DecisionOutcome
+		outcome DecisionOutcome
 		want    Verdict
 	}{
-		{"allow", okOutcome("ALLOW", nil), Proceed{Decision: &spi.Decision{Action: "ALLOW"}}},
-		{"mask", okOutcome("MASK", masks), Proceed{Decision: &spi.Decision{Action: "MASK", Masks: masks}, Masks: masks}},
-		{"deny", okOutcome("DENY", nil), Deny{Decision: &spi.Decision{Action: "DENY"}}},
-		{"cp-error fails closed", spi.DecisionOutcome{Err: "unreachable"}, Fail{Message: "unreachable"}},
-		{"unexpected action fails closed to deny", okOutcome("SURPRISE", nil), Deny{Decision: &spi.Decision{Action: "SURPRISE"}}},
+		{"allow", okOutcome("ALLOW", nil), Proceed{Decision: &Decision{Action: "ALLOW"}}},
+		{"mask", okOutcome("MASK", masks), Proceed{Decision: &Decision{Action: "MASK", Masks: masks}, Masks: masks}},
+		{"deny", okOutcome("DENY", nil), Deny{Decision: &Decision{Action: "DENY"}}},
+		{"cp-error fails closed", DecisionOutcome{Err: "unreachable"}, Fail{Message: "unreachable"}},
+		{"unexpected action fails closed to deny", okOutcome("SURPRISE", nil), Deny{Decision: &Decision{Action: "SURPRISE"}}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -93,7 +64,7 @@ func TestAuthorizeReducesControlPlaneVerdict(t *testing.T) {
 }
 
 func TestAuthorizeSanitizeDiagnosticsIsPerDecision(t *testing.T) {
-	dec := &fakeDecider{outcome: spi.DecisionOutcome{Decision: &spi.Decision{Action: "ALLOW", SanitizeDiagnostics: true}}}
+	dec := &fakeDecider{outcome: DecisionOutcome{Decision: &Decision{Action: "ALLOW", SanitizeDiagnostics: true}}}
 	e := NewQueryEngine(dec)
 	if e.SanitizeDiagnostics() {
 		t.Fatal("must start clear")
@@ -105,7 +76,7 @@ func TestAuthorizeSanitizeDiagnosticsIsPerDecision(t *testing.T) {
 	// Per-decision, NOT monotonic: a later decision that does not request redaction clears it. This is what
 	// lets a MySQL ALLOW after a MASK relay its diagnostics verbatim (the control plane decides fresh each
 	// Decide; an ALLOW MySQL query cannot leak a protected value through a diagnostic).
-	dec.outcome = spi.DecisionOutcome{Decision: &spi.Decision{Action: "ALLOW", SanitizeDiagnostics: false}}
+	dec.outcome = DecisionOutcome{Decision: &Decision{Action: "ALLOW", SanitizeDiagnostics: false}}
 	e.Authorize(AuthzInput{SQL: "SELECT 2", ProbeSession: staticNamespace([]string{"app"}, new(int))})
 	if e.SanitizeDiagnostics() {
 		t.Fatal("a later decision with SanitizeDiagnostics=false must clear it (per-decision, not latched)")
@@ -126,7 +97,7 @@ func TestAuthorizeSanitizeDiagnosticsStaysClearWhenNeverRequested(t *testing.T) 
 func TestAuthorizePassesConnectionCatalogCallbacks(t *testing.T) {
 	dec := &fakeDecider{outcome: okOutcome("ALLOW", nil)}
 	connectionID := []byte("0123456789abcdef")
-	runCommands := func([]*pb.ProxyCommand, *spi.SessionObservation) error { return nil }
+	runCommands := func([]*pb.ProxyCommand, *SessionObservation) error { return nil }
 	got := NewQueryEngine(dec).Authorize(AuthzInput{
 		SQL:              "SELECT 1",
 		Token:            "token",
@@ -153,7 +124,7 @@ func TestAuthorizePassesConnectionCatalogCallbacks(t *testing.T) {
 func TestAuthorizeNamespaceProbeFailureFailsClosed(t *testing.T) {
 	dec := &fakeDecider{outcome: okOutcome("ALLOW", nil)}
 	e := NewQueryEngine(dec)
-	got := e.Authorize(AuthzInput{SQL: "SELECT 1", ProbeSession: func() (spi.SessionObservation, error) { return spi.SessionObservation{}, errors.New("boom") }})
+	got := e.Authorize(AuthzInput{SQL: "SELECT 1", ProbeSession: func() (SessionObservation, error) { return SessionObservation{}, errors.New("boom") }})
 	if _, ok := got.(Fail); !ok {
 		t.Fatalf("want Fail on namespace probe error, got %T", got)
 	}
@@ -207,9 +178,9 @@ func TestMysqlAnsiQuotesForwardedAndCached(t *testing.T) {
 	dec := &fakeDecider{outcome: okOutcome("ALLOW", nil)}
 	e := NewQueryEngine(dec)
 	probes := 0
-	in := AuthzInput{SQL: `SELECT "card_number" FROM cards`, ProbeSession: func() (spi.SessionObservation, error) {
+	in := AuthzInput{SQL: `SELECT "card_number" FROM cards`, ProbeSession: func() (SessionObservation, error) {
 		probes++
-		return spi.SessionObservation{Namespace: []string{"app"}, SessionObservation: &analyzerpb.SessionObservation{Engine: &analyzerpb.SessionObservation_Mysql{Mysql: &analyzerpb.MySqlSession{AnsiQuotes: true}}}}, nil
+		return SessionObservation{Namespace: []string{"app"}, SessionObservation: &analyzerpb.SessionObservation{Engine: &analyzerpb.SessionObservation_Mysql{Mysql: &analyzerpb.MySqlSession{AnsiQuotes: true}}}}, nil
 	}}
 
 	e.Authorize(in)
@@ -228,8 +199,8 @@ func TestMysqlAnsiQuotesForwardedAndCached(t *testing.T) {
 	// Per-probe, not latched: a later probe that no longer observes ANSI_QUOTES clears the forwarded flag,
 	// so a mid-session flip back to the default mode is decided under the default lexer.
 	e.MarkNamespaceDirty()
-	in.ProbeSession = func() (spi.SessionObservation, error) {
-		return spi.SessionObservation{Namespace: []string{"app"}, SessionObservation: &analyzerpb.SessionObservation{Engine: &analyzerpb.SessionObservation_Mysql{Mysql: &analyzerpb.MySqlSession{AnsiQuotes: false}}}}, nil
+	in.ProbeSession = func() (SessionObservation, error) {
+		return SessionObservation{Namespace: []string{"app"}, SessionObservation: &analyzerpb.SessionObservation{Engine: &analyzerpb.SessionObservation_Mysql{Mysql: &analyzerpb.MySqlSession{AnsiQuotes: false}}}}, nil
 	}
 	e.Authorize(in)
 	if dec.lastReq.Session.GetMysql().GetAnsiQuotes() {
@@ -241,7 +212,7 @@ func TestPostgresLookupStateForwardedAndCached(t *testing.T) {
 	dec := &fakeDecider{outcome: okOutcome("ALLOW", nil)}
 	e := NewQueryEngine(dec)
 	probes := 0
-	observations := []spi.SessionObservation{
+	observations := []SessionObservation{
 		{
 			Namespace: []string{"pg_catalog", "app"},
 			SessionObservation: &analyzerpb.SessionObservation{Engine: &analyzerpb.SessionObservation_Postgres{Postgres: &analyzerpb.PostgresSession{
@@ -257,7 +228,7 @@ func TestPostgresLookupStateForwardedAndCached(t *testing.T) {
 	}
 	in := AuthzInput{
 		SQL: "SELECT 1",
-		ProbeSession: func() (spi.SessionObservation, error) {
+		ProbeSession: func() (SessionObservation, error) {
 			probe := observations[probes]
 			probes++
 			return probe, nil
@@ -281,8 +252,8 @@ func TestPostgresLookupStateForwardedAndCached(t *testing.T) {
 }
 
 func TestTempOverlayOnlyWhenProvided(t *testing.T) {
-	temps := []spi.TempColumn{{Schema: "pg_temp_3", Table: "t", Column: "c", Ordinal: 0}}
-	probeTemps := func() ([]spi.TempColumn, error) { return temps, nil }
+	temps := []TempColumn{{Schema: "pg_temp_3", Table: "t", Column: "c", Ordinal: 0}}
+	probeTemps := func() ([]TempColumn, error) { return temps, nil }
 
 	// MySQL: no overlay -> temp probe never consulted.
 	decMy := &fakeDecider{outcome: okOutcome("ALLOW", nil)}
@@ -303,44 +274,13 @@ func TestTempOverlayOnlyWhenProvided(t *testing.T) {
 	}
 }
 
-func TestFragmentColumnsFromRowsStrict(t *testing.T) {
-	str := func(s string) *string { return &s }
-	valid := [][]*string{{str("app"), str("users"), str("id"), str("integer"), str("1"), str("NO"), str("db")}, {str("app"), str("users"), str("email"), str("text"), str("2"), str("YES"), str("db")}}
-	got, err := FragmentColumnsFromRows(fakeDb{}, 0, "app", valid)
-	if err != nil {
-		t.Fatalf("FragmentColumnsFromRows: %v", err)
-	}
-	want := []*analyzerpb.Column{{Catalog: "db", Schema: "app", Table: "users", Column: "id", DataType: "integer", Ordinal: 1}, {Catalog: "db", Schema: "app", Table: "users", Column: "email", DataType: "text", Ordinal: 2, Nullable: true}}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("columns = %+v, want %+v", got, want)
-	}
-
-	cases := []struct {
-		name string
-		rows [][]*string
-	}{
-		{"wrong width", [][]*string{{str("app")}}},
-		{"nil field", [][]*string{{str("app"), nil, str("id"), str("int"), str("1"), str("NO"), str("db")}}},
-		{"schema mismatch", [][]*string{{str("other"), str("t"), str("c"), str("int"), str("1"), str("NO"), str("db")}}},
-		{"bad ordinal", [][]*string{{str("app"), str("t"), str("c"), str("int"), str("2147483648"), str("NO"), str("db")}}},
-		{"bad nullable", [][]*string{{str("app"), str("t"), str("c"), str("int"), str("1"), str("TRUE"), str("db")}}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if _, err := FragmentColumnsFromRows(fakeDb{}, 0, "app", tc.rows); err == nil {
-				t.Fatal("FragmentColumnsFromRows succeeded, want strict error")
-			}
-		})
-	}
-}
-
 func TestTempProbeIsBestEffort(t *testing.T) {
 	dec := &fakeDecider{outcome: okOutcome("ALLOW", nil)}
 	e := NewQueryEngine(dec)
 	got := e.Authorize(AuthzInput{
 		SQL:              "SELECT 1",
 		ProbeSession:     staticNamespace([]string{"public"}, new(int)),
-		ProbeTempColumns: func() ([]spi.TempColumn, error) { return nil, errors.New("temp probe failed") },
+		ProbeTempColumns: func() ([]TempColumn, error) { return nil, errors.New("temp probe failed") },
 	})
 	// A failed temp probe is swallowed (fail-closed at the CP against the base catalog), not a Fail.
 	if _, ok := got.(Proceed); !ok {

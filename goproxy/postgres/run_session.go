@@ -45,7 +45,7 @@ func NewRunSession(ctx context.Context, target spi.TargetDb, db relay.Db, client
 		sessionCore: sessionCore{
 			currentCatalog: catalog,
 			targetDb:       pgproto3.NewFrontend(conn, conn),
-			qe:             relay.NewQueryEngine(client),
+			qe:             spi.NewQueryEngine(client),
 			db:             db,
 			lastTxStatus:   txStatus,
 		},

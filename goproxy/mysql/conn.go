@@ -173,7 +173,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 	defer targetDbConn.Close()
 	cancelQuery := func() { _ = cancelTargetDbQuery(s.targetDb, targetGreeting.ConnectionID) }
 
-	qe := relay.NewQueryEngine(s.client)
+	qe := spi.NewQueryEngine(s.client)
 	preparedStmts := make(map[uint32]preparedStmt)
 	if handshake.Database != "" {
 		// The client selected a database at connect time. Switching the current database is not a gated
@@ -260,7 +260,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 				var relayStats spi.RelayStats
 				relayStatus := relay.StatusError
 				stop = true
-				decision, denied, serveErr := relay.ServeStatement(qe, relay.AuthzInput{
+				decision, denied, serveErr := relay.ServeStatement(qe, spi.AuthzInput{
 					SQL:          sql,
 					Token:        token,
 					ClientAddr:   clientAddr,
@@ -576,7 +576,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 }
 
 func (s *Server) authorize(
-	qe *relay.QueryEngine,
+	qe *spi.QueryEngine,
 	clientConn, targetDbConn net.Conn,
 	deprecateEOF bool,
 	seq byte,
@@ -584,8 +584,8 @@ func (s *Server) authorize(
 	connectionID []byte,
 	runCommands func([]*pb.ProxyCommand, *spi.SessionObservation) error,
 	probeSession func() (spi.SessionObservation, error),
-) (relay.Proceed, bool, error) {
-	verdict := qe.Authorize(relay.AuthzInput{
+) (spi.Proceed, bool, error) {
+	verdict := qe.Authorize(spi.AuthzInput{
 		SQL:          sql,
 		Token:        token,
 		ClientAddr:   clientAddr,
@@ -597,26 +597,26 @@ func (s *Server) authorize(
 		},
 	})
 	switch v := verdict.(type) {
-	case relay.Fail:
+	case spi.Fail:
 		if err := mysqlwire.WritePacket(clientConn, seq+1, mysqlwire.ErrPacketState(
 			1105,
 			"HY000",
 			"proxy-monster: "+v.Message,
 		)); err != nil {
-			return relay.Proceed{}, false, err
+			return spi.Proceed{}, false, err
 		}
-		return relay.Proceed{}, false, errors.New("mysqlproxy: authorization failed mechanically")
-	case relay.Deny:
+		return spi.Proceed{}, false, errors.New("mysqlproxy: authorization failed mechanically")
+	case spi.Deny:
 		start := time.Now()
 		forwarded, err := writeDeny(clientConn, seq, v.Decision, errRedactor(qe))
 		if forwarded {
 			qe.AwaitCompletion(relay.EmitCompletion(s.client, v.Decision, spi.RelayStats{}, relay.StatusError, start))
 		}
-		return relay.Proceed{}, false, err
-	case relay.Proceed:
+		return spi.Proceed{}, false, err
+	case spi.Proceed:
 		return v, true, nil
 	default:
-		return relay.Proceed{}, false, errors.New("mysqlproxy: engine returned an unknown verdict")
+		return spi.Proceed{}, false, errors.New("mysqlproxy: engine returned an unknown verdict")
 	}
 }
 

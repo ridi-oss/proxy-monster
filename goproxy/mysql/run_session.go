@@ -21,7 +21,7 @@ type RunSession struct {
 	target       spi.TargetDb
 	token        string
 	connectionID []byte
-	qe           *relay.QueryEngine
+	qe           *spi.QueryEngine
 	ref          *relay.Refetcher
 	guard        spi.ExecGuard
 }
@@ -46,7 +46,7 @@ func NewRunSession(ctx context.Context, target spi.TargetDb, db relay.Db, client
 		target:       target,
 		token:        token,
 		connectionID: append([]byte(nil), connectionID...),
-		qe:           relay.NewQueryEngine(client),
+		qe:           spi.NewQueryEngine(client),
 		guard:        guard,
 	}
 	s.ref = relay.NewRefetcher(db, s.connectionID, generation, func(sql string, expectedColumns int) ([][]*string, error) {
@@ -65,7 +65,7 @@ func (s *RunSession) OnOpen(ctx context.Context, cmds []*pb.ProxyCommand) error 
 }
 
 func (s *RunSession) ServeStatement(sql string, maxRows int) (result spi.StatementResult, err error) {
-	result.Decision, result.Denied, err = relay.ServeStatement(s.qe, relay.AuthzInput{
+	result.Decision, result.Denied, err = relay.ServeStatement(s.qe, spi.AuthzInput{
 		SQL:          sql,
 		Token:        s.token,
 		ConnectionID: s.connectionID,

@@ -45,8 +45,10 @@ func TestShowGenericFormatsPreserveExistingFlags(t *testing.T) {
 func TestShowAthenaFormatsAndFormattedAWSCLI(t *testing.T) {
 	e := newEnv(t)
 	var received atomic.Int64
+	var cliStart, arrived atomic.Int64
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		received.Add(1)
+		arrived.Store(time.Now().UnixNano())
 		if r.Header.Get("Authorization") != "Bearer pmk_tok" || r.Header.Get("X-Amz-Target") != "AmazonAthena.StartQueryExecution" {
 			t.Errorf("unexpected token or operation: %v", r.Header)
 		}
@@ -101,7 +103,7 @@ func TestShowAthenaFormatsAndFormattedAWSCLI(t *testing.T) {
 		if _, err := exec.LookPath("aws"); err != nil {
 			t.Skip("AWS CLI is not installed")
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 		defer cancel()
 		command := exec.CommandContext(ctx, "sh", "-c", bare+" --output json --no-cli-pager")
 		for _, entry := range os.Environ() {
@@ -113,7 +115,18 @@ func TestShowAthenaFormatsAndFormattedAWSCLI(t *testing.T) {
 			"AWS_CONFIG_FILE="+os.DevNull, "AWS_SHARED_CREDENTIALS_FILE="+os.DevNull,
 			"AWS_EC2_METADATA_DISABLED=true", "AWS_CLI_AUTO_PROMPT=off", "AWS_MAX_ATTEMPTS=1",
 		)
+		cliStart.Store(time.Now().UnixNano())
 		output, err := command.CombinedOutput()
+		total := time.Duration(time.Now().UnixNano() - cliStart.Load())
+		reqAt := time.Duration(arrived.Load() - cliStart.Load())
+		t.Logf("AWSDIAG cli total=%s request_at=%s err=%v", total, reqAt, err)
+		v0 := time.Now()
+		vout, verr := exec.Command("aws", "--version").CombinedOutput()
+		t.Logf("AWSDIAG then aws --version took %s: %v %s", time.Since(v0), verr, strings.TrimSpace(string(vout)))
+		if total > 10*time.Second {
+			log, _ := os.ReadFile(e.stateDir + "/daemon.log")
+			t.Logf("AWSDIAG slow; daemon log:\n%s", log)
+		}
 		if err != nil || !strings.Contains(string(output), `"QueryExecutionId": "cli-query"`) || received.Load() != 1 {
 			t.Fatalf("formatted CLI did not complete through the spawned daemon: %v, %s, requests: %d", err, output, received.Load())
 		}

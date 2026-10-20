@@ -1,10 +1,17 @@
 version: v2
-# `mise run proto-generate` scopes this module to the services cp-go serves to the Kotlin control plane
-# over cpgo/gobridge, one proto file each; add a new one to that task and to proto-check.
+# `mise run proto-generate` scopes this module to the protos cp-go serves: controlplane.proto, and one file per
+# cpgo/gobridge service; add a new one to that task and to proto-check. The imported engine, analyzer and athena
+# types map to analyzer/probe/pb, which generates them.
 plugins:
   - local: protoc-gen-go
-    out: gobridge/pb
-    opt: paths=source_relative,Mgithub_source.proto=github.com/ridi-oss/proxy-monster/cpgo/gobridge/pb;bridgepb
+    out: .
+    opt: &opt
+      - module=github.com/ridi-oss/proxy-monster/cpgo
+      - Mgithub_source.proto=github.com/ridi-oss/proxy-monster/cpgo/gobridge/pb;bridgepb
+      - Mcontrolplane.proto=github.com/ridi-oss/proxy-monster/cpgo/grpcsvc/pb;controlplanepb
+      - Mengine.proto=github.com/ridi-oss/proxy-monster/analyzer/probe/pb
+      - Manalyzer.proto=github.com/ridi-oss/proxy-monster/analyzer/probe/pb
+      - Mathena.proto=github.com/ridi-oss/proxy-monster/analyzer/probe/pb
   - local: protoc-gen-go-grpc
-    out: gobridge/pb
-    opt: paths=source_relative,Mgithub_source.proto=github.com/ridi-oss/proxy-monster/cpgo/gobridge/pb;bridgepb
+    out: .
+    opt: *opt

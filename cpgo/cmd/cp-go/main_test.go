@@ -189,7 +189,7 @@ func TestRunExitsWhenChildDies(t *testing.T) {
 // sharedEnv is every setting cp-go shares with the Kotlin child, set to a value other than its default.
 var sharedEnv = map[string]string{
 	"PM_DB_URL": "jdbc:postgresql://db.example/pm", "PM_DB_USER": "pm-user", "PM_DB_PASSWORD": "pm-password",
-	"PM_SESSION_SECRET": "a-session-secret-of-at-least-32-chars", "PM_AUTH_DEBUG": "false",
+	"PM_SESSION_SECRET": "a-session-secret-of-at-least-32-chars", "PM_SECRET_TOKEN": "secret-token", "PM_AUTH_DEBUG": "false",
 	"PM_MCP_RESOURCE": "https://pm.example.com/mcp", "PM_INSTANCE_NAME": "pm", "PM_WEB_ORIGIN": "https://web.example.com", "PM_RESULT_KEY": "result-key",
 	"PM_ELEVATED_SCOPE_TTL": "1800", "PM_OAUTH_ACCESS_TTL": "300", "PM_SESSION_WINDOW": "3h",
 	"PM_WEB_SESSION_ABSOLUTE": "4h", "PM_WEB_SESSION_IDLE": "10m", "PM_WEB_SESSION_SLIDE": "1m",

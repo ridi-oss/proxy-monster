@@ -8,16 +8,20 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/alecthomas/kong"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 
 	"github.com/ridi-oss/proxy-monster/cpgo/internal/dbtest"
+	"github.com/ridi-oss/proxy-monster/cpgo/session"
 )
 
 // The test binary doubles as the Kotlin child: cp-go starts it with CPGO_FAKE_CHILD set.
@@ -41,6 +45,7 @@ func fakeChild() {
 			"bridge":  os.Getenv("PM_CP_GO_GRPC_ADDR"),
 			"key":     os.Getenv("PM_GITHUB_APP_PRIVATE_KEY"),
 			"token":   os.Getenv("PM_CP_INTERNAL_TOKEN"),
+			"dbUser":  os.Getenv("PM_DB_USER"),
 		})
 	})
 	mux.HandleFunc("/exit", func(http.ResponseWriter, *http.Request) { os.Exit(3) })
@@ -136,7 +141,7 @@ func TestRunForwardsToChildOnLoopback(t *testing.T) {
 	var env map[string]string
 	_ = json.NewDecoder(resp.Body).Decode(&env)
 	_ = resp.Body.Close()
-	if env["bind"] != "127.0.0.1" || env["trusted"] != "127.0.0.1" || env["xff"] != "127.0.0.1" {
+	if env["bind"] != "127.0.0.1" || env["trusted"] != "127.0.0.1" || env["xff"] != "127.0.0.1" || env["dbUser"] != cfg.DBUser {
 		t.Fatalf("child saw %v", env)
 	}
 
@@ -178,5 +183,99 @@ func TestRunExitsWhenChildDies(t *testing.T) {
 		}
 	case <-time.After(40 * time.Second):
 		t.Fatal("run did not return after the child died")
+	}
+}
+
+// sharedEnv is every setting cp-go shares with the Kotlin child, set to a value other than its default.
+var sharedEnv = map[string]string{
+	"PM_DB_URL": "jdbc:postgresql://db.example/pm", "PM_DB_USER": "pm-user", "PM_DB_PASSWORD": "pm-password",
+	"PM_SESSION_SECRET": "a-session-secret-of-at-least-32-chars", "PM_AUTH_DEBUG": "false",
+	"PM_MCP_RESOURCE": "https://pm.example.com/mcp", "PM_WEB_ORIGIN": "https://web.example.com", "PM_RESULT_KEY": "result-key",
+	"PM_ELEVATED_SCOPE_TTL": "1800", "PM_OAUTH_ACCESS_TTL": "300", "PM_SESSION_WINDOW": "3h",
+	"PM_WEB_SESSION_ABSOLUTE": "4h", "PM_WEB_SESSION_IDLE": "10m", "PM_WEB_SESSION_SLIDE": "1m",
+	"PM_WEB_SESSION_IDLE_WARN_LEAD": "30", "PM_WEB_SESSION_ABSOLUTE_WARN_LEAD": "2m", "PM_WEB_SESSION_HEARTBEAT": "45",
+	"PM_OIDC_ISSUER": "https://idp.example.com", "PM_OIDC_CLIENT_ID": "client", "PM_OIDC_CLIENT_SECRET": "client-secret",
+	"PM_OIDC_REDIRECT_URI": "https://pm.example.com/auth/oidc/callback", "PM_OIDC_SCOPES": "openid email",
+	"PM_OIDC_GROUP_MAP": "idp-admins=system:admin", "PM_OIDC_GROUP_PREFIX": "okta-", "PM_OIDC_USER_ATTRIBUTES": "department",
+	"PM_IDP_RECHECK_INTERVAL": "60", "PM_GITHUB_APP_ID": "7", "PM_GITHUB_API_URL": "https://ghe.example.com/api/v3",
+}
+
+func parseConfig(t *testing.T, args ...string) config {
+	t.Helper()
+	var cfg config
+	k, err := kong.New(&cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := k.Parse(args); err != nil {
+		t.Fatal(err)
+	}
+	return cfg
+}
+
+func sorted(env []string) string {
+	slices.Sort(env)
+	return strings.Join(env, "\n")
+}
+
+func TestTheChildGetsEverySharedSettingGoParsed(t *testing.T) {
+	var want []string
+	for k, v := range sharedEnv {
+		t.Setenv(k, v)
+		want = append(want, k+"="+v)
+	}
+	cfg := parseConfig(t)
+	if got := sorted(cfg.kotlinEnv()); got != sorted(want) {
+		t.Fatalf("child env:\n%s\nwant:\n%s", got, sorted(want))
+	}
+
+	s, err := sessionSettings(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantSession := session.Settings{
+		Secret: "a-session-secret-of-at-least-32-chars", Secure: true, ResultKey: true, WebOrigin: "https://web.example.com",
+		OIDCEnabled: true, MCPResource: "https://pm.example.com/mcp", ElevatedScopeTTL: 1800, MCPAccessTTL: 300,
+		SessionWindowSeconds: 3 * 3600, AbsoluteSeconds: 4 * 3600, IdleSeconds: 600, SlideSeconds: 60,
+		IdleWarnLeadSeconds: 30, AbsoluteWarnLeadSeconds: 120, HeartbeatSeconds: 45,
+	}
+	if s != wantSession {
+		t.Errorf("session settings %+v, want %+v", s, wantSession)
+	}
+	o, err := oidcSettings(cfg)
+	if err != nil || o == nil {
+		t.Fatalf("oidc settings %v %v", o, err)
+	}
+	if o.Issuer != "https://idp.example.com" || o.ClientID != "client" || o.ClientSecret != "client-secret" ||
+		o.RedirectURI != "https://pm.example.com/auth/oidc/callback" || o.Scopes != "openid email" || o.RecheckInterval != time.Minute ||
+		strings.Join(o.Groups.Resolve([]string{"idp-admins", "okta-eng"}), ",") != "system:admin,eng" {
+		t.Errorf("oidc settings %+v", o)
+	}
+	if cfg.OIDCUserAttributes != "department" || cfg.GitHub.AppID != "7" || cfg.GitHub.APIURL != "https://ghe.example.com/api/v3" {
+		t.Errorf("config %+v", cfg)
+	}
+}
+
+func TestTheChildGetsGosDefaultsAndFlags(t *testing.T) {
+	for k := range sharedEnv {
+		t.Setenv(k, "")
+		_ = os.Unsetenv(k)
+	}
+	t.Setenv("PM_DB_USER", "from-env")
+	cfg := parseConfig(t, "--db-url=jdbc:postgresql://flag/pm", "--no-auth-debug")
+	want := []string{
+		"PM_DB_URL=jdbc:postgresql://flag/pm", "PM_DB_USER=from-env", "PM_DB_PASSWORD=proxymonster",
+		"PM_SESSION_SECRET=dev-insecure-session-secret-change-me", "PM_AUTH_DEBUG=false",
+		"PM_MCP_RESOURCE=http://127.0.0.1:8080/mcp", "PM_ELEVATED_SCOPE_TTL=3600", "PM_OAUTH_ACCESS_TTL=600",
+		"PM_SESSION_WINDOW=7200", "PM_WEB_SESSION_ABSOLUTE=7200", "PM_WEB_SESSION_IDLE=900", "PM_WEB_SESSION_SLIDE=120",
+		"PM_WEB_SESSION_IDLE_WARN_LEAD=60", "PM_WEB_SESSION_ABSOLUTE_WARN_LEAD=300", "PM_WEB_SESSION_HEARTBEAT=90",
+		"PM_OIDC_SCOPES=openid profile email groups offline_access", "PM_IDP_RECHECK_INTERVAL=300",
+		"PM_GITHUB_API_URL=https://api.github.com",
+	}
+	if got := sorted(cfg.kotlinEnv()); got != sorted(want) {
+		t.Fatalf("child env:\n%s\nwant:\n%s", got, sorted(want))
+	}
+	if o, err := oidcSettings(cfg); err != nil || o != nil {
+		t.Fatalf("oidc with no settings: %v %v", o, err)
 	}
 }

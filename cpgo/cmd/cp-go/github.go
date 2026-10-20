@@ -12,9 +12,8 @@ import (
 )
 
 type githubConfig struct {
-	// Shared with the Kotlin child, which reads them from the environment, so they are never flags.
-	AppID    string `kong:"-"`
-	APIURL   string `kong:"-"`
+	AppID    string `env:"PM_GITHUB_APP_ID" group:"kotlin" help:"GitHub App ID; the GitHub source is on when it is set."`
+	APIURL   string `env:"PM_GITHUB_API_URL" name:"api-url" default:"https://api.github.com" group:"kotlin" help:"GitHub API base URL, for GitHub Enterprise."`
 	KMSKeyID string `env:"PM_GITHUB_APP_KMS_KEY_ID" help:"AWS KMS key (ID, ARN, or alias) holding the App's private key, used in place of a PEM."`
 	CAFile   string `env:"PM_GITHUB_CA_FILE" help:"PEM CA certificates trusted for the GitHub API besides the system ones."`
 }

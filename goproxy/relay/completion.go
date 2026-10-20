@@ -65,7 +65,7 @@ func RelayStatus(clean bool, err error) string {
 // EmitCompletion fires a post-relay completion report on its own goroutine and returns a channel that closes
 // when the report has been sent (or given up on). It never blocks the caller and never surfaces an error: a
 // lost completion degrades the audit volume signal, not the client session. The returned channel is what
-// lets the SAME connection's next Decide see this statement's volume (QueryEngine.AwaitCompletion): a
+// lets the SAME connection's next Decide see this statement's volume (Authorizer.AwaitCompletion): a
 // sequential dump script must not outrun its own budget. No report is sent for a statement that was never
 // relayed (dec nil) or whose decision carries no audit id (DecisionID 0, a fail-closed path); the channel is
 // then already closed.

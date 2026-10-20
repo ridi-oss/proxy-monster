@@ -1,6 +1,6 @@
 // Package postgres is the blocking PostgreSQL wire broker for the simple and extended query protocols.
 // It owns only wire I/O and mechanically applies engine verdicts; authorization remains exclusively in
-// spi.QueryEngine. COPY is deferred to a later phase.
+// spi.Authorizer. COPY is deferred to a later phase.
 package postgres
 
 import (

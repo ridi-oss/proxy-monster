@@ -2,9 +2,9 @@ package spi
 
 import "testing"
 
-func TestQueryEngineCachesCatalogWithNamespace(t *testing.T) {
+func TestAuthorizerCachesCatalogWithNamespace(t *testing.T) {
 	decider := &fakeDecider{outcome: okOutcome("ALLOW", nil)}
-	query := NewQueryEngine(decider)
+	query := NewAuthorizer(decider)
 	catalog := "one"
 	probes := 0
 	input := AuthzInput{ProbeSession: func() (SessionObservation, error) {

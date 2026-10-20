@@ -27,7 +27,7 @@ func (e TargetDbError) Error() string { return e.Message }
 
 // ServeStatement authorizes, executes, and conditionally runs after-statement refetch commands.
 func ServeStatement(
-	qe *spi.QueryEngine,
+	qe *spi.Authorizer,
 	in spi.AuthzInput,
 	ref *Refetcher,
 	guard spi.ExecGuard,

@@ -206,7 +206,7 @@ access through the proxy's role.
 
 ## Integration and verification
 
-Reuse the existing listener lifecycle, `QueryEngine.Authorize`, and row masker.
+Reuse the existing listener lifecycle, `Authorizer.Authorize`, and row masker.
 Separate SDK/API metadata access from the SQL-only `Provider`/refetch
 interfaces; do not create a fake `database/sql` driver. Admission uses the
 existing catalog freshness contract. DDL invalidation must not depend solely on

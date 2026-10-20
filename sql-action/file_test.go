@@ -32,8 +32,9 @@ func gitRepo(t *testing.T) *testRepo {
 
 func (r *testRepo) git(args ...string) string {
 	r.t.Helper()
+	// No detached auto-maintenance: it holds .git/objects/maintenance.lock while TempDir cleanup runs.
 	full := append([]string{"-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false",
-		"-c", "init.defaultBranch=main"}, args...)
+		"-c", "init.defaultBranch=main", "-c", "maintenance.auto=false"}, args...)
 	cmd := exec.Command("git", full...)
 	cmd.Dir = r.dir
 	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")

@@ -2,12 +2,9 @@
 # sibling modules needed). Build from web/:
 #   docker build -t proxy-monster-web .
 #
-# Runtime env: PM_PROXY_TARGET (control-plane base URL the /api and /auth rewrites forward to —
-# see next.config.ts; set this to wherever control-plane is reachable from inside the
-# cluster/VPC, e.g. http://control-plane.internal:8080) and NEXT_LOCALE-independent i18n (cookie-
-# based, no env needed). PORT/HOSTNAME below make the standalone server listen on 0.0.0.0 so it's
-# reachable from outside the container — the generated server.js defaults HOSTNAME to "localhost"
-# otherwise, which is unreachable from outside the container network namespace.
+# Runtime env: PM_CP_URL, the control plane's base URL its paths are forwarded to (web/src/proxy.ts),
+# needed only when they reach this container. PORT/HOSTNAME below make the standalone server listen
+# on 0.0.0.0; server.js otherwise defaults HOSTNAME to "localhost", unreachable from outside it.
 
 # Match ../mise.toml's node/pnpm pins — bump both together.
 FROM node:24-alpine AS base

@@ -123,8 +123,8 @@ registers itself, and why the control plane holds no target credentials).
 ## How users reach it
 
 - Users reach the web console over HTTPS. The Next server rewrites `/api` and
-  `/auth` to the CP (`PM_PROXY_TARGET`), so the browser talks same-origin and
-  the console itself never needs the CP's address. That rewrite is the console's
+  `/auth` to the CP (`PM_CP_URL`), so the browser talks same-origin and the
+  console itself never needs the CP's address. That rewrite is the console's
   path only — it is not a boundary around the CP. The CP also serves clients
   that call it directly: pmon (device login, silent token renewal, datasource
   discovery), MCP and OAuth clients, and the wire proxies over gRPC. Wherever
@@ -197,7 +197,7 @@ entry is involved on that path.
 | Proxy → CP | gRPC · `PM_GRPC_PORT` | internal | authorize · register · push catalog (plaintext HTTP/2; gated by one shared secret only when `PM_SECRET_TOKEN` is set) |
 | Proxy → Target DB | MySQL / PG | internal | relay the (masked) statement |
 | User browser → Web | HTTPS | inbound | the console UI |
-| Web → CP | HTTP · `PM_PROXY_TARGET` | internal | `/api` + `/auth` server-side rewrite |
+| Web → CP | HTTP · `PM_CP_URL` | internal | `/api` + `/auth` server-side rewrite |
 | MCP / AI client → CP | HTTPS · `/mcp` `/oauth/*` | via edge | OAuth 2.1 server + MCP resource (only if MCP used) |
 | CP → control-plane store | SQL · PostgreSQL 5432 | internal | system of record (r/w) |
 | CP → OIDC IdP | HTTPS | outbound | discovery + token exchange |

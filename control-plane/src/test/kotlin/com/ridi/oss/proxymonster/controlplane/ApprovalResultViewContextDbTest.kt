@@ -3,9 +3,11 @@ package com.ridi.oss.proxymonster.controlplane
 import com.ridi.oss.proxymonster.grpc.runError
 
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
+import com.ridi.oss.proxymonster.controlplane.support.CpGoStack
 import com.ridi.oss.proxymonster.controlplane.support.EnforcementFixture
 import com.ridi.oss.proxymonster.controlplane.support.pushTestCatalog
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
+import com.ridi.oss.proxymonster.controlplane.support.testLoginRoute
 import com.ridi.oss.proxymonster.controlplane.support.webSessionCookie
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
@@ -31,6 +33,7 @@ import io.ktor.server.sessions.set
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
 import kotlinx.serialization.json.Json
+import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.TestInstance
 import com.ridi.oss.proxymonster.analyzer.pb.RequireResultReadGrant
@@ -55,6 +58,8 @@ class ApprovalResultViewContextDbTest {
     private lateinit var fx: EnforcementFixture
     private lateinit var resultStore: QueryResultStore
     private lateinit var runExecService: RunExecService
+    // The request detail is served by cp-go; the result route stays on the in-process Kotlin routes.
+    private lateinit var cpGo: CpGoStack
     private lateinit var config: Config
     private var roleId: Long = 0
     private var segregatedUnmaskPolicyId: Long = 0
@@ -92,6 +97,10 @@ class ApprovalResultViewContextDbTest {
             devMarker = true,
             trustedProxies = setOf("localhost"),
         )
+        val stackConfig = config.copy(sessionSecret = "approval-result-view-cp-go-secret-32", resultKey = ByteArray(32) { it.toByte() })
+        cpGo = CpGoStack(stackConfig, ControlPlaneCore(fx.dataSource), fx.metaDatabase) {
+            routing { testLoginRoute(PrincipalSessionStore(fx.dataSource, null), stackConfig) }
+        }
         listOf(executor, requester, approver, auditor, admin, outsider).distinct().forEach { principal ->
             fx.userGroupStore.createUser(
                 AppUserInput(principal = principal),
@@ -166,6 +175,11 @@ class ApprovalResultViewContextDbTest {
             ),
             updatedBy = "test-fixture",
         )
+    }
+
+    @AfterAll
+    fun teardown() {
+        if (::cpGo.isInitialized) cpGo.close()
     }
 
     private fun ApplicationTestBuilder.wire(): HttpClient {
@@ -599,19 +613,22 @@ class ApprovalResultViewContextDbTest {
         // metadata-only, and row count is a result-derived existence/cardinality oracle behind task.assume).
         // The requester holds both task.read (self-request seed) and task.assume (party seed), so their
         // GET /{id} returns the un-redacted meta.
-        client.login(requester)
+        val console = cpGo.client()
+        console.login(requester)
         assertNotNull(
-            client.get("/api/approvals/$id").body<QueryRequestDetail>().result?.rowCount,
+            console.get("/api/approvals/$id").body<QueryRequestDetail>().result?.rowCount,
             "an assumer sees the result row count in metadata",
         )
 
-        client.login(admin)
-        val adminDetail = client.get("/api/approvals/$id")
+        console.login(admin)
+        val adminDetail = console.get("/api/approvals/$id")
         assertEquals(HttpStatusCode.OK, adminDetail.status, "admin may read metadata")
         val adminMeta = adminDetail.body<QueryRequestDetail>().result
         assertNotNull(adminMeta, "admin still sees execution status metadata")
         assertNull(adminMeta.rowCount, "admin (task.read only) must not learn the result row count")
         assertTrue(adminMeta.columns.isEmpty(), "admin (task.read only) must not learn the result column shape")
+        // A new web session for the same principal ends the older one, so the admin signs in here last.
+        client.login(admin)
         assertEquals(HttpStatusCode.NotFound, client.get("/api/approvals/$id/result").status, "admin may not assume R")
     }
 
@@ -722,7 +739,8 @@ class ApprovalResultViewContextDbTest {
         // A task.read-only admin: no detail, and neither form on the metadata poll.
         client.login(admin)
         assertEquals(HttpStatusCode.NotFound, client.get("/api/approvals/$id/result").status, "admin may not assume R")
-        val adminDetail = client.get("/api/approvals/$id")
+        val console = cpGo.client().also { it.login(admin) }
+        val adminDetail = console.get("/api/approvals/$id")
         assertEquals(HttpStatusCode.OK, adminDetail.status, "admin may read metadata")
         assertFalse(
             adminDetail.bodyAsText().let { it.contains("orders_missing") || it.contains("undefined_table") },

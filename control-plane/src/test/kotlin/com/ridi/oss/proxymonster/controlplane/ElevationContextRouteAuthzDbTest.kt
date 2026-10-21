@@ -232,7 +232,7 @@ class ElevationContextRouteAuthzDbTest {
 
     @Test
     fun `query-approval approve fires the tag-gated permit only through a trusted edge (Approvals-kt wiring)`() = testApplication {
-        val client = wire()
+        val client = cpGo.client()
         client.post("/test/session/$approver")
 
         // No trusted XFF -> requester_ip absent -> tag not derived -> mayDecide denies.
@@ -295,7 +295,7 @@ class ElevationContextRouteAuthzDbTest {
 
     @Test
     fun `query-approval approve mutates only authorization state and never runs the query`() = testApplication {
-        val client = wire()
+        val client = cpGo.client()
         client.post("/test/session/$approver")
 
         val id = seedQueryRequest()
@@ -304,7 +304,7 @@ class ElevationContextRouteAuthzDbTest {
         assertNull(childColumn(id, "status"))
 
         // Approve is authorized through a trusted edge (approver in reviewer + the derived trusted-network tag).
-        // No proxy is attached to runExecService; a pure approve must not need one.
+        // No proxy is attached; a pure approve must not need one.
         val ok = client.post("/api/approvals/$id/approve") {
             header("X-Forwarded-For", "100.100.5.5")
             contentType(ContentType.Application.Json)

@@ -450,33 +450,6 @@ fun Route.approvalRoutes(
         }
     }
 
-    get("/api/approvals/inbox") {
-        val principal = call.requireApi() ?: return@get
-        call.respond(service.inbox(principal, call.httpRequesterIp(config)))
-    }
-
-    get("/api/approvals/{id}") {
-        val principal = call.requireApi() ?: return@get
-        val id = call.idParam() ?: return@get call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        try {
-            call.respond(service.detail(principal, call.httpRequesterIp(config), id))
-        } catch (e: TaskServiceException) {
-            call.respondServiceError(e)
-        }
-    }
-
-    post("/api/approvals/{id}/approve") {
-        val principal = call.requireApi() ?: return@post
-        val id = call.idParam() ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        val revision = runCatching { call.receive<ApproveQueryRequestInput>() }.getOrNull()?.revision
-            ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.field_required", mapOf("fields" to "revision")))
-        try {
-            call.respond(service.approve(principal, call.httpRequesterIp(config), call.auditActor(config), id, revision))
-        } catch (e: TaskServiceException) {
-            call.respondServiceError(e)
-        }
-    }
-
     post("/api/approvals/{id}/edit") {
         val principal = call.requireApi() ?: return@post
         val id = call.idParam() ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
@@ -493,27 +466,6 @@ fun Route.approvalRoutes(
         val id = call.idParam() ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
         try {
             call.respond(service.forceRun(principal, call.httpRequesterIp(config), call.auditActor(config), id))
-        } catch (e: TaskServiceException) {
-            call.respondServiceError(e)
-        }
-    }
-
-    post("/api/approvals/{id}/reject") {
-        val principal = call.requireApi() ?: return@post
-        val id = call.idParam() ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        val body = call.receive<RejectInput>()
-        try {
-            call.respond(service.reject(principal, call.httpRequesterIp(config), call.auditActor(config), id, body.reason))
-        } catch (e: TaskServiceException) {
-            call.respondServiceError(e)
-        }
-    }
-
-    post("/api/approvals/{id}/unapprove") {
-        val principal = call.requireApi() ?: return@post
-        val id = call.idParam() ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        try {
-            call.respond(service.unapprove(principal, call.httpRequesterIp(config), call.auditActor(config), id))
         } catch (e: TaskServiceException) {
             call.respondServiceError(e)
         }

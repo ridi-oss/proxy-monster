@@ -12,10 +12,10 @@ import (
 // Provision is JIT directory reconciliation on login: the app_user row exists (a SCIM-owned row keeps its
 // source and is never reactivated), its attributes are the declared claims, and the user's group memberships
 // become exactly the mapped IdP groups.
-func Provision(ctx context.Context, pool *pgxpool.Pool, principal string, email *string, groups []string, mapping GroupMapping, attributes []byte) error {
+func Provision(ctx context.Context, pool *pgxpool.Pool, principal string, email, name *string, groups []string, mapping GroupMapping, attributes []byte) error {
 	return pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		q := db.New(tx)
-		if err := q.ProvisionUser(ctx, db.ProvisionUserParams{Principal: principal, Email: email}); err != nil {
+		if err := q.ProvisionUser(ctx, db.ProvisionUserParams{Principal: principal, Email: email, DisplayName: name}); err != nil {
 			return err
 		}
 		// Outside ProvisionUser's SCIM guard: SCIM never writes attributes, so a SCIM row would keep a stale claim.

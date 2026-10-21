@@ -46,18 +46,20 @@ func (q *Queries) ProvisionGroup(ctx context.Context, name string) (int64, error
 }
 
 const provisionUser = `-- name: ProvisionUser :exec
-INSERT INTO app_user (principal, email, source, active) VALUES ($1, $2, 'OIDC', TRUE)
-ON CONFLICT (principal) DO UPDATE SET email = COALESCE(EXCLUDED.email, app_user.email), source = EXCLUDED.source
+INSERT INTO app_user (principal, email, display_name, source, active) VALUES ($1, $2, $3, 'OIDC', TRUE)
+ON CONFLICT (principal) DO UPDATE SET email = COALESCE(EXCLUDED.email, app_user.email),
+    display_name = COALESCE(EXCLUDED.display_name, app_user.display_name), source = EXCLUDED.source
 WHERE app_user.source <> 'SCIM'
 `
 
 type ProvisionUserParams struct {
-	Principal string
-	Email     *string
+	Principal   string
+	Email       *string
+	DisplayName *string
 }
 
 func (q *Queries) ProvisionUser(ctx context.Context, arg ProvisionUserParams) error {
-	_, err := q.db.Exec(ctx, provisionUser, arg.Principal, arg.Email)
+	_, err := q.db.Exec(ctx, provisionUser, arg.Principal, arg.Email, arg.DisplayName)
 	return err
 }
 

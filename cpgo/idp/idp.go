@@ -130,6 +130,7 @@ func (c *Crypto) Decrypt(blob []byte) (string, error) {
 type Claims struct {
 	Subject string
 	Email   *string
+	Name    *string
 	Groups  []string
 	// Raw is every claim, for the ones PM_OIDC_USER_ATTRIBUTES declares.
 	Raw map[string]any
@@ -277,6 +278,10 @@ func (p *Provider) Validate(ctx context.Context, idToken, nonce string) (*Claims
 	out := &Claims{Subject: claims.Subject, Raw: raw}
 	if email, ok := claims.Claims["email"].(string); ok {
 		out.Email = &email
+	}
+	if name, ok := claims.Claims["name"].(string); ok && strings.TrimSpace(name) != "" {
+		name = strings.TrimSpace(name)
+		out.Name = &name
 	}
 	if groups, ok := claims.Claims["groups"].([]any); ok {
 		for _, g := range groups {

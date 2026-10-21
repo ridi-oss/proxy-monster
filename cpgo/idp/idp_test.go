@@ -44,6 +44,7 @@ func TestProvision(t *testing.T) {
 	}
 	mapping := ParseGroupMapping("idp-admins=system:admin", "")
 	email := "alice@example.com"
+	name := "Alice Kim"
 
 	sourceOf := func(group string) string {
 		var s string
@@ -60,7 +61,7 @@ func TestProvision(t *testing.T) {
 	}
 	exec(`INSERT INTO app_group (name, source) VALUES ('ops', 'LOCAL')`)
 
-	if err := Provision(ctx, st.Pool, "alice@example.com", &email, []string{"idp-admins", "eng", "ops"}, mapping, []byte("{}")); err != nil {
+	if err := Provision(ctx, st.Pool, "alice@example.com", &email, &name, []string{"idp-admins", "eng", "ops"}, mapping, []byte("{}")); err != nil {
 		t.Fatal(err)
 	}
 	if g := groupsOf("alice@example.com"); g != "eng,ops,system:admin" || sourceOf("eng") != "OIDC" || sourceOf("ops") != "LOCAL" || !isAdmin("alice@example.com") {
@@ -68,19 +69,19 @@ func TestProvision(t *testing.T) {
 	}
 	exec(`INSERT INTO app_group (name, source) VALUES ('manual', 'LOCAL');
 		INSERT INTO group_member (group_id, user_id) SELECT g.id, u.id FROM app_group g, app_user u WHERE g.name = 'manual' AND u.principal = 'alice@example.com'`)
-	if err := Provision(ctx, st.Pool, "alice@example.com", nil, []string{"eng"}, mapping, []byte("{}")); err != nil {
+	if err := Provision(ctx, st.Pool, "alice@example.com", nil, nil, []string{"eng"}, mapping, []byte("{}")); err != nil {
 		t.Fatal(err)
 	}
-	var keptEmail, source string
-	_ = st.Pool.QueryRow(ctx, `SELECT email, source FROM app_user WHERE principal = 'alice@example.com'`).Scan(&keptEmail, &source)
-	if g := groupsOf("alice@example.com"); g != "eng" || keptEmail != email || source != "OIDC" {
-		t.Fatalf("a later login must leave exactly the IdP's groups and keep the email: %q %q %q", g, keptEmail, source)
+	var keptEmail, keptName, source string
+	_ = st.Pool.QueryRow(ctx, `SELECT email, display_name, source FROM app_user WHERE principal = 'alice@example.com'`).Scan(&keptEmail, &keptName, &source)
+	if g := groupsOf("alice@example.com"); g != "eng" || keptEmail != email || keptName != name || source != "OIDC" {
+		t.Fatalf("a later login must leave exactly the IdP's groups and keep the email and name: %q %q %q %q", g, keptEmail, keptName, source)
 	}
 	if isAdmin("alice@example.com") || sourceOf("ops") != "LOCAL" {
 		t.Fatalf("dropping the IdP admin group must revoke system:admin: admin %v, ops %s", isAdmin("alice@example.com"), sourceOf("ops"))
 	}
 
-	if err := Provision(ctx, st.Pool, "analyst@example.com", nil, []string{"proxy-monster-analysts"}, ParseGroupMapping("", "proxy-monster-"), []byte("{}")); err != nil {
+	if err := Provision(ctx, st.Pool, "analyst@example.com", nil, nil, []string{"proxy-monster-analysts"}, ParseGroupMapping("", "proxy-monster-"), []byte("{}")); err != nil {
 		t.Fatal(err)
 	}
 	if g, src := groupsOf("analyst@example.com"), sourceOf("analysts"); g != "analysts" || src != "OIDC" {
@@ -89,7 +90,7 @@ func TestProvision(t *testing.T) {
 
 	exec(`INSERT INTO app_user (principal, email, source, external_id, active) VALUES ('scim@example.com', 'old@example.com', 'SCIM', 'ext-1', false)`)
 	other := "new@example.com"
-	if err := Provision(ctx, st.Pool, "scim@example.com", &other, []string{"eng"}, mapping, []byte("{}")); err != nil {
+	if err := Provision(ctx, st.Pool, "scim@example.com", &other, &name, []string{"eng"}, mapping, []byte("{}")); err != nil {
 		t.Fatal(err)
 	}
 	var active bool
@@ -104,9 +105,12 @@ func TestValidate(t *testing.T) {
 	fake.Issuer = fake.URL + "/"
 	p := NewProvider(Config{Issuer: fake.Issuer, ClientID: fake.ClientID, ClientSecret: fake.ClientSecret})
 	ctx := context.Background()
-	alice := fakeidp.Identity{Subject: "s-alice", Email: "alice@example.com", Groups: []string{"eng"}}
+	alice := fakeidp.Identity{Subject: "s-alice", Email: "alice@example.com", Groups: []string{"eng"}, Extra: map[string]any{"name": " Alice Kim "}}
 
 	claims, err := p.Validate(ctx, fake.Sign(jose.RS256, alice, "n1", time.Time{}), "n1")
+	if err != nil || claims.Name == nil || *claims.Name != "Alice Kim" {
+		t.Fatalf("the name claim is the display name, trimmed: %v %v", claims, err)
+	}
 	if err != nil || claims.Principal() != "alice@example.com" || strings.Join(claims.Groups, ",") != "eng" {
 		t.Fatalf("an issuer with a trailing slash: %+v %v", claims, err)
 	}

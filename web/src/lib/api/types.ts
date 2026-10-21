@@ -484,6 +484,11 @@ export interface Person {
   email?: string | null;
 }
 
+/** An active user a request may CC. */
+export interface CcCandidate extends Person {
+  principal: string;
+}
+
 /** The pull request a GitHub request came from. */
 export interface PullRequestRef {
   /** `owner/name` of the pull request's repository. */

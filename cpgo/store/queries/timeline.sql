@@ -29,3 +29,8 @@ DELETE FROM request_participant WHERE request_id = $1 AND principal = $2 AND kin
 
 -- name: PeopleByPrincipal :many
 SELECT principal, display_name, email FROM app_user WHERE principal = ANY(@principals::text[]);
+
+-- name: SearchActiveUsers :many
+SELECT principal, display_name, email FROM app_user
+WHERE active AND (principal ILIKE @pattern::text OR email ILIKE @pattern::text OR display_name ILIKE @pattern::text)
+ORDER BY coalesce(display_name, principal), principal LIMIT 10;

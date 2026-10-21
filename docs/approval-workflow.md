@@ -98,7 +98,9 @@ login. A Slack reply's @-mentions read as the mentioned users' Slack names.
 `POST /api/requests/{id}/comments` adds a comment or, with `lgtm`, an LGTM,
 gated by `task.comment`; an LGTM is shown but never approves. A CC is added with
 `POST /api/requests/{id}/ccs` and removed with
-`DELETE /api/requests/{id}/ccs/{principal}`, gated by `task.cc`.
+`DELETE /api/requests/{id}/ccs/{principal}`, gated by `task.cc`;
+`GET /api/requests/{id}/cc-candidates?q=` suggests up to ten active users whose
+principal, email, or name contains `q`, under the same gate.
 `POST /api/requests/{id}/close` ends a request that has not started
 (`task.cancel`): a pending one of any kind, or an approved query that has not
 run. CCs are `request_participant` rows of kind `cc`, read by Cedar as

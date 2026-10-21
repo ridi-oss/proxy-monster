@@ -209,6 +209,34 @@ func (a access) addCC(w http.ResponseWriter, r *http.Request, id int64) error {
 	return a.setCC(w, r, id, *in.Principal, true)
 }
 
+type ccCandidate struct {
+	Principal string  `json:"principal"`
+	Name      *string `json:"name,omitempty"`
+	Email     *string `json:"email,omitempty"`
+}
+
+// ccCandidates lists up to ten active users whose principal, email or name contains q, for whoever may CC.
+func (a access) ccCandidates(w http.ResponseWriter, r *http.Request, id int64) error {
+	ctx := r.Context()
+	req, err := a.workflowRequest(ctx, id)
+	if err != nil {
+		return err
+	}
+	if err := a.require(ctx, req, "task.cc", api.CodeCCForbidden); err != nil {
+		return err
+	}
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	if q == "" {
+		api.WriteJSON(w, http.StatusOK, []ccCandidate{})
+		return nil
+	}
+	escaped := strings.NewReplacer(`\`, `\\`, "%", `\%`, "_", `\_`).Replace(q)
+	rows, err := db.New(a.pool).SearchActiveUsers(ctx, "%"+escaped+"%")
+	return api.WriteRows(w, rows, err, func(u db.SearchActiveUsersRow) ccCandidate {
+		return ccCandidate{Principal: u.Principal, Name: u.DisplayName, Email: u.Email}
+	})
+}
+
 func (a access) removeCC(w http.ResponseWriter, r *http.Request, id int64) error {
 	return a.setCC(w, r, id, r.PathValue("principal"), false)
 }

@@ -115,12 +115,12 @@ PM_CONTROL_PLANE_GRPC="${PM_CONTROL_PLANE_GRPC:-127.0.0.1:9090}" \
 [tasks.web]
 description = "Run the web console on :41300 against the local control plane"
 shell = "bash -c"
-# web/next.config.ts defaults PM_PROXY_TARGET to :41390; the control-plane task serves :8080, so point
+# web/next.config.ts defaults PM_CP_URL to :41390; the control-plane task serves :8080, so point
 # the console there.
 run = '''
 set -euo pipefail
 pnpm -C web install
-PM_PROXY_TARGET="${PM_PROXY_TARGET:-http://127.0.0.1:8080}" pnpm -C web dev
+PM_CP_URL="${PM_CP_URL:-${PM_PROXY_TARGET:-http://127.0.0.1:8080}}" pnpm -C web dev
 '''
 
 [tasks.dev]
@@ -169,7 +169,7 @@ start proxy-postgres \
   PM_TARGET_PORT="${PM_PG_TARGET_PORT:-5433}"
 # Hand web the same control-plane URL this task just waited on, so the console's /api and /auth rewrite
 # can never point somewhere else.
-start web PM_PROXY_TARGET="${PM_PROXY_TARGET:-$cp_url}"
+start web PM_CP_URL="${PM_CP_URL:-${PM_PROXY_TARGET:-$cp_url}}"
 
 cat <<BANNER
 

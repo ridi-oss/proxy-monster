@@ -5,10 +5,6 @@ import { version } from "./package.json";
 
 const withNextIntl = createNextIntlPlugin("./src/i18n/request.ts");
 
-// Proxy /api and /auth to the Kotlin control-plane (default :41390), so the
-// browser talks same-origin and its httpOnly session cookie flows through.
-const target = process.env.PM_PROXY_TARGET ?? "http://127.0.0.1:41390";
-
 const nextConfig: NextConfig = {
   // Container images (web/Dockerfile) copy only `.next/standalone` + `.next/static` — the traced,
   // minimal subset of node_modules the built server actually needs — instead of the full
@@ -18,12 +14,6 @@ const nextConfig: NextConfig = {
   // the server release, so a plain `pnpm build` and a container image report the same version and
   // neither needs a build argument. Inlined at build time, so only the string ships — not package.json.
   env: { NEXT_PUBLIC_APP_VERSION: version },
-  async rewrites() {
-    return [
-      { source: "/api/:path*", destination: `${target}/api/:path*` },
-      { source: "/auth/:path*", destination: `${target}/auth/:path*` },
-    ];
-  },
   // The console is never meant to be embedded. It matters most on /device: that page's Continue button
   // approves a pmon login with the viewer's session, so a framed copy would be a clickjacking target for
   // an attacker-prefilled code. Applied site-wide since no page here has a reason to be framed.

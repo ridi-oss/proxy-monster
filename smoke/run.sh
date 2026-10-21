@@ -90,7 +90,7 @@ wait "$compose_pid" || { echo "smoke: the datastores did not come up; see $SMOKE
 # next dev takes seconds to start, so the console starts now and is awaited once the proxies are up.
 echo "smoke: starting the console on :$WEB"
 (
-  cd "$ROOT/web" && exec env PM_PROXY_TARGET="http://127.0.0.1:$CP_HTTP" PM_WEB_DEV_ORIGINS=127.0.0.1,localhost \
+  cd "$ROOT/web" && exec env PM_CP_URL="http://127.0.0.1:$CP_HTTP" PM_WEB_DEV_ORIGINS=127.0.0.1,localhost \
     pnpm exec next dev -p "$WEB" -H 127.0.0.1 > "$SMOKE_DIR/logs/web.log" 2>&1
 ) &
 pids+=($!)

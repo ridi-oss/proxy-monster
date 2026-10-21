@@ -321,15 +321,12 @@ access is hardened, retain `SELECT` on both for `PM_TARGET_USER`.
 
 ### Web console
 
-- `PM_PROXY_TARGET` — _required for `next dev`; build-time only for the
-  container image_. CP HTTP base URL — target for the `/api` + `/auth`
-  server-side rewrites. `next.config.ts` reads it while the config evaluates, so
-  `next dev` picks it up per boot, but `next build` bakes the resolved
-  destination into `.next/routes-manifest.json`. Under `output: "standalone"`
-  the runtime image ships no `next.config.ts` and cannot re-evaluate it, so
-  setting this as a container env var has no effect — see
-  [Web console rewrites](#web-console-rewrites) for the deployment consequence.
-  Example: `http://pm-cp.pm.internal:8080`
+- `PM_CP_URL` — _optional_. The CP's HTTP base URL. The web server forwards the
+  CP's paths (`/api`, `/auth`, …) there (`web/src/proxy.ts`), reading it per
+  request. Needed only when those paths reach the web server, as in `next dev`;
+  behind the ALB layout below they go to the CP directly. Default
+  `http://127.0.0.1:41390`. `PM_PROXY_TARGET` is its deprecated name, still read
+  when `PM_CP_URL` is unset. Example: `http://pm-cp.pm.internal:8080`
 - `NEXT_PUBLIC_API_URL` — _optional_. Public API base; default `""`
   (same-origin).
 - `AUTH_RECHECK_MS` / `AUTH_SETTLE_GRACE_MS` / `AUTH_CALLBACK_PATH` /
@@ -587,14 +584,14 @@ mise run web
 ```
 
 → http://localhost:41300. That is `pnpm -C web install` then `pnpm -C web dev`
-with `PM_PROXY_TARGET=http://127.0.0.1:8080`. The web dev server rewrites `/api`
-and `/auth` to `PM_PROXY_TARGET`, which defaults to `http://127.0.0.1:41390`
-(`web/next.config.ts`) while control-plane defaults to `:8080` — so one has to
-point at the other, and the task does that for you. Running web by hand, either
-set the same variable or run control-plane with `PM_HTTP_PORT=41390`:
+with `PM_CP_URL=http://127.0.0.1:8080`. The web server forwards the CP's paths
+to `PM_CP_URL`, which defaults to `http://127.0.0.1:41390` (`web/src/proxy.ts`)
+while control-plane defaults to `:8080` — so one has to point at the other, and
+the task does that for you. Running web by hand, either set the same variable or
+run control-plane with `PM_HTTP_PORT=41390`:
 
 ```
-PM_PROXY_TARGET=http://127.0.0.1:8080 pnpm -C web dev
+PM_CP_URL=http://127.0.0.1:8080 pnpm -C web dev
 ```
 
 Serving over a real network (not just `localhost`)? Next.js blocks cross-origin
@@ -1110,10 +1107,8 @@ auditmon (excerpt; task role grants S3 + KMS + Aurora-reader):
 }
 ```
 
-web (excerpt; no secrets — it proxies `/api` + `/auth` to the CP). Note there is
-no `PM_PROXY_TARGET` here: it is baked in at `docker build` time, so a task-
-definition entry would be ignored — see
-[Web console rewrites](#web-console-rewrites):
+web (excerpt; no secrets). It needs no `PM_CP_URL`: the ALB sends the CP's paths
+to the CP, so they never reach the web container:
 
 ```json
 {
@@ -1128,37 +1123,13 @@ definition entry would be ignored — see
       "name": "web",
       "image": "<acct>.dkr.ecr.ap-northeast-2.amazonaws.com/pm-web:0.1.0",
       "portMappings": [{ "containerPort": 41300 }]
-      // no "environment": PM_PROXY_TARGET is build-time (see below), and the console's own
-      // API calls are browser-side, path-routed to the CP by the ALB
+      // no "environment": the console's own API calls are browser-side, path-routed
+      // to the CP by the ALB
       // no "secrets": the web holds none — it forwards to the CP, which owns identity + policy
     }
   ]
 }
 ```
-
-#### Web console rewrites
-
-`next.config.ts` reads `PM_PROXY_TARGET` while the config evaluates, and
-`next build` freezes the resolved destination into `.next/routes-manifest.json`.
-Because `output: "standalone"` ships a server bundle with no `next.config.ts`,
-the runtime container cannot re-read the variable — set it as an ECS
-`environment` entry and the rewrites still point at the build-time default
-`http://127.0.0.1:41390`, inside the container's own network namespace, so every
-console API call through the container returns a 500. The Dockerfile declares no
-matching `ARG` either, so `--build-arg` does not reach the build as things
-stand.
-
-The ALB layout above sidesteps this: `/api/*` and `/auth/*` are path-routed
-straight to the CP, and the console's API calls are same-origin browser
-requests, so they never traverse the web container's rewrites. Keep that routing
-and the container needs no CP address at all. Only front the console some other
-way (a single upstream to the web container, no path routing) and the rewrites
-become load-bearing — then bake the target in per environment by adding
-`ARG PM_PROXY_TARGET` + `ENV PM_PROXY_TARGET` to `web/Dockerfile`'s builder
-stage, giving you one image per CP address.
-
-Local `next dev` is unaffected — it evaluates the config on every boot, which is
-why `PM_PROXY_TARGET=http://127.0.0.1:8080 pnpm -C web dev` works.
 
 ### Create the resources
 

@@ -394,6 +394,7 @@ class NotificationService(
             taskId = req.id,
             revision = req.revision,
             requester = req.principal,
+            title = req.title,
             datasource = req.datasourceName ?: if (req.kind == "QUERY") "—" else "",
             requestKind = req.kind,
             durationSec = req.requestedDurationSec,

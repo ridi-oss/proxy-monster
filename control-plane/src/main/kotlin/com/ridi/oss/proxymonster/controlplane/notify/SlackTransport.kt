@@ -175,6 +175,18 @@ class SlackTransport(
         // vouch for a statement they could not fully read.
         val summary = renderer.summary(message, locale)
         val truncated = summary.length > SECTION_TEXT_LIMIT
+        message.title?.trim()?.takeIf { it.isNotEmpty() }?.let { title ->
+            add(
+                buildJsonObject {
+                    put("type", "header")
+                    putJsonObject("text") {
+                        put("type", "plain_text")
+                        put("text", if (title.length > HEADER_TEXT_LIMIT) title.take(HEADER_TEXT_LIMIT - 1) + "…" else title)
+                        put("emoji", false)
+                    }
+                },
+            )
+        }
         add(
             buildJsonObject {
                 put("type", "section")
@@ -334,6 +346,7 @@ class SlackTransport(
 
         /** A Block Kit section's `text` hard-caps here; a longer body is a permanent invalid_blocks reject. */
         private const val SECTION_TEXT_LIMIT = 3000
+        private const val HEADER_TEXT_LIMIT = 150
 
         /**
          * Slack errors worth another attempt. Everything else — `channel_not_found`, `not_in_channel`, a

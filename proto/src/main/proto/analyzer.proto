@@ -78,48 +78,56 @@ message Namespace {
   reserved "mysql_version_id";
 }
 
-// Every engine-specific analysis setting, grouped so the analyzer builds its sqlglot-go Dialect once
-// from one input. [engine] reuses proxymonster.v1.Engine (controlplane.proto) — the same enum the
-// proxy registers with — rather than a second, parallel MySQL/Postgres type. The caller (control-plane)
-// forwards this as-is from what the proxy already reported at introspection time; it does not
-// re-derive or re-parse any of these values itself.
+// Every engine-specific analysis setting: the engine, what its datasource reported, and what the proxy
+// observed on the session. The analyzer builds its sqlglot-go Dialect once from it.
 message EngineConfig {
   proxymonster.v1.Engine engine = 1;
-  // The target server's version as a clean major.minor[.patch] string. Required and validated for
-  // MySQL: analysis fails closed at VALIDATE without a parseable version. PostgreSQL carries the
-  // value for the wire contract but does not currently use it during analysis.
-  string engine_version = 2;
-  // MySQL's server-level lower_case_table_names setting (0..2), required for MySQL. Absent for
-  // PostgreSQL, which has no equivalent setting.
-  optional int32 mysql_lower_case_table_names = 3;
-  reserved 4 to 7;
-  reserved "mysql_ansi_quotes", "postgres_shadowed_functions", "postgres_function_shadowing_observed",
-    "postgres_system_xid_visible";
+  EngineDatasource datasource = 9;
   // What the proxy observed on the target session right before this statement. Forwarded by the
   // control plane exactly as the proxy sent it on DecisionRequest.session.
   SessionObservation session = 8;
-  // What an Athena StartQueryExecution call carries besides the SQL text (see athena.proto); set only
-  // for ATHENA. Forwarded unchanged from DecisionRequest.athena.
-  proxymonster.athena.v1.AthenaSqlContext athena = 9;
+  reserved 2 to 7;
+  reserved "engine_version", "mysql_lower_case_table_names", "mysql_ansi_quotes", "postgres_shadowed_functions",
+    "postgres_function_shadowing_observed", "postgres_system_xid_visible";
 }
 
-// Per-statement facts about the live target session that change how the analyzer parses or resolves
-// a statement. The proxy probes them before each statement; the control plane forwards them as-is.
-// Every field is engine-specific and stays unset for the other engine.
+// What the engine reads from a registered datasource, as its target reported it at introspection.
+message EngineDatasource {
+  // A clean major.minor[.patch]; MySQL fails closed without one.
+  string engine_version = 1;
+  // MySQL's server-level lower_case_table_names (0..2); required for MySQL, unset for the others.
+  optional int32 mysql_lower_case_table_names = 2;
+}
+
+// Per-statement facts from the proxy that change how the analyzer parses or resolves a statement: what
+// it observed on the held target session, or what the request itself carries beside the SQL. The control
+// plane forwards them as-is. One arm per engine, so an engine can only ever receive its own facts.
 message SessionObservation {
-  // MySQL sql_mode has ANSI_QUOTES active, so `"col"` is a quoted identifier (a masked column read),
-  // not a string literal. sql_mode is mutable per session, so this is observed per statement.
-  bool mysql_ansi_quotes = 1;
-  // Unqualified PostgreSQL functions whose live resolution can select a visible non-pg_catalog
-  // overload instead of the builtin whose implicit output schema the analyzer knows. Explicit
-  // pg_catalog qualification remains trusted.
-  repeated string postgres_shadowed_functions = 2;
-  // True only after the proxy observed function visibility on the held PostgreSQL session. False is
-  // distinct from an observed empty shadow list and keeps implicit polymorphic schemas closed.
-  bool postgres_function_shadowing_observed = 3;
-  // Whether pg_catalog.xid is the type PostgreSQL resolves for an unqualified xid on the held session.
-  // Absence means type visibility was not observed and keeps the cast gated fail-closed.
-  optional bool postgres_system_xid_visible = 4;
+  oneof engine {
+    MySqlSession mysql = 1;
+    PostgresSession postgres = 2;
+    // What an Athena StartQueryExecution call carries besides the SQL text (see athena.proto).
+    proxymonster.athena.v1.AthenaSqlContext athena = 3;
+  }
+}
+
+message MySqlSession {
+  // sql_mode has ANSI_QUOTES active, so `"col"` is a quoted identifier (a masked column read), not a
+  // string literal. sql_mode is mutable per session, so this is observed per statement.
+  bool ansi_quotes = 1;
+}
+
+message PostgresSession {
+  // Unqualified functions whose live resolution can select a visible non-pg_catalog overload instead of
+  // the builtin whose implicit output schema the analyzer knows. Explicit pg_catalog qualification remains
+  // trusted.
+  repeated string shadowed_functions = 1;
+  // True only after the proxy observed function visibility on the held session. False is distinct from an
+  // observed empty shadow list and keeps implicit polymorphic schemas closed.
+  bool function_shadowing_observed = 2;
+  // Whether pg_catalog.xid is the type resolved for an unqualified xid on the held session. Absence means
+  // type visibility was not observed and keeps the cast gated fail-closed.
+  optional bool system_xid_visible = 3;
 }
 
 message AnalyzeRequest {
@@ -155,6 +163,30 @@ message SplitRequest {
 message SplitResponse {
   bool ok = 1;
   repeated string statements = 2;
+}
+
+// Column names to put in the engine's canonical spelling, the one the analyzer keys its catalog on. Only
+// catalog, schema, table and column are read. ParseColumns reads them as SQL identifiers a person typed;
+// IntrospectedColumns as names the engine's own catalog reported.
+message ColumnNamesRequest {
+  proxymonster.v1.Engine engine = 1;
+  reserved 2;
+  reserved "mysql_lower_case_table_names";
+  EngineDatasource datasource = 4;
+  repeated Column columns = 3;
+}
+
+// [columns] answers the request's columns in order; any [error] leaves it empty.
+message ColumnNamesResponse {
+  enum Error {
+    NONE = 0;
+    // An unknown engine, a name that is not an identifier, or a malformed request.
+    INVALID = 1;
+    // The engine refused the datasource: MySQL before introspection reports lower_case_table_names.
+    DATASOURCE_REJECTED = 2;
+  }
+  Error error = 1;
+  repeated Column columns = 2;
 }
 
 // ---- response side ----
@@ -195,7 +227,7 @@ enum MaskedDisposition {
 // Granularity tracks what the AST exposes: kinds are as specific as the parse distinguishes (every
 // CREATE/ALTER/DROP object type, every discriminated SHOW/SET form), and benign forms the parse treats
 // uniformly share a kind (all schema-introspecting SHOWs are SHOW_METADATA; benign session SETs are
-// SET_SESSION_VAR). The coverage test (analyzer/probe/mysql_statement_coverage_test.go) is the
+// SET_SESSION_VAR). The coverage test (analyzer/engines/mysql_statement_coverage_test.go) is the
 // authority and pins the kind for every MySQL statement.
 //
 // The enum numbers are opaque identifiers, not a taxonomy: 0 is unspecified, 1 is unknown, and every
@@ -521,17 +553,26 @@ message StatementFacts {
   repeated ReturnedColumn returned_columns = 20;
   // Athena `EXECUTE lookup_user USING 7` runs a statement stored in the workgroup by name; its text is not
   // in the request, so there is nothing to trace lineage on. The analyzer fails closed (unanalyzable) and
-  // names the definition here; the proxy fetches it from AWS, adds it to EngineConfig.athena
+  // names the definition here; the proxy fetches it from AWS, adds it to SessionObservation.athena
   // .prepared_definitions, and re-sends the same analysis. Set only on an unresolved fact.
   proxymonster.athena.v1.AthenaPreparedDefinitionNeed athena_prepared_definition_need = 21;
-  // Athena only. The client submits SQL and a parameter list separately:
-  //   QueryString = "SELECT email FROM users WHERE id = ?", ExecutionParameters = ["7"]
-  // The analyzer folds the parameters into the text so lineage sees literals, and may also expand `*` or
-  // add the editor LIMIT; the result is rewritten_sql:
-  //   rewritten_sql = "SELECT email FROM users WHERE id = 7", athena_submission.execution_parameters = []
-  // The proxy must submit that list (here empty) with the rewritten text, or AWS binds the client's "7"
-  // to a `?` that no longer exists. Absent means the client's list still matches the text.
-  proxymonster.athena.v1.AthenaSubmission athena_submission = 22;
+  // What the proxy must submit beside rewritten_sql for engines whose request carries more than text.
+  // Absent means rewritten_sql alone (or the client's original) is the whole submission.
+  Submission submission = 22;
+}
+
+// Engine-specific companions to rewritten_sql; the proxy's engine reads its own arm and no other.
+message Submission {
+  oneof engine {
+    // The client submits SQL and a parameter list separately:
+    //   QueryString = "SELECT email FROM users WHERE id = ?", ExecutionParameters = ["7"]
+    // The analyzer folds the parameters into the text so lineage sees literals, and may also expand `*` or
+    // add the editor LIMIT; the result is rewritten_sql:
+    //   rewritten_sql = "SELECT email FROM users WHERE id = 7", submission.athena.execution_parameters = []
+    // The proxy must submit that list (here empty) with the rewritten text, or AWS binds the client's "7"
+    // to a `?` that no longer exists.
+    proxymonster.athena.v1.AthenaSubmission athena = 1;
+  }
 }
 
 message ReturnedColumn {

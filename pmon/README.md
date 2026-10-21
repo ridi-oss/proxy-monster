@@ -10,8 +10,9 @@ datasource, and injects the token upstream.
 brew trust --formula ridi-oss/tap/pmon
 brew install ridi-oss/tap/pmon   # or: go build -o /usr/local/bin/pmon ./pmon
 
-pmon login --url https://pm.example.com  # saves the "default" server, then device-auth in your browser
-pmon status                    # every server's login and brokered datasources
+pmon login --url https://pm.example.com  # saves the server under its instance name, then device-auth in your browser
+pmon status                    # every server's login, version and brokered datasources
+pmon version                   # pmon's, its daemon's and each server's version
 pmon show acme-mysql            # mysql://you@example.com:pmlocal_…@127.0.0.1:6100/my_database
 pmon show acme-postgres         # postgresql://you@example.com:pmlocal_…@127.0.0.1:6101/app?sslmode=disable
 ```
@@ -22,10 +23,14 @@ step — there is no separate command to start brokering.
 ### Servers
 
 pmon can be logged in to several control planes at once. Each server has a name;
-a command that names none addresses `default`.
+a command that names none addresses the default server. A server set or logged
+in to by URL alone is named after the instance (`PM_INSTANCE_NAME`, from
+`/api/instance`), or `default` on a server too old to say. The first server you
+create becomes the default; `pmon server default <name>` makes another one the
+default, and `pmon server default` prints it.
 
 ```sh
-pmon server set --url https://pm.example.com          # the "default" server
+pmon server set --url https://pm.example.com          # named after the instance, e.g. "pm"
 pmon server set dev --url https://pm.dev.example.com  # the "dev" server
 pmon login                     # log in to default
 pmon login dev                 # log in to dev
@@ -34,11 +39,89 @@ pmon show acme-mysql            # acme-mysql on default
 pmon show dev acme-mysql        # acme-mysql on dev
 pmon logout dev                 # or `pmon logout --all`
 pmon server unset dev           # log out of dev and delete it
+pmon server default dev         # bare commands now address dev
+pmon server rename default      # rename to the name the server advertises
+pmon server rename dev staging  # or to a name you give
 ```
 
 Changing a logged-in server's URL logs it out: a token is only good against the
 control plane that issued it. A config from a single-server release loads as
-`default`, keeping its ports and password.
+`default`, keeping its ports and password, and a config from before the default
+could be chosen keeps `default` as its default. Deleting the default server
+leaves none until you create or choose another. A renamed server keeps its
+login, ports and default, and the entries `pmon mcp --install` added for it move
+to the new name.
+
+### Scopes
+
+A login grants `mcp:read` and `mcp:query`. `--scopes` names every scope to grant
+instead, as a comma-separated list:
+
+```sh
+pmon login hr --scopes mcp:read,mcp:query,mcp:approvals:write
+```
+
+The browser approval page lists each scope beyond the default pair before you
+approve. Those extra scopes last `PM_ELEVATED_SCOPE_TTL` (default 1h) from the
+approval; read and query last the whole login. `pmon status` shows the granted
+scopes and when the extra ones expire. To change scopes, log in again.
+
+### MCP
+
+`pmon mcp [server]` is a local stdio MCP server. An agent runs it as a command,
+and it relays to `<server>/mcp` with a short-lived MCP token the daemon mints
+from your pmon login, so the agent needs no sign-in of its own.
+
+`pmon mcp --install` registers it with every AI app installed on this machine
+(Claude Desktop, Claude Code, Codex) for every server; name servers or pass
+`--app` to narrow it, and `--uninstall` removes the entries. Each entry is named
+`pmon-<server>`; a name another app's entry already holds gets `-2`, `-3`, and
+so on. It replaces an app's other entry for the same server: one that connects
+to the server's MCP URL over https, or `pmon mcp` under another name.
+
+```sh
+pmon mcp --install
+pmon mcp --install --app claude-code hr
+pmon mcp --uninstall hr
+```
+
+By hand, the same entries are:
+
+```sh
+claude mcp add --scope user pmon-hr -- pmon mcp hr
+codex mcp add pmon-hr -- pmon mcp hr
+```
+
+Claude Desktop takes the same command in `claude_desktop_config.json`:
+`"mcpServers": {"pmon-hr": {"command": "pmon", "args": ["mcp", "hr"]}}`. If the
+server is not logged in, `pmon mcp` exits with the `pmon login` to run. Name the
+pmon server after the proxy-monster instance, as the `get_pmon_guide` MCP tool
+does, so `pmon-<instance>` names one install everywhere.
+
+### Remotes
+
+A remote is another macOS or Linux machine whose pmon daemon this one drives
+over SSH: sign in with this machine's browser, and connect to its datasources
+here.
+
+```sh
+pmon remote add devbox                 # any ssh target: a Host alias, host, or user@host
+pmon --remote devbox login hr          # or PMON_REMOTE=devbox
+pmon --remote devbox show hr orders    # a connection string on a port of this machine
+pmon --remote devbox mcp --install     # pmon-devbox-<server> entries in this machine's AI apps
+```
+
+The daemon keeps one shared ssh connection per remote and forwards the remote's
+control socket and each of its datasources to a loopback port here, from the
+same port range as this machine's datasources. `--remote` runs any command
+against the remote daemon through that socket; `start` starts it over ssh. The
+SSH target is the remote's name, so a short name, keys and jump hosts come from
+`~/.ssh/config`. ssh runs with `BatchMode`, so it never prompts: use a key or an
+agent. Reaching a running remote daemon needs nothing more there; starting one
+uses `pmon` from the remote's login-shell `PATH`, else Proxy Monster Desktop's
+bundled `pmon`. `pmon remote` lists each remote's state. The menu-bar app shows
+each remote as its own submenu, adds and removes remotes in Settings › Servers,
+and notifies you when a connected remote drops.
 
 ## Commands
 
@@ -46,10 +129,13 @@ control plane that issued it. A config from a single-server release loads as
 |  |  |
 | --- | --- |
 | `pmon server set [name] --url U` / `unset [name]` / `list` | Manage servers (`-f` on `unset` skips the live-connection prompt) |
-| `pmon login [server] [--url U]` | Device-auth flow; starts the daemon if needed and opens the server's brokers |
+| `pmon login [server] [--url U] [--scopes S]` | Device-auth flow; starts the daemon if needed and opens the server's brokers |
 | `pmon logout [server] [--all]` | Clear a server's credentials and close its brokers (the daemon stays up) |
 | `pmon show [server] <ds>` | One datasource's local connection string |
-| `pmon status` | Daemon state: every server's login and expiry, brokered datasources, live connections |
+| `pmon mcp [server]` | Local stdio MCP server relaying to the server's `/mcp` over the pmon login |
+| `pmon status` | Daemon state: every server's login, expiry, and scopes, brokered datasources, live connections |
+| `pmon remote add <ssh-target>` / `remove <ssh-target>` / `reconnect <ssh-target>` / `list` | Manage remotes, whose daemons this one reaches over SSH |
+| `pmon --remote <ssh-target> <command>` | Run a command against a remote's daemon (also `PMON_REMOTE`) |
 | `pmon start` / `stop` / `restart` | Daemon lifecycle (`-f` / `--force` on `stop` and `restart` skips the live-connection prompt) |
 | `pmon --version` | The release this binary was built from |
 
@@ -97,9 +183,9 @@ the running process predates it. `pmon restart` picks up the current build.
 ## Architecture
 
 The daemon owns all state and logic and exposes a **local control socket**. This
-CLI and the [menu-bar app](../pmontray) are symmetric peers over that socket:
-neither is privileged, both can start and stop the daemon, and both work when it
-is down.
+CLI and the [menu-bar app](./tray) are symmetric peers over that socket: neither
+is privileged, both can start and stop the daemon, and both work when it is
+down.
 
 ```
 pmon CLI ──┐                        ┌── menu-bar app
@@ -154,10 +240,5 @@ pmon CLI ──┐                        ┌── menu-bar app
 | --- | --- |
 | `PMON_CONFIG_DIR` | State directory (default: the user config dir). Set it to run several independent daemons |
 | `PMON_PORT_BASE` | Low end of the loopback port range (default 6100). Needed when two daemons share a machine — a separate state dir isolates state, not ports |
+| `PMON_REMOTE` | SSH target of the remote whose daemon commands address, as `--remote` |
 | `PMON_BINARY` | The `pmon` binary that runs the daemon. Resolved automatically (this binary if it is `pmon`, else a sibling `pmon`, else `PATH`); set it for an unbundled dev build |
-
-## Not yet
-
-- **Notarized menu-bar app** — [`pmontray/`](../pmontray) is built and ad-hoc
-  signed; distributing it to other machines needs a Developer ID signature +
-  notarization.

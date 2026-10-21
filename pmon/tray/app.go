@@ -1,0 +1,356 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"io"
+	"maps"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/ridi-oss/proxy-monster/pmon/control"
+)
+
+// reconnectDelay is how long to wait before re-subscribing after the event stream drops. The stream ending is
+// the normal signal that the daemon stopped, so this is a poll for "did it come back", not an error path.
+const reconnectDelay = 2 * time.Second
+
+// tick refreshes the "time left" titles and the ending-soon notices between daemon events.
+const tick = time.Minute
+
+// openAtLoginDecided records that Open at Login was set once, by the first sign-in or by the user, so the
+// app never turns it back on after the user turned it off.
+const openAtLoginDecided = "openAtLoginDecided"
+
+// app is the tray's whole runtime. It mirrors daemon state into the menu; it never holds state the daemon does
+// not have, apart from which notices it already showed.
+type app struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+
+	// renderMu serializes renders, so a menu is always built from one status start to finish.
+	renderMu  sync.Mutex
+	onScreen  bool
+	shape     string
+	nodes     []*node
+	children  map[*node][]*node
+	genCancel context.CancelFunc
+
+	// actionBusy serializes the lifecycle actions, so a double-click cannot run two conflicting changes at once.
+	// A try-lock rather than a blocking mutex: an action that cannot run should say so and return, never queue
+	// behind a long one (a device-auth flow runs for minutes) and leave the menu unresponsive.
+	actionBusy sync.Mutex
+	actionHeld bool
+
+	mu     sync.Mutex
+	status *control.Status // nil means "no daemon reachable"
+	// remotes is each remote daemon's own status, by SSH target; remoteWatch stops the watcher behind it.
+	remotes     map[string]*control.Status
+	remoteWatch map[string]remoteWatcher
+	// remoteStates is each remote's state at the last status, to notice a dropped connection.
+	remoteStates map[string]control.RemoteState
+	signingIn    map[string]bool
+	// warned is the sign-in end each server was last warned about, so each ending is announced once.
+	warned map[string]time.Time
+	// ended is the sign-in end each server's "ended" notice was posted for.
+	ended map[string]time.Time
+	// ai is the last read of each AI app's settings; reading runs the apps' CLIs, so it is cached.
+	ai        []aiState
+	aiServers string
+	aiMu      sync.Mutex     // one AI-settings read at a time
+	prefsPid  int            // the Settings window's process, while open
+	prefsIn   io.WriteCloser // its stdin, for tellPrefs
+	// pmonVersion is the bundled pmon's `--version`, read once at startup.
+	pmonVersion string
+	// updates is whether this build updates itself; pendingUpdate is a downloaded update's version.
+	updates       bool
+	pendingUpdate string
+	// appearance ticks when watchAppearance polls, for settings the Settings window changes.
+	appearance chan struct{}
+
+	errMu  sync.Mutex
+	err    error
+	exited bool
+}
+
+func newApp(ctx context.Context) *app {
+	ctx, cancel := context.WithCancel(ctx)
+	return &app{pmonVersion: bundledPmonVersion(), ctx: ctx, cancel: cancel, children: map[*node][]*node{}, warned: map[string]time.Time{}, ended: map[string]time.Time{}, signingIn: map[string]bool{}, appearance: make(chan struct{}, 1)}
+}
+
+// tryLockAction claims the lifecycle lock without blocking, reporting whether it was free.
+func (a *app) tryLockAction() bool {
+	a.actionBusy.Lock()
+	defer a.actionBusy.Unlock()
+	if a.actionHeld {
+		return false
+	}
+	a.actionHeld = true
+	return true
+}
+
+func (a *app) unlockAction() {
+	a.actionBusy.Lock()
+	a.actionHeld = false
+	a.actionBusy.Unlock()
+}
+
+func (a *app) setErr(err error) {
+	a.errMu.Lock()
+	defer a.errMu.Unlock()
+	if a.err == nil {
+		a.err = err
+	}
+}
+
+func (a *app) exitErr() error {
+	a.errMu.Lock()
+	defer a.errMu.Unlock()
+	return a.err
+}
+
+func (a *app) view() view {
+	a.mu.Lock()
+	signingIn := make(map[string]bool, len(a.signingIn))
+	for k, v := range a.signingIn {
+		signingIn[k] = v
+	}
+	a.mu.Unlock()
+	on, supported := loginItem()
+	a.mu.Lock()
+	ai, updates, pending := a.ai, a.updates, a.pendingUpdate
+	a.mu.Unlock()
+	a.mu.Lock()
+	remotes := maps.Clone(a.remotes)
+	a.mu.Unlock()
+	return view{now: time.Now(), signingIn: signingIn, loginItemOn: on, loginItemShow: supported, ai: ai, pmonVersion: a.pmonVersion,
+		updates: updates, pendingUpdate: pending, remotes: remotes}
+}
+
+func (a *app) setSigningIn(server string, on bool) {
+	a.mu.Lock()
+	if on {
+		a.signingIn[server] = true
+	} else {
+		delete(a.signingIn, server)
+	}
+	a.mu.Unlock()
+	a.renderMu.Lock()
+	a.redraw()
+	a.renderMu.Unlock()
+}
+
+// onReady draws the first menu and starts the watchers.
+func (a *app) onReady() {
+	applyTheme(nil, theme())
+	a.renderMu.Lock()
+	a.onScreen = true
+	a.redraw()
+	a.renderMu.Unlock()
+	a.startUpdates()
+	go func() {
+		a.finishUpdate() // first: it replaces a daemon an older build left, which starting one would hide
+		a.startDaemon()
+	}()
+	go a.watchDaemon()
+	go a.ticker()
+	go a.watchAppearance()
+	go offerTerminal()
+}
+
+func (a *app) onExit() {
+	stopUpdater()
+	a.errMu.Lock()
+	a.exited = true
+	a.errMu.Unlock()
+	a.cancel()
+}
+
+// watchAppearance applies a language, theme or Open at Login the Settings window changed. The two processes
+// share the app's user defaults and login item, so polling them is the whole protocol.
+func (a *app) watchAppearance() {
+	l, th := lang(), theme()
+	login, _ := loginItem()
+	t := time.NewTicker(2 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-a.ctx.Done():
+			return
+		case <-t.C:
+		}
+		select {
+		case a.appearance <- struct{}{}:
+		default:
+		}
+		nlogin, _ := loginItem()
+		if nl, nth := lang(), theme(); nl != l || nth != th || nlogin != login {
+			l, th, login = nl, nth, nlogin
+			applyTheme(nil, th)
+			a.renderMu.Lock()
+			a.redraw()
+			a.renderMu.Unlock()
+			go a.refreshAI(true)
+		}
+	}
+}
+
+func (a *app) ticker() {
+	t := time.NewTicker(tick)
+	defer t.Stop()
+	n := 0
+	for {
+		select {
+		case <-a.ctx.Done():
+			return
+		case <-t.C:
+			if n++; n%5 == 0 {
+				go a.refreshAI(true)
+			}
+			go a.installWhenIdle()
+			a.renderMu.Lock()
+			a.redraw()
+			a.renderMu.Unlock()
+		}
+	}
+}
+
+// noticeEndings posts one notification per server when its sign-in is about to end. Clicking it signs in.
+func (a *app) noticeEndings(s *control.Status, v view) {
+	if s == nil {
+		return
+	}
+	for _, srv := range s.Servers {
+		end, ok := signInEnd(srv)
+		if !srv.LoggedIn || !ok {
+			continue
+		}
+		left := end.Sub(v.now)
+		if left <= 0 || srv.ReauthRequired {
+			a.noticeEnded(srv.Name, end)
+			continue
+		}
+		if left >= endingSoon {
+			continue
+		}
+		a.mu.Lock()
+		seen := a.warned[srv.Name].Equal(end)
+		a.warned[srv.Name] = end
+		a.mu.Unlock()
+		if !seen {
+			notifyAction("ending:"+srv.Name, T("n.ending", "server", srv.Name, "m", strconv.Itoa(max(1, int(left.Minutes())))),
+				T("n.endingBody"), "signin:"+srv.Name)
+		}
+	}
+}
+
+// postNotice is notifyAction, replaceable in tests.
+var postNotice = notifyAction
+
+// noticeEnded announces once per sign-in that a server's sign-in has ended, whether its window closed or the
+// daemon's renewal was refused, including one that ended while the tray was not running.
+func (a *app) noticeEnded(server string, end time.Time) {
+	a.mu.Lock()
+	seen := a.ended[server].Equal(end)
+	a.ended[server] = end
+	a.mu.Unlock()
+	if !seen {
+		postNotice("ended:"+server, T("n.ended", "server", server), T("n.endedBody"), "signin:"+server)
+	}
+}
+
+func (a *app) notificationClicked(key string) {
+	if server, ok := strings.CutPrefix(key, "signin:"); ok {
+		a.run(action{op: opSignIn, server: server})
+	}
+}
+
+// startDaemon starts the daemon when the app launches, so a saved sign-in's datasources are ready and the menu
+// never shows the stopped state for no reason. Quit still stops it.
+func (a *app) startDaemon() {
+	if !a.tryLockAction() {
+		return // a Start or Sign In is already doing it
+	}
+	defer a.unlockAction()
+	if _, err := control.EnsureDaemon(a.ctx); err != nil && a.ctx.Err() == nil {
+		notify(T("n.startFailed"), err.Error())
+	}
+}
+
+// watchDaemon keeps the menu in sync with the daemon, and is also how the tray learns the daemon is gone: the
+// event stream ending means no daemon, which renders as the stopped state rather than a stale last-known one.
+func (a *app) watchDaemon() {
+	for {
+		if err := a.ctx.Err(); err != nil {
+			return
+		}
+		client, err := control.Connect(a.ctx)
+		if err != nil {
+			a.render(nil)
+			if !a.sleep(reconnectDelay) {
+				return
+			}
+			continue
+		}
+		// The stream's first event is the current status, so the menu is correct as soon as it opens.
+		streamErr := client.Events(a.ctx, func(ev control.Event) {
+			switch ev.Kind {
+			case "status":
+				if ev.Status != nil {
+					a.render(ev.Status)
+				}
+			case "reauth":
+				a.refresh(client)
+			case "shutdown":
+				a.render(nil)
+			default:
+				a.refresh(client)
+			}
+		})
+		if streamErr != nil && !errors.Is(streamErr, context.Canceled) {
+			a.render(nil)
+		} else {
+			a.render(nil) // the stream ended: the daemon is gone until proven otherwise
+		}
+		if !a.sleep(reconnectDelay) {
+			return
+		}
+	}
+}
+
+// refresh re-reads /status, for an event whose payload does not carry it.
+func (a *app) refresh(client *control.Client) {
+	s, err := client.Status(a.ctx)
+	if err != nil {
+		a.render(nil)
+		return
+	}
+	a.render(s)
+}
+
+// sleep waits d, returning false if the app is shutting down.
+func (a *app) sleep(d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-a.ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
+}
+
+// openAtLoginOnce turns Open at Login on after the first sign-in, unless it was already decided.
+func openAtLoginOnce() {
+	if prefBool(openAtLoginDecided) {
+		return
+	}
+	if _, supported := loginItem(); !supported {
+		return
+	}
+	if err := setLoginItem(true); err == nil {
+		setPrefBool(openAtLoginDecided, true)
+	}
+}

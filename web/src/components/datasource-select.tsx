@@ -2,9 +2,10 @@
 
 // Datasource selector reused by the editor, policy, and access surfaces. Loads
 // the datasource list (SWR) and renders a shadcn Select; the caller owns the id.
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { Database } from 'lucide-react'
 import { useDatasources } from '@/lib/hooks'
+import type { Datasource } from '@/lib/api/types'
 import {
   Select,
   SelectContent,
@@ -41,13 +42,28 @@ export function DatasourceSelect({
   size = 'sm',
   connectableOnly = false,
 }: Props) {
-  const { data, isLoading } = useDatasources(connectableOnly)
+  const { data, isLoading, mutate } = useDatasources(connectableOnly)
+  const [fresh, setFresh] = useState<Datasource[] | null>(null)
   const datasources = data ?? []
 
-  // Auto-select the first datasource for scoped (non-"all") pickers.
+  // A cached list may predate access to the saved datasource, so the fallback below waits for a fresh one.
   useEffect(() => {
-    if (!allowAll && value == null && data && data.length > 0) onChange(data[0].id)
-  }, [allowAll, value, data, onChange])
+    let live = true
+    mutate().then((list) => live && setFresh(list ?? null), () => {})
+    return () => {
+      live = false
+    }
+  }, [mutate])
+
+  // Scoped (non-"all") pickers fall back to the first datasource when none, or an unlisted one, is set.
+  useEffect(() => {
+    if (allowAll || !fresh) return
+    if (fresh.length === 0) {
+      if (value != null) onChange(null)
+    } else if (value == null || !fresh.some((d) => d.id === value)) {
+      onChange(fresh[0].id)
+    }
+  }, [allowAll, value, fresh, onChange])
 
   const current = value == null ? (allowAll ? ALL : null) : String(value)
   const nameOf = (v: string) =>

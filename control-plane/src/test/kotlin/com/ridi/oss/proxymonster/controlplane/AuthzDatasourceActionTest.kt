@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.controlplane.authz.UserParents
 import com.ridi.oss.proxymonster.controlplane.authz.Authz
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzDecision
@@ -68,7 +69,7 @@ class AuthzDatasourceActionTest {
     fun `a granted role may connect to the named datasource`() {
         val decision = authz().authorizeDatasourceAction(
             principal = "alice",
-            roles = setOf("batch-writer"),
+            parents = UserParents(setOf("batch-writer")),
             action = AuthzAction.DATASOURCE_CONNECT,
             datasource = "acme-mysql",
         )
@@ -79,7 +80,7 @@ class AuthzDatasourceActionTest {
     fun `a granted role may run a granted sql kind on the named datasource`() {
         val decision = authz().authorizeDatasourceActionId(
             principal = "alice",
-            roles = setOf("batch-writer"),
+            parents = UserParents(setOf("batch-writer")),
             cedarActionId = "stmt.cat.write.insert",
             datasource = "acme-mysql",
         )
@@ -93,7 +94,7 @@ class AuthzDatasourceActionTest {
             AuthzDecision.Allow,
             authz.authorizeDatasourceAction(
                 principal = "alice",
-                roles = setOf("batch-writer"),
+                parents = UserParents(setOf("batch-writer")),
                 action = AuthzAction.EXCEPTION_UNMASKABLE,
                 datasource = "acme-mysql",
                 datasourceTags = listOf("system:development"),
@@ -102,7 +103,7 @@ class AuthzDatasourceActionTest {
         assertIs<AuthzDecision.Deny>(
             authz.authorizeDatasourceAction(
                 principal = "alice",
-                roles = setOf("batch-writer"),
+                parents = UserParents(setOf("batch-writer")),
                 action = AuthzAction.EXCEPTION_UNMASKABLE,
                 datasource = "acme-mysql",
                 datasourceTags = emptyList(),
@@ -114,7 +115,7 @@ class AuthzDatasourceActionTest {
     fun `an ungranted sql kind is denied — deny-by-default, not absent-equals-allow`() {
         val decision = authz().authorizeDatasourceActionId(
             principal = "alice",
-            roles = setOf("batch-writer"),
+            parents = UserParents(setOf("batch-writer")),
             cedarActionId = "stmt.cat.write.delete",
             datasource = "acme-mysql",
         )
@@ -125,7 +126,7 @@ class AuthzDatasourceActionTest {
     fun `the same grant on a different datasource name does not apply — NAME-keyed, not blanket`() {
         val decision = authz().authorizeDatasourceAction(
             principal = "alice",
-            roles = setOf("batch-writer"),
+            parents = UserParents(setOf("batch-writer")),
             action = AuthzAction.DATASOURCE_CONNECT,
             datasource = "other",
         )
@@ -136,7 +137,7 @@ class AuthzDatasourceActionTest {
     fun `no roles at all is denied`() {
         val decision = authz().authorizeDatasourceAction(
             principal = "nobody",
-            roles = emptySet(),
+            parents = UserParents(emptySet()),
             action = AuthzAction.DATASOURCE_CONNECT,
             datasource = "acme-mysql",
         )
@@ -163,7 +164,7 @@ class AuthzDatasourceActionTest {
             AuthzDecision.Allow,
             authz.authorizeDatasourceActionId(
                 principal = "alice",
-                roles = setOf("anyone"),
+                parents = UserParents(setOf("anyone")),
                 cedarActionId = "stmt.cat.read",
                 datasource = "acme-mysql",
                 datasourceTags = listOf("pci"),
@@ -174,7 +175,7 @@ class AuthzDatasourceActionTest {
             AuthzDecision.Allow,
             authz.authorizeDatasourceActionId(
                 principal = "alice",
-                roles = setOf("anyone"),
+                parents = UserParents(setOf("anyone")),
                 cedarActionId = "stmt.cat.write.delete",
                 datasource = "acme-mysql",
                 datasourceTags = listOf("system:critical"),
@@ -184,7 +185,7 @@ class AuthzDatasourceActionTest {
         assertIs<AuthzDecision.Deny>(
             authz.authorizeDatasourceActionId(
                 principal = "alice",
-                roles = setOf("anyone"),
+                parents = UserParents(setOf("anyone")),
                 cedarActionId = "stmt.cat.read",
                 datasource = "acme-mysql",
                 datasourceTags = emptyList(),

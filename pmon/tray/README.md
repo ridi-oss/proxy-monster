@@ -1,0 +1,228 @@
+# pmontray — proxy-monster in the macOS menu bar
+
+Shipped as the app **Proxy Monster Desktop**; `pmontray` is its executable.
+
+A menu-bar front end for the [`pmon`](..) daemon. It is a **peer of the CLI, not
+its owner**: both drive the same control socket, both can start and stop the
+daemon, and both work when it is down. Anything the menu does is equally doable
+with `pmon`, and vice versa.
+
+```sh
+./build-app.sh            # -> "./dist/Proxy Monster Desktop.app"
+open "./dist/Proxy Monster Desktop.app"
+```
+
+To start it at login: System Settings › General › Login Items › add
+`Proxy Monster Desktop`. There is no launchd plist to install — the app is the
+login item, and the daemon's lifetime is an explicit choice, never an init
+system's.
+
+## Releases
+
+Each `pmon-v*` release attaches a universal (arm64 + x86_64) build, signed with
+RIDI's Developer ID and notarized:
+
+- `ProxyMonsterDesktop_<version>.pkg` installs the app for the current user
+  (`~/Applications`, no password) or for all users (`/Applications`), as the
+  Installer asks.
+- `ProxyMonsterDesktop_<version>_darwin_universal.zip` is the app alone.
+
+`brew install --cask ridi-oss/tap/proxy-monster-desktop` installs the zip and
+puts its `pmon` on `PATH`; it cannot install beside the `pmon` formula.
+
+On its first launch the app offers to put `pmon` on `PATH`, unless a new
+terminal already finds a `pmon`: for all users (`/usr/local/bin/pmon`, with an
+administrator's password) or only for the current user (`~/.local/bin/pmon`,
+adding `~/.local/bin` to `~/.zshrc`, `~/.bash_profile` and `~/.bashrc` where
+they exist and do not name it, or creating the login shell's profile). Settings
+› General changes the choice, and its Uninstall button stops the daemon, removes
+Open at Login, the link, the PATH line and the app's settings, and moves the app
+to the Trash. Saved servers and sign-ins stay for the CLI; `pmontray --forget`
+does the same cleanup without the Trash.
+
+The release job runs `signing-keychain.sh`, `build-app.sh` and
+`package-macos.sh`; each script lists the environment it reads. Unset, the
+signing and notarization inputs fall back to an ad-hoc, unnotarized build.
+
+### Updates
+
+Release builds update themselves with [Sparkle](https://sparkle-project.org)
+(`sparkle.sh` pins the version). `build-app.sh` embeds it when `FEED_URL` is
+set; other builds have no updater. The feed is `appcast-macos.xml` on the
+rolling `desktop-feed` release, which the release job replaces with the new
+version, signed with the EdDSA key in the `release` environment
+(`SPARKLE_ED_KEY`; its public half is `sparkle-public-key`). The same release
+holds `ProxyMonsterDesktop.pkg`, the current installer, which the console's
+Connect page links to.
+
+The app checks daily and downloads an update on its own, then installs it once
+no database connection or browser sign-in is open, relaunches, and replaces a
+daemon the old build started with the new `pmon`. The menu offers **Install
+Update** while one waits. An organization turns updates off with a configuration
+profile setting `SUEnableAutomaticChecks` to false for
+`com.ridi.oss.proxymonster.pmontray`; Settings then shows the switch as managed.
+
+### Windows
+
+The same app runs in the Windows notification area. `package-windows.sh`, on
+macOS or Linux, builds `pmontray.exe` (no console window), `pmon.exe` and
+WinSparkle into a per-user MSI (`windows/ProxyMonsterDesktop.wxs`, built with
+msitools' `wixl`): it installs to
+`%LOCALAPPDATA%\Programs\Proxy Monster Desktop` and adds a Start menu shortcut.
+wixl has no ARM64 target, so the ARM64 MSI is an x64 package holding ARM64
+binaries, which a per-user install does not depend on; it refuses to install on
+an x64 PC.
+
+The installer is optional. The app itself registers `pmon://`, its notification
+identity (`HKCU\Software\Classes\AppUserModelId\RIDI.ProxyMonsterDesktop`) and
+Open at Login, and puts its folder on the user's PATH, so the three files of
+`ProxyMonsterDesktop_<version>_windows_<arch>.zip` run from any folder.
+
+Windows releases are signed by hand with a hardware token. Each `pmon-v*`
+release attaches attested unsigned binaries
+(`ProxyMonsterDesktop_<version>_windows_<arch>_unsigned.zip`). The token holder
+runs `sign-windows.sh pmon-v<version>` where the token is plugged in (macOS or
+Linux, with osslsigncode), which signs the executables, packages and signs the
+MSIs, and uploads them with the signed zips. It reads the PIN from 1Password
+(`PIN_REF`; empty, it prompts), embeds `windows/signing-chain.pem` and verifies
+against `windows/signing-root.pem`; its header lists the rest. Then
+`gh workflow run desktop-feed-windows.yml --ref pmon-v<version>` checks that the
+MSIs are signed by the certificate whose SHA-1 thumbprint is in
+`windows/signing-cert-sha1` (it refuses to publish until that file exists) and
+publishes `appcast-windows.xml` and `ProxyMonsterDesktop-x64.msi` on
+`desktop-feed`. WinSparkle reads that feed; an organization turns updates off
+with the policy value `AutoUpdate` = 0 under
+`HKLM\Software\Policies\RIDI\Proxy Monster Desktop`.
+
+A renewed certificate has a new thumbprint: commit it to
+`windows/signing-cert-sha1` before signing with it, or the feed workflow refuses
+the MSIs; replace the two PEM files if its issuer changed. The thumbprint is the
+SHA-1 of the certificate's DER
+(`openssl x509 -in cert.pem -outform der | shasum`).
+
+## The menu
+
+```
+acme — dana@acme.example · 9h 12m left  ›  Sign In Again…
+                                            Sign Out
+                                            ─────────
+                                            orders     ›  Copy URL
+                                            analytics  ›  Copy JDBC URL
+                                                          Copy Go DSN
+                                                          Copy Command Line
+staging — signed out                    ›  Sign In…
+─────────
+Connect AI Apps                         ›  ✓ Claude Desktop
+                                             Claude Code
+                                             Codex
+2 open connections
+─────────
+✓ Open at Login
+Check for Updates…
+Settings…
+Quit Proxy Monster
+```
+
+One submenu per server; each datasource offers every connection-string format
+its engine supports (the same strings `pmon show --format` prints). With no
+daemon running the menu says so and offers **Start**; it never shows a stale
+last-known state.
+
+The menu-bar icon is a monochrome template image; its state is a shape on the
+shield, counting this machine's servers and every connected remote's: dots while
+a browser sign-in is open, a clock when a sign-in ends within 30 minutes, plain
+while any sign-in works, a slash when none works and one has ended, faded when
+nothing is signed in or running. An arrow marks a downloaded update.
+
+- **Sign In…** opens the server's sign-in page in the browser with the code
+  filled in, starting the daemon first if none is running. A notification 30
+  minutes before a sign-in ends, and one when it has ended, sign in again when
+  clicked.
+- **Settings…** opens a window with Servers (add, change an address, remove,
+  sign in and out), AI Apps (a switch per app and server), General (Open at
+  Login, updates, language and theme) and About (versions). It runs as a second
+  process (`pmontray --preferences`) because the systray owns the menu-bar
+  process's main thread. The page (`prefs.html`) runs in a system web view and
+  uses the console's look: its tokens and the Geist fonts, embedded in the app
+  (`fonts/`, SIL Open Font License). It calls Go through one asynchronous
+  `pmCall`, since several calls take seconds. Opened in a browser on its own,
+  the page runs on demo data, for design review. With no servers, the menu
+  offers **Connect to a Server…**, which opens it at Add.
+- **`pmon://connect?name=<server>&url=<address>`** links, from the console's
+  Connect page, add a server and start its sign-in. Any web page can open such a
+  link, so the address must be `https` (`http` only for this machine), the user
+  confirms first, and replacing an existing server's address says so. A cancel
+  or an unanswered dialog changes nothing.
+- **Language and theme** are set in Settings › General: System, English or
+  한국어, and System, Light or Dark. Every message comes from
+  `i18n/<lang>.json`, shared by the menu and the Settings page; a test fails if
+  a key is missing from any language. Both choices live in the app's user
+  defaults, which the menu-bar process re-reads every 2 seconds.
+- **Connect AI Apps** adds or removes `pmon mcp <server>` in Claude Desktop (its
+  `claude_desktop_config.json`, other settings untouched), Claude Code
+  (`claude mcp add --scope user`) and Codex (`codex mcp add`), listing only the
+  apps installed. The entry runs the `pmon` inside the app bundle. Codex's own
+  command rewrites the formatting of `~/.codex/config.toml`. Without the CLI —
+  the Claude and Codex desktop apps on Windows ship none — the app edits the
+  file the CLI would (`~/.claude.json`, or one `[mcp_servers.<entry>]` table of
+  `~/.codex/config.toml`, leaving the rest as it was). On macOS the AI app is
+  not restarted and the notification says what to do; on Windows, Claude Desktop
+  writes its config back from memory, so it is restarted around the change after
+  the user confirms.
+- **Open at Login** turns on after the first sign-in; once the user changes it,
+  the app leaves it alone. Needs macOS 13.
+- **Quit** stops the daemon, then exits — it is the peer of `pmon stop`. Merely
+  closing the menu does nothing, matching a CLI command simply returning.
+- **Sign Out / Quit** confirm first when connections are open, because the
+  daemon is shared: the CLI may have started it and another window may be
+  mid-query. The dialog fails **closed** — if it cannot be shown, the action is
+  refused rather than silently dropping someone's session.
+
+## Design
+
+It holds **no state**. Every fact shown comes from the daemon's `/status`, and
+every action is a call on the same control API the CLI uses, so the two front
+ends cannot drift.
+
+It **starts the daemon when it launches**, so a saved sign-in's datasources are
+ready as soon as the user logs in to their computer, and **Quit stops it**. The
+CLI stays explicit: `pmon status` never starts one.
+
+The menu is built as a tree from each status (`menu.go`). A tree with the same
+keys as the one on screen updates the items in place; any other shape resets the
+menu, since a systray can only append items. A Copy item's label and payload
+come from one datasource in one render, so they cannot pair two datasources.
+
+### Its own module
+
+A systray needs **cgo** and must own the main thread. Keeping it out of `pmon`
+leaves that a pure-Go static binary, which is what lets `pmon` be dropped on any
+machine and cross-compiled freely.
+
+`build-app.sh` bundles `pmon` inside the `.app` (`Contents/MacOS/pmon`): the
+tray spawns the daemon by exec'ing a `pmon` binary, so shipping the pair
+together is what keeps the daemon and the front end from skewing.
+
+### macOS integration
+
+Notifications and Open at Login use the system frameworks (`native_darwin.m`): a
+notification is attributed to the app and can be clicked. An unbundled `go run`
+build has no app identity, so its notifications fall back to `osascript`. The
+confirm dialog and the clipboard use `osascript` and `pbcopy`. Any value
+interpolated into an AppleScript is escaped (`osaQuote`): a principal or
+datasource name reaches those scripts as data, and an unescaped quote would
+otherwise run as code.
+
+The `.app` bundle is required, not cosmetic: `LSUIElement` (no Dock icon) is an
+`Info.plist` property, and the bundle identity is what macOS attaches
+notification permission and the Login Item to.
+
+## Environment
+
+Inherits `pmon`'s: `PMON_CONFIG_DIR` (state directory) and `PMON_PORT_BASE`
+(loopback port range). Set both to run a tray against an isolated daemon without
+disturbing one already running.
+
+`PMON_BINARY` overrides which `pmon` runs the daemon. Normally the tray finds
+the `pmon` bundled beside it (`Contents/MacOS/pmon`), falling back to `PATH` —
+set this when running an unbundled dev build from `go run`.

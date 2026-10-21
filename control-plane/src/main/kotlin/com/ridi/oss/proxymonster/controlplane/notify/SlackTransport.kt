@@ -35,6 +35,9 @@ class SlackTransport(
     private val webBaseUrl: String,
     private val renderer: NotificationRenderer,
     private val api: String = "https://slack.com/api",
+    private val channels: SlackChannelRouter? = null,
+    // True for the instance that posts one message per request to its datasource's channel, not DMs.
+    private val toChannel: Boolean = false,
 ) : NotificationTransport {
 
     private val log = LoggerFactory.getLogger(SlackTransport::class.java)
@@ -44,7 +47,17 @@ class SlackTransport(
     // Misses are NOT cached: a principal that gains a Slack account later resolves on its next notification.
     private val userIdCache = java.util.concurrent.ConcurrentHashMap<String, String>()
 
-    override val name = TRANSPORT
+    override val name = if (toChannel) TRANSPORT_CHANNEL else TRANSPORT
+
+    override val addressesTasks = toChannel
+
+    override val sharedAudience = toChannel
+
+    override fun taskAddress(req: com.ridi.oss.proxymonster.controlplane.AccessRequest): String? =
+        if (toChannel) channels?.channelFor(req) else null
+
+    override fun serves(req: com.ridi.oss.proxymonster.controlplane.AccessRequest): Boolean =
+        toChannel || channels == null || !channels.channelOnly || channels.channelFor(req) == null
 
     /** A section block's `text` caps at 3000 characters; the statement shares that block with its label. */
     override val statementHardLimit = 2800
@@ -52,6 +65,7 @@ class SlackTransport(
     override val supportsUpdate = true
 
     override suspend fun addressOf(principal: String, email: String?): String? {
+        if (toChannel) return principal
         // Prefer the CURRENT directory email over an email-shaped principal: a principal can be a stale login
         // address (auth-model.md: principal = email ?? sub), and delivering to a reassigned old address would
         // hand a task to its new owner. The email-shaped principal is only the fallback for a principal that
@@ -94,7 +108,10 @@ class SlackTransport(
         message.copy(
             requester = mentionFor(message.requester),
             decidedBy = message.decidedBy?.let { mentionFor(it) },
+            forcedBy = message.forcedBy?.let { mentionFor(it) },
             notifiedApprovers = message.notifiedApprovers.map { mentionFor(it) },
+            approvers = message.approvers.map { mentionFor(it) },
+            ccs = message.ccs.map { mentionFor(it) },
         )
 
     override suspend fun deliver(to: String, message: NotificationMessage, locale: String): DeliveryResult {
@@ -125,6 +142,34 @@ class SlackTransport(
         return send("chat.update", body) { externalRef }
     }
 
+    override val supportsReplies = true
+
+    override suspend fun reply(threadRef: String, text: String): DeliveryResult {
+        val channel = threadRef.substringBefore(':', "")
+        val ts = threadRef.substringAfter(':', "")
+        if (channel.isEmpty() || ts.isEmpty()) return DeliveryResult.Drop("malformed message ref")
+        val body = buildJsonObject {
+            put("channel", channel)
+            put("thread_ts", ts)
+            put("text", text)
+        }
+        return send("chat.postMessage", body) { resp ->
+            resp["ts"]?.jsonPrimitive?.contentOrNullSafe()?.let { "$channel:$it" }
+        }
+    }
+
+    override suspend fun editReply(replyRef: String, text: String?): DeliveryResult {
+        val channel = replyRef.substringBefore(':', "")
+        val ts = replyRef.substringAfter(':', "")
+        if (channel.isEmpty() || ts.isEmpty()) return DeliveryResult.Drop("malformed message ref")
+        val body = buildJsonObject {
+            put("channel", channel)
+            put("ts", ts)
+            if (text != null) put("text", text)
+        }
+        return send(if (text == null) "chat.delete" else "chat.update", body) { replyRef }
+    }
+
     /** The Block Kit body: one context-free summary section, then the actions the message is allowed to offer. */
     private fun blocksFor(message: NotificationMessage, locale: String) = kotlinx.serialization.json.buildJsonArray {
         // A section's text field hard-caps at 3000; overrun is a permanent invalid_blocks reject that would
@@ -143,7 +188,17 @@ class SlackTransport(
                 }
             },
         )
-        val actions = if (truncated) message.actions - NotificationAction.APPROVE_AND_RUN else message.actions
+        renderer.audience(message, locale)?.let { line ->
+            add(
+                buildJsonObject {
+                    put("type", "context")
+                    putJsonArray("elements") {
+                        add(buildJsonObject { put("type", "mrkdwn"); put("text", line) })
+                    }
+                },
+            )
+        }
+        val actions = if (truncated) message.actions - APPROVALS else message.actions
         if (actions.isNotEmpty()) {
             add(
                 buildJsonObject {
@@ -165,18 +220,18 @@ class SlackTransport(
                 put("type", "plain_text")
                 put("text", renderer.actionLabel(action, locale))
             }
+            if (action == NotificationAction.OPEN) {
+                put("url", message.deepLink)
+                return@buildJsonObject
+            }
+            put("action_id", ACTION_IDS.getValue(action))
+            put("value", "${message.taskId}:${message.revision}")
             when (action) {
-                NotificationAction.OPEN -> put("url", message.deepLink)
-                NotificationAction.APPROVE_AND_RUN -> {
-                    put("action_id", ACTION_APPROVE)
-                    put("value", message.taskId.toString())
-                    put("style", "primary")
-                }
-                NotificationAction.DENY -> {
-                    put("action_id", ACTION_DENY)
-                    put("value", message.taskId.toString())
-                    put("style", "danger")
-                }
+                NotificationAction.APPROVE_AND_RUN, NotificationAction.RUN -> put("style", "primary")
+                NotificationAction.APPROVE ->
+                    if (NotificationAction.APPROVE_AND_RUN !in message.actions) put("style", "primary")
+                NotificationAction.DENY -> put("style", "danger")
+                else -> Unit
             }
         }
 
@@ -258,8 +313,28 @@ class SlackTransport(
 
     companion object {
         const val TRANSPORT = "slack"
+        const val TRANSPORT_CHANNEL = "slack-channel"
         const val ACTION_APPROVE = "pm_approve_and_run"
+        const val ACTION_APPROVE_ONLY = "pm_approve"
         const val ACTION_DENY = "pm_deny"
+        const val ACTION_RUN = "pm_run"
+        const val ACTION_UNAPPROVE = "pm_unapprove"
+        const val ACTION_CLOSE = "pm_close"
+        const val ACTION_LGTM = "pm_lgtm"
+        const val ACTION_REVIEW = "pm_review"
+
+        val ACTION_IDS = mapOf(
+            NotificationAction.APPROVE_AND_RUN to ACTION_APPROVE,
+            NotificationAction.APPROVE to ACTION_APPROVE_ONLY,
+            NotificationAction.RUN to ACTION_RUN,
+            NotificationAction.UNAPPROVE to ACTION_UNAPPROVE,
+            NotificationAction.DENY to ACTION_DENY,
+            NotificationAction.CLOSE to ACTION_CLOSE,
+            NotificationAction.LGTM to ACTION_LGTM,
+            NotificationAction.REVIEW to ACTION_REVIEW,
+        )
+
+        private val APPROVALS = setOf(NotificationAction.APPROVE_AND_RUN, NotificationAction.APPROVE)
 
         /** A Block Kit section's `text` hard-caps here; a longer body is a permanent invalid_blocks reject. */
         private const val SECTION_TEXT_LIMIT = 3000

@@ -47,6 +47,12 @@ class ConfigGuardTest {
         assertFailsWith<IllegalArgumentException> { Config.fromEnv(envOf("PM_QUERY_TIMEOUT" to "abc")) }
     }
 
+    @Test fun `PM_ELEVATED_SCOPE_TTL defaults to an hour and is clamped like the OAuth TTLs`() {
+        assertEquals(3_600L, Config.fromEnv(envOf()).elevatedScopeTtlSeconds)
+        assertEquals(900L, Config.fromEnv(envOf("PM_ELEVATED_SCOPE_TTL" to "900")).elevatedScopeTtlSeconds)
+        assertEquals(60L, Config.fromEnv(envOf("PM_ELEVATED_SCOPE_TTL" to "5")).elevatedScopeTtlSeconds)
+    }
+
     @Test fun `PM_NOTIFY_STATEMENT takes omit auto full, coerces legacy truncated, rejects the rest`() {
         assertEquals("auto", Config.fromEnv(envOf()).notifyStatement, "default is auto")
         assertEquals("omit", Config.fromEnv(envOf("PM_NOTIFY_STATEMENT" to "omit")).notifyStatement)
@@ -55,6 +61,16 @@ class ConfigGuardTest {
         assertEquals("auto", Config.fromEnv(envOf("PM_NOTIFY_STATEMENT" to "truncated")).notifyStatement)
         // Anything else is a config error, not a silent default.
         assertFailsWith<IllegalArgumentException> { Config.fromEnv(envOf("PM_NOTIFY_STATEMENT" to "sometimes")) }
+    }
+
+    @Test fun `PM_SLACK_CHANNELS maps tags to channel ids, first match wins, and PM_SLACK_MODE picks channel-only`() {
+        val config = Config.fromEnv(envOf("PM_SLACK_CHANNELS" to "service:manta=C0123ABC, system:production=G0456DEF", "PM_SLACK_MODE" to "channel"))
+        assertEquals(listOf(SlackChannelRoute("service:manta", "C0123ABC"), SlackChannelRoute("system:production", "G0456DEF")), config.slackChannels)
+        assertTrue(config.slackChannelOnly)
+        assertFalse(Config.fromEnv(envOf()).slackChannelOnly, "default mode is both")
+        assertFailsWith<IllegalArgumentException> { Config.fromEnv(envOf("PM_SLACK_CHANNELS" to "service:manta=general")) }
+        assertFailsWith<IllegalArgumentException> { Config.fromEnv(envOf("PM_SLACK_CHANNELS" to "a=C1,a=C2")) }
+        assertFailsWith<IllegalArgumentException> { Config.fromEnv(envOf("PM_SLACK_MODE" to "dm")) }
     }
 
     @Test fun `PM_QUERY_TIMEOUT is bounded to the proxy's duration-safe ceiling (no ms overflow)`() {
@@ -396,6 +412,84 @@ class ConfigGuardTest {
         )
         assertFailsWith<IllegalArgumentException> {
             Config.fromEnv(envOf()).copy(webSessionSlideSeconds = 900, webSessionIdleSeconds = 900)
+        }
+    }
+
+    @Test fun `instance name defaults to the MCP host's first label and is validated when set`() {
+        assertEquals("local", Config.fromEnv(envOf()).instanceName)
+        assertEquals("", Config.fromEnv(envOf()).instanceDescription)
+        assertEquals("hris-pmon", Config.fromEnv(envOf("PM_MCP_RESOURCE" to "https://hris-pmon.example.com/mcp")).instanceName)
+        assertEquals("local", Config.fromEnv(envOf("PM_MCP_RESOURCE" to "http://10.0.0.7:8080/mcp")).instanceName)
+        assertEquals("local", Config.fromEnv(envOf("PM_MCP_RESOURCE" to "http://[::1]:8080/mcp")).instanceName)
+        assertEquals("hr-pmon", Config.defaultInstanceName("https://HR--Pmon.example.com/mcp"))
+        assertEquals("a".repeat(40), Config.defaultInstanceName("https://${"a".repeat(60)}.example.com/mcp"))
+        assertEquals("prod-1", Config.fromEnv(envOf("PM_INSTANCE_NAME" to "prod-1")).instanceName)
+        for (bad in listOf("Prod", "prod_1", "-prod", "prod-", "a".repeat(41), "p q")) {
+            assertFailsWith<IllegalArgumentException>(bad) { Config.fromEnv(envOf("PM_INSTANCE_NAME" to bad)) }
+        }
+        assertEquals("HR data", Config.fromEnv(envOf("PM_INSTANCE_DESCRIPTION" to " HR data ")).instanceDescription)
+        assertFailsWith<IllegalArgumentException> { Config.fromEnv(envOf("PM_INSTANCE_DESCRIPTION" to "a\nb")) }
+        assertFailsWith<IllegalArgumentException> { Config.fromEnv(envOf("PM_INSTANCE_DESCRIPTION" to "x".repeat(501))) }
+    }
+
+    @Test fun `PM_CI_OIDC_ISSUERS parses name=issuer entries sharing one audience and rejects malformed ones`() {
+        assertEquals(emptyList(), Config.fromEnv(envOf()).ciOidcIssuers)
+        val list = "github=https://token.actions.githubusercontent.com, gitlab=https://gitlab.com"
+        assertEquals(
+            listOf(
+                CiOidcIssuer("github", "https://token.actions.githubusercontent.com", "https://pm.example.com"),
+                CiOidcIssuer("gitlab", "https://gitlab.com", "https://pm.example.com"),
+            ),
+            Config.fromEnv(envOf("PM_CI_OIDC_ISSUERS" to list, "PM_MCP_RESOURCE" to "https://pm.example.com/mcp")).ciOidcIssuers,
+        )
+        assertEquals(
+            listOf("proxy-monster", "proxy-monster"),
+            Config.fromEnv(envOf("PM_CI_OIDC_ISSUERS" to list, "PM_CI_OIDC_AUDIENCE" to "proxy-monster")).ciOidcIssuers.map { it.audience },
+        )
+        listOf(
+            "github=http://token.actions.githubusercontent.com",
+            "github=",
+            "GitHub=https://token.actions.githubusercontent.com",
+            "https://token.actions.githubusercontent.com",
+            "a=https://a.example.com,a=https://b.example.com",
+        ).forEach { raw ->
+            assertFailsWith<IllegalArgumentException>(raw) { Config.fromEnv(envOf("PM_CI_OIDC_ISSUERS" to raw)) }
+        }
+    }
+
+    @Test fun `PM_CP_GO_GRPC_ADDR names cp-go's bridge, and the GitHub source needs it`() {
+        val bridge = arrayOf("PM_CP_GO_GRPC_ADDR" to "127.0.0.1:18092", "PM_CP_INTERNAL_TOKEN" to "tok")
+        assertNull(Config.fromEnv(envOf()).cpGoBridge)
+        assertEquals(CpGoBridgeConfig("127.0.0.1:18092", "tok"), Config.fromEnv(envOf(*bridge)).cpGoBridge)
+        assertFalse(Config.fromEnv(envOf(*bridge)).cpGoBridge.toString().contains("tok)"))
+        assertFailsWith<IllegalArgumentException> { Config.fromEnv(envOf("PM_CP_GO_GRPC_ADDR" to "127.0.0.1:1")) }
+
+        assertNull(Config.fromEnv(envOf()).github)
+        assertNull(Config.fromEnv(envOf("PM_GITHUB_APP_ID" to " ", *bridge)).github)
+        assertEquals(
+            GitHubConfig(
+                apiUrl = "https://api.github.com",
+                identity = listOf(GitHubIdentityResolver.EXTERNAL_IDENTITY, GitHubIdentityResolver.VERIFIED_EMAIL),
+            ),
+            Config.fromEnv(envOf("PM_GITHUB_APP_ID" to "123", *bridge)).github,
+        )
+        assertFailsWith<IllegalArgumentException> { Config.fromEnv(envOf("PM_GITHUB_APP_ID" to "123", "PM_CP_INTERNAL_TOKEN" to "tok")) }
+    }
+
+    @Test fun `PM_GITHUB_API_URL and PM_GITHUB_IDENTITY are normalized and validated`() {
+        fun github(vararg extra: Pair<String, String>) =
+            Config.fromEnv(
+                envOf("PM_GITHUB_APP_ID" to "123", "PM_CP_GO_GRPC_ADDR" to "127.0.0.1:1", "PM_CP_INTERNAL_TOKEN" to "tok", *extra),
+            ).github!!
+        assertEquals("https://git.example.com/api/v3", github("PM_GITHUB_API_URL" to " https://git.example.com/api/v3/ ").apiUrl)
+        assertEquals(
+            listOf(GitHubIdentityResolver.COMMIT_EMAIL, GitHubIdentityResolver.EXTERNAL_IDENTITY),
+            github("PM_GITHUB_IDENTITY" to " commit-email , external-identity ").identity,
+        )
+        assertEquals(2, github("PM_GITHUB_IDENTITY" to " ").identity.size)
+        for (bad in listOf("saml", "verified-email,verified-email", " , ")) {
+            val e = assertFailsWith<IllegalArgumentException>(bad) { github("PM_GITHUB_IDENTITY" to bad) }
+            assertTrue(e.message!!.contains("external-identity, verified-email, commit-email"), bad)
         }
     }
 }

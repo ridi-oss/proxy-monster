@@ -11,8 +11,10 @@ import {
   closeEditorSession,
   deleteEditorTask,
   getEditorResult,
+  getEditorSession,
   getEditorTask,
   openEditorSession,
+  setEditorDefaultSchema,
   submitEditorQuery,
   submitEditorScript,
 } from '@/lib/api/client'
@@ -63,6 +65,10 @@ export interface TableTab extends BaseTab {
   kind: 'table'
   datasourceId: number
   table: TreeTable
+  /** The column to flash in the Columns view; `seq` changes on every request so a repeat re-flashes. */
+  focus: { column: string; seq: number } | null
+  /** The open sub-view (columns, indexes, …), kept per tab. */
+  view: string
 }
 export interface SummaryTab extends BaseTab {
   kind: 'summary'
@@ -100,7 +106,7 @@ export interface ResultTabsApi {
   logs: QueryLogEntry[]
   run: (sql: string) => void
   runAll: (sql: string, timeoutSeconds: number) => void
-  openTable: (table: TreeTable) => void
+  openTable: (table: TreeTable, column?: string) => void
   collapsedGroups: ReadonlySet<number>
   toggleGroup: (groupId: number) => void
   closeGroup: (groupId: number) => void
@@ -112,6 +118,15 @@ export interface ResultTabsApi {
   clearLogs: () => void
   sessionOpen: boolean
   closeSession: () => Promise<void>
+  clearFocus: (id: string) => void
+  setTableView: (id: string, view: string) => void
+  /** Bumps on every openTable, so the strip can leave Logs even when the tab already existed. */
+  revealSeq: number
+  /** The session's effective namespace as the proxy last reported it: undefined before the session opens,
+   *  null when the proxy could not read it. */
+  searchPath: string[] | null | undefined
+  /** Make a schema the session's default (the server builds the statement); logged, without a result tab. */
+  setDefaultSchema: (schema: string) => void
 }
 
 export function useResultTabs(datasourceId: number | null, maxRows: number): ResultTabsApi {
@@ -122,6 +137,8 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
 
   // Mirror state in a ref so the imperative handlers read the latest without stale closures.
   const tabsRef = useRef<ResultTab[]>([])
+  const focusSeq = useRef(0)
+  const [revealSeq, setRevealSeq] = useState(0)
   useEffect(() => {
     tabsRef.current = tabs
   }, [tabs])
@@ -142,10 +159,26 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
   const openingRef = useRef<Promise<string> | null>(null)
   const [sessionOpen, setSessionOpen] = useState(false)
 
+  const [searchPath, setSearchPath] = useState<string[] | null | undefined>(undefined)
+
   const forgetSession = useCallback(() => {
     sessionIdRef.current = null
     sessionDsRef.current = null
     setSessionOpen(false)
+    setSearchPath(undefined)
+  }, [])
+
+  const searchPathSeq = useRef(0)
+  const refreshSearchPath = useCallback(() => {
+    const sid = sessionIdRef.current
+    if (!sid) return
+    // Overlapping refreshes can land out of order; only the latest request may set the value.
+    const seq = ++searchPathSeq.current
+    getEditorSession(sid)
+      .then(({ searchPath: path }) => {
+        if (seq === searchPathSeq.current && sessionIdRef.current === sid) setSearchPath(path)
+      })
+      .catch(() => {})
   }, [])
 
   const ensureSession = useCallback(async (): Promise<string> => {
@@ -156,6 +189,7 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
     const p = openEditorSession(datasourceId).then(({ sessionId }) => {
       sessionIdRef.current = sessionId
       sessionDsRef.current = datasourceId
+      refreshSearchPath()
       setSessionOpen(true)
       return sessionId
     })
@@ -165,13 +199,14 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
     } finally {
       openingRef.current = null
     }
-  }, [datasourceId])
+  }, [datasourceId, refreshSearchPath])
 
   // Switching datasource invalidates every tab (catalog + rows differ) and closes the previous session's
   // held connection (the cleanup runs on datasource change AND on unmount).
   useEffect(() => {
     setTabs([])
     setActiveId(null)
+    setSearchPath(undefined)
     return () => {
       // Drop any live tab tasks (their saved rows) alongside closing the held session — the previous
       // datasource's tabs are being discarded, so their server-side results should go too (best-effort).
@@ -372,11 +407,12 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
             // A policy DENY is a decision, not an error: returning it as a DENY result is what gives the
             // panel the reason and the decisionId it needs to offer "request approval". Throwing here
             // collapsed it into a generic failure and dropped both, leaving the requester nowhere to go.
-            if (child?.errorCode === 'approval.execute_denied') {
+            if (child?.errorCode === 'approval.execute_denied' || child?.errorCode === 'approval.rate_spent') {
               return {
                 decision: 'DENY',
                 decisionId: child.decisionId ?? null,
                 denyReason: child.denyReason ?? null,
+                denyCode: child.errorCode === 'approval.rate_spent' ? 'rate_spent' : null,
                 maskedColumns: [],
                 piiTouched: [],
                 effectiveRoles: [],
@@ -428,6 +464,7 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
       }
 
       run()
+        .finally(refreshSearchPath)
         .then((r) => {
           if (r == null) return
           appendLog(
@@ -484,9 +521,65 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
           }
         })
     },
-    [appendLog, datasourceId, patch, ensureSession, forgetSession, setTabTaskId, openSiblingTabs, releaseTask, t],
+    [appendLog, datasourceId, patch, ensureSession, forgetSession, setTabTaskId, openSiblingTabs, releaseTask, refreshSearchPath, t],
   )
   fetchIntoRef.current = fetchInto
+
+  const setDefaultSchema = useCallback(
+    (schema: string) => {
+      if (datasourceId == null) return
+      const execution = ++executionRef.current
+      const timestamp = new Date().toISOString()
+      const startedAt = performance.now()
+      const log = (statement: string, entry: Pick<QueryLogEntry, 'decision' | 'denyReason' | 'error'>) =>
+        appendLog(
+          {
+            id: `execution-${execution}`,
+            datasourceId,
+            statement,
+            rowsReturned: 0,
+            latencyMs: Math.max(0, Math.round(performance.now() - startedAt)),
+            timestamp,
+            ...entry,
+          },
+          execution,
+        )
+      void (async () => {
+        try {
+          const call = async () => setEditorDefaultSchema(await ensureSession(), schema)
+          let response
+          try {
+            response = await call()
+          } catch (e) {
+            // The held session may have been reaped (idle) or expired — reopen once and retry, as a run does.
+            if (!(e instanceof Error && /session/i.test(e.message))) throw e
+            forgetSession()
+            response = await call()
+          }
+          const { statement, result } = response
+          // Newer than any refresh still in flight, so taking a fresh token makes those land as stale.
+          searchPathSeq.current++
+          setSearchPath(response.searchPath)
+          if (result?.status === 'DONE') {
+            log(statement, { decision: 'ALLOW', denyReason: null, error: null })
+          } else if (result?.errorCode === 'approval.execute_denied' || result?.errorCode === 'approval.rate_spent') {
+            log(statement, { decision: 'DENY', denyReason: result.denyReason ?? null, error: null })
+            toast.error(result.denyReason ?? translateApiError(result.errorCode))
+          } else {
+            const message = translateApiError(result?.errorCode ?? 'approval.query_failed')
+            log(statement, { decision: 'ERROR', denyReason: null, error: message })
+            toast.error(message)
+          }
+        } catch (e) {
+          const message = e instanceof Error ? e.message : 'query failed'
+          log(t('schema.useSchema', { name: schema }), { decision: 'ERROR', denyReason: null, error: message })
+          toast.error(message)
+          refreshSearchPath()
+        }
+      })()
+    },
+    [appendLog, datasourceId, ensureSession, forgetSession, refreshSearchPath, t],
+  )
 
   const run = useCallback(
     (sql: string) => {
@@ -617,11 +710,16 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
   }, [])
 
   const openTable = useCallback(
-    (table: TreeTable) => {
+    (table: TreeTable, column?: string) => {
       if (datasourceId == null) return
       const key = JSON.stringify(['table', datasourceId, table.key])
+      const focus = column == null ? null : { column, seq: ++focusSeq.current }
+      setRevealSeq((n) => n + 1)
       const existing = tabsRef.current.find((t) => t.kind === 'table' && t.key === key)
       if (existing) {
+        if (focus) {
+          setTabs((ts) => ts.map((t) => (t.id === existing.id && t.kind === 'table' ? { ...t, focus, view: 'columns' } : t)))
+        }
         setActiveId(existing.id)
         return
       }
@@ -633,6 +731,8 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
         title: table.qualified,
         datasourceId,
         table,
+        focus,
+        view: 'columns',
         pinned: false,
         taskId: null,
         ordinal: 0,
@@ -647,6 +747,14 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
     },
     [datasourceId, fetchInto],
   )
+
+  const clearFocus = useCallback((id: string) => {
+    setTabs((ts) => ts.map((t) => (t.id === id && t.kind === 'table' && t.focus ? { ...t, focus: null } : t)))
+  }, [])
+
+  const setTableView = useCallback((id: string, view: string) => {
+    setTabs((ts) => ts.map((t) => (t.id === id && t.kind === 'table' ? { ...t, view } : t)))
+  }, [])
 
   const pin = useCallback((id: string) => {
     setTabs((ts) => ts.map((t) => (t.id === id ? { ...t, pinned: !t.pinned } : t)))
@@ -705,5 +813,10 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
     clearLogs,
     sessionOpen,
     closeSession,
+    clearFocus,
+    setTableView,
+    revealSeq,
+    searchPath,
+    setDefaultSchema,
   }
 }

@@ -1,0 +1,263 @@
+package engines
+
+// The analyzer<->JVM FFM wire boundary (docs/statement-facts-contract.md): protobuf in,
+// protobuf out on both directions of the call. AnalyzeStatementSafe is the entry point cmd/libsqlglot's
+// AnalyzeStatement export calls; it is total (never panics, always returns a valid marshaled
+// StatementFacts), the fail-closed contract the FFI boundary requires.
+
+import (
+	"fmt"
+
+	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
+	"github.com/ridi-oss/sqlglot-go/optimizer"
+	"github.com/ridi-oss/sqlglot-go/schema"
+	"google.golang.org/protobuf/proto"
+)
+
+// AnalyzeStatement decodes req's typed fields, runs Probe, and returns the response as a typed
+// proto message — no (un)marshaling here. AnalyzeStatementSafe below owns the byte-buffer boundary.
+func AnalyzeStatement(req *pb.AnalyzeRequest) (*pb.StatementFacts, error) {
+	namespace, err := namespaceConfigFromProto(req.GetNamespace())
+	if err != nil {
+		return nil, err
+	}
+	sch, implicit, err := schemaMappingFromProto(namespace.Catalog, req.GetCatalog().GetColumns())
+	if err != nil {
+		return nil, err
+	}
+	namespace.EngineCatalog = engineCatalogFromProto(req.GetCatalog().GetFunctions(), namespace.SearchPath)
+	return EmitFacts(req.GetSql(), req.GetEngineConfig(), sch, implicit, namespace), nil
+}
+
+// Names arrive folded. Nil stays nil, which makes every call unknown.
+func engineCatalogFromProto(c *pb.FunctionCatalog, searchPath []string) *optimizer.EngineCatalog {
+	if c == nil {
+		return nil
+	}
+	schemaFunctions := func(entries []*pb.SchemaFunctions) map[string]map[string]bool {
+		out := map[string]map[string]bool{}
+		for _, e := range entries {
+			names := map[string]bool{}
+			for _, n := range e.GetNames() {
+				names[n] = true
+			}
+			out[e.GetSchema()] = names
+		}
+		return out
+	}
+	stringSet := func(names []string) map[string]bool {
+		out := map[string]bool{}
+		for _, n := range names {
+			out[n] = true
+		}
+		return out
+	}
+	currentDatabase := ""
+	if len(searchPath) > 0 {
+		currentDatabase = searchPath[0]
+	}
+	return &optimizer.EngineCatalog{
+		BuiltinFunctions:      stringSet(c.GetBuiltinFunctions()),
+		SystemFunctionSchemas: schemaFunctions(c.GetSystemFunctionSchemas()),
+		UDFSchemas:            schemaFunctions(c.GetUdfSchemas()),
+		LoadableFunctions:     stringSet(c.GetLoadableFunctions()),
+		CurrentDatabase:       currentDatabase,
+	}
+}
+
+// AnalyzeStatementSafe is the total, panic-safe entry point for the c-shared / FFI boundary: decode
+// reqBytes, run AnalyzeStatement, encode the response — ALWAYS returning a validly-encoded
+// StatementFacts, never an error, never a panic escaping to the caller (which, across a cgo boundary,
+// would crash the host process). Any internal error or panic becomes a fail-closed (resolved=false)
+// result, the safe direction for a security probe.
+func AnalyzeStatementSafe(reqBytes []byte) (out []byte) {
+	defer func() {
+		if r := recover(); r != nil {
+			out = mustFailProto("LINEAGE", fmt.Sprintf("panic: %v", r))
+		}
+	}()
+	var req pb.AnalyzeRequest
+	if err := proto.Unmarshal(reqBytes, &req); err != nil {
+		return mustFailProto("VALIDATE", fmt.Sprintf("invalid AnalyzeRequest: %v", err))
+	}
+	result, err := AnalyzeStatement(&req)
+	if err != nil {
+		return mustFailProto("VALIDATE", err.Error())
+	}
+	out, err = proto.Marshal(result)
+	if err != nil {
+		return marshalErrorFallback
+	}
+	return out
+}
+
+// SplitStatementsSafe is the panic-safe FFI entry point for the batch split: anything that goes wrong
+// becomes an encoded ok=false, never a panic crossing into the JVM.
+func SplitStatementsSafe(reqBytes []byte) (out []byte) {
+	defer func() {
+		if r := recover(); r != nil {
+			out = splitFailure
+		}
+	}()
+	var req pb.SplitRequest
+	if err := proto.Unmarshal(reqBytes, &req); err != nil {
+		return splitFailure
+	}
+	statements, ok := SplitStatements(req.GetSql(), req.GetEngineConfig())
+	if !ok {
+		return splitFailure
+	}
+	encoded, err := proto.Marshal(&pb.SplitResponse{Ok: true, Statements: statements})
+	if err != nil {
+		return splitFailure
+	}
+	return encoded
+}
+
+// The encoded fail-closed SplitResponse, computed once so the failure path never has to marshal.
+var splitFailure = must(proto.Marshal(&pb.SplitResponse{Ok: false}))
+
+// ParseColumnsSafe is ParseColumn over a marshaled ColumnNamesRequest, total like
+// SplitStatementsSafe: any failure is ok=false.
+func ParseColumnsSafe(reqBytes []byte) []byte {
+	return columnNamesSafe(reqBytes, func(t Datasource, cols []*pb.Column) ([]ColumnName, error) {
+		out := make([]ColumnName, len(cols))
+		for i, c := range cols {
+			n, err := t.ParseColumn(c.GetCatalog(), c.GetSchema(), c.GetTable(), c.GetColumn())
+			if err != nil {
+				return nil, err
+			}
+			out[i] = n
+		}
+		return out, nil
+	})
+}
+
+// IntrospectedColumnsSafe is IntrospectedColumns over a marshaled ColumnNamesRequest.
+func IntrospectedColumnsSafe(reqBytes []byte) []byte {
+	return columnNamesSafe(reqBytes, func(t Datasource, cols []*pb.Column) ([]ColumnName, error) {
+		return t.IntrospectedColumns(cols), nil
+	})
+}
+
+func columnNamesSafe(reqBytes []byte, names func(Datasource, []*pb.Column) ([]ColumnName, error)) (out []byte) {
+	defer func() {
+		if recover() != nil {
+			out = columnNamesFailure
+		}
+	}()
+	var req pb.ColumnNamesRequest
+	if err := proto.Unmarshal(reqBytes, &req); err != nil {
+		return columnNamesFailure
+	}
+	eng, ok := ByProto(req.GetEngine())
+	if !ok {
+		return columnNamesFailure
+	}
+	target, err := eng.Datasource(req.GetDatasource())
+	if err != nil {
+		return datasourceRejected
+	}
+	canonical, err := names(target, req.GetColumns())
+	if err != nil {
+		return columnNamesFailure
+	}
+	resp := &pb.ColumnNamesResponse{}
+	for _, n := range canonical {
+		resp.Columns = append(resp.Columns, &pb.Column{Catalog: n.Catalog().String(), Schema: n.Schema().String(), Table: n.Table(), Column: n.Column()})
+	}
+	encoded, err := proto.Marshal(resp)
+	if err != nil {
+		return columnNamesFailure
+	}
+	return encoded
+}
+
+var columnNamesFailure = must(proto.Marshal(&pb.ColumnNamesResponse{Error: pb.ColumnNamesResponse_INVALID}))
+
+var datasourceRejected = must(proto.Marshal(&pb.ColumnNamesResponse{Error: pb.ColumnNamesResponse_DATASOURCE_REJECTED}))
+
+// marshalErrorFallback is a statically-valid encoded fail-closed StatementFacts, computed once so
+// mustFailProto never has to marshal twice on the (essentially unreachable) path where encoding the
+// real failure result itself errors — proto.Marshal on a well-formed message practically never
+// fails, unlike JSON's marshal-on-arbitrary-types risk, but the FFI boundary must still be total.
+var marshalErrorFallback = must(proto.Marshal(unanalyzableFacts("LINEAGE", "marshal error")))
+
+func mustFailProto(stage, detail string) []byte {
+	b, err := proto.Marshal(unanalyzableFacts(stage, detail))
+	if err != nil {
+		return marshalErrorFallback
+	}
+	return b
+}
+
+func must(b []byte, err error) []byte {
+	if err != nil {
+		panic(err) // only ever runs at init on a hardcoded literal message; a failure here is a build-time bug.
+	}
+	return b
+}
+
+func strPtr(s string) *string { return &s }
+
+// schemaMappingFromProto builds a depth-3 schema.Mapping (catalog -> schema -> table -> column ->
+// SQL type) from the flat Column list — the Go-side half of the flat-catalog contract: no tree-walking
+// encoder or decoder on either side. A column with no catalog of its own belongs to the namespace
+// catalog. Implicit columns (ctid, xmin) also collect into the implicit Mapping ([]string leaves).
+func schemaMappingFromProto(namespaceCatalog string, cols []*pb.Column) (*schema.Mapping, *schema.Mapping, error) {
+	root := schema.NewMapping()
+	implicit := schema.NewMapping()
+	if namespaceCatalog == "" {
+		return nil, nil, fmt.Errorf("namespace catalog is required")
+	}
+	for _, col := range cols {
+		if col.GetSchema() == "" || col.GetTable() == "" || col.GetColumn() == "" {
+			return nil, nil, fmt.Errorf("catalog column entry is missing schema/table/column")
+		}
+		catalog := col.GetCatalog()
+		if catalog == "" {
+			catalog = namespaceCatalog
+		}
+		schemas := getOrNewMapping(root, catalog)
+		tables := getOrNewMapping(schemas, col.GetSchema())
+		tableColumns := getOrNewMapping(tables, col.GetTable())
+		if _, exists := tableColumns.Get(col.GetColumn()); exists {
+			return nil, nil, fmt.Errorf(
+				"catalog contains duplicate column entry: %s.%s.%s.%s",
+				catalog, col.GetSchema(), col.GetTable(), col.GetColumn(),
+			)
+		}
+		tableColumns.Set(col.GetColumn(), col.GetDataType())
+		if col.GetImplicit() {
+			tables := getOrNewMapping(getOrNewMapping(implicit, catalog), col.GetSchema())
+			names, _ := tables.Get(col.GetTable())
+			list, _ := names.([]string)
+			tables.Set(col.GetTable(), append(list, col.GetColumn()))
+		}
+	}
+	return root, implicit, nil
+}
+
+func getOrNewMapping(m *schema.Mapping, key string) *schema.Mapping {
+	if existing, ok := m.Get(key); ok {
+		if child, ok := existing.(*schema.Mapping); ok {
+			return child
+		}
+	}
+	child := schema.NewMapping()
+	m.Set(key, child)
+	return child
+}
+
+// namespaceConfigFromProto converts the wire Namespace into the NamespaceConfig Probe consumes.
+// validateNamespace provides a comprehensive fail-fast duplicate of Probe's own validation, so no
+// direct caller can bypass its invariants.
+func namespaceConfigFromProto(ns *pb.Namespace) (NamespaceConfig, error) {
+	if ns == nil {
+		return NamespaceConfig{}, fmt.Errorf("namespace is required")
+	}
+	return validateNamespace(NamespaceConfig{
+		Catalog:    ns.GetCatalog(),
+		SearchPath: append([]string(nil), ns.GetSearchPath()...),
+	})
+}

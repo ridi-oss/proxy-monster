@@ -6,7 +6,6 @@ import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyStore
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
@@ -67,7 +66,7 @@ class PolicyOriginDbTest {
             }
         }
         assertEquals(
-            "176f5f46f11ea1760b98e97e6cc6a63f",
+            "5e14794fbf24f054a79e2e911fa8dbd4",
             digest,
             "the seeded security posture changed: a policy body, id, key, origin, enabled flag, role, " +
                 "group, or group-to-role link differs from what a fresh install is supposed to enforce",
@@ -246,8 +245,7 @@ class PolicyOriginDbTest {
     }
 
     private fun fullyMigrated(prefix: String): DataSource {
-        val ds = SharedPostgres.hikari(SharedPostgres.freshDatabase(prefix))
-        Flyway.configure().dataSource(ds).load().migrate()
+        val ds = SharedPostgres.hikari(SharedPostgres.migratedDatabase(prefix))
         return ds
     }
 
@@ -291,11 +289,15 @@ class PolicyOriginDbTest {
               principal in Role::"system:admin",
               action in
                 [Action::"task.approve",
+                 Action::"task.run",
+                 Action::"task.comment",
+                 Action::"task.cc",
                  Action::"task.read",
                  Action::"grant.revoke",
                  Action::"task.request",
                  Action::"task.cancel",
-                 Action::"task.delete"],
+                 Action::"task.delete",
+                 Action::"task.force_run"],
               resource
             );
             """.trimIndent() + "\n"

@@ -6,7 +6,6 @@ import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.grpc.ConnectionInfo
 import com.ridi.oss.proxymonster.grpc.Engine
 import com.ridi.oss.proxymonster.grpc.connectionInfo
-import org.flywaydb.core.Flyway
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -16,9 +15,8 @@ class ConnectionInfoDbTest {
     @Test
     fun `registration preserves absence, clears explicit empty, and refuses secrets`() {
         requireDockerOrSkip()
-        val dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_connection_info"))
+        val dataSource = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_connection_info"))
         try {
-            Flyway.configure().dataSource(dataSource).load().migrate()
             val store = DatasourceStore(dataSource)
             fun register(info: ConnectionInfo?) =
                 store.register("native", Engine.MYSQL, "target", 3306, "shop", emptyList(), "proxy.example:3307", null, false, info)

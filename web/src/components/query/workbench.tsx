@@ -6,10 +6,11 @@
 // (Run, row limit, shortcut hint) on top, the enforcing results panel below.
 // Every query is policy-enforced server-side: ALLOW / MASK / DENY; a DENY opens
 // the JIT request dialog.
-import { useMemo, useRef, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { ListChecks, Loader2, Play, TriangleAlert, Unplug } from 'lucide-react'
 import { useCatalog, useDatasources } from '@/lib/hooks'
+import { currentCatalog } from '@/lib/catalog'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import {
@@ -35,7 +36,6 @@ import { SqlEditor, type SqlEditorHandle } from './sql-editor'
 import { ResultTabs } from './result-tabs'
 import { QueryHistoryMenu } from './query-history-menu'
 import { RequestAccessDialog } from './request-access-dialog'
-import { RateResetRequestDialog } from './rate-reset-request-dialog'
 import { CloseSessionDialog } from './close-session-dialog'
 import { RunAllConfirmDialog } from './run-all-confirm-dialog'
 import { opensTransaction } from './statement'
@@ -46,20 +46,22 @@ const SCRIPT_TIMEOUTS = ['30', '60', '300', '600']
 // The proxy's shipped default row cap (docs/result-caps.md): a page size above it can only produce a capped run.
 const DEFAULT_CAP_ROWS = 5000
 
+const RATE_BOOST_ROLE = 'system:rate-boost-2x'
+
 export function Workbench() {
   const t = useTranslations('Query')
-  const [datasourceId, setDatasourceId] = usePersistedDatasource()
+  const [datasourceId, setDatasourceId, datasourceLoaded] = usePersistedDatasource()
   const [sql, setSql] = usePersistedSql()
   const [maxRows, setMaxRows] = useState('200')
   const [requestOpen, setRequestOpen] = useState(false)
   const [denyReason, setDenyReason] = useState<string | null>(null)
-  const [rateResetOpen, setRateResetOpen] = useState(false)
-  const [rateDenyReason, setRateDenyReason] = useState<string | null>(null)
+  const [requestRoleName, setRequestRoleName] = useState<string | undefined>(undefined)
   const [closeSessionOpen, setCloseSessionOpen] = useState(false)
   const [scriptTimeout, setScriptTimeout] = useState('300')
   const [notice, setNotice] = useState<'selectOne' | 'useRunAll' | 'selectAll' | null>(null)
   const [pendingScript, setPendingScript] = useState<string | null>(null)
   const editorRef = useRef<SqlEditorHandle>(null)
+  const insertAtCursor = useCallback((text: string) => editorRef.current?.insertAtCursor(text), [])
 
   const { data: catalog, isLoading: catalogLoading, error: catalogError } = useCatalog(datasourceId)
   const { data: datasources, isLoading: datasourcesLoading, error: datasourcesError } = useDatasources(true)
@@ -104,14 +106,13 @@ export function Workbench() {
     else setPendingScript(target.sql)
   }
 
-  const handleRequestAccess = (reason?: string | null) => {
+  const openRequest = (reason: string | null | undefined, roleName?: string) => {
     setDenyReason(reason ?? null)
+    setRequestRoleName(roleName)
     setRequestOpen(true)
   }
-  const handleRequestRateReset = (reason?: string | null) => {
-    setRateDenyReason(reason ?? null)
-    setRateResetOpen(true)
-  }
+  const handleRequestAccess = (reason?: string | null) => openRequest(reason)
+  const handleRequestRateBoost = (reason?: string | null) => openRequest(reason, RATE_BOOST_ROLE)
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -122,12 +123,17 @@ export function Workbench() {
               <p className="text-muted-foreground px-1 text-[11px] font-medium tracking-wider uppercase">
                 {t('workbench.explorer')}
               </p>
-              <DatasourceSelect
-                value={datasourceId}
-                onChange={setDatasourceId}
-                className="w-full"
-                connectableOnly
-              />
+              {/* The picker auto-selects the first datasource, so it mounts only once the saved one is read. Its wrapper keeps Select's hidden input out of space-y. */}
+              <div className="h-7">
+                {datasourceLoaded && (
+                  <DatasourceSelect
+                    value={datasourceId}
+                    onChange={setDatasourceId}
+                    className="w-full"
+                    connectableOnly
+                  />
+                )}
+              </div>
             </div>
             {datasourceId == null ? (
               <p className="text-muted-foreground p-3 text-xs">{t('workbench.selectDatasource')}</p>
@@ -143,10 +149,16 @@ export function Workbench() {
               </p>
             ) : (
               <SchemaTree
+                key={datasourceId}
                 datasourceId={datasourceId}
                 tables={tree}
-                onInsert={(text) => editorRef.current?.insertAtCursor(text)}
+                onInsert={insertAtCursor}
                 onOpenTable={resultTabs.openTable}
+                onSelectColumn={resultTabs.openTable}
+                defaultSchemas={datasource?.defaultSchemas}
+                searchPath={resultTabs.searchPath}
+                onUseSchema={datasource?.defaultSchemaSettable ? resultTabs.setDefaultSchema : undefined}
+                currentCatalog={currentCatalog(datasource)}
               />
             )}
         </aside>
@@ -259,7 +271,7 @@ export function Workbench() {
             <ResizableHandle />
 
             <ResizablePanel defaultSize={48} minSize={15}>
-              <ResultTabs api={resultTabs} onRequestAccess={handleRequestAccess} onRequestRateReset={handleRequestRateReset} />
+              <ResultTabs api={resultTabs} onRequestAccess={handleRequestAccess} onRequestRateBoost={handleRequestRateBoost} />
             </ResizablePanel>
           </ResizablePanelGroup>
         </div>
@@ -278,13 +290,13 @@ export function Workbench() {
         onOpenChange={setCloseSessionOpen}
         onConfirm={resultTabs.closeSession}
       />
-      <RateResetRequestDialog open={rateResetOpen} onOpenChange={setRateResetOpen} denyReason={rateDenyReason} />
       {datasourceId != null && (
         <RequestAccessDialog
           open={requestOpen}
           onOpenChange={setRequestOpen}
           datasourceId={datasourceId}
           denyReason={denyReason}
+          roleName={requestRoleName}
         />
       )}
     </div>

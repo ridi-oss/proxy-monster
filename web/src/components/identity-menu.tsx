@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from 'react'
 import { useTranslations } from 'next-intl'
-import { Clock3, LogOut, Network, RefreshCw, User } from 'lucide-react'
+import Link from 'next/link'
+import { Bot, Clock3, LogOut, Network, RefreshCw, User } from 'lucide-react'
 import { useAuth } from '@/lib/auth'
 import { openReauthPopup } from '@/lib/reauth'
 import { useSessionLifecycle } from '@/lib/session'
@@ -30,6 +31,7 @@ function formatRemaining(remainingMs: number, t: ReturnType<typeof useTranslatio
 export function IdentityMenu() {
   const commonT = useTranslations('Common')
   const t = useTranslations('Session')
+  const connectT = useTranslations('Connect')
   const { identity, logout } = useAuth()
   const { absoluteExpiresAt } = useSessionLifecycle()
   const [now, setNow] = useState(() => Date.now())
@@ -79,6 +81,10 @@ export function IdentityMenu() {
             </span>
           </div>
         )}
+        <DropdownMenuItem render={<Link href="/connect" />}>
+          <Bot className="size-3.5" />
+          {connectT('menu')}
+        </DropdownMenuItem>
         <DropdownMenuItem onClick={() => openReauthPopup()}>
           <RefreshCw className="size-3.5" />
           {t('reauthNow')}

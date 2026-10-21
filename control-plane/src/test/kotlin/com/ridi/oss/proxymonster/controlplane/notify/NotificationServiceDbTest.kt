@@ -4,8 +4,15 @@ import com.ridi.oss.proxymonster.controlplane.AccessRequest
 import com.ridi.oss.proxymonster.controlplane.AuditEvent
 import com.ridi.oss.proxymonster.controlplane.Decision
 import com.ridi.oss.proxymonster.controlplane.DecryptedResult
+import com.ridi.oss.proxymonster.controlplane.ParticipantKind
 import com.ridi.oss.proxymonster.controlplane.QueryResultStore
+import com.ridi.oss.proxymonster.controlplane.RequestEdit
+import com.ridi.oss.proxymonster.controlplane.RequestEventKind
+import com.ridi.oss.proxymonster.controlplane.RequestEvents
+import com.ridi.oss.proxymonster.controlplane.RequestParticipants
 import com.ridi.oss.proxymonster.controlplane.ResultCrypto
+import com.ridi.oss.proxymonster.controlplane.management.AuditActor
+import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
 import com.ridi.oss.proxymonster.controlplane.support.EnforcementFixture
 import com.ridi.oss.proxymonster.controlplane.support.FakeTransport
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
@@ -243,6 +250,228 @@ class NotificationServiceDbTest {
         assertEquals(1, transport.updated.size, "the decided event edits the existing message")
         assertEquals("ref-fake", transport.updated.first().ref)
         assertEquals(0, transport.addressCalls.get(), "editing needs only the handle — no addressOf round-trip")
+    }
+
+    @Test
+    fun `a repeated decision redraws the message again`() = runBlocking {
+        val task = newTask().id
+        enqueue(task, NotificationEvent.TASK_REQUESTED, "sam@x")
+        svc.drainOnce()
+        repeat(2) {
+            enqueue(task, NotificationEvent.TASK_DECIDED, "sam@x")
+            svc.drainOnce()
+        }
+        assertEquals(2, transport.updated.count { it.event == NotificationEvent.TASK_DECIDED })
+    }
+
+    @Test
+    fun `a channel message offers Review, withholds a flagged statement even under full, and names approvers and CCs`() = runBlocking {
+        val channel = FakeTransport(name = "chan", channel = "C123")
+        val shared = NotificationService(
+            store = store,
+            recipients = RecipientResolver(fx.authz, fx.roleResolver) { emptyList() },
+            transports = listOf(transport, channel),
+            accessStore = fx.accessStore,
+            queryResultStore = null,
+            webBaseUrl = "https://console.example",
+            disclosure = StatementDisclosure.FULL,
+            defaultLocale = "en",
+        )
+        val task = newTask().id
+        fx.dataSource.connection.use { c ->
+            RequestParticipants.add(c, task, listOf("sam@x"), ParticipantKind.APPROVER)
+            RequestParticipants.add(c, task, listOf("cc@x"), ParticipantKind.CC)
+            shared.emitRequested(c, task, "req@example.com", fx.datasource, null)
+        }
+        shared.drainOnce()
+
+        val posted = channel.delivered.single()
+        assertEquals("C123", posted.to)
+        assertEquals(setOf(NotificationAction.OPEN, NotificationAction.REVIEW), posted.actions)
+        assertNull(posted.statement.text, "a channel never gets the full-disclosure statement of a flagged request")
+        assertEquals(listOf("sam@x"), posted.approvers)
+        assertEquals(listOf("cc@x"), posted.ccs)
+    }
+
+    @Test
+    fun `a comment is posted into every other thread, never back into the one it came from, and edits follow`() = runBlocking {
+        val threads = FakeTransport(name = "threads", supportsReplies = true)
+        val svc = NotificationService(
+            store = store,
+            recipients = RecipientResolver(fx.authz, fx.roleResolver) { emptyList() },
+            transports = listOf(threads),
+            accessStore = fx.accessStore,
+            queryResultStore = null,
+            webBaseUrl = "https://console.example",
+            disclosure = StatementDisclosure.AUTO,
+            defaultLocale = "en",
+        )
+        val task = newTask().id
+        fx.dataSource.connection.use { c -> store.enqueue(c, task, NotificationEvent.TASK_REQUESTED, "threads", "sam@x", NotificationKind.APPROVER) }
+        fx.dataSource.connection.use { c -> store.enqueue(c, task, NotificationEvent.TASK_SUBMITTED, "threads", "req@example.com", NotificationKind.REQUESTER) }
+        svc.drainOnce()
+        assertTrue(threads.replies.isEmpty(), "the request itself is not replayed into a new thread")
+
+        val samThread = "thread:addr:sam@x:task.requested"
+        val reqThread = "thread:addr:req@example.com:task.submitted"
+        val comment = fx.dataSource.connection.use { c ->
+            RequestEvents.record(c, task, RequestEventKind.COMMENT, "sam@x", "slack", "why the join?", samThread, "D1:9.9")
+        }!!
+        svc.drainOnce()
+        assertEquals(listOf(reqThread to "*sam@x*: why the join?"), threads.replies)
+
+        val edited = fx.dataSource.connection.use { c -> RequestEvents.editBySlackRef(c, "D1:9.9", "why this join?") }!!
+        assertEquals(comment.id, edited.id)
+        svc.propagate(edited)
+        assertEquals(listOf<Pair<String, String?>>("$reqThread/reply1" to "*sam@x*: why this join?"), threads.replyEdits.toList())
+
+        svc.drainOnce()
+        assertEquals(1, threads.replies.size, "a drained entry is not posted twice")
+
+        // A CC who is removed stops getting new entries in their thread.
+        fx.dataSource.connection.use { c ->
+            RequestParticipants.add(c, task, listOf("cc@x"), ParticipantKind.CC)
+            store.enqueue(c, task, NotificationEvent.TASK_CC_ADDED, "threads", "cc@x", NotificationKind.CC)
+        }
+        svc.drainOnce()
+        fx.dataSource.connection.use { c ->
+            RequestParticipants.remove(c, task, "cc@x", ParticipantKind.CC)
+            RequestEvents.record(c, task, RequestEventKind.COMMENT, "sam@x", "console", "after removal")
+        }
+        svc.drainOnce()
+        assertTrue(threads.replies.none { (ref, text) -> "cc@x" in ref && "after removal" in text }, "got: ${threads.replies}")
+        assertTrue(threads.replies.any { (ref, text) -> ref == samThread && "after removal" in text })
+    }
+
+    @Test
+    fun `role requests are announced and decided through AccessService, with role text`() = runBlocking {
+        val approver = "role-approver@example.com"
+        val roles = fx.policyStore.listRoles().associateBy { it.name }
+        fx.policyStore.createAssignment(com.ridi.oss.proxymonster.controlplane.RoleAssignmentInput(approver, roles.getValue("system:admin").id))
+        val recorder = ManagementAuditRecorder(fx.auditStore)
+        val access = com.ridi.oss.proxymonster.controlplane.AccessService(
+            fx.accessStore, fx.datasourceStore, fx.auditStore, fx.roleResolver, fx.authz, recorder, svc,
+        )
+        val actor = AuditActor("req@example.com", channel = "console")
+        val role = fx.policyStore.createRole(com.ridi.oss.proxymonster.controlplane.RoleInput("notify-role-${System.nanoTime()}"))
+        val req = access.createRequest(
+            "req@example.com", null, actor,
+            com.ridi.oss.proxymonster.controlplane.AccessRequestInput(roleId = role.id, reason = "on call", requestedDurationSec = 1800),
+        )
+        val reset = access.createRequest(
+            "req@example.com", null, actor,
+            com.ridi.oss.proxymonster.controlplane.AccessRequestInput(roleId = role.id, reason = "again", requestedDurationSec = 1800),
+        )
+        assertEquals("PENDING", statusOf(req.id, NotificationEvent.TASK_SUBMITTED, "req@example.com"))
+        assertEquals("PENDING", statusOf(reset.id, NotificationEvent.TASK_SUBMITTED, "req@example.com"))
+        enqueue(req.id, NotificationEvent.TASK_REQUESTED, "sam@x")
+        svc.drainOnce()
+
+        val delivered = transport.delivered.filter { it.event in setOf(NotificationEvent.TASK_REQUESTED, NotificationEvent.TASK_SUBMITTED) }
+        val open = NotificationAction.OPEN
+        assertEquals(setOf(open, NotificationAction.APPROVE, NotificationAction.DENY), delivered.single { it.to == "addr:sam@x" }.actions)
+        assertTrue(delivered.filter { it.to == "addr:req@example.com" }.all { it.actions == setOf(open, NotificationAction.CLOSE) })
+
+        access.approve(approver, null, AuditActor(approver, channel = "console"), req.id, null)
+        access.reject(approver, null, AuditActor(approver, channel = "console"), reset.id, "not now")
+        assertEquals("PENDING", statusOf(req.id, NotificationEvent.TASK_DECIDED, "req@example.com"))
+        assertEquals("PENDING", statusOf(reset.id, NotificationEvent.TASK_DECIDED, "req@example.com"))
+
+        val text = NotificationRenderer().summary(
+            NotificationMessage(
+                event = NotificationEvent.TASK_REQUESTED, taskId = req.id, revision = 1, requester = "req@example.com",
+                datasource = "", roleName = role.name, reason = null, statement = RenderedStatement(null, false),
+                deepLink = "x", actions = emptySet(), requestKind = "ROLE", durationSec = 1800,
+            ),
+            "en",
+        )
+        assertEquals("*req@example.com* asks for the *${role.name}* role on *any datasource* for 30 minutes.", text)
+        val resetText = NotificationRenderer().summary(
+            NotificationMessage(
+                event = NotificationEvent.TASK_REQUESTED, taskId = reset.id, revision = 1, requester = "req@example.com",
+                datasource = "", roleName = null, reason = null, statement = RenderedStatement(null, false),
+                deepLink = "x", actions = emptySet(), requestKind = "RATE_RESET", spentRate = "10000 rows / 1h",
+            ),
+            "en",
+        )
+        assertEquals("*req@example.com* asks to reset their spent result rates.\nSpent rate: 10000 rows / 1h", resetText)
+    }
+
+    @Test
+    fun `an approved request offers unapprove and deny to approvers and close to the requester`() = runBlocking {
+        val task = newTask().id
+        fx.dataSource.connection.use { c ->
+            c.prepareStatement("UPDATE access_request SET status = 'APPROVED', decided_by = 'sam@x', approved_at = now() WHERE id = ?")
+                .use { ps -> ps.setLong(1, task); ps.executeUpdate() }
+        }
+        enqueue(task, NotificationEvent.TASK_DECIDED, "sam@x")
+        enqueue(task, NotificationEvent.TASK_DECIDED, "req@example.com", NotificationKind.REQUESTER)
+        svc.drainOnce()
+
+        val byRecipient = transport.delivered.filter { it.event == NotificationEvent.TASK_DECIDED }.associateBy { it.to }
+        val open = NotificationAction.OPEN
+        // No result store here, so Run is not offered to anyone.
+        assertEquals(setOf(open, NotificationAction.UNAPPROVE, NotificationAction.DENY), byRecipient.getValue("addr:sam@x").actions)
+        assertEquals(setOf(open, NotificationAction.CLOSE), byRecipient.getValue("addr:req@example.com").actions)
+    }
+
+    @Test
+    fun `every edit redraws the message with the new SQL and its approve buttons`() = runBlocking {
+        val task = newTask().id
+        enqueue(task, NotificationEvent.TASK_REQUESTED, "sam@x")
+        svc.drainOnce()
+        val recorder = ManagementAuditRecorder(fx.auditStore)
+        val actor = AuditActor("req@example.com", clientAddr = null, channel = "console")
+        for (sql in listOf("SELECT 2", "SELECT 3")) {
+            fx.accessStore.editQueryRequest(task, listOf(sql), RequestEdit("h", null, "ALLOW", false), actor, recorder) { c, r ->
+                svc.emit(c, NotificationEvent.TASK_EDITED, r)
+            }
+            svc.drainOnce()
+        }
+
+        val edits = transport.updated.filter { it.event == NotificationEvent.TASK_EDITED && it.ref == "ref-fake" }
+        assertEquals(listOf("SELECT 2", "SELECT 3"), edits.map { it.statement.text }.distinct())
+        assertEquals(listOf(2, 3), edits.map { it.revision }.distinct())
+        // The requester's own receipt is redrawn too, with Close instead of the decision.
+        assertTrue(
+            listOf(2, 3).all { rev -> edits.any { it.revision == rev && NotificationAction.DENY in it.actions } },
+            "a pending edit offers the decision again",
+        )
+    }
+
+    @Test
+    fun `an alert posts fresh and leaves the request message as the one later events edit`() = runBlocking {
+        val task = newTask().id
+        transport.deliverResult = DeliveryResult.Sent("ref-request")
+        enqueue(task, NotificationEvent.TASK_REQUESTED, "sam@x")
+        svc.drainOnce()
+
+        transport.deliverResult = DeliveryResult.Sent("ref-alert")
+        enqueue(task, NotificationEvent.TASK_MERGED_WITHOUT_FILE, "sam@x")
+        svc.drainOnce()
+        assertEquals(NotificationEvent.TASK_MERGED_WITHOUT_FILE, transport.delivered.last().event, "the alert is a fresh post")
+        assertEquals("ref-request", store.externalRef(task, "fake", "sam@x", NotificationKind.APPROVER))
+
+        enqueue(task, NotificationEvent.TASK_EXECUTED, "sam@x")
+        svc.drainOnce()
+        assertEquals(listOf("ref-request"), transport.updated.map { it.ref })
+    }
+
+    @Test
+    fun `an approval after a force-run edits the request message, not the force-run alert`() = runBlocking {
+        val task = newTask().id
+        transport.deliverResult = DeliveryResult.Sent("ref-request")
+        enqueue(task, NotificationEvent.TASK_REQUESTED, "sam@x")
+        svc.drainOnce()
+
+        transport.deliverResult = DeliveryResult.Sent("ref-force-run")
+        enqueue(task, NotificationEvent.TASK_FORCE_RUN, "sam@x")
+        svc.drainOnce()
+        assertEquals("ref-request", store.externalRef(task, "fake", "sam@x", NotificationKind.APPROVER))
+
+        enqueue(task, NotificationEvent.TASK_DECIDED, "sam@x")
+        svc.drainOnce()
+        assertEquals(listOf("ref-request"), transport.updated.map { it.ref }, "the decision clears the request's buttons")
     }
 
     @Test

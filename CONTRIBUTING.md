@@ -18,9 +18,12 @@ mise run verify   # the whole gate: lint, JVM tests, Go tests, web unit tests + 
 ```
 
 Run `mise run verify` before opening a pull request — it is the gate documented
-in [AGENTS.md](./AGENTS.md#build-test-run). `mise tasks ls` lists the
-per-component tasks for running one piece at a time; install, run locally, and
-deploy is [INSTALL.md](./INSTALL.md).
+in [AGENTS.md](./AGENTS.md#build-test-run). It runs `verify-static`,
+`verify-jvm` and `verify-go`, which CI runs as parallel jobs:
+`PM_TEST_SHARD=i/n` runs one slice of the JVM test classes, and `PM_GO_PACKAGES`
+narrows the Go tests. `mise tasks ls` lists the per-component tasks for running
+one piece at a time; install, run locally, and deploy is
+[INSTALL.md](./INSTALL.md).
 
 Prettier owns the prose-and-config formats (`.md`, `.json`, `.yml`/`.yaml`,
 `.css`); eslint owns TypeScript. `mise run lint` checks both and
@@ -41,8 +44,13 @@ without it is a weaker check than the gate: a data race reads as a pass.
 ## Tests are DB-backed
 
 Enforcement is exercised against real databases, not mocks. Write MySQL and
-PostgreSQL tests with Testcontainers, and reuse containers across tests where
-you can. They are required, not optional: without a Docker environment they fail
+PostgreSQL tests with Testcontainers through the shared helpers
+(`SharedPostgres`/`SharedMySql` on the JVM, each module's `dbtest` in Go). They
+start each container once per test JVM or `go test` run, and tests isolate by
+database or schema; never start a container per test. The control-plane tests
+run in parallel forks (`-Ppm.testForks=n`), each with its own pair of
+containers; under `mise run verify` the forks share one server per engine
+instead. They are required, not optional: without a Docker environment they fail
 rather than skip, so Docker must be running for `mise run verify`.
 
 `PM_REQUIRE_DB_TESTS=true` turns a missing-Docker skip into a hard failure. CI
@@ -93,7 +101,7 @@ failure modes. The design-doc index is [docs/README.md](./docs/README.md).
 
 ## Releases
 
-Three release trains, each with its own version and changelog
+Four release trains, each with its own version and changelog
 (`release-please-config.json`). Merging a release PR tags and publishes; a push
 to `main` only opens or updates the PR.
 
@@ -102,6 +110,7 @@ to `main` only opens or updates the PR.
 | --- | --- | --- |
 | Server | `server-v0.1.0` | `goproxy`, `control-plane`, `auditmon`, `engine`, `auth`, `proto`, `web` |
 | Client | `pmon-v0.1.0` | `pmon`, the client CLI |
+| CI | `pm-ci-v0.1.0` | `sql-action`, the `pm-ci` binary its GitHub Action runs |
 | Library | `mysqlwire/v0.1.0` | `mysqlwire`, published for `go get` |
 
 The paths a commit touches decide its train, so a `pmon/` change never bumps the
@@ -109,6 +118,13 @@ server. Subjects follow
 [Conventional Commits](https://www.conventionalcommits.org):
 `feat:`/`fix:`/`perf:` appear in the changelog, `chore:`/`test:`/`ci:` do not,
 and `!` or a `BREAKING CHANGE:` footer drives the major bump.
+
+A `pmon` release also ships the desktop app; its Windows signing and update
+feeds are in [pmon/tray/README.md](./pmon/tray/README.md#releases). Last, bump
+[ridi-oss/homebrew-tap](https://github.com/ridi-oss/homebrew-tap):
+`Formula/pmon.rb` takes the version and the four CLI archives' SHA-256 from the
+release's `checksums.txt`, and `Casks/proxy-monster-desktop.rb` the version and
+the universal zip's. The tap's `main` takes changes only through a pull request.
 
 `mysqlwire`'s tag carries a slash because Go requires that prefix for a module
 outside the repository root. Inside the workspace `go.work` still resolves the

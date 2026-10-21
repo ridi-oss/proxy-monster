@@ -2,7 +2,6 @@ package com.ridi.oss.proxymonster.controlplane
 
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
@@ -34,8 +33,7 @@ class RoleMaskFnSoftDeleteDbTest {
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        ds = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_role_maskfn_soft_delete"))
-        Flyway.configure().dataSource(ds).load().migrate()
+        ds = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_role_maskfn_soft_delete"))
         policyStore = PolicyStore(ds)
         userGroupStore = UserGroupStore(ds)
         accessStore = AccessStore(ds)

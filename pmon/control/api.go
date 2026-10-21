@@ -5,7 +5,12 @@
 // Transport is a Unix socket under a per-user 0700 directory, so only the same OS user can connect.
 package control
 
-import "github.com/ridi-oss/proxy-monster/pmon/driver"
+import (
+	"slices"
+	"strings"
+
+	"github.com/ridi-oss/proxy-monster/pmon/driver"
+)
 
 // Status is the daemon's whole observable state, and the only thing a peer formats. Live listener facts come
 // from the daemon's own maps, never from the sticky port map on disk — a revoked datasource keeps its port
@@ -24,18 +29,33 @@ type Status struct {
 	LocalPassword string `json:"localPassword"`
 	// Servers is every configured server, sorted by name.
 	Servers []ServerInfo `json:"servers"`
+	// DefaultServer is the server a command addresses when it names none; it may name no configured server.
+	DefaultServer string `json:"defaultServer"`
+	// FixedDefault is set by Client.Status for a daemon that predates choosing the default: its default is
+	// always "default", and it reads a request naming no server as that one.
+	FixedDefault bool `json:"-"`
 	// Datasources is every datasource across all servers, sorted by server then name.
 	Datasources []Datasource `json:"datasources"`
+	// Remotes are the remote daemons this daemon keeps an SSH connection to.
+	Remotes []RemoteInfo `json:"remotes,omitempty"`
 }
 
 // ServerInfo is one configured control plane and its login.
 type ServerInfo struct {
-	Name             string `json:"name"`
-	ControlPlane     string `json:"controlPlane"`
+	Name         string `json:"name"`
+	Default      bool   `json:"default,omitempty"`
+	ControlPlane string `json:"controlPlane"`
+	// ServerVersion and InstanceName are the server's release and instance name from its /api/instance;
+	// empty for a server older than that route or not reached yet.
+	ServerVersion    string `json:"serverVersion,omitempty"`
+	InstanceName     string `json:"instanceName,omitempty"`
 	Principal        string `json:"principal,omitempty"`
 	LoggedIn         bool   `json:"loggedIn"`
 	ExpiresAt        string `json:"expiresAt,omitempty"`
 	SessionExpiresAt string `json:"sessionExpiresAt,omitempty"`
+	// Scopes beyond mcp:read and mcp:query last until ElevatedUntil.
+	Scopes        []string `json:"scopes,omitempty"`
+	ElevatedUntil string   `json:"elevatedUntil,omitempty"`
 	// ReauthRequired is set once renewal has been refused: the session window closed, so brokering keeps
 	// working only until the wire token expires and the user must log in again.
 	ReauthRequired bool `json:"reauthRequired"`
@@ -120,12 +140,97 @@ func (s *Status) LoggedInServers() []ServerInfo {
 	return out
 }
 
+// RemoteInfo is one remote daemon reached over SSH. Socket is its control socket forwarded to this machine, which
+// a peer talks to like a local daemon's; it is set only while State is RemoteConnected or RemoteNoDaemon.
+type RemoteInfo struct {
+	Target string      `json:"target"` // the ssh target, also its name: "devbox", "dana@devbox.example"
+	State  RemoteState `json:"state"`
+	// Error is ssh's or the remote shell's last word: "ssh: connect to host devbox port 22: Connection refused".
+	Error    string    `json:"error,omitempty"`
+	Socket   string    `json:"socket,omitempty"` // "/tmp/pmon-501/pmon-9a631b7f1a34259a-r49960de5.sock"
+	Forwards []Forward `json:"forwards,omitempty"`
+}
+
+// Forward is one remote datasource on a loopback port here: {"server": "acme", "datasource": "orders", "port": 6103}.
+type Forward struct {
+	Server     string `json:"server"`
+	Datasource string `json:"datasource"`
+	Port       int    `json:"port"`
+}
+
+// Port is a remote datasource's loopback port here, or 0 while it is not forwarded.
+func (r RemoteInfo) Port(server, datasource string) int {
+	for _, f := range r.Forwards {
+		if f.Server == server && f.Datasource == datasource {
+			return f.Port
+		}
+	}
+	return 0
+}
+
+// Localize is a remote daemon's status with each datasource on its port here: the remote's own port means
+// nothing on this machine.
+func (r RemoteInfo) Localize(s *Status) *Status {
+	out := *s
+	out.Datasources = slices.Clone(s.Datasources)
+	for i, ds := range out.Datasources {
+		out.Datasources[i].LocalPort = r.Port(ds.Server, ds.Name)
+	}
+	return &out
+}
+
+// RemoteState is where a remote's connection stands.
+type RemoteState string
+
+const (
+	RemoteConnecting RemoteState = "connecting"
+	RemoteConnected  RemoteState = "connected"
+	// RemoteNoDaemon is a working connection to a remote whose pmon daemon is not running.
+	RemoteNoDaemon RemoteState = "no-daemon"
+	// RemoteNoPmon is a remote whose daemon could not be started: no pmon on its PATH or in Proxy Monster Desktop.
+	// A running daemon needs no pmon there; only starting one does.
+	RemoteNoPmon RemoteState = "no-pmon"
+	RemoteDown   RemoteState = "down"
+)
+
+// ValidTarget reports whether target can be an SSH target: not empty, not an ssh option, and free of what a shell
+// or a format string would read.
+func ValidTarget(target string) bool {
+	return target != "" && !strings.HasPrefix(target, "-") && !strings.ContainsAny(target, " \t\n'\"\\%`$;|&<>")
+}
+
+// RemoteRequest names a remote by its SSH target: {"target": "devbox"}.
+type RemoteRequest struct {
+	Target string `json:"target"`
+}
+
 // LoginRequest asks the daemon to run a device-auth flow against Server ([state.DefaultServer] when empty). A
 // non-empty ControlPlane first sets the server's URL, as [SetServerRequest] does.
 type LoginRequest struct {
 	Server       string `json:"server,omitempty"`
 	ControlPlane string `json:"controlPlane,omitempty"`
 	TTLSeconds   int    `json:"ttlSeconds,omitempty"`
+	// Scopes replaces the server's default scopes when non-empty.
+	Scopes []string `json:"scopes,omitempty"`
+}
+
+// MCPTokenRequest asks for an MCP access token from Server's login ([state.DefaultServer] when empty).
+type MCPTokenRequest struct {
+	Server string `json:"server,omitempty"`
+}
+
+// MCPToken is a short-lived MCP access token for URL, minted from the server's login.
+type MCPToken struct {
+	URL       string `json:"url"`
+	Token     string `json:"token"`
+	ExpiresAt string `json:"expiresAt"`
+	Scope     string `json:"scope"`
+}
+
+// LogoutResult is the daemon's state plus the servers whose control-plane logout failed.
+type LogoutResult struct {
+	Status
+	NotEndedOnServer []string `json:"notEndedOnServer,omitempty"`
 }
 
 // LogoutRequest clears one server's login ([state.DefaultServer] when empty), or every server's with All.
@@ -142,13 +247,36 @@ type SetServerRequest struct {
 
 // SetServerResult says what [SetServerRequest] changed.
 type SetServerResult struct {
-	Created   bool `json:"created"`
-	Changed   bool `json:"changed"`
-	LoggedOut bool `json:"loggedOut"`
+	// Name is the server set, which a request naming none leaves to the daemon; Default reports whether it
+	// is the default server afterwards.
+	Name             string `json:"name,omitempty"`
+	Default          bool   `json:"default,omitempty"`
+	Created          bool   `json:"created"`
+	Changed          bool   `json:"changed"`
+	LoggedOut        bool   `json:"loggedOut"`
+	NotEndedOnServer bool   `json:"notEndedOnServer,omitempty"`
 }
 
 // UnsetServerRequest deletes a server, logging it out first.
 type UnsetServerRequest struct {
+	Name string `json:"name"`
+}
+
+// RenameServerRequest renames server Name (the default server when empty) to To, or to the name the server
+// advertises when To is empty.
+type RenameServerRequest struct {
+	Name string `json:"name"`
+	To   string `json:"to"`
+}
+
+// RenameServerResult is the rename made.
+type RenameServerResult struct {
+	Name string `json:"name"`
+	To   string `json:"to"`
+}
+
+// SetDefaultRequest makes Name the server a command addresses when it names none.
+type SetDefaultRequest struct {
 	Name string `json:"name"`
 }
 
@@ -163,9 +291,14 @@ type LoginEvent struct {
 	// and prints the plain one, so a user following the printed link types the code themselves.
 	VerificationURIComplete string `json:"verificationUriComplete,omitempty"`
 	UserCode                string `json:"userCode,omitempty"`
-	// Done fields, set when Kind == "done".
-	Principal string `json:"principal,omitempty"`
-	ExpiresAt string `json:"expiresAt,omitempty"`
+	// Done fields, set when Kind == "done". Server is the server logged in to, which a request naming none
+	// leaves to the daemon.
+	Server                   string   `json:"server,omitempty"`
+	Principal                string   `json:"principal,omitempty"`
+	ExpiresAt                string   `json:"expiresAt,omitempty"`
+	Scopes                   []string `json:"scopes,omitempty"`
+	ElevatedUntil            string   `json:"elevatedUntil,omitempty"`
+	ReplacedNotEndedOnServer bool     `json:"replacedNotEndedOnServer,omitempty"`
 	// Error, set when Kind == "error".
 	Error string `json:"error,omitempty"`
 }
@@ -186,12 +319,19 @@ type ErrorResponse struct {
 
 // Route paths on the control socket.
 const (
-	PathStatus      = "/status"
-	PathLogin       = "/login"
-	PathLogout      = "/logout"
-	PathServerSet   = "/servers/set"
-	PathServerUnset = "/servers/unset"
-	PathReload      = "/reload"
-	PathShutdown    = "/shutdown"
-	PathEvents      = "/events"
+	PathStatus          = "/status"
+	PathLogin           = "/login"
+	PathLogout          = "/logout"
+	PathServerSet       = "/servers/set"
+	PathServerUnset     = "/servers/unset"
+	PathServerDefault   = "/servers/default"
+	PathServerRename    = "/servers/rename"
+	PathReload          = "/reload"
+	PathShutdown        = "/shutdown"
+	PathEvents          = "/events"
+	PathMCPToken        = "/mcp-token"
+	PathRemoteAdd       = "/remotes/add"
+	PathRemoteRemove    = "/remotes/remove"
+	PathRemoteStart     = "/remotes/start"
+	PathRemoteReconnect = "/remotes/reconnect"
 )

@@ -7,6 +7,7 @@ import { toast } from 'sonner'
 import { approveApproval, executeApproval, ApiError } from '@/lib/api/client'
 import type { AccessRequest } from '@/lib/api/types'
 import { swrKeys } from '@/lib/hooks'
+import { runsOnMerge } from '@/lib/approvals'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -33,39 +34,44 @@ function errorMessage(err: unknown, t: Translator): string {
 
 export function ApproveQueryDialog({
   request,
+  run,
   onClose,
   onApproved,
 }: {
   request: AccessRequest | null
+  run: boolean
   onClose: () => void
   onApproved?: () => void
 }) {
   const t = useTranslations('Workflows')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const fromGithub = runsOnMerge(request)
+  const approveOnly = fromGithub || !run
 
   const handleOpenChange = (open: boolean) => {
     if (!open && !busy) onClose()
   }
 
-  // Approve and run are one action here, mirroring the Slack "Approve and run" button: the approver is
-  // always the executor (the query runs under the requested role, execute-under-R), so approving without
-  // running would just strand the task waiting for a second click. Approval is committed first; if only the
-  // run fails, the request stays APPROVED and the detail's Run button lets the approver retry.
-  const handleApproveAndRun = async () => {
+  // Approval commits first; a console request then runs at once, a GitHub one waits for its merge.
+  const handleApprove = async () => {
     if (!request) return
     setBusy(true)
     setError(null)
     try {
-      await approveApproval(request.id)
+      await approveApproval(request.id, request.revision)
     } catch (err) {
       setError(errorMessage(err, t))
       setBusy(false)
       return
     }
     try {
-      await executeApproval(request.id)
-      toast.success(t('approveDialog.approveAndRunToast', { principal: request.principal }))
+      if (approveOnly) {
+        toast.success(t('approveDialog.approvedToast', { principal: request.principal }))
+      } else {
+        await executeApproval(request.id)
+        toast.success(t('approveDialog.approveAndRunToast', { principal: request.principal }))
+      }
     } catch (err) {
       // Approval already committed; surface the run's REAL localized error (e.g. no result store, deleted
       // datasource) rather than a blanket "retry" line that may not be actionable. The detail refresh below
@@ -84,11 +90,15 @@ export function ApproveQueryDialog({
     <Dialog open={request !== null} onOpenChange={handleOpenChange}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>{t('approveDialog.title')}</DialogTitle>
+          <DialogTitle>{t(approveOnly ? 'approveDialog.titleGithub' : 'approveDialog.title')}</DialogTitle>
           <DialogDescription>
-            {request
-              ? t('approveDialog.descriptionWithPrincipal', { principal: request.principal })
-              : t('approveDialog.descriptionFallback')}
+            {fromGithub
+              ? t('approvalDetail.approvedGithub')
+              : approveOnly
+                ? t('approveDialog.descriptionApproveOnly', { principal: request?.principal ?? '' })
+                : request
+                  ? t('approveDialog.descriptionWithPrincipal', { principal: request.principal })
+                  : t('approveDialog.descriptionFallback')}
           </DialogDescription>
         </DialogHeader>
 
@@ -98,18 +108,22 @@ export function ApproveQueryDialog({
           </div>
         )}
 
-        <p className="text-muted-foreground text-sm">{t('approveDialog.executeUnderRNote')}</p>
+        {!fromGithub && (
+          <p className="text-muted-foreground text-sm">{t('approveDialog.executeUnderRNote')}</p>
+        )}
 
         <DialogFooter>
           <Button variant="outline" onClick={onClose} disabled={busy}>
             {t('actions.cancel')}
           </Button>
           <Button
-            onClick={handleApproveAndRun}
+            onClick={handleApprove}
             disabled={busy}
             className="bg-emerald-600 text-white hover:bg-emerald-700"
           >
-            {busy ? t('actions.approvingAndRunning') : t('actions.approveAndRun')}
+            {busy
+              ? t(approveOnly ? 'actions.approving' : 'actions.approvingAndRunning')
+              : t(approveOnly ? 'actions.approve' : 'actions.approveAndRun')}
           </Button>
         </DialogFooter>
       </DialogContent>

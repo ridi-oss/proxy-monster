@@ -14,7 +14,7 @@ import "C"
 import (
 	"unsafe"
 
-	"github.com/ridi-oss/proxy-monster/analyzer/probe"
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 )
 
 // AnalyzeStatement analyzes one SQL statement. reqBytes/reqLen is a marshaled analyzerv1.AnalyzeRequest
@@ -23,13 +23,13 @@ import (
 // buffer on both sides, not a NUL-terminated C string — mirroring SqlNormalize's existing byte-exact
 // argument convention, just applied to the return value too. The returned pointer is malloc'd by Go
 // and MUST be released by the caller via FreeCString (it frees by address, not by NUL scan, so it
-// works equally for a char* or a raw byte buffer). probe.AnalyzeStatementSafe is total (never panics,
+// works equally for a char* or a raw byte buffer). engines.AnalyzeStatementSafe is total (never panics,
 // always a validly-encoded StatementFacts), so this boundary can never crash the host JVM.
 //
 //export AnalyzeStatement
 func AnalyzeStatement(reqBytes *C.char, reqLen C.size_t, outLen *C.size_t) unsafe.Pointer {
 	req := analyzeRequestBytesFromC(reqBytes, reqLen)
-	out := probe.AnalyzeStatementSafe(req)
+	out := engines.AnalyzeStatementSafe(req)
 	*outLen = C.size_t(len(out))
 	if len(out) == 0 {
 		return nil // CBytes on an empty slice would still need freeing; nil is a valid zero-length result
@@ -44,7 +44,30 @@ func AnalyzeStatement(reqBytes *C.char, reqLen C.size_t, outLen *C.size_t) unsaf
 //export SplitStatements
 func SplitStatements(reqBytes *C.char, reqLen C.size_t, outLen *C.size_t) unsafe.Pointer {
 	req := analyzeRequestBytesFromC(reqBytes, reqLen)
-	out := probe.SplitStatementsSafe(req)
+	out := engines.SplitStatementsSafe(req)
+	*outLen = C.size_t(len(out))
+	if len(out) == 0 {
+		return nil
+	}
+	return C.CBytes(out) // malloc'd; caller frees via FreeCString.
+}
+
+// ParseColumns reads column names a person typed as SQL identifiers in the engine's dialect. Same
+// byte-buffer convention and FreeCString ownership as AnalyzeStatement.
+//
+//export ParseColumns
+func ParseColumns(reqBytes *C.char, reqLen C.size_t, outLen *C.size_t) unsafe.Pointer {
+	return bufferResult(engines.ParseColumnsSafe(analyzeRequestBytesFromC(reqBytes, reqLen)), outLen)
+}
+
+// IntrospectedColumns puts names the engine's own catalog reported in canonical spelling. Same convention.
+//
+//export IntrospectedColumns
+func IntrospectedColumns(reqBytes *C.char, reqLen C.size_t, outLen *C.size_t) unsafe.Pointer {
+	return bufferResult(engines.IntrospectedColumnsSafe(analyzeRequestBytesFromC(reqBytes, reqLen)), outLen)
+}
+
+func bufferResult(out []byte, outLen *C.size_t) unsafe.Pointer {
 	*outLen = C.size_t(len(out))
 	if len(out) == 0 {
 		return nil
@@ -63,7 +86,7 @@ func analyzeRequestBytesFromC(p *C.char, n C.size_t) []byte {
 }
 
 // SqlNormalize canonicalizes one SQL statement for byte-exact query-grant matching. SQL is passed as
-// a pointer plus its UTF-8 byte length so an embedded NUL reaches probe.SqlNormalize and is denied there
+// a pointer plus its UTF-8 byte length so an embedded NUL reaches engines.SqlNormalize and is denied there
 // instead of being truncated at this boundary. The returned char* is malloc'd by Go and MUST be released
 // by the caller via FreeCString; an allocated empty string means deny.
 //
@@ -90,7 +113,7 @@ func sqlNormalizeFromC(sql *C.char, sqlLen C.size_t, dialect *C.char) (out strin
 		return "", false
 	}
 	bytes := C.GoBytes(unsafe.Pointer(sql), C.int(sqlLen))
-	return probe.SqlNormalize(string(bytes), C.GoString(dialect))
+	return engines.SqlNormalize(string(bytes), C.GoString(dialect))
 }
 
 // FreeCString releases a char*/byte buffer previously returned by AnalyzeStatement or SqlNormalize.

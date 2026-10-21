@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/ridi-oss/proxy-monster/goproxy/drain"
+	"github.com/ridi-oss/proxy-monster/goproxy/listen"
+	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
 const (
@@ -45,7 +47,7 @@ func NextBackendGeneration() (uint64, bool) {
 // the protocol supplies its per-connection handler via [New].
 type Server struct {
 	name   string
-	port   int
+	listen spi.Listen
 	handle func(net.Conn)
 
 	mu          sync.Mutex
@@ -59,10 +61,10 @@ type Server struct {
 
 // New constructs a wire broker for one target DB datasource. name prefixes its errors and logs; handle runs
 // per accepted connection on its own goroutine.
-func New(port int, name string, handle func(net.Conn)) *Server {
+func New(listen spi.Listen, name string, handle func(net.Conn)) *Server {
 	return &Server{
 		name:        name,
-		port:        port,
+		listen:      listen,
 		handle:      handle,
 		connSlots:   make(chan struct{}, maxConcurrentConnections),
 		draining:    drain.New(),
@@ -73,7 +75,7 @@ func New(port int, name string, handle func(net.Conn)) *Server {
 // Draining reports whether a drain has begun — the protocol's handler checks it to send a shutdown notice.
 func (s *Server) Draining() bool { return s.draining.Draining() }
 
-// Listen binds the configured TCP port. Port zero requests an ephemeral port for tests.
+// Listen binds the configured TCP ports. Port zero requests an ephemeral port for tests.
 func (s *Server) Listen() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -88,7 +90,7 @@ func (s *Server) Listen() error {
 	if s.ln != nil {
 		return fmt.Errorf("%s: already listening", s.name)
 	}
-	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", s.port))
+	ln, err := listen.Open(s.listen)
 	if err != nil {
 		return err
 	}

@@ -7,22 +7,10 @@ import (
 
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
-	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
-// TableDetailRunner runs one short-lived, proxy-dialed table-detail session.
-type TableDetailRunner struct {
-	client   spi.TableDetailClient
-	targetDb spi.Db
-}
-
-// NewTableDetailRunner constructs a table-detail runner for one datasource target.
-func NewTableDetailRunner(client spi.TableDetailClient, targetDb spi.Db) *TableDetailRunner {
-	return &TableDetailRunner{client: client, targetDb: targetDb}
-}
-
-// Run blocks for the short table-detail session lifetime.
-func (r *TableDetailRunner) Run(sessionID string, table *enginepb.ObjectRef) {
+// RunTableDetail blocks for one short-lived, proxy-dialed table-detail session.
+func (r *Runner) RunTableDetail(sessionID string, table *enginepb.ObjectRef) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -38,7 +26,7 @@ func (r *TableDetailRunner) Run(sessionID string, table *enginepb.ObjectRef) {
 		return
 	}
 
-	detail, detailErr := r.targetDb.ReadTableDetail(ctx, table)
+	detail, detailErr := r.target.ReadTableDetail(ctx, table)
 	if detailErr != nil {
 		message := "table introspection failed"
 		if text := strings.TrimSpace(detailErr.Error()); text != "" {

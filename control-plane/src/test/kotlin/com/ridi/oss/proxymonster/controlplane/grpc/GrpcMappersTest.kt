@@ -72,6 +72,13 @@ class GrpcMappersTest {
     }
 
     @Test
+    fun `the target error forward crosses only when the decision asks for it`() {
+        val forwarded = ctx(EnfAction.ALLOW).copy(forwardTargetError = true).toWireDecision(1, 0, emptyList()).verdict
+        assertTrue(forwarded.forwardTargetError)
+        assertFalse(ctx(EnfAction.ALLOW).toWireDecision(1, 0, emptyList()).verdict.forwardTargetError)
+    }
+
+    @Test
     fun `targeted after-statement refetch maps schema and hash`() {
         val hash = ByteString.copyFromUtf8("h1")
         val d = ctx(EnfAction.ALLOW).toWireDecision(

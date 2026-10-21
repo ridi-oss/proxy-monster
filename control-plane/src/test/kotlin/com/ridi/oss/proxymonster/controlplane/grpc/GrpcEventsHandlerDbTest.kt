@@ -15,7 +15,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.TestInstance
@@ -42,8 +41,7 @@ class GrpcEventsHandlerDbTest {
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_grpc_events"))
-        Flyway.configure().dataSource(dataSource).load().migrate()
+        dataSource = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_grpc_events"))
         core = ControlPlaneCore(dataSource)
         server = GrpcServer(0, ControlPlaneGrpcService(core), secretToken = null).also { it.start() }
         rawChannel = NettyChannelBuilder.forAddress("localhost", server.boundPort).usePlaintext().build()

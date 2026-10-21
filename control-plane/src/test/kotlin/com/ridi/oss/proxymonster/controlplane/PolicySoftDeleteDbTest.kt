@@ -10,7 +10,6 @@ import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyStore
 import com.ridi.oss.proxymonster.controlplane.authz.RoleSource
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
@@ -39,8 +38,7 @@ class PolicySoftDeleteDbTest {
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        ds = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_policy_soft_delete"))
-        Flyway.configure().dataSource(ds).load().migrate()
+        ds = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_policy_soft_delete"))
         store = CedarPolicyStore(ds)
         engine = CedarEngine(store)
         authz = Authz(engine, store, RoleSource { principal -> roles[principal] ?: emptySet() })

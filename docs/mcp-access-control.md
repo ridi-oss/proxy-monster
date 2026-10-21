@@ -160,6 +160,7 @@ and refresh tokens. There is no RFC 7591 DCR endpoint.
 | Control plane | `POST /oauth/token` | OAuth 2.1 | Code→token exchange (verifies PKCE) and one-time refresh-token rotation. |
 | Control plane | `POST /oauth/revoke` | RFC 7009 | Revoke an access or refresh token. |
 | Control plane | `GET /oauth/consents`, `DELETE /oauth/consents/{id}` | Shared-session API/UI | List and revoke remembered client consent; revocation also invalidates that client's refresh-token chain for the principal. |
+| Control plane | `POST /auth/session/mcp-token` | proxy-monster | A pmon daemon trades its session's renewal bearer for an MCP access token; see [pmon session exchange](#pmon-session-exchange). |
 
 ### CIMD client registration
 
@@ -209,6 +210,36 @@ principal that already holds it.
   expiry) takes effect on the next tool call — no stale authority frozen into a
   credential. This mirrors the web session model.
 
+### pmon session exchange
+
+An agent can reach `/mcp` through the user's pmon login instead of its own OAuth
+sign-in. `pmon mcp <server>` is a local stdio MCP server; it asks the pmon
+daemon for a token, and the daemon calls `POST /auth/session/mcp-token` with
+`Authorization: Bearer <renewalToken>`, the secret that names its daemon session
+(`cpgo/routes/device/device.go`). The answer is an `MCP_ACCESS` token for
+`PM_MCP_RESOURCE` with client id `pmon` and an `oauth_consent` row like any
+other, so `/mcp` cannot tell it from an OAuth token: the scope is a ceiling and
+Cedar decides every call. No refresh token is issued; pmon asks again.
+
+The scopes come from the device login. `pmon login --scopes a,b` sends them on
+`/auth/device/start` (default `mcp:read mcp:query`; unknown names answer
+`device.unknown_scope`), the `/device` page lists every scope beyond the default
+pair before the human approves, and the approval stamps `elevated_until` =
+approval time + `PM_ELEVATED_SCOPE_TTL` (default 1h). The daemon session carries
+both. The agent can type the flag; only the human in the browser grants it.
+
+<!-- prettier-ignore -->
+| At exchange time | Token scope | Token expiry |
+| --- | --- | --- |
+| Before `elevated_until` | every granted scope | earliest of `PM_OAUTH_ACCESS_TTL`, the login's TTL, `elevated_until` |
+| At or after `elevated_until` | granted scopes ∩ `mcp:read mcp:query`; none left answers 403 `auth.scopes_expired` | earliest of `PM_OAUTH_ACCESS_TTL`, the login's TTL |
+| Login TTL passed, liveness `INACTIVE`, or principal deactivated | refused, 401 `auth.session_window_expired` | — |
+
+The login's TTL is the wire-token lifetime it was minted for
+(`pmon login --ttl`), not `PM_SESSION_WINDOW`. Each mint is audited as
+`auth.session.mcp_token` on the `pmon` channel, naming the token id, never the
+token.
+
 ### Scopes (consent ceilings, not permissions)
 
 Coarse, human-legible scopes that map 1:1 to the existing `AuthzAction`
@@ -218,11 +249,11 @@ the user's authority (e.g. a read-only agent):
 <!-- prettier-ignore -->
 | Scope | Ceiling over | Cedar action still enforced |
 | --- | --- | --- |
-| `mcp:read` | all in-scope read tools, including audit, token listing, own permissions, principal rate | matching `admin.*` per tool, or the REST route's gate (`audit.read`, `token.list`) |
+| `mcp:read` | all in-scope read tools, including audit, token listing, own permissions | matching `admin.*` per tool, or the REST route's gate (`audit.read`, `token.list`) |
 | `mcp:datasources:write` | datasource create/update/delete, refresh, test, classification writes | `admin.datasources` |
 | `mcp:policies:write` | Cedar policy + role + mask-fn writes | `admin.policies` |
-| `mcp:identity:write` | users/groups/members/role-assignments, principal rate reset | `admin.identity` |
-| `mcp:query` | queries, own tasks and query history, approval and access requests, grant listing, own rate-reset request | the REST route's Cedar gate per tool |
+| `mcp:identity:write` | users/groups/members/role-assignments | `admin.identity` |
+| `mcp:query` | queries, own tasks and query history, approval and access requests, grant listing | the REST route's Cedar gate per tool |
 | `mcp:approvals:write` | approve, reject, and execute query approvals; approve and reject access requests; revoke grants | `task.approve` on the Request, `grant.revoke` on the grant |
 | `mcp:tokens` | mint and revoke the caller's wire tokens | `token.mint` / `token.revoke` on the Token |
 
@@ -328,19 +359,15 @@ All under `admin.policies` (write tools also require `mcp:policies:write`):
   `admin.policies` (writes need `mcp:policies:write`).
 - `list_group_members` / `list_group_roles` (`groupName`) → `admin.identity`,
   scope `mcp:read` (REST: `GET /api/groups/{id}/members`, `.../roles`).
-- `get_principal_rate` (`principal`) → `admin.identity`, scope `mcp:read` — the
-  principal's last rate reset (REST:
-  `GET /api/access/principals/{p}/rate-reset`).
-- `reset_principal_rate` (`principal`, `reason`) → `admin.identity`, scope
-  `mcp:identity:write` (REST: `POST /api/access/principals/{p}/rate-reset`).
 
 ### Query and approval tools
 
 - `list_connectable_datasources` (`datasource.connect`, scope `mcp:query`) — the
-  datasources the caller may connect to: name, engine, default schemas. No host
-  or port (REST: `GET /api/datasources?connectable=true`).
-- `describe_datasource` (`datasource.connect`, scope `mcp:query`) — schemas,
-  tables, and columns of one connectable datasource.
+  datasources the caller may connect to: name, engine, default schemas,
+  description. No host or port (REST: `GET /api/datasources?connectable=true`).
+- `describe_datasource` (`datasource.connect`, scope `mcp:query`) — name,
+  engine, description, and the schemas, tables, and columns of one connectable
+  datasource.
 - `run_query` (`task.request`, scope `mcp:query`) — runs SQL as an editor task
   under the caller's own roles on a one-shot connection, waits up to 10 s, and
   returns the task status, per-statement metadata, and the first 200 rows of the
@@ -357,6 +384,8 @@ All under `admin.policies` (write tools also require `mcp:policies:write`):
 - `request_approval` (`task.request`, scope `mcp:query`) — from a denied
   `decisionId`, or proactive from datasource + SQL + title (REST:
   `POST /api/approvals`).
+- `edit_approval` (`task.request`, scope `mcp:query`) — the requester's own
+  pending or approved request (REST: `POST /api/approvals/{id}/edit`).
 - `list_my_approvals` (`task.read`, scope `mcp:query`) — REST:
   `GET /api/approvals`.
 - `list_approval_inbox` (`task.approve`, scope `mcp:query`) — REST:
@@ -366,12 +395,22 @@ All under `admin.policies` (write tools also require `mcp:policies:write`):
 - `approve_approval` / `reject_approval` (`task.approve`, scope
   `mcp:approvals:write`) — REST: `POST /api/approvals/{id}/approve`,
   `POST /api/approvals/{id}/reject`.
-- `execute_approval` (`task.approve`, scope `mcp:approvals:write`) — REST:
+- `execute_approval` (`task.run`, scope `mcp:approvals:write`) — REST:
   `POST /api/approvals/{id}/execute`.
+- `unapprove_approval` (`task.approve`, scope `mcp:approvals:write`) — REST:
+  `POST /api/approvals/{id}/unapprove`.
+- `comment_approval` (`task.comment`, scope `mcp:query`) — a comment, or with
+  `lgtm` an LGTM, on any request (REST: `POST /api/requests/{id}/comments`).
+- `set_approval_cc` (`task.cc`, scope `mcp:query`) — adds or, with `remove`,
+  removes a CC on any request (REST: `POST /api/requests/{id}/ccs`,
+  `DELETE /api/requests/{id}/ccs/{principal}`).
 - `get_approval_result` (`task.assume`, scope `mcp:query`) — one page of an
   approval's rows (REST: `GET /api/approvals/{id}/result`).
-- `cancel_approval` (`task.cancel`, scope `mcp:query`) — REST:
-  `POST /api/approvals/{id}/cancel`.
+- `cancel_approval` (`task.cancel`, scope `mcp:query`) — closes a request that
+  has not run, or stops a running one (REST: `POST /api/approvals/{id}/cancel`).
+- `force_run_approval` (`task.force_run`, scope `mcp:approvals:write`) — lets a
+  GitHub request skip its scope's freshness and one-PR-at-a-time checks (REST:
+  `POST /api/approvals/{id}/force-run`).
 - `delete_query_task` (`taskId`; `task.delete`, scope `mcp:query`, destructive)
   — removes one of the caller's editor tasks and its stored result (REST:
   `DELETE /api/editor/tasks/{id}`).
@@ -413,9 +452,6 @@ reject record the MCP caller as the actor with `channel=mcp`.
 - `revoke_access_grant` (`id`; `grant.revoke`, scope `mcp:approvals:write`,
   destructive) — decided against the grant's owner (REST:
   `POST /api/access-grants/{id}/revoke`).
-- `reset_my_rate` (`reason`, `denyReason?`; scope `mcp:query`) — asks an
-  approver to reset the caller's spent `@cap` rate (REST:
-  `POST /api/access-requests/rate-reset`).
 
 ### Audit
 
@@ -442,11 +478,54 @@ reject record the MCP caller as the actor with `channel=mcp`.
   `RoleResolver.resolve` returns, with every source that grants it (`direct`,
   `group`, or `grant` with its id and expiry). REST has no roles field; an agent
   needs them to explain a denial or pick a role to request.
+- `get_pmon_guide` (scope `mcp:read`) — plain text for using this instance
+  through pmon: install, `pmon server set <instance> --url <issuer>`,
+  `pmon login <instance>`, the `pmon mcp <instance>` install line for Claude
+  Code, Codex, and Claude Desktop, one `pmon show <instance> <ds> --cli` per
+  datasource the caller may connect to (the `list_connectable_datasources`
+  gate), `pmon status`, `pmon logout`, and `--scopes`.
+- `get_usage_guide` and `get_admin_guide` (scope `mcp:read`) — the text of
+  [docs/guides/usage.md](./guides/usage.md) and [admin.md](./guides/admin.md),
+  bundled into the jar at build time.
 
 The token, audit, grant, access-request, and self tools are resource-gated like
 the query tools: the dispatcher checks the scope, then the shared service runs
 the REST route's Cedar decision on the same context — `requesterIp` and the
 channel the route passes — so MCP returns no row the console would not.
+
+## Several instances
+
+A user often has access to more than one proxy-monster deployment, and installs
+each as its own MCP server. The deployment names itself: `PM_INSTANCE_NAME`
+(default: the first DNS label of `PM_MCP_RESOURCE`'s host, or `local`) and
+`PM_INSTANCE_DESCRIPTION`. The install name is `pmon-<instance>`, served with
+the MCP URL by `GET /api/mcp/connect` to the console's Connect an agent page.
+`GET /api/instance` serves the instance name, the server version, the MCP URL
+and the install name without a session, so a client can name its entry the way
+this page does before anyone signs in.
+
+`initialize` returns `instructions`, in English for every client (the agent
+reads them, and it answers the user in the user's language), so the agent knows
+which server to use for what. The instance and datasource descriptions are
+passed through as configured:
+
+```
+This MCP server is the proxy-monster instance "hr-pmon": HR and payroll data
+Other pmon-* MCP servers are different proxy-monster instances, each with its own datasources and access. Use this one only for the datasources listed here.
+For SQL clients or scripts, or to share one pmon login across agents, call get_pmon_guide.
+For how to use proxy-monster — running queries, masked results, denials, approvals, access requests — call get_usage_guide.
+For how to configure it — tags, roles, Cedar policy, presets, result caps — call get_admin_guide.
+Datasources you can query here:
+- payroll (postgres): Salaries and payslips
+- hris (mysql)
+```
+
+The list is the caller's own: the same `datasource.connect` decision
+`list_connectable_datasources` makes, so a datasource the caller cannot connect
+to is never named. It is capped at 50, then points at
+`list_connectable_datasources`. A datasource's line comes from the proxy's
+`PM_DATASOURCE_DESCRIPTION`, carried on `RegisterRequest.description`. The
+server's `Implementation` title is `proxy-monster (<instance>)`.
 
 ## Data model
 
@@ -557,5 +636,6 @@ _consent ceiling_, and Cedar decided.
 - MCP Authorization (spec 2025-11-25) — MCP server as OAuth 2.1 resource server.
 - RFC 9728 (protected-resource metadata), RFC 8414 (AS metadata), RFC 8707
   (resource indicators / audience), RFC 7636 (PKCE), RFC 7009 (revocation), RFC
-  8628 (device-auth — the existing `pmon` precedent, not used by MCP).
+  8628 (device-auth — `pmon login`, whose session the
+  [pmon session exchange](#pmon-session-exchange) turns into MCP tokens).
 - CIMD (Client ID Metadata Documents) — the client-registration mechanism.

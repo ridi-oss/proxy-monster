@@ -1,6 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
   "separate-pull-requests": true,
+  "last-release-sha": "5001b8ccd91a3a9f9ef47f5fc6efe50f0a86f715",
   "include-v-in-tag": true,
   "initial-version": "0.1.0",
   "bump-minor-pre-major": true,
@@ -55,11 +56,16 @@
       "component": "server",
       "release-type": "simple",
       "changelog-path": "CHANGELOG.md",
-      "exclude-paths": ["pmon", "pmontray", "mysqlwire"],
+      "exclude-paths": ["pmon", "mysqlwire", "sql-action"],
       "extra-files": [
         {
           "type": "json",
           "path": "web/package.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "control-plane/src/main/resources/proxymonster/server-version.json",
           "jsonpath": "$.version"
         }
       ]
@@ -67,7 +73,13 @@
     "pmon": {
       "component": "pmon",
       "release-type": "go",
-      "version-file": "version.go",
+      "extra-files": [{ "type": "generic", "path": "version.go" }],
+      "changelog-path": "CHANGELOG.md"
+    },
+    "sql-action": {
+      "component": "pm-ci",
+      "release-type": "go",
+      "extra-files": [{ "type": "generic", "path": "version.go" }],
       "changelog-path": "CHANGELOG.md"
     },
     "mysqlwire": {

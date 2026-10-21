@@ -44,6 +44,10 @@ configured per proxy under `PM_TARGET_*`.
   `jdbc:postgresql://pm.cluster-xxxx.ap-northeast-2.rds.amazonaws.com:5432/proxymonster`
 - `PM_HTTP_PORT` / `PM_GRPC_PORT` — _optional_. HTTP (web/auth/MCP) and gRPC
   (proxies) listen ports. Defaults: `8080` · `9090`.
+- `PM_CP_CHILD_HTTP_PORT` / `PM_CP_CHILD_GRPC_PORT` — _optional_. The image's
+  entrypoint, `cp-go`, owns the two public ports and runs the Kotlin control
+  plane as a child on these loopback ports, forwarding to it. Defaults: `18090`
+  · `18091`; change them only if something else in the container uses them.
 - `PM_OIDC_ISSUER` / `_CLIENT_ID` / `_CLIENT_SECRET` / `_REDIRECT_URI` —
   _required for SSO_ (all four). Redirect must equal
   `<public-origin>/auth/oidc/callback`. Example issuer
@@ -53,6 +57,10 @@ configured per proxy under `PM_TARGET_*`.
   (default `openid profile email groups offline_access`); map IdP groups → local
   groups/roles (explicit map to target `system:*`). Example:
   `PM_OIDC_GROUP_MAP=okta-admins=system:admin,okta-devs=developers`
+- `PM_OIDC_USER_ATTRIBUTES` — _optional_. id_token claims copied onto the Cedar
+  `User` as `<name>:<String|Long|Bool|Set<String>|User>` pairs
+  ([docs/auth-model.md](./docs/auth-model.md#user-attributes)). Example:
+  `PM_OIDC_USER_ATTRIBUTES=manager:User,department:String`
 - `PM_SESSION_SECRET` — _required (prod)_. Signs web sessions; ≥32 chars,
   non-default (enforced when debug is off). Example:
   `$(openssl rand -base64 48)`
@@ -74,6 +82,16 @@ configured per proxy under `PM_TARGET_*`.
 
 - `PM_MCP_RESOURCE` — _optional_. Public MCP resource URL; required only if MCP
   is used. Example: `https://console.example.com/mcp`
+- `PM_INSTANCE_NAME` — _optional_. Short name for this deployment, used in the
+  MCP install name `pmon-<name>` and told to agents so several installed
+  instances stay distinct. Lowercase letters, digits, and inner hyphens, at most
+  40; any other value fails boot. Default: the first DNS label of
+  `PM_MCP_RESOURCE`'s host (`https://hr-pmon.example.com/mcp` → `hr-pmon`), or
+  `local` for an IP or `localhost`. It is public: `GET /api/instance` serves it
+  with the server version, the MCP URL, and the install name.
+- `PM_INSTANCE_DESCRIPTION` — _optional_. One line telling users and agents what
+  this instance holds, at most 500 characters. Default empty. Example:
+  `HR and payroll databases`
 - `PM_TRUSTED_PROXIES` — _optional, set behind an LB_. Comma-separated
   socket-peer addresses or CIDR blocks of the edges trusted to assert forwarded
   headers about a request: `X-Forwarded-For` for client-IP attestation,
@@ -95,6 +113,49 @@ configured per proxy under `PM_TARGET_*`.
   `proxy_set_header X-Forwarded-Proto $scheme` (or the equivalent), not a
   pass-through of the request header.
 
+- `PM_WEB_URL` — _optional_. The web console, e.g. `http://web:3000`. When set,
+  `cp-go` serves `/api/`, `/auth/`, `/oauth/`, `/mcp`, and `/.well-known/oauth-`
+  itself and forwards every other path there, on every port it serves HTTP on,
+  so a load balancer can send it everything. Unset (default), `cp-go` serves
+  only those paths and the load balancer routes the rest to web.
+
+- `PM_TAILNET_*` — _optional_. Put the console on a tailnet: `cp-go` joins it as
+  a node and serves the console on ports 443 and 80, with no separate Tailscale
+  task or TLS edge. It is on when a login is set; unset (default) keeps `cp-go`
+  off the tailnet, and the HTTP and gRPC ports work the same either way.
+  - `PM_TAILNET_CLIENT_ID` and `PM_TAILNET_AUDIENCE` — log in without a stored
+    key, through a Tailscale federated identity that trusts the cloud ID token
+    `cp-go` obtains (on ECS, from STS `GetWebIdentityToken`, so the task role
+    needs that permission for the audience). Or set `PM_TAILNET_AUTH_KEY`. The
+    node keeps its state in memory and is ephemeral, so each start logs in
+    again. If the tailnet requires device approval, set the client id as
+    `<id>?ephemeral=true&preauthorized=true`; otherwise the node waits for
+    approval until `PM_CP_START_TIMEOUT` and `cp-go` exits.
+  - `PM_TAILNET_TAGS` — the node's tags, e.g. `tag:console`. Required to host a
+    Service or to log in by federated identity.
+  - `PM_TAILNET_SERVICE` — a
+    [Tailscale Service](https://tailscale.com/kb/1552/tailscale-services) to
+    host, e.g. `svc:console`; the tailnet policy must define it and auto-approve
+    it for the node's tag. Unset, `cp-go` serves on the node's own name. A
+    Service keeps its name and address across deploys; a node's name does not
+    always, since a new node can get a `-1` suffix until the old ephemeral node
+    is removed.
+  - `PM_TAILNET_CERT_ARN` — an ACM certificate for the console's hostname,
+    issued with export enabled; the task role needs `acm:ExportCertificate` on
+    it. `cp-go` exports it at start and daily, so a renewal is served without a
+    restart. Point the hostname's DNS at the Service's or the node's address.
+    Unset, Tailscale's certificate for the tailnet name
+    (`<service>.<tailnet>.ts.net`, or the node's) is used: HTTPS must be enabled
+    for the tailnet, the name appears in public certificate logs, and the
+    console's public URL settings must use that name.
+  - `PM_TAILNET_HOSTNAME` — the node's name. Default `pmon-<instance name>`, the
+    name the MCP server is installed under (`PM_INSTANCE_NAME`).
+
+  Port 80 redirects to https on a name the certificate covers. The tailnet
+  client's own address is the requester IP, and any `X-Forwarded-For` the client
+  sends is ignored: on a Service `cp-go` takes the address from the PROXY v2
+  header Tailscale adds, and on the node it is the connection's own.
+
 - `PM_WEB_SESSION_ABSOLUTE` / `_IDLE` / `_SLIDE` / `_IDLE_WARN_LEAD` /
   `_ABSOLUTE_WARN_LEAD` / `_HEARTBEAT` — _optional_. Two-clock console session
   timings. Defaults: `2h` · `15m` · `2m` · `1m` · `5m` · `90s`.
@@ -108,6 +169,9 @@ configured per proxy under `PM_TARGET_*`.
   integer seconds (no unit). Default `600`.
 - `PM_OAUTH_ACCESS_TTL` / `PM_OAUTH_REFRESH_TTL` — _optional_. MCP OAuth token
   lifetimes (seconds). Defaults `600` · `21600`.
+- `PM_ELEVATED_SCOPE_TTL` — _optional_. How long a pmon login's scopes beyond
+  `mcp:read` and `mcp:query` last after its browser approval (seconds, clamped
+  to 60–86400). Default `3600`.
 - `PM_SCIM_TOKEN` — _optional_. SCIM provisioning bearer (OIDC just-in-time is
   the default).
 - `PM_SLACK_BOT_TOKEN` / `PM_SLACK_APP_TOKEN` — _optional_. Slack notifications
@@ -119,7 +183,11 @@ configured per proxy under `PM_TARGET_*`.
   leaves the whole layer inert and the workflow unchanged, never a
   half-configured mode. Socket Mode means the CP dials out; no inbound ingress
   is added. Set `PM_WEB_ORIGIN` too, or the message's "open request" link points
-  at the control plane rather than the console.
+  at the control plane rather than the console. Replies in a request's threads
+  become comments only when the app also has the `channels:history`,
+  `groups:history`, and `im:history` scopes and the `message.channels`,
+  `message.groups`, and `message.im` events
+  ([docs/notifications.md](./docs/notifications.md#threads)).
 - `PM_NOTIFY_STATEMENT` — _optional_. How much of a requester's SQL a
   notification may carry: `auto` (default) shows a statement only when a
   disclosure hint clears it, hiding one whose predicate compares a literal
@@ -132,6 +200,13 @@ configured per proxy under `PM_TARGET_*`.
   with a warning.)
 - `PM_NOTIFY_LOCALE` — _optional_. Fallback language (`en` · `ko`) for a
   recipient who has not set one in the console. Default `en`.
+- `PM_SLACK_CHANNELS` — _optional_. Posts requests to Slack channels by
+  datasource tag: `tag=channel id`, comma-separated, first match wins (e.g.
+  `service:billing=C0123ABC,system:production=C0789GHI`). Invite the bot to each
+  channel ([docs/notifications.md](./docs/notifications.md#channels)).
+- `PM_SLACK_MODE` — _optional_. `both` (default) posts a matched request to its
+  channel and DMs; `channel` posts it to the channel only. An unmatched request
+  always goes to DMs.
 - `PM_AUTH_DEBUG` / `PM_DEV` / `PM_OAUTH_DEBUG_AUTO_CONSENT` — _dev-only_.
   Defaults: `PM_AUTH_DEBUG=true`, `PM_DEV=false`,
   `PM_OAUTH_DEBUG_AUTO_CONSENT=true`. The CP refuses to boot when debug auth is
@@ -141,14 +216,17 @@ configured per proxy under `PM_TARGET_*`.
 ### Proxy — one set per datasource
 
 - `PM_ENGINE` — _optional_. The target database's engine, and so the wire
-  dialect this proxy speaks: `postgres` or `mysql`. Default `mysql`. Unrelated
-  to `PM_DB_URL`, which is always PostgreSQL.
+  dialect this proxy speaks: `postgres`, `mysql`, or `athena`. Default `mysql`.
+  Unrelated to `PM_DB_URL`, which is always PostgreSQL.
 - `PM_DATASOURCE_NAME` / `PM_DATASOURCE_TAGS` — _name required_. Logical id
   (must match the CP's) + the tags policy keys off. Example: `analytics-prod` ·
   `system:production`. These reach Cedar as written and every table and column
   under the datasource inherits them, so a name the shipped presets key on
   decides for the whole datasource — set the posture here and leave column
   classification to the console.
+- `PM_DATASOURCE_DESCRIPTION` — _optional_. One line saying what the datasource
+  holds, at most 500 characters, shown to agents over MCP. Sent at every
+  registration, so unsetting it clears the stored value. Default empty.
 - `PM_PROXY_PORT` — _optional_. The wire port clients connect to. Defaults:
   `6033` (MySQL) · `6432` (PG).
 - `PM_TARGET_HOST` / `_PORT` / `_DB` / `_USER` / `_PASSWORD` — _optional with
@@ -156,6 +234,23 @@ configured per proxy under `PM_TARGET_*`.
   `acme`). In production set all five to the target DB this proxy fronts (VPC
   peering in the AWS layout below). Example: `prod-db.prod-vpc.internal` ·
   `5432` · `appdb` · `pmproxy`
+- `PM_TARGET_TLS` — _optional_. TLS on the proxy's own connection to the target
+  DB: `disable` (default); `require` (encrypt, no certificate check, so no
+  protection from an active man-in-the-middle); `verify-ca` (check the chain
+  only); or `verify-full` (check the chain and that the certificate names
+  `PM_TARGET_HOST`). Use `verify-full` for RDS/Aurora and Azure, and for Cloud
+  SQL on shared or customer-managed CA with `PM_TARGET_HOST` set to the
+  instance's DNS name (`<uid>.<project>.<region>.sql.goog`). Use `verify-ca` for
+  Cloud SQL on the default per-instance CA, whose certificate names no DNS host.
+- `PM_TARGET_CA` — _optional_. The CAs to trust, as a comma-separated list:
+  `system` (the OS trust store), `rds` (the bundled
+  [RDS global CA bundle](https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem)),
+  or a path to a PEM file (relative paths resolve against the proxy's working
+  directory; write a file literally named `rds` as `./rds`). Default
+  `system,rds` for `verify-full`. `verify-ca` requires it and accepts only
+  files: without the hostname check, the CA must sign nothing but this target,
+  as a Cloud SQL per-instance server CA does (download it with
+  `gcloud sql instances describe <instance> --format='value(serverCaCert.cert)'`).
 - `PM_CONTROL_PLANE_GRPC` — _optional_. CP gRPC address `host:port`. Default
   `localhost:9090`. Production example: `pm-cp.pm.internal:9090`
 - `PM_ADVERTISE_ADDR` — _optional, no default_. The client-facing `host:port` a
@@ -167,6 +262,17 @@ configured per proxy under `PM_TARGET_*`.
   address"). It must parse as `host:port` with a port in 1-65535 or the proxy
   refuses to start. Example: `127.0.0.1:6033` locally ·
   `analytics-prod.pm.example.com:6432` in production
+- Athena (`PM_ENGINE=athena`) authenticates through the AWS SDK's own credential
+  chain (`AWS_PROFILE`, instance role, …), so `PM_TARGET_HOST`,
+  `PM_TARGET_USER`, and `PM_TARGET_PASSWORD` are unused; `PM_TARGET_DB` is the
+  default database. It also reads `AWS_REGION`, `PM_ATHENA_WORKGROUP` (default
+  `primary`), `PM_ATHENA_DEFAULT_CATALOG` (default `AwsDataCatalog`), and
+  `PM_ATHENA_CONTEXT_PATH` (default `:memory:`; an absolute path in a private
+  directory persists the enforcement-context cache across restarts). The SDK's
+  `AWS_ENDPOINT_URL` (with `AWS_CA_BUNDLE` for a private CA) points the proxy at
+  an Athena emulator instead of the regional endpoint; it must be an HTTPS
+  origin. Wire TLS is required: Athena clients speak HTTPS to the proxy. Default
+  port `6443`.
 - `PM_TLS_CERT` / `PM_TLS_KEY` — _optional (both or neither; one alone ⇒ refuses
   to start)_. TLS cert+key file paths for the wire listener. Wire TLS is
   optional — the cleaner pattern is a private transport (peered VPC,
@@ -181,6 +287,18 @@ configured per proxy under `PM_TARGET_*`.
   Rotating the cert re-advertises the new chain on the next register, so clients
   pick it up without redistribution.
 - `PM_SECRET_TOKEN` — _required_. The shared gRPC secret; must equal the CP's.
+- `PM_PROXY_PROTOCOL_PORT` / `PM_TRUSTED_PROXIES` — _optional (the port needs at
+  least one trusted proxy, or the proxy refuses to start)_. A second wire port
+  for an edge that relays clients through a hop that would otherwise replace
+  their address, such as a load balancer without client-IP preservation. Every
+  connection there must open with a PROXY protocol v1 or v2 header and come from
+  a socket peer in `PM_TRUSTED_PROXIES` (comma-separated addresses or CIDR
+  blocks); the header's source address is then the client address the CP audits.
+  A connection from any other peer is closed at accept, and one without a header
+  fails its handshake. The plain wire port never reads a header, so a client
+  there cannot assert an address. The port must differ from `PM_PROXY_PORT`, and
+  an entry that is neither an address nor a block refuses to start. Example:
+  `16033` · `10.20.0.0/16`
 
 #### Target DB service-account grants
 
@@ -225,12 +343,17 @@ pmon takes no proxy address of its own: its daemon discovers every datasource
 the logged-in principal may connect to and dials each one's `PM_ADVERTISE_ADDR`.
 
 - server URL — _required once per server_. `pmon server set [name] --url <url>`
-  saves a control-plane base URL under a name (`default` when omitted);
+  saves a control-plane base URL under a name (when omitted, the instance name
+  the server advertises, or `default` on an older server);
   `pmon login --url <url> [name]` does the same and logs in. Later commands name
-  the server, or address `default`. Example:
+  the server, or address the default server (the first one created;
+  `pmon server default <name>` changes it). Example:
   `pmon login --url https://console.example.com`
 - `--ttl` (on `pmon login`) — _optional_. Wire-token lifetime in seconds.
   Default `43200` (12h).
+- `--scopes` (on `pmon login`) — _optional_. Comma-separated scopes the login
+  grants, replacing the default `mcp:read,mcp:query`. Scopes beyond that pair
+  last `PM_ELEVATED_SCOPE_TTL`.
 - local broker port — _not configurable_. The daemon assigns each datasource the
   next free loopback port at or above `6100` and persists it, so a datasource
   keeps the same port across restarts. Ports are unique across servers.
@@ -522,13 +645,40 @@ otherwise a call answers `common.forbidden`. Sign that principal in through
 `/login` (debug login, with `system:admin`) first, or authorize with
 `?principal=` naming a principal that already has the role.
 
-Add and authorize the user-scoped Claude Code connection:
+The console's **Connect an agent** page (identity menu → `/connect`) gives each
+signed-in user one block to paste to their agent (Claude Code or Codex CLI),
+built from `GET /api/mcp/connect`. The agent installs the server and starts the
+OAuth sign-in, which the user approves in the browser. The block carries only
+what installing needs, the install name and URL; the server describes itself and
+the user's datasources in its MCP `instructions` on every connection, so that
+survives agent restarts. The server is installed as `pmon-<PM_INSTANCE_NAME>`,
+so a user with several proxy-monster instances gets one distinctly named entry
+per instance, and pasting an instance's block again replaces its entry. The
+block carries no secret.
+
+A second block, **Already use pmon? Share its login**, installs the same server
+as a local stdio command, `pmon mcp <instance>`, which relays to `/mcp` with an
+MCP token minted from the user's pmon login (see
+[pmon/README.md](./pmon/README.md#mcp)). One `pmon login` then serves both SQL
+clients and agents, and it works when the agent runs on a remote machine,
+because the device login completes in any browser. This is also how Claude
+Desktop connects: its local stdio servers run on the user's machine. claude.ai
+and ChatGPT are not supported: their connectors reach MCP servers from the
+vendor's cloud, while a proxy-monster server accepts direct connections from the
+user's machine only. The `get_pmon_guide` MCP tool gives an agent the same pmon
+setup for its instance, plus one `pmon show` line per datasource the user may
+connect to.
+
+For the local defaults the instance is `local`, so the Claude Code commands are:
 
 ```
-claude mcp add --scope user --transport http proxy-monster http://127.0.0.1:8080/mcp
-claude mcp login proxy-monster
-claude mcp get proxy-monster
+claude mcp add --scope user --transport http pmon-local http://127.0.0.1:8080/mcp
+claude mcp login pmon-local
+claude mcp get pmon-local
 ```
+
+Codex CLI: `codex mcp add pmon-local --url http://127.0.0.1:8080/mcp` starts the
+login itself.
 
 `claude mcp login` needs a real interactive terminal — it holds a local callback
 listener open while your browser completes the redirect, so it can't run from a

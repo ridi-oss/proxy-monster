@@ -57,7 +57,7 @@ the kind; the `kind → category` map lives solely in Cedar.
 
 Flat granular — the content distinctions are kinds, so the `kind → category` map
 below is a pure lookup with no logic. Representative, not the full set; the
-coverage test (`analyzer/probe/mysql_statement_coverage_test.go`) is the
+coverage test (`analyzer/engines/mysql_statement_coverage_test.go`) is the
 authority and enforces exhaustiveness.
 
 <!-- prettier-ignore -->

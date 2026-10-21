@@ -165,6 +165,28 @@ captured on the connection's own held target-DB connection (design:
   that treated `CommandComplete` as commit believes a rolled-back write
   succeeded. Narrow window; MySQL's analogue is benign (skipped and retried on
   reconnect). Fix (bounded reads through the pending `Sync`) is a follow-up.
+- 🟡 A PostgreSQL multi-statement query may control the transaction only by
+  beginning with `BEGIN` and ending with `COMMIT`; any other `BEGIN`, `COMMIT`,
+  `ROLLBACK`, `SAVEPOINT`, or `SET TRANSACTION` in it is refused. Send those
+  statements as their own query.
+- A PostgreSQL refusal on the extended protocol outside `BEGIN` does not undo
+  the statements already executed since the last `Sync`; PostgreSQL would roll
+  that implicit transaction back. Inside `BEGIN` a refusal fails the transaction
+  as an error does.
+- 🟡 A MySQL multi-statement query with a syntax error or an empty statement
+  (`;;`) runs nothing, where MySQL runs the statements before it. A MySQL stored
+  procedure that returns result sets fails (1312): the proxy relays one result
+  per statement.
+
+## Athena
+
+- 🟡 One datasource reflects and classifies one catalog
+  (`PM_ATHENA_DEFAULT_CATALOG`). Athena resolves `catalog.database.table` across
+  catalogs in one query, and the analyzer accepts the qualifier, but a table in
+  any other catalog has no columns in the snapshot, so the statement is
+  unanalyzable and denies. Cover a second catalog with a second datasource.
+- 🟡 A forwarded `GetQueryResults` page reports no row or byte volume; the audit
+  completion covers the accepted submission only.
 
 ## Wire-cert distribution (direct clients and `pmon`)
 

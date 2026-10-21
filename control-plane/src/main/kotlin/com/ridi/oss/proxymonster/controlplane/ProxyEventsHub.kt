@@ -140,6 +140,7 @@ class ProxyEventsHub {
         ephemeralToken: String,
         connectionId: com.google.protobuf.ByteString,
         onOpen: List<Refetch>,
+        defaultSchema: String? = null,
     ): Dispatch {
         val event = controlEvent {
             openRunChannel = openRunChannel {
@@ -147,6 +148,7 @@ class ProxyEventsHub {
                 this.ephemeralToken = ephemeralToken
                 this.connectionId = connectionId
                 this.onOpen.addAll(onOpen.map { proxyCommand { refetch = it } })
+                if (defaultSchema != null) this.defaultSchema = defaultSchema
             }
         }
         return dispatch(name, "an open-run request", event)

@@ -38,7 +38,7 @@ secrets/
 # real hostnames, credentials, and internal schema names.
 tmp/
 
-# Parity oracle (analyzer/probe): the pinned Python sqlglot checkout the Go parity test compares
+# Parity oracle (analyzer/engines): the pinned Python sqlglot checkout the Go parity test compares
 # against, provisioned locally on demand — absent = the parity test skips (golden.json is the frozen
 # regression guard). Plus any bytecode its driver emits.
 .reference/

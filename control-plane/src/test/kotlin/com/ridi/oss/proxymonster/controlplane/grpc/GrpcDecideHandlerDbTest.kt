@@ -28,7 +28,6 @@ import io.grpc.Status
 import io.grpc.StatusException
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder
 import kotlinx.coroutines.runBlocking
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.TestInstance
@@ -62,8 +61,7 @@ class GrpcDecideHandlerDbTest {
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_grpc_decide"))
-        Flyway.configure().dataSource(dataSource).load().migrate()
+        dataSource = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_grpc_decide"))
         core = ControlPlaneCore(dataSource)
         ds = core.datasourceStore.create(
             DatasourceInput(name = "grpc-ds", engine = "postgres", host = "localhost", port = 5432, dbName = "app"),

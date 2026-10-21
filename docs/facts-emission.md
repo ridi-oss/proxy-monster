@@ -146,7 +146,7 @@ The analyzer walks each resolved scope's source map and emits a Table fact only
 when the source resolves to a physical target-DB relation. A CTE, derived table,
 table-valued expression, or alias is not a physical Table; the walk recurses
 into its scope and emits the physical relations it reads. This reuses the
-analyzer's scope resolution (`analyzer/probe/relation.go`) rather than
+analyzer's scope resolution (`analyzer/engines/relation.go`) rather than
 collecting SQL names and subtracting a CTE-name set — that distinction is the
 safety property:
 
@@ -247,6 +247,18 @@ gate:
 3. Permit → relay the original statement verbatim, no rewrite or masks, with a
    recorded reason.
 4. No permit / Cedar error / `INADMISSIBLE` → deny.
+5. Before recording a deny from step 4 on an `UNANALYZABLE` MySQL or PostgreSQL
+   wire statement, the control plane sends the `check_target_error` command: the
+   proxy prepares the statement on the target without running it (MySQL
+   `COM_STMT_PREPARE`, PostgreSQL Parse) and re-sends the request with the
+   outcome. If the target rejects it, the decision is an ALLOW that runs
+   nothing: the proxy sends the target's error, redacted
+   ([diagnostic-redaction.md](./diagnostic-redaction.md)) unless it is a syntax
+   error: a prepare runs nothing, so that error holds only client text, fixed
+   text, or object names, and reports an `error` completion. A statement that
+   prepares keeps the deny. The proxy never runs the statement on this path,
+   because a prepare refuses two statements in one string that a query would
+   run.
 
 An unanalyzable statement cannot claim that no sensitive resources were touched,
 so the exception is datasource-wide and explicit — suitable for a permissive
@@ -280,7 +292,7 @@ On a `MASK` verdict the control-plane sets `Verdict.unmaskable_permitted` when
 the datasource grants `exception.unmaskable`
 (`authorizeDatasourceAction(EXCEPTION_UNMASKABLE)`). The proxy relays the
 binary/prepared result unmasked only when that flag is set — checked in
-`goproxy/mysqlproxy/conn.go` and `goproxy/pgproxy/extended.go` — and otherwise
+`goproxy/mysql/conn.go` and `goproxy/postgres/extended.go` — and otherwise
 refuses fail-closed. MySQL binary/prepared-statement results and PostgreSQL
 binary-format results have a relay path; COPY and fast-path do not and stay
 denied even where policy permits `exception.unmaskable`. That is an honest

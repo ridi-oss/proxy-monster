@@ -177,9 +177,7 @@ class NotificationStoreTest {
     }
 
     @Test
-    fun `locale and email round-trip for a directory user, and setLocale reports a missing one`() {
-        assertFalse(store.setLocale("nobody@example.com", "ko"), "no directory row to set a preference on")
-
+    fun `locale and email read back for a directory user`() {
         fx.dataSource.connection.use { c ->
             c.prepareStatement("INSERT INTO app_user (principal, email) VALUES (?, ?)").use { ps ->
                 ps.setString(1, "dir@example.com"); ps.setString(2, "dir-mail@example.com"); ps.executeUpdate()
@@ -187,7 +185,9 @@ class NotificationStoreTest {
         }
         assertNull(store.localeOf("dir@example.com"), "no preference expressed yet")
         assertEquals("dir-mail@example.com", store.emailOf("dir@example.com"))
-        assertTrue(store.setLocale("dir@example.com", "ko"))
+        fx.dataSource.connection.use { c ->
+            c.prepareStatement("UPDATE app_user SET locale = 'ko' WHERE principal = 'dir@example.com'").use { it.executeUpdate() }
+        }
         assertEquals("ko", store.localeOf("dir@example.com"))
     }
 }

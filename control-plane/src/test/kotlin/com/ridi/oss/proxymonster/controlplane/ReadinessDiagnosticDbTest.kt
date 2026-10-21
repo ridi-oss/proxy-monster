@@ -10,7 +10,6 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
@@ -108,8 +107,7 @@ class ReadinessDiagnosticDbTest {
     }
 
     private fun migratedDatabase(prefix: String): DataSource {
-        val ds = SharedPostgres.hikari(SharedPostgres.freshDatabase(prefix))
-        Flyway.configure().dataSource(ds).load().migrate()
+        val ds = SharedPostgres.hikari(SharedPostgres.migratedDatabase(prefix))
         return ds
     }
 

@@ -45,6 +45,8 @@ interface Props {
   datasourceId: number
   datasourceName?: string
   denyReason?: string | null
+  /** Role to preselect on open when the roles list has it. */
+  roleName?: string
 }
 
 export function RequestAccessDialog({
@@ -53,6 +55,7 @@ export function RequestAccessDialog({
   datasourceId,
   datasourceName,
   denyReason,
+  roleName: preselectRoleName,
 }: Props) {
   const t = useTranslations('Query')
   const { data: roles, isLoading } = useRoles()
@@ -68,10 +71,12 @@ export function RequestAccessDialog({
     if (!open) return
     setSubmitted(false)
     setError(null)
-    if (roleId == null && roles && roles.length > 0) setRoleId(String(roles[0].id))
+    const preselected = preselectRoleName ? roles?.find((r) => r.name === preselectRoleName) : undefined
+    if (preselected) setRoleId(String(preselected.id))
+    else if (roleId == null && roles && roles.length > 0) setRoleId(String(roles[0].id))
     if (!reason && denyReason) setReason(t('requestAccess.prefilledReason', { reason: denyReason }))
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, roles])
+  }, [open, roles, preselectRoleName])
 
   const valid = !!roleId && reason.trim().length > 0
 

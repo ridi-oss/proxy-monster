@@ -12,11 +12,11 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
@@ -25,6 +25,18 @@ import (
 
 func wireVerdict(v *pb.Verdict) *pb.WireDecision {
 	return &pb.WireDecision{Outcome: &pb.WireDecision_Verdict{Verdict: v}}
+}
+
+func commandsEqual(got, want []*pb.ProxyCommand) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if !proto.Equal(got[i], want[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 func wireBefore(commands ...*pb.ProxyCommand) *pb.WireDecision {
@@ -41,9 +53,37 @@ func TestDecisionFromWire(t *testing.T) {
 		if decision != nil {
 			t.Fatalf("decision = %+v, want nil", decision)
 		}
-		want := []*pb.Refetch{{Catalog: "db", Schema: "app", IfHashDiffers: []byte{1, 2}}}
-		if !reflect.DeepEqual(commands, want) {
-			t.Fatalf("commands = %+v, want %+v", commands, want)
+		if len(commands) != 1 || !proto.Equal(commands[0], refetch("app", []byte{1, 2})) {
+			t.Fatalf("commands = %+v", commands)
+		}
+	})
+
+	t.Run("before decide passes every command arm through opaquely", func(t *testing.T) {
+		fetch := &pb.ProxyCommand{Command: &pb.ProxyCommand_FetchAthenaPreparedDefinition{FetchAthenaPreparedDefinition: &enginepb.FetchAthenaPreparedDefinition{Workgroup: "wg", Name: "stmt"}}}
+		commands, decision := decisionFromWire(wireBefore(refetch("app", nil), fetch))
+		if decision != nil || len(commands) != 2 || !proto.Equal(commands[1], fetch) {
+			t.Fatalf("commands = %+v decision = %+v", commands, decision)
+		}
+		if commands, got := decisionFromWire(wireBefore(&pb.ProxyCommand{})); commands != nil || got.Action != "DENY" {
+			t.Fatalf("armless command accepted: %+v %+v", commands, got)
+		}
+		if commands, got := decisionFromWire(wireBefore()); commands != nil || got.Action != "DENY" {
+			t.Fatalf("empty before-decide round accepted: %+v %+v", commands, got)
+		}
+	})
+
+	t.Run("the submission rides rewritten sql", func(t *testing.T) {
+		_, got := decisionFromWire(wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW, RewrittenSql: proto.String("SELECT 1"), Submission: &enginepb.Submission{Engine: &enginepb.Submission_Athena{Athena: &enginepb.AthenaSubmission{ExecutionParameters: []string{"'x'"}}}}}))
+		if got.Action != "ALLOW" || got.RewrittenSQL == nil || *got.RewrittenSQL != "SELECT 1" || got.Submission.GetAthena() == nil || len(got.Submission.GetAthena().ExecutionParameters) != 1 {
+			t.Fatalf("submission not mapped: %+v", got)
+		}
+		_, got = decisionFromWire(wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW, RewrittenSql: proto.String("SELECT 1"), Submission: &enginepb.Submission{Engine: &enginepb.Submission_Athena{Athena: &enginepb.AthenaSubmission{}}}}))
+		if got.Action != "ALLOW" || got.Submission.GetAthena() == nil || len(got.Submission.GetAthena().ExecutionParameters) != 0 {
+			t.Fatalf("empty parameter list lost its presence: %+v", got)
+		}
+		_, got = decisionFromWire(wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW, Submission: &enginepb.Submission{Engine: &enginepb.Submission_Athena{Athena: &enginepb.AthenaSubmission{}}}}))
+		if got.Action != "DENY" {
+			t.Fatalf("parameters without rewritten sql accepted: %+v", got)
 		}
 	})
 
@@ -65,7 +105,7 @@ func TestDecisionFromWire(t *testing.T) {
 		if commands != nil {
 			t.Fatalf("commands = %+v, want nil", commands)
 		}
-		want := &engine.Decision{
+		want := &spi.Decision{
 			Action:              "MASK",
 			DecisionID:          42,
 			MaxRows:             500,
@@ -75,10 +115,14 @@ func TestDecisionFromWire(t *testing.T) {
 			EffectiveRoles:      []string{"analyst"},
 			RewrittenSQL:        proto.String("SELECT c FROM t"),
 			UnmaskablePermitted: true,
-			AfterStatement:      []*pb.Refetch{{Catalog: "db", Schema: "app", IfHashDiffers: []byte("hash")}},
+			AfterStatement:      []*pb.ProxyCommand{refetch("app", []byte("hash"))},
 			Generation:          9,
 			ResultFingerprint:   []*enginepb.RequireResultReadGrant{{Resource: &enginepb.RequireResultReadGrant_Function{Function: &enginepb.FunctionResource{Name: "now"}}}},
 		}
+		if !commandsEqual(got.AfterStatement, want.AfterStatement) {
+			t.Fatalf("after-statement = %+v, want %+v", got.AfterStatement, want.AfterStatement)
+		}
+		got.AfterStatement, want.AfterStatement = nil, nil
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("decision = %+v, want %+v", got, want)
 		}
@@ -137,15 +181,20 @@ func TestIdentityFromWire(t *testing.T) {
 		Principal:    "alice@example.com",
 		Roles:        []string{"analyst", "reader"},
 		ConnectionID: []byte("0123456789abcdef"),
-		OnOpen:       []*pb.Refetch{{Catalog: "db", Schema: "app", IfHashDiffers: []byte("hash")}},
+		OnOpen:       []*pb.ProxyCommand{refetch("app", []byte("hash"))},
 	}
+	if !commandsEqual(got.OnOpen, want.OnOpen) {
+		t.Fatalf("on-open = %+v, want %+v", got.OnOpen, want.OnOpen)
+	}
+	onOpen := got.OnOpen
+	got.OnOpen, want.OnOpen = nil, nil
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("identity = %+v, want %+v", got, want)
 	}
 	wire.Roles[0] = "mutated"
 	wire.ConnectionId[0] = 'x'
 	wire.OnOpen[0].GetRefetch().IfHashDiffers[0] = 'x'
-	if got.Roles[0] != "analyst" || string(got.ConnectionID) != "0123456789abcdef" || string(got.OnOpen[0].IfHashDiffers) != "hash" {
+	if got.Roles[0] != "analyst" || string(got.ConnectionID) != "0123456789abcdef" || string(onOpen[0].GetRefetch().IfHashDiffers) != "hash" {
 		t.Fatal("identityFromWire retained mutable proto backing arrays")
 	}
 
@@ -174,7 +223,7 @@ func TestValidateTokenAndDecideUnreachable(t *testing.T) {
 	if _, err := c.ValidateToken("token", ""); err == nil {
 		t.Fatal("ValidateToken against unreachable control plane succeeded")
 	}
-	out := c.Decide(engine.DecideRequest{Token: "token", SQL: "SELECT 1"})
+	out := c.Decide(spi.DecideRequest{Token: "token", SQL: "SELECT 1"})
 	if !out.IsErr() || out.Err == "" {
 		t.Fatalf("Decide = %+v, want non-empty fail-closed error", out)
 	}
@@ -183,7 +232,7 @@ func TestValidateTokenAndDecideUnreachable(t *testing.T) {
 func TestRegisterUnspecifiedEngineRejectedBeforeRPC(t *testing.T) {
 	fake := &fakeControlPlane{}
 	c := startFakeControlPlane(t, fake)
-	if err := c.Register(enginepb.Engine_ENGINE_UNSPECIFIED, "localhost", 1234, "db", nil, "", nil, false, nil); err == nil || !strings.Contains(err.Error(), "unspecified engine") {
+	if err := c.Register(enginepb.Engine_ENGINE_UNSPECIFIED, "localhost", 1234, "db", nil, "", nil, false, nil, nil); err == nil || !strings.Contains(err.Error(), "unspecified engine") {
 		t.Fatalf("Register error = %v, want local unspecified-engine error", err)
 	}
 	fake.mu.Lock()
@@ -193,8 +242,6 @@ func TestRegisterUnspecifiedEngineRejectedBeforeRPC(t *testing.T) {
 		t.Fatalf("unsupported Register reached server: %+v", reached)
 	}
 }
-
-var _ engine.Decider = (*Client)(nil)
 
 type fakeControlPlane struct {
 	pb.UnimplementedControlPlaneServer
@@ -354,7 +401,7 @@ func TestValidateTokenMapsRequestAndIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ValidateToken: %v", err)
 	}
-	if got.Principal != "alice@example.com" || !reflect.DeepEqual(got.OnOpen, []*pb.Refetch{{Catalog: "db", Schema: "app"}}) {
+	if got.Principal != "alice@example.com" || !proto.Equal(got.OnOpen[0], refetch("app", nil)) {
 		t.Fatalf("identity = %+v", got)
 	}
 	fake.mu.Lock()
@@ -389,22 +436,20 @@ func TestDecideMapsRequestAndRetriesBeforeDecide(t *testing.T) {
 		wireVerdict(&pb.Verdict{Decision: pb.EnfAction_MASK, DecisionId: 99, Generation: 4}),
 	}}
 	c := startFakeControlPlane(t, fake)
-	var run [][]*pb.Refetch
-	request := engine.DecideRequest{
-		Session: engine.SessionObservation{
+	var run [][]*pb.ProxyCommand
+	request := spi.DecideRequest{
+		Session: spi.SessionObservation{
 			Namespace: []string{"public", "app"},
-			SessionObservation: &enginepb.SessionObservation{
-				PostgresShadowedFunctions:         []string{"unnest"},
-				PostgresFunctionShadowingObserved: true,
-				PostgresSystemXidVisible:          proto.Bool(true),
-			},
+			SessionObservation: &enginepb.SessionObservation{Engine: &enginepb.SessionObservation_Postgres{Postgres: &enginepb.PostgresSession{
+				ShadowedFunctions: []string{"unnest"}, FunctionShadowingObserved: true, SystemXidVisible: proto.Bool(true),
+			}}},
 		},
 		Token:        "raw-token",
 		SQL:          "SELECT 1",
 		ClientAddr:   "10.0.0.9:5555",
-		TempColumns:  []engine.TempColumn{{Schema: "pg_temp_3", Table: "t", Column: "c", SqlType: "text", Ordinal: 5}},
+		TempColumns:  []spi.TempColumn{{Schema: "pg_temp_3", Table: "t", Column: "c", SqlType: "text", Ordinal: 5}},
 		ConnectionID: []byte("0123456789abcdef"),
-		RunCommands: func(commands []*pb.Refetch) error {
+		RunCommands: func(commands []*pb.ProxyCommand, _ *spi.SessionObservation) error {
 			run = append(run, commands)
 			return nil
 		},
@@ -413,7 +458,7 @@ func TestDecideMapsRequestAndRetriesBeforeDecide(t *testing.T) {
 	if out.IsErr() || out.Decision.Action != "MASK" || out.Decision.Generation != 4 {
 		t.Fatalf("Decide = %+v", out)
 	}
-	if !reflect.DeepEqual(run, [][]*pb.Refetch{{{Catalog: "db", Schema: "app", IfHashDiffers: []byte("old")}}}) {
+	if len(run) != 1 || len(run[0]) != 1 || !proto.Equal(run[0][0], refetch("app", []byte("old"))) {
 		t.Fatalf("RunCommands calls = %+v", run)
 	}
 
@@ -429,12 +474,12 @@ func TestDecideMapsRequestAndRetriesBeforeDecide(t *testing.T) {
 		!reflect.DeepEqual(req.GetSearchPath(), request.Session.Namespace) || !reflect.DeepEqual(req.GetConnectionId(), request.ConnectionID) {
 		t.Fatalf("DecisionRequest = %+v", req)
 	}
-	if !req.GetSession().GetPostgresFunctionShadowingObserved() ||
-		!reflect.DeepEqual(req.GetSession().GetPostgresShadowedFunctions(), []string{"unnest"}) {
-		t.Fatalf("PostgreSQL function shadow state = %v/%v, want observed [unnest]", req.GetSession().GetPostgresFunctionShadowingObserved(), req.GetSession().GetPostgresShadowedFunctions())
+	if !req.GetSession().GetPostgres().GetFunctionShadowingObserved() ||
+		!reflect.DeepEqual(req.GetSession().GetPostgres().GetShadowedFunctions(), []string{"unnest"}) {
+		t.Fatalf("PostgreSQL function shadow state = %v/%v, want observed [unnest]", req.GetSession().GetPostgres().GetFunctionShadowingObserved(), req.GetSession().GetPostgres().GetShadowedFunctions())
 	}
-	if req.GetSession().PostgresSystemXidVisible == nil || !req.GetSession().GetPostgresSystemXidVisible() {
-		t.Fatalf("PostgreSQL xid visibility = %v, want present true", req.GetSession().PostgresSystemXidVisible)
+	if req.GetSession().GetPostgres().SystemXidVisible == nil || !req.GetSession().GetPostgres().GetSystemXidVisible() {
+		t.Fatalf("PostgreSQL xid visibility = %v, want present true", req.GetSession().GetPostgres().SystemXidVisible)
 	}
 	if len(req.GetTempColumns()) != 1 || req.GetTempColumns()[0].GetOrdinal() != 5 {
 		t.Fatalf("TempColumns = %+v", req.GetTempColumns())
@@ -444,13 +489,52 @@ func TestDecideMapsRequestAndRetriesBeforeDecide(t *testing.T) {
 	}
 }
 
+func TestDecideRunsTheTargetErrorCheck(t *testing.T) {
+	check := &pb.ProxyCommand{Command: &pb.ProxyCommand_CheckTargetError{CheckTargetError: &pb.CheckTargetError{}}}
+	fake := &fakeControlPlane{decideQueue: []*pb.WireDecision{
+		wireBefore(check),
+		wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW, DecisionId: 7, ForwardTargetError: true}),
+	}}
+	c := startFakeControlPlane(t, fake)
+	observed := &spi.TargetError{Code: "1064", Message: []byte{0xff}}
+	var checked []string
+	out := c.Decide(spi.DecideRequest{
+		SQL:          "SELECT $$",
+		ConnectionID: []byte("0123456789abcdef"),
+		CheckTargetError: func(sql string) (*spi.TargetError, error) {
+			checked = append(checked, sql)
+			return observed, nil
+		},
+	})
+	if out.IsErr() || !out.Decision.ForwardTargetError || out.TargetError != observed {
+		t.Fatalf("Decide = %+v, want the forward verdict carrying the observed error", out)
+	}
+	if len(checked) != 1 || checked[0] != "SELECT $$" {
+		t.Fatalf("checked = %v, want the statement once", checked)
+	}
+	fake.mu.Lock()
+	requests := append([]*pb.DecisionRequest(nil), fake.decideReqs...)
+	fake.mu.Unlock()
+	if len(requests) != 2 || requests[0].GetTargetCheck() != nil || requests[1].GetTargetCheck().GetErrorCode() != "1064" {
+		t.Fatalf("requests = %+v, want the re-sent request to carry error code 1064", requests)
+	}
+
+	t.Run("missing checker", func(t *testing.T) {
+		c := startFakeControlPlane(t, &fakeControlPlane{decideResp: wireBefore(check)})
+		out := c.Decide(spi.DecideRequest{})
+		if !out.IsErr() || !strings.Contains(out.Err, "no checker") {
+			t.Fatalf("Decide = %+v", out)
+		}
+	})
+}
+
 func TestDecideOmitsUnobservedPostgresTypeVisibility(t *testing.T) {
 	fake := &fakeControlPlane{}
 	c := startFakeControlPlane(t, fake)
-	out := c.Decide(engine.DecideRequest{
-		Session: engine.SessionObservation{
+	out := c.Decide(spi.DecideRequest{
+		Session: spi.SessionObservation{
 			Namespace:          []string{"public"},
-			SessionObservation: &enginepb.SessionObservation{PostgresFunctionShadowingObserved: true},
+			SessionObservation: &enginepb.SessionObservation{Engine: &enginepb.SessionObservation_Postgres{Postgres: &enginepb.PostgresSession{FunctionShadowingObserved: true}}},
 		},
 		Token:        "raw-token",
 		SQL:          "SELECT 1",
@@ -465,7 +549,7 @@ func TestDecideOmitsUnobservedPostgresTypeVisibility(t *testing.T) {
 		t.Fatalf("Decide requests = %d, want 1", len(fake.decideReqs))
 	}
 	session := fake.decideReqs[0].GetSession()
-	if session == nil || session.PostgresSystemXidVisible != nil {
+	if session == nil || session.GetPostgres().SystemXidVisible != nil {
 		t.Fatalf("unobserved PostgreSQL xid visibility = %+v, want a session with the field absent", session)
 	}
 }
@@ -473,14 +557,14 @@ func TestDecideOmitsUnobservedPostgresTypeVisibility(t *testing.T) {
 func TestDecideBeforeDecideFailures(t *testing.T) {
 	t.Run("missing runner", func(t *testing.T) {
 		c := startFakeControlPlane(t, &fakeControlPlane{decideResp: wireBefore(refetch("app", nil))})
-		out := c.Decide(engine.DecideRequest{})
+		out := c.Decide(spi.DecideRequest{})
 		if !out.IsErr() || !strings.Contains(out.Err, "no runner") {
 			t.Fatalf("Decide = %+v", out)
 		}
 	})
 	t.Run("runner error", func(t *testing.T) {
 		c := startFakeControlPlane(t, &fakeControlPlane{decideResp: wireBefore(refetch("app", nil))})
-		out := c.Decide(engine.DecideRequest{RunCommands: func([]*pb.Refetch) error { return errors.New("probe failed") }})
+		out := c.Decide(spi.DecideRequest{RunCommands: func([]*pb.ProxyCommand, *spi.SessionObservation) error { return errors.New("probe failed") }})
 		if !out.IsErr() || !strings.Contains(out.Err, "probe failed") {
 			t.Fatalf("Decide = %+v", out)
 		}
@@ -489,7 +573,7 @@ func TestDecideBeforeDecideFailures(t *testing.T) {
 		fake := &fakeControlPlane{decideResp: wireBefore(refetch("app", nil))}
 		c := startFakeControlPlane(t, fake)
 		runs := 0
-		out := c.Decide(engine.DecideRequest{RunCommands: func([]*pb.Refetch) error { runs++; return nil }})
+		out := c.Decide(spi.DecideRequest{RunCommands: func([]*pb.ProxyCommand, *spi.SessionObservation) error { runs++; return nil }})
 		if !out.IsErr() || !strings.Contains(out.Err, "4 times") {
 			t.Fatalf("Decide = %+v", out)
 		}
@@ -543,7 +627,7 @@ func TestRegisterAndPushCatalog(t *testing.T) {
 	fake := &fakeControlPlane{}
 	c := startFakeControlPlane(t, fake)
 	chain := "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
-	if err := c.Register(enginepb.Engine_MYSQL, "target DB", 3306, "app", []string{"tag"}, "127.0.0.1:6033", &chain, true, nil); err != nil {
+	if err := c.Register(enginepb.Engine_MYSQL, "target DB", 3306, "app", []string{"tag"}, "127.0.0.1:6033", &chain, true, nil, nil); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	catalog := &pb.CatalogRequest{Catalog: &enginepb.CatalogSnapshot{Columns: []*enginepb.Column{{Schema: "s", Table: "t", Column: "c"}}}}
@@ -588,7 +672,7 @@ func TestRegisterRejectsIncompatibleControlPlaneVersion(t *testing.T) {
 	bad := ProtocolVersion + 1
 	fake := &fakeControlPlane{registerRespVersion: &bad}
 	c := startFakeControlPlane(t, fake)
-	err := c.Register(enginepb.Engine_MYSQL, "target DB", 3306, "app", nil, "", nil, false, nil)
+	err := c.Register(enginepb.Engine_MYSQL, "target DB", 3306, "app", nil, "", nil, false, nil, nil)
 	if !errors.Is(err, ErrIncompatibleControlPlane) {
 		t.Fatalf("Register against a version-skewed control plane must return ErrIncompatibleControlPlane: %v", err)
 	}
@@ -605,7 +689,7 @@ func TestRegisterTreatsControlPlaneRejectionAsIncompatible(t *testing.T) {
 		"proxy wire-protocol version 1 is incompatible with this control-plane's version 2 — deploy the proxy and control-plane from the same server-v* release",
 	)}
 	c := startFakeControlPlane(t, fake)
-	err := c.Register(enginepb.Engine_MYSQL, "target DB", 3306, "app", nil, "", nil, false, nil)
+	err := c.Register(enginepb.Engine_MYSQL, "target DB", 3306, "app", nil, "", nil, false, nil, nil)
 	if !errors.Is(err, ErrIncompatibleControlPlane) {
 		t.Fatalf("a control-plane version rejection must surface as ErrIncompatibleControlPlane: %v", err)
 	}
@@ -651,6 +735,7 @@ func TestStreamEventsDispatchesMappedRunOpen(t *testing.T) {
 		{Kind: &pb.ControlEvent_RefreshCatalog{RefreshCatalog: &pb.RefreshCatalog{}}},
 		{Kind: &pb.ControlEvent_OpenRunChannel{OpenRunChannel: &pb.OpenRunChannel{
 			SessionId: "sess-1", EphemeralToken: "eph-9", ConnectionId: connectionID, OnOpen: []*pb.ProxyCommand{refetch("app", nil)},
+			DefaultSchema: "orders",
 		}}},
 		{Kind: &pb.ControlEvent_OpenTableDetailChannel{OpenTableDetailChannel: &pb.OpenTableDetailChannel{SessionId: "sess-2", Catalog: "db", Schema: "public", Table: "users"}}},
 	}}
@@ -664,8 +749,10 @@ func TestStreamEventsDispatchesMappedRunOpen(t *testing.T) {
 	if err == nil {
 		t.Fatal("StreamEvents returned nil, want EOF")
 	}
-	wantRun := spi.RunOpen{SessionID: "sess-1", Token: "eph-9", ConnectionID: connectionID, OnOpen: []*pb.Refetch{{Catalog: "db", Schema: "app"}}}
-	if refreshes != 1 || !reflect.DeepEqual(openedRun, wantRun) || !reflect.DeepEqual(table, []string{"sess-2", "db", "public", "users"}) {
+	wantRun := spi.RunOpen{SessionID: "sess-1", Token: "eph-9", ConnectionID: connectionID, OnOpen: []*pb.ProxyCommand{refetch("app", nil)}, DefaultSchema: "orders"}
+	runOnOpenEqual := commandsEqual(openedRun.OnOpen, wantRun.OnOpen)
+	openedRun.OnOpen, wantRun.OnOpen = nil, nil
+	if refreshes != 1 || !runOnOpenEqual || !reflect.DeepEqual(openedRun, wantRun) || !reflect.DeepEqual(table, []string{"sess-2", "db", "public", "users"}) {
 		t.Fatalf("dispatch refresh/run/table = %d/%+v/%v", refreshes, openedRun, table)
 	}
 	fake.mu.Lock()
@@ -802,6 +889,18 @@ func (f *holdOpenControlPlane) openCount() int {
 func startHoldOpenControlPlane(t *testing.T, fake *holdOpenControlPlane) *Client {
 	t.Helper()
 	return startControlPlane(t, fake)
+}
+
+func waitReady(t *testing.T, c *Client) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c.conn.Connect()
+	for s := c.conn.GetState(); s != connectivity.Ready; s = c.conn.GetState() {
+		if !c.conn.WaitForStateChange(ctx, s) {
+			t.Fatalf("control-plane connection never became ready (last state %s)", s)
+		}
+	}
 }
 
 func startControlPlane(t *testing.T, fake pb.ControlPlaneServer) *Client {
@@ -962,6 +1061,8 @@ func TestEventsLoopRotationGapStaysBoundedAcrossPeriods(t *testing.T) {
 		t.Helper()
 		fake := &holdOpenControlPlane{done: make(chan struct{})}
 		c := startHoldOpenControlPlane(t, fake)
+		// A lazy dial on a loaded runner can outlast a 30ms stream age, which then reads as a wire fault.
+		waitReady(t, c)
 		ctx, cancel := context.WithCancel(context.Background())
 		loopDone := make(chan struct{})
 		go func() {
@@ -986,7 +1087,7 @@ func TestEventsLoopRotationGapStaysBoundedAcrossPeriods(t *testing.T) {
 	// 1. Reproduce: pacing the rotation with the error backoff is the pre-fix behavior. One open fits in the
 	//    budget; the second reopen alone would need 30s.
 	unpaced := opensWithin(t, eventLoopTimings{
-		streamMaxAge:      30 * time.Millisecond,
+		streamMaxAge:      300 * time.Millisecond,
 		reconnect:         backoff,
 		rotationReconnect: backoff,
 	})

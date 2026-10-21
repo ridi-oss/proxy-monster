@@ -1,0 +1,25 @@
+name: sql
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+permissions:
+  id-token: write
+  contents: read
+env:
+  PM_CI_SERVER_URL: http://127.0.0.1:8090
+  PM_CI_AUDIENCE: pm-github-e2e
+jobs:
+  file:
+    runs-on: [self-hosted, pm-github-e2e]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: File SQL
+        run: >
+          "$PM_CI_BIN" file --repository "${{ github.repository }}" --pr "${{
+          github.event.pull_request.number }}" --base "${{
+          github.event.pull_request.base.sha }}" --head "${{
+          github.event.pull_request.head.sha }}" --dir db/orders --datasource
+          e2e-mysql --schema acme --role system:development-architect --files
+          '^(?P<key>[0-9]+)_.+\.sql$' --order numeric

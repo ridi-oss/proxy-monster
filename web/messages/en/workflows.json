@@ -19,7 +19,16 @@
     "done": "Done",
     "copy": "Copy",
     "copied": "Copied",
-    "copyCommand": "Copy command"
+    "copyCommand": "Copy command",
+    "edit": "Edit",
+    "saving": "Saving…",
+    "save": "Save",
+    "forceRun": "Force run",
+    "forcingRun": "Forcing…",
+    "unapprove": "Unapprove",
+    "unapproving": "Unapproving…",
+    "close": "Close request",
+    "closing": "Closing…"
   },
   "fields": {
     "requester": "Requester",
@@ -38,7 +47,9 @@
     "rejectionReason": "Rejection reason",
     "sourceDecision": "Source decision",
     "requesterReason": "Requester reason",
-    "grantDuration": "Grant duration"
+    "grantDuration": "Grant duration",
+    "source": "Source",
+    "scope": "Scope"
   },
   "durations": {
     "asRequested": "As requested",
@@ -73,7 +84,9 @@
     "unknownRole": "unknown role",
     "noSqlAttached": "No SQL attached.",
     "proactive": "proactive",
-    "datasourceNumbered": "datasource #{id}"
+    "datasourceNumbered": "datasource #{id}",
+    "sourceGithub": "GitHub",
+    "sourceMcp": "MCP"
   },
   "masterDetail": {
     "pageTitle": "Workflows",
@@ -82,7 +95,6 @@
     "newRequest": "New request",
     "roleAccessRequest": "Role access request",
     "queryApprovalRequest": "Query approval request",
-    "rateResetRequest": "Rate reset request",
     "loadingRequests": "Loading workflow requests…",
     "lookingUpType": "Looking up request type…",
     "invalidRequestId": "Request id must be a positive number.",
@@ -163,7 +175,7 @@
   "approvalDetail": {
     "loading": "Loading approval request…",
     "noRows": "No rows.",
-    "approverExecution": "Approver execution",
+    "approverExecution": "Execution",
     "queryApprovalFallbackTitle": "Query approval #{id}",
     "submittedToast": "Execution submitted.",
     "runFailed": "run failed",
@@ -171,11 +183,12 @@
     "cancelFailed": "cancel failed",
     "rejectedToast": "Query approval rejected",
     "rejectFailed": "reject failed",
-    "approvedExecuteUnderR": "Approved — an approver may submit it under the requested role.",
+    "approvedExecuteUnderR": "Approved — the requester or an approver can run it under the requested role within a day.",
+    "approvedGithub": "Approved — it runs when the pull request is ready to merge.",
     "runUnderRole": "Run the approved query under the requested role. Progress and results update automatically.",
     "runStatus": "{status} · {rows, plural, one {# row} other {# rows}} · expires {expires}",
     "failedCode": "Execution failed: {code}",
-    "awaitingApprover": "Awaiting an approver to run this query.",
+    "awaitingApprover": "Waiting for the requester or an approver to run this query.",
     "rejectTitle": "Reject query approval",
     "rejectDescription": "Reject this query approval request from {principal}.",
     "rejectPlaceholder": "Explain why this query should not be approved.",
@@ -183,7 +196,21 @@
     "statementLabel": "Statement {n} of {total}",
     "statementTab": "Statement {n}",
     "statementRows": "{rows, plural, one {# row} other {# rows}}",
-    "batchSummary": "{count, plural, one {# statement} other {# statements}}"
+    "batchSummary": "{count, plural, one {# statement} other {# statements}}",
+    "editTitle": "Edit request",
+    "editDescription": "Changing the SQL returns the request to pending, so it must be approved again.",
+    "editSqlLabel": "SQL",
+    "editReasonLabel": "Reason",
+    "editedToast": "Request updated",
+    "editFailed": "Could not update the request.",
+    "revision": "Revision {revision}",
+    "forceRunToast": "Forced past the scope checks; it runs when the pull request is ready to merge.",
+    "forceRunFailed": "Could not force the run.",
+    "forcedBy": "Forced past the scope's freshness and one-PR-at-a-time checks by {admin}.",
+    "unapprovedToast": "Approval withdrawn.",
+    "unapproveFailed": "unapprove failed",
+    "closedToast": "Request closed.",
+    "closeFailed": "close failed"
   },
   "approveDialog": {
     "approveFailed": "approve failed",
@@ -192,7 +219,10 @@
     "title": "Approve & run query request",
     "descriptionWithPrincipal": "Approve {principal}'s query request and run it under the requested role.",
     "descriptionFallback": "Approve this query request and run it under the requested role.",
-    "executeUnderRNote": "Once approved, an approver runs the query under the requested role and releases the result — the requester never sees more than that role would."
+    "executeUnderRNote": "The query runs under the requested role — the requester never sees more than that role would.",
+    "titleGithub": "Approve query request",
+    "approvedToast": "Approved {principal}'s request.",
+    "descriptionApproveOnly": "Approve {principal}'s query request. The requester or an approver can then run it within a day."
   },
   "tokenDialog": {
     "generateFailed": "Generate failed",
@@ -210,19 +240,41 @@
     "connectionString": "Connection string",
     "connectionStringWithName": "Connection string · {name}"
   },
-  "rateResetComposer": {
-    "title": "Request a rate reset",
-    "description": "Your relayed-volume rate is spent. An approver resets it; the reset clears every window at once and leaves the per-statement cap alone.",
-    "denyReasonLabel": "Denied with (optional)",
-    "denyReasonPlaceholder": "rate 10000/1h spent",
-    "reasonPlaceholder": "Monthly export re-run — need the full table today.",
-    "submittedToast": "Rate reset requested — awaiting approver review",
-    "submitFailed": "failed to submit request"
-  },
   "rateResetDetail": {
     "title": "Rate reset request #{id}",
     "spentRate": "Spent rate",
-    "approvedToast": "Approved — reset {principal}'s result rates",
-    "note": "Approving writes a reset marker: {principal}'s relayed volume before the approval stops counting toward every rate window. Per-statement caps are unchanged."
+    "note": "Rate resets were removed. This request is kept as history."
+  },
+  "timeline": {
+    "heading": "Timeline",
+    "ccs": "CC",
+    "addCc": "Add CC",
+    "ccPlaceholder": "Principal or email",
+    "removeCc": "Remove {principal}",
+    "commentPlaceholder": "Write a comment",
+    "comment": "Comment",
+    "giveLgtm": "LGTM",
+    "lgtmBadge": "LGTM",
+    "viaSlack": "via Slack",
+    "failed": "That did not go through.",
+    "events": {
+      "requested": "requested this (revision {revision})",
+      "edited": "edited the SQL (revision {revision})",
+      "approved": "approved revision {revision}",
+      "rejected": "rejected it: {body}",
+      "unapproved": "withdrew the approval",
+      "expired": "The approval expired, so the request is pending again.",
+      "withdrawn": "— the approving review no longer counts, so the request is pending again",
+      "closed": "closed the request",
+      "ran": "ran it",
+      "executed": "The run finished.",
+      "failed": "The run failed.",
+      "cancelled": "The run was canceled.",
+      "cc_added": "added {body} as a CC",
+      "cc_removed": "removed {body} from the CCs"
+    },
+    "notOnRequest": "not on this request",
+    "edited": "edited",
+    "deleted": "Comment deleted."
   }
 }

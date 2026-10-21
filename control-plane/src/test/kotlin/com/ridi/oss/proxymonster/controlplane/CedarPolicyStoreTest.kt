@@ -7,7 +7,6 @@ import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyStore
 import com.ridi.oss.proxymonster.controlplane.authz.InvalidCedarPolicyException
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
@@ -30,8 +29,7 @@ class CedarPolicyStoreTest {
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        ds = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_cedar_policy"))
-        Flyway.configure().dataSource(ds).load().migrate()
+        ds = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_cedar_policy"))
         store = CedarPolicyStore(ds)
     }
 

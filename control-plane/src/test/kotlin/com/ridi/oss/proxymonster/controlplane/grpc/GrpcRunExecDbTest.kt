@@ -50,7 +50,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.withTimeout
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.TestInstance
@@ -79,8 +78,7 @@ class GrpcRunExecDbTest {
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_grpc_editor"))
-        Flyway.configure().dataSource(dataSource).load().migrate()
+        dataSource = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_grpc_editor"))
         core = ControlPlaneCore(dataSource)
         service = RunExecService(core)
         datasource = core.datasourceStore.create(
@@ -941,6 +939,47 @@ class GrpcRunExecDbTest {
             proxyRequests.send(proxyRunMsg { done = runDone { rowsAffected = -1 } })
             withTimeout(5_000) { runResult.await() }.getOrThrow()
             withTimeout(5_000) { proxy.await() }
+        }
+    }
+
+    @Test
+    fun `runBatch opens the target connection in the requested default schema`() = runBlocking {
+        supervisorScope {
+            val event = async { stub.events(eventsRequest { datasourceName = datasource.name; protocolVersion = CONTROL_PROTOCOL_VERSION }).first() }
+            awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }
+            val batch = async {
+                runCatching {
+                    service.runBatch(
+                        principal = "batch-user",
+                        ds = datasource,
+                        statementCount = 1,
+                        maxRows = 500,
+                        statementAt = { if (it == 0) "select 1" else null },
+                        onStatement = { _, _ -> true },
+                        defaultSchema = "orders",
+                    )
+                }
+            }
+            val open = withTimeout(5_000) { event.await() }.openRunChannel
+            assertEquals("orders", open.defaultSchema)
+            val proxyRequests = Channel<ProxyRunMsg>(Channel.UNLIMITED)
+            val proxy = async {
+                stub.runExec(proxyRequests.receiveAsFlow()).collect { control ->
+                    when {
+                        control.hasQuery() -> {
+                            proxyRequests.send(proxyRunMsg { decision = runDecision { decision = WireEnfAction.ALLOW } })
+                            proxyRequests.send(proxyRunMsg { done = runDone { rowsAffected = -1 } })
+                        }
+                        control.hasClose() -> proxyRequests.close()
+                        else -> fail("control plane sent an empty editor control message")
+                    }
+                }
+            }
+            proxyRequests.send(proxyRunMsg { sessionReady = runReady { sessionId = open.sessionId } })
+            proxyRequests.send(proxyRunMsg { serving = runServing {} })
+            withTimeout(5_000) { batch.await() }.getOrThrow()
+            withTimeout(5_000) { proxy.await() }
+            awaitUntil("Events stream detached") { datasource.name !in core.proxyEventsHub.attached() }
         }
     }
 

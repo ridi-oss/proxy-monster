@@ -218,7 +218,7 @@ schema; and a redacted column outside a catalog-class relation. Anything
 rejected throws `SystemManifestException`, which aborts startup.
 
 Validation does not check command ids against the analyzer: nothing verifies
-that a manifest command id is one `analyzer/probe/facts.go` can actually emit,
+that a manifest command id is one `analyzer/engines/facts.go` can actually emit,
 or that every emitted id has a manifest entry. `ManifestCommandCoverageDbTest`
 covers the second direction at test time (see [Verification](#verification)).
 
@@ -348,8 +348,8 @@ outside output.
 
 Privileged functions:
 
-- configuration read/mutation: `set_config`, `current_setting` (relation-level
-  `pg_settings` is critical for the same reason);
+- configuration mutation: `set_config`. `current_setting` stays open, since it
+  reads the same values as the passthrough `SHOW <guc>`;
 - backend/session control: `pg_cancel_backend`, `pg_terminate_backend`,
   `pg_log_backend_memory_contexts`;
 - configuration/log control: `pg_reload_conf`, `pg_rotate_logfile`;

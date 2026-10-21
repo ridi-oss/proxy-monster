@@ -1,5 +1,9 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import org.junit.jupiter.api.AfterAll
+import io.ktor.server.routing.routing
+import com.ridi.oss.proxymonster.controlplane.support.testLoginRoute
+import com.ridi.oss.proxymonster.controlplane.support.CpGoStack
 import ch.qos.logback.classic.Logger
 import ch.qos.logback.classic.spi.ILoggingEvent
 import ch.qos.logback.core.read.ListAppender
@@ -9,7 +13,6 @@ import com.ridi.oss.proxymonster.controlplane.oauth.MCPA_SCOPES
 import com.ridi.oss.proxymonster.controlplane.support.McpTokens
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.errorCode
-import com.ridi.oss.proxymonster.controlplane.support.installControlPlane
 import com.ridi.oss.proxymonster.controlplane.support.login
 import com.ridi.oss.proxymonster.controlplane.support.mcpCall
 import com.ridi.oss.proxymonster.controlplane.support.mcpRaw
@@ -32,7 +35,6 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
 import kotlinx.serialization.json.put
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
@@ -54,21 +56,28 @@ class McpTokenToolsDbTest {
     private lateinit var dataSource: DataSource
     private lateinit var core: ControlPlaneCore
     private lateinit var tokens: McpTokens
+    private lateinit var cpGo: CpGoStack
     private val seq = AtomicInteger()
-    private val config = mcpTestConfig()
+    private val config = mcpTestConfig().copy(mcpResource = "http://127.0.0.1/mcp")
 
     @BeforeAll
     fun setUp() {
         requireDockerOrSkip()
-        dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_mcp_token_tools"))
-        Flyway.configure().dataSource(dataSource).load().migrate()
+        val database = SharedPostgres.migratedDatabase("pm_mcp_token_tools")
+        dataSource = SharedPostgres.hikari(database)
         core = ControlPlaneCore(dataSource)
-        tokens = McpTokens(dataSource)
+        tokens = McpTokens(dataSource, config.mcpResource)
+        cpGo = CpGoStack(config, core, database) { routing { testLoginRoute(PrincipalSessionStore(dataSource, null), config) } }
+    }
+
+    @AfterAll
+    fun tearDown() {
+        if (::cpGo.isInitialized) cpGo.close()
     }
 
     @Test
     fun `a minted secret is returned once and never stored, logged or replayed`() = testApplication {
-        val client = installControlPlane(config, core)
+        val client = cpGo.client()
         val caller = principal("mint")
         val token = tokens.token(caller, setOf("mcp:tokens", "mcp:read"))
         val root = LoggerFactory.getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME) as Logger
@@ -101,7 +110,7 @@ class McpTokenToolsDbTest {
 
     @Test
     fun `the TTL is clamped to the token window`() = testApplication {
-        val client = installControlPlane(config, core)
+        val client = cpGo.client()
         val caller = principal("ttl")
         val token = tokens.token(caller, setOf("mcp:tokens"))
         for ((requested, expected) in listOf(10L to TOKEN_MIN_TTL_SECONDS, 999_999L to TOKEN_MAX_TTL_SECONDS, null to DEFAULT_USER_TTL_SECONDS)) {
@@ -114,7 +123,7 @@ class McpTokenToolsDbTest {
 
     @Test
     fun `no argument names another owner, so a caller only ever mints its own`() = testApplication {
-        val client = installControlPlane(config, core)
+        val client = cpGo.client()
         val caller = principal("owner")
         val victim = principal("victim")
         val token = tokens.token(caller, setOf("mcp:tokens"))
@@ -131,7 +140,7 @@ class McpTokenToolsDbTest {
 
     @Test
     fun `an owner lists and revokes own tokens, a stranger cannot, an admin can`() = testApplication {
-        val client = installControlPlane(config, core)
+        val client = cpGo.client()
         val owner = principal("revoke-owner")
         val stranger = principal("revoke-stranger")
         val admin = admin()
@@ -166,7 +175,7 @@ class McpTokenToolsDbTest {
 
     @Test
     fun `a deprovisioned principal gets no token`() = testApplication {
-        val client = installControlPlane(config, core)
+        val client = cpGo.client()
         val caller = principal("gone")
         val token = tokens.token(caller, setOf("mcp:tokens"))
         core.userGroupStore.createUser(AppUserInput(caller, active = false), core.tokenStore, core.accessStore, PrincipalSessionStore(dataSource, null))
@@ -183,7 +192,7 @@ class McpTokenToolsDbTest {
 
     @Test
     fun `mcp read alone cannot mint, and every metadata document advertises mcp tokens`() = testApplication {
-        val client = installControlPlane(config, core)
+        val client = cpGo.client()
         val caller = principal("readonly")
         val response = client.mcpRaw(tokens.token(caller, setOf("mcp:read")), "mint_token")
         assertEquals(HttpStatusCode.Forbidden, response.status)

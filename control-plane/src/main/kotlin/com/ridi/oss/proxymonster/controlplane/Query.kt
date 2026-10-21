@@ -14,6 +14,7 @@ import com.ridi.oss.proxymonster.controlplane.authz.FunctionVerdict
 import com.ridi.oss.proxymonster.controlplane.authz.TableRef
 import com.ridi.oss.proxymonster.controlplane.authz.TableVerdict
 import com.ridi.oss.proxymonster.controlplane.authz.UtilityRef
+import com.ridi.oss.proxymonster.controlplane.authz.UserParents
 import com.ridi.oss.proxymonster.controlplane.authz.UtilityVerdict
 import com.ridi.oss.proxymonster.controlplane.authz.authorizeColumns
 import com.ridi.oss.proxymonster.controlplane.authz.authorizeFunctions
@@ -25,11 +26,13 @@ import com.ridi.oss.proxymonster.controlplane.authz.authorizeDatasourceActionId
 import com.ridi.oss.proxymonster.classification.BaselineDangerousFunctions
 import com.ridi.oss.proxymonster.grpc.ColumnMask
 import com.ridi.oss.proxymonster.grpc.EnfAction
+import com.ridi.oss.proxymonster.grpc.ProxyCommand
 import com.ridi.oss.proxymonster.grpc.Engine
 import com.ridi.oss.proxymonster.grpc.ObjectRef
 import com.ridi.oss.proxymonster.grpc.columnMask
 import com.ridi.oss.proxymonster.analyzer.pb.CatalogSnapshot
 import com.ridi.oss.proxymonster.analyzer.pb.Column
+import com.ridi.oss.proxymonster.analyzer.pb.Submission
 import com.ridi.oss.proxymonster.analyzer.pb.FailureClass
 import com.ridi.oss.proxymonster.analyzer.pb.MaskedDisposition
 import com.ridi.oss.proxymonster.analyzer.pb.RequireResultReadGrant
@@ -47,6 +50,7 @@ import com.ridi.oss.proxymonster.probe.Masking
 import com.ridi.oss.proxymonster.probe.analyzerFor
 import com.ridi.oss.proxymonster.probe.bindMasks
 import io.ktor.http.HttpStatusCode
+import io.ktor.server.application.ApplicationCall
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
@@ -102,6 +106,7 @@ data class QueryResponse(
     val decision: EnfAction,
     val decisionId: Long? = null,
     val denyReason: String? = null,
+    val denyCode: String? = null,
     val maskedColumns: List<String> = emptyList(),
     // The tagged columns touched, not only `pii`-tagged ones; see decideQuery (Query.kt).
     val piiTouched: List<String> = emptyList(),
@@ -143,6 +148,8 @@ enum class Channel(val contextValue: String) {
      */
     SLACK("slack"),
     MCP("mcp"),
+    /** A task approved from a pull-request review: no session and no `requester_ip`, like [SLACK]. */
+    GITHUB("github"),
 }
 
 /** The analyzer's result-read grants bundled as the [ResultFingerprint] message [decideResultView] freezes
@@ -175,9 +182,15 @@ data class DecisionContext(
     val detail: String?,
     val passthrough: Boolean,
     val structural: Boolean = false,
+    /** A stable code for [denyReason] a caller can branch on ([RATE_SPENT_CODE]), or null. */
+    val denyCode: String? = null,
     /** ALLOW/MASK only: the `*`-expanded query the wire proxy must send instead of the client's original
      * so target-DB column order matches the mask ordinals. Null = send verbatim. */
     val rewrittenSql: String? = null,
+    /** The engine-specific companion to [rewrittenSql] (analyzer.proto Submission); the proxy's engine reads it. */
+    val submission: Submission? = null,
+    /** Non-empty: no verdict yet; the proxy runs these, then re-sends the same statement. */
+    val beforeDecide: List<ProxyCommand> = emptyList(),
     /** The analyzer's ordered output column names for this decision (an empty list for a passthrough /
      * unanalyzed statement). */
     val outputColumns: List<String> = emptyList(),
@@ -216,6 +229,10 @@ data class DecisionContext(
     val referencedSchemas: Set<com.ridi.oss.proxymonster.grpc.ObjectRef> = emptySet(),
     /** Parsed dotted-identifier candidates used by the catalog-miss retry path. */
     val schemaCandidates: Set<com.ridi.oss.proxymonster.grpc.ObjectRef> = emptySet(),
+    /** An unanalyzable deny that becomes the target's own error when the target rejects the statement. */
+    val checkTargetError: Boolean = false,
+    /** The proxy sends the target's error from its check, redacted, and runs nothing. */
+    val forwardTargetError: Boolean = false,
 )
 
 /**
@@ -225,7 +242,7 @@ data class DecisionContext(
  */
 internal fun readsAllUnmasked(
     principal: String,
-    roles: Set<String>,
+    parents: UserParents,
     ds: Datasource,
     catalog: List<CatalogColumn>,
     leakColumns: List<ObjectRef>,
@@ -250,13 +267,13 @@ internal fun readsAllUnmasked(
                 ?.let { ref.key to it }
         }.toMap()
     } ?: emptyMap()
-    return authz.authorizeColumns(principal, roles, ds.name, refs, context.copy(stmtKind = null), systemTags, ds.tags)
+    return authz.authorizeColumns(principal, parents, ds.name, refs, context.copy(stmtKind = null), systemTags, ds.tags)
         .values.all { it == ColumnVerdict.UNMASKED }
 }
 
 /**
  * Pure union of a principal's role sources: the base set (direct `principal_role`) ∪ active JIT grant
- * roles ∪ group-derived roles. [RoleResolver.resolve] is the sole production caller and passes the
+ * roles ∪ group-derived roles. [RoleResolver.resolveParents] is the sole production caller and passes the
  * server-resolved sets (never a client/session-asserted list); kept as a pure fn so the union
  * logic stays unit-testable (EffectiveRolesTest).
  */
@@ -398,13 +415,13 @@ internal fun effectiveAuthzContext(
     channel: Channel,
     authz: Authz,
     principal: String,
-    roles: Set<String>,
+    parents: UserParents,
     datasource: String,
     datasourceTags: List<String>,
     stmtKind: String? = null,
 ): AuthzContext {
     val raw = caller.copy(channel = channel.contextValue, stmtKind = stmtKind)
-    return raw.copy(tags = authz.resolveContextTags(principal, roles, datasource, raw, datasourceTags))
+    return raw.copy(tags = authz.resolveContextTags(principal, parents, datasource, raw, datasourceTags))
 }
 
 /**
@@ -477,6 +494,11 @@ fun decideQuery(
     ) {
         return structuralDeny(facts.detail.ifBlank { "statement is inadmissible" }, emptyList())
     }
+    // The analyzer asked for input only the proxy can fetch: no verdict, run the commands and retry.
+    val beforeDecide = ds.engine.definition.beforeDecideCommands(facts)
+    if (beforeDecide.isNotEmpty()) {
+        return structuralDeny(facts.detail.ifBlank { "more input is required" }, emptyList()).copy(beforeDecide = beforeDecide)
+    }
 
     if (userGroupStore.isDeactivated(principal)) {
         return structuralDeny(DEACTIVATED_PRINCIPAL_DENY, emptyList(), failedStage = "deprovisioned")
@@ -487,8 +509,9 @@ fun decideQuery(
     // check — including between the route and the async proxy Decide — cannot still authorize the run. An
     // all-deleted snapshot collapses to the empty set and denies here (never falls back to the principal's
     // own roles). Ordinary resolution is already deleted-role-filtered in RoleResolver.
-    val roles = providedRoles?.let { policyStore.liveRoleNames(it) } ?: roleResolver.resolve(principal)
-    val roleList = roles.toList()
+    val parents = providedRoles?.let { UserParents(policyStore.liveRoleNames(it)) }
+        ?: roleResolver.resolveParents(principal)
+    val roleList = parents.roles.toList()
     // The statement's classified kind, resolved before the context so a read policy can condition on it
     // (`context.stmt_kind`) — e.g. permit unmasked reads only under a plan-only EXPLAIN, which returns no
     // rows. STMT_UNKNOWN (a pre-parse failure), like an unspecified/unrecognized kind, leaves stmt_kind
@@ -498,7 +521,7 @@ fun decideQuery(
     else StatementKind.STATEMENT_KIND_STMT_UNKNOWN
     @Suppress("NAME_SHADOWING")
     val context = effectiveAuthzContext(
-        context, channel, authz, principal, roles, ds.name, ds.tags,
+        context, channel, authz, principal, parents, ds.name, ds.tags,
         stmtKind = statementKind
             .takeIf {
                 it != StatementKind.STATEMENT_KIND_UNSPECIFIED &&
@@ -509,7 +532,7 @@ fun decideQuery(
     )
     val derivedTags = context.tags.toList()
     // The datasource-level `result.cap` answer, asked up front: it alone decides a passthrough or relay's cap.
-    val datasourceCaps = authz.resolveResultCaps(principal, roles, ds.name, emptyList(), context, ds.tags)
+    val datasourceCaps = authz.resolveResultCaps(principal, parents, ds.name, emptyList(), context, ds.tags)
 
     // Fail-closed contract validation (analyzer.proto): the single statement-execution grant is the sole
     // per-statement authorization signal. A RESOLVED statement without it would default to the grantable
@@ -552,7 +575,7 @@ fun decideQuery(
         policyDeny(reason, roleList, derivedTags)
             .copy(catalogMiss = catalogMiss, schemaCandidates = facts.namespaceQualifierCandidatesList.toSet())
 
-    when (authz.authorizeDatasourceAction(principal, roles, AuthzAction.DATASOURCE_CONNECT, ds.name, context, ds.tags)) {
+    when (authz.authorizeDatasourceAction(principal, parents, AuthzAction.DATASOURCE_CONNECT, ds.name, context, ds.tags)) {
         is AuthzDecision.Deny -> return policyDeny("no access to datasource '${ds.name}'", roleList, derivedTags)
         AuthzDecision.Allow -> Unit
     }
@@ -582,7 +605,7 @@ fun decideQuery(
             )
         }
         val utilRefs = utilityTags.keys.map(::UtilityRef)
-        val verdicts = authz.authorizeUtilities(principal, roles, ds.name, utilRefs, context, utilityTags, ds.tags)
+        val verdicts = authz.authorizeUtilities(principal, parents, ds.name, utilRefs, context, utilityTags, ds.tags)
         usedUtilityTags = utilityTags
         utilRefs.firstOrNull { verdicts[it.command] != UtilityVerdict.USE }?.let {
             return structuralDeny(
@@ -603,9 +626,10 @@ fun decideQuery(
     // unanalyzable/utility gates still apply on top (e.g. ALTER TABLE stays prod-denied).
     val kindAction = statementKindActionId(statementKind)
         ?: return structuralDeny("statement kind is unspecified", roleList, contextTags = derivedTags)
-    if (authz.authorizeDatasourceActionId(principal, roles, kindAction, ds.name, context, ds.tags) !is AuthzDecision.Allow) {
+    if (authz.authorizeDatasourceActionId(principal, parents, kindAction, ds.name, context, ds.tags) !is AuthzDecision.Allow) {
         val kindName = statementKind.name.removePrefix("STATEMENT_KIND_").lowercase()
         return policyDeny("statement kind '$kindName' is not permitted", roleList, derivedTags)
+            .copy(checkTargetError = !facts.hasStatementExec())
     }
 
     // A resolved statement that touches no column/table/function, changes no catalog, and calls no function
@@ -621,11 +645,11 @@ fun decideQuery(
         // A literal write reaches this relay too, and its diagnostic can leak (a PostgreSQL constraint ERR
         // dumps the whole target row) — gate on the analyzer's leak set. `SELECT 1` has an empty set: raw.
         if (relaysRows(statementKind)) {
-            spentRate(auditStore, principal, ds.name, datasourceCaps)?.let { return policyDeny(it, roleList, derivedTags) }
+            spentRate(auditStore, principal, ds.name, datasourceCaps)?.let { return policyDeny(it, roleList, derivedTags).copy(denyCode = RATE_SPENT_CODE) }
         }
         return passthroughAllow(roleList, "passthrough (no data touched)", derivedTags)
             .copy(
-                sanitizeDiagnostics = !readsAllUnmasked(principal, roles, ds, catalogIndex.rowsByKey.values.toList(), facts.diagnosticLeakColumnsList, context, authz, systemClassification),
+                sanitizeDiagnostics = !readsAllUnmasked(principal, parents, ds, catalogIndex.rowsByKey.values.toList(), facts.diagnosticLeakColumnsList, context, authz, systemClassification),
                 schemaCandidates = facts.namespaceQualifierCandidatesList.toSet(),
                 statementKind = statementKind,
             )
@@ -644,7 +668,7 @@ fun decideQuery(
             }.toMap()
             if (functionTags.isNotEmpty()) {
                 val refs = functionTags.keys.map(::FunctionRef)
-                val verdicts = authz.authorizeFunctions(principal, roles, ds.name, refs, context, functionTags, ds.tags)
+                val verdicts = authz.authorizeFunctions(principal, parents, ds.name, refs, context, functionTags, ds.tags)
                 refs.firstOrNull { verdicts[it.name] != FunctionVerdict.ALLOWED }?.let {
                     return structuralDeny("$SYSTEM_FUNCTION_DENY '${it.name}'", roleList, failedStage = "policy", contextTags = derivedTags)
                 }
@@ -652,7 +676,7 @@ fun decideQuery(
         }
         val stage = facts.failedStage.takeIf { facts.hasFailedStage() }?.lowercase()
         val reason = "fail-closed: could not analyze ($stage)"
-        return when (authz.authorizeDatasourceAction(principal, roles, AuthzAction.EXCEPTION_UNANALYZABLE, ds.name, context, ds.tags)) {
+        return when (authz.authorizeDatasourceAction(principal, parents, AuthzAction.EXCEPTION_UNANALYZABLE, ds.name, context, ds.tags)) {
             is AuthzDecision.Allow -> DecisionContext(
                 action = EnfAction.ALLOW,
                 denyReason = null,
@@ -671,9 +695,9 @@ fun decideQuery(
                 // Unanalyzable: no leak set to authorize, so fail closed and redact the diagnostic.
                 sanitizeDiagnostics = true,
             ).withCaps(datasourceCaps).let { relay ->
-                if (relaysRows(statementKind)) spentRate(auditStore, principal, ds.name, datasourceCaps)?.let { deny(it) } ?: relay else relay
+                if (relaysRows(statementKind)) spentRate(auditStore, principal, ds.name, datasourceCaps)?.let { deny(it).copy(denyCode = RATE_SPENT_CODE) } ?: relay else relay
             }
-            is AuthzDecision.Deny -> deny(reason, catalogMiss = true)
+            is AuthzDecision.Deny -> deny(reason, catalogMiss = true).copy(checkTargetError = true)
         }
     }
 
@@ -697,7 +721,7 @@ fun decideQuery(
         // capability over the unanalyzable relay above, which likewise relays everything unmasked under
         // the same grant.
         is CatalogCoverage.Denied -> return when (
-            authz.authorizeDatasourceAction(principal, roles, AuthzAction.EXCEPTION_UNANALYZABLE, ds.name, context, ds.tags)
+            authz.authorizeDatasourceAction(principal, parents, AuthzAction.EXCEPTION_UNANALYZABLE, ds.name, context, ds.tags)
         ) {
             is AuthzDecision.Allow -> DecisionContext(
                 action = EnfAction.ALLOW,
@@ -715,7 +739,7 @@ fun decideQuery(
                 // An uncovered column means the leak set can't be authorized — fail closed and redact.
                 sanitizeDiagnostics = true,
             ).withCaps(datasourceCaps).let { relay ->
-                if (relaysRows(statementKind)) spentRate(auditStore, principal, ds.name, datasourceCaps)?.let { deny(it) } ?: relay else relay
+                if (relaysRows(statementKind)) spentRate(auditStore, principal, ds.name, datasourceCaps)?.let { deny(it).copy(denyCode = RATE_SPENT_CODE) } ?: relay else relay
             }
             is AuthzDecision.Deny -> structuralDeny(
                 coverage.reason, roleList, failedStage = "catalog", contextTags = derivedTags,
@@ -779,7 +803,7 @@ fun decideQuery(
         facts.functionsList.filterTo(functionsToAuthorize) { it in functionTags }
         if (functionsToAuthorize.isNotEmpty()) {
             val refs = functionsToAuthorize.map(::FunctionRef)
-            val verdicts = authz.authorizeFunctions(principal, roles, ds.name, refs, context, functionTags, ds.tags)
+            val verdicts = authz.authorizeFunctions(principal, parents, ds.name, refs, context, functionTags, ds.tags)
             refs.firstOrNull { verdicts[it.name] != FunctionVerdict.ALLOWED }?.let {
                 return structuralDeny("$SYSTEM_FUNCTION_DENY '${it.name}'", roleList, failedStage = "policy", contextTags = derivedTags)
             }
@@ -788,7 +812,7 @@ fun decideQuery(
     }
 
     val columnVerdicts = if (columnRefs.isEmpty()) emptyMap() else
-        authz.authorizeColumns(principal, roles, ds.name, columnRefs, context, columnSystemTags, ds.tags)
+        authz.authorizeColumns(principal, parents, ds.name, columnRefs, context, columnSystemTags, ds.tags)
     val masks = ArrayList<ColumnMask>()
     var hasMandatoryRedaction = false
     for (grant in columnGrants) {
@@ -857,7 +881,7 @@ fun decideQuery(
             val table = grant.table
             TableRef(table.key, table.catalog, table.schema, table.table)
         }.distinctBy { it.key }
-        val verdicts = authz.authorizeTables(principal, roles, ds.name, refs, context, tableSystemTags, ds.tags)
+        val verdicts = authz.authorizeTables(principal, parents, ds.name, refs, context, tableSystemTags, ds.tags)
         refs.firstOrNull { verdicts[it.key] != TableVerdict.READ }?.let {
             return deny("no read grant for scanned table '${it.schema}.${it.table}'")
         }
@@ -872,7 +896,7 @@ fun decideQuery(
     // A permitted exception.unmaskable lets the proxy relay a masked result raw, so for the cap ask a masked
     // column counts as reaching the client in the clear.
     val unmaskablePermitted = masks.isNotEmpty() && !hasMandatoryRedaction && authz.authorizeDatasourceAction(
-        principal, roles, AuthzAction.EXCEPTION_UNMASKABLE, ds.name, context, ds.tags,
+        principal, parents, AuthzAction.EXCEPTION_UNMASKABLE, ds.name, context, ds.tags,
     ) is AuthzDecision.Allow
     val returnedMasked = LinkedHashMap<String, Boolean>()
     for (rc in facts.returnedColumnsList) {
@@ -893,8 +917,8 @@ fun decideQuery(
         for ((name, tagId) in allowedFunctionTags) add(CapResource.Function(FunctionRef(name), tagId))
         for ((command, tagId) in usedUtilityTags) add(CapResource.Utility(UtilityRef(command), tagId))
     }
-    val statementCaps = authz.resolveResultCaps(principal, roles, ds.name, capResources, context, ds.tags)
-    spentRate(auditStore, principal, ds.name, datasourceCaps, statementCaps)?.let { return deny(it) }
+    val statementCaps = authz.resolveResultCaps(principal, parents, ds.name, capResources, context, ds.tags)
+    spentRate(auditStore, principal, ds.name, datasourceCaps, statementCaps)?.let { return deny(it).copy(denyCode = RATE_SPENT_CODE) }
     // Every classified column the statement touched, whatever its tags are named: `pii` is a deployment's
     // own tag, so keying this on that one string leaves auditmon's mass-export detector blind on a
     // deployment that classifies with `pci`.
@@ -910,7 +934,7 @@ fun decideQuery(
     // MASK/DENY always redacts; an ALLOW redacts iff the analyzer's leak set holds a column the viewer
     // can't read unmasked. `select id from users` (all readable) relays raw.
     val sanitizeDiagnostics = action != EnfAction.ALLOW ||
-        !readsAllUnmasked(principal, roles, ds, catalogIndex.rowsByKey.values.toList(), facts.diagnosticLeakColumnsList, context, authz, systemClassification)
+        !readsAllUnmasked(principal, parents, ds, catalogIndex.rowsByKey.values.toList(), facts.diagnosticLeakColumnsList, context, authz, systemClassification)
     return DecisionContext(
         action = action,
         denyReason = null,
@@ -963,7 +987,7 @@ internal fun resultCaps(vararg resolved: ResolvedCaps): ResultCaps {
 /**
  * The deny reason when a rate entry the statement's `result.cap` permits carry is already spent, else null.
  * A forbid on any ask lifts every rate; with no rate collected no audit scan runs. The scan is one query
- * over the widest window, lower-bounded by the principal's last rate reset (AuditStore.relayedVolume).
+ * over the widest window (AuditStore.relayedVolume).
  */
 /** A rate bounds relayed volume, so a statement that relays no rows (COMMIT, SET, USE) is never rate-denied. */
 private fun relaysRows(kind: StatementKind): Boolean = kind !in SESSION_KINDS
@@ -977,7 +1001,8 @@ private val SESSION_KINDS = setOf(
 
 internal fun spentRate(auditStore: AuditStore?, principal: String, datasource: String, vararg resolved: ResolvedCaps): String? {
     if (auditStore == null || resolved.any { it.unbounded }) return null
-    val rates = resolved.flatMap { it.rates }
+    val boost = resolved.maxOf { it.boost }
+    val rates = resolved.flatMap { it.rates }.map { it.boosted(boost) }
     if (rates.isEmpty()) return null
     val relayed = auditStore.relayedVolume(principal, datasource, rates.map { it.window }, Instant.now())
     val spent = rates.firstOrNull { rate ->
@@ -998,6 +1023,7 @@ private const val SYSTEM_UTILITY_DENY = "utility command is not allowed on this 
 private const val DEACTIVATED_PRINCIPAL_DENY = "principal is deprovisioned (deactivated) — access denied"
 private const val CATALOG_CONFIGURATION_DENY = "fail-closed: invalid catalog or analyzer namespace configuration"
 internal const val RATE_SPENT_DENY = "rate"
+internal const val RATE_SPENT_CODE = "rate_spent"
 private const val WIRE_TASK_FORBIDDEN_DENY = "automatic task approval is not permitted for this datasource"
 
 private fun structuralDeny(
@@ -1051,6 +1077,17 @@ private fun policyDeny(
  * ordinary policy DENY (SQLSTATE 42501/1142), never a gRPC status, so the client sees the same shape as any
  * other denied statement.
  */
+// Nothing runs: the client gets the target's error for a statement the target would reject anyway.
+internal fun DecisionContext.targetErrorAllow(errorCode: String): DecisionContext = copy(
+    action = EnfAction.ALLOW,
+    denyReason = null,
+    failedStage = null,
+    detail = "unanalyzable; the target rejected it (error $errorCode)",
+    checkTargetError = false,
+    forwardTargetError = true,
+    sanitizeDiagnostics = true,
+)
+
 internal fun wireTaskForbiddenDeny(
     roles: List<String>,
     contextTags: List<String>,
@@ -1062,8 +1099,13 @@ internal fun wireTaskForbiddenDeny(
 // than each building its own. An EXPLAIN/DESCRIBE keeps its original text — the analyzer emits no
 // rewritten_sql for it (the rewrite is for the inner query it plans). The exception.unanalyzable escape
 // hatches deliberately relay the original whole statement, so they do not call this.
-private fun DecisionContext.withAnalyzerRewrite(facts: StatementFacts): DecisionContext =
-    if (facts.hasRewrittenSql()) copy(rewrittenSql = facts.rewrittenSql) else this
+private fun DecisionContext.withAnalyzerRewrite(facts: StatementFacts): DecisionContext = when {
+    facts.hasRewrittenSql() -> copy(
+        rewrittenSql = facts.rewrittenSql,
+        submission = if (facts.hasSubmission()) facts.submission else null,
+    )
+    else -> this
+}
 
 // The Cedar action a statement's kind is gated by. "stmt.kind.<k>" is a member of its category action in
 // the schema, so a category or kind preset matches it; an admin-category kind with no preset denies —
@@ -1169,6 +1211,17 @@ data class EditorSessionOpened(val sessionId: String)
 
 @Serializable
 data class EditorScriptRequest(val datasourceId: Long, val sql: String, val maxRows: Int = 500, val timeoutSeconds: Long? = null)
+
+/** [searchPath] is the held connection's effective namespace; null until the proxy reports one, or when it could not read it. */
+@Serializable
+data class EditorSessionState(val searchPath: List<String>?)
+
+@Serializable
+data class DefaultSchemaInput(val schema: String)
+
+/** The statement run to set the default schema, its outcome, and the session's namespace afterwards. */
+@Serializable
+data class DefaultSchemaResult(val statement: String, val result: QueryResultMeta?, val searchPath: List<String>?)
 
 /** Async editor SUBMIT ack: the born-APPROVED EDITOR task and its single result child (task:child 1:1). No
  *  rows inline — completion is observed by polling the task/result endpoints. */
@@ -1317,6 +1370,52 @@ fun Route.editorSessionRoutes(
             ?: return@delete call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
         service.delete(principal, taskId)
         call.respond(HttpStatusCode.NoContent)
+    }
+
+    // The session's datasource when [principal] owns the session and may connect to it; the response is sent
+    // otherwise. A missing session and someone else's get the same 404, so a guessed id reveals nothing. The
+    // session's path names the target's schemas, so reading it needs datasource.connect, as the catalog does.
+    suspend fun ApplicationCall.ownedConnectableSession(principal: String): Pair<OpenEditorSession, Datasource>? {
+        val sessionId = parameters["sessionId"]
+            ?: return null.also { respond(HttpStatusCode.BadRequest, ApiError("common.bad_id")) }
+        val session = runExecService.sessionOwnedBy(sessionId, principal)
+            ?: return null.also { respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "editor_session"))) }
+        val ds = datasourceStore.getByName(session.datasourceName)
+        if (ds == null || userGroupStore.isDeactivated(principal) ||
+            !authorizeMetadata(authz, principal, roleResolver.resolveParents(principal), ds, httpAuthzContext(config))
+        ) {
+            return null.also { respond(HttpStatusCode.Forbidden, ApiError("datasource.not_connectable")) }
+        }
+        return session to ds
+    }
+
+    get("/api/editor/sessions/{sessionId}") {
+        val principal = call.requireApi() ?: return@get
+        val (session, _) = call.ownedConnectableSession(principal) ?: return@get
+        call.respond(EditorSessionState(session.namespace))
+    }
+
+    // The engine builds the statement; it then runs as an ordinary editor submit on the session (the same
+    // auto-approval and per-statement decision as typed SQL) and its task is dropped once read.
+    post("/api/editor/sessions/{sessionId}/default-schema") {
+        val principal = call.requireApi() ?: return@post
+        val (session, ds) = call.ownedConnectableSession(principal) ?: return@post
+        val schema = call.receive<DefaultSchemaInput>().schema
+        if (schema.isBlank()) {
+            return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.field_required", mapOf("fields" to "schema")))
+        }
+        val statement = ds.engine.definition.defaultSchemaStatement?.invoke(schema)
+            ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("query.default_schema_unsupported"))
+        val requesterIp = call.httpRequesterIp(config)
+        try {
+            val sub = service.submitOnSession(principal, requesterIp, session.sessionId, statement, 1)
+            sub.job.join()
+            val result = service.status(principal, requesterIp, sub.response.taskId).result
+            service.delete(principal, sub.response.taskId)
+            call.respond(DefaultSchemaResult(statement, result, session.namespace))
+        } catch (e: TaskServiceException) {
+            call.respondServiceError(e)
+        }
     }
 
     delete("/api/editor/sessions/{sessionId}") {

@@ -1,0 +1,42 @@
+{
+  "check": {
+    "no_sql": "No SQL to run",
+    "requester_unmapped": "The pull request's author is not mapped to a proxy-monster user",
+    "awaiting_approval": "Waiting for approval of {path}",
+    "approved_enable_automerge": "Approved — enable auto-merge to run and merge",
+    "waiting_checks": "Waiting for other checks",
+    "waiting_draft": "Waiting for the pull request to be marked ready for review",
+    "conflicts": "Resolve the conflicts with the base branch",
+    "waiting_mergeable": "Waiting for GitHub to allow the merge",
+    "waiting_reviews": "Waiting for the reviews the base branch requires",
+    "waiting_threads": "Resolve the review conversations",
+    "merge_method": "The base branch does not allow merging by {method}; change the auto-merge method",
+    "cannot_rebase": "GitHub cannot rebase this pull request; change the auto-merge method or rebase it yourself",
+    "unchecked_rule": "The base branch's {rule} rule cannot be checked before the merge",
+    "waiting_merge": "Waiting for #{pr} to merge",
+    "update_branch": "Update your branch",
+    "update_branch_behind": "Update your branch — #{pr} merged first",
+    "waiting_files": "Waiting for this commit's SQL files to be filed",
+    "executor_unmapped": "Whoever enabled auto-merge is not mapped to a proxy-monster user",
+    "cannot_run": "The SQL cannot run; open the request for details",
+    "running": "Running {path}",
+    "executed": "Executed",
+    "failed": "{path} failed"
+  },
+  "review": {
+    "dismissed": "{path} changed; please re-approve"
+  },
+  "comment": {
+    "requester_unmapped": "proxy-monster could not map the author of this pull request to a user, so its SQL was not filed. Ask an admin to link your GitHub account, then push again.",
+    "requested": "`{path}` on **{schema}** — waiting for approval ({statementCount} statements). [Open the request]({link})",
+    "decided_approved": "`{path}` on **{schema}** — approved by **{decidedBy}**. It runs when the pull request is ready to merge. [Open the request]({link})",
+    "decided_rejected": "`{path}` on **{schema}** — rejected by **{decidedBy}**. [Open the request]({link})",
+    "executed": "`{path}` on **{schema}** — executed. Statements run: {statementCount}. Approved by **{decidedBy}**. [Open the request]({link})",
+    "failed": "`{path}` on **{schema}** — failed. Approved by **{decidedBy}**.\n\n```\n{error}\n```\n\n[Open the request]({link})",
+    "failed_at": "`{path}` on **{schema}** — failed at statement {ordinal} of {statementCount}. Approved by **{decidedBy}**.\n\n```sql\n{statement}\n```\n\n```\n{error}\n```\n\n[Open the request]({link})",
+    "cancelled": "`{path}` on **{schema}** — cancelled. [Open the request]({link})",
+    "closed_after_run": "`{path}` on **{schema}** ran, but this pull request was closed without merging. The scope stays blocked until this file reaches main: reopen and merge this pull request, or add the identical file in a new one. [Open the request]({link})",
+    "merged_without_file": "`{path}` on **{schema}** ran, but this pull request merged without the file, so the target has SQL that main does not. Admins have been alerted. [Open the request]({link})",
+    "force_run": "Force-run by **{forcedBy}**: `{path}` on **{schema}** skips the scope's freshness and one-PR-at-a-time checks. It still runs only when the pull request is ready to merge. [Open the request]({link})"
+  }
+}

@@ -5,11 +5,11 @@ import com.ridi.oss.proxymonster.auth.sha256Hex
 import com.ridi.oss.proxymonster.controlplane.AccessService
 import com.ridi.oss.proxymonster.controlplane.ApiError
 import com.ridi.oss.proxymonster.controlplane.DatasourceInput
-import com.ridi.oss.proxymonster.controlplane.RateReset
 import com.ridi.oss.proxymonster.controlplane.wireName
 import com.ridi.oss.proxymonster.controlplane.ApprovalService
 import com.ridi.oss.proxymonster.controlplane.EditorTaskService
 import com.ridi.oss.proxymonster.controlplane.RunExecService
+import com.ridi.oss.proxymonster.controlplane.SERVER_VERSION
 import com.ridi.oss.proxymonster.controlplane.TaskServiceException
 import com.ridi.oss.proxymonster.controlplane.AuditService
 import com.ridi.oss.proxymonster.controlplane.AuditStore
@@ -188,7 +188,7 @@ fun Application.installMcp(
 
     val authorizer = McpAuthorizer(config, core)
     val mutationExecutor = McpMutationExecutor(core.dataSource, core.auditStore, core.cedarPolicyStore, authorizer)
-    val taskTools = McpTaskTools(core, datasourceService, editorTasks, approvals, access, audit, queryHistory, tokens)
+    val taskTools = McpTaskTools(core, datasourceService, editorTasks, approvals, access, audit, queryHistory, tokens, config)
     mcpStatelessStreamableHttp(
         path = "/mcp",
         // The SDK's built-in guard reads the HTTP/1.1 Host header literally and rejects HTTP/2
@@ -199,6 +199,7 @@ fun Application.installMcp(
         val requestContext = call.attributes[MCP_CONTEXT]
         createMcpServer(
             call,
+            config,
             metadataUri,
             requestContext,
             authorizer,
@@ -249,10 +250,11 @@ private class McpAuthorizer(private val config: Config, private val core: Contro
 
     fun authorize(context: McpRequestContext, capability: McpCapability): Set<String> {
         requireScope(context, capability)
-        val roles = core.roleResolver.resolve(context.principal)
+        val parents = core.roleResolver.resolveParents(context.principal)
+        val roles = parents.roles
         val decision = core.authz.authorizeAs(
             context.principal,
-            roles,
+            parents,
             capability.action,
             capability.resource,
             AuthzContext(channel = Channel.MCP.contextValue, requesterIp = context.requesterIp),
@@ -417,6 +419,7 @@ private fun mcpAuditRecord(
 
 private fun createMcpServer(
     call: ApplicationCall,
+    config: Config,
     metadataUri: String,
     context: McpRequestContext,
     authorizer: McpAuthorizer,
@@ -428,15 +431,15 @@ private fun createMcpServer(
     core: ControlPlaneCore,
     taskTools: McpTaskTools,
 ): Server {
-    val locale = requestLocale(call)
     val server = Server(
-        Implementation("proxy-monster-access-control", "1.0.0"),
+        Implementation("proxy-monster", SERVER_VERSION, title = "proxy-monster (${config.instanceName})"),
         ServerOptions(capabilities = ServerCapabilities(tools = ServerCapabilities.Tools(listChanged = false))),
+        instructionsProvider = { mcpInstructions(config, core, context) },
     )
     for (capability in McpCapabilityRegistry.entries) {
         server.addTool(
             name = capability.toolName,
-            description = toolDescription(capability.toolName, locale),
+            description = toolDescription(capability.toolName),
             inputSchema = schemaFor(capability.toolName),
             toolAnnotations = ToolAnnotations(
                 readOnlyHint = capability.annotations.readOnlyHint,
@@ -458,7 +461,8 @@ private fun createMcpServer(
                 } else {
                     executeWrite(capability, args, context, mutations, datasourceService, policyService, identityService, access, core)
                 }
-                CallToolResult(content = listOf(TextContent(structured.toString())), structuredContent = structured)
+                val text = (structured["result"] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: structured.toString()
+                CallToolResult(content = listOf(TextContent(text)), structuredContent = structured)
             } catch (e: CedarValidationManagementException) {
                 val raw = buildJsonObject { put("errors", JsonArray(e.errors.map(::JsonPrimitive))) }
                 CallToolResult(content = listOf(TextContent(raw.toString())), isError = true, structuredContent = raw)
@@ -561,7 +565,6 @@ private suspend fun executeRead(
     "list_mask_fns" -> structured(policies.listMaskFns())
     "list_group_members" -> structured(identities.listGroupMembers(args.requiredString("groupName")))
     "list_group_roles" -> structured(identities.listGroupRoles(args.requiredString("groupName")))
-    "get_principal_rate" -> structured<RateReset?>(access.lastRateReset(args.requiredString("principal")))
     else -> throw ManagementException(ApiError("mcp.invalid_request"))
 }
 
@@ -719,9 +722,6 @@ private fun executeWrite(
                 },
             )
             "delete_mask_fn" -> structured(policies.deleteMaskFn(args.requiredString("name"), actor, connection))
-            "reset_principal_rate" -> structured(
-                access.resetRate(args.requiredString("principal"), args.requiredString("reason"), actor, connection),
-            )
             "create_datasource" -> structured(
                 datasources.createDatasource(
                     DatasourceInput(
@@ -775,8 +775,6 @@ private fun schemaFor(tool: String): ToolSchema {
         when (tool) {
             "get_datasource_liveness", "browse_catalog", "list_column_tags" -> string("datasource")
             "list_group_members", "list_group_roles" -> string("groupName")
-            "get_principal_rate" -> string("principal")
-            "reset_principal_rate" -> { string("principal"); string("reason") }
             "create_datasource" -> { string("name"); datasourceFields() }
             "update_datasource" -> { string("datasource"); string("newName"); datasourceFields() }
             "delete_datasource", "refresh_datasource", "test_datasource" -> string("datasource")
@@ -834,8 +832,12 @@ private fun schemaFor(tool: String): ToolSchema {
             "request_approval" -> {
                 integer("decisionId"); string("datasource"); string("sql"); string("title"); string("roleName"); string("reason")
             }
+            "edit_approval" -> { integer("id"); string("sql"); string("title"); string("reason") }
             "list_my_approvals" -> string("status")
-            "get_approval", "approve_approval", "execute_approval", "cancel_approval" -> integer("id")
+            "approve_approval" -> { integer("id"); integer("revision", min = 1) }
+            "get_approval", "execute_approval", "cancel_approval", "force_run_approval", "unapprove_approval" -> integer("id")
+            "comment_approval" -> { integer("id"); string("body"); boolean("lgtm") }
+            "set_approval_cc" -> { integer("id"); string("principal"); boolean("remove") }
             "reject_approval" -> { integer("id"); string("reason") }
             "get_approval_result" -> { integer("id"); resultPage() }
             "list_audit" -> integer("limit", min = 1, max = 500)
@@ -843,7 +845,6 @@ private fun schemaFor(tool: String): ToolSchema {
             "request_access" -> { string("roleName"); string("reason"); string("datasource"); integer("durationSec", min = 1) }
             "list_access_requests" -> string("status")
             "list_access_grants" -> { string("principal"); boolean("active") }
-            "reset_my_rate" -> { string("reason"); string("denyReason") }
             "list_query_history" -> integer("limit", min = 1, max = 200)
             "delete_query_task" -> integer("taskId")
             "approve_access_request" -> { integer("id"); integer("durationSec", min = 1) }
@@ -860,8 +861,6 @@ private fun schemaFor(tool: String): ToolSchema {
     val required = when (tool) {
         "get_datasource_liveness", "browse_catalog", "list_column_tags" -> listOf("datasource")
         "list_group_members", "list_group_roles" -> listOf("groupName")
-        "get_principal_rate" -> listOf("principal")
-        "reset_principal_rate" -> listOf("principal", "reason")
         "create_datasource" -> listOf("name")
         "update_datasource", "delete_datasource", "refresh_datasource", "test_datasource" -> listOf("datasource")
         "get_table_detail" -> listOf("datasource", "catalog", "schema", "table")
@@ -883,11 +882,14 @@ private fun schemaFor(tool: String): ToolSchema {
         "run_query", "discover_roles" -> listOf("datasource", "sql")
         "get_query_result", "get_query_status", "cancel_query" -> listOf("taskId")
         "request_approval" -> listOf("roleName", "reason")
-        "get_approval", "approve_approval", "execute_approval", "cancel_approval", "get_approval_result" -> listOf("id")
+        "edit_approval" -> listOf("id", "sql")
+        "approve_approval" -> listOf("id", "revision")
+        "get_approval", "execute_approval", "cancel_approval", "force_run_approval", "get_approval_result",
+        "unapprove_approval", "comment_approval" -> listOf("id")
+        "set_approval_cc" -> listOf("id", "principal")
         "reject_approval" -> listOf("id", "reason")
         "get_audit_event", "approve_access_request", "revoke_access_grant", "revoke_token" -> listOf("id")
         "request_access" -> listOf("roleName", "reason")
-        "reset_my_rate" -> listOf("reason")
         "delete_query_task" -> listOf("taskId")
         "reject_access_request" -> listOf("id", "reason")
         else -> emptyList()
@@ -1032,15 +1034,8 @@ private fun JsonObject.stringSet(name: String): Set<String> {
 }
 private fun JsonObject.has(name: String): Boolean = containsKey(name)
 
-private fun requestLocale(call: ApplicationCall): Locale =
-    if (call.request.headers[HttpHeaders.AcceptLanguage]?.lowercase(Locale.ROOT)?.startsWith("ko") == true) {
-        Locale.KOREAN
-    } else {
-        Locale.ENGLISH
-    }
-
-private fun toolDescription(toolName: String, locale: Locale): String =
-    ResourceBundle.getBundle("mcp_tools", locale).getString(toolName)
+// English only: the model reads tool descriptions, not the user.
+private fun toolDescription(toolName: String): String = ResourceBundle.getBundle("mcp_tools", Locale.ROOT).getString(toolName)
 
 private fun URI.sameOrigin(other: URI): Boolean =
     scheme.equals(other.scheme, ignoreCase = true) && host.equals(other.host, ignoreCase = true) &&

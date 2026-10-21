@@ -35,10 +35,11 @@ updates:
     directories:
       - /analyzer
       - /auditmon
+      - /cpgo
       - /goproxy
       - /mysqlwire
       - /pmon
-      - /pmontray
+      - /pmon/tray
     schedule:
       interval: weekly
     commit-message:

@@ -230,11 +230,11 @@ HTTP; workflow saves under a result id).
 ## Completion observation
 
 Workflow execute completion is observed by polling the task detail/result
-endpoints (see `ExecuteApprovalResponse`). The poll is the source of truth. A
-`TaskCompletionHub` and the `GET /api/tasks/events` SSE stream accelerate it by
-pushing each task's terminal transition to the parties involved; every push is
-re-filtered through the live `task.read` gate, and a missed event only delays an
-update.
+endpoints (see `ExecuteQueryRequestResponse`). The poll is the source of truth.
+A `TaskCompletionHub` and the `GET /api/tasks/events` SSE stream accelerate it
+by pushing each task's terminal transition to the parties involved; every push
+is re-filtered through the live `task.read` gate, and a missed event only delays
+an update.
 
 ## Cedar actions
 
@@ -302,6 +302,7 @@ stored as R's execution-enforced output — no ceiling.
 ```
 PENDING → APPROVED | REJECTED
 APPROVED → EXECUTING → EXECUTED | FAILED
+PENDING | APPROVED → PENDING   (the requester edits the SQL; revision + 1)
 ```
 
 plus `EXECUTING → CANCELLED` from the cancel routes above. `DRAFT` and `DELETED`
@@ -330,6 +331,7 @@ task
   decided_by / decided_at / approved_at
   executing_at, executed_at
   reason, title, source_decision_id, deny_reason, evaluated_decision
+  revision / revised_at  bumped by each edit; an approval names its revision
   created_at
 ```
 

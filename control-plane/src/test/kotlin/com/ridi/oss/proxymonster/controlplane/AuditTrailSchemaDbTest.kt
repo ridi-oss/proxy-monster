@@ -2,7 +2,6 @@ package com.ridi.oss.proxymonster.controlplane
 
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.Test
 import java.sql.SQLException
 import javax.sql.DataSource
@@ -23,8 +22,7 @@ class AuditTrailSchemaDbTest {
     @Test
     fun `a clean store has no id sequence a genesis head and a live source-decision foreign key`() {
         requireDockerOrSkip()
-        val dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_audit_trail_schema"))
-        Flyway.configure().dataSource(dataSource).load().migrate()
+        val dataSource = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_audit_trail_schema"))
 
         dataSource.connection.use { connection ->
             connection.createStatement().use { statement ->
@@ -103,8 +101,8 @@ class AuditTrailSchemaDbTest {
         dataSource.connection.use { connection ->
             connection.prepareStatement(
                 "INSERT INTO access_request " +
-                    "(principal, kind, datasource_id, status, reason, source_decision_id) " +
-                    "VALUES ('requester', 'QUERY', ?, 'PENDING', 'need it', ?) RETURNING id",
+                    "(principal, kind, datasource_id, status, reason, source_decision_id, creator_kind) " +
+                    "VALUES ('requester', 'QUERY', ?, 'PENDING', 'need it', ?, 'WORKFLOW') RETURNING id",
             ).use { statement ->
                 statement.setLong(1, datasourceId)
                 statement.setLong(2, sourceDecisionId)

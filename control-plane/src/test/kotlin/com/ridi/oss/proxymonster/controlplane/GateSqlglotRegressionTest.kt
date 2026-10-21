@@ -1,6 +1,7 @@
 package com.ridi.oss.proxymonster.controlplane
 
 import com.ridi.oss.proxymonster.analyzer.pb.sessionObservation
+import com.ridi.oss.proxymonster.analyzer.pb.mySqlSession
 import com.ridi.oss.proxymonster.controlplane.support.EnforcementFixture
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.grpc.EnfAction
@@ -106,7 +107,7 @@ class GateSqlglotRegressionTest {
         fun decide(ansiQuotes: Boolean) = decideQuery(
             "analyst@example.com", ds, """SELECT "ssn" FROM users""", Channel.WIRE, catalog,
             mysql.policyStore, mysql.accessStore, mysql.userGroupStore, mysql.roleResolver, mysql.authz,
-            session = sessionObservation { mysqlAnsiQuotes = ansiQuotes },
+            session = sessionObservation { mysql = mySqlSession { this.ansiQuotes = ansiQuotes } },
         )
 
         val masked = decide(true)

@@ -64,6 +64,7 @@ class SlackTransportTest {
         approved = null,
         deepLink = "https://console.example/workflows/$taskId",
         actions = actions,
+        revision = 1,
     )
 
     private fun MockSlack.Recorded.blocks(): List<JsonObject> =
@@ -134,7 +135,7 @@ class SlackTransportTest {
         val elements = slack.lastRequest("chat.postMessage")!!.blocks().actionElements()
 
         val approve = elements.first { it["action_id"]?.jsonPrimitive?.content == SlackTransport.ACTION_APPROVE }
-        assertEquals("7", approve["value"]?.jsonPrimitive?.content, "the button carries the task id")
+        assertEquals("7:1", approve["value"]?.jsonPrimitive?.content, "the button carries the task id and its revision")
         assertEquals("primary", approve["style"]?.jsonPrimitive?.content)
 
         val deny = elements.first { it["action_id"]?.jsonPrimitive?.content == SlackTransport.ACTION_DENY }

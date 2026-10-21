@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -22,8 +23,9 @@ import (
 
 	"github.com/ridi-oss/proxy-monster/pmon/control"
 	"github.com/ridi-oss/proxy-monster/pmon/driver"
+	"github.com/ridi-oss/proxy-monster/pmon/internal/instance"
 	"github.com/ridi-oss/proxy-monster/pmon/internal/login"
-	"github.com/ridi-oss/proxy-monster/pmon/state"
+	"github.com/ridi-oss/proxy-monster/pmon/internal/state"
 )
 
 const (
@@ -98,6 +100,11 @@ type Daemon struct {
 	// reauthRequired marks a server whose renewal was refused: brokering keeps working until the wire token
 	// expires, but only a fresh login recovers it.
 	reauthRequired map[string]bool
+	// instances is each server's /api/instance as last read; absent for a server
+	// older than that route, or one not reached yet.
+	instances map[string]instance.Info
+	// remotes is the SSH connection to each saved remote daemon.
+	remotes map[string]*remote
 
 	subMu   sync.Mutex
 	subs    map[int]chan control.Event
@@ -116,6 +123,8 @@ func New(version string, providers *driver.Registry) *Daemon {
 		httpClient:       &http.Client{Timeout: 15 * time.Second},
 		startedAt:        time.Now(),
 		rediscover:       make(chan struct{}, 1),
+		instances:        map[string]instance.Info{},
+		remotes:          map[string]*remote{},
 		listeners:        map[dsKey]*brokerListener{},
 		datasources:      map[dsKey]driver.Endpoint{},
 		unbrokered:       map[dsKey]driver.Endpoint{},
@@ -183,8 +192,10 @@ func (d *Daemon) Run(ctx context.Context) error {
 		fmt.Fprintln(os.Stderr, "not logged in — the daemon is idle; run `pmon login`")
 	}
 
+	d.startRemotes()
 	go d.rediscoverLoop(ctx)
 	go d.renewLoop(ctx)
+	go d.versionLoop(ctx)
 
 	select {
 	case <-ctx.Done():
@@ -195,6 +206,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}
 
 	d.publish(control.Event{Kind: "shutdown", Message: "the daemon is stopping"})
+	d.stopRemotes()
 	d.closeAllListeners()
 	// Close established sessions too, matching logout and revocation: `pmon stop` warned the user these would be
 	// dropped, so drop them deliberately rather than leaving it to process exit.
@@ -268,16 +280,23 @@ func (d *Daemon) Status() control.Status {
 		// `pmon show` would emit a connection string with an empty password.
 		LocalPassword: cmp.Or(d.localPassword, d.cfg.LocalPassword),
 		Servers:       make([]control.ServerInfo, 0, len(d.cfg.Servers)),
+		DefaultServer: d.cfg.Default,
 		Datasources:   make([]control.Datasource, 0, len(d.datasources)+len(d.unbrokered)),
+		Remotes:       d.remoteInfos(),
 	}
 	for name, srv := range d.cfg.Servers {
 		out.Servers = append(out.Servers, control.ServerInfo{
 			Name:               name,
+			Default:            name == d.cfg.Default,
+			ServerVersion:      d.instances[name].Version,
+			InstanceName:       d.instances[name].Name,
 			ControlPlane:       srv.ControlPlane,
 			Principal:          srv.Principal,
 			LoggedIn:           srv.LoggedIn(),
 			ExpiresAt:          srv.ExpiresAt,
 			SessionExpiresAt:   srv.SessionExpiresAt,
+			Scopes:             slices.Clone(srv.Scopes),
+			ElevatedUntil:      srv.ElevatedUntil,
 			ReauthRequired:     d.reauthRequired[name],
 			LastDiscoveryError: d.lastDiscoveryErr[name],
 		})
@@ -370,7 +389,14 @@ func (d *Daemon) LocalPassword() string {
 // login is the only step needed to reach a datasource. A second concurrent login to the same server waits
 // rather than starting a competing device flow.
 func (d *Daemon) Login(ctx context.Context, req control.LoginRequest, onEvent func(control.LoginEvent)) error {
-	name := cmp.Or(req.Server, state.DefaultServer)
+	name := req.Server
+	if name == "" && req.ControlPlane != "" {
+		var err error
+		if name, err = d.nameForURL(ctx, req.ControlPlane); err != nil {
+			return err
+		}
+	}
+	name = d.serverName(name)
 	if err := state.ValidServerName(name); err != nil {
 		return err
 	}
@@ -379,14 +405,14 @@ func (d *Daemon) Login(ctx context.Context, req control.LoginRequest, onEvent fu
 	defer loginMu.Unlock()
 
 	if req.ControlPlane != "" {
-		if _, err := d.SetServer(control.SetServerRequest{Name: name, ControlPlane: req.ControlPlane}); err != nil {
+		if _, err := d.setServer(name, req.ControlPlane, req.Server != ""); err != nil {
 			return err
 		}
 	}
 	srv := d.snapshot().Servers[name]
 	if srv == nil {
-		if name == state.DefaultServer {
-			return errors.New("no default server — set one with `pmon server set --url <control-plane-url>`, or log in with `pmon login --url <control-plane-url>`")
+		if req.Server == "" {
+			return errors.New("no default server — set one with `pmon server set --url <control-plane-url>` or `pmon login --url <control-plane-url>`, or pick one with `pmon server default <name>`")
 		}
 		return fmt.Errorf("unknown server %q — set it with `pmon server set %s --url <control-plane-url>`, or log in with `pmon login --url <control-plane-url> %s`", name, name, name)
 	}
@@ -394,6 +420,7 @@ func (d *Daemon) Login(ctx context.Context, req control.LoginRequest, onEvent fu
 	res, err := login.Run(ctx, login.Options{
 		ControlPlane: srv.ControlPlane,
 		TTLSeconds:   req.TTLSeconds,
+		Scopes:       req.Scopes,
 		OnPrompt: func(p login.Prompt) {
 			onEvent(control.LoginEvent{
 				Kind:                    "prompt",
@@ -422,18 +449,25 @@ func (d *Daemon) Login(ctx context.Context, req control.LoginRequest, onEvent fu
 		live.IssuedAt = time.Now().UTC().Format(time.RFC3339)
 		live.SessionExpiresAt = res.SessionExpiresAt
 		live.RenewalToken = res.RenewalToken
+		live.Scopes = res.Scopes
+		live.ElevatedUntil = res.ElevatedUntil
 		return nil
 	})
 	if err == nil {
 		d.mu.Lock()
 		delete(d.reauthRequired, name)
 		d.mu.Unlock()
-		onEvent(control.LoginEvent{Kind: "done", Principal: res.Principal, ExpiresAt: res.ExpiresAt})
 	}
 	serverMu.Unlock()
 	if err != nil {
 		return fmt.Errorf("could not save the login: %w", err)
 	}
+	// After the save, so a failed end never costs the new login.
+	replacedEnded := srv.RenewalToken == "" || srv.RenewalToken == res.RenewalToken || d.endOnServer(srv, true)
+	onEvent(control.LoginEvent{
+		Kind: "done", Server: name, Principal: res.Principal, ExpiresAt: res.ExpiresAt,
+		Scopes: res.Scopes, ElevatedUntil: res.ElevatedUntil, ReplacedNotEndedOnServer: !replacedEnded,
+	})
 
 	// Bring brokers up immediately, then announce the new state.
 	d.openListeners(ctx)
@@ -441,35 +475,64 @@ func (d *Daemon) Login(ctx context.Context, req control.LoginRequest, onEvent fu
 	return nil
 }
 
+// MCPToken mints an MCP access token from a server's login, so a bridge never reads credentials itself.
+func (d *Daemon) MCPToken(ctx context.Context, req control.MCPTokenRequest) (control.MCPToken, error) {
+	name := d.serverName(req.Server)
+	srv := d.snapshot().Servers[name]
+	if srv == nil && req.Server == "" {
+		return control.MCPToken{}, errors.New("no default server — pick one with `pmon server default <name>`, or name the server: `pmon mcp <server>`")
+	}
+	if srv == nil {
+		return control.MCPToken{}, fmt.Errorf("unknown server %q — set it up with `pmon server set %s --url <control-plane-url>`, then `pmon login %s`", name, name, name)
+	}
+	if !srv.LoggedIn() || srv.RenewalToken == "" {
+		return control.MCPToken{}, fmt.Errorf("not logged in to %q — run `pmon login %s`", name, name)
+	}
+	tok, err := login.ExchangeMCP(ctx, d.httpClient, srv.ControlPlane, srv.RenewalToken)
+	if errors.Is(err, login.ErrMCPRefused) {
+		return control.MCPToken{}, fmt.Errorf("the login to %q has ended — run `pmon login %s`", name, name)
+	}
+	if errors.Is(err, login.ErrMCPUnsupported) {
+		return control.MCPToken{}, fmt.Errorf("%q (%s) does not support `pmon mcp` yet — its proxy-monster server needs an upgrade", name, srv.ControlPlane)
+	}
+	if err != nil {
+		return control.MCPToken{}, fmt.Errorf("could not get an MCP token from %q: %w", name, err)
+	}
+	return control.MCPToken{URL: srv.ControlPlane + "/mcp", Token: tok.AccessToken, ExpiresAt: tok.ExpiresAt, Scope: tok.Scope}, nil
+}
+
 // Logout clears one server's credentials (or every server's) and closes its brokers, leaving the daemon
 // running.
-// Logout clears one server's credentials (or every server's) and closes its brokers, leaving the daemon
-// running.
-func (d *Daemon) Logout(req control.LogoutRequest) error {
+func (d *Daemon) Logout(req control.LogoutRequest) ([]string, error) {
 	var names []string
 	if req.All {
 		for name := range d.snapshot().Servers {
 			names = append(names, name)
 		}
 	} else {
-		names = []string{cmp.Or(req.Server, state.DefaultServer)}
+		names = []string{d.serverName(req.Server)}
 	}
 	sort.Strings(names)
+	var notEnded []string
 	for _, name := range names {
 		mu := lockOf(&d.serverMus, name)
 		mu.Lock()
-		err := d.logout(name, req.All)
+		ended, err := d.logout(name, req.All)
 		mu.Unlock()
 		if err != nil {
-			return err
+			return notEnded, err
+		}
+		if !ended {
+			notEnded = append(notEnded, name)
 		}
 	}
 	d.publishStatus()
-	return nil
+	return notEnded, nil
 }
 
 // logout clears one server's login and closes its brokers. Callers hold the server's serverMus lock.
-func (d *Daemon) logout(name string, missingOK bool) error {
+func (d *Daemon) logout(name string, missingOK bool) (ended bool, err error) {
+	ended = d.endOnServer(d.snapshot().Servers[name], false)
 	if err := d.commit(func(c *state.Config) error {
 		srv := c.Servers[name]
 		if srv == nil {
@@ -481,10 +544,26 @@ func (d *Daemon) logout(name string, missingOK bool) error {
 		srv.ClearLogin()
 		return nil
 	}); err != nil {
-		return err
+		return ended, err
 	}
 	d.forgetServer(name)
-	return nil
+	return ended, nil
+}
+
+const endOnServerTimeout = 5 * time.Second
+
+// endOnServer reports true when there was nothing to end or the control plane ended it.
+func (d *Daemon) endOnServer(srv *state.Server, replaced bool) bool {
+	if srv == nil || srv.RenewalToken == "" || srv.ControlPlane == "" {
+		return true
+	}
+	ctx, cancel := context.WithTimeout(d.ctx, endOnServerTimeout)
+	defer cancel()
+	if err := login.Logout(ctx, d.httpClient, srv.ControlPlane, srv.RenewalToken, replaced); err != nil {
+		fmt.Fprintf(os.Stderr, "could not end the login on %s: %v\n", srv.ControlPlane, err)
+		return false
+	}
+	return true
 }
 
 // forgetServer closes a server's brokers and established sessions and drops what discovery knew of it.
@@ -533,25 +612,56 @@ func (d *Daemon) forgetServer(name string) {
 // SetServer creates a server or changes its URL. A token is only good against the control plane that minted
 // it, so changing a logged-in server's URL logs it out.
 func (d *Daemon) SetServer(req control.SetServerRequest) (control.SetServerResult, error) {
+	name := req.Name
+	if name == "" {
+		var err error
+		if name, err = d.nameForURL(context.Background(), req.ControlPlane); err != nil {
+			return control.SetServerResult{}, err
+		}
+	}
+	return d.setServer(name, req.ControlPlane, req.Name != "")
+}
+
+// setServer is SetServer for a resolved name. A name derived from the URL (named false) only ever creates a
+// server or finds it unchanged: another server may have taken the name since nameForURL looked.
+func (d *Daemon) setServer(name, controlPlane string, named bool) (control.SetServerResult, error) {
 	var res control.SetServerResult
-	name := cmp.Or(req.Name, state.DefaultServer)
-	if err := state.ValidServerName(name); err != nil {
+	cp, err := normalizeControlPlane(controlPlane)
+	if err != nil {
 		return res, err
 	}
-	cp, err := normalizeControlPlane(req.ControlPlane)
-	if err != nil {
+	if err := state.ValidServerName(name); err != nil {
 		return res, err
 	}
 	mu := lockOf(&d.serverMus, name)
 	mu.Lock()
 	defer mu.Unlock()
+	taken := func(srv *state.Server) error {
+		if !named && srv != nil && srv.ControlPlane != cp {
+			return fmt.Errorf("server %q already points at %s — name this one: `pmon server set <name> --url %s`", name, srv.ControlPlane, cp)
+		}
+		return nil
+	}
+	if err := taken(d.snapshot().Servers[name]); err != nil {
+		return res, err
+	}
+	if prev := d.snapshot().Servers[name]; prev != nil && prev.ControlPlane != cp && prev.LoggedIn() {
+		res.NotEndedOnServer = !d.endOnServer(prev, false)
+	}
+	notEnded := res.NotEndedOnServer
 	if err := d.commit(func(c *state.Config) error {
-		res = control.SetServerResult{}
+		res = control.SetServerResult{NotEndedOnServer: notEnded}
 		srv := c.Servers[name]
+		if err := taken(srv); err != nil {
+			return err
+		}
 		switch {
 		case srv == nil:
 			c.Servers[name] = &state.Server{ID: state.NewServerID(), ControlPlane: cp, Ports: map[string]int{}}
 			res.Created = true
+			if c.Servers[c.Default] == nil {
+				c.Default = name
+			}
 		case srv.ControlPlane != cp:
 			res.Changed = true
 			res.LoggedOut = srv.LoggedIn()
@@ -562,8 +672,15 @@ func (d *Daemon) SetServer(req control.SetServerRequest) (control.SetServerResul
 	}); err != nil {
 		return res, err
 	}
+	res.Name, res.Default = name, d.snapshot().Default == name
 	if res.Changed {
 		d.forgetServer(name)
+		d.mu.Lock()
+		delete(d.instances, name)
+		d.mu.Unlock()
+	}
+	if srv := d.snapshot().Servers[name]; srv != nil && (res.Created || res.Changed) {
+		go d.refreshVersion(context.Background(), name, srv)
 	}
 	if res.Created || res.Changed {
 		d.publishStatus()
@@ -573,11 +690,15 @@ func (d *Daemon) SetServer(req control.SetServerRequest) (control.SetServerResul
 
 // UnsetServer logs a server out and deletes it, along with its sticky ports.
 // UnsetServer logs a server out and deletes it, along with its sticky ports.
-func (d *Daemon) UnsetServer(req control.UnsetServerRequest) error {
-	name := cmp.Or(req.Name, state.DefaultServer)
+func (d *Daemon) UnsetServer(req control.UnsetServerRequest) ([]string, error) {
+	name := d.serverName(req.Name)
 	mu := lockOf(&d.serverMus, name)
 	mu.Lock()
 	defer mu.Unlock()
+	var notEnded []string
+	if srv := d.snapshot().Servers[name]; srv != nil && !d.endOnServer(srv, false) {
+		notEnded = []string{name}
+	}
 	if err := d.commit(func(c *state.Config) error {
 		if c.Servers[name] == nil {
 			return fmt.Errorf("unknown server %q", name)
@@ -585,9 +706,124 @@ func (d *Daemon) UnsetServer(req control.UnsetServerRequest) error {
 		delete(c.Servers, name)
 		return nil
 	}); err != nil {
-		return err
+		return nil, err
 	}
 	d.forgetServer(name)
+	d.mu.Lock()
+	delete(d.instances, name)
+	d.mu.Unlock()
+	d.publishStatus()
+	return notEnded, nil
+}
+
+// serverName is name, or the default server when name is empty; with no default either, it is
+// state.DefaultServer, the name a new server gets.
+func (d *Daemon) serverName(name string) string {
+	return cmp.Or(d.snapshot().Resolve(name), state.DefaultServer)
+}
+
+// nameForURL names the server for a control-plane URL given without a name: the server already saved with that
+// URL, else the instance name the server advertises, else state.DefaultServer for a server too old to say.
+func (d *Daemon) nameForURL(ctx context.Context, raw string) (string, error) {
+	cp, err := normalizeControlPlane(raw)
+	if err != nil {
+		return "", err
+	}
+	cfg := d.snapshot()
+	for name, srv := range cfg.Servers {
+		if srv.ControlPlane == cp {
+			return name, nil
+		}
+	}
+	name := state.DefaultServer
+	info, err := instance.Fetch(ctx, cp)
+	switch {
+	case err == nil && state.ValidServerName(info.Name) == nil:
+		name = info.Name
+	case err != nil && !errors.Is(err, instance.ErrUnsupported):
+		return "", fmt.Errorf("could not ask %s for its name (%v) — try again, or name the server: `pmon server set <name> --url %s`", cp, err, cp)
+	}
+	if srv := cfg.Servers[name]; srv != nil {
+		return "", fmt.Errorf("server %q already points at %s — name this one: `pmon server set <name> --url %s`", name, srv.ControlPlane, cp)
+	}
+	return name, nil
+}
+
+// RenameServer renames a server, keeping its login and sticky ports, and the default if it was the default. Its
+// brokers close and reopen under the new name, dropping their connections.
+func (d *Daemon) RenameServer(ctx context.Context, req control.RenameServerRequest) (control.RenameServerResult, error) {
+	from := d.serverName(req.Name)
+	srv := d.snapshot().Servers[from]
+	if srv == nil {
+		return control.RenameServerResult{}, fmt.Errorf("unknown server %q", from)
+	}
+	to := req.To
+	if to == "" {
+		info, err := instance.Fetch(ctx, srv.ControlPlane)
+		if err != nil || state.ValidServerName(info.Name) != nil {
+			return control.RenameServerResult{}, fmt.Errorf("%q does not advertise a name (%v) — give one: `pmon server rename %s <new-name>`", from, cmp.Or(err, errors.New("no usable name")), from)
+		}
+		to = info.Name
+	}
+	if err := state.ValidServerName(to); err != nil {
+		return control.RenameServerResult{}, err
+	}
+	res := control.RenameServerResult{Name: from, To: to}
+	if to == from {
+		return res, nil
+	}
+	// Both names, in one order, so two renames crossing each other cannot deadlock.
+	first, second := lockOf(&d.serverMus, min(from, to)), lockOf(&d.serverMus, max(from, to))
+	first.Lock()
+	defer first.Unlock()
+	second.Lock()
+	defer second.Unlock()
+	if err := d.commit(func(c *state.Config) error {
+		switch {
+		case c.Servers[from] == nil || c.Servers[from].ID != srv.ID || c.Servers[from].ControlPlane != srv.ControlPlane:
+			return fmt.Errorf("server %q changed meanwhile; try again", from)
+		case c.Servers[to] != nil:
+			return fmt.Errorf("server %q already exists", to)
+		}
+		c.Servers[to] = c.Servers[from]
+		delete(c.Servers, from)
+		if c.Default == from {
+			c.Default = to
+		}
+		return nil
+	}); err != nil {
+		return control.RenameServerResult{}, err
+	}
+	d.mu.Lock()
+	reauth := d.reauthRequired[from]
+	if v, ok := d.instances[from]; ok {
+		d.instances[to] = v
+		delete(d.instances, from)
+	}
+	d.mu.Unlock()
+	d.forgetServer(from)
+	if reauth {
+		d.mu.Lock()
+		d.reauthRequired[to] = true
+		d.mu.Unlock()
+	}
+	go d.refreshVersion(context.Background(), to, srv)
+	d.openListeners(ctx)
+	d.publishStatus()
+	return res, nil
+}
+
+// SetDefault makes a configured server the one a command addresses when it names none.
+func (d *Daemon) SetDefault(req control.SetDefaultRequest) error {
+	if err := d.commit(func(c *state.Config) error {
+		if c.Servers[req.Name] == nil {
+			return fmt.Errorf("unknown server %q", req.Name)
+		}
+		c.Default = req.Name
+		return nil
+	}); err != nil {
+		return err
+	}
 	d.publishStatus()
 	return nil
 }
@@ -943,6 +1179,52 @@ func (d *Daemon) rediscoverLoop(ctx context.Context) {
 			d.openListeners(ctx)
 		}
 	}
+}
+
+// versionCheckInterval is how often the daemon re-reads each server's version; a server changes it on a deploy.
+const versionCheckInterval = 5 * time.Minute
+
+func (d *Daemon) versionLoop(ctx context.Context) {
+	d.refreshVersions(ctx)
+	t := time.NewTicker(versionCheckInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			d.refreshVersions(ctx)
+		}
+	}
+}
+
+// refreshVersions reads every server's /api/instance, keeping the last version when one does not answer now.
+func (d *Daemon) refreshVersions(ctx context.Context) {
+	var wg sync.WaitGroup
+	for name, srv := range d.snapshot().Servers {
+		wg.Go(func() { d.refreshVersion(ctx, name, srv) })
+	}
+	wg.Wait()
+}
+
+// refreshVersion reads srv's version and keeps it while name is still that server at that URL: the server may
+// have been renamed, moved or replaced while the request ran.
+func (d *Daemon) refreshVersion(ctx context.Context, name string, srv *state.Server) {
+	info, err := instance.Fetch(ctx, srv.ControlPlane)
+	if err != nil && !errors.Is(err, instance.ErrUnsupported) {
+		return
+	}
+	d.mu.Lock()
+	if cur := d.cfg.Servers[name]; cur != nil && cur.ID == srv.ID && cur.ControlPlane == srv.ControlPlane {
+		changed := d.instances[name] != info
+		d.instances[name] = info
+		d.mu.Unlock()
+		if changed {
+			d.publishStatus()
+		}
+		return
+	}
+	d.mu.Unlock()
 }
 
 // renewLoop silently re-mints the wire token before it expires, so a saved connection keeps working without a

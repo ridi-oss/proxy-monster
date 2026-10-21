@@ -2,7 +2,6 @@ package com.ridi.oss.proxymonster.controlplane
 
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
@@ -25,8 +24,7 @@ class ScimGroupsDbTest {
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        val ds = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_scim_groups"))
-        Flyway.configure().dataSource(ds).load().migrate()
+        val ds = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_scim_groups"))
         userGroupStore = UserGroupStore(ds)
     }
 

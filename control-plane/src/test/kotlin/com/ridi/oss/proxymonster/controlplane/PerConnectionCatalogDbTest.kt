@@ -6,6 +6,8 @@ import com.ridi.oss.proxymonster.grpc.ControlPlaneGrpcKt
 import com.ridi.oss.proxymonster.grpc.decisionRequest
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder
 import com.ridi.oss.proxymonster.analyzer.pb.sessionObservation
+import com.ridi.oss.proxymonster.analyzer.pb.mySqlSession
+import com.ridi.oss.proxymonster.analyzer.pb.postgresSession
 import com.ridi.oss.proxymonster.grpc.EnfAction
 import com.ridi.oss.proxymonster.controlplane.support.EnforcementFixture
 import com.ridi.oss.proxymonster.controlplane.support.PerConnectionCatalogFixture
@@ -14,6 +16,7 @@ import com.ridi.oss.proxymonster.controlplane.support.requireDocker
 import com.ridi.oss.proxymonster.controlplane.support.SharedMySql
 import com.ridi.oss.proxymonster.controlplane.systemSchemas
 import com.ridi.oss.proxymonster.controlplane.isPostgres
+import com.ridi.oss.proxymonster.grpc.targetCheck
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.TestInstance
@@ -77,14 +80,14 @@ abstract class PerConnectionCatalogDbContract {
 
         val masked = decideConnection(
             fixture.core, opened.connectionId, "analyst@example.com", fixture.datasource,
-            """select "ssn" from users""", listOf(schema), null, session = sessionObservation { mysqlAnsiQuotes = true },
+            """select "ssn" from users""", listOf(schema), null, session = sessionObservation { mysql = mySqlSession { ansiQuotes = true } },
         )
         val maskedVerdict = assertIs<EnforcementOutcome.Verdict>(masked)
         assertEquals(EnfAction.MASK, maskedVerdict.ctx.action, maskedVerdict.ctx.denyReason)
 
         val allowed = decideConnection(
             fixture.core, opened.connectionId, "analyst@example.com", fixture.datasource,
-            """select "ssn" from users""", listOf(schema), null, session = sessionObservation { mysqlAnsiQuotes = false },
+            """select "ssn" from users""", listOf(schema), null, session = sessionObservation { mysql = mySqlSession { ansiQuotes = false } },
         )
         val allowedVerdict = assertIs<EnforcementOutcome.Verdict>(allowed)
         assertEquals(EnfAction.ALLOW, allowedVerdict.ctx.action, allowedVerdict.ctx.denyReason)
@@ -131,6 +134,7 @@ abstract class PerConnectionCatalogDbContract {
                         sql,
                         listOf(shadowSchema, "pg_catalog", schema),
                         null,
+                        targetCheck = targetCheck {},
                     ),
                 )
                 assertEquals(EnfAction.DENY, verdict.ctx.action, verdict.ctx.toString())
@@ -180,7 +184,7 @@ abstract class PerConnectionCatalogDbContract {
                 sql,
                 listOf("pg_catalog", schema),
                 null,
-                session = sessionObservation { postgresFunctionShadowingObserved = true },
+                session = sessionObservation { postgres = postgresSession { functionShadowingObserved = true } },
             ),
         )
         assertEquals(EnfAction.ALLOW, observed.ctx.action, observed.ctx.denyReason)
@@ -203,7 +207,7 @@ abstract class PerConnectionCatalogDbContract {
             null,
         )
         val before = assertIs<EnforcementOutcome.BeforeDecide>(outcome)
-        assertEquals(listOf("missing_schema"), before.commands.map { it.schema })
+        assertEquals(listOf("missing_schema"), before.commands.map { it.refetch.schema })
     }
 
 
@@ -233,7 +237,7 @@ abstract class PerConnectionCatalogDbContract {
                 connectionId = opened.connectionId
                 sql = """select "ssn" from users"""
                 searchPath.add(schema)
-                session = sessionObservation { mysqlAnsiQuotes = ansiQuotes }
+                session = sessionObservation { mysql = mySqlSession { this.ansiQuotes = ansiQuotes } }
             }).verdict
             val masked = decide(true)
             assertEquals(EnfAction.MASK, masked.decision, masked.denyReason)
@@ -299,7 +303,7 @@ abstract class PerConnectionCatalogDbContract {
                 "select '1'::xid",
                 searchPath,
                 null,
-                session = sessionObservation { visible?.let { postgresSystemXidVisible = it } },
+                session = sessionObservation { postgres = postgresSession { visible?.let { systemXidVisible = it } } },
             ),
         )
 

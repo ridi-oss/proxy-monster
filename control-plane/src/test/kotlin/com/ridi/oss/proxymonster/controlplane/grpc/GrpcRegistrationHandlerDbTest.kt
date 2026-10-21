@@ -35,7 +35,6 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.channels.Channel as CoroutineChannel
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.TestInstance
@@ -114,8 +113,7 @@ class GrpcRegistrationHandlerDbTest {
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_grpc_register"))
-        Flyway.configure().dataSource(dataSource).load().migrate()
+        dataSource = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_grpc_register"))
         core = ControlPlaneCore(dataSource)
         server = GrpcServer(0, ControlPlaneGrpcService(core), secretToken = null).also { it.start() }
         rawChannel = NettyChannelBuilder.forAddress("localhost", server.boundPort).usePlaintext().build()
@@ -163,6 +161,26 @@ class GrpcRegistrationHandlerDbTest {
             description.contains("wire-protocol version") && description.contains("same server-v* release"),
             "the mismatch error must name the version and tell the operator to deploy both together: $description",
         )
+    }
+
+    @Test
+    fun `register stores the description, keeps it when absent, clears it when empty, and refuses bad text`() = runBlocking {
+        fun req(description: String?) = regReq {
+            name = "reg-description"; engine = Engine.MYSQL; host = "h"; port = 3306; dbName = "d"
+            if (description != null) this.description = description
+        }
+        fun stored() = core.datasourceStore.getByName("reg-description")!!.description
+        stub.register(req("Orders and payments"))
+        assertEquals("Orders and payments", stored())
+        stub.register(req(null))
+        assertEquals("Orders and payments", stored())
+        for (bad in listOf("x".repeat(DatasourceStore.MAX_DESCRIPTION + 1), "two\nlines", "tab\there")) {
+            assertEquals(Status.Code.INVALID_ARGUMENT, statusOf { stub.register(req(bad)) })
+        }
+        assertEquals("Orders and payments", stored())
+        stub.register(req("가".repeat(DatasourceStore.MAX_DESCRIPTION)))
+        stub.register(req(""))
+        assertEquals("", stored())
     }
 
     @Test

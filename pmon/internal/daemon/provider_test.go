@@ -13,7 +13,7 @@ import (
 	"github.com/ridi-oss/proxy-monster/mysqlwire"
 	"github.com/ridi-oss/proxy-monster/pmon/control"
 	"github.com/ridi-oss/proxy-monster/pmon/driver"
-	"github.com/ridi-oss/proxy-monster/pmon/providers"
+	"github.com/ridi-oss/proxy-monster/pmon/internal/providers"
 )
 
 type servingBroker struct {
@@ -163,7 +163,7 @@ func TestProviderServesHTTPWithFreshSessionOnKeepAlive(t *testing.T) {
 	if got := liveConnections(d); got != 1 {
 		t.Fatalf("live connections = %d, want one persistent HTTP connection", got)
 	}
-	if err := d.Logout(control.LogoutRequest{}); err != nil {
+	if _, err := d.Logout(control.LogoutRequest{}); err != nil {
 		t.Fatal(err)
 	}
 	if got := liveConnections(d); got != 0 {

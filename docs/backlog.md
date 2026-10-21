@@ -88,8 +88,26 @@ forward work. MySQL leads PostgreSQL in priority.
   stored tag on a table or a function. Not reachable today — neither takes a
   direct stored-tag input — but a marshalling change could regress it silently.
 
+## Control plane as a tailnet node
+
+- Embed `tsnet` so the control plane is its own tailnet node, with no sidecar.
+  It needs a stable node identity on ECS (persisted state, or an ephemeral node
+  with a tagged key and a fixed hostname). `tsnet` is Go, so this lands with the
+  control plane's Go port.
+- GitHub webhooks over Funnel for [sql-from-github.md](./sql-from-github.md): a
+  public listener (`ListenFunnel`) serving only the signature-checked webhook
+  handler, separate from the tailnet-only listener. Removes the poll's up to 15
+  s delay; the poll stays to catch missed deliveries.
+- Tailscale-attested network conditions through `WhoIs` on tailnet connections
+  (see Authorization & network conditions).
+
 ## Approval automation
 
+- Ordered console requests: "run after #12" makes a request wait until #12 has
+  executed, for a multi-step fix whose steps need different roles, which one
+  request (one role) cannot hold. A later step is approved without running and
+  runs when the one before it finishes. It needs its own prerequisite field;
+  [sql-from-github.md](./sql-from-github.md) orders GitHub runs without one.
 - Broaden predicate-literal detection past direct comparison. A value also
   reaches a predicate through a function, a `CASE`, a subquery, or a bound
   parameter, and none of those are reported today. The consumer already fails
@@ -285,6 +303,11 @@ Fixes for gaps documented in
 
 ## Athena
 
+- Multi-catalog datasources (high priority). Reflect, classify, and refetch
+  every catalog the datasource may read, not only `PM_ATHENA_DEFAULT_CATALOG`,
+  so a cross-catalog query masks instead of denying. The default catalog keeps
+  its role for unqualified names; the reflected set becomes a list, and
+  classification keys already carry the catalog.
 - Add Redis or control-plane DB adapters for the minimal enforcement-context
   cache in the [forwarding design](./athena.md). Preserve owner/instruction
   bindings and expiry; Athena still owns execution state and idempotency.
@@ -295,9 +318,31 @@ Fixes for gaps documented in
 - Measure the context cache and response buffers under load. Peak memory is
   bounded by the 10,000-context cap times record size plus eight concurrent
   result pages, but neither has been measured.
+- Editor: surface a canceled Athena run as CANCELLED rather than a generic
+  failure; stream scan progress (bytes scanned, elapsed) during polling; record
+  bytes scanned on completion and show the estimated cost. Progress and cost
+  share one run-statistics message on the run channel.
+- Feed the resolved result cap into the Athena LIMIT rewrite alongside the
+  editor's row cap.
+- Ship a narrower default `native.invoke` policy: the broad permit lets a viewer
+  create workgroups and other NATIVE-category resources.
+- Athena for Apache Spark (sessions, calculations, notebooks) is refused; adding
+  it needs owner binding for session ids, the way query executions are bound.
+- Report result volume for forwarded `GetQueryResults` pages; the completion
+  event records the accepted submission only.
 
 ## Data plane
 
+- PostgreSQL multi-statement queries with transaction control anywhere in the
+  batch. Today the proxy runs a batch statement by statement inside its own
+  `BEGIN`/`COMMIT`, so it refuses transaction control other than a leading
+  `BEGIN` and a trailing `COMMIT`. When no statement changes the catalog or the
+  session (`SET search_path`, `SET ROLE`), every statement can be decided up
+  front and the batch sent whole, so PostgreSQL applies its own transaction
+  rules. Needs per-result-set masks, caps, completions, and diagnostic redaction
+  in one relayed response. A batch that changes the catalog or session must stay
+  statement by statement: deciding it up front binds a later statement to
+  objects an earlier one renamed or replaced.
 - Unmaskable-feature relay: a verbatim passthrough for `COPY OUT`, PostgreSQL
   fast-path, and similar features so a trusted datasource can opt in (denied
   today; MySQL and PostgreSQL binary-result relay is built). Each feature is a
@@ -441,7 +486,7 @@ Fixes for gaps documented in
   and call it from Kotlin over FFM instead of hand-maintaining byte-identical
   copies. Masking is the clearest case: `Masking.kt` and `Masks.kt` under
   `engine/src/main/kotlin/com/ridi/oss/proxymonster/probe/` versus
-  `goproxy/engine/masking.go`, which must stay identical by hand. The analyzer
+  `goproxy/relay/masking.go`, which must stay identical by hand. The analyzer
   already reaches Go through an FFM binding, so the same Go implementation could
   serve the JVM side. Medium priority.
 - Structural de-duplication: shared route-CRUD helpers, web CRUD tabs, JDBC

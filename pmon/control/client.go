@@ -16,7 +16,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/ridi-oss/proxy-monster/pmon/state"
+	"github.com/ridi-oss/proxy-monster/pmon/internal/state"
 )
 
 // ErrDaemonNotRunning reports that no daemon is listening. Every peer command handles this rather than
@@ -26,15 +26,56 @@ var ErrDaemonNotRunning = errors.New("the pmon daemon is not running")
 // Client speaks the control API over the daemon's unix socket.
 type Client struct {
 	http *http.Client
+	// remote is the remote daemon behind a forwarded socket, whose datasources it reports on their ports here.
+	remote *RemoteInfo
+	// forwarded is a socket ssh forwards: ssh accepts the connection even when nothing listens on the far end,
+	// then closes it, so an EOF before any reply means the remote daemon is not running.
+	forwarded bool
+}
+
+// remote is the remote daemon every client in this process addresses, set by [UseRemote].
+var remote *RemoteInfo
+
+// UseRemote points every client this process makes at a remote daemon's forwarded control socket, with its
+// datasources reported on their forwarded ports.
+func UseRemote(r RemoteInfo) { remote = &r }
+
+// NewRemoteClient is a client of a remote daemon through its forwarded socket, reporting each datasource on its
+// port here, or on port 0 while it is not forwarded.
+func NewRemoteClient(r RemoteInfo) *Client {
+	c := NewClientAt(r.Socket)
+	c.remote = &r
+	return c
+}
+
+// CloseIdle closes the connections the client keeps for reuse; a client used for a while then dropped must call it.
+func (c *Client) CloseIdle() { c.http.CloseIdleConnections() }
+
+// NewClientAt is a client of the daemon listening on socket, such as a remote daemon's forwarded socket.
+func NewClientAt(socket string) *Client {
+	c := clientFor([]string{socket})
+	c.forwarded = true
+	return c
 }
 
 // NewClient dials the socket lazily per request — so a Client constructed while the daemon is down starts
 // working the moment one comes up, with no reconstruction.
 func NewClient() (*Client, error) {
+	if remote != nil {
+		return NewRemoteClient(*remote), nil
+	}
+	return newLocalClient()
+}
+
+func newLocalClient() (*Client, error) {
 	sockets, err := state.SocketPaths()
 	if err != nil {
 		return nil, err
 	}
+	return clientFor(sockets), nil
+}
+
+func clientFor(sockets []string) *Client {
 	return &Client{http: &http.Client{
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -54,7 +95,7 @@ func NewClient() (*Client, error) {
 				return nil, dialErr
 			},
 		},
-	}}, nil
+	}}
 }
 
 // do issues a control request. A dial failure becomes [ErrDaemonNotRunning] so callers branch on one error.
@@ -77,7 +118,7 @@ func (c *Client) do(ctx context.Context, method, path string, body any) (*http.R
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		if isDialFailure(err) {
+		if isDialFailure(err) || (c.forwarded && (errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF))) {
 			return nil, ErrDaemonNotRunning
 		}
 		return nil, err
@@ -88,10 +129,16 @@ func (c *Client) do(ctx context.Context, method, path string, body any) (*http.R
 		if json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&e) == nil && e.Error != "" {
 			return nil, fmt.Errorf("%s", e.Error)
 		}
+		if resp.StatusCode == http.StatusNotFound {
+			return nil, fmt.Errorf("control API %s: %w", path, ErrUnknownRoute)
+		}
 		return nil, fmt.Errorf("control API %s: HTTP %d", path, resp.StatusCode)
 	}
 	return resp, nil
 }
+
+// ErrUnknownRoute means the daemon has no such control route: it is an older build than this client.
+var ErrUnknownRoute = errors.New("HTTP 404: the running daemon is older than this pmon")
 
 // isDialFailure reports whether err means "nothing is listening on the control socket". It keys on the
 // operation being a DIAL rather than on an essno allow-list: a stale non-socket file, a permission problem, or
@@ -112,11 +159,52 @@ func (c *Client) Status(ctx context.Context) (*Status, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	var s Status
-	if err := json.NewDecoder(resp.Body).Decode(&s); err != nil {
+	var raw json.RawMessage
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
 		return nil, err
 	}
+	st, err := decodeStatus(raw)
+	if err == nil && c.remote != nil {
+		st = c.remote.Localize(st)
+		for i, ds := range st.Datasources {
+			if ds.LocalPort == 0 && ds.Brokered {
+				st.Datasources[i].Brokered, st.Datasources[i].Reason = false, "not forwarded to this machine yet"
+			}
+		}
+	}
+	return st, err
+}
+
+// decodeStatus reads a status, including one from a daemon that predates choosing the default server.
+func decodeStatus(raw []byte) (*Status, error) {
+	var s Status
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return nil, err
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) == nil {
+		if _, ok := fields["defaultServer"]; !ok {
+			s.DefaultServer, s.FixedDefault = "default", true
+			for i := range s.Servers {
+				s.Servers[i].Default = s.Servers[i].Name == "default"
+			}
+		}
+	}
 	return &s, nil
+}
+
+// MCPToken asks the daemon for an MCP access token from a server's login.
+func (c *Client) MCPToken(ctx context.Context, req MCPTokenRequest) (*MCPToken, error) {
+	resp, err := c.do(ctx, http.MethodPost, PathMCPToken, req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var tok MCPToken
+	if err := json.NewDecoder(resp.Body).Decode(&tok); err != nil {
+		return nil, err
+	}
+	return &tok, nil
 }
 
 // Login runs a device-auth flow in the daemon, calling onEvent for each streamed step. It returns when the
@@ -149,13 +237,15 @@ func (c *Client) Login(ctx context.Context, req LoginRequest, onEvent func(Login
 }
 
 // Logout clears a server's credentials (or every server's) and closes its brokers, leaving the daemon running.
-func (c *Client) Logout(ctx context.Context, req LogoutRequest) error {
+func (c *Client) Logout(ctx context.Context, req LogoutRequest) ([]string, error) {
 	resp, err := c.do(ctx, http.MethodPost, PathLogout, req)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	resp.Body.Close()
-	return nil
+	defer resp.Body.Close()
+	var res LogoutResult
+	_ = json.NewDecoder(resp.Body).Decode(&res)
+	return res.NotEndedOnServer, nil
 }
 
 // SetServer creates a server or changes its URL.
@@ -169,14 +259,72 @@ func (c *Client) SetServer(ctx context.Context, req SetServerRequest) (SetServer
 	return res, json.NewDecoder(resp.Body).Decode(&res)
 }
 
-// UnsetServer logs a server out and deletes it.
-func (c *Client) UnsetServer(ctx context.Context, req UnsetServerRequest) error {
-	resp, err := c.do(ctx, http.MethodPost, PathServerUnset, req)
+// SetDefault makes a server the one a command addresses when it names none.
+func (c *Client) SetDefault(ctx context.Context, req SetDefaultRequest) error {
+	resp, err := c.do(ctx, http.MethodPost, PathServerDefault, req)
 	if err != nil {
 		return err
 	}
-	resp.Body.Close()
-	return nil
+	return resp.Body.Close()
+}
+
+// AddRemote saves an SSH target; the daemon then keeps a connection to that machine's daemon.
+func (c *Client) AddRemote(ctx context.Context, target string) error {
+	resp, err := c.do(ctx, http.MethodPost, PathRemoteAdd, RemoteRequest{Target: target})
+	if err != nil {
+		return err
+	}
+	return resp.Body.Close()
+}
+
+// StartRemote asks this daemon to start the pmon daemon on a remote it is connected to.
+func (c *Client) StartRemote(ctx context.Context, target string) error {
+	resp, err := c.do(ctx, http.MethodPost, PathRemoteStart, RemoteRequest{Target: target})
+	if err != nil {
+		return err
+	}
+	return resp.Body.Close()
+}
+
+// ReconnectRemote asks this daemon to try a remote that is not connected now, instead of after its backoff.
+func (c *Client) ReconnectRemote(ctx context.Context, target string) error {
+	resp, err := c.do(ctx, http.MethodPost, PathRemoteReconnect, RemoteRequest{Target: target})
+	if err != nil {
+		return err
+	}
+	return resp.Body.Close()
+}
+
+// RemoveRemote closes a remote's connection and forgets it.
+func (c *Client) RemoveRemote(ctx context.Context, target string) error {
+	resp, err := c.do(ctx, http.MethodPost, PathRemoteRemove, RemoteRequest{Target: target})
+	if err != nil {
+		return err
+	}
+	return resp.Body.Close()
+}
+
+// RenameServer renames a server, keeping its login and sticky ports.
+func (c *Client) RenameServer(ctx context.Context, req RenameServerRequest) (RenameServerResult, error) {
+	var res RenameServerResult
+	resp, err := c.do(ctx, http.MethodPost, PathServerRename, req)
+	if err != nil {
+		return res, err
+	}
+	defer resp.Body.Close()
+	return res, json.NewDecoder(resp.Body).Decode(&res)
+}
+
+// UnsetServer logs a server out and deletes it.
+func (c *Client) UnsetServer(ctx context.Context, req UnsetServerRequest) ([]string, error) {
+	resp, err := c.do(ctx, http.MethodPost, PathServerUnset, req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var res LogoutResult
+	_ = json.NewDecoder(resp.Body).Decode(&res)
+	return res.NotEndedOnServer, nil
 }
 
 // Reload forces an immediate rediscovery instead of waiting for the next cycle.
@@ -249,7 +397,15 @@ func EnsureDaemon(ctx context.Context) (*Client, error) {
 	} else if !errors.Is(err, ErrDaemonNotRunning) {
 		return nil, err
 	}
-	if err := StartDaemon(); err != nil {
+	if remote != nil {
+		local, err := newLocalClient()
+		if err != nil {
+			return nil, err
+		}
+		if err := local.StartRemote(ctx, remote.Target); err != nil {
+			return nil, err
+		}
+	} else if err := StartDaemon(); err != nil {
 		return nil, err
 	}
 	if err := waitForDaemon(ctx, c, daemonStartTimeout); err != nil {
@@ -275,7 +431,7 @@ func Connect(ctx context.Context) (*Client, error) {
 const daemonBinaryEnv = "PMON_BINARY"
 
 // daemonBinaryName is the binary that understands the `daemon` subcommand.
-const daemonBinaryName = "pmon"
+const daemonBinaryName = "pmon" + exeSuffix
 
 // SelfRunsDaemon is set by the pmon CLI's own main package to declare that THIS binary understands the `daemon`
 // subcommand. It is a positive self-identification, not a guess: resolving by filename would break a pmon
@@ -351,7 +507,7 @@ func executable(path string) error {
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("%s is not a regular file", path)
 	}
-	if info.Mode()&0o111 == 0 {
+	if !runnable(path, info) {
 		return fmt.Errorf("%s is not executable", path)
 	}
 	return nil
@@ -370,28 +526,6 @@ func trustedSpawnTarget(path string) error {
 		return err
 	}
 	return trustedPathComponent(filepath.Dir(path), "its directory")
-}
-
-// trustedPathComponent requires that path be owned by this user (or root) and not group/world-writable. `what`
-// names it in the error, so a refusal says whether the binary or its directory was the problem.
-func trustedPathComponent(path, what string) error {
-	info, err := os.Stat(path)
-	if err != nil {
-		return err
-	}
-	st, ok := info.Sys().(*syscall.Stat_t)
-	if !ok {
-		return fmt.Errorf("cannot verify %s ownership", what)
-	}
-	if uid := os.Getuid(); int(st.Uid) != uid && st.Uid != 0 {
-		return fmt.Errorf("%s is owned by uid %d, not %d or root", what, st.Uid, uid)
-	}
-	// A sticky directory (/tmp, mode 1777) still bars unlinking someone else's file, but nothing here needs to
-	// live in one, so the simpler predicate is kept rather than carving out an exception that widens the surface.
-	if perm := info.Mode().Perm(); perm&0o022 != 0 {
-		return fmt.Errorf("%s is group/world-writable (%o)", what, perm)
-	}
-	return nil
 }
 
 // StartDaemon spawns a DETACHED daemon and returns once it is launched (not once it is ready — see
@@ -413,13 +547,11 @@ func StartDaemon() error {
 			}
 		}
 	}
-	// New session: the daemon must not die with the peer's process group, nor take its controlling terminal
-	// signals (a Ctrl-C in the shell that ran `pmon login` must not kill the daemon).
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	if err := cmd.Start(); err != nil {
+	started, err := startDetached(cmd)
+	if err != nil {
 		return fmt.Errorf("could not start the daemon: %w", err)
 	}
-	return cmd.Process.Release() // detach; the daemon owns its own lifetime + pid lock
+	return started.Process.Release() // detach; the daemon owns its own lifetime + pid lock
 }
 
 // waitForDaemon polls the socket until the daemon answers or the timeout expires.
@@ -450,6 +582,12 @@ func StopDaemon(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if remote != nil {
+		if err := c.Shutdown(ctx); err != nil {
+			return err
+		}
+		return waitForRemoteExit(ctx, c, 10*time.Second)
+	}
 	if err := c.Shutdown(ctx); err == nil {
 		return waitForExit(ctx, 10*time.Second)
 	}
@@ -460,10 +598,28 @@ func StopDaemon(ctx context.Context) error {
 	if pid <= 0 {
 		return fmt.Errorf("a daemon is running but its pid is unreadable; stop it by hand")
 	}
-	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
+	if err := terminate(pid); err != nil {
 		return fmt.Errorf("could not signal the daemon (pid %d): %w", pid, err)
 	}
 	return waitForExit(ctx, 10*time.Second)
+}
+
+// waitForRemoteExit waits until a remote daemon stops answering; its pid lock is on the other machine.
+func waitForRemoteExit(ctx context.Context, c *Client, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		if _, err := c.Status(ctx); errors.Is(err, ErrDaemonNotRunning) {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("the daemon on %s did not stop within %s", remote.Target, timeout)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
 }
 
 // waitForExit waits for the pid lock to free, which is the daemon's true exit (the socket may linger).

@@ -72,6 +72,7 @@ message RegisterRequest {
   bool advertise_wire_tls = 11;                 // whether this proxy serves client-facing TLS at all
   int32 protocol_version = 12;
   ConnectionInfo connection_info = 13;          // nonsecret endpoint + properties for clients; absent = keep stored
+  optional string description = 14;            // PM_DATASOURCE_DESCRIPTION; absent = keep stored, empty = clear
 }
 message ConnectionInfo {
   string endpoint = 1;
@@ -117,6 +118,11 @@ stored value; an explicit empty message clears it. The engine definition
 validates the accepted fields, and a non-connectable listing omits it along with
 the other connection material.
 
+`description` is one line saying what the datasource holds, from the proxy's
+`PM_DATASOURCE_DESCRIPTION`. Register refuses more than 500 characters or any
+control character. It is served on connectable `/api/datasources` rows and to
+MCP agents, and stripped with the connection material otherwise.
+
 Only a proxy sets them; the admin REST create/update does not. A proxy with wire
 TLS fails to boot only if its certificate cannot be READ — whether the chain is
 usable as a client's trust anchor is the client's verification to make, and is
@@ -143,7 +149,7 @@ policy.
 ## Catalog
 
 The proxy introspects the target and pushes the catalog — it already holds the
-live connection (`goproxy/introspect/`). The scan is the ordinary
+live connection (`goproxy/sqldb/introspect.go`). The scan is the ordinary
 `information_schema.columns` query per engine.
 
 ```protobuf

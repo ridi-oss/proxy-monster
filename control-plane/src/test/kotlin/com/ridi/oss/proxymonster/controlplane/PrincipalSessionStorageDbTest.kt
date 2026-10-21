@@ -2,8 +2,8 @@ package com.ridi.oss.proxymonster.controlplane
 
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
+import com.ridi.oss.proxymonster.controlplane.support.seedDaemonSession
 import kotlinx.coroutines.runBlocking
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
@@ -25,8 +25,7 @@ class PrincipalSessionStorageDbTest {
     @BeforeAll
     fun setUp() {
         requireDockerOrSkip()
-        dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_principal_session_storage"))
-        Flyway.configure().dataSource(dataSource).load().migrate()
+        dataSource = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_principal_session_storage"))
         store = PrincipalSessionStore(dataSource, null)
         serializer = jsonSessionSerializer()
         storage = PrincipalSessionStorage(store, serializer)
@@ -88,7 +87,7 @@ class PrincipalSessionStorageDbTest {
 
     @Test
     fun `daemon rows cannot be linked or reached through web session keys`() = runBlocking {
-        val daemon = store.create("daemon-key@example.com", null, null, 7200, 60).row.id
+        val daemon = dataSource.seedDaemonSession("daemon-key@example.com", 7200, 60)
         storage.write("daemon-key", serializer.serialize(WebSessionRef(daemon)))
 
         assertNull(sessionKey(daemon))

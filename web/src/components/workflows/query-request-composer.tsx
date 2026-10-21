@@ -184,7 +184,7 @@ export function QueryRequestComposer({
         toast.info(t('queryComposer.wouldAllowToast'))
       }
       void mutate(
-        swrKeys.myApprovals(undefined),
+        swrKeys.involvedApprovals,
         (requests: AccessRequest[] | undefined) => [
           res.request,
           ...(requests ?? []).filter((request) => request.id !== res.request.id),

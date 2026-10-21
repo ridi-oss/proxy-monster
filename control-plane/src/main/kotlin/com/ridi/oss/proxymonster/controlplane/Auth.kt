@@ -37,9 +37,7 @@ data class UserSession(
 @kotlinx.serialization.Serializable
 data class WebSessionRef(val sessionId: Long)
 
-const val WEB_SESSION_AUTH = "web-session"
 val PRINCIPAL_SESSION_STORE = AttributeKey<PrincipalSessionStore>("principal-session-store")
-val FAILED_WEB_SESSION = AttributeKey<Long>("failed-web-session")
 private val RESOLVED_IDENTITY = AttributeKey<ResolvedIdentity>("resolved-session-identity")
 private data class ResolvedIdentity(val row: WebSessionRow?)
 
@@ -103,7 +101,6 @@ fun ApplicationCall.webSession(): WebSessionRow? {
     val resolved = application.attributes.getOrNull(PRINCIPAL_SESSION_STORE)?.let { store ->
         ref?.let { store.resolveWeb(it.sessionId, deviceCookieId()) }
     }
-    if (ref != null && resolved == null) attributes.put(FAILED_WEB_SESSION, ref.sessionId)
     attributes.put(RESOLVED_IDENTITY, ResolvedIdentity(resolved))
     return resolved
 }

@@ -1,0 +1,6 @@
+# build output
+/dist/
+# `go build` drops the binary here: `pmontray` with -o, else named after the directory
+/pmontray
+/tray
+/*.syso

@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.controlplane.authz.UserParents
 import com.ridi.oss.proxymonster.controlplane.authz.Authz
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzDecision
@@ -11,6 +12,7 @@ import com.ridi.oss.proxymonster.controlplane.authz.ResultCap
 import com.ridi.oss.proxymonster.controlplane.authz.RoleSource
 import com.ridi.oss.proxymonster.controlplane.authz.authorizeDatasourceAction
 import com.ridi.oss.proxymonster.controlplane.authz.resolveResultCaps
+import java.math.BigDecimal
 import java.sql.Connection
 import java.time.Duration
 import java.util.logging.Logger
@@ -30,6 +32,8 @@ class ResultCapAuthzTest {
         3L to """@cap("9") permit(principal in Role::"tight", action == Action::"result.cap", resource == Datasource::"acme-pg");""",
         4L to """forbid(principal in Role::"dump", action == Action::"result.cap", resource == Datasource::"acme-pg");""",
         5L to """permit(principal in Role::"quiet", action == Action::"result.cap", resource);""",
+        6L to """@boost("2") permit(principal in Role::"boost-2x", action == Action::"result.cap", resource);""",
+        7L to """@boost("5") permit(principal in Role::"boost-5x", action == Action::"result.cap", resource);""",
     )
 
     private object UnusedDataSource : DataSource {
@@ -51,7 +55,7 @@ class ResultCapAuthzTest {
     private val id = CapResource.Column(ColumnRef("acme.public.users.id", "acme", "public", "users", "id"), null, masked = false)
 
     private fun resolve(roles: Set<String>, vararg resources: CapResource) =
-        authz.resolveResultCaps("alice", roles, "acme-pg", resources.toList())
+        authz.resolveResultCaps("alice", UserParents(roles), "acme-pg", resources.toList())
 
     @Test
     fun `the datasource ask alone yields the general row`() {
@@ -93,7 +97,7 @@ class ResultCapAuthzTest {
     @Test
     fun `permitting result cap is not a read grant`() {
         assertIs<AuthzDecision.Deny>(
-            authz.authorizeDatasourceAction("alice", setOf("dump"), AuthzAction.DATASOURCE_CONNECT, "acme-pg"),
+            authz.authorizeDatasourceAction("alice", UserParents(setOf("dump")), AuthzAction.DATASOURCE_CONNECT, "acme-pg"),
         )
     }
 
@@ -109,5 +113,28 @@ class ResultCapAuthzTest {
             assertFailsWith<IllegalArgumentException>(bad) { ResultCap.parse(mapOf("cap" to bad)) }
         }
         assertTrue(ResultCap.parse(emptyMap()).isEmpty)
+    }
+
+    @Test
+    fun `the largest boost a principal holds rides along with the fold, and caps stay`() {
+        val plain = resolve(emptySet(), ssnClear)
+        val boosted = resolve(setOf("boost-2x", "boost-5x"), ssnClear)
+        assertEquals(BigDecimal.ONE, plain.boost)
+        assertEquals(BigDecimal("5"), boosted.boost)
+        assertEquals(plain.copy(boost = BigDecimal("5")), boosted)
+        assertEquals(setOf("100MB/1h x5", "10000/1h x5", "50000/1d x5"), boosted.rates.map { it.boosted(boosted.boost).spec }.toSet())
+    }
+
+    @Test
+    fun `a boost is a number greater than 1, and a boosted rate rounds down`() {
+        assertEquals(BigDecimal("3"), ResultCap.parse(mapOf("boost" to " 3 ")).boost)
+        assertEquals(BigDecimal("1.5"), ResultCap.parse(mapOf("boost" to "1.5")).boost)
+        val rate = ResultCap.parse(mapOf("cap" to "10001/1h, 5MB/1d")).rates
+        assertEquals(listOf(15_001L to null, null to 7_500_000L), rate.map { it.boosted(BigDecimal("1.5")).let { r -> r.rows to r.bytes } })
+        assertEquals("10001/1h x1.5", rate[0].boosted(BigDecimal("1.50")).spec)
+        for (bad in listOf("1", "1.0", "0.5", "0", "-2", ".5", "1e2", "2x", "")) {
+            assertFailsWith<IllegalArgumentException>(bad) { ResultCap.parse(mapOf("boost" to bad)) }
+        }
+        assertTrue(!ResultCap.parse(mapOf("boost" to "2")).isEmpty)
     }
 }

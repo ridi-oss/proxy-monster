@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.controlplane.authz.UserParents
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzContext
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzDecision
@@ -7,7 +8,6 @@ import com.ridi.oss.proxymonster.controlplane.authz.AuthzResource
 import com.ridi.oss.proxymonster.controlplane.authz.authorizeWithContext
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
@@ -32,8 +32,7 @@ class EditorSelfApproveAuthzDbTest {
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_editor_selfapprove"))
-        Flyway.configure().dataSource(dataSource).load().migrate()
+        dataSource = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_editor_selfapprove"))
         core = ControlPlaneCore(dataSource)
         ds = core.datasourceStore.create(
             DatasourceInput(name = "editor-ds", engine = "postgres", host = "h", port = 5432, dbName = "d"),
@@ -50,8 +49,8 @@ class EditorSelfApproveAuthzDbTest {
 
     @Test
     fun `autoApproveTask allows non-admin self-approve on server-attested channels`() {
-        assertTrue(autoApproveTask(alice, emptySet(), ds, AuthzContext(), core.authz, Channel.EDITOR))
-        assertTrue(autoApproveTask(alice, emptySet(), ds, AuthzContext(), core.authz, Channel.WIRE))
+        assertTrue(autoApproveTask(alice, UserParents(emptySet()), ds, AuthzContext(), core.authz, Channel.EDITOR))
+        assertTrue(autoApproveTask(alice, UserParents(emptySet()), ds, AuthzContext(), core.authz, Channel.WIRE))
     }
 
     @Test

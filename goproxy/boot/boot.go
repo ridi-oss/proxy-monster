@@ -28,7 +28,7 @@ const ambientRefreshInterval = 12 * time.Minute
 const drainTimeout = 10 * time.Second
 
 // runDrainTimeout bounds how long shutdown waits for an in-flight editor/approval query to finish before
-// closing the control-plane clients its runExec stream rides — the run-stream analogue of drainTimeout.
+// closing the control-plane client its runExec stream rides — the run-stream analogue of drainTimeout.
 const runDrainTimeout = 10 * time.Second
 
 // Run is the dialect-neutral boot consumer. The executable composition root injects the provider registry;
@@ -45,32 +45,28 @@ func Run(registry spi.Registry) error {
 		return err
 	}
 
-	enforcementClient, err := cp.New(cfg.ControlPlaneGrpcTarget, cfg.SecretToken, cfg.DatasourceName)
+	client, err := cp.New(cfg.ControlPlaneGrpcTarget, cfg.SecretToken, cfg.DatasourceName)
 	if err != nil {
-		return fmt.Errorf("failed to create enforcement control-plane client: %w", err)
+		return fmt.Errorf("failed to create control-plane client: %w", err)
 	}
-	defer enforcementClient.Close()
-	configClient, err := cp.New(cfg.ControlPlaneGrpcTarget, cfg.SecretToken, cfg.DatasourceName)
-	if err != nil {
-		return fmt.Errorf("failed to create config control-plane client: %w", err)
-	}
-	defer configClient.Close()
+	defer client.Close()
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	provider := cfg.Provider
-	targetDb, err := provider.NewDb(spi.TargetDb{
+	target, err := provider.OpenTarget(spi.TargetConfig{
 		Host:     cfg.TargetHost,
 		Port:     cfg.TargetPort,
 		Db:       cfg.TargetDb,
 		User:     cfg.TargetUser,
 		Password: cfg.TargetPassword,
+		TLS:      cfg.TargetTLS,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to open target: %w", err)
 	}
-	defer targetDb.Close()
+	defer target.Close()
 
 	// Build the client-facing TLS config BEFORE registering, so the proxy can advertise the certificate chain
 	// a client should trust alongside its address. certChain is re-read at every (re)register, so a rotated
@@ -134,14 +130,7 @@ func Run(registry spi.Registry) error {
 		slog.Info("proxy TLS disabled — plaintext (trusted tailnet only); set PM_TLS_CERT + PM_TLS_KEY to enable")
 	}
 
-	reconciler := newDatasourceReconciler(
-		configClient,
-		cfg,
-		targetDb,
-		provider.Dialect(),
-		certChain,
-		maxResyncConcurrency,
-	)
+	runner := run.NewRunner(client, target, cfg.QueryTimeout)
 	// Track in-flight run executions with the same drain primitive the wire server uses, so shutdown lets an
 	// executing editor/approval query finish and idle sessions return. Every open still dials back (spawns
 	// Run): a refusal would strand the control-plane, which has already committed this proxy for the request
@@ -153,32 +142,32 @@ func Run(registry spi.Registry) error {
 	defer eventsCancel() // covers the early serve-error return; the drain path cancels explicitly (idempotent)
 	eventsDone := make(chan struct{})
 	// A wire-protocol version skew is fatal: refuse to start rather than attach and stall the run channel.
-	if err := reconciler.registerAndPushCatalog(); err != nil {
+	if err := runner.RegisterAndPushCatalog(cfg, provider.Engine(), certChain); err != nil {
 		slog.Error("refusing to start — deploy the proxy and control-plane from the same server-v* release", "error", err)
 		return err
 	}
 	go func() {
 		defer close(eventsDone)
-		err := configClient.RunEventsLoop(
+		err := client.RunEventsLoop(
 			eventsCtx,
 			func() {
 				// A re-register (reconnect) that finds a now-incompatible control-plane is equally fatal:
 				// exit so the supervisor replaces this proxy rather than run against a version it cannot speak.
-				if err := reconciler.tryRegisterAndPushCatalog(); err != nil {
+				if err := runner.TryRegisterAndPushCatalog(cfg, provider.Engine(), certChain); err != nil {
 					slog.Error("control-plane became version-incompatible on reconnect — exiting", "error", err)
 					os.Exit(1)
 				}
 			},
-			func() { reconciler.refreshCatalog() },
+			func() { runner.RefreshCatalog() },
 			func(open spi.RunOpen) {
 				runs.Add()
 				go func() {
 					defer runs.Done()
-					run.NewRunner(enforcementClient, targetDb, cfg.QueryTimeout).Run(open, runs.Signal())
+					runner.Run(open, runs.Signal())
 				}()
 			},
 			func(sessionID string, table *enginepb.ObjectRef) {
-				go run.NewTableDetailRunner(configClient, targetDb).Run(sessionID, table)
+				go runner.RunTableDetail(sessionID, table)
 			},
 		)
 		// A version rejection on the events stream is fatal even when a resync Register races to a still-
@@ -195,13 +184,13 @@ func Run(registry spi.Registry) error {
 			case <-eventsCtx.Done():
 				return
 			case <-time.After(ambientRefreshInterval):
-				reconciler.refreshCatalog()
+				runner.RefreshCatalog()
 			}
 		}
 	}()
 
-	server := targetDb.NewWireServer(cfg.ProxyPort, enforcementClient, tlsProvider)
-	slog.Info("starting proxy-monster data plane", "engine", cfg.Engine, "control_plane", cfg.ControlPlaneGrpcTarget)
+	server := target.NewWireServer(cfg.Listen(), client, tlsProvider)
+	slog.Info("starting proxy-monster data plane", "engine", cfg.EngineName, "control_plane", cfg.ControlPlaneGrpcTarget)
 
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- server.Start() }()
@@ -214,7 +203,7 @@ func Run(registry spi.Registry) error {
 	}
 
 	// On SIGTERM (a rolling redeploy), drain gracefully: stop accepting, let in-flight statements finish,
-	// send idle clients a protocol-level shutdown notice, then close the control-plane clients and exit.
+	// send idle clients a protocol-level shutdown notice, then close the control-plane client and exit.
 	// The replacement task is already fronted by the NLB, so reconnects land there.
 	slog.Info("shutting down, draining client connections", "timeout", drainTimeout)
 	gracefulDrain(runs, eventsCancel, eventsDone, server.Drain)
@@ -225,8 +214,7 @@ func Run(registry spi.Registry) error {
 	if serveExitErr != nil {
 		slog.Error("data plane serve error during shutdown", "error", serveExitErr)
 	}
-	_ = enforcementClient.Close()
-	_ = configClient.Close()
+	_ = client.Close()
 	if serveExitErr != nil {
 		os.Exit(1)
 	}
@@ -244,7 +232,7 @@ func Run(registry spi.Registry) error {
 // counted out, and the client close would then strand it on the control-plane's dial timeout. That wait is
 // unbounded on purpose: a loop that never returns after its context is cancelled is a wedged process, left to
 // the stop timeout's SIGKILL like any other. Both drains are bounded, so the caller can close the
-// control-plane clients those run streams ride without cutting one. Split from Run so this ordering is
+// control-plane client those run streams ride without cutting one. Split from Run so this ordering is
 // unit-testable.
 func gracefulDrain(
 	runs *drain.Tracker,

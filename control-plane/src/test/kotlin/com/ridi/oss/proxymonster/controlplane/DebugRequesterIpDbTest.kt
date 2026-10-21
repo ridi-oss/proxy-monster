@@ -1,5 +1,8 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import org.junit.jupiter.api.AfterEach
+import com.zaxxer.hikari.HikariDataSource
+import com.ridi.oss.proxymonster.controlplane.support.CpGoStack
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzDecision
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzResource
@@ -27,7 +30,6 @@ import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.Test
 import javax.sql.DataSource
 import kotlin.test.assertEquals
@@ -74,28 +76,37 @@ class DebugRequesterIpDbTest {
      * route that runs a REAL Cedar decision through the two-pass tag derivation — the difference between
      * "the resolver returns the address" and "the address actually changes an authorization outcome".
      */
+    @Suppress("UnusedReceiverParameter")
     private fun ApplicationTestBuilder.probe(config: Config, core: ControlPlaneCore): HttpClient {
-        application {
-            module(config, core)
+        val database = (core.dataSource as HikariDataSource).jdbcUrl.substringAfterLast('/')
+        val edges = if (config.trustedProxies.isEmpty()) emptyMap() else mapOf("PM_TRUSTED_PROXIES" to "127.0.0.1")
+        // The Kotlin child behind cp-go trusts its loopback hop, as CpGoStack configures it.
+        val behindCpGo = config.copy(trustedProxies = setOf("127.0.0.1"))
+        val stack = CpGoStack(config, core, database, extraEnv = edges) {
             routing {
-                serverGet("/test/requester-ip") { call.respond(call.httpRequesterIp(config) ?: "-") }
+                serverGet("/test/requester-ip") { call.respond(call.httpRequesterIp(behindCpGo) ?: "-") }
                 serverGet("/test/tag-gated") {
                                 val decision = core.authz.authorizeWithContext(
                         call.parameters["principal"] ?: principal,
                         AuthzAction.TASK_APPROVE,
                         AuthzResource.ApprovalRequest(requester = "someone-else", datasourceName = TAG_DS),
-                        call.httpAuthzContext(config),
+                        call.httpAuthzContext(behindCpGo),
                         TAG_DS,
                     )
                     call.respond(if (decision is AuthzDecision.Deny) "DENY" else "ALLOW")
                 }
             }
         }
-        return createClient {
-            expectSuccess = false
-            install(HttpCookies)
-            install(ClientContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
-        }
+        stacks += stack
+        return stack.client()
+    }
+
+    private val stacks = mutableListOf<CpGoStack>()
+
+    @AfterEach
+    fun closeStacks() {
+        stacks.forEach { it.close() }
+        stacks.clear()
     }
 
     private suspend fun HttpClient.debugLogin(ip: String?) = post("/auth/debug") {
@@ -123,8 +134,7 @@ class DebugRequesterIpDbTest {
     @Test
     fun `a debug login's simulated address replaces the observed peer on the decision path`() = testApplication {
         requireDockerOrSkip()
-        val dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_debug_requester_ip"))
-        Flyway.configure().dataSource(dataSource).load().migrate()
+        val dataSource = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_debug_requester_ip"))
         val config = Config.fromEnv { null }.copy(dbUrl = "", dbUser = "", dbPassword = "")
         val client = probe(config, ControlPlaneCore(dataSource))
 
@@ -156,8 +166,7 @@ class DebugRequesterIpDbTest {
     @Test
     fun `a malformed address is refused rather than silently ignored`() = testApplication {
         requireDockerOrSkip()
-        val dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_debug_requester_ip_bad"))
-        Flyway.configure().dataSource(dataSource).load().migrate()
+        val dataSource = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_debug_requester_ip_bad"))
         val config = Config.fromEnv { null }.copy(dbUrl = "", dbUser = "", dbPassword = "")
         val client = probe(config, ControlPlaneCore(dataSource))
 
@@ -211,8 +220,7 @@ class DebugRequesterIpDbTest {
     @Test
     fun `a simulated address changes a real Cedar decision through the derived tag`() = testApplication {
         requireDockerOrSkip()
-        val dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_debug_requester_ip_cedar"))
-        Flyway.configure().dataSource(dataSource).load().migrate()
+        val dataSource = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_debug_requester_ip_cedar"))
         val core = ControlPlaneCore(dataSource)
         core.datasourceStore.create(
             DatasourceInput(name = TAG_DS, engine = "postgres", host = "localhost", port = 5432, dbName = "app"),
@@ -255,8 +263,7 @@ class DebugRequesterIpDbTest {
     @Test
     fun `the stored address is inert once the debug bypass is off`() = runBlocking {
         requireDockerOrSkip()
-        val dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_debug_requester_ip_off"))
-        Flyway.configure().dataSource(dataSource).load().migrate()
+        val dataSource = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_debug_requester_ip_off"))
         val secret = "debug-requester-ip-test-secret-0123456789"
 
         fun config(authDebug: Boolean) = Config(

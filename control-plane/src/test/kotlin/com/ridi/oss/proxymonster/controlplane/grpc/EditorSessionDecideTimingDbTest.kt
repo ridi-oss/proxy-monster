@@ -31,7 +31,6 @@ import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.withTimeout
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.TestInstance
@@ -72,8 +71,7 @@ class EditorSessionDecideTimingDbTest {
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_editor_decide_timing"))
-        Flyway.configure().dataSource(dataSource).load().migrate()
+        dataSource = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_editor_decide_timing"))
         core = ControlPlaneCore(dataSource)
         service = RunExecService(core)
         datasource = core.datasourceStore.create(

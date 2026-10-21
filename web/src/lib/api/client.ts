@@ -11,7 +11,7 @@ import type {
   AccessRequestInput,
   AppGroup,
   AppGroupInput,
-  ApprovalDetail,
+  QueryRequestDetail,
   AppUser,
   AppUserInput,
   AuditEvent,
@@ -22,31 +22,33 @@ import type {
   Classification,
   ClassificationDelete,
   ClassificationInput,
-  CreateApprovalInput,
-  CreateApprovalResponse,
+  CreateQueryRequestInput,
+  CreateQueryRequestResponse,
   CreateTokenInput,
   Datasource,
   DatasourceInput,
   DiscoverRolesRequest,
   DiscoverRolesResponse,
+  DefaultSchemaResult,
   EditorScriptRequest,
   EditorSubmitResponse,
   EditorTaskStatus,
-  ExecuteApprovalResponse,
+  ExecuteQueryRequestResponse,
   GroupMember,
   GroupRoleMapping,
   Identity,
   IssuedToken,
   MaskFn,
   MaskFnInput,
+  McpConnectInfo,
   MePermissions,
   QueryHistoryEntry,
   QueryRequest,
   QueryResponse,
   QueryResultView,
-  RateReset,
-  RateResetRequestInput,
   RefreshResult,
+  RequestEvent,
+  RequestThread,
   Role,
   RoleAssignment,
   RoleAssignmentInput,
@@ -143,6 +145,11 @@ export function getSessionStatus(): Promise<SessionStatus> {
 /** POST /auth/session/heartbeat — records visible activity and returns authoritative session deadlines. */
 export function touchSession(): Promise<SessionStatus> {
   return request<SessionStatus>('/auth/session/heartbeat', { method: 'POST' })
+}
+
+/** GET /api/mcp/connect — this instance's MCP install name and URL. */
+export function getMcpConnect(): Promise<McpConnectInfo> {
+  return request<McpConnectInfo>('/api/mcp/connect')
 }
 
 /** GET /api/me/permissions — resolves coarse Cedar-backed capabilities for the current principal. */
@@ -274,6 +281,19 @@ export function openEditorSession(datasourceId: number): Promise<{ sessionId: st
   return request<{ sessionId: string }>(`/api/editor/sessions`, {
     method: 'POST',
     body: JSON.stringify({ datasourceId }),
+  })
+}
+
+/** GET /api/editor/sessions/{id} — the held connection's effective namespace, as the proxy last read it. */
+export function getEditorSession(sessionId: string): Promise<{ searchPath: string[] | null }> {
+  return request<{ searchPath: string[] | null }>(`/api/editor/sessions/${encodeURIComponent(sessionId)}`)
+}
+
+/** POST /api/editor/sessions/{id}/default-schema — the server builds and runs the engine's statement. */
+export function setEditorDefaultSchema(sessionId: string, schema: string): Promise<DefaultSchemaResult> {
+  return request<DefaultSchemaResult>(`/api/editor/sessions/${encodeURIComponent(sessionId)}/default-schema`, {
+    method: 'POST',
+    body: JSON.stringify({ schema }),
   })
 }
 
@@ -524,29 +544,6 @@ export function createAccessRequest(input: AccessRequestInput): Promise<AccessRe
   })
 }
 
-export function createRateResetRequest(input: RateResetRequestInput): Promise<AccessRequest> {
-  return request<AccessRequest>('/api/access-requests/rate-reset', {
-    method: 'POST',
-    body: JSON.stringify(input),
-  })
-}
-
-export function resetPrincipalRate(principal: string, reason: string): Promise<RateReset> {
-  return request<RateReset>(`/api/access/principals/${encodeURIComponent(principal)}/rate-reset`, {
-    method: 'POST',
-    body: JSON.stringify({ reason }),
-  })
-}
-
-export async function getPrincipalRateReset(principal: string): Promise<RateReset | null> {
-  const res = await fetch(`${API_BASE}/api/access/principals/${encodeURIComponent(principal)}/rate-reset`, {
-    credentials: 'include',
-  })
-  if (res.status === 204) return null
-  if (!res.ok) throw new Error(await res.text())
-  return (await res.json()) as RateReset
-}
-
 export function approveAccessRequest(id: number, durationSec?: number): Promise<AccessRequest> {
   return request<AccessRequest>(`/api/access-requests/${id}/approve`, {
     method: 'POST',
@@ -578,8 +575,8 @@ export function revokeAccessGrant(id: number): Promise<void> {
 
 // ---- Query approvals -------------------------------------------------------
 
-export function createApproval(input: CreateApprovalInput): Promise<CreateApprovalResponse> {
-  return request<CreateApprovalResponse>('/api/approvals', {
+export function createApproval(input: CreateQueryRequestInput): Promise<CreateQueryRequestResponse> {
+  return request<CreateQueryRequestResponse>('/api/approvals', {
     method: 'POST',
     body: JSON.stringify(input),
   })
@@ -592,21 +589,32 @@ export function discoverApprovalRoles(input: DiscoverRolesRequest): Promise<Disc
   })
 }
 
-export function getMyApprovals(status?: string): Promise<AccessRequest[]> {
-  const qs = status ? `?status=${encodeURIComponent(status)}` : ''
-  return request<AccessRequest[]>(`/api/approvals${qs}`)
-}
-
 export function getApprovalInbox(): Promise<AccessRequest[]> {
   return request<AccessRequest[]>('/api/approvals/inbox')
 }
 
-export function getApproval(id: number): Promise<ApprovalDetail> {
-  return request<ApprovalDetail>(`/api/approvals/${id}`)
+export function getInvolvedApprovals(): Promise<AccessRequest[]> {
+  return request<AccessRequest[]>('/api/requests/involved')
 }
 
-export function approveApproval(id: number): Promise<AccessRequest> {
-  return request<AccessRequest>(`/api/approvals/${id}/approve`, { method: 'POST' })
+export function getApproval(id: number): Promise<QueryRequestDetail> {
+  return request<QueryRequestDetail>(`/api/approvals/${id}`)
+}
+
+/** Approve the revision the approver read; the server refuses it if the request was edited since. */
+export function approveApproval(id: number, revision: number): Promise<AccessRequest> {
+  return request<AccessRequest>(`/api/approvals/${id}/approve`, {
+    method: 'POST',
+    body: JSON.stringify({ revision }),
+  })
+}
+
+/** Replace the SQL of the caller's own pending or approved request; it goes back to pending. */
+export function editApproval(id: number, input: { sql: string; reason?: string }): Promise<AccessRequest> {
+  return request<AccessRequest>(`/api/approvals/${id}/edit`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
 }
 
 export function rejectApproval(id: number, reason: string): Promise<AccessRequest> {
@@ -619,13 +627,41 @@ export function rejectApproval(id: number, reason: string): Promise<AccessReques
 // ---- Task execution / result ------------------------------------------------
 
 /** Submit an approved task for asynchronous execution. */
-export function executeApproval(id: number): Promise<ExecuteApprovalResponse> {
-  return request<ExecuteApprovalResponse>(`/api/approvals/${id}/execute`, { method: 'POST' })
+export function executeApproval(id: number): Promise<ExecuteQueryRequestResponse> {
+  return request<ExecuteQueryRequestResponse>(`/api/approvals/${id}/execute`, { method: 'POST' })
 }
 
 /** Cancel an executing approved task. */
+export function commentOnApproval(id: number, body: string | null, lgtm = false): Promise<RequestEvent> {
+  return request<RequestEvent>(`/api/requests/${id}/comments`, { method: 'POST', body: JSON.stringify({ body, lgtm }) })
+}
+
+export function addApprovalCc(id: number, principal: string): Promise<AccessRequest> {
+  return request<AccessRequest>(`/api/requests/${id}/ccs`, { method: 'POST', body: JSON.stringify({ principal }) })
+}
+
+export function removeApprovalCc(id: number, principal: string): Promise<AccessRequest> {
+  return request<AccessRequest>(`/api/requests/${id}/ccs/${encodeURIComponent(principal)}`, { method: 'DELETE' })
+}
+
+export function getRequestThread(id: number): Promise<RequestThread> {
+  return request<RequestThread>(`/api/requests/${id}/thread`)
+}
+
+export function closeRequest(id: number): Promise<AccessRequest> {
+  return request<AccessRequest>(`/api/requests/${id}/close`, { method: 'POST' })
+}
+
+export function unapproveApproval(id: number): Promise<AccessRequest> {
+  return request<AccessRequest>(`/api/approvals/${id}/unapprove`, { method: 'POST' })
+}
+
 export function cancelApproval(id: number): Promise<AccessRequest> {
   return request<AccessRequest>(`/api/approvals/${id}/cancel`, { method: 'POST' })
+}
+
+export function forceRunApproval(id: number): Promise<AccessRequest> {
+  return request<AccessRequest>(`/api/approvals/${id}/force-run`, { method: 'POST' })
 }
 
 /** Fetch decrypted rows after the latest child reaches DONE. */

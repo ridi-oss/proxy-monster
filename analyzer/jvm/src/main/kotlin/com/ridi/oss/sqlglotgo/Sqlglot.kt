@@ -17,7 +17,7 @@ import java.nio.file.StandardCopyOption
  * `buildNativeLib` Gradle task and bundled on the classpath) is loaded once for the JVM's lifetime.
  *
  * Thread-safe: the Go `AnalyzeStatement` is a pure function of its inputs, and each call here uses
- * its own confined [Arena]. Fail-closed: the Go side (`probe.AnalyzeStatementSafe`) never panics and
+ * its own confined [Arena]. Fail-closed: the Go side (`engines.AnalyzeStatementSafe`) never panics and
  * always returns a validly-encoded StatementFacts, so a malformed query yields `resolved=false` rather
  * than an error.
  *
@@ -28,6 +28,8 @@ object Sqlglot {
     private val linker = Linker.nativeLinker()
     private val analyzeStatementHandle: MethodHandle
     private val splitStatementsHandle: MethodHandle
+    private val parseColumnsHandle: MethodHandle
+    private val introspectedColumnsHandle: MethodHandle
     private val sqlNormalizeHandle: MethodHandle
     private val freeHandle: MethodHandle
 
@@ -57,6 +59,14 @@ object Sqlglot {
                 ValueLayout.ADDRESS,
             ),
         )
+        parseColumnsHandle = linker.downcallHandle(
+            lookup.find("ParseColumns").orElseThrow { IllegalStateException("ParseColumns not exported by native lib") },
+            FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS),
+        )
+        introspectedColumnsHandle = linker.downcallHandle(
+            lookup.find("IntrospectedColumns").orElseThrow { IllegalStateException("IntrospectedColumns not exported by native lib") },
+            FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS),
+        )
         sqlNormalizeHandle = linker.downcallHandle(
             lookup.find("SqlNormalize").orElseThrow { IllegalStateException("SqlNormalize not exported by native lib") },
             FunctionDescriptor.of(
@@ -79,7 +89,7 @@ object Sqlglot {
      * Raw bytes in, raw bytes out — this binding has no knowledge of the wire schema (mirrors
      * [sqlNormalize]'s byte-exact argument convention, applied to both directions here); the caller
      * (engine's `SqlglotProbe`) owns building/parsing the actual proto messages. Total: the native
-     * side (`probe.AnalyzeStatementSafe`) never panics and always returns a validly-encoded
+     * side (`engines.AnalyzeStatementSafe`) never panics and always returns a validly-encoded
      * StatementFacts, so a malformed request yields a `resolved=false` message rather than an error.
      */
     fun analyzeStatement(requestBytes: ByteArray): ByteArray = callByteBufferHandle(analyzeStatementHandle, requestBytes)
@@ -89,6 +99,12 @@ object Sqlglot {
      * marshaled `analyzerv1.SplitResponse` out. Same raw-bytes convention as [analyzeStatement].
      */
     fun splitStatements(requestBytes: ByteArray): ByteArray = callByteBufferHandle(splitStatementsHandle, requestBytes)
+
+    /** A marshaled `analyzerv1.ColumnNamesRequest` in, a marshaled `ColumnNamesResponse` out. */
+    fun parseColumns(requestBytes: ByteArray): ByteArray = callByteBufferHandle(parseColumnsHandle, requestBytes)
+
+    /** Same messages as [parseColumns], for names the engine's own catalog reported. */
+    fun introspectedColumns(requestBytes: ByteArray): ByteArray = callByteBufferHandle(introspectedColumnsHandle, requestBytes)
 
     /**
      * The byte-buffer FFM calling convention [analyzeStatement] follows: one byte buffer in (a
@@ -119,7 +135,6 @@ object Sqlglot {
      * dialect or SQL cannot be normalized safely.
      */
     fun sqlNormalize(sql: String, dialect: String): String? {
-        if (dialect != "mysql" && dialect != "postgres") return null
         if (!hasWellFormedUtf16(sql)) return null
 
         val sqlBytes = sql.toByteArray(Charsets.UTF_8)

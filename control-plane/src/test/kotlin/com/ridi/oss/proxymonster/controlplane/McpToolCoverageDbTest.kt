@@ -209,8 +209,6 @@ class McpToolCoverageDbTest {
         on("delete_role") { client.ok(adm, "delete_role", args("name" to "cov-role")) }
         on("deprovision_user") { client.ok(adm, "deprovision_user", args("principal" to "cov-user@example.com")) }
         on("delete_mask_fn") { client.ok(adm, "delete_mask_fn", args("name" to "cov-mask")) }
-        on("reset_principal_rate") { client.ok(adm, "reset_principal_rate", args("principal" to requester, "reason" to "coverage")) }
-        on("get_principal_rate") { client.ok(adm, "get_principal_rate", args("principal" to requester)) }
 
         // Queries and query approvals.
         on("list_connectable_datasources") { client.ok(req, "list_connectable_datasources") }
@@ -237,11 +235,12 @@ class McpToolCoverageDbTest {
                 approvalId = it.result().jsonObject.getValue("request").jsonObject.getValue("id").jsonPrimitive.long
             }
         }
+        on("edit_approval") { client.ok(req, "edit_approval", args("id" to approvalId, "sql" to sql)) }
         on("list_my_approvals") { client.ok(req, "list_my_approvals") }
         on("list_approval_inbox") { client.ok(adm, "list_approval_inbox") }
         on("get_approval") { client.ok(adm, "get_approval", args("id" to approvalId)) }
         on("reject_approval") { client.ok(adm, "reject_approval", args("id" to rejectApprovalId, "reason" to "coverage")) }
-        on("approve_approval") { client.ok(adm, "approve_approval", args("id" to approvalId)) }
+        on("approve_approval") { client.ok(adm, "approve_approval", args("id" to approvalId, "revision" to 1)) }
         on("execute_approval") {
             client.ok(adm, "execute_approval", args("id" to approvalId)).also {
                 withTimeout(10_000) {
@@ -255,9 +254,33 @@ class McpToolCoverageDbTest {
         }
         on("get_approval_result") { client.ok(req, "get_approval_result", args("id" to approvalId)) }
         on("cancel_approval") { client.ok(req, "cancel_approval", args("id" to approvalId)) }
+        on("force_run_approval") {
+            val github = core.accessStore.createQueryRequest(
+                principal = requester, datasourceId = ds.id, statements = listOf(sql), denyReason = null,
+                sourceDecisionId = null, reason = "coverage", title = null, evaluatedDecision = "ALLOW", roleId = role(ANALYST),
+            ).id
+            fx.dataSource.connection.use { c ->
+                c.prepareStatement("UPDATE access_request SET source = 'github', scope = 'cov-gh', repository = 'acme/shop', pr = 1 WHERE id = ?")
+                    .use { ps -> ps.setLong(1, github); ps.executeUpdate() }
+            }
+            client.ok(adm, "force_run_approval", args("id" to github))
+        }
+        on("comment_approval") { client.ok(req, "comment_approval", args("id" to approvalId, "body" to "coverage")) }
+        on("set_approval_cc") { client.ok(req, "set_approval_cc", args("id" to approvalId, "principal" to admin)) }
+        on("unapprove_approval") {
+            val approved = core.accessStore.createQueryRequest(
+                principal = requester, datasourceId = ds.id, statements = listOf(sql), denyReason = null,
+                sourceDecisionId = null, reason = "coverage", title = null, evaluatedDecision = "ALLOW", roleId = role(ANALYST),
+            ).id
+            client.ok(adm, "approve_approval", args("id" to approved, "revision" to 1))
+            client.ok(adm, "unapprove_approval", args("id" to approved))
+        }
 
-        // JIT access, rates, audit, permissions and tokens.
+        // JIT access, audit, permissions and tokens.
         on("get_my_permissions") { client.ok(req, "get_my_permissions") }
+        on("get_pmon_guide") { client.ok(req, "get_pmon_guide") }
+        on("get_usage_guide") { client.ok(req, "get_usage_guide") }
+        on("get_admin_guide") { client.ok(req, "get_admin_guide") }
         on("request_access") {
             client.ok(req, "request_access", args("roleName" to jitRole.name, "reason" to "coverage")).also { accessRequestId = it.id() }
         }
@@ -270,7 +293,6 @@ class McpToolCoverageDbTest {
             }
         }
         on("revoke_access_grant") { client.ok(req, "revoke_access_grant", args("id" to grantId)) }
-        on("reset_my_rate") { client.ok(req, "reset_my_rate", args("reason" to "coverage")) }
         on("list_audit") { client.ok(req, "list_audit") }
         on("get_audit_event") { client.ok(req, "get_audit_event", args("id" to ownAudit)) }
         on("mint_token") { client.ok(req, "mint_token", args("name" to "coverage")).also { tokenId = it.id() } }

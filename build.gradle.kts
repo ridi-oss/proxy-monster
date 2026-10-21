@@ -20,6 +20,13 @@ plugins {
 // `build/` and stay incrementally cached.
 val pmBuildDir: String? = providers.gradleProperty("pm.buildDir").orNull
 
+// -Ppm.testShard=i/n runs the i-th of n disjoint slices of every module's test classes, split by class name.
+val pmTestShard: Pair<Int, Int>? = providers.gradleProperty("pm.testShard").orNull?.let { spec ->
+    val parts = spec.split("/").mapNotNull { it.toIntOrNull() }
+    require(parts.size == 2 && parts[1] >= 1 && parts[0] in 1..parts[1]) { "pm.testShard must be i/n with 1 <= i <= n, got $spec" }
+    parts[0] to parts[1]
+}
+
 subprojects {
     if (pmBuildDir != null) {
         layout.buildDirectory.set(rootProject.layout.projectDirectory.dir(pmBuildDir).dir(path.removePrefix(":").replace(':', '/')))
@@ -32,6 +39,21 @@ subprojects {
     // warns/denies.
     tasks.withType<Test>().configureEach {
         jvmArgs("--enable-native-access=ALL-UNNAMED")
+        // In CI every test runs on every commit, so a green check never stands on a cached result.
+        if (providers.environmentVariable("CI").isPresent) {
+            outputs.cacheIf { false }
+            outputs.upToDateWhen { false }
+        }
+        pmTestShard?.let { (index, count) ->
+            inputs.property("pmTestShard", "$index/$count")
+            // A small module can fall wholly into another shard.
+            failOnNoDiscoveredTests = false
+            // A nested class goes with its outer class.
+            exclude { e ->
+                !e.isDirectory && e.name.endsWith(".class") &&
+                    Math.floorMod(e.relativePath.pathString.removeSuffix(".class").substringBefore('$').hashCode(), count) != index - 1
+            }
+        }
     }
     tasks.withType<JavaExec>().configureEach {
         jvmArgs("--enable-native-access=ALL-UNNAMED")

@@ -102,6 +102,7 @@ class AccountManagementEnforcementDbTest {
         sql = createUserRandom,
         executeAs = listOf("account-admin"),
         creatorKind = "WORKFLOW",
+        revision = 1,
     )
 
     @Test

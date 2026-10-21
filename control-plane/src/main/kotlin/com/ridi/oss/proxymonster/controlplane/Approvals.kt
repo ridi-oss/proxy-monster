@@ -2,13 +2,13 @@ package com.ridi.oss.proxymonster.controlplane
 
 import com.ridi.oss.proxymonster.analyzer.pb.SessionObservation
 import com.ridi.oss.proxymonster.analyzer.pb.StatementKind
+import com.ridi.oss.proxymonster.controlplane.authz.UserParents
 import com.ridi.oss.proxymonster.controlplane.authz.Authz
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzContext
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzDecision
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzResource
 import com.ridi.oss.proxymonster.controlplane.authz.authorizeDatasourceAction
-import com.ridi.oss.proxymonster.controlplane.authz.authorizeWithContext
 import com.ridi.oss.proxymonster.controlplane.authz.resolveContextTags
 import com.ridi.oss.proxymonster.controlplane.notify.NotificationService
 import com.ridi.oss.proxymonster.grpc.EnfAction
@@ -28,7 +28,7 @@ import kotlinx.serialization.Serializable
 // ---- DTOs ---------------------------------------------------------------------------------
 
 @Serializable
-data class CreateApprovalInput(
+data class CreateQueryRequestInput(
     val sourceDecisionId: Long? = null,
     val datasourceId: Long? = null,
     val sql: String? = null,
@@ -42,10 +42,17 @@ data class CreateApprovalInput(
     val requestedDurationSec: Long = 3600,
 )
 
+/** A request's new SQL; a null title or reason keeps the current one. */
+@Serializable
+data class EditQueryRequestInput(val sql: String, val title: String? = null, val reason: String? = null)
+
+@Serializable
+data class ApproveQueryRequestInput(val revision: Int)
+
 @Serializable
 data class DiscoverRolesRequest(val datasourceId: Long, val sql: String)
 
-@Serializable data class CreateApprovalResponse(val request: AccessRequest, val wouldAllow: Boolean)
+@Serializable data class CreateQueryRequestResponse(val request: AccessRequest, val wouldAllow: Boolean)
 
 /**
  * A human query-approval request: a WORKFLOW-origin QUERY task. EDITOR and WIRE tasks share the
@@ -114,15 +121,26 @@ fun discoverRoles(
     return DiscoverRolesResponse(options = options)
 }
 
-@Serializable data class ApprovalDetail(
+@Serializable data class QueryRequestDetail(
     val request: AccessRequest,
     val canDecide: Boolean,
+    // Approving and running in one step needs both task.approve and task.run.
+    val canApproveAndRun: Boolean = false,
+    val canReject: Boolean = false,
+    val canUnapprove: Boolean = false,
+    // Closing a request that has not run; [canCancel] stops a running one.
+    val canClose: Boolean = false,
+    val canComment: Boolean = false,
+    val canCc: Boolean = false,
+    val timeline: List<RequestEvent> = emptyList(),
     // The active statement's execution metadata. Rows remain behind the result endpoint.
     val result: QueryResultMeta? = null,
     // Every statement, in run order, with its own status.
     val statements: List<QueryResultMeta> = emptyList(),
     val canExecute: Boolean = false,
     val canCancel: Boolean = false,
+    val canEdit: Boolean = false,
+    val canForceRun: Boolean = false,
 )
 
 /**
@@ -152,7 +170,7 @@ fun discoverRoles(
 )
 
 /** Submit acknowledgement. Completion is observed by polling the task detail/result endpoints. */
-@Serializable data class ExecuteApprovalResponse(val decision: String)
+@Serializable data class ExecuteQueryRequestResponse(val decision: String)
 
 // ---- APPROVAL execute-under-R + live view re-decision (approval-workflow.md) --------------------------
 //
@@ -227,7 +245,7 @@ internal fun viewerDecision(
         catalog = structure?.catalog ?: datasourceStore.catalog(ds.id), policyStore = policyStore, accessStore = accessStore,
         userGroupStore = userGroupStore, roleResolver = roleResolver, authz = authz, auditStore = auditStore,
         providedRoles = roles, context = callerContext, systemClassification = systemClassification,
-        liveSearchPath = structure?.inputs?.searchPath,
+        liveSearchPath = structure?.inputs?.searchPath ?: req.pullRequest?.defaultSchema?.let { listOf(it) },
         session = structure?.inputs?.session ?: SessionObservation.getDefaultInstance(),
         tempColumns = structure?.inputs?.tempColumns.orEmpty(),
     )
@@ -345,31 +363,27 @@ internal fun decideResultView(ctx: DecisionContext, decrypted: DecryptedResult):
  * The shared auto-approve gate for a self-approved task on a server-attested channel. Editor and wire tasks
  * must clear BOTH lifecycle checks a human request+approve would: [AuthzAction.TASK_REQUEST] on the datasource
  * and [AuthzAction.TASK_APPROVE] against a self-requested Request under the trusted [channel]. Both must
- * ALLOW; either Deny fails the task closed. [ownRoles] is the caller's server-resolved request-side role
- * snapshot; the approve side re-resolves its own snapshot inside [authorizeWithContext]. Returns true only
- * when the task may be born APPROVED.
+ * ALLOW; either Deny fails the task closed. [own] is the caller's server-resolved snapshot, used for both
+ * checks. Returns true only when the task may be born APPROVED.
  */
 internal fun autoApproveTask(
     principal: String,
-    ownRoles: Set<String>,
+    own: UserParents,
     ds: Datasource,
     rawCtx: AuthzContext,
     authz: Authz,
     channel: Channel,
 ): Boolean {
     val taskCtx = rawCtx.copy(channel = channel.contextValue)
-    val tags = authz.resolveContextTags(principal, ownRoles, ds.name, taskCtx, ds.tags)
-    val mayRequest = authz.authorizeDatasourceAction(
-        principal, ownRoles, AuthzAction.TASK_REQUEST, ds.name, taskCtx.copy(tags = tags), ds.tags,
-    )
+    val ctx = taskCtx.copy(tags = authz.resolveContextTags(principal, own, ds.name, taskCtx, ds.tags))
+    val mayRequest = authz.authorizeDatasourceAction(principal, own, AuthzAction.TASK_REQUEST, ds.name, ctx, ds.tags)
     if (mayRequest is AuthzDecision.Deny) return false
-    val mayApprove = authz.authorizeWithContext(
+    val mayApprove = authz.authorizeAs(
         principal,
+        own,
         AuthzAction.TASK_APPROVE,
         AuthzResource.ApprovalRequest(requester = principal, approver = principal, datasourceName = ds.name),
-        taskCtx,
-        ds.name,
-        ds.tags,
+        ctx,
     )
     return mayApprove !is AuthzDecision.Deny
 }
@@ -415,7 +429,7 @@ fun Route.approvalRoutes(
 ) {
     post("/api/approvals") {
         val principal = call.requireApi() ?: return@post
-        val input = call.receive<CreateApprovalInput>()
+        val input = call.receive<CreateQueryRequestInput>()
         try {
             call.respond(
                 HttpStatusCode.Created,
@@ -436,11 +450,6 @@ fun Route.approvalRoutes(
         }
     }
 
-    get("/api/approvals") {
-        val principal = call.requireApi() ?: return@get
-        call.respond(service.listOwn(principal, call.request.queryParameters["status"]))
-    }
-
     get("/api/approvals/inbox") {
         val principal = call.requireApi() ?: return@get
         call.respond(service.inbox(principal, call.httpRequesterIp(config)))
@@ -459,8 +468,31 @@ fun Route.approvalRoutes(
     post("/api/approvals/{id}/approve") {
         val principal = call.requireApi() ?: return@post
         val id = call.idParam() ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
+        val revision = runCatching { call.receive<ApproveQueryRequestInput>() }.getOrNull()?.revision
+            ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.field_required", mapOf("fields" to "revision")))
         try {
-            call.respond(service.approve(principal, call.httpRequesterIp(config), call.auditActor(config), id))
+            call.respond(service.approve(principal, call.httpRequesterIp(config), call.auditActor(config), id, revision))
+        } catch (e: TaskServiceException) {
+            call.respondServiceError(e)
+        }
+    }
+
+    post("/api/approvals/{id}/edit") {
+        val principal = call.requireApi() ?: return@post
+        val id = call.idParam() ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
+        val input = call.receive<EditQueryRequestInput>()
+        try {
+            call.respond(service.edit(principal, call.httpRequesterIp(config), call.auditActor(config), id, input))
+        } catch (e: TaskServiceException) {
+            call.respondServiceError(e)
+        }
+    }
+
+    post("/api/approvals/{id}/force-run") {
+        val principal = call.requireApi() ?: return@post
+        val id = call.idParam() ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
+        try {
+            call.respond(service.forceRun(principal, call.httpRequesterIp(config), call.auditActor(config), id))
         } catch (e: TaskServiceException) {
             call.respondServiceError(e)
         }
@@ -477,11 +509,21 @@ fun Route.approvalRoutes(
         }
     }
 
+    post("/api/approvals/{id}/unapprove") {
+        val principal = call.requireApi() ?: return@post
+        val id = call.idParam() ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
+        try {
+            call.respond(service.unapprove(principal, call.httpRequesterIp(config), call.auditActor(config), id))
+        } catch (e: TaskServiceException) {
+            call.respondServiceError(e)
+        }
+    }
+
     post("/api/approvals/{id}/cancel") {
         val principal = call.requireApi() ?: return@post
         val id = call.idParam() ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
         try {
-            call.respond(service.cancel(principal, call.httpRequesterIp(config), id))
+            call.respond(service.cancel(principal, call.httpRequesterIp(config), call.auditActor(config), id))
         } catch (e: TaskServiceException) {
             call.respondServiceError(e)
         }
@@ -543,6 +585,7 @@ internal suspend fun runApprovedTask(
     taskCompletionHub: TaskCompletionHub?,
     notifications: NotificationService?,
     log: org.slf4j.Logger,
+    defaultSchema: String? = null,
 ) {
     val dsName = req.datasourceId?.let { req.datasourceName } ?: "?"
     fun lifecycleRecord(event: String, channel: Channel) = AuditEvent(
@@ -571,6 +614,8 @@ internal suspend fun runApprovedTask(
             taskId = id,
             preflight = { store.meta(id)?.status == "RUNNING" },
             exchangeTimeoutMs = config.queryExchangeTimeoutMs,
+            namespaces = defaultSchema?.let { listOf(it) },
+            defaultSchema = defaultSchema,
             statementAt = { ordinal ->
                 if (ordinal == 0) statements[0].sql else store.startNextRun(id, executor)?.sql
             },
@@ -580,7 +625,7 @@ internal suspend fun runApprovedTask(
                     // failRun SKIPs the rest in the same transaction.
                     denyReason = response.denyReason
                     denyDecisionId = response.decisionId
-                    batchFailure = "approval.execute_denied"
+                    batchFailure = if (response.denyCode == RATE_SPENT_CODE) "approval.rate_spent" else "approval.execute_denied"
                     false
                 } else {
                     val result = DecryptedResult(response.columns, response.rows, response.rowsAffected, response.resultFingerprint, response.truncatedByCap)

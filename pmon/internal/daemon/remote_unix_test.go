@@ -1,0 +1,287 @@
+//go:build !windows
+
+package daemon
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"slices"
+	"strconv"
+	"strings"
+	"syscall"
+	"testing"
+	"time"
+
+	"github.com/ridi-oss/proxy-monster/pmon/control"
+	"github.com/ridi-oss/proxy-monster/pmon/internal/providers"
+	"github.com/ridi-oss/proxy-monster/pmon/internal/state"
+)
+
+// TestFakeSSH is the ssh the tunnel tests run: it plays the shared connection, its forwards, and a remote
+// shell whose socket listing holds FAKE_REMOTE_SOCK; it has no pmon, which a running daemon does not need.
+func TestFakeSSH(t *testing.T) {
+	if os.Getenv("FAKE_SSH_LOG") == "" {
+		t.Skip("helper process")
+	}
+	args := os.Args[slices.Index(os.Args, "--")+1:]
+	log := func(line string) {
+		f, _ := os.OpenFile(os.Getenv("FAKE_SSH_LOG"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+		fmt.Fprintln(f, line)
+		f.Close()
+	}
+	ctl := args[slices.Index(args, "-S")+1]
+	switch {
+	case slices.Contains(args, "-M"):
+		log(fmt.Sprintf("master %d", os.Getpid()))
+		if _, err := os.Stat(os.Getenv("FAKE_SSH_PENDING")); err == nil {
+			time.Sleep(time.Hour) // waiting on a key approval
+		}
+		_ = os.WriteFile(ctl, nil, 0o600)
+		time.Sleep(time.Hour)
+	case slices.Contains(args, "check"):
+		if _, err := os.Stat(ctl); err != nil {
+			os.Exit(255)
+		}
+	case slices.Contains(args, "forward"):
+		spec := args[slices.Index(args, "-L")+1]
+		if local, remote, ok := strings.Cut(spec, ":"); ok && strings.HasSuffix(local, ".sock") {
+			if err := os.Symlink(remote, local); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			return
+		}
+		log("forward " + spec)
+	case slices.Contains(args, "cancel"):
+		log("cancel " + args[slices.Index(args, "-L")+1])
+	case strings.Contains(args[len(args)-1], "pmon-*.sock"):
+		// A forward socket of that machine's own remotes lists beside the daemon's.
+		fmt.Println(strings.TrimSuffix(os.Getenv("FAKE_REMOTE_SOCK"), ".sock") + "-r1234abcd.sock")
+		fmt.Println(os.Getenv("FAKE_REMOTE_SOCK"))
+	}
+	os.Exit(0)
+}
+
+// fakeRemoteDaemon serves /status and /events on a unix socket, as a remote daemon brokering one datasource.
+func fakeRemoteDaemon(t *testing.T) string {
+	dir, err := os.MkdirTemp("/tmp", "pmrd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	sock := filepath.Join(dir, "pmon-0123456789abcdef.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := control.Status{Version: "remote", Servers: []control.ServerInfo{{Name: "acme", LoggedIn: true}},
+		Datasources: []control.Datasource{{Server: "acme", Name: "orders", Brokered: true, LocalPort: 6100}}}
+	mux := http.NewServeMux()
+	mux.HandleFunc(control.PathStatus, func(w http.ResponseWriter, _ *http.Request) { _ = json.NewEncoder(w).Encode(st) })
+	mux.HandleFunc(control.PathEvents, func(w http.ResponseWriter, r *http.Request) { <-r.Context().Done() })
+	srv := &http.Server{Handler: mux}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+	return sock
+}
+
+func TestRemoteTunnelLifecycle(t *testing.T) {
+	isolate(t)
+	logPath := filepath.Join(t.TempDir(), "ssh.log")
+	t.Setenv("FAKE_SSH_LOG", logPath)
+	t.Setenv("FAKE_REMOTE_SOCK", fakeRemoteDaemon(t))
+	restore, every := sshCommand, remoteCheckEvery
+	t.Cleanup(func() { sshCommand, remoteCheckEvery = restore, every })
+	remoteCheckEvery = 100 * time.Millisecond
+	sshCommand = func(ctx context.Context, args ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, os.Args[0], append([]string{"-test.run=^TestFakeSSH$", "--"}, args...)...)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	d := New("test", providers.Builtins())
+	d.ctx = ctx
+	t.Cleanup(func() { cancel(); d.stopRemotes() })
+
+	waitFor := func(what string, ok func(control.RemoteInfo) bool) control.RemoteInfo {
+		t.Helper()
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			if rs := d.Status().Remotes; len(rs) == 1 && ok(rs[0]) {
+				return rs[0]
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		t.Fatalf("remote never %s: %+v", what, d.Status().Remotes)
+		return control.RemoteInfo{}
+	}
+	masters := func() []int {
+		b, _ := os.ReadFile(logPath)
+		var pids []int
+		for _, line := range strings.Split(string(b), "\n") {
+			if pid, ok := strings.CutPrefix(line, "master "); ok {
+				n, _ := strconv.Atoi(pid)
+				pids = append(pids, n)
+			}
+		}
+		return pids
+	}
+	alive := func(pid int) bool { return syscall.Kill(pid, 0) == nil }
+
+	if err := d.AddRemote(control.RemoteRequest{Target: "devbox"}); err != nil {
+		t.Fatal(err)
+	}
+	r := waitFor("connected with a forward", func(r control.RemoteInfo) bool {
+		return r.State == control.RemoteConnected && r.Port("acme", "orders") > 0
+	})
+	if r.Port("acme", "orders") != state.PortBase() {
+		t.Errorf("forwarded on %d, want the first port of this daemon's range %d", r.Port("acme", "orders"), state.PortBase())
+	}
+	if b, _ := os.ReadFile(logPath); !strings.Contains(string(b), fmt.Sprintf("forward 127.0.0.1:%d:127.0.0.1:6100", state.PortBase())) {
+		t.Errorf("no datasource forward in:\n%s", b)
+	}
+
+	// A dropped connection comes back.
+	first := masters()[0]
+	_ = syscall.Kill(first, syscall.SIGKILL)
+	waitFor("reconnected", func(r control.RemoteInfo) bool {
+		return r.State == control.RemoteConnected && len(masters()) == 2
+	})
+
+	if err := d.RemoveRemote(control.RemoteRequest{Target: "devbox"}); err != nil {
+		t.Fatal(err)
+	}
+	if ports := d.snapshot().RemotePorts["devbox"]; ports != nil {
+		t.Errorf("ports kept after remove: %v", ports)
+	}
+	for _, pid := range masters() {
+		if alive(pid) {
+			t.Errorf("ssh %d outlived its remote", pid)
+		}
+	}
+
+	// Shutdown waits for every ssh connection.
+	if err := d.AddRemote(control.RemoteRequest{Target: "devbox"}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor("connected again", func(r control.RemoteInfo) bool { return r.State == control.RemoteConnected })
+	cancel()
+	d.stopRemotes()
+	for _, pid := range masters() {
+		if alive(pid) {
+			t.Errorf("ssh %d outlived the daemon", pid)
+		}
+	}
+}
+
+// Reconnect replaces an ssh still waiting to sign in rather than leaving it until a deadline.
+func TestReconnectReplacesAPendingSSH(t *testing.T) {
+	isolate(t)
+	logPath := filepath.Join(t.TempDir(), "ssh.log")
+	pending := filepath.Join(t.TempDir(), "pending")
+	if err := os.WriteFile(pending, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FAKE_SSH_LOG", logPath)
+	t.Setenv("FAKE_SSH_PENDING", pending)
+	t.Setenv("FAKE_REMOTE_SOCK", fakeRemoteDaemon(t))
+	restore, every := sshCommand, remoteCheckEvery
+	t.Cleanup(func() { sshCommand, remoteCheckEvery = restore, every })
+	remoteCheckEvery = 100 * time.Millisecond
+	sshCommand = func(ctx context.Context, args ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, os.Args[0], append([]string{"-test.run=^TestFakeSSH$", "--"}, args...)...)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	d := New("test", providers.Builtins())
+	d.ctx = ctx
+	t.Cleanup(func() { cancel(); d.stopRemotes() })
+	masters := func() int {
+		b, _ := os.ReadFile(logPath)
+		return strings.Count(string(b), "master ")
+	}
+	waitFor := func(what string, ok func() bool) {
+		t.Helper()
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			if ok() {
+				return
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		t.Fatalf("never %s: masters %d, %+v", what, masters(), d.Status().Remotes)
+	}
+
+	if err := d.AddRemote(control.RemoteRequest{Target: "devbox"}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor("started ssh", func() bool { return masters() == 1 })
+	time.Sleep(300 * time.Millisecond)
+	if s := d.Status().Remotes[0].State; s != control.RemoteConnecting {
+		t.Fatalf("state %s while ssh waits, want connecting", s)
+	}
+	_ = os.Remove(pending)
+	if err := d.ReconnectRemote(control.RemoteRequest{Target: "devbox"}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor("connected on a second ssh", func() bool {
+		rs := d.Status().Remotes
+		return masters() == 2 && rs[0].State == control.RemoteConnected
+	})
+	b, _ := os.ReadFile(logPath)
+	var first int
+	fmt.Sscanf(string(b), "master %d", &first)
+	if first == 0 || syscall.Kill(first, 0) == nil {
+		t.Errorf("the replaced ssh %d is still running", first)
+	}
+	if err := d.ReconnectRemote(control.RemoteRequest{Target: "nope"}); err == nil {
+		t.Error("reconnect of an unknown remote succeeded")
+	}
+}
+
+// The listing runs in the remote user's own shell, which only hands it to sh: zsh must not abort on a glob that
+// matches nothing, which is a stopped daemon's normal case.
+func TestListDaemonSocketsInEveryShell(t *testing.T) {
+	for _, shell := range []string{"sh", "bash", "zsh"} {
+		path, err := exec.LookPath(shell)
+		if err != nil {
+			continue
+		}
+		out, err := exec.Command(path, "-c", listDaemonSockets).CombinedOutput()
+		if err != nil {
+			t.Errorf("%s: %v: %s", shell, err, out)
+		}
+	}
+}
+
+// A crashed daemon leaves its socket file behind with no process holding it; the listing must skip it.
+func TestListDaemonSocketsSkipsDeadSockets(t *testing.T) {
+	if _, err := exec.LookPath("lsof"); err != nil {
+		t.Skip("no lsof")
+	}
+	dir, err := state.SocketPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dead := filepath.Join(filepath.Dir(dir), fmt.Sprintf("pmon-%016x.sock", time.Now().UnixNano()))
+	ln, err := net.Listen("unix", dead)
+	if err != nil {
+		t.Skipf("socket folder not usable here: %v", err)
+	}
+	ln.(*net.UnixListener).SetUnlinkOnClose(false)
+	ln.Close()
+	t.Cleanup(func() { os.Remove(dead) })
+	for _, shell := range []string{"sh", "bash", "zsh"} {
+		path, err := exec.LookPath(shell)
+		if err != nil {
+			continue
+		}
+		out, err := exec.Command(path, "-c", listDaemonSockets).CombinedOutput()
+		if err != nil || strings.Contains(string(out), dead) {
+			t.Errorf("%s listed the dead socket or failed: %v: %s", shell, err, out)
+		}
+	}
+}

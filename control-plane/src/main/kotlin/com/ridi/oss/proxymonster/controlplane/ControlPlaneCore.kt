@@ -4,6 +4,7 @@ import com.ridi.oss.proxymonster.controlplane.authz.Authz
 import com.ridi.oss.proxymonster.controlplane.authz.CedarEngine
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyStore
 import com.ridi.oss.proxymonster.controlplane.authz.RoleSource
+import java.time.Clock
 import javax.sql.DataSource
 
 /**
@@ -23,6 +24,7 @@ import javax.sql.DataSource
 class ControlPlaneCore(
     val dataSource: DataSource,
     configCatalogRefreshWindowMillis: Long = CONFIG_CATALOG_REFRESH_WINDOW_MILLIS,
+    val clock: Clock = Clock.systemUTC(),
 ) {
     val auditStore = AuditStore(dataSource)
     val authAudit = AuthAuditRecorder(auditStore)
@@ -35,7 +37,14 @@ class ControlPlaneCore(
     val roleResolver = RoleResolver(dataSource, userGroupStore, accessStore)
     val cedarPolicyStore = CedarPolicyStore(dataSource)
     val cedarEngine = CedarEngine(cedarPolicyStore)
-    val authz = Authz(cedarEngine, cedarPolicyStore, RoleSource { p -> roleResolver.resolve(p) })
+    val authz = Authz(
+        cedarEngine,
+        cedarPolicyStore,
+        object : RoleSource {
+            override fun rolesOf(principal: String) = roleResolver.resolve(principal)
+            override fun parentsOf(principal: String) = roleResolver.resolveParents(principal)
+        },
+    )
 
     // System classification (docs/system-classification.md). Loads + validates the bundled
     // manifests at boot (a malformed manifest aborts startup); classifies system Tables into system: tags

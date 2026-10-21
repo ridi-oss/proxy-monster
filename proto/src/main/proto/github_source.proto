@@ -1,0 +1,258 @@
+syntax = "proto3";
+
+// GitHubSource is served by cp-go to the Kotlin SQL-from-GitHub flow over the loopback gRPC bridge
+// (cpgo/gobridge) until that flow moves to Go, when this service is deleted (docs/cp-go-migration.md).
+package proxymonster.cpgo.v1;
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+
+option java_package = "com.ridi.oss.proxymonster.cpgo";
+option java_multiple_files = true;
+
+// The GitHub App the SQL-from-GitHub flow acts as. A failed GitHub call answers with a GitHubError
+// status detail.
+service GitHubSource {
+  rpc ReadPullRequests(ReadPullRequestsRequest) returns (ReadPullRequestsResponse);
+  rpc ReadFile(ReadFileRequest) returns (ReadFileResponse);
+  rpc CompareCommits(CompareCommitsRequest) returns (CompareCommitsResponse);
+  rpc ReadBranchRules(BranchRulesRequest) returns (BranchRules);
+  rpc PostCheck(PostCheckRequest) returns (google.protobuf.Empty);
+  rpc DismissReview(DismissReviewRequest) returns (google.protobuf.Empty);
+  // With a marker, edits the App's comment carrying it, or posts a new one.
+  rpc PostComment(PostCommentRequest) returns (google.protobuf.Empty);
+  rpc ExternalIdentity(IdentityRequest) returns (ExternalIdentityResponse);
+  rpc VerifiedEmails(IdentityRequest) returns (VerifiedEmailsResponse);
+}
+
+message GitHubError {
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    UNAUTHORIZED = 1;
+    FORBIDDEN = 2;
+    NOT_FOUND = 3;
+    RATE_LIMITED = 4;
+    UNPROCESSABLE = 5;
+    SERVER = 6;
+    GRAPHQL = 7;
+  }
+  Kind kind = 1;
+  // Names the method, path, and status, never a header or token.
+  string message = 2;
+  int32 status = 3;
+  google.protobuf.Timestamp reset_at = 4;
+}
+
+message Repo {
+  string owner = 1;
+  string name = 2;
+}
+
+message SourceUser {
+  string id = 1;
+  string login = 2;
+}
+
+// From the last GitHub GraphQL answer that reported it.
+message RateLimit {
+  int32 remaining = 1;
+  google.protobuf.Timestamp reset_at = 2;
+}
+
+enum ReviewState {
+  REVIEW_STATE_UNSPECIFIED = 0;
+  APPROVED = 1;
+  CHANGES_REQUESTED = 2;
+  COMMENTED = 3;
+  DISMISSED = 4;
+  PENDING = 5;
+}
+
+enum CheckStatus {
+  CHECK_STATUS_UNSPECIFIED = 0;
+  QUEUED = 1;
+  IN_PROGRESS = 2;
+  COMPLETED = 3;
+}
+
+enum CheckConclusion {
+  CHECK_CONCLUSION_UNSPECIFIED = 0;
+  SUCCESS = 1;
+  NEUTRAL = 2;
+  SKIPPED = 3;
+  FAILURE = 4;
+  CANCELLED = 5;
+  TIMED_OUT = 6;
+  ACTION_REQUIRED = 7;
+  STALE = 8;
+}
+
+enum FileChange {
+  FILE_CHANGE_UNSPECIFIED = 0;
+  ADDED = 1;
+  DELETED = 2;
+  MODIFIED = 3;
+  RENAMED = 4;
+  COPIED = 5;
+  CHANGED = 6;
+}
+
+enum CommitRelation {
+  COMMIT_RELATION_UNSPECIFIED = 0;
+  AHEAD = 1;
+  IDENTICAL = 2;
+  BEHIND = 3;
+  DIVERGED = 4;
+}
+
+message Review {
+  string id = 1;
+  SourceUser reviewer = 2;
+  ReviewState state = 3;
+  google.protobuf.Timestamp submitted_at = 4;
+  string url = 5;
+  // The commit the review was submitted on; unset when that commit is gone from the pull request.
+  optional string commit = 6;
+}
+
+message Check {
+  string name = 1;
+  bool required = 2;
+  CheckStatus status = 3;
+  CheckConclusion conclusion = 4;
+}
+
+// Unset in PullRequest when the head commit's rollup could not be read, which differs from no checks.
+message Checks {
+  repeated Check checks = 1;
+}
+
+message ChangedFile {
+  string path = 1;
+  FileChange change = 2;
+}
+
+message CommitAuthor {
+  optional string user_id = 1;
+  optional string email = 2;
+  bool merge = 3;
+}
+
+message AutoMerge {
+  SourceUser enabled_by = 1;
+  google.protobuf.Timestamp enabled_at = 2;
+  // MERGE, SQUASH or REBASE.
+  string merge_method = 3;
+}
+
+message PullRequest {
+  int32 number = 1;
+  bool open = 2;
+  bool merged = 3;
+  google.protobuf.Timestamp merged_at = 4;
+  optional string merge_commit = 5;
+  string head_sha = 6;
+  string base_ref = 7;
+  SourceUser author = 8;
+  AutoMerge auto_merge = 9;
+  repeated Review reviews = 10;
+  Checks checks = 11;
+  repeated ChangedFile files = 12;
+  repeated CommitAuthor commits = 13;
+  bool draft = 14;
+  // GitHub's MergeableState, MergeStateStatus and PullRequestReviewDecision; review_decision is empty when the
+  // base branch requires no review.
+  string mergeable = 15;
+  string merge_state = 16;
+  string review_decision = 17;
+  int32 unresolved_threads = 18;
+  bool can_be_rebased = 19;
+}
+
+message ReadPullRequestsRequest {
+  Repo repo = 1;
+  repeated int32 numbers = 2;
+}
+
+// A pull request GitHub does not find is absent.
+message ReadPullRequestsResponse {
+  map<int32, PullRequest> pull_requests = 1;
+  RateLimit rate_limit = 2;
+}
+
+message ReadFileRequest {
+  Repo repo = 1;
+  string ref = 2;
+  string path = 3;
+}
+
+message ReadFileResponse {
+  bytes content = 1;
+}
+
+message CompareCommitsRequest {
+  Repo repo = 1;
+  string base = 2;
+  string head = 3;
+}
+
+message CompareCommitsResponse {
+  CommitRelation relation = 1;
+}
+
+message BranchRulesRequest {
+  Repo repo = 1;
+  string branch = 2;
+}
+
+// What a branch's rulesets and branch protection require of a pull request before it merges.
+message BranchRules {
+  repeated string contexts = 1;
+  // The head must contain the base branch.
+  bool strict = 2;
+  bool thread_resolution = 3;
+  // Empty allows every method; otherwise lowercase GitHub names (merge, squash, rebase).
+  repeated string merge_methods = 4;
+  // Rule types that can block a merge and that the flow does not evaluate.
+  repeated string unchecked = 5;
+}
+
+message PostCheckRequest {
+  Repo repo = 1;
+  string head_sha = 2;
+  string name = 3;
+  CheckStatus status = 4;
+  CheckConclusion conclusion = 5;
+  string title = 6;
+  string summary = 7;
+}
+
+message DismissReviewRequest {
+  Repo repo = 1;
+  int32 pr = 2;
+  string review_id = 3;
+  string message = 4;
+}
+
+message PostCommentRequest {
+  Repo repo = 1;
+  int32 pr = 2;
+  optional string marker = 3;
+  string body = 4;
+}
+
+message IdentityRequest {
+  string org = 1;
+  string login = 2;
+}
+
+message ExternalIdentityResponse {
+  // The SAML nameId; unset when the org links none to the login.
+  optional string name_id = 1;
+  RateLimit rate_limit = 2;
+}
+
+message VerifiedEmailsResponse {
+  repeated string emails = 1;
+  RateLimit rate_limit = 2;
+}

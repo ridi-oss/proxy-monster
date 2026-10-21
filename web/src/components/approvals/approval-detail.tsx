@@ -1,12 +1,21 @@
 'use client'
 
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useState } from 'react'
 import { useTranslations } from 'next-intl'
 import { mutate as globalMutate } from 'swr'
 import { toast } from 'sonner'
-import { cancelApproval, executeApproval, rejectApproval } from '@/lib/api/client'
+import {
+  cancelApproval,
+  editApproval,
+  executeApproval,
+  forceRunApproval,
+  rejectApproval,
+  unapproveApproval,
+} from '@/lib/api/client'
 import { onTaskEvent, subscribeTaskEvents } from '@/lib/api/task-events'
 import { swrKeys, useApproval } from '@/lib/hooks'
+import type { AccessRequest } from '@/lib/api/types'
+import { runsOnMerge } from '@/lib/approvals'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -24,6 +33,9 @@ import { Textarea } from '@/components/ui/textarea'
 import { ErrorState, LoadingState } from '@/components/page-scaffold'
 import { ApprovalResultTabs } from './approval-result-tabs'
 import { ApproveQueryDialog } from './approve-query-dialog'
+import { RequestTimeline } from './request-timeline'
+import { useAuth } from '@/lib/auth'
+import { Field, RequestOrigin } from './request-origin'
 
 const STATUS_STYLE: Record<string, string> = {
   DRAFT: 'border-border text-muted-foreground',
@@ -35,6 +47,7 @@ const STATUS_STYLE: Record<string, string> = {
   FAILED: 'border-red-500/30 bg-red-500/10 text-red-500',
   CANCELLED: 'border-border text-muted-foreground',
   DELETED: 'border-border text-muted-foreground',
+  ALREADY_RAN: 'border-border text-muted-foreground',
   SKIPPED: 'border-border text-muted-foreground',
 }
 
@@ -46,17 +59,6 @@ const DECISION_STYLE: Record<string, string> = {
 
 function formatTimestamp(iso?: string | null): string {
   return iso ? new Date(iso).toLocaleString() : '—'
-}
-
-function Field({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div className="space-y-1">
-      <p className="text-muted-foreground text-[10px] font-semibold tracking-widest uppercase">
-        {label}
-      </p>
-      <div className="text-sm">{children}</div>
-    </div>
-  )
 }
 
 /**
@@ -81,8 +83,14 @@ function Pill({ value, styles }: { value?: string | null; styles: Record<string,
 export function ApprovalDetail({ id }: { id: number }) {
   const t = useTranslations('Workflows')
   const { data, error, isLoading } = useApproval(id, { refreshInterval: 15000 })
-  const [busy, setBusy] = useState<'reject' | 'run' | 'cancel' | null>(null)
-  const [approveOpen, setApproveOpen] = useState(false)
+  const [busy, setBusy] = useState<'reject' | 'run' | 'cancel' | 'close' | 'unapprove' | 'edit' | 'forceRun' | null>(null)
+  const [editOpen, setEditOpen] = useState(false)
+  const [editSql, setEditSql] = useState('')
+  const [editReason, setEditReason] = useState('')
+  const [editError, setEditError] = useState<string | null>(null)
+  // The request as it was when the approver opened the dialog; a poll that brings a newer revision must not change it.
+  const [approving, setApproving] = useState<{ request: AccessRequest; run: boolean } | null>(null)
+  const { identity } = useAuth()
   const [rejectOpen, setRejectOpen] = useState(false)
   const [rejectReason, setRejectReason] = useState('')
   const [rejectError, setRejectError] = useState<string | null>(null)
@@ -120,9 +128,10 @@ export function ApprovalDetail({ id }: { id: number }) {
 
   const refresh = () => {
     globalMutate(swrKeys.approval(id))
-    globalMutate(swrKeys.myApprovals(undefined))
+    globalMutate(swrKeys.involvedApprovals)
     globalMutate(swrKeys.approvalInbox)
     globalMutate(['approval-result', id])
+    globalMutate(swrKeys.requestThread(id))
   }
 
   const handleRun = async () => {
@@ -155,6 +164,45 @@ export function ApprovalDetail({ id }: { id: number }) {
     }
   }
 
+  const handleUnapprove = async () => {
+    setBusy('unapprove')
+    try {
+      await unapproveApproval(id)
+      toast.success(t('approvalDetail.unapprovedToast'))
+      refresh()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : t('approvalDetail.unapproveFailed'))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const handleClose = async () => {
+    setBusy('close')
+    try {
+      await cancelApproval(id)
+      toast.success(t('approvalDetail.closedToast'))
+      refresh()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : t('approvalDetail.closeFailed'))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const handleForceRun = async () => {
+    setBusy('forceRun')
+    try {
+      await forceRunApproval(id)
+      toast.success(t('approvalDetail.forceRunToast'))
+      refresh()
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : t('approvalDetail.forceRunFailed'))
+    } finally {
+      setBusy(null)
+    }
+  }
+
   const handleReject = async () => {
     if (!rejectReason.trim()) return
     setBusy('reject')
@@ -172,7 +220,33 @@ export function ApprovalDetail({ id }: { id: number }) {
     }
   }
 
-  const approvedCopy = t('approvalDetail.approvedExecuteUnderR')
+  const openEdit = () => {
+    setEditSql(request.sql ?? '')
+    setEditReason(request.reason ?? '')
+    setEditError(null)
+    setEditOpen(true)
+  }
+
+  const handleEdit = async () => {
+    if (!editSql.trim() || !editReason.trim()) return
+    setBusy('edit')
+    setEditError(null)
+    try {
+      await editApproval(id, { sql: editSql, reason: editReason.trim() })
+      toast.success(t('approvalDetail.editedToast'))
+      setEditOpen(false)
+      refresh()
+    } catch (err) {
+      setEditError(err instanceof Error ? err.message : t('approvalDetail.editFailed'))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const fromGithub = runsOnMerge(request)
+  const approvedCopy = fromGithub
+    ? t('approvalDetail.approvedGithub')
+    : t('approvalDetail.approvedExecuteUnderR')
 
   const ranStatements = statements.filter((s) => s.status === 'DONE' || s.status === 'FAILED')
 
@@ -192,25 +266,59 @@ export function ApprovalDetail({ id }: { id: number }) {
               <div className="flex flex-wrap items-center gap-2">
                 <Pill value={request.status} styles={STATUS_STYLE} />
                 <Pill value={request.evaluatedDecision} styles={DECISION_STYLE} />
+                {request.revision > 1 && (
+                  <span className="text-muted-foreground text-xs">
+                    {t('approvalDetail.revision', { revision: request.revision })}
+                  </span>
+                )}
               </div>
             </div>
-            {canDecide && (
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="outline"
-                  onClick={() => setRejectOpen(true)}
-                  disabled={busy !== null}
-                  className="border-red-500/30 text-red-500 hover:bg-red-500/10 hover:text-red-500"
-                >
-                  {t('actions.reject')}
-                </Button>
-                <Button
-                  onClick={() => setApproveOpen(true)}
-                  disabled={busy !== null}
-                  className="bg-emerald-600 text-white hover:bg-emerald-700"
-                >
-                  {t('actions.approveAndRun')}
-                </Button>
+            {(data.canEdit || canDecide || data.canReject || data.canUnapprove || data.canClose) && (
+              <div className="flex flex-wrap items-center gap-2">
+                {data.canEdit && (
+                  <Button variant="outline" onClick={openEdit} disabled={busy !== null}>
+                    {t('actions.edit')}
+                  </Button>
+                )}
+                {data.canClose && (
+                  <Button variant="outline" onClick={handleClose} disabled={busy !== null}>
+                    {busy === 'close' ? t('actions.closing') : t('actions.close')}
+                  </Button>
+                )}
+                {data.canUnapprove && (
+                  <Button variant="outline" onClick={handleUnapprove} disabled={busy !== null}>
+                    {busy === 'unapprove' ? t('actions.unapproving') : t('actions.unapprove')}
+                  </Button>
+                )}
+                {data.canReject && (
+                  <Button
+                    variant="outline"
+                    onClick={() => setRejectOpen(true)}
+                    disabled={busy !== null}
+                    className="border-red-500/30 text-red-500 hover:bg-red-500/10 hover:text-red-500"
+                  >
+                    {t('actions.reject')}
+                  </Button>
+                )}
+                {canDecide && (
+                  <Button
+                    variant={data.canApproveAndRun ? 'outline' : 'default'}
+                    onClick={() => setApproving({ request, run: false })}
+                    disabled={busy !== null}
+                    className={data.canApproveAndRun ? undefined : 'bg-emerald-600 text-white hover:bg-emerald-700'}
+                  >
+                    {t('actions.approve')}
+                  </Button>
+                )}
+                {data.canApproveAndRun && (
+                  <Button
+                    onClick={() => setApproving({ request, run: true })}
+                    disabled={busy !== null}
+                    className="bg-emerald-600 text-white hover:bg-emerald-700"
+                  >
+                    {t('actions.approveAndRun')}
+                  </Button>
+                )}
               </div>
             )}
           </div>
@@ -240,6 +348,7 @@ export function ApprovalDetail({ id }: { id: number }) {
                 {request.sourceDecisionId != null ? `#${request.sourceDecisionId}` : t('values.proactive')}
               </code>
             </Field>
+            <RequestOrigin request={request} />
           </div>
 
           <div className="space-y-3">
@@ -276,13 +385,32 @@ export function ApprovalDetail({ id }: { id: number }) {
             </div>
           )}
 
+          {fromGithub && request.forceRun && (
+            <p className="text-muted-foreground text-sm">
+              {t('approvalDetail.forcedBy', { admin: request.forceRunBy ?? '—' })}
+            </p>
+          )}
+
+          {fromGithub && data.canForceRun && (request.status === 'PENDING' || request.status === 'APPROVED') && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={handleForceRun}
+              disabled={busy !== null}
+              data-testid="force-run-approval"
+            >
+              {busy === 'forceRun' ? t('actions.forcingRun') : t('actions.forceRun')}
+            </Button>
+          )}
+
           {(request.status === 'APPROVED' || runStarted) && (
             <div className="space-y-3 border-t pt-4">
               <p className="text-muted-foreground text-[10px] font-semibold tracking-widest uppercase">
                 {t('approvalDetail.approverExecution')}
               </p>
 
-              {data.canExecute && !runStarted && (
+              {data.canExecute && !runStarted && !fromGithub && (
                 <div className="space-y-2">
                   <p className="text-muted-foreground text-sm">
                     {t('approvalDetail.runUnderRole', { principal: request.principal })}
@@ -324,13 +452,13 @@ export function ApprovalDetail({ id }: { id: number }) {
                 </div>
               )}
 
-              {!runStarted && !data.canExecute && request.status === 'APPROVED' && (
-                <p className="text-muted-foreground text-sm">
-                  {t('approvalDetail.awaitingApprover')}
-                </p>
+              {!runStarted && !data.canExecute && !fromGithub && request.status === 'APPROVED' && (
+                <p className="text-muted-foreground text-sm">{t('approvalDetail.awaitingApprover')}</p>
               )}
             </div>
           )}
+
+          <RequestTimeline request={request} principal={identity?.principal} onChanged={refresh} />
         </CardContent>
       </Card>
             </div>
@@ -352,11 +480,57 @@ export function ApprovalDetail({ id }: { id: number }) {
       </ResizablePanelGroup>
 
       <ApproveQueryDialog
-        key={approveOpen ? request.id : 'closed'}
-        request={approveOpen ? request : null}
-        onClose={() => setApproveOpen(false)}
+        key={approving ? `${approving.request.id}:${approving.run}` : 'closed'}
+        request={approving?.request ?? null}
+        run={approving?.run ?? false}
+        onClose={() => setApproving(null)}
         onApproved={refresh}
       />
+
+      <Dialog open={editOpen} onOpenChange={setEditOpen}>
+        <DialogContent className="sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>{t('approvalDetail.editTitle')}</DialogTitle>
+            <DialogDescription>{t('approvalDetail.editDescription')}</DialogDescription>
+          </DialogHeader>
+
+          {editError && (
+            <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-500">
+              {editError}
+            </div>
+          )}
+
+          <div className="space-y-1.5">
+            <Label htmlFor="query-approval-edit-sql">{t('approvalDetail.editSqlLabel')}</Label>
+            <Textarea
+              id="query-approval-edit-sql"
+              value={editSql}
+              onChange={(e) => setEditSql(e.target.value)}
+              rows={10}
+              className="font-mono text-xs"
+              autoFocus
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="query-approval-edit-reason">{t('approvalDetail.editReasonLabel')}</Label>
+            <Textarea
+              id="query-approval-edit-reason"
+              value={editReason}
+              onChange={(e) => setEditReason(e.target.value)}
+              rows={2}
+            />
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditOpen(false)} disabled={busy === 'edit'}>
+              {t('actions.cancel')}
+            </Button>
+            <Button onClick={handleEdit} disabled={!editSql.trim() || !editReason.trim() || busy === 'edit'}>
+              {busy === 'edit' ? t('actions.saving') : t('actions.save')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={rejectOpen} onOpenChange={setRejectOpen}>
         <DialogContent className="sm:max-w-md">

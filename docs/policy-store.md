@@ -381,6 +381,8 @@ Shipped cap rows (all enabled):
 | `-305` | `guardrail.result-cap-default` | permit `result.cap` on every resource: `@cap("5000, 50MB, 10000/1h, 50000/1d, 100MB/1h, 500MB/1d")` |
 | `-306` | `guardrail.result-cap-clear` | permit `result.cap` `when { resource is Column && resource.tagged && context has masked && !context.masked }` (a tagged value in the clear): `@cap("500, 5MB")` |
 | `-307` | `guardrail.result-cap-exporter` | `forbid` `result.cap` for `system:production-exporter` |
+| `-308` | `guardrail.rate-boost-2x` | `@boost("2")` permit `result.cap` for `system:rate-boost-2x` |
+| `-309` | `guardrail.rate-boost-5x` | `@boost("5")` permit `result.cap` for `system:rate-boost-5x` |
 
 ### Trust boundary — posture is a cleartext lever
 

@@ -11,7 +11,6 @@ import com.ridi.oss.proxymonster.controlplane.support.execOnTarget
 import com.ridi.oss.proxymonster.controlplane.support.pushTestCatalog
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.controlplane.support.runEnforcedForTest
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
@@ -327,8 +326,7 @@ object SchemaThreadingFixtures {
     }
 
     private fun metadataStores(): MetaStores {
-        val metadata = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_schema_meta"))
-        Flyway.configure().dataSource(metadata).load().migrate()
+        val metadata = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_schema_meta"))
         return MetaStores(
             metadata = metadata,
             datasourceStore = DatasourceStore(metadata),

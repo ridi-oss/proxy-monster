@@ -32,7 +32,6 @@ import io.ktor.server.sessions.set
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
 import kotlinx.serialization.json.Json
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.TestInstance
 import javax.sql.DataSource
@@ -42,6 +41,9 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import com.ridi.oss.proxymonster.controlplane.support.CpGoStack
+import com.ridi.oss.proxymonster.controlplane.support.testLoginRoute
+import org.junit.jupiter.api.AfterAll
 
 /**
  * ROUTE-level coverage of the non-query context wiring that [ElevationContextTagTest]
@@ -71,6 +73,7 @@ class ElevationContextRouteAuthzDbTest {
     private lateinit var resultStore: QueryResultStore
     private lateinit var datasource: Datasource
     private lateinit var config: Config
+    private lateinit var cpGo: CpGoStack
     private var targetRoleId: Long = 0
 
     private val approver = "approver@example.com"
@@ -81,17 +84,17 @@ class ElevationContextRouteAuthzDbTest {
         principal, action == Action::"context.tag::trusted-network", resource
     ) when { context has requester_ip && context.requester_ip.isInRange(ip("100.100.0.0/16")) };"""
 
-    // A TASK_APPROVE permit gated ONLY on the derived tag — the consuming end of the two-pass. The
+    // A TASK_APPROVE + TASK_RUN permit gated ONLY on the derived tag — the consuming end of the two-pass. The
     // approver holds Role::"reviewer"; without the derived tag (no requester_ip / no datasource) it cannot fire.
     private val tagGatedApprovePermit = """permit(
-        principal in Role::"reviewer", action == Action::"task.approve", resource
+        principal in Role::"reviewer", action in [Action::"task.approve", Action::"task.run"], resource
     ) when { context has tags && context.tags.contains("trusted-network") };"""
 
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_elev_route"))
-        Flyway.configure().dataSource(dataSource).load().migrate()
+        val database = SharedPostgres.migratedDatabase("pm_elev_route")
+        dataSource = SharedPostgres.hikari(database)
         core = ControlPlaneCore(dataSource)
         runExecService = RunExecService(core) // required by approvalRoutes; /execute reaches it (test b below)
         resultStore = QueryResultStore(dataSource, ResultCrypto(ByteArray(32) { it.toByte() }))
@@ -122,6 +125,14 @@ class ElevationContextRouteAuthzDbTest {
             sessionWindowSeconds = 3600, idpRecheckIntervalSeconds = 600, devMarker = true,
             trustedProxies = setOf("localhost"),
         )
+        cpGo = CpGoStack(config, core, database, extraEnv = mapOf("PM_TRUSTED_PROXIES" to "127.0.0.1")) {
+            routing { testLoginRoute(PrincipalSessionStore(dataSource, null), config) }
+        }
+    }
+
+    @AfterAll
+    fun teardown() {
+        if (::cpGo.isInitialized) cpGo.close()
     }
 
     private fun ApplicationTestBuilder.wire(): HttpClient {
@@ -156,7 +167,6 @@ class ElevationContextRouteAuthzDbTest {
                 )
                 call.respond(HttpStatusCode.NoContent)
             }
-            accessRoutes(config, core.accessStore, core.authz, core.datasourceStore, core.roleResolver, ManagementAuditRecorder(core.auditStore))
             datasourceRoutes(config, core.authz, core.roleResolver, core.datasourceStore, core.proxyEventsHub, TableDetailService(core), core.tokenStore, core.userGroupStore)
             approvalRoutes(
                 config, core.accessStore, core.auditStore, core.datasourceStore, core.policyStore,
@@ -198,7 +208,7 @@ class ElevationContextRouteAuthzDbTest {
 
     @Test
     fun `ROLE access-request approve fires the tag-gated permit only through a trusted edge (Access-kt wiring)`() = testApplication {
-        val client = wire()
+        val client = cpGo.client()
         client.post("/test/session/$approver")
 
         // No trusted XFF -> requester_ip absent -> tag not derived -> the tag-gated approve permit cannot fire.
@@ -229,7 +239,7 @@ class ElevationContextRouteAuthzDbTest {
         val forbidden = seedQueryRequest()
         val denied = client.post("/api/approvals/$forbidden/approve") {
             contentType(ContentType.Application.Json)
-            setBody("""{"mode":"APPROVER_EXEC"}""")
+            setBody("""{"revision":1}""")
         }
         assertEquals(
             HttpStatusCode.Forbidden, denied.status,
@@ -241,7 +251,7 @@ class ElevationContextRouteAuthzDbTest {
         val ok = client.post("/api/approvals/$approved/approve") {
             header("X-Forwarded-For", "100.100.5.5")
             contentType(ContentType.Application.Json)
-            setBody("""{"mode":"APPROVER_EXEC"}""")
+            setBody("""{"revision":1}""")
         }
         assertEquals(
             HttpStatusCode.OK, ok.status,
@@ -251,7 +261,7 @@ class ElevationContextRouteAuthzDbTest {
 
     @Test
     fun `approve routes write a kind=admin audit event through the wiring`() = testApplication {
-        val client = wire()
+        val client = cpGo.client()
         client.post("/test/session/$approver")
 
         // ROLE approve through the real route writes one kind="admin" event; count is scoped to this
@@ -270,7 +280,7 @@ class ElevationContextRouteAuthzDbTest {
             client.post("/api/approvals/$queryReq/approve") {
                 header("X-Forwarded-For", "100.100.5.5")
                 contentType(ContentType.Application.Json)
-                setBody("""{"mode":"APPROVER_EXEC"}""")
+                setBody("""{"revision":1}""")
             }.status,
         )
         assertEquals(1, adminAuditCount("approve query request #$queryReq%"), "QUERY approve route must audit")
@@ -297,6 +307,8 @@ class ElevationContextRouteAuthzDbTest {
         // No proxy is attached to runExecService; a pure approve must not need one.
         val ok = client.post("/api/approvals/$id/approve") {
             header("X-Forwarded-For", "100.100.5.5")
+            contentType(ContentType.Application.Json)
+            setBody("""{"revision":1}""")
         }
         assertEquals(HttpStatusCode.OK, ok.status, "trusted-edge approve succeeds")
 
@@ -352,7 +364,7 @@ class ElevationContextRouteAuthzDbTest {
             HttpStatusCode.Forbidden, denied.status,
             "no requester_ip -> no trusted-network tag -> execute-under-R authority denied (defense in depth)",
         )
-        assertEquals("approval.not_approver", denied.body<ApiError>().code)
+        assertEquals("approval.not_runner", denied.body<ApiError>().code)
     }
 
     @Test
@@ -405,7 +417,7 @@ class ElevationContextRouteAuthzDbTest {
 
     @Test
     fun `ROLE request creation against a datasource is gated by workflow-request`() = testApplication {
-        val client = wire()
+        val client = cpGo.client()
         client.post("/test/session/$requester")
         val body = """{"roleId": $targetRoleId, "datasourceId": ${datasource.id}, "reason": "need it"}"""
 
@@ -437,7 +449,7 @@ class ElevationContextRouteAuthzDbTest {
 
     @Test
     fun `datasource list is filtered by connect only when connectable is requested`() = testApplication {
-        val client = wire()
+        val client = cpGo.client()
         client.post("/test/session/$requester")
 
         // Default (no param): the full list, so JIT-request compose can show datasources the caller cannot

@@ -9,6 +9,7 @@ import { useAuth } from '@/lib/auth'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { DeviceScopes, extraScopes } from '@/components/device/device-scopes'
 
 /** Uppercase, strip non-alphanumerics, cap at the 8 significant characters. */
 function normalizeCode(raw: string): string {
@@ -35,6 +36,8 @@ function DeviceInner() {
   const [code, setCode] = useState(initialCode)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Set when a confirmed login asks for more than mcp:read and mcp:query.
+  const [extra, setExtra] = useState<{ userCode: string; scopes: string[]; ttl: number | null } | null>(null)
 
   const complete = code.length === 8
 
@@ -54,6 +57,10 @@ function DeviceInner() {
         <Loader2 className="text-muted-foreground size-5 animate-spin" />
       </div>
     )
+  }
+
+  const authorize = (userCode: string) => {
+    window.location.href = `${API_BASE}/auth/device/authorize?user_code=${encodeURIComponent(userCode)}`
   }
 
   const handleSubmit = async (e: FormEvent) => {
@@ -79,7 +86,14 @@ function DeviceInner() {
         setSubmitting(false)
         return
       }
-      window.location.href = `${API_BASE}/auth/device/authorize?user_code=${encodeURIComponent(userCode)}`
+      const ack = (await res.json()) as { scopes?: string[]; elevatedTtlSeconds?: number | null }
+      const scopes = ack.scopes ?? []
+      if (extraScopes(scopes).length > 0) {
+        setExtra({ userCode, scopes, ttl: ack.elevatedTtlSeconds ?? null })
+        setSubmitting(false)
+        return
+      }
+      authorize(userCode)
     } catch {
       setError(t('error'))
       setSubmitting(false)
@@ -100,28 +114,44 @@ function DeviceInner() {
         <h1 className="mb-1 text-base font-semibold">{t('title')}</h1>
         <p className="text-muted-foreground mb-4 text-sm">{prefilled ? t('confirm') : t('instruction')}</p>
 
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div className="space-y-1.5">
-            <Label htmlFor="user_code">{t('codeLabel')}</Label>
-            <Input
-              id="user_code"
-              value={formatCode(code)}
-              onChange={(e) => setCode(normalizeCode(e.target.value))}
-              autoComplete="off"
-              autoCapitalize="characters"
-              spellCheck={false}
-              maxLength={9}
-              autoFocus={!prefilled}
-              className="text-center font-mono text-lg tracking-[0.35em] uppercase"
-            />
+        {extra ? (
+          <div className="space-y-4">
+            <DeviceScopes scopes={extra.scopes} elevatedTtlSeconds={extra.ttl} />
+            <Button
+              className="w-full"
+              disabled={submitting}
+              onClick={() => {
+                setSubmitting(true)
+                authorize(extra.userCode)
+              }}
+            >
+              {submitting ? t('scopes.approving') : t('scopes.approve')}
+            </Button>
           </div>
+        ) : (
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div className="space-y-1.5">
+              <Label htmlFor="user_code">{t('codeLabel')}</Label>
+              <Input
+                id="user_code"
+                value={formatCode(code)}
+                onChange={(e) => setCode(normalizeCode(e.target.value))}
+                autoComplete="off"
+                autoCapitalize="characters"
+                spellCheck={false}
+                maxLength={9}
+                autoFocus={!prefilled}
+                className="text-center font-mono text-lg tracking-[0.35em] uppercase"
+              />
+            </div>
 
-          {error && <p className="text-sm text-red-500">{error}</p>}
+            {error && <p className="text-sm text-red-500">{error}</p>}
 
-          <Button type="submit" className="w-full" disabled={!complete || submitting}>
-            {submitting ? t('continuing') : t('continue')}
-          </Button>
-        </form>
+            <Button type="submit" className="w-full" disabled={!complete || submitting}>
+              {submitting ? t('continuing') : t('continue')}
+            </Button>
+          </form>
+        )}
       </div>
     </div>
   )

@@ -4,7 +4,7 @@ How the analyzer resolves a relation used where a value is expected — a whole
 row or a composite field — so a protected column can never slip through. This is
 the deep-dive for one bug-prone subsystem; the whole-analyzer overview is
 [analyzer/README.md](../analyzer/README.md), and the resolver itself is
-`analyzer/probe/relation.go`.
+`analyzer/engines/relation.go`.
 
 Schema throughout: `users(id,email,phone,name,ssn,region,created_at)` with `ssn`
 = PII (masked), `orders(id,user_id,…)`, `sink(id,data,data2)`.
@@ -88,7 +88,7 @@ place, every one of `to_jsonb(x)`, `SELECT x`, `x AS sub`, `(x).col`,
 derivation. There is no separate whole-row code path to keep in sync across
 representations.
 
-### The resolver (`analyzer/probe/relation.go`)
+### The resolver (`analyzer/engines/relation.go`)
 
 - `relationOf(name, chain, depth)` applies R1: walk the scope chain
   column-first, and the first source exposing `name` as a column wins — a scalar
@@ -145,7 +145,7 @@ Composite field access resolves field-precise but routes to `references`, so
 And defining a relation-valued column sweeps the whole row, so `(d.sub).id` over
 `(SELECT users AS sub FROM users) d` denies on `users.ssn` even though only the
 non-PII `id` is read — `TestRelationValuedOverDeny` in
-`analyzer/probe/relation_test.go` pins that behavior. Narrowing either is
+`analyzer/engines/relation_test.go` pins that behavior. Narrowing either is
 unimplemented analyzer precision work.
 
 The safety property is conservation, not enumeration: one resolver at every

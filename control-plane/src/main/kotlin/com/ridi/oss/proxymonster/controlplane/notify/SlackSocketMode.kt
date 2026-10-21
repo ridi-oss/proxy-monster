@@ -24,10 +24,40 @@ data class SlackInteraction(
     val principal: String,
     val actionId: String,
     val taskId: Long,
+    /** The revision the clicked message showed; null for a button from before revisions, which decides nothing. */
+    val revision: Int?,
     val responseUrl: String?,
     val triggerChannel: String?,
     val triggerTs: String?,
+    /** Present on every click; opening a modal needs it within 3 seconds. */
+    val triggerId: String? = null,
+    /** The modal the click came from, or null for a click on a message. */
+    val viewId: String? = null,
 )
+
+/** A message event in a channel or DM: a new thread reply, an edit, or a deletion. */
+data class SlackThreadMessage(
+    val kind: Kind,
+    val channel: String,
+    val ts: String,
+    val threadTs: String? = null,
+    /** The active principal behind the author, or null when no active user matches their verified email. */
+    val principal: String? = null,
+    /** The author's Slack display name, for an author with no principal. */
+    val name: String? = null,
+    val text: String? = null,
+    /** The active principals the reply @-mentions; Slack users with no active user are left out. */
+    val mentions: List<String> = emptyList(),
+) {
+    enum class Kind { NEW, EDITED, DELETED }
+}
+
+/** What to show the clicker: a private reply, a modal to open, or the new content of the modal they clicked in. */
+sealed interface SlackReply {
+    data class Ephemeral(val text: String) : SlackReply
+    data class OpenView(val view: JsonObject) : SlackReply
+    data class UpdateView(val view: JsonObject) : SlackReply
+}
 
 /**
  * Slack Socket Mode (docs/notifications.md, "How it connects").
@@ -53,7 +83,8 @@ class SlackSocketMode(
     // The inbound identity map: a verified Slack email → the ACTIVE directory principal, or null when there is
     // no active user to speak for it. Injected so the socket layer holds no store handle.
     private val principalForEmail: (email: String) -> String?,
-    private val onInteraction: suspend (SlackInteraction) -> String,
+    private val onInteraction: suspend (SlackInteraction) -> SlackReply,
+    private val onMessage: suspend (SlackThreadMessage) -> Unit = {},
     private val api: String = "https://slack.com/api",
 ) {
     private val log = LoggerFactory.getLogger(SlackSocketMode::class.java)
@@ -135,6 +166,7 @@ class SlackSocketMode(
 
     private suspend fun handle(envelope: JsonObject) {
         val payload = envelope["payload"]?.jsonObject ?: return
+        if (envelope["type"]?.jsonPrimitive?.content == "events_api") return handleEvent(payload)
         if (payload["type"]?.jsonPrimitive?.content != "block_actions") return
 
         // Fails CLOSED: an unresolved workspace refuses every click rather than accepting all of them.
@@ -147,8 +179,10 @@ class SlackSocketMode(
 
         val action = payload["actions"]?.jsonArray?.firstOrNull()?.jsonObject ?: return
         val actionId = action["action_id"]?.jsonPrimitive?.content ?: return
-        if (actionId != SlackTransport.ACTION_APPROVE && actionId != SlackTransport.ACTION_DENY) return
-        val taskId = action["value"]?.jsonPrimitive?.content?.toLongOrNull() ?: return
+        if (actionId !in SlackTransport.ACTION_IDS.values) return
+        val value = action["value"]?.jsonPrimitive?.content?.split(':') ?: return
+        val taskId = value[0].toLongOrNull() ?: return
+        val revision = value.getOrNull(1)?.let { it.toIntOrNull() ?: return }
 
         val slackUserId = payload["user"]?.jsonObject?.get("id")?.jsonPrimitive?.content ?: return
         val principal = resolvePrincipal(slackUserId) ?: run {
@@ -161,12 +195,81 @@ class SlackSocketMode(
                 principal = principal,
                 actionId = actionId,
                 taskId = taskId,
+                revision = revision,
                 responseUrl = payload["response_url"]?.jsonPrimitive?.content,
                 triggerChannel = payload["channel"]?.jsonObject?.get("id")?.jsonPrimitive?.content,
                 triggerTs = payload["message"]?.jsonObject?.get("ts")?.jsonPrimitive?.content,
+                triggerId = payload["trigger_id"]?.jsonPrimitive?.content,
+                viewId = payload["view"]?.jsonObject?.get("id")?.jsonPrimitive?.content,
             ),
         )
-        if (reply.isNotEmpty()) respondEphemeral(payload, reply)
+        when (reply) {
+            is SlackReply.Ephemeral -> if (reply.text.isNotEmpty()) respondEphemeral(payload, reply.text)
+            is SlackReply.OpenView -> payload["trigger_id"]?.jsonPrimitive?.content?.let { trigger ->
+                callJson("views.open", buildJsonObject { put("trigger_id", trigger); put("view", reply.view) })
+            }
+            is SlackReply.UpdateView -> payload["view"]?.jsonObject?.get("id")?.jsonPrimitive?.content?.let { viewId ->
+                callJson("views.update", buildJsonObject { put("view_id", viewId); put("view", reply.view) })
+            }
+        }
+    }
+
+    private suspend fun callJson(method: String, body: JsonObject) {
+        runCatching {
+            val response = http.post("$api/$method") {
+                header(HttpHeaders.Authorization, "Bearer $botToken")
+                header(HttpHeaders.ContentType, "application/json; charset=utf-8")
+                setBody(body.toString())
+            }
+            val parsed = json.parseToJsonElement(response.bodyAsText()).jsonObject
+            if (parsed["ok"]?.jsonPrimitive?.content?.toBooleanStrictOrNull() != true) {
+                log.warn("slack {} failed: {}", method, parsed["error"]?.jsonPrimitive?.content)
+            }
+        }.onFailure { log.warn("slack {} threw", method, it) }
+    }
+
+    /**
+     * A message in a channel or DM the bot is in. Messages from any bot, this one included, are ignored, so the
+     * replies it posts never come back as comments. The author is resolved like a clicker.
+     */
+    private suspend fun handleEvent(payload: JsonObject) {
+        val expectedTeam = resolveTeamId()
+        if (expectedTeam == null || payload["team_id"]?.jsonPrimitive?.content != expectedTeam) return
+        val event = payload["event"]?.jsonObject ?: return
+        if (event["type"]?.jsonPrimitive?.content != "message") return
+        val channel = event["channel"]?.jsonPrimitive?.content ?: return
+        fun JsonObject.str(key: String) = this[key]?.jsonPrimitive?.content
+        fun JsonObject.fromBot() = this["bot_id"] != null || str("subtype") == "bot_message"
+        val message = when (event.str("subtype")) {
+            null, "thread_broadcast" -> {
+                if (event.fromBot()) return
+                val ts = event.str("ts") ?: return
+                val threadTs = event.str("thread_ts")?.takeIf { it != ts } ?: return
+                val user = event.str("user") ?: return
+                val (principal, name) = resolveAuthor(user)
+                val text = event.str("text")
+                val mentioned = MENTION.findAll(text.orEmpty()).map { it.groupValues[1] }.filter { it != user }.distinct().toList()
+                val mentions = mentioned.mapNotNull { runCatching { userInfo(it) }.getOrNull()?.let(::principalOf) }
+                SlackThreadMessage(SlackThreadMessage.Kind.NEW, channel, ts, threadTs, principal, name, text, mentions)
+            }
+            "message_changed" -> {
+                val edited = event["message"]?.jsonObject ?: return
+                if (edited.fromBot()) return
+                SlackThreadMessage(SlackThreadMessage.Kind.EDITED, channel, edited.str("ts") ?: return, text = edited.str("text"))
+            }
+            "message_deleted" -> SlackThreadMessage(SlackThreadMessage.Kind.DELETED, channel, event.str("deleted_ts") ?: return)
+            else -> return
+        }
+        onMessage(message)
+    }
+
+    private suspend fun resolveAuthor(slackUserId: String): Pair<String?, String?> {
+        val user = userInfo(slackUserId) ?: return null to null
+        val profile = user["profile"]?.jsonObject
+        val name = listOf("display_name", "real_name").firstNotNullOfOrNull { key ->
+            profile?.get(key)?.jsonPrimitive?.content?.takeIf { it.isNotBlank() }
+        } ?: slackUserId
+        return principalOf(user) to name
     }
 
     /**
@@ -175,7 +278,9 @@ class SlackSocketMode(
      * unverified email, or an email that maps to no active `app_user` is refused: the Slack email is matched
      * to a provisioned user and resolved to THAT user's principal, never trusted as the principal itself.
      */
-    private suspend fun resolvePrincipal(slackUserId: String): String? {
+    private suspend fun resolvePrincipal(slackUserId: String): String? = userInfo(slackUserId)?.let { principalOf(it) }
+
+    private suspend fun userInfo(slackUserId: String): JsonObject? {
         val response = http.post("$api/users.info") {
             header(HttpHeaders.Authorization, "Bearer $botToken")
             header(HttpHeaders.ContentType, "application/x-www-form-urlencoded")
@@ -183,7 +288,10 @@ class SlackSocketMode(
         }
         val body = runCatching { json.parseToJsonElement(response.bodyAsText()).jsonObject }.getOrNull() ?: return null
         if (body["ok"]?.jsonPrimitive?.content?.toBooleanStrictOrNull() != true) return null
-        val user = body["user"]?.jsonObject ?: return null
+        return body["user"]?.jsonObject
+    }
+
+    private fun principalOf(user: JsonObject): String? {
         // A deactivated or bot account never acts on a task.
         if (user["deleted"]?.jsonPrimitive?.content?.toBooleanStrictOrNull() == true) return null
         if (user["is_bot"]?.jsonPrimitive?.content?.toBooleanStrictOrNull() == true) return null
@@ -217,6 +325,8 @@ class SlackSocketMode(
         minOf(BACKOFF_CAP_MS, BACKOFF_BASE_MS shl minOf(failures, 6))
 
     companion object {
+        // A user mention in message text: <@U123> or <@U123|name>.
+        private val MENTION = Regex("<@([UW][A-Z0-9_]+)(?:\\|[^>]*)?>")
         private const val RECONNECT_DELAY_MS = 1_000L
         private const val BACKOFF_BASE_MS = 2_000L
         private const val BACKOFF_CAP_MS = 120_000L

@@ -7,12 +7,15 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -28,6 +31,7 @@ class SlackSocketModeTest {
     private lateinit var slack: MockSlack
     private lateinit var http: HttpClient
     private val received = Channel<SlackInteraction>(Channel.UNLIMITED)
+    private val messages = Channel<SlackThreadMessage>(Channel.UNLIMITED)
     private val principalByEmail = mutableMapOf<String, String>()
 
     private val botToken = "xoxb-test"
@@ -56,7 +60,8 @@ class SlackSocketModeTest {
         botToken = botToken,
         appToken = appToken,
         principalForEmail = { principalByEmail[it] },
-        onInteraction = { received.send(it); reply },
+        onInteraction = { received.send(it); SlackReply.Ephemeral(reply) },
+        onMessage = { messages.send(it) },
         api = slack.apiBase,
     )
 
@@ -88,6 +93,46 @@ class SlackSocketModeTest {
 
     private suspend fun awaitDispatch() = withTimeout(5_000) { received.receive() }
 
+    // The client acks before it dispatches, but the mock records an ack only once its reader gets to the frame.
+    private suspend fun awaitAck(envelopeId: String): Boolean = withTimeoutOrNull(5_000) {
+        while (slack.acks().none { it["envelope_id"]?.jsonPrimitive?.content == envelopeId }) delay(10)
+        true
+    } ?: false
+
+    private fun messageEvent(id: String, event: String) =
+        """{"envelope_id":"$id","type":"events_api","payload":{"team_id":"T_WORKSPACE","type":"event_callback","event":$event}}"""
+
+    @Test
+    fun `a thread reply is dispatched with its author, and bot posts and top-level messages are not`() = withSocket { _ ->
+        slack.pushEnvelope(messageEvent("m-bot", """{"type":"message","channel":"C1","ts":"2.0","thread_ts":"1.0","bot_id":"B1","text":"copy"}"""))
+        slack.pushEnvelope(messageEvent("m-top", """{"type":"message","channel":"C1","ts":"3.0","user":"U_CLICKER","text":"hi"}"""))
+        slack.pushEnvelope(
+            messageEvent("m-reply", """{"type":"message","channel":"C1","ts":"4.0","thread_ts":"1.0","user":"U_CLICKER","text":"why? <@U_VALID> <@U_GONE|gone>"}"""),
+        )
+        slack.pushEnvelope(
+            messageEvent("m-edit", """{"type":"message","subtype":"message_changed","channel":"C1","message":{"ts":"4.0","user":"U_CLICKER","text":"why not?"}}"""),
+        )
+        val reply = withTimeout(5_000) { messages.receive() }
+        assertEquals(
+            SlackThreadMessage(
+                SlackThreadMessage.Kind.NEW, "C1", "4.0", "1.0", "okta|clicker", "U_CLICKER", "why? <@U_VALID> <@U_GONE|gone>",
+                mentions = listOf("valid@example.com"),
+            ),
+            reply,
+            "a mention of a Slack user with no active user is left out",
+        )
+        val edit = withTimeout(5_000) { messages.receive() }
+        assertEquals(SlackThreadMessage(SlackThreadMessage.Kind.EDITED, "C1", "4.0", text = "why not?"), edit)
+    }
+
+    @Test
+    fun `a click carries the revision its message showed`() = withSocket { _ ->
+        slack.pushEnvelope(envelope("env-rev", value = "42:3"))
+        val it = awaitDispatch()
+        assertEquals(42L, it.taskId)
+        assertEquals(3, it.revision)
+    }
+
     @Test
     fun `a valid click is acked and dispatched with the resolved principal`() = withSocket { _ ->
         slack.pushEnvelope(envelope("env-1"))
@@ -96,12 +141,10 @@ class SlackSocketModeTest {
         assertEquals("okta|clicker", it.principal, "the verified Slack email is mapped to the directory principal, not trusted raw")
         assertEquals(SlackTransport.ACTION_APPROVE, it.actionId)
         assertEquals(42L, it.taskId)
+        assertNull(it.revision, "a button from before revisions names none")
         assertEquals("C_MOCK", it.triggerChannel)
         assertEquals("1700000000001.000100", it.triggerTs)
-        assertTrue(
-            slack.acks().any { a -> a["envelope_id"]?.jsonPrimitive?.content == "env-1" },
-            "every envelope must be acked so Slack does not redeliver it",
-        )
+        assertTrue(awaitAck("env-1"), "every envelope must be acked so Slack does not redeliver it")
         assertTrue(slack.requestsFor("auth.test").isNotEmpty(), "the workspace was resolved from the bot token")
     }
 

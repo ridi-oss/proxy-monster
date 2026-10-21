@@ -5,6 +5,7 @@ import com.ridi.oss.proxymonster.auth.ConsumeAuthorizationCodeInput
 import com.ridi.oss.proxymonster.auth.OAuthAuthorizationStore
 import com.ridi.oss.proxymonster.auth.pkceS256
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
+import com.ridi.oss.proxymonster.grpc.Engine
 import com.ridi.oss.proxymonster.controlplane.management.DatasourceManagementService
 import com.ridi.oss.proxymonster.controlplane.management.IdentityManagementService
 import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
@@ -39,13 +40,13 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
@@ -54,6 +55,7 @@ import javax.sql.DataSource
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
@@ -66,8 +68,7 @@ class McpServerDbTest {
     @BeforeAll
     fun setUp() {
         requireDockerOrSkip()
-        dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_mcp_server"))
-        Flyway.configure().dataSource(dataSource).load().migrate()
+        dataSource = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_mcp_server"))
         core = ControlPlaneCore(dataSource)
         oauth = OAuthAuthorizationStore(dataSource)
     }
@@ -195,7 +196,112 @@ class McpServerDbTest {
     }
 
     @Test
-    fun `tool catalog is complete localized and scope cannot grant a write`() = testApplication {
+    fun `initialize instructions name the instance and list only datasources the caller may connect to`() = testApplication {
+        application { installTestMcp() }
+        val client = createClient { expectSuccess = false }
+        core.datasourceStore.register(
+            "mcp-instr-orders", Engine.MYSQL, "db", 3306, "orders", emptyList(), "", null, false,
+            description = "Orders and payments",
+        )
+        val role = core.policyStore.createRole(RoleInput("mcp-instr-connect"))
+        core.cedarPolicyStore.create(
+            CedarPolicyInput(
+                "mcp-instr-connect",
+                """permit(principal in Role::"mcp-instr-connect", action == Action::"datasource.connect", resource == Datasource::"mcp-instr-orders");""",
+            ),
+            "admin@example.com",
+        )
+        val connector = "mcp-instr-connector@example.com"
+        val stranger = "mcp-instr-stranger@example.com"
+        grantRole(connector, role.name)
+        suspend fun instructions(principal: String, language: String = "en"): String {
+            val sdk = client.mcpStreamableHttp("/mcp") {
+                header(HttpHeaders.Authorization, "Bearer ${token(principal, setOf("mcp:read"))}")
+                header(HttpHeaders.AcceptLanguage, language)
+            }
+            assertEquals("proxy-monster (hr-pmon)", sdk.serverVersion?.title)
+            return assertNotNull(sdk.serverInstructions)
+        }
+
+        val granted = instructions(connector)
+        assertContains(granted, "\"hr-pmon\", server version $SERVER_VERSION: HR and payroll data")
+        assertContains(granted, "pmon-*")
+        assertContains(granted, "call get_pmon_guide")
+        assertContains(granted, "call get_usage_guide")
+        assertContains(granted, "call get_admin_guide")
+        assertContains(granted, "- mcp-instr-orders (mysql): Orders and payments")
+
+        val denied = instructions(stranger)
+        assertContains(denied, "\"hr-pmon\"")
+        assertFalse("mcp-instr-orders" in denied, denied)
+
+        assertEquals(instructions(connector), instructions(connector, "ko"), "instructions are English for every locale")
+    }
+
+    @Test
+    fun `get_pmon_guide gives this instance's pmon setup and only the caller's connectable datasources`() = testApplication {
+        application { installTestMcp() }
+        val client = createClient { expectSuccess = false }
+        core.datasourceStore.register("mcp-guide-orders", Engine.MYSQL, "db", 3306, "orders", emptyList(), "", null, false)
+        core.datasourceStore.register("mcp-guide-payroll", Engine.MYSQL, "db", 3306, "payroll", emptyList(), "", null, false)
+        val role = core.policyStore.createRole(RoleInput("mcp-guide-connect"))
+        core.cedarPolicyStore.create(
+            CedarPolicyInput(
+                "mcp-guide-connect",
+                """permit(principal in Role::"mcp-guide-connect", action == Action::"datasource.connect", resource == Datasource::"mcp-guide-orders");""",
+            ),
+            "admin@example.com",
+        )
+        val connector = "mcp-guide-connector@example.com"
+        grantRole(connector, role.name)
+        suspend fun guide(principal: String): String {
+            val response = client.post("/mcp") {
+                acceptMcp(token(principal, setOf("mcp:read")))
+                setBody(toolCall(1, "get_pmon_guide").toString())
+            }
+            val result = TEST_JSON.parseToJsonElement(response.bodyAsText()).jsonObject.getValue("result").jsonObject
+            val text = result.getValue("content").jsonArray.single().jsonObject.getValue("text").jsonPrimitive.content
+            assertEquals(text, result.getValue("structuredContent").jsonObject.getValue("result").jsonPrimitive.content)
+            return text
+        }
+
+        val granted = guide(connector)
+        assertContains(granted, "brew trust --formula ridi-oss/tap/pmon")
+        assertContains(granted, "brew install ridi-oss/tap/pmon")
+        assertContains(granted, "pmon server set hr-pmon --url http://localhost")
+        assertContains(granted, "pmon login hr-pmon\n")
+        assertContains(granted, "claude mcp add --scope user pmon-hr-pmon -- pmon mcp hr-pmon")
+        assertContains(granted, "codex mcp add pmon-hr-pmon -- pmon mcp hr-pmon")
+        assertContains(granted, "\"args\": [\"mcp\", \"hr-pmon\"]")
+        assertContains(granted, "pmon show hr-pmon mcp-guide-orders --cli")
+        assertFalse("mcp-guide-payroll" in granted, granted)
+        assertContains(granted, "pmon status")
+        assertContains(granted, "pmon logout hr-pmon")
+        assertContains(granted, "--scopes mcp:query,mcp:read,mcp:approvals:write")
+
+        val stranger = guide("mcp-guide-stranger@example.com")
+        assertFalse("pmon show" in stranger, stranger)
+        assertContains(stranger, "pmon login hr-pmon")
+    }
+
+    @Test
+    fun `get_usage_guide and get_admin_guide return the bundled guides as text`() = testApplication {
+        application { installTestMcp() }
+        val client = createClient { expectSuccess = false }
+        for ((tool, file) in listOf("get_usage_guide" to "usage.md", "get_admin_guide" to "admin.md")) {
+            val response = client.post("/mcp") {
+                acceptMcp(token("mcp-guides@example.com", setOf("mcp:read")))
+                setBody(toolCall(1, tool).toString())
+            }
+            val result = TEST_JSON.parseToJsonElement(response.bodyAsText()).jsonObject.getValue("result").jsonObject
+            val text = result.getValue("content").jsonArray.single().jsonObject.getValue("text").jsonPrimitive.content
+            assertEquals(javaClass.getResource("/guides/$file")!!.readText(), text)
+            assertTrue(text.startsWith("# "), text.take(200))
+        }
+    }
+
+    @Test
+    fun `tool catalog is complete and scope cannot grant a write`() = testApplication {
         application { installTestMcp() }
         val principal = "mcp-catalog@example.com"
         grantRole(principal, "system:admin")
@@ -209,7 +315,7 @@ class McpServerDbTest {
         val tools = sdk.listTools().tools
         assertEquals(McpCapabilityRegistry.approvedToolNames, tools.map { it.name }.toSet())
         assertTrue(tools.all { !it.description.isNullOrBlank() })
-        assertContains(assertNotNull(tools.single { it.name == "create_role" }.description), "역할")
+        assertEquals("Create an access-control role.", tools.single { it.name == "create_role" }.description)
 
         val denied = client.post("/mcp") {
             acceptMcp(readToken)
@@ -1045,7 +1151,7 @@ class McpServerDbTest {
         application { installTestMcp() }
         val principal = "mcp-admin-datasource-reads@example.com"
         grantRole(principal, "system:admin")
-        seedDatasource("mcp-admin-read-datasource", listOf("ssn", "email"))
+        seedDatasource("mcp-admin-read-datasource", listOf("ssn", "email"), systemColumns = listOf("relname"))
         val sdk = adminSdk(principal)
 
         val listed = callResult(sdk, "list_datasources", emptyMap()).jsonArray
@@ -1053,8 +1159,10 @@ class McpServerDbTest {
         assertEquals("mcp", listed.getValue("dbName").jsonPrimitive.content)
 
         val catalog = callResult(sdk, "browse_catalog", mapOf("datasource" to "mcp-admin-read-datasource")).jsonArray.map { it.jsonObject }
-        assertEquals(listOf("email", "ssn"), catalog.map { it.getValue("column").jsonPrimitive.content }.sorted())
-        assertTrue(catalog.all { it.getValue("table").jsonPrimitive.content == "users" && it.getValue("schema").jsonPrimitive.content == "public" })
+        val (system, user) = catalog.partition { it.getValue("system").jsonPrimitive.boolean }
+        assertEquals(listOf("email", "ssn"), user.map { it.getValue("column").jsonPrimitive.content }.sorted())
+        assertTrue(user.all { it.getValue("table").jsonPrimitive.content == "users" && it.getValue("schema").jsonPrimitive.content == "public" })
+        assertEquals(listOf("pg_catalog.relname"), system.map { "${it.getValue("schema").jsonPrimitive.content}.${it.getValue("column").jsonPrimitive.content}" })
 
         answerTableDetail("mcp-admin-read-datasource", tableDetail("mcp", "public", "users", listOf("ssn", "email"))).use {
             val detail = callResult(
@@ -1264,7 +1372,7 @@ class McpServerDbTest {
         dataSource.connection.use { connection -> connection.createStatement().use { it.execute(sql) } }
     }
 
-    private fun seedDatasource(name: String, columns: List<String> = listOf("ssn")) {
+    private fun seedDatasource(name: String, columns: List<String> = listOf("ssn"), systemColumns: List<String> = emptyList()) {
         dataSource.connection.use { connection ->
             val id = connection.prepareStatement(
                 """INSERT INTO datasource(name, engine, host, port, db_name, default_schemas)
@@ -1283,6 +1391,9 @@ class McpServerDbTest {
                     this.columns += columns.mapIndexed { index, column ->
                         pushedColumn("public", "users", column, "text", index + 1, true, catalog = "mcp")
                     }
+                    this.columns += systemColumns.mapIndexed { index, column ->
+                        pushedColumn("pg_catalog", "pg_class", column, "name", index + 1, true, catalog = "mcp")
+                    }
                 },
             )
         }
@@ -1300,6 +1411,8 @@ class McpServerDbTest {
     }
 
     private fun config(mcpResource: String = RESOURCE, trustedProxies: Set<String> = emptySet()) = Config(
+        instanceName = "hr-pmon",
+        instanceDescription = "HR and payroll data",
         httpPort = 0,
         dbUrl = "",
         dbUser = "",

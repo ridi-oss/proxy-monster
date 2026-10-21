@@ -14,6 +14,8 @@ import com.cedarpolicy.model.policy.PolicySet
 import com.cedarpolicy.model.schema.Schema
 import com.cedarpolicy.value.EntityUID
 import com.cedarpolicy.value.Value
+import java.math.BigDecimal
+import java.math.RoundingMode
 import java.time.Duration
 
 /**
@@ -106,12 +108,38 @@ internal data class CedarRequest(
 object CedarSchema {
     private const val RESOURCE_PATH = "/authz/schema.cedarschema"
 
-    val text: String = CedarSchema::class.java.getResourceAsStream(RESOURCE_PATH)
+    private const val USER_DECLARATION = "entity User in [Role, Group];"
+
+    private val bundledText: String = CedarSchema::class.java.getResourceAsStream(RESOURCE_PATH)
         ?.bufferedReader()
         ?.use { it.readText() }
         ?: error("authz: $RESOURCE_PATH is missing from the classpath (control-plane/src/main/resources/authz/)")
 
-    val schema: Schema = Schema.parse(Schema.JsonOrCedar.Cedar, text)
+    @Volatile var text: String = bundledText
+        private set
+
+    @Volatile var schema: Schema = Schema.parse(Schema.JsonOrCedar.Cedar, bundledText)
+        private set
+
+    /** The id_token claims `User` carries ([UserAttribute]); set once at boot, before any policy is validated. */
+    @Volatile var userAttributes: List<UserAttribute> = emptyList()
+        private set
+
+    fun declareUserAttributes(attributes: List<UserAttribute>) {
+        check(bundledText.contains(USER_DECLARATION)) { "authz: $RESOURCE_PATH no longer declares `$USER_DECLARATION`" }
+        val declaration = if (attributes.isEmpty()) USER_DECLARATION
+        else "entity User in [Role, Group] = { ${attributes.joinToString(", ") { "${it.name}?: ${it.type.cedar}" }} };"
+        val candidate = bundledText.replace(USER_DECLARATION, declaration)
+        val parsed = try {
+            Schema.parse(Schema.JsonOrCedar.Cedar, candidate)
+        } catch (e: Exception) {
+            throw IllegalArgumentException("PM_OIDC_USER_ATTRIBUTES does not form a valid Cedar schema: ${e.message}", e)
+        }
+        text = candidate
+        schema = parsed
+        userAttributes = attributes
+        augmentedSchemas.clear()
+    }
 
     // Each schema action's DIRECT parent actions, parsed from `action "a"[, "b"] [in ["p", ...]] appliesTo`.
     // The statement-classification actions nest (stmt.kind.<k> in stmt.cat.<leaf>, stmt.cat.<leaf> in
@@ -120,7 +148,7 @@ object CedarSchema {
         val decl = Regex("""action\s+((?:"[^"]+"\s*,?\s*)+?)(?:in\s*\[([^\]]*)])?\s*appliesTo""")
         val quoted = Regex(""""([^"]+)"""")
         val map = HashMap<String, MutableSet<String>>()
-        decl.findAll(text).forEach { m ->
+        decl.findAll(bundledText).forEach { m ->
             val names = quoted.findAll(m.groupValues[1]).map { it.groupValues[1] }.toList()
             val parents = m.groupValues[2].takeIf { it.isNotBlank() }
                 ?.let { p -> quoted.findAll(p).mapTo(mutableSetOf()) { it.groupValues[1] } } ?: emptySet()
@@ -177,7 +205,7 @@ object CedarSchema {
         // the same action, so emitting both declares it twice and the whole schema fails to parse.
         val decls = tagNames.distinctBy(::unescapeCedarString).sorted().joinToString("\n") { name ->
             "action \"context.tag::$name\" appliesTo { principal: [User, Role], resource: [Datasource], " +
-                "context: { channel?: String, requester_ip?: ipaddr, tailscale_caps?: Set<String> } };"
+                "context: { channel?: String, requester_ip?: ipaddr, tailscale_caps?: Set<String>, native_operation?: String } };"
         }
         return "$text\n$decls"
     }
@@ -247,12 +275,12 @@ object CedarSchema {
         return parseErrors + typeErrors + retiredUtilityErrors(cedarSrc) + capErrors
     }
 
-    /** A cap annotation must parse, and must sit on a `result.cap` policy — anywhere else it is inert, which
-     *  reads as a cap that never applies; refuse both at the write. */
+    /** A cap or boost annotation must parse, and must sit on a `result.cap` policy — anywhere else it is inert,
+     *  which reads as a limit that never applies; refuse both at the write. */
     private fun capAnnotationErrors(policy: Policy): List<String> = try {
         val cap = ResultCap.parse(policy.annotations)
         if (!cap.isEmpty && !RESULT_CAP_ACTION.containsMatchIn(policy.source)) {
-            listOf("a @cap annotation belongs on an Action::\"result.cap\" policy")
+            listOf("a @cap or @boost annotation belongs on an Action::\"result.cap\" policy")
         } else {
             emptyList()
         }
@@ -277,6 +305,24 @@ object CedarSchema {
                 "Utility::\"…/$cmd\" is no longer emitted — this policy would never match. Use $replacement instead."
             }
 
+    private val HAS_ATTRIBUTE = Regex("""\bhas\s+(?:([A-Za-z_][A-Za-z0-9_]*)|"([^"]*)")""")
+    private val DECLARED_ATTRIBUTE = Regex("""([A-Za-z_][A-Za-z0-9_]*)\??\s*:""")
+
+    /**
+     * Enabled-policy lint for a `has <name>` no schema type declares. Cedar types it as false rather than
+     * rejecting it, so a policy reading an attribute dropped from PM_OIDC_USER_ATTRIBUTES silently stops
+     * matching — a forbid that no longer fires.
+     */
+    fun undeclaredAttributeLint(sources: List<Pair<Long, String>>): List<String> {
+        val declared = DECLARED_ATTRIBUTE.findAll(text).mapTo(HashSet()) { it.groupValues[1] }
+        return sources.flatMap { (id, src) ->
+            HAS_ATTRIBUTE.findAll(src).map { it.groupValues[1].ifEmpty { it.groupValues[2] } }
+                .filter { it !in declared }.distinct()
+                .map { "policy $id: `has $it` names an attribute no schema type declares, so it is always false" }
+                .toList()
+        }
+    }
+
     /** Enabled-policy lint for retired Utility commands — see [retiredUtilityErrors]. */
     fun retiredUtilityLint(sources: List<Pair<Long, String>>): List<String> =
         sources.flatMap { (id, src) -> retiredUtilityErrors(src).map { "policy $id: $it" } }.distinct()
@@ -297,19 +343,28 @@ object CedarSchema {
  * most 31 days. Cedar ignores annotations when it decides; the control plane folds these off the permits
  * that determined an ALLOW.
  */
-data class ResultCap(val rows: Long? = null, val bytes: Long? = null, val rates: List<Rate> = emptyList()) {
-    val isEmpty: Boolean get() = rows == null && bytes == null && rates.isEmpty()
+data class ResultCap(val rows: Long? = null, val bytes: Long? = null, val rates: List<Rate> = emptyList(), val boost: BigDecimal? = null) {
+    val isEmpty: Boolean get() = rows == null && bytes == null && rates.isEmpty() && boost == null
 
     /** One rate entry: [rows] xor [bytes] over [window]. [spec] is the entry text, for the deny reason. */
-    data class Rate(val rows: Long?, val bytes: Long?, val window: Duration, val spec: String)
+    data class Rate(val rows: Long?, val bytes: Long?, val window: Duration, val spec: String) {
+        /** This rate multiplied by [factor], rounded down; the spec names the factor (`10000/1h x1.5`). */
+        fun boosted(factor: BigDecimal): Rate {
+            if (factor.compareTo(BigDecimal.ONE) == 0) return this
+            fun times(n: Long) = n.toBigDecimal().multiply(factor).setScale(0, RoundingMode.FLOOR).longValueExact()
+            return Rate(rows?.let(::times), bytes?.let(::times), window, "$spec x${factor.stripTrailingZeros().toPlainString()}")
+        }
+    }
 
     companion object {
         const val NAME = "cap"
+        const val BOOST = "boost"
         val MAX_WINDOW: Duration = Duration.ofDays(31)
 
         /** Parse a policy's annotations; a malformed value throws so a write rejects it and a load fails. */
         fun parse(annotations: Map<String, String>): ResultCap {
-            val raw = annotations[NAME] ?: return ResultCap()
+            val boost = annotations[BOOST]?.let(::parseBoost)
+            val raw = annotations[NAME] ?: return ResultCap(boost = boost)
             var rows: Long? = null
             var bytes: Long? = null
             val rates = ArrayList<Rate>()
@@ -325,7 +380,16 @@ data class ResultCap(val rows: Long? = null, val bytes: Long? = null, val rates:
                     rates += Rate(r, b, parseWindow(entry.substring(slash + 1)), entry)
                 }
             }
-            return ResultCap(rows, bytes, rates)
+            return ResultCap(rows, bytes, rates, boost)
+        }
+
+        private val BOOST_FACTOR = Regex("""\d+(\.\d+)?""")
+
+        /** `@boost("<n>")` multiplies every rate by a decimal number greater than 1 (`1.5`, `2`). */
+        private fun parseBoost(raw: String): BigDecimal {
+            val n = raw.trim().takeIf { BOOST_FACTOR.matches(it) }?.toBigDecimal()
+            require(n != null && n > BigDecimal.ONE) { "@boost must be a number greater than 1, got \"$raw\"" }
+            return n
         }
 
         private val AMOUNT = Regex("""(\d+)\s*([KMG]B)?""", RegexOption.IGNORE_CASE)

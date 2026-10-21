@@ -17,12 +17,12 @@ func TestRunnerCatalogIdentity(t *testing.T) {
 			fixture := test.seed(t)
 			catalog := "def"
 			if test.name == "postgres" {
-				catalog = fixture.runTarget.Db
+				catalog = fixture.runConfig.Db
 			}
 			fake, client := runStartFakeCP(t, runSessionID)
 			open := runOpen(fixture)
 			for _, command := range open.OnOpen {
-				command.Catalog = catalog
+				command.GetRefetch().Catalog = catalog
 			}
 			done := runLaunchOpen(t, fake, client, fixture, open)
 			runSendQuery(fake, "SELECT 1", 20)

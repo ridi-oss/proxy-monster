@@ -9,7 +9,6 @@ import com.ridi.oss.proxymonster.controlplane.authz.authorizeDatasourceAction
 import com.ridi.oss.proxymonster.controlplane.authz.requireAdmin
 import com.ridi.oss.proxymonster.controlplane.authz.resolveContextTags
 import com.ridi.oss.proxymonster.controlplane.management.DatasourceManagementService
-import com.ridi.oss.proxymonster.controlplane.grpc.inspectTrustChain
 import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
 import com.ridi.oss.proxymonster.controlplane.management.ManagementException
 import com.ridi.oss.proxymonster.analyzer.pb.CatalogSnapshot
@@ -19,14 +18,12 @@ import com.ridi.oss.proxymonster.grpc.Engine
 import com.ridi.oss.proxymonster.grpc.ObjectRef
 import com.ridi.oss.proxymonster.probe.Classification
 import com.ridi.oss.proxymonster.probe.TableDetail
-import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.request.receive
 import io.ktor.server.response.header
 import io.ktor.server.response.respond
-import io.ktor.server.response.respondText
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
@@ -76,7 +73,12 @@ data class Datasource(
     val currentCatalog: String? = null,
     /** Nonsecret endpoint and properties the proxy publishes for clients; null until a proxy sends one. */
     @Serializable(with = ConnectionInfoSerializer::class) val connectionInfo: ConnectionInfo? = null,
+    /** One line the proxy publishes (PM_DATASOURCE_DESCRIPTION) saying what this datasource holds. */
+    val description: String = "",
 ) {
+    /** Whether an editor session on this datasource can set its default schema (POST …/default-schema). */
+    val defaultSchemaSettable: Boolean = engine.definition.defaultSchemaStatement != null
+
     /**
      * The same row with everything a caller would need to reach the proxy removed — the advertised address
      * and certificate chain, and the advisory upstream coordinates. What survives is identity (name, engine,
@@ -84,7 +86,7 @@ data class Datasource(
      */
     fun withoutConnectionMaterial(): Datasource = copy(
         host = "", port = 0, dbName = "", advertiseAddr = null, advertiseCertChain = null,
-        currentCatalog = null, connectionInfo = null,
+        currentCatalog = null, connectionInfo = null, description = "",
     )
 }
 
@@ -126,6 +128,8 @@ data class CatalogColumn(
     // An engine-implicit system column (PostgreSQL ctid/xmin/…), synthesized at analysis time — never
     // stored, never classifiable; resolves like a normal column but is excluded from * expansion.
     val implicit: Boolean = false,
+    // True for a column in an engine system schema (information_schema, pg_catalog, …); only catalog browsing sets it.
+    val system: Boolean = false,
 )
 
 @Serializable
@@ -186,7 +190,9 @@ class DatasourceStore(internal val dataSource: DataSource) {
         const val DATASOURCE_COLUMNS =
             "id, name, engine, host, port, db_name, tags, default_schemas, mysql_lower_case_table_names, " +
                 "catalog_synced_at, last_seen_at, engine_version, advertise_addr, advertise_cert_chain, " +
-                "advertise_wire_tls, current_catalog_name, connection_info"
+                "advertise_wire_tls, current_catalog_name, connection_info, description"
+
+        const val MAX_DESCRIPTION = 500
 
         /** The `system:` tag namespace is owned by the product — an operator may not coin a name in it. */
         const val RESERVED_TAG_PREFIX = "system:"
@@ -315,8 +321,13 @@ class DatasourceStore(internal val dataSource: DataSource) {
         advertiseCertChain: String?,
         advertiseWireTls: Boolean,
         connectionInfo: ConnectionInfo? = null,
+        // Null keeps the stored description; empty clears it.
+        description: String? = null,
     ): Datasource {
         engine.validateConnectionInfo(connectionInfo)
+        if (description != null && (description.codePointCount(0, description.length) > MAX_DESCRIPTION || description.any(Char::isISOControl))) {
+            throw ManagementException(ApiError("datasource.invalid_description", mapOf("max" to MAX_DESCRIPTION.toString())))
+        }
         // A proxy declaring its own posture (`PM_DATASOURCE_TAGS=system:production`) passes; an invented
         // `system:*` name is refused here as on the admin surfaces, so no write path can coin one.
         requireWritableTags(tags)
@@ -363,8 +374,8 @@ class DatasourceStore(internal val dataSource: DataSource) {
                 // coverage (an admin create/rename that doesn't take it can't interleave a stale decision). The
                 // A fresh insert leaves catalog_synced_at NULL.
                 val upsertedId = c.prepareStatement(
-                    """INSERT INTO datasource (name, engine, host, port, db_name, tags, advertise_addr, advertise_cert_chain, advertise_wire_tls, connection_info)
-                       VALUES (?, ?, ?, ?, ?, ?::jsonb, ?, ?, ?, ?::jsonb)
+                    """INSERT INTO datasource (name, engine, host, port, db_name, tags, advertise_addr, advertise_cert_chain, advertise_wire_tls, connection_info, description)
+                       VALUES (?, ?, ?, ?, ?, ?::jsonb, ?, ?, ?, ?::jsonb, COALESCE(?, ''))
                        ON CONFLICT (name) WHERE deleted_at IS NULL DO UPDATE SET
                            engine  = EXCLUDED.engine,
                            host    = EXCLUDED.host,
@@ -383,6 +394,7 @@ class DatasourceStore(internal val dataSource: DataSource) {
                            -- Authoritative every register, so TLS-on -> TLS-off is observable rather than sticky.
                            advertise_wire_tls = EXCLUDED.advertise_wire_tls,
                            connection_info = COALESCE(EXCLUDED.connection_info, datasource.connection_info),
+                           description = COALESCE(?, datasource.description),
                            catalog           = CASE WHEN datasource.db_name IS DISTINCT FROM EXCLUDED.db_name THEN NULL ELSE datasource.catalog END,
                            current_catalog_name = CASE WHEN datasource.db_name IS DISTINCT FROM EXCLUDED.db_name THEN NULL ELSE datasource.current_catalog_name END,
                            catalog_synced_at = CASE WHEN datasource.db_name IS DISTINCT FROM EXCLUDED.db_name THEN NULL ELSE datasource.catalog_synced_at END,
@@ -407,6 +419,8 @@ class DatasourceStore(internal val dataSource: DataSource) {
                     ps.setString(8, advertiseCertChain)
                     ps.setBoolean(9, advertiseWireTls)
                     ps.setString(10, connectionInfo?.let { json.encodeToString(ConnectionInfoSerializer, it) })
+                    ps.setString(11, description)
+                    ps.setString(12, description)
                     ps.executeQuery().use { rs -> if (rs.next()) rs.getLong(1) else null }
                 }
                 if (upsertedId == null) {
@@ -606,35 +620,23 @@ class DatasourceStore(internal val dataSource: DataSource) {
         id: Long,
         c: java.sql.Connection,
         columns: (CatalogSnapshot, String?, Map<ObjectRef, Classification>) -> List<CatalogColumn>,
-    ): Catalog = c.prepareStatement(
-        """SELECT d.current_catalog_name, d.catalog,
-                  d.engine, d.engine_version,
-                  cl.catalog_name, cl.schema_name, cl.table_name, cl.column_name, cl.tags, cl.mask_fn_id, m.name AS mask_fn_name
-           FROM datasource d
-           LEFT JOIN column_classification cl ON cl.datasource_id = d.id
-           LEFT JOIN mask_fn m ON m.id = cl.mask_fn_id AND m.deleted_at IS NULL
-           WHERE d.id = ?""",
-    ).use { ps ->
-        ps.setLong(1, id)
-        ps.executeQuery().use { rs ->
-            var currentCatalog: String? = null
-            var engine: Engine? = null
-            var engineVersion: String? = null
-            var snapshot = CatalogSnapshot.getDefaultInstance()
-            val classifications = HashMap<ObjectRef, Classification>()
-            while (rs.next()) {
-                currentCatalog = rs.getString("current_catalog_name")
-                engine = engineFromWire(rs.getString("engine"))
-                engineVersion = rs.getString("engine_version")
-                rs.getBytes("catalog")?.let { snapshot = CatalogSnapshot.parseFrom(it) }
-                rs.classification()?.let { classifications[columnRef(it.catalog!!, it.schema, it.table, it.column)] = it }
+    ): Catalog {
+        // Classifications are read on their own: joined here, every classification row would carry the whole catalog.
+        val (row, snapshot) = c.prepareStatement(
+            "SELECT current_catalog_name, catalog, engine, engine_version FROM datasource WHERE id = ?",
+        ).use { ps ->
+            ps.setLong(1, id)
+            ps.executeQuery().use { rs ->
+                if (!rs.next()) return Catalog(emptyList(), FunctionCatalog.getDefaultInstance())
+                Triple(rs.getString("current_catalog_name"), engineFromWire(rs.getString("engine")), rs.getString("engine_version")) to
+                    (rs.getBytes("catalog")?.let(CatalogSnapshot::parseFrom) ?: CatalogSnapshot.getDefaultInstance())
             }
-            Catalog(
-                columns(snapshot, currentCatalog, classifications),
-                engine?.functionCatalog(snapshot.routinesList.associate { it.schema to it.namesList }, engineVersion)
-                    ?: FunctionCatalog.getDefaultInstance(),
-            )
         }
+        val (currentCatalog, engine, engineVersion) = row
+        return Catalog(
+            columns(snapshot, currentCatalog, classificationsFor(id, c)),
+            engine.functionCatalog(snapshot.routinesList.associate { it.schema to it.namesList }, engineVersion),
+        )
     }
 
     private fun java.sql.ResultSet.classification(): Classification? = getString("tags")?.let { tags ->
@@ -648,35 +650,22 @@ class DatasourceStore(internal val dataSource: DataSource) {
      * Live classification metadata keyed independently of the pushed catalog. Enforcement fragments provide the
      * structural rows; classifications remain CP-owned and can change without a connection re-introspection.
      */
-    fun classificationsFor(id: Long): Map<ObjectRef, Classification> =
-        dataSource.connection.use { c ->
-            c.prepareStatement(
-                """SELECT cl.catalog_name, cl.schema_name, cl.table_name, cl.column_name, cl.tags, cl.mask_fn_id,
-                          m.name AS mask_fn_name
-                   FROM column_classification cl
-                   LEFT JOIN mask_fn m ON m.id = cl.mask_fn_id AND m.deleted_at IS NULL
-                   WHERE cl.datasource_id = ?""",
-            ).use { ps ->
-                ps.setLong(1, id)
-                ps.executeQuery().use { rs ->
-                    buildMap {
-                        while (rs.next()) {
-                            val schema = rs.getString("schema_name")
-                            val table = rs.getString("table_name")
-                            val column = rs.getString("column_name")
-                            put(
-                                columnRef(rs.getString("catalog_name"), schema, table, column),
-                                Classification(
-                                    schema,
-                                    table,
-                                    column,
-                                    json.decodeFromString(stringList, rs.getString("tags")),
-                                    rs.longOrNull("mask_fn_id"),
-                                    rs.getString("mask_fn_name"),
-                                    rs.getString("catalog_name"),
-                                ),
-                            )
-                        }
+    fun classificationsFor(id: Long): Map<ObjectRef, Classification> = dataSource.connection.use { c -> classificationsFor(id, c) }
+
+    private fun classificationsFor(id: Long, c: java.sql.Connection): Map<ObjectRef, Classification> =
+        c.prepareStatement(
+            """SELECT cl.catalog_name, cl.schema_name, cl.table_name, cl.column_name, cl.tags, cl.mask_fn_id,
+                      m.name AS mask_fn_name
+               FROM column_classification cl
+               LEFT JOIN mask_fn m ON m.id = cl.mask_fn_id AND m.deleted_at IS NULL
+               WHERE cl.datasource_id = ?""",
+        ).use { ps ->
+            ps.setLong(1, id)
+            ps.executeQuery().use { rs ->
+                buildMap {
+                    while (rs.next()) {
+                        val cl = rs.classification() ?: continue
+                        put(columnRef(cl.catalog!!, cl.schema, cl.table, cl.column), cl)
                     }
                 }
             }
@@ -769,6 +758,7 @@ class DatasourceStore(internal val dataSource: DataSource) {
         advertiseWireTls = getBoolean("advertise_wire_tls"),
         currentCatalog = getString("current_catalog_name"),
         connectionInfo = getString("connection_info")?.let { json.decodeFromString(ConnectionInfoSerializer, it) },
+        description = getString("description"),
     )
 }
 
@@ -815,7 +805,7 @@ private fun ApplicationCall.bearerWirePrincipal(tokenStore: TokenStore, userGrou
     val header = request.headers[HttpHeaders.Authorization] ?: return null
     if (!header.startsWith("Bearer ", ignoreCase = true)) return null
     val token = header.substring(7).trim().ifBlank { return null }
-    val id = resolveActiveToken(tokenStore, userGroupStore, token) ?: return null
+    val id = resolveActiveToken(tokenStore, userGroupStore, token, allowRetired = false) ?: return null
     val kind = TokenKind.fromWire(id.kind)
     if (kind != TokenKind.SESSION && kind != TokenKind.USER) return null
     return id.principal
@@ -834,19 +824,17 @@ private suspend fun ApplicationCall.requireApiOrBearer(config: Config, tokenStor
     return null
 }
 
-private val datasourceLog = org.slf4j.LoggerFactory.getLogger("com.ridi.oss.proxymonster.controlplane.Datasources")
-
 /** Whether Cedar grants [principal] datasource.connect on [ds] — the decision the proxy runs on connect. */
 internal fun mayConnect(authz: Authz, roleResolver: RoleResolver, principal: String, requesterIp: String?, ds: Datasource): Boolean =
-    authorizeMetadata(authz, principal, roleResolver.resolve(principal), ds, AuthzContext(requesterIp = requesterIp))
+    authorizeMetadata(authz, principal, roleResolver.resolveParents(principal), ds, AuthzContext(requesterIp = requesterIp))
 
 /** Whether Cedar grants [principal] task.request on [ds]; the shipped global permit keeps it open by default. */
 internal fun mayRequestOn(authz: Authz, roleResolver: RoleResolver, principal: String, requesterIp: String?, ds: Datasource): Boolean {
-    val roles = roleResolver.resolve(principal)
+    val parents = roleResolver.resolveParents(principal)
     val raw = AuthzContext(requesterIp = requesterIp)
-    val tags = authz.resolveContextTags(principal, roles, ds.name, raw, ds.tags)
+    val tags = authz.resolveContextTags(principal, parents, ds.name, raw, ds.tags)
     return authz.authorizeDatasourceAction(
-        principal, roles, AuthzAction.TASK_REQUEST, ds.name, raw.copy(tags = tags), ds.tags,
+        principal, parents, AuthzAction.TASK_REQUEST, ds.name, raw.copy(tags = tags), ds.tags,
     ) !is AuthzDecision.Deny
 }
 
@@ -869,31 +857,9 @@ fun Route.datasourceRoutes(
     // would only hide the policy dev is configured to exercise.
     fun mayConnect(call: ApplicationCall, principal: String, ds: Datasource): Boolean {
         if (userGroupStore.isDeactivated(principal)) return false
-        return authorizeMetadata(authz, principal, roleResolver.resolve(principal), ds, call.httpAuthzContext(config))
+        return authorizeMetadata(authz, principal, roleResolver.resolveParents(principal), ds, call.httpAuthzContext(config))
     }
 
-    // The datasource LIST stays open to every authenticated principal: the SQL editor's picker,
-    // JIT-request compose (which must show datasources you CANNOT yet connect to, precisely so they can be
-    // requested), and token generation all need it — not an admin action. `?connectable=true` narrows it to
-    // datasources the caller can connect to (for the query picker), and a row the caller cannot connect to
-    // is served without its connection material. Everything keyed to ONE datasource — the row, its catalog,
-    // its wire cert, its table detail — is connect-gated below. Only mutation/config routes require
-    // admin.datasources.
-    get("/api/datasources") {
-        // Discovery route: the pmon daemon reads this (with a Bearer wire token) to learn each datasource's
-        // engine + advertised proxy address, so it can open a local broker port per datasource.
-        val principal = call.requireApiOrBearer(config, tokenStore, userGroupStore) ?: return@get
-        val all = management.listDatasources()
-        val connectableOnly = call.request.queryParameters["connectable"].equals("true", ignoreCase = true)
-        // The list stays unfiltered by default — JIT-request compose must show datasources you cannot yet
-        // connect to, precisely so they can be requested — but a row you may not connect to is stripped of
-        // its connection material, the same decision {id} and {id}/wire-cert make. A row this list would
-        // answer more fully than {id} does is a bypass of {id}.
-        val visible = if (connectableOnly) all.filter { mayConnect(call, principal, it) } else {
-            all.map { if (mayConnect(call, principal, it)) it else it.withoutConnectionMaterial() }
-        }
-        call.respond(visible)
-    }
     // Which datasources currently have a proxy attached (an open Events stream) — the admin liveness
     // view. Read-only; returns the set of attached datasource names.
     get("/api/datasources/live") {
@@ -907,49 +873,6 @@ fun Route.datasourceRoutes(
         val id = call.idParam() ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
         try {
             call.respond(management.refreshDatasource(id))
-        } catch (e: ManagementException) {
-            call.respondManagementError(e)
-        }
-    }
-    post("/api/datasources") {
-        if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_DATASOURCES)) return@post
-        val input = call.receive<DatasourceInput>()
-        try {
-            call.respond(HttpStatusCode.Created, management.createDatasource(input, call.auditActor(config)))
-        } catch (e: ManagementException) {
-            call.respondManagementError(e)
-        }
-    }
-    get("/api/datasources/{id}") {
-        // Connect-gated, unlike the list: a single row carries advertiseAddr and advertiseCertChain, the
-        // same trust material {id}/wire-cert serves under datasource.connect. Leaving this on
-        // authentication alone would make that gate decorative.
-        val principal = call.requireApiOrBearer(config, tokenStore, userGroupStore) ?: return@get
-        val id = call.idParam() ?: return@get call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        val datasource = store.get(id)
-            ?: return@get call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "datasource")))
-        if (!mayConnect(call, principal, datasource)) {
-            return@get call.respond(HttpStatusCode.Forbidden, ApiError("datasource.not_connectable"))
-        }
-        call.respond(datasource)
-    }
-    put("/api/datasources/{id}") {
-        if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_DATASOURCES)) return@put
-        val id = call.idParam() ?: return@put call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        val input = call.receive<DatasourceInput>()
-        try {
-            management.updateDatasource(id, input, call.auditActor(config))?.let { call.respond(it) }
-                ?: call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "datasource")))
-        } catch (e: ManagementException) {
-            call.respondManagementError(e)
-        }
-    }
-    delete("/api/datasources/{id}") {
-        if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_DATASOURCES)) return@delete
-        val id = call.idParam() ?: return@delete call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        try {
-            if (management.deleteDatasource(id, call.auditActor(config)).deleted) call.respond(HttpStatusCode.NoContent)
-            else call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "datasource")))
         } catch (e: ManagementException) {
             call.respondManagementError(e)
         }
@@ -977,52 +900,6 @@ fun Route.datasourceRoutes(
             return@get call.respond(HttpStatusCode.Forbidden, ApiError("datasource.not_connectable"))
         }
         call.respond(management.browseCatalog(datasource.name))
-    }
-    /**
-     * The certificate chain to trust for this datasource's proxy, PEM, leaf first — the same bytes the
-     * datasource list carries, offered as a downloadable file for psql/mysql/DataGrip to use as
-     * `sslrootcert` / `--ssl-ca` with `verify-full`. A self-signed proxy cert is the one-element case.
-     * pmon does not need this route: it reads the chain from the datasource list it already polls.
-     *
-     * Not a secret — these are the certificates the proxy already presents to every client that opens a TLS
-     * connection to it — so the gate is `datasource.connect`, the same authority `{id}/catalog` needs:
-     * whoever may open a session may fetch what they need to open it safely.
-     *
-     * Re-validated before serving. Registration already refuses a chain that does not chain, so a failure
-     * here means the row changed underneath the control plane — exactly when serving trust material would be
-     * worst. 409 rather than 500: the row is readable, the chain is not usable, and re-registering fixes it.
-     */
-    get("/api/datasources/{id}/wire-cert") {
-        // Same gate and the same principal resolution as {id}/catalog: a browser session or a wire-token
-        // Bearer. The console is today's only caller, since the chain also rides on the datasource list pmon
-        // already polls — but a Bearer client asking for the certificate directly is a reasonable thing to do,
-        // and session-only would answer it 401.
-        val principal = call.requireApiOrBearer(config, tokenStore, userGroupStore) ?: return@get
-        val id = call.idParam() ?: return@get call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        val datasource = store.get(id)
-            ?: return@get call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "datasource")))
-        if (!mayConnect(call, principal, datasource)) {
-            return@get call.respond(HttpStatusCode.Forbidden, ApiError("datasource.not_connectable"))
-        }
-        val chain = store.wireCertChain(id)
-        if (chain.isNullOrBlank()) {
-            // Distinct from "not found" so the console can say "this proxy has no wire TLS" rather than
-            // "no such datasource".
-            return@get call.respond(HttpStatusCode.NotFound, ApiError("datasource.no_wire_cert"))
-        }
-        // Served whatever it looks like. The client verifies, and it is the only party that can report a
-        // meaningful error about its own trust store — withholding the file just leaves the operator with
-        // nothing to install and no way to see why.
-        inspectTrustChain(chain)?.let { reason ->
-            datasourceLog.warn("serving datasource '{}' wire cert chain that may not verify: {}", datasource.name, reason)
-        }
-        // Filename from the id, not the name: a datasource name is barely constrained, and a quote or CRLF in
-        // one would be header injection here.
-        call.response.header(
-            HttpHeaders.ContentDisposition,
-            "attachment; filename=\"datasource-${datasource.id}-wire-cert.pem\"",
-        )
-        call.respondText(chain, ContentType.parse("application/x-pem-file"))
     }
     get("/api/datasources/{id}/table-detail") {
         // Same authority as {id}/catalog, and for the same reason: this is the physical shape of a table the

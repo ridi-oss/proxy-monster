@@ -112,12 +112,14 @@ class AuthAuditRecorder(private val auditStore: AuditStore) {
         const val CHANNEL_PMON = "pmon"
         const val CHANNEL_OAUTH = "oauth"
         const val CHANNEL_SESSION = "session"
+        const val CHANNEL_WORKLOAD = "workload"
 
         const val ACTION_OIDC_LOGIN = "auth.oidc.login"
         const val ACTION_LOGOUT = "auth.logout"
         const val ACTION_DEVICE_APPROVE = "auth.device.approve"
         const val ACTION_DEVICE_MINT = "auth.device.mint"
         const val ACTION_SESSION_RENEW = "auth.session.renew"
+        const val ACTION_SESSION_MCP_TOKEN = "auth.session.mcp_token"
         const val ACTION_SESSION_EXPIRE = "auth.session.expire"
         const val ACTION_WIRE_VALIDATE = "auth.wire.validate"
         const val ACTION_TOKEN_MINT = "auth.token.mint"
@@ -125,6 +127,7 @@ class AuthAuditRecorder(private val auditStore: AuditStore) {
         const val ACTION_OAUTH_CONSENT = "auth.oauth.consent"
         const val ACTION_OAUTH_TOKEN = "auth.oauth.token"
         const val ACTION_OAUTH_REVOKE = "auth.oauth.revoke"
+        const val ACTION_WORKLOAD_EXCHANGE = "auth.workload.exchange"
 
         private const val DATASOURCE = "control-plane"
     }

@@ -2,6 +2,7 @@
 
 // A table tab's content: live physical metadata/classification tabs plus a live, enforced Data
 // preview (SELECT * through the policy engine, so PII is masked/denied just like a query).
+import { useEffect } from 'react'
 import { useTranslations } from 'next-intl'
 import { KeyRound } from 'lucide-react'
 import type { TableRelation } from '@/lib/api/types'
@@ -68,12 +69,16 @@ function LiveState({ loading, error }: { loading: boolean; error: unknown }) {
 
 export function TableView({
   tab,
+  onViewChange,
+  onFocusShown,
   onRequestAccess,
-  onRequestRateReset,
+  onRequestRateBoost,
 }: {
   tab: TableTab
+  onViewChange: (view: string) => void
+  onFocusShown: () => void
   onRequestAccess: (denyReason?: string | null) => void
-  onRequestRateReset?: (denyReason?: string | null) => void
+  onRequestRateBoost?: (denyReason?: string | null) => void
 }) {
   const t = useTranslations('Query')
   const unavailable = t('table.unavailable')
@@ -89,9 +94,17 @@ export function TableView({
   const loadingDetail = !detail && !error
   const showDetail = detail && !error
 
+  // No row to flash (the load failed, or the live table lacks the column): drop the request.
+  const focusColumn = tab.focus?.column
+  const focusRowMissing = focusColumn != null && (error != null || (detail != null && !detail.columns.some((c) => c.name === focusColumn)))
+  useEffect(() => {
+    if (focusRowMissing) onFocusShown()
+  }, [focusRowMissing, onFocusShown])
+
   return (
     <Tabs
-      defaultValue="columns"
+      value={tab.view}
+      onValueChange={(value) => onViewChange(String(value))}
       data-testid="table-detail-tabs"
       className="flex min-h-0 min-w-0 flex-1 flex-col gap-0"
     >
@@ -148,8 +161,15 @@ export function TableView({
                 .map((column) => {
                   const tags = column.classification?.tags ?? []
                   const pii = tags.includes('pii')
+                  const focused = tab.focus?.column === column.name
                   return (
-                    <tr key={column.name} className="hover:bg-muted/40">
+                    <tr
+                      key={focused ? `${column.name}:${tab.focus!.seq}` : column.name}
+                      ref={focused ? (row) => row?.scrollIntoView({ block: 'nearest' }) : undefined}
+                      onAnimationEnd={focused ? onFocusShown : undefined}
+                      data-focused={focused || undefined}
+                      className={cn('hover:bg-muted/40', focused && 'animate-row-flash')}
+                    >
                       <td className="text-muted-foreground border-b px-3 py-1.5 text-right tabular-nums">
                         {column.ordinal}
                       </td>
@@ -344,7 +364,7 @@ export function TableView({
             running={tab.res.loading}
             error={tab.res.error}
             onRequestAccess={() => onRequestAccess(tab.res.result?.denyReason)}
-            onRequestRateReset={onRequestRateReset && (() => onRequestRateReset(tab.res.result?.denyReason))}
+            onRequestRateBoost={onRequestRateBoost && (() => onRequestRateBoost(tab.res.result?.denyReason))}
           />
         )}
       </TabsContent>

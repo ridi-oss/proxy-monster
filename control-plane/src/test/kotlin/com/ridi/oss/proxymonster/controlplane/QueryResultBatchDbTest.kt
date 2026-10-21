@@ -2,7 +2,6 @@ package com.ridi.oss.proxymonster.controlplane
 
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
@@ -36,8 +35,7 @@ class QueryResultBatchDbTest {
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_qr_batch"))
-        Flyway.configure().dataSource(dataSource).load().migrate()
+        dataSource = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_qr_batch"))
         accessStore = AccessStore(dataSource)
         datasourceId = DatasourceStore(dataSource).create(
             DatasourceInput(name = "ds", engine = "postgres", host = "h", port = 5432, dbName = "d"),
@@ -57,7 +55,7 @@ class QueryResultBatchDbTest {
             title = "t",
             evaluatedDecision = "ALLOW",
         ).id
-        accessStore.decideQueryRequest(id, approved = true, rejectionReason = null, decidedBy = "bob@example.com")
+        accessStore.decideQueryRequest(id, approved = true, rejectionReason = null, decidedBy = "bob@example.com", revision = 1)
         return id
     }
 

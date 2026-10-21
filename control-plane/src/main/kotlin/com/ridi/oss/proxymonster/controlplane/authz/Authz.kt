@@ -7,6 +7,7 @@ import com.cedarpolicy.value.EntityTypeName
 import com.cedarpolicy.value.EntityUID
 import com.cedarpolicy.value.IpAddress
 import com.cedarpolicy.value.PrimBool
+import com.cedarpolicy.value.PrimLong
 import com.cedarpolicy.value.PrimString
 import com.cedarpolicy.value.Unknown
 import com.cedarpolicy.value.Value
@@ -18,6 +19,13 @@ import com.ridi.oss.proxymonster.controlplane.userSession
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.response.respond
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.longOrNull
+import java.math.BigDecimal
 
 /**
  * The Cedar action set (docs/authz-model.md). `cedarId` is the literal Cedar `Action::"..."` id — see
@@ -30,12 +38,16 @@ enum class AuthzAction(val cedarId: String) {
     TASK_APPROVE("task.approve"),
     // Task lifecycle actions replace code-side group-membership / ownership gates. TASK_REQUEST is
     // Datasource-scoped; TASK_READ gates metadata; TASK_ASSUME gates result data; GRANT_REVOKE acts on an
-    // AccessGrant. Executing under R remains the same R-scoped TASK_APPROVE authority.
+    // AccessGrant. TASK_RUN gates running an approved request under R.
     TASK_REQUEST("task.request"),
     TASK_READ("task.read"),
     TASK_ASSUME("task.assume"),
+    TASK_RUN("task.run"),
+    TASK_COMMENT("task.comment"),
+    TASK_CC("task.cc"),
     TASK_CANCEL("task.cancel"),
     TASK_DELETE("task.delete"),
+    TASK_FORCE_RUN("task.force_run"),
     GRANT_REVOKE("grant.revoke"),
     TOKEN_MINT("token.mint"),
     TOKEN_LIST("token.list"),
@@ -46,6 +58,7 @@ enum class AuthzAction(val cedarId: String) {
     // Never consulted for access — its policies carry the result-cap annotations (docs/result-caps.md).
     RESULT_CAP("result.cap"),
     DATASOURCE_CONNECT("datasource.connect"),
+    NATIVE_INVOKE("native.invoke"),
     // Statement categories (stmt.cat.*) are NOT enumerated here: a statement is authorized by its kind
     // (stmt.kind.<k>, from the statement_exec grant) and the Cedar schema alone maps a kind to its category.
     // The control-plane never names a category — only the schema and operator policies do.
@@ -74,6 +87,8 @@ sealed interface AuthzResource {
         val executedBy: String? = null,
         val datasourceName: String? = null,
         val roleName: String? = null,
+        val source: String = "console",
+        val ccs: List<String> = emptyList(),
     ) : AuthzResource
 
     /** An issued JIT access grant (`access_grant` row). [owner] is the elevated principal, so an
@@ -92,6 +107,17 @@ sealed interface AuthzResource {
      *  PATs — null when the operation isn't tied to one token (e.g. listing a principal's tokens), which
      *  leaves the Cedar `kind` attribute absent. Prospective at mint time (no id), so it is Token{owner, kind}. */
     data class Token(val owner: String, val kind: TokenKind?) : AuthzResource
+
+    /** A provider-native resource (an Athena workgroup, execution, prepared statement…) authorized with
+     *  [AuthzAction.NATIVE_INVOKE]; kind and id are the provider's own vocabulary, owner is the principal that
+     *  created it when the provider knows. Cedar sees it as NativeResource in its Datasource. */
+    data class NativeResource(
+        val datasourceName: String,
+        val kind: String,
+        val id: String,
+        val owner: String? = null,
+        val datasourceTags: List<String> = emptyList(),
+    ) : AuthzResource
 }
 
 /** A column touched by a query, marshalled to Cedar entities by [authorizeColumns]. [key] is the
@@ -170,6 +196,8 @@ data class AuthzContext(
     // On a `result.cap` ask for a returned column: whether this principal's read of it is masked
     // (docs/result-caps.md). Null everywhere else, so a policy reads it has-guarded.
     val masked: Boolean? = null,
+    /** The provider-native operation being invoked ("athena:GetQueryResults"); set only on native.invoke asks. */
+    val nativeOperation: String? = null,
 ) {
     /**
      * The Cedar `context` map. `network_zones` is always present (empty set if none); `tags` too UNLESS
@@ -184,6 +212,7 @@ data class AuthzContext(
         channel?.let { put("channel", PrimString(it)) }
         stmtKind?.let { put("stmt_kind", PrimString(it)) }
         masked?.let { put("masked", PrimBool(it)) }
+        nativeOperation?.let { put("native_operation", PrimString(it)) }
         requesterIp?.let { ip ->
             // Defensive: a malformed IP must NEVER break the whole decision. Fail-closed means the attribute
             // is simply absent (a policy conditioning on it then denies), not a thrown IpAddress constructor
@@ -198,17 +227,35 @@ sealed interface AuthzDecision {
     data class Deny(val reason: String, val code: String = "forbidden") : AuthzDecision
 }
 
+/** A user's Cedar parents (its resolved roles and local groups) and its stored [UserAttribute] values. */
+data class UserParents(
+    val roles: Set<String>,
+    val groups: Set<String> = emptySet(),
+    val attributes: JsonObject = JsonObject(emptyMap()),
+)
+
+/** The Cedar principal a decision marshals: a user with its parents, or a CI workload with its token claims. */
+sealed interface AuthzPrincipal {
+    data class User(val name: String, val parents: UserParents) : AuthzPrincipal
+    data class Workload(val name: String, val issuer: String, val claims: Map<String, String>) : AuthzPrincipal
+}
+
 /**
  * Authz's identity port (Layer 1 — RoleResolver, no Cedar). [Authz] never resolves roles itself; the
- * caller wires in a [RoleSource] backed by `RoleResolver.resolve` (or a stub, in tests) — this is
+ * caller wires in a [RoleSource] backed by `RoleResolver.resolveParents` (or a stub, in tests) — this is
  * what keeps role resolution swappable/testable independent of Cedar.
  */
 fun interface RoleSource {
     fun rolesOf(principal: String): Set<String>
+
+    /** Roles and groups in one lookup; the default carries no groups. */
+    fun parentsOf(principal: String): UserParents = UserParents(rolesOf(principal))
 }
 
 private val USER_TYPE: EntityTypeName = EntityTypeName.parse("User").get()
 private val ROLE_TYPE: EntityTypeName = EntityTypeName.parse("Role").get()
+private val GROUP_TYPE: EntityTypeName = EntityTypeName.parse("Group").get()
+private val WORKLOAD_TYPE: EntityTypeName = EntityTypeName.parse("Workload").get()
 private val ACTION_TYPE: EntityTypeName = EntityTypeName.parse("Action").get()
 private val SYSTEM_TYPE: EntityTypeName = EntityTypeName.parse("System").get()
 private val DATASOURCE_TYPE: EntityTypeName = EntityTypeName.parse("Datasource").get()
@@ -222,6 +269,10 @@ private val COLUMN_TYPE: EntityTypeName = EntityTypeName.parse("Column").get()
 private val TAG_TYPE: EntityTypeName = EntityTypeName.parse("Tag").get()
 private val FUNCTION_TYPE: EntityTypeName = EntityTypeName.parse("Function").get()
 private val UTILITY_TYPE: EntityTypeName = EntityTypeName.parse("Utility").get()
+private val NATIVE_RESOURCE_TYPE: EntityTypeName = EntityTypeName.parse("NativeResource").get()
+
+/** CI token claims marshalled as Workload attributes; must match `entity Workload` in schema.cedarschema. */
+internal val WORKLOAD_CLAIM_ATTRIBUTES = setOf("repository", "repository_id", "ref", "base_ref", "workflow_ref", "event_name", "actor")
 
 /**
  * Marshalling attaches every tag a resource carries, whatever it is named and whatever type carries it. What
@@ -256,22 +307,52 @@ private fun dedupeByEuid(entities: List<Entity>): Set<Entity> {
     return seen.values.toSet()
 }
 
+/** A User entity with its roles and groups as parents and its declared attributes, plus those parent entities. */
+private fun userEntities(user: String, parents: UserParents): List<Entity> {
+    val roleEuids = parents.roles.map { ROLE_TYPE.of(it) }
+    val groupEuids = parents.groups.map { GROUP_TYPE.of(it) }
+    val attrs = CedarSchema.userAttributes.mapNotNull { a ->
+        parents.attributes[a.name]?.let { a.cedarValue(it) }?.let { a.name to it }
+    }.toMap()
+    return listOf(Entity(USER_TYPE.of(user), attrs, (roleEuids + groupEuids).toMutableSet())) +
+        (roleEuids + groupEuids).map { Entity(it) }
+}
+
+/** A stored value as its declared Cedar type; null (attribute absent) when an earlier declaration stored another type. */
+private fun UserAttribute.cedarValue(stored: JsonElement): Value? {
+    val primitive = stored as? JsonPrimitive
+    return when (type) {
+        UserAttribute.Type.STRING -> primitive?.takeIf { it.isString }?.let { PrimString(it.content) }
+        UserAttribute.Type.USER -> primitive?.takeIf { it.isString }?.let { USER_TYPE.of(it.content) }
+        UserAttribute.Type.LONG -> primitive?.takeUnless { it.isString }?.longOrNull?.let(::PrimLong)
+        UserAttribute.Type.BOOL -> primitive?.takeUnless { it.isString }?.booleanOrNull?.let(::PrimBool)
+        UserAttribute.Type.STRING_SET -> (stored as? JsonArray)
+            ?.map { (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.let { p -> PrimString(p.content) } ?: return null }
+            ?.let { CedarList(it) }
+    }
+}
+
+private fun workloadEntity(w: AuthzPrincipal.Workload): Entity = Entity(
+    WORKLOAD_TYPE.of(w.name),
+    buildMap<String, Value> {
+        put("issuer", PrimString(w.issuer))
+        w.claims.filterKeys { it in WORKLOAD_CLAIM_ATTRIBUTES }.forEach { (k, v) -> put(k, PrimString(v)) }
+    },
+    emptySet(),
+)
+
 /**
- * The one marshalling point: the reusable actor graph a decision evaluates — [principal] carrying [roles] as
- * parents, one entity per role, and [auxEntities] (any parents the focal resource resolves against: a
- * datasource, the tables a column belongs to, tag entities). The focal resource itself is spliced in per
- * call by the engine, so one graph answers for many resources.
- *
- * dedupeByEuid, not `.toSet()`: an auxiliary entity can repeat the SAME Role EUID the principal already
- * carries as a parent (e.g. an `ApprovalRequest.roleName` equal to one of the principal's own roles), which
- * cedar-java rejects as a duplicate entity ("duplicate entity entry").
+ * The one marshalling point: the reusable actor graph a decision evaluates — [principal] with its parent
+ * entities, plus [auxEntities] (any parents the focal resource resolves against: a datasource, the tables a
+ * column belongs to, tag entities). The focal resource itself is spliced in per call by the engine, so one
+ * graph answers for many resources.
  */
-private fun marshal(principal: String, roles: Set<String>, auxEntities: List<Entity>): CedarRequest {
-    val roleEuids = roles.map { ROLE_TYPE.of(it) }
-    val principalEuid = USER_TYPE.of(principal)
-    val principalEntity = Entity(principalEuid, emptyMap(), roleEuids.toSet())
-    val roleEntities = roleEuids.map { Entity(it) }
-    return CedarRequest(principalEuid, dedupeByEuid(listOf(principalEntity) + roleEntities + auxEntities))
+private fun marshal(principal: AuthzPrincipal, auxEntities: List<Entity>): CedarRequest {
+    val principalEntities = when (principal) {
+        is AuthzPrincipal.User -> userEntities(principal.name, principal.parents)
+        is AuthzPrincipal.Workload -> listOf(workloadEntity(principal))
+    }
+    return CedarRequest(principalEntities.first().getEUID(), dedupeByEuid(principalEntities + auxEntities))
 }
 
 // The name-keyed resource EUID convention (docs/authz-model.md), defined once: a datasource's own NAME, then
@@ -296,7 +377,7 @@ private fun utilityEuid(datasource: String, command: String) = UTILITY_TYPE.of("
  */
 private fun <V> Authz.authorizeReadResources(
     principal: String,
-    roles: Set<String>,
+    parents: UserParents,
     datasource: String,
     datasourceTags: List<String>,
     context: AuthzContext,
@@ -309,7 +390,7 @@ private fun <V> Authz.authorizeReadResources(
     val tagEuids = HashMap<String, EntityUID>()
     val dsEntity = datasourceEntity(dsEuid, datasource, datasourceTags, tagEuids)
     val (focalByKey, auxEntities) = build(dsEuid) { tag -> tagEuids.getOrPut(tag) { TAG_TYPE.of(tag) } }
-    val request = marshal(principal, roles, listOf(dsEntity) + auxEntities + tagEuids.values.map { Entity(it) })
+    val request = marshal(AuthzPrincipal.User(principal, parents), listOf(dsEntity) + auxEntities + tagEuids.values.map { Entity(it) })
     val contextMap = context.toCedarMap()
     val unmasked = ACTION_TYPE.of(AuthzAction.RESULT_READ_UNMASKED.cedarId)
     val masked = ACTION_TYPE.of(AuthzAction.RESULT_READ_MASKED.cedarId)
@@ -365,24 +446,14 @@ class Authz(
     private val roleSource: RoleSource,
 ) {
     /** Accessor over the private [roleSource]: [authorizeWithContext] resolves a principal's
-     *  roles ONCE to feed BOTH pass-1 tag derivation and pass-2 authorization — this accessor is how it reaches
+     *  parents ONCE to feed BOTH pass-1 tag derivation and pass-2 authorization — this accessor is how it reaches
      *  the role port to take that single snapshot before threading it through [authorizeAs]. */
-    internal fun rolesOf(principal: String): Set<String> = roleSource.rolesOf(principal)
+    internal fun parentsOf(principal: String): UserParents = roleSource.parentsOf(principal)
 
-    /**
-     * Whether the ENGINE can evaluate [ip] as a `requester_ip` — which cedar-java's `IpAddress` regex
-     * does not answer (see [com.ridi.oss.proxymonster.controlplane.isStorableIpLiteral]).
-     *
-     * Runs one throwaway decision and asks only whether the engine produced a verdict at all: the
-     * verdict itself is irrelevant, only the absence of an engine ERROR is being tested.
-     */
-    fun evaluatesInCedar(ip: String): Boolean {
-        val request = marshal("ip-probe", emptySet(), emptyList())
-        val context = AuthzContext(requesterIp = ip).toCedarMap()
-        val response = runCatching {
-            engine.isAuthorized(request, ACTION_TYPE.of(AuthzAction.DATASOURCE_CONNECT.cedarId), Entity(SYSTEM_TYPE.of("system")), context)
-        }.getOrNull() ?: return false
-        return response.success.isPresent
+    /** Per-call parents lookup, seeded with the principal's resolved snapshot. */
+    private fun userParents(principal: String, parents: UserParents): (String) -> UserParents {
+        val cache = hashMapOf(principal to parents)
+        return { user -> cache.getOrPut(user) { parentsOf(user) } }
     }
 
     /**
@@ -397,14 +468,14 @@ class Authz(
      */
     fun satisfiableAs(
         principal: String,
-        roles: Set<String>,
+        parents: UserParents,
         action: AuthzAction,
         resource: AuthzResource,
         knownChannel: String? = null,
         unknownContextKeys: Set<String> = emptySet(),
     ): SatisfiableVerdict {
-        val (resourceEntity, auxEntities) = marshalResource(resource)
-        val request = marshal(principal, roles, auxEntities)
+        val (resourceEntity, auxEntities) = marshalResource(resource, userParents(principal, parents))
+        val request = marshal(AuthzPrincipal.User(principal, parents), auxEntities)
         val context = buildMap<String, Value> {
             knownChannel?.let { put("channel", PrimString(it)) }
             unknownContextKeys.forEach { put(it, Unknown(it)) }
@@ -423,32 +494,39 @@ class Authz(
         action: AuthzAction,
         resource: AuthzResource,
         context: AuthzContext = AuthzContext(),
-    ): AuthzDecision = authorizeAs(principal, roleSource.rolesOf(principal), action, resource, context)
+    ): AuthzDecision = authorizeAs(principal, parentsOf(principal), action, resource, context)
 
     /**
-     * Authorize with an EXPLICIT, already-resolved [roles] set — no second, out-of-band [RoleSource]
-     * resolution. The single-resource analog of [authorizeColumns]/[authorizeDatasourceAction] taking `roles`
-     * explicitly: [authorizeWithContext] resolves a principal's roles ONCE and threads that same snapshot
+     * Authorize with EXPLICIT, already-resolved [parents] — no second, out-of-band [RoleSource]
+     * resolution. The single-resource analog of [authorizeColumns]/[authorizeDatasourceAction]
+     * taking `parents` explicitly: [authorizeWithContext] resolves a principal's parents ONCE and threads that same snapshot
      * through BOTH pass-1 tag derivation and this pass-2 authorization, so a role revoked / a JIT grant
      * expiring between the two passes can never earn a `context.tag` the final decision no longer sees
      * (decideQuery's single-resolution invariant, Query.kt, carried onto the non-query surface).
      */
     fun authorizeAs(
         principal: String,
-        roles: Set<String>,
+        parents: UserParents,
         action: AuthzAction,
         resource: AuthzResource,
         context: AuthzContext = AuthzContext(),
     ): AuthzDecision {
-        val (resourceEntity, auxEntities) = marshalResource(resource)
-        val request = marshal(principal, roles, auxEntities)
+        if (resource is AuthzResource.NativeResource &&
+            (resource.datasourceName.isBlank() || resource.kind.isBlank() || resource.id.isBlank() ||
+                resource.owner?.isBlank() == true || context.nativeOperation.isNullOrBlank())
+        ) return AuthzDecision.Deny("invalid native resource or operation")
+        val (resourceEntity, auxEntities) = marshalResource(resource, userParents(principal, parents))
+        val request = marshal(AuthzPrincipal.User(principal, parents), auxEntities)
         return engine.isAuthorized(request, ACTION_TYPE.of(action.cedarId), resourceEntity, context.toCedarMap()).toAuthzDecision()
     }
 
     // The focal resource entity a single-resource decision evaluates, plus any auxiliary parent entities it
     // resolves against (a scoping datasource/role). The engine reads the focal EUID off the entity and splices
     // it into the actor graph, so — unlike the batch gates — the resource is never threaded as a bare EUID.
-    private fun marshalResource(resource: AuthzResource): Pair<Entity, List<Entity>> = when (resource) {
+    private fun marshalResource(
+        resource: AuthzResource,
+        parentsOf: (String) -> UserParents,
+    ): Pair<Entity, List<Entity>> = when (resource) {
         AuthzResource.System -> Entity(SYSTEM_TYPE.of("system")) to emptyList()
 
         is AuthzResource.AuditRecord ->
@@ -461,9 +539,10 @@ class Authz(
         AuthzResource.AuditLog -> Entity(AUDIT_LOG_TYPE.of("all")) to emptyList()
 
         is AuthzResource.ApprovalRequest -> {
-            val requesterEuid = USER_TYPE.of(resource.requester)
             val extraEntities = ArrayList<Entity>()
             val parents = mutableSetOf<EntityUID>()
+            extraEntities += userEntities(resource.requester, parentsOf(resource.requester))
+
             if (resource.datasourceName != null) {
                 val dsEuid = DATASOURCE_TYPE.of(resource.datasourceName)
                 parents += dsEuid
@@ -476,9 +555,17 @@ class Authz(
             }
             val reqEuid = REQUEST_TYPE.of("${resource.requester}#${resource.datasourceName ?: "-"}")
             val attrs = buildMap<String, Value> {
-                put("requester", requesterEuid)
-                resource.approver?.let { put("approver", USER_TYPE.of(it)) }
-                resource.executedBy?.let { put("executedBy", USER_TYPE.of(it)) }
+                put("requester", USER_TYPE.of(resource.requester))
+                resource.approver?.let { approver ->
+                    extraEntities += userEntities(approver, parentsOf(approver))
+                    put("approver", USER_TYPE.of(approver))
+                }
+                resource.executedBy?.let { executedBy ->
+                    extraEntities += userEntities(executedBy, parentsOf(executedBy))
+                    put("executedBy", USER_TYPE.of(executedBy))
+                }
+                if (resource.ccs.isNotEmpty()) put("ccs", CedarList(resource.ccs.map { USER_TYPE.of(it) as Value }))
+                put("source", PrimString(resource.source) as Value)
             }
             Entity(reqEuid, attrs, parents) to extraEntities
         }
@@ -501,6 +588,21 @@ class Authz(
             Entity(grantEuid, mapOf("owner" to ownerEuid), parents) to extraEntities
         }
 
+        is AuthzResource.NativeResource -> {
+            val dsEuid = DATASOURCE_TYPE.of(resource.datasourceName)
+            val tags = HashMap<String, EntityUID>()
+            val ds = datasourceEntity(dsEuid, resource.datasourceName, resource.datasourceTags, tags)
+            val attrs = buildMap<String, Value> {
+                put("kind", PrimString(resource.kind))
+                put("id", PrimString(resource.id))
+                resource.owner?.let { put("owner", USER_TYPE.of(it)) }
+            }
+            val id = listOf(resource.datasourceName, resource.kind, resource.id).joinToString("/") {
+                java.net.URLEncoder.encode(it, Charsets.UTF_8)
+            }
+            Entity(NATIVE_RESOURCE_TYPE.of(id), attrs, setOf(dsEuid)) to (listOf(ds) + tags.values.map { Entity(it) })
+        }
+
         is AuthzResource.Token -> {
             val ownerEuid = USER_TYPE.of(resource.owner)
             val tokenEuid = TOKEN_TYPE.of("${resource.owner}#${resource.kind?.name ?: "-"}")
@@ -515,14 +617,14 @@ class Authz(
 
 /**
  * Per-column authz (docs/authz-model.md: masking is column config, not authorization). Builds ONE
- * [Entities] set for the whole batch — principal + [roles] + the datasource + every touched column
+ * [Entities] set for the whole batch — principal + [parents] + the datasource + every touched column
  * (each carrying its table/tag membership, table/tag entities deduped across columns) — then asks
  * Cedar twice per column (result.read.unmasked, then result.read.masked); neither permitting is
  * DENIED. There is no bypass and no "absent = allow": every entry in [columns] gets an explicit
  * verdict.
  *
- * [roles] is the caller's EXPLICIT, already-resolved role set — unlike [Authz.authorize], this does
- * NOT call [RoleSource] itself. Query.kt's `decideQuery` resolves roles once (deliberately AFTER
+ * [parents] is the caller's EXPLICIT, already-resolved role and group set — unlike [Authz.authorize], this does
+ * NOT call [RoleSource] itself. Query.kt's `decideQuery` resolves them once (deliberately AFTER
  * admission, per the SECURITY INVARIANT documented there) and threads that same set through to both
  * the engine and this call, so there's no risk of a second, out-of-band resolution disagreeing with
  * the first.
@@ -534,7 +636,7 @@ class Authz(
  */
 fun Authz.authorizeColumns(
     principal: String,
-    roles: Set<String>,
+    parents: UserParents,
     datasource: String,
     columns: List<ColumnRef>,
     context: AuthzContext = AuthzContext(),
@@ -546,7 +648,7 @@ fun Authz.authorizeColumns(
     // and preset permits reach a column.
     datasourceTags: List<String> = emptyList(),
 ): Map<String, ColumnVerdict> = authorizeReadResources(
-    principal, roles, datasource, datasourceTags, context, columns.map { it.key }, ColumnVerdict.DENIED,
+    principal, parents, datasource, datasourceTags, context, columns.map { it.key }, ColumnVerdict.DENIED,
     build = { dsEuid, tag ->
         fun hasDelim(s: String) = '/' in s || '.' in s
         val tableEuids = HashMap<Triple<String, String, String>, EntityUID>()
@@ -583,16 +685,16 @@ fun Authz.authorizeColumns(
  * count unless a `result.read` grant covers its Table resource. Deny-by-default: every [tables] entry
  * gets an explicit verdict; there is no "absent = allow".
  *
- * Mirrors [authorizeColumns]: ONE [Entities] batch (principal + [roles] + datasource + Table entities),
+ * Mirrors [authorizeColumns]: ONE [Entities] batch (principal + [parents] + datasource + Table entities),
  * name-keyed EUIDs (`Table::"<ds>/<catalog>/<schema>/<table>"`), and a delimiter-bearing identity (`/`
  * or `.` inside a component) builds no EUID → DENIED fail-closed. Either `result.read.unmasked` OR
  * `result.read.masked` on the Table permits the scan — a masked reader already observes the table's rows
- * (masked), so existence/cardinality is not additionally protected. [roles] is the caller's explicit
+ * (masked), so existence/cardinality is not additionally protected. [parents] is the caller's explicit
  * resolved set (no out-of-band [RoleSource] re-resolution), matching [authorizeColumns].
  */
 fun Authz.authorizeTables(
     principal: String,
-    roles: Set<String>,
+    parents: UserParents,
     datasource: String,
     tables: List<TableRef>,
     context: AuthzContext = AuthzContext(),
@@ -605,7 +707,7 @@ fun Authz.authorizeTables(
     // on a dev datasource through the Table's Datasource parent.
     datasourceTags: List<String> = emptyList(),
 ): Map<String, TableVerdict> = authorizeReadResources(
-    principal, roles, datasource, datasourceTags, context, tables.map { it.key }, TableVerdict.DENIED,
+    principal, parents, datasource, datasourceTags, context, tables.map { it.key }, TableVerdict.DENIED,
     build = { dsEuid, tag ->
         fun hasDelim(s: String) = '/' in s || '.' in s
         val tableEntities = LinkedHashMap<String, Entity>()
@@ -627,7 +729,7 @@ fun Authz.authorizeTables(
 /** Authorize calls by resolved name; the caller passes dangerous builtins and user functions only. */
 fun Authz.authorizeFunctions(
     principal: String,
-    roles: Set<String>,
+    parents: UserParents,
     datasource: String,
     functions: List<FunctionRef>,
     context: AuthzContext = AuthzContext(),
@@ -636,7 +738,7 @@ fun Authz.authorizeFunctions(
     // conditional forbid can relax a dangerous function on a dev datasource through its Datasource parent.
     datasourceTags: List<String> = emptyList(),
 ): Map<String, FunctionVerdict> = authorizeReadResources(
-    principal, roles, datasource, datasourceTags, context, functions.map { it.name }, FunctionVerdict.DENIED,
+    principal, parents, datasource, datasourceTags, context, functions.map { it.name }, FunctionVerdict.DENIED,
     build = { dsEuid, tag ->
         fun hasDelim(s: String) = '/' in s
         val fnEntities = LinkedHashMap<String, Entity>()
@@ -667,14 +769,14 @@ fun Authz.authorizeFunctions(
  */
 fun Authz.authorizeUtilities(
     principal: String,
-    roles: Set<String>,
+    parents: UserParents,
     datasource: String,
     utilities: List<UtilityRef>,
     context: AuthzContext = AuthzContext(),
     systemTags: Map<String, String> = emptyMap(),
     datasourceTags: List<String> = emptyList(),
 ): Map<String, UtilityVerdict> = authorizeReadResources(
-    principal, roles, datasource, datasourceTags, context, utilities.map { it.command }, UtilityVerdict.DENIED,
+    principal, parents, datasource, datasourceTags, context, utilities.map { it.command }, UtilityVerdict.DENIED,
     build = { dsEuid, tag ->
         fun hasDelim(s: String) = '/' in s
         val utilEntities = LinkedHashMap<String, Entity>()
@@ -706,19 +808,20 @@ sealed interface CapResource {
 
 /** The limits a statement's `result.cap` asks resolve to. [unbounded] = a forbid matched some ask; null on a
  *  dimension = no cap entry from any permit; [rates] = every rate entry collected, checked by the caller. */
-data class ResolvedCaps(val unbounded: Boolean, val rows: Long?, val bytes: Long?, val rates: List<ResultCap.Rate> = emptyList())
+data class ResolvedCaps(val unbounded: Boolean, val rows: Long?, val bytes: Long?, val rates: List<ResultCap.Rate> = emptyList(), val boost: BigDecimal = BigDecimal.ONE)
 
 /**
  * Ask `Action::"result.cap"` (docs/result-caps.md) on the datasource and on every [resources] entry, and fold
  * the outcomes: a DENY on any ask (a forbid matched) makes the statement unbounded; else the tightest cap
- * rows and cap bytes across the permits that determined each ALLOW, plus every rate entry they carry. A
+ * rows and cap bytes across the permits that determined each ALLOW, plus every rate entry they carry and the
+ * largest `@boost` among them. A
  * column ask carries `context.masked`; the others do not. `result.cap` grants nothing — no enforcement path
  * consults it — so an ALLOW here is only "these permits speak"; an evaluation error contributes nothing
  * (the caller's constant default then applies, fail-closed).
  */
 fun Authz.resolveResultCaps(
     principal: String,
-    roles: Set<String>,
+    parents: UserParents,
     datasource: String,
     resources: List<CapResource>,
     context: AuthzContext = AuthzContext(),
@@ -774,7 +877,7 @@ fun Authz.resolveResultCaps(
     val askedTables = resources.filterIsInstance<CapResource.Table>().mapNotNull { r ->
         tableEuids[Triple(r.ref.catalog, r.ref.schema, r.ref.table)]?.let { euid -> tableEntities.first { it.euid == euid } }
     }
-    val request = marshal(principal, roles, listOf(dsEntity) + focal + tableEntities + tagEuids.values.map { Entity(it) })
+    val request = marshal(AuthzPrincipal.User(principal, parents), listOf(dsEntity) + focal + tableEntities + tagEuids.values.map { Entity(it) })
     val contextMap = context.toCedarMap()
     val action = ACTION_TYPE.of(AuthzAction.RESULT_CAP.cedarId)
     val caps = ArrayList<ResultCap>()
@@ -795,13 +898,14 @@ fun Authz.resolveResultCaps(
         rows = caps.mapNotNull { it.rows }.minOrNull(),
         bytes = caps.mapNotNull { it.bytes }.minOrNull(),
         rates = caps.flatMap { it.rates },
+        boost = caps.mapNotNull { it.boost }.maxOrNull() ?: BigDecimal.ONE,
     )
 }
 
 /**
  * The two once-per-query gates ahead of the catalog/analyzer/column loop (docs/authz-model.md:
  * `datasource.connect` then `sql.<kind>`, wired in decideQuery's Query.kt). A single-resource
- * decision, like [Authz.authorize], but — like [authorizeColumns] — takes [roles] EXPLICITLY (no
+ * decision, like [Authz.authorize], but — like [authorizeColumns] — takes [parents] EXPLICITLY (no
  * second, out-of-band [RoleSource] resolution) and keys the [datasource] resource EUID off its NAME,
  * not its numeric id: `Datasource::"acme-mysql"`, matching [authorizeColumns] and every seed policy /
  * doc example. [Authz.authorize]'s own `AuthzResource.Datasource` marshalling keys off the numeric id
@@ -810,7 +914,7 @@ fun Authz.resolveResultCaps(
  */
 fun Authz.authorizeDatasourceAction(
     principal: String,
-    roles: Set<String>,
+    parents: UserParents,
     action: AuthzAction,
     datasource: String,
     context: AuthzContext = AuthzContext(),
@@ -818,7 +922,16 @@ fun Authz.authorizeDatasourceAction(
     // preset permit (`exception.unanalyzable`/`exception.unmaskable` on `system:development`, policy ids -201/-202) matches
     // this datasource. A datasource-level action's resource IS the Datasource, so its own tag parent suffices.
     datasourceTags: List<String> = emptyList(),
-): AuthzDecision = authorizeDatasourceActionId(principal, roles, action.cedarId, datasource, context, datasourceTags)
+): AuthzDecision = authorizeDatasourceActionId(principal, parents, action.cedarId, datasource, context, datasourceTags)
+
+/** [authorizeDatasourceAction] for any [AuthzPrincipal], including a CI [AuthzPrincipal.Workload]. */
+fun Authz.authorizeDatasourceAction(
+    principal: AuthzPrincipal,
+    action: AuthzAction,
+    datasource: String,
+    context: AuthzContext = AuthzContext(),
+    datasourceTags: List<String> = emptyList(),
+): AuthzDecision = authorizeDatasourceActionId(principal, action.cedarId, datasource, context, datasourceTags)
 
 /**
  * Authorize a Datasource-scoped action by its raw Cedar action id, for the statement-kind gate whose
@@ -828,7 +941,16 @@ fun Authz.authorizeDatasourceAction(
  */
 fun Authz.authorizeDatasourceActionId(
     principal: String,
-    roles: Set<String>,
+    parents: UserParents,
+    cedarActionId: String,
+    datasource: String,
+    context: AuthzContext = AuthzContext(),
+    datasourceTags: List<String> = emptyList(),
+): AuthzDecision =
+    authorizeDatasourceActionId(AuthzPrincipal.User(principal, parents), cedarActionId, datasource, context, datasourceTags)
+
+fun Authz.authorizeDatasourceActionId(
+    principal: AuthzPrincipal,
     cedarActionId: String,
     datasource: String,
     context: AuthzContext = AuthzContext(),
@@ -849,7 +971,7 @@ fun Authz.authorizeDatasourceActionId(
     val contextMap: Map<String, Value> = context.toCedarMap()
     // The action-ancestry entities ride in as marshal's auxEntities, joining the request's entity set
     // alongside the datasource resource — so the category nesting resolves under schema-free eval.
-    val request = marshal(principal, roles, tagEntities + actionEntities)
+    val request = marshal(principal, tagEntities + actionEntities)
     return engine.isAuthorized(request, ACTION_TYPE.of(cedarActionId), dsEntity, contextMap).toAuthzDecision()
 }
 
@@ -869,7 +991,7 @@ fun Authz.authorizeDatasourceActionId(
  */
 fun Authz.resolveContextTags(
     principal: String,
-    roles: Set<String>,
+    parents: UserParents,
     datasource: String,
     rawContext: AuthzContext,
     datasourceTags: List<String> = emptyList(),
@@ -882,7 +1004,7 @@ fun Authz.resolveContextTags(
     val dsEntity = datasourceEntity(dsEuid, datasource, datasourceTags, tagEuids)
     val tagEntities = tagEuids.values.map { Entity(it) }
 
-    val request = marshal(principal, roles, tagEntities)
+    val request = marshal(AuthzPrincipal.User(principal, parents), tagEntities)
     // includeTags = false: pass-1 must not expose `tags` at all (no tag-on-tag). The generated tag-action
     // schema also omits it, so a rule reading context.tags won't validate; omitting it here closes the eval side.
     val contextMap: Map<String, Value> = rawContext.toCedarMap(includeTags = false)
@@ -891,6 +1013,19 @@ fun Authz.resolveContextTags(
         engine.isAuthorized(request, ACTION_TYPE.of("context.tag::$tag"), dsEntity, contextMap)
             .success.orElse(null)?.isAllowed == true
     }
+}
+
+/** The native.invoke decision with tags derived here; supplied tags, statement kind, and operation are replaced. */
+fun Authz.authorizeNativeResource(
+    principal: String,
+    parents: UserParents,
+    resource: AuthzResource.NativeResource,
+    operation: String,
+    context: AuthzContext,
+): AuthzDecision {
+    val raw = context.copy(tags = emptySet(), stmtKind = null, nativeOperation = operation)
+    val tags = resolveContextTags(principal, parents, resource.datasourceName, raw, resource.datasourceTags)
+    return authorizeAs(principal, parents, AuthzAction.NATIVE_INVOKE, resource, raw.copy(tags = tags))
 }
 
 /**
@@ -923,13 +1058,13 @@ internal fun Authz.authorizeWithContext(
     datasourceName: String?,
     datasourceTags: List<String> = emptyList(),
 ): AuthzDecision {
-    val roles = rolesOf(principal)
+    val parents = parentsOf(principal)
     val context = if (datasourceName == null) {
         raw
     } else {
-        raw.copy(tags = resolveContextTags(principal, roles, datasourceName, raw, datasourceTags))
+        raw.copy(tags = resolveContextTags(principal, parents, datasourceName, raw, datasourceTags))
     }
-    return authorizeAs(principal, roles, action, resource, context)
+    return authorizeAs(principal, parents, action, resource, context)
 }
 
 /**

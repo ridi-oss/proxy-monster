@@ -54,7 +54,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.TestInstance
@@ -74,7 +73,7 @@ import kotlin.test.fail
  * Route/DB regression coverage for `POST /api/approvals/{id}/execute`'s DENY-under-R fail-closed
  * floor (Approvals.kt:589-670): a request elevated to role R, already APPROVED for APPROVER_EXEC, whose
  * execute-under-R decision comes back DENY must (1) never leak columns/rows in the HTTP response
- * ([ExecuteApprovalResponse.result] stays null) and (2) never write a `query_result` row — the early
+ * ([ExecuteQueryRequestResponse.result] stays null) and (2) never write a `query_result` row — the early
  * return at :642-644 must precede [QueryResultStore.save] at :657, not race it. Runs a REAL fake proxy over
  * gRPC (the SAME [ControlPlaneCore] wired into both [RunExecService] and [ControlPlaneGrpcService], so
  * the fake proxy's Events/runExec streams land on the same `proxyEventsHub` — mirrors
@@ -104,8 +103,7 @@ class ApprovalExecuteRouteDbTest {
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_exec_route"))
-        Flyway.configure().dataSource(dataSource).load().migrate()
+        dataSource = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_exec_route"))
         core = ControlPlaneCore(dataSource)
         runExecService = RunExecService(core)
         resultStore = QueryResultStore(dataSource, ResultCrypto(ByteArray(32) { it.toByte() }))
@@ -115,9 +113,8 @@ class ApprovalExecuteRouteDbTest {
             DatasourceInput(name = "exec-route-ds", engine = "postgres", host = "localhost", port = 5432, dbName = "app"),
         )
 
-        // The executor holds a real task.approve grant, clearing mayDecide — which is what isolates the
-        // branches actually under test here (the execute-under-R DENY floor and the approver-of-record
-        // identity check) from the authority gate in front of them.
+        // The executor holds real task.approve and task.run grants, clearing mayDecide — which isolates the
+        // branches under test here (the execute-under-R DENY floor) from the authority gate in front of them.
         core.userGroupStore.createUser(
             AppUserInput(principal = executor), core.tokenStore, core.accessStore, sessionStore,
         )
@@ -128,7 +125,7 @@ class ApprovalExecuteRouteDbTest {
                 name = "exec-route-test-task-authority",
                 cedarSrc = """permit(
                     principal == User::"$executor",
-                    action in [Action::"task.approve", Action::"task.read", Action::"task.cancel"],
+                    action in [Action::"task.approve", Action::"task.run", Action::"task.read", Action::"task.cancel"],
                     resource
                 );""",
             ),
@@ -207,8 +204,7 @@ class ApprovalExecuteRouteDbTest {
             denyReason = null, sourceDecisionId = null, reason = "need it", title = null,
             evaluatedDecision = "DENY", roleId = roleId,
         ).id
-        // decided_by defaults to the executor so the /execute approver=executor gate passes; a test can
-        // seed a DIFFERENT approver of record to exercise that gate's 403.
+        // decided_by defaults to the executor; a test can seed a different approver of record.
         dataSource.connection.use { c ->
             c.prepareStatement("UPDATE access_request SET status='APPROVED', decided_by=? WHERE id=?").use { ps ->
                 ps.setString(1, decidedBy)
@@ -271,7 +267,7 @@ class ApprovalExecuteRouteDbTest {
             withTimeout(5_000) { proxy.await() }
 
             assertEquals(HttpStatusCode.Accepted, response.status)
-            assertEquals("EXECUTING", response.body<ExecuteApprovalResponse>().decision)
+            assertEquals("EXECUTING", response.body<ExecuteQueryRequestResponse>().decision)
             awaitUntil("DENY marks task and child failed") {
                 core.accessStore.getRequest(id)?.status == "FAILED" && resultStore.meta(id)?.status == "FAILED"
             }
@@ -568,7 +564,7 @@ class ApprovalExecuteRouteDbTest {
             withTimeout(5_000) { proxy.await() }
 
             assertEquals(HttpStatusCode.Accepted, response.status)
-            assertEquals("EXECUTING", response.body<ExecuteApprovalResponse>().decision)
+            assertEquals("EXECUTING", response.body<ExecuteQueryRequestResponse>().decision)
             awaitUntil("successful run completes") {
                 core.accessStore.getRequest(id)?.status == "EXECUTED" && resultStore.meta(id)?.status == "DONE"
             }
@@ -634,7 +630,7 @@ class ApprovalExecuteRouteDbTest {
             // The response must come back BEFORE Done — the whole point of the async submit.
             val response = withTimeout(5_000) { responseDeferred.await() }
             assertEquals(HttpStatusCode.Accepted, response.status)
-            assertEquals("EXECUTING", response.body<ExecuteApprovalResponse>().decision)
+            assertEquals("EXECUTING", response.body<ExecuteQueryRequestResponse>().decision)
 
             // ...and while the proxy still holds Done, the durable state is observably in flight.
             awaitUntil("task EXECUTING and child RUNNING while in flight") {
@@ -681,7 +677,7 @@ class ApprovalExecuteRouteDbTest {
             proxyRequests.send(proxyRunMsg { serving = runServing {} })
             assertEquals(HttpStatusCode.Accepted, withTimeout(5_000) { execute.await() }.status)
             awaitUntil("approval child RUNNING") { resultStore.meta(id)?.status == "RUNNING" }
-            assertEquals(true, client.get("/api/approvals/$id").body<ApprovalDetail>().canCancel)
+            assertEquals(true, client.get("/api/approvals/$id").body<QueryRequestDetail>().canCancel)
 
             val cancelled = client.post("/api/approvals/$id/cancel")
             assertEquals(HttpStatusCode.OK, cancelled.status)
@@ -731,7 +727,7 @@ class ApprovalExecuteRouteDbTest {
     }
 
     @Test
-    fun `cancel is idempotent after execution and rejects pending tasks`() = testApplication {
+    fun `cancel is idempotent after execution and closes a pending task`() = testApplication {
         val client = wireAsExecutor()
         val executed = seedApprovedRoleRequest("exec-cancel-terminal-role")
         dataSource.connection.use { c ->
@@ -749,9 +745,9 @@ class ApprovalExecuteRouteDbTest {
                 ps.setLong(1, pending); ps.executeUpdate()
             }
         }
-        val denied = client.post("/api/approvals/$pending/cancel")
-        assertEquals(HttpStatusCode.Conflict, denied.status)
-        assertEquals("approval.not_cancelable", denied.body<ApiError>().code)
+        val closed = client.post("/api/approvals/$pending/cancel")
+        assertEquals(HttpStatusCode.OK, closed.status)
+        assertEquals("CANCELLED", closed.body<AccessRequest>().status)
     }
 
     /** The async task model exposes no /release or /withhold routes; hitting them 404s. */
@@ -763,29 +759,32 @@ class ApprovalExecuteRouteDbTest {
         assertEquals(HttpStatusCode.NotFound, client.post("/api/approvals/$id/withhold").status)
     }
 
-    /**
-     * The approver of record must be the one who executes (executedBy = decided_by = the approver). An
-     * eligible approver B who did not approve THIS task cannot run a task approved by A: /execute rejects
-     * with 403 `approval.not_the_approver` BEFORE the execute-once claim, so nothing runs and the task
-     * stays APPROVED. The fixture's blanket `task.approve` grant clears the R-scoped authority gate
-     * (`mayDecide`), so this identity check is the sole gate under test here. The positive case
-     * (the approver of record executes and proceeds) is the default `decidedBy = executor` seed the other
-     * tests above exercise.
-     */
+    /** Running is task.run, not approving: a principal without it is refused before the execute-once claim. */
     @Test
-    fun `execute by an approver other than the approver of record is 403 not_the_approver and runs nothing`() = testApplication {
-        val client = wireAsExecutor()
-        // Approved by a DIFFERENT approver A; the /execute caller is the signed-in executor (B).
-        val id = seedApprovedRoleRequest("exec-wrong-approver-role", decidedBy = "approver-a@example.com")
+    fun `execute without task run is 403 not_runner and runs nothing`() = testApplication {
+        val client = wire().also { it.login("outsider@example.com") }
+        val id = seedApprovedRoleRequest("exec-no-run-role")
 
         val denied = client.post("/api/approvals/$id/execute")
         assertEquals(HttpStatusCode.Forbidden, denied.status)
-        assertEquals("approval.not_the_approver", denied.body<ApiError>().code)
-
-        // The gate fires before claimExecution, so the task never leaves APPROVED and the pre-created
-        // statement child is never run (no result is stored).
+        assertEquals("approval.not_runner", denied.body<ApiError>().code)
         assertEquals("APPROVED", core.accessStore.getRequest(id)?.status)
         assertEquals(null, resultStore.meta(id)?.status, "no child was ever run")
+    }
+
+    @Test
+    fun `an approval older than a day is refused at execute and runs nothing`() = testApplication {
+        val client = wireAsExecutor()
+        val id = seedApprovedRoleRequest("exec-expired-role")
+        dataSource.connection.use { c ->
+            c.prepareStatement("UPDATE access_request SET approved_at = now() - interval '25 hours' WHERE id = ?").use { ps ->
+                ps.setLong(1, id); ps.executeUpdate()
+            }
+        }
+        val refused = client.post("/api/approvals/$id/execute")
+        assertEquals(HttpStatusCode.Conflict, refused.status)
+        assertEquals("approval.expired", refused.body<ApiError>().code)
+        assertEquals("APPROVED", core.accessStore.getRequest(id)?.status)
     }
 
     /**

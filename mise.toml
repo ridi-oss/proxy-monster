@@ -17,11 +17,16 @@ go = "1.26"
 buf = "1.72.0"
 protoc-gen-go = "1.35.2"
 protoc-gen-go-grpc = "1.5.1"
+# cp-go's typed store queries (cpgo/sqlc.yaml → cpgo/store/db).
+sqlc = "1.31.1"
 # web/ (Next.js). Pinned rather than "whatever's on PATH" so `pnpm install`'s lockfile resolution
 # and `next build` behavior stay reproducible across machines. Match web/Dockerfile's base image +
 # corepack pin when bumping either.
 node = "24.18.0"
 pnpm = "10.22.0"
+# auto-approver/ (pmon-auto-approver-agent): tests, and the self-contained binary the server image ships. Match the
+# oven/bun image in control-plane/Dockerfile when bumping.
+bun = "1.3.14"
 
 # Tasks. `mise run dev` is the whole local stack; `mise run verify` is the whole verification gate.
 # Each component also has its own task, so you can run one against a stack you started by hand.
@@ -56,10 +61,22 @@ description = "Stop the local datastores (their volumes survive)"
 run = "docker compose down"
 
 [tasks.control-plane]
-description = "Run the control plane against the local store — HTTP :8080, gRPC :9090"
+description = "Run the control plane (cp-go in front of the Kotlin control plane) against the local store — HTTP :8080, gRPC :9090"
 depends = ["up"]
 shell = "bash -c"
-run = 'PM_DB_URL="${PM_DB_URL:-jdbc:postgresql://localhost:5442/proxymonster}" ./gradlew --no-daemon :control-plane:run'
+# PM_CP_ATTACH=true skips starting Kotlin, for one you run yourself (e.g. from the IDE) with
+# PM_HTTP_PORT=18090 PM_GRPC_PORT=18091 PM_BIND_HOST=127.0.0.1 PM_TRUSTED_PROXIES=127.0.0.1, and the
+# same PM_CP_INTERNAL_TOKEN in both processes; set PM_CP_GO_GRPC_PORT here and
+# PM_CP_GO_GRPC_ADDR=127.0.0.1:<that port> there for the Go services Kotlin calls.
+run = '''
+set -euo pipefail
+export PM_DB_URL="${PM_DB_URL:-jdbc:postgresql://localhost:5442/proxymonster}"
+if [ "${PM_CP_ATTACH:-}" != "true" ]; then
+  ./gradlew --no-daemon -q :control-plane:installDist
+fi
+(cd cpgo && go build -o ../control-plane/build/cp-go ./cmd/cp-go)
+PM_CP_CHILD="$PWD/control-plane/build/install/control-plane/bin/control-plane" exec control-plane/build/cp-go
+'''
 
 [tasks.proxy-mysql]
 description = "Run a wire proxy on :6033 fronting the sample MySQL target DB (datasource acme-mysql)"
@@ -176,6 +193,33 @@ run = '''
 set -euo pipefail
 (cd analyzer && buf generate ../proto/src/main/proto --path ../proto/src/main/proto/analyzer.proto --path ../proto/src/main/proto/engine.proto --path ../proto/src/main/proto/athena.proto)
 (cd goproxy && buf generate ../proto/src/main/proto --path ../proto/src/main/proto/controlplane.proto)
+(cd cpgo && buf generate ../proto/src/main/proto --path ../proto/src/main/proto/controlplane.proto --path ../proto/src/main/proto/github_source.proto)
+'''
+
+[tasks.sqlc-generate]
+description = "Regenerate cp-go's store queries, listing every migration as sqlc's schema in version order"
+shell = "bash -c"
+run = '''
+set -euo pipefail
+ls control-plane/src/main/resources/db/migration | sort -t_ -k1.2 -n | sed 's#^#      - ../control-plane/src/main/resources/db/migration/#' > cpgo/sqlc.schema.tmp
+awk 'NR == FNR {list = list $0 "\n"; next} /^    schema:$/ {print; printf "%s", list; skip = 1; next} skip && /^      - / {next} {skip = 0; print}' \
+  cpgo/sqlc.schema.tmp cpgo/sqlc.yaml > cpgo/sqlc.yaml.new
+mv cpgo/sqlc.yaml.new cpgo/sqlc.yaml
+rm cpgo/sqlc.schema.tmp
+(cd cpgo && sqlc generate)
+'''
+
+[tasks.sqlc-check]
+description = "Verify cp-go's sqlc schema lists every migration and the generated store code is current"
+shell = "bash -c"
+run = '''
+set -euo pipefail
+want=$(ls control-plane/src/main/resources/db/migration | sort -t_ -k1.2 -n | sed 's#^#      - ../control-plane/src/main/resources/db/migration/#')
+if [ "$want" != "$(grep '^      - ../control-plane/' cpgo/sqlc.yaml)" ]; then
+  echo "cpgo/sqlc.yaml does not list the current migrations; run: mise run sqlc-generate" >&2
+  exit 1
+fi
+(cd cpgo && sqlc diff) || { echo "cp-go store code is stale; run: mise run sqlc-generate" >&2; exit 1; }
 '''
 
 [tasks.proto-check]
@@ -189,6 +233,10 @@ files=(
   analyzer/probe/pb/athena.pb.go
   goproxy/internal/pb/controlplane.pb.go
   goproxy/internal/pb/controlplane_grpc.pb.go
+  cpgo/grpcsvc/pb/controlplane.pb.go
+  cpgo/grpcsvc/pb/controlplane_grpc.pb.go
+  cpgo/gobridge/pb/github_source.pb.go
+  cpgo/gobridge/pb/github_source_grpc.pb.go
 )
 before=$(git hash-object "${files[@]}")
 mise run proto-generate
@@ -226,14 +274,103 @@ pnpm -C web install
 [tasks.verify]
 description = "The full verification gate: lint, JVM tests, Go tests, web unit tests + build"
 shell = "bash -c"
+# The three parts run concurrently, each into its own log; CI runs the same three as parallel jobs,
+# sharding the two test tasks. PM_VERIFY_LOGS picks the log directory. The JVM tests take longest, so
+# the other two run at a lower CPU priority.
+run = '''
+set -uo pipefail
+logs="${PM_VERIFY_LOGS:-$(mktemp -d "${TMPDIR:-/tmp}/pm-verify.XXXXXX")}"
+mkdir -p "$logs"
+echo "verify: logs in $logs"
+# The Go tests' fixed-name containers are otherwise shared with, and reaped by, other checkouts' runs.
+export PM_TEST_CONTAINER_SUFFIX="verify-$$-$(date +%s)"
+trap 'docker rm -fv ${pg:-} ${mysql:-} $(docker ps -aq --filter "name=-$PM_TEST_CONTAINER_SUFFIX") >/dev/null 2>&1' EXIT
+# The JVM test forks share one database server per engine (TestDatabases.kt) instead of each starting its own.
+pg=$(docker run -d --rm -P -e POSTGRES_USER=test -e POSTGRES_PASSWORD=test -e POSTGRES_DB=test \
+  "${PM_TEST_POSTGRES_IMAGE:-postgres:17}" postgres -c max_connections=2000) || exit 1
+trap 'kill $(jobs -p) 2>/dev/null; wait; exit 130' INT TERM
+# Durability only: one server takes every fork's DDL, which otherwise queues on its fsyncs.
+mysql=$(docker run -d --rm -P -e MYSQL_ROOT_PASSWORD=test -e MYSQL_USER=test -e MYSQL_PASSWORD=test -e MYSQL_DATABASE=test \
+  "${PM_TEST_MYSQL_IMAGE:-mysql:8.4}" --max-connections=1000 --innodb-flush-log-at-trx-commit=2 --sync-binlog=0) || exit 1
+pg_port=$(docker port "$pg" 5432/tcp | head -1)
+mysql_port=$(docker port "$mysql" 3306/tcp | head -1)
+export PM_TEST_POSTGRES_SERVER="localhost:${pg_port##*:}" PM_TEST_MYSQL_SERVER="localhost:${mysql_port##*:}"
+parts="static jvm go"
+start=$SECONDS
+# Set here rather than in the build so CI keeps its own; past 3/4 of Docker's CPUs more forks gained nothing.
+docker_cpus=$(docker info | awk '/^ CPUs:/ {print $2}')
+forks=$((docker_cpus * 3 / 4)) host_cpus=$(getconf _NPROCESSORS_ONLN)
+[ "$forks" -gt "$host_cpus" ] && forks=$host_cpus
+[ "$forks" -lt 1 ] && forks=1
+export GRADLE_OPTS="${GRADLE_OPTS:-} -Dorg.gradle.parallel=true -Dorg.gradle.project.pm.testForks=$forks"
+for part in $parts; do
+  (
+    t0=$SECONDS
+    if [ "$part" = jvm ]; then prio=0; else prio=10; fi
+    nice -n "$prio" mise run "verify-$part" > "$logs/$part.log" 2>&1
+    rc=$?
+    echo "$rc" > "$logs/$part.status"
+    if [ "$rc" -eq 0 ]; then result=passed; else result=FAILED; fi
+    echo "verify: $part $result in $((SECONDS - t0))s"
+  ) &
+done
+wait
+failed=""
+for part in $parts; do
+  rc=$(cat "$logs/$part.status" 2>/dev/null || echo 1)
+  if [ "$rc" -ne 0 ]; then
+    failed="$failed $part"
+    echo "=== verify-$part failed; last 60 lines of $logs/$part.log ===" >&2
+    tail -n 60 "$logs/$part.log" >&2
+  fi
+done
+if [ -n "$failed" ]; then
+  echo "verify: FAILED:$failed after $((SECONDS - start))s" >&2
+  exit 1
+fi
+echo "verify: all parts passed in $((SECONDS - start))s"
+'''
+
+[tasks.verify-static]
+description = "The gate's non-test checks: lint, proto bindings, image go.mod builds, web unit tests + build"
+shell = "bash -c"
 run = '''
 set -euo pipefail
 mise run lint
 mise run proto-check
+mise run sqlc-check
+mise run check-image-gomod
+pnpm -C web test:unit
+pnpm -C web build
+mise run verify-auto-approver
+'''
+
+[tasks.verify-auto-approver]
+description = "pmon-auto-approver-agent: install, typecheck, tests, and the compiled binary the image ships"
+shell = "bash -c"
+dir = "{{config_root}}/auto-approver"
+run = '''
+set -euo pipefail
+bun install --frozen-lockfile
+bun run typecheck
+bun test
+bun run build
+'''
+
+[tasks.verify-jvm]
+description = "The gate's JVM tests (PM_TEST_SHARD=i/n runs one slice of the test classes)"
+shell = "bash -c"
 # The JVM tests are DB-backed (Testcontainers) and fail rather than skip, so Docker must be running.
 # --no-daemon: a shared Gradle daemon is machine-wide state, so a build here can recycle a JVM another
 # process depends on. Without it, this gate is not self-contained.
-./gradlew --no-daemon :analyzer:jvm:test :engine:test :control-plane:test
+run = '''
+set -euo pipefail
+./gradlew --no-daemon ${PM_TEST_SHARD:+-Ppm.testShard=$PM_TEST_SHARD} :analyzer:jvm:test :engine:test :control-plane:test
+'''
+
+[tasks.verify-go]
+description = "The gate's Go tests (PM_GO_PACKAGES narrows them to some module patterns)"
+shell = "bash -c"
 # Explicit module patterns: the repo root is a Go workspace, not a module, so `./...` does not resolve
 # there. go.work is what makes these root-relative paths work with no cd.
 #
@@ -241,16 +378,19 @@ mise run proto-check
 # where a race is both most likely and least visible, and a data race is a correctness bug the plain
 # run reports as a pass. These tests wait on containers and sockets far more than they compute, so the
 # detector costs a few seconds of wall clock rather than the usual multiple.
-go test -race ./analyzer/... ./auditmon/... ./goproxy/... ./mysqlwire/... ./pmon/...
-mise run check-image-gomod
-pnpm -C web test:unit
-pnpm -C web build
+#
+# The packages share one testcontainers reaper, which exits 10s after its last package lets go; a package
+# starting in that window waits on the dying reaper until its 60s deadline.
+run = '''
+set -euo pipefail
+pkgs=${PM_GO_PACKAGES:-./analyzer/... ./auditmon/... ./cpgo/... ./goproxy/... ./mysqlwire/... ./pmon/... ./pmon/tray/... ./sql-action/...}
+TESTCONTAINERS_RYUK_RECONNECTION_TIMEOUT=5m go test -race $pkgs
 '''
 
 [tasks.check-image-gomod]
 description = "Build each server-image Go module in go.mod mode (GOWORK=off), the way the image build does"
 shell = "bash -c"
-# The server images (goproxy/Dockerfile, auditmon/Dockerfile) build each module GOWORK=off, so it
+# The server images (goproxy/Dockerfile, auditmon/Dockerfile, control-plane/Dockerfile's cp-go) build each module GOWORK=off, so it
 # resolves its OWN go.mod — not the workspace. Every other Go build here goes through go.work, which
 # resolves a sibling like analyzer from ../analyzer and hides a stale transitive pin in goproxy/go.mod:
 # the drift then surfaces only on the release image build (a broken pm-goproxy), never in `verify`.
@@ -258,7 +398,7 @@ shell = "bash -c"
 # `go build ./...` compiles every package and writes no binary.
 run = '''
 set -euo pipefail
-for m in goproxy auditmon; do
+for m in goproxy auditmon cpgo; do
   echo "=== $m (GOWORK=off go build ./...) ==="
   (cd "$m" && GOWORK=off go build ./...)
 done
@@ -291,7 +431,7 @@ shell = "bash -c"
 # module, so a root-relative pattern only resolves once a go.work exists.
 run = '''
 set -euo pipefail
-for m in analyzer auditmon goproxy mysqlwire pmon; do
+for m in analyzer auditmon cpgo goproxy mysqlwire pmon pmon/tray sql-action; do
   echo "=== $m ==="
   (cd "$m" && go test -race ./...)
 done

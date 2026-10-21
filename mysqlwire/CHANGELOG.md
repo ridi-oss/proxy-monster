@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.5](https://github.com/ridi-oss/proxy-monster/compare/mysqlwire/v0.1.4...mysqlwire/v0.1.5) (2026-10-08)
+
+
+### Features
+
+* **mysqlproxy:** run a multi-statement query statement by statement ([eb1deb2](https://github.com/ridi-oss/proxy-monster/commit/eb1deb2cca49968695a02105f3e4bb5482420434))
+* **mysqlwire:** advertise multi-statements and expose the server version ([787bc2a](https://github.com/ridi-oss/proxy-monster/commit/787bc2ad46781c7b625306ebec797207c82ad0b2))
+
 ## [0.1.4](https://github.com/ridi-oss/proxy-monster/compare/mysqlwire/v0.1.3...mysqlwire/v0.1.4) (2026-08-20)
 
 

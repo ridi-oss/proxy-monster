@@ -10,5 +10,21 @@
   "success": {
     "title": "Login successful",
     "body": "You're logged in — return to your terminal. pmon will finish automatically. You can close this tab."
+  },
+  "scopes": {
+    "title": "This login asks for more than reading and querying",
+    "intro": "Approve only if you asked for these. Besides reading and running queries, an agent using this login can:",
+    "names": {
+      "mcp_approvals_write": "Approve, reject, and run query approvals and access requests as you",
+      "mcp_datasources_write": "Create, change, and delete datasources and column classifications",
+      "mcp_identity_write": "Manage users, groups, and role assignments",
+      "mcp_policies_write": "Create, change, and delete policies, roles, and mask functions",
+      "mcp_tokens": "Mint and revoke your access tokens"
+    },
+    "unknown": "Use a permission this page does not describe",
+    "windowHours": "These extra permissions last {hours, plural, one {for # hour} other {for # hours}} after you approve. Reading and querying last for the whole login.",
+    "windowMinutes": "These extra permissions last {minutes, plural, one {for # minute} other {for # minutes}} after you approve. Reading and querying last for the whole login.",
+    "approve": "Approve",
+    "approving": "Approving…"
   }
 }

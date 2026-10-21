@@ -31,9 +31,11 @@ import com.ridi.oss.proxymonster.controlplane.decideConnection
 import com.ridi.oss.proxymonster.controlplane.inTx
 import com.ridi.oss.proxymonster.controlplane.systemSchemas
 import com.ridi.oss.proxymonster.controlplane.resolveRequestIdentity
+import com.ridi.oss.proxymonster.controlplane.authorizeBounded
+import com.ridi.oss.proxymonster.controlplane.RequestAdmission
+import com.ridi.oss.proxymonster.controlplane.deniedAdmission
 import com.ridi.oss.proxymonster.grpc.RequestAuthorization
 import com.ridi.oss.proxymonster.grpc.RequestAuthorizationResult
-import com.ridi.oss.proxymonster.grpc.requestAuthorizationResult
 import com.google.protobuf.Empty
 import com.ridi.oss.proxymonster.grpc.CatalogRequest
 import com.ridi.oss.proxymonster.grpc.CatalogResponse
@@ -88,12 +90,7 @@ private const val TABLE_DETAIL_STREAM_TIMEOUT_MS = 60_000L
 // error instead of a stalled run channel. Bump it on any incompatible wire change. It MUST match the proxy's
 // goproxy cp.ProtocolVersion; the two are separate constants in separate languages kept in lockstep by hand —
 // a server-v* release always ships both at the same value.
-internal const val CONTROL_PROTOCOL_VERSION = 4
-
-// The completion-event terminal statuses the proxy reports: a clean finish, a target DB/relay error carrying
-// partial counts, or a canceled statement. Any other value is rejected fail-closed so a malformed report
-// can't write an uninterpretable outcome into the audit trail.
-private val COMPLETION_STATUSES = setOf("ok", "error", "canceled")
+internal const val CONTROL_PROTOCOL_VERSION = 5
 
 /**
  * Build the session-temp overlay from a decide request's proxy-supplied [temps], applying BOTH
@@ -192,21 +189,25 @@ class ControlPlaneGrpcService(
     override suspend fun authorizeRequest(request: RequestAuthorization): RequestAuthorizationResult {
         val resolved = core.resolveRequestIdentity(request.token, request.clientAddr.ifBlank { null })
         if (resolved.kind != TokenKind.SESSION && resolved.kind != TokenKind.USER) {
-            throw StatusException(Status.UNAUTHENTICATED.withDescription("metadata requires a native credential"))
+            throw StatusException(Status.UNAUTHENTICATED.withDescription("request authorization requires a wire credential"))
         }
         val ds = core.datasourceStore.getByName(request.datasourceName)
             ?: throw StatusException(Status.NOT_FOUND.withDescription("unknown datasource"))
-        val roles = resolved.effectiveRoles
-        val allowed = try {
-            ds.engine.definition.requestAuthorizer.authorize(request, ds, resolved.identity.principal, roles, resolved.context, core.authz)
+        val parents = resolved.effectiveParents
+        val admission = try {
+            ds.engine.definition.requestAuthorizer.authorizeBounded(request, ds, resolved.identity.principal, parents, resolved.context, core.authz)
         } catch (_: ManagementException) {
-            false
+            request.deniedAdmission()
         }
-        return requestAuthorizationResult {
-            this.allowed = allowed
-            if (allowed) principal = resolved.identity.principal else denyReason = "datasource.not_connectable"
-            effectiveRoles.addAll(roles)
+        val result = RequestAuthorizationResult.newBuilder().setAllowed(admission is RequestAdmission.Allowed).addAllEffectiveRoles(parents.roles)
+        when (admission) {
+            is RequestAdmission.Allowed -> {
+                result.principal = resolved.identity.principal
+                admission.instructions?.applyTo(result)
+            }
+            is RequestAdmission.Denied -> result.denyReason = admission.denyCode
         }
+        return result.build()
     }
 
     override suspend fun decide(request: DecisionRequest): WireDecision {
@@ -256,6 +257,7 @@ class ControlPlaneGrpcService(
             val outcome = decideConnection(
                 core, request.connectionId, id.principal, ds, request.sql, request.searchPathList,
                 clientAddr, request.session, channel, assumeRoles, tempColumns, httpRequesterIp = httpIp,
+                targetCheck = if (request.hasTargetCheck()) request.targetCheck else null,
             ) ?: throw StatusException(Status.NOT_FOUND.withDescription("connection disappeared during Decide"))
         ) {
             is EnforcementOutcome.BeforeDecide -> beforeDecideDecision(outcome.commands)
@@ -265,48 +267,6 @@ class ControlPlaneGrpcService(
                 outcome.afterStatement,
             )
         }
-    }
-
-    /**
-     * Record the post-relay completion as a chained audit event and the execution boundary for a native-wire
-     * task. The correlated task moves APPROVED → EXECUTED on `ok`, or APPROVED → FAILED on `error`/`canceled`,
-     * in the same transaction as the completion event. Decisions without a WIRE task remain audit-only, so
-     * editor and workflow execution lifecycles are untouched. This handler records the proxy's outcome; it
-     * never re-decides enforcement.
-     *
-     * The completion mirrors the referenced decision's identity fields so the row is self-describing for the
-     * audit monitor and satisfies the audit schema. `decision_id` 0 is rejected, and an unknown id is
-     * `NOT_FOUND`. Duplicate reports still append completion events as before; the task transition is an
-     * idempotent compare-and-set and silently no-ops after the first terminal report.
-     */
-    override suspend fun reportCompletion(request: CompletionReport): Empty {
-        if (request.decisionId == 0L) {
-            throw StatusException(Status.INVALID_ARGUMENT.withDescription("decision_id must reference a recorded decision"))
-        }
-        val status = request.status
-        if (status !in COMPLETION_STATUSES) {
-            throw StatusException(
-                Status.INVALID_ARGUMENT.withDescription("status must be one of ${COMPLETION_STATUSES.joinToString("|")}"),
-            )
-        }
-        val decision = core.auditStore.get(request.decisionId)
-            ?: throw StatusException(Status.NOT_FOUND.withDescription("unknown decision_id ${request.decisionId}"))
-        val completionEvent = completionEvent(
-            decision, request.decisionId, request.rowsReturned, request.bytesReturned, status, request.durationMs,
-        )
-        core.dataSource.inTx { conn ->
-            core.auditStore.insert(conn, completionEvent)
-            core.accessStore.wireTaskIdForDecision(request.decisionId, conn)?.let { taskId ->
-                if (core.accessStore.claimExecution(taskId, conn)) {
-                    if (status == "ok") {
-                        check(core.accessStore.markExecuted(taskId, conn)) { "wire task $taskId left EXECUTING" }
-                    } else {
-                        check(core.accessStore.markFailed(taskId, conn)) { "wire task $taskId left EXECUTING" }
-                    }
-                }
-            }
-        }
-        return Empty.getDefaultInstance()
     }
 
     override suspend fun pushSchemaFragment(request: SchemaFragmentPush): SchemaFragmentAck {
@@ -400,6 +360,7 @@ class ControlPlaneGrpcService(
                 advertiseCertChain = certChain,
                 advertiseWireTls = request.advertiseWireTls,
                 connectionInfo = if (request.hasConnectionInfo()) request.connectionInfo else null,
+                description = if (request.hasDescription()) request.description else null,
             )
         } catch (e: DatasourceEngineConflictException) {
             // Engine is immutable at register — a mismatched re-register is a client precondition

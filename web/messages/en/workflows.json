@@ -49,7 +49,8 @@
     "requesterReason": "Requester reason",
     "grantDuration": "Grant duration",
     "source": "Source",
-    "scope": "Scope"
+    "scope": "Scope",
+    "runsAs": "Runs as"
   },
   "durations": {
     "asRequested": "As requested",

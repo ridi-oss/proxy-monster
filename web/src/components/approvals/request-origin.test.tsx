@@ -5,7 +5,7 @@ import en from '../../../messages/en/workflows.json'
 import ko from '../../../messages/ko/workflows.json'
 import type { AccessRequest } from '@/lib/api/types'
 import { runsOnMerge } from '@/lib/approvals'
-import { RequestOrigin } from './request-origin'
+import { RequestOrigin, RunsAs } from './request-origin'
 
 const base: AccessRequest = {
   id: 1,
@@ -30,10 +30,10 @@ const github: AccessRequest = {
   scope: 'prod',
 }
 
-function render(request: AccessRequest, locale = 'en'): string {
+function render(request: AccessRequest, locale = 'en', Component: typeof RunsAs = RequestOrigin): string {
   return renderToStaticMarkup(
     <NextIntlClientProvider locale={locale} messages={{ Workflows: locale === 'en' ? en : ko }}>
-      <RequestOrigin request={request} />
+      <Component request={request} />
     </NextIntlClientProvider>,
   )
 }
@@ -73,4 +73,16 @@ it('approves a GitHub request without running it', () => {
   expect(runsOnMerge({})).toBe(false)
   expect(runsOnMerge(undefined)).toBe(false)
   expect(runsOnMerge(null)).toBe(false)
+})
+
+it('shows the role a query request runs as', () => {
+  const html = render({ ...github, executeAs: ['schema-migrator'] }, 'en', RunsAs)
+  expect(html).toContain(en.fields.runsAs)
+  expect(html).toContain('schema-migrator')
+  expect(render({ ...base, executeAs: ['analyst'] }, 'ko', RunsAs)).toContain(ko.fields.runsAs)
+})
+
+it('shows a dash when a query request has no execute-as role, and nothing for a role request', () => {
+  expect(render(base, 'en', RunsAs)).toContain('—')
+  expect(render({ ...base, kind: 'ROLE', executeAs: ['analyst'] }, 'en', RunsAs)).toBe('')
 })

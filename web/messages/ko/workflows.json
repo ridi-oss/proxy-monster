@@ -49,7 +49,8 @@
     "requesterReason": "요청자 사유",
     "grantDuration": "부여 기간",
     "source": "출처",
-    "scope": "범위"
+    "scope": "범위",
+    "runsAs": "실행 역할"
   },
   "durations": {
     "asRequested": "요청한 기간대로",

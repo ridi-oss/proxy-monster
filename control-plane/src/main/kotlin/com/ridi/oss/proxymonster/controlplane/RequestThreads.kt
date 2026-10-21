@@ -10,12 +10,6 @@ import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
 import com.ridi.oss.proxymonster.controlplane.notify.NotificationEvent
 import com.ridi.oss.proxymonster.controlplane.notify.NotificationService
 import io.ktor.http.HttpStatusCode
-import io.ktor.server.request.receive
-import io.ktor.server.response.respond
-import io.ktor.server.routing.Route
-import io.ktor.server.routing.delete
-import io.ktor.server.routing.get
-import io.ktor.server.routing.post
 import kotlinx.serialization.Serializable
 
 /** What the caller may do on a request's thread, with the thread itself. */
@@ -34,8 +28,8 @@ data class RequestThread(
 )
 
 /**
- * The parts every workflow request shares, whatever it asks for: comments, LGTMs, CCs, the timeline, closing it, and
- * the list of requests a person took part in. Each action is a Cedar decision on the Request.
+ * The parts every workflow request shares, whatever it asks for: comments, LGTMs, CCs, the timeline and closing it.
+ * Each action is a Cedar decision on the Request.
  */
 class RequestThreads(
     private val accessStore: AccessStore,
@@ -78,15 +72,6 @@ class RequestThreads(
             canDecide = req.status == "PENDING" && may(principal, requesterIp, AuthzAction.TASK_APPROVE, req, channel),
         )
     }
-
-    /**
-     * Requests the caller filed or took part in, from the participant list rather than a Cedar check per row.
-     * Another person's statement shows only when it carries no protected literal, as in a Slack channel.
-     */
-    fun involved(principal: String): List<AccessRequest> =
-        accessStore.listInvolvedRequests(principal, INVOLVED_LIMIT).map { req ->
-            if (req.principal == principal || req.statementCarriesProtectedLiteral == false) req else req.copy(sql = null)
-        }
 
     /** Add a comment, or with [lgtm] an LGTM, which is shown but never approves. */
     fun comment(
@@ -173,7 +158,6 @@ class RequestThreads(
 
     companion object {
         private const val REQUEST = "request"
-        private const val INVOLVED_LIMIT = 200
         const val COMMENT_MAX_CHARS = 4000
     }
 }
@@ -185,71 +169,3 @@ val AccessRequest.isWorkflowRequest: Boolean get() = creatorKind == "WORKFLOW"
  *  request closes with its pull request. */
 val AccessRequest.closable: Boolean get() =
     !fromPullRequest && (status == "PENDING" || (kind == "QUERY" && status == "APPROVED"))
-
-@Serializable data class CommentInput(val body: String? = null, val lgtm: Boolean = false)
-
-@Serializable data class CcInput(val principal: String)
-
-/** The routes every request shares, whatever its kind. */
-fun Route.requestRoutes(config: Config, threads: RequestThreads) {
-    get("/api/requests/involved") {
-        val principal = call.requireApi() ?: return@get
-        call.respond(threads.involved(principal))
-    }
-
-    get("/api/requests/{id}/thread") {
-        val principal = call.requireApi() ?: return@get
-        val id = call.idParam() ?: return@get call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        try {
-            call.respond(threads.thread(principal, call.httpRequesterIp(config), id))
-        } catch (e: TaskServiceException) {
-            call.respondServiceError(e)
-        }
-    }
-
-    post("/api/requests/{id}/comments") {
-        val principal = call.requireApi() ?: return@post
-        val id = call.idParam() ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        val input = call.receive<CommentInput>()
-        try {
-            call.respond(
-                HttpStatusCode.Created,
-                threads.comment(principal, call.httpRequesterIp(config), call.auditActor(config), id, input.body, input.lgtm),
-            )
-        } catch (e: TaskServiceException) {
-            call.respondServiceError(e)
-        }
-    }
-
-    post("/api/requests/{id}/ccs") {
-        val principal = call.requireApi() ?: return@post
-        val id = call.idParam() ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        val input = call.receive<CcInput>()
-        try {
-            call.respond(threads.setCc(principal, call.httpRequesterIp(config), call.auditActor(config), id, input.principal, add = true))
-        } catch (e: TaskServiceException) {
-            call.respondServiceError(e)
-        }
-    }
-
-    delete("/api/requests/{id}/ccs/{principal}") {
-        val principal = call.requireApi() ?: return@delete
-        val id = call.idParam() ?: return@delete call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        val cc = call.parameters["principal"] ?: return@delete call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        try {
-            call.respond(threads.setCc(principal, call.httpRequesterIp(config), call.auditActor(config), id, cc, add = false))
-        } catch (e: TaskServiceException) {
-            call.respondServiceError(e)
-        }
-    }
-
-    post("/api/requests/{id}/close") {
-        val principal = call.requireApi() ?: return@post
-        val id = call.idParam() ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        try {
-            call.respond(threads.close(principal, call.httpRequesterIp(config), call.auditActor(config), id))
-        } catch (e: TaskServiceException) {
-            call.respondServiceError(e)
-        }
-    }
-}

@@ -1117,22 +1117,6 @@ class AccessStore(internal val dataSource: DataSource) {
         }
     }
 
-    /** Requests [principal] filed or took part in, newest first, at most [limit]. */
-    fun listInvolvedRequests(principal: String, limit: Int): List<AccessRequest> = dataSource.connection.use { c ->
-        c.prepareStatement(
-            """$REQ_SELECT
-               WHERE $WORKFLOW_REQUEST
-                 AND (ar.principal = ? OR EXISTS (
-                      SELECT 1 FROM request_participant p WHERE p.request_id = ar.id AND p.principal = ?))
-               ORDER BY ar.created_at DESC LIMIT ?""",
-        ).use { ps ->
-            ps.setString(1, principal)
-            ps.setString(2, principal)
-            ps.setInt(3, limit)
-            ps.executeQuery().use { rs -> val o = ArrayList<AccessRequest>(); while (rs.next()) o += rs.toRequest(); o }
-        }
-    }
-
     /** Approve: mark the request APPROVED and insert a time-boxed grant. */
     fun approve(id: Long, durationSec: Long?, decidedBy: String): AccessRequest? {
         dataSource.inTx { c -> approve(id, durationSec, decidedBy, c) }

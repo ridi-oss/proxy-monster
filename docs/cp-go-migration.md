@@ -10,11 +10,11 @@ requires access granted by the maintainers.
 
 Status: phases 0–2 done; phases 3–5 in progress (Go decides Cedar for the routes
 it serves; roles, mask functions, policies, JIT access requests, users, groups,
-datasource read, wire cert, create, edit and delete, and wire tokens run on Go);
-phase 6 in progress (web sessions, OIDC login, the IdP recheck, pmon's device
-login and its daemon session run on Go); phase 7 in progress (the
-`ReportCompletion` RPC runs on Go, every other RPC is forwarded); phase 8 in
-progress (the MCP OAuth authorization server runs on Go).
+datasource read, wire cert, create, edit and delete, wire tokens, and request
+threads run on Go); phase 6 in progress (web sessions, OIDC login, the IdP
+recheck, pmon's device login and its daemon session run on Go); phase 7 in
+progress (the `ReportCompletion` RPC runs on Go, every other RPC is forwarded);
+phase 8 in progress (the MCP OAuth authorization server runs on Go).
 
 ## Shape
 
@@ -99,14 +99,17 @@ Estimated at 31–46 working days in total.
 
 The query-request workflow (`ApprovalService.kt`, `Approvals.kt`, the notify
 layer) moves in phase 5's approvals slice. Go already serves the own-requests
-list, with each request's `ccs`. The port must keep:
+list, with each request's `ccs`, and the `/api/requests/**` thread routes
+(timeline, comments, CCs, close, the involved list); after each write Go asks
+Kotlin's `/internal/request-notified` to send the notification. MCP and Slack
+still call Kotlin's `RequestThreads`. The port must keep:
 
 - Running an approved request is gated by `task.run`, not by who approved it.
 - An approval expires after 24 hours (`APPROVAL_TTL`): the claim to run refuses
   an older one, and a sweep returns it to `PENDING` with `TASK_REOPENED`. GitHub
   requests are exempt.
-- Unapprove, reject of an approved request, close, comments, CCs, the
-  `/api/approvals/involved` list, and a `request_event` row for every change.
+- Unapprove, reject of an approved request, and a `request_event` row for every
+  change.
 - Slack channel and thread messages never carry the full statement.
 
 ## Cedar in Go

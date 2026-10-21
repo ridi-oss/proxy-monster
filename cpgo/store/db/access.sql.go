@@ -574,6 +574,19 @@ func (q *Queries) ApproveRequest(ctx context.Context, arg ApproveRequestParams) 
 	return result.RowsAffected(), nil
 }
 
+const closeRequest = `-- name: CloseRequest :execrows
+UPDATE access_request ar SET status = 'CANCELLED'
+WHERE ar.id = $1 AND ar.creator_kind = 'WORKFLOW' AND (ar.status = 'PENDING' OR (ar.status = 'APPROVED' AND ar.kind = 'QUERY'))
+`
+
+func (q *Queries) CloseRequest(ctx context.Context, id int64) (int64, error) {
+	result, err := q.db.Exec(ctx, closeRequest, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const createRoleRequest = `-- name: CreateRoleRequest :one
 INSERT INTO access_request (principal, role_id, datasource_id, reason, requested_duration_sec, creator_kind)
 VALUES ($1, $2, $3, $4, $5, 'WORKFLOW') RETURNING id
@@ -646,6 +659,154 @@ func (q *Queries) InsertGrant(ctx context.Context, arg InsertGrantParams) (int64
 	var id int64
 	err := row.Scan(&id)
 	return id, err
+}
+
+const involvedRequests = `-- name: InvolvedRequests :many
+SELECT ar.id, ar.principal, ar.role_id, r.name AS role_name, ar.datasource_id, d.name AS datasource_name,
+       ar.reason, ar.requested_duration_sec, ar.status, ar.decided_by,
+       (SELECT qr.executed_by FROM query_result qr WHERE qr.task_id = ar.id ORDER BY qr.ordinal LIMIT 1) AS executed_by,
+       ar.decided_at, ar.rejection_reason, ar.created_at, ar.kind,
+       (SELECT string_agg(qr.sql, E';\n' ORDER BY qr.ordinal) FROM query_result qr WHERE qr.task_id = ar.id) AS sql,
+       (SELECT qr.sql_hash FROM query_result qr WHERE qr.task_id = ar.id ORDER BY qr.ordinal LIMIT 1) AS sql_hash,
+       (SELECT count(*) FROM query_result qr WHERE qr.task_id = ar.id) AS statement_count,
+       ar.deny_reason, ar.source_decision_id, ar.title, ar.evaluated_decision,
+       ar.approved_at, ar.executing_at, ar.executed_at, ar.execute_as, ar.creator_kind,
+       ar.statement_carries_protected_literal, ar.source, ar.scope, ar.change_key, ar.merged_at,
+       ar.revision, ar.revised_at, ar.content_hash,
+       ar.file_key, ar.path, ar.pr_url, ar.repository, ar.pr, ar.default_schema, ar.pr_auto_merge,
+       ar.head_sha, ar.merge_sha, ar.approved_review_id, ar.filed_head, ar.key_order, ar.force_run, ar.force_run_by,
+       (SELECT coalesce(array_agg(p.principal ORDER BY p.principal), '{}') FROM request_participant p
+        WHERE p.request_id = ar.id AND p.kind = 'cc')::text[] AS ccs
+FROM access_request ar LEFT JOIN app_role r ON r.id = ar.role_id
+LEFT JOIN datasource d ON d.id = ar.datasource_id
+WHERE ar.creator_kind = 'WORKFLOW'
+  AND (ar.principal = $1::text OR EXISTS (
+       SELECT 1 FROM request_participant p WHERE p.request_id = ar.id AND p.principal = $1::text))
+ORDER BY ar.created_at DESC LIMIT 200
+`
+
+type InvolvedRequestsRow struct {
+	ID                               int64
+	Principal                        string
+	RoleID                           *int64
+	RoleName                         *string
+	DatasourceID                     *int64
+	DatasourceName                   *string
+	Reason                           *string
+	RequestedDurationSec             int64
+	Status                           string
+	DecidedBy                        *string
+	ExecutedBy                       *string
+	DecidedAt                        *time.Time
+	RejectionReason                  *string
+	CreatedAt                        time.Time
+	Kind                             string
+	Sql                              []byte
+	SqlHash                          *string
+	StatementCount                   int64
+	DenyReason                       *string
+	SourceDecisionID                 *int64
+	Title                            *string
+	EvaluatedDecision                *string
+	ApprovedAt                       *time.Time
+	ExecutingAt                      *time.Time
+	ExecutedAt                       *time.Time
+	ExecuteAs                        []string
+	CreatorKind                      string
+	StatementCarriesProtectedLiteral *bool
+	Source                           string
+	Scope                            *string
+	ChangeKey                        *string
+	MergedAt                         *time.Time
+	Revision                         int32
+	RevisedAt                        *time.Time
+	ContentHash                      *string
+	FileKey                          *string
+	Path                             *string
+	PrUrl                            *string
+	Repository                       *string
+	Pr                               *int32
+	DefaultSchema                    *string
+	PrAutoMerge                      bool
+	HeadSha                          *string
+	MergeSha                         *string
+	ApprovedReviewID                 *string
+	FiledHead                        *string
+	KeyOrder                         *string
+	ForceRun                         bool
+	ForceRunBy                       *string
+	Ccs                              []string
+}
+
+func (q *Queries) InvolvedRequests(ctx context.Context, principal string) ([]InvolvedRequestsRow, error) {
+	rows, err := q.db.Query(ctx, involvedRequests, principal)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []InvolvedRequestsRow{}
+	for rows.Next() {
+		var i InvolvedRequestsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Principal,
+			&i.RoleID,
+			&i.RoleName,
+			&i.DatasourceID,
+			&i.DatasourceName,
+			&i.Reason,
+			&i.RequestedDurationSec,
+			&i.Status,
+			&i.DecidedBy,
+			&i.ExecutedBy,
+			&i.DecidedAt,
+			&i.RejectionReason,
+			&i.CreatedAt,
+			&i.Kind,
+			&i.Sql,
+			&i.SqlHash,
+			&i.StatementCount,
+			&i.DenyReason,
+			&i.SourceDecisionID,
+			&i.Title,
+			&i.EvaluatedDecision,
+			&i.ApprovedAt,
+			&i.ExecutingAt,
+			&i.ExecutedAt,
+			&i.ExecuteAs,
+			&i.CreatorKind,
+			&i.StatementCarriesProtectedLiteral,
+			&i.Source,
+			&i.Scope,
+			&i.ChangeKey,
+			&i.MergedAt,
+			&i.Revision,
+			&i.RevisedAt,
+			&i.ContentHash,
+			&i.FileKey,
+			&i.Path,
+			&i.PrUrl,
+			&i.Repository,
+			&i.Pr,
+			&i.DefaultSchema,
+			&i.PrAutoMerge,
+			&i.HeadSha,
+			&i.MergeSha,
+			&i.ApprovedReviewID,
+			&i.FiledHead,
+			&i.KeyOrder,
+			&i.ForceRun,
+			&i.ForceRunBy,
+			&i.Ccs,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const liveAccessGrants = `-- name: LiveAccessGrants :many

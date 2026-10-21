@@ -11,6 +11,7 @@ import com.ridi.oss.proxymonster.controlplane.RequestEventKind
 import com.ridi.oss.proxymonster.controlplane.RequestEvents
 import com.ridi.oss.proxymonster.controlplane.RequestParticipants
 import com.ridi.oss.proxymonster.controlplane.ResultCrypto
+import com.ridi.oss.proxymonster.controlplane.requestNotifier
 import com.ridi.oss.proxymonster.controlplane.management.AuditActor
 import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
 import com.ridi.oss.proxymonster.controlplane.support.EnforcementFixture
@@ -26,6 +27,7 @@ import org.junit.jupiter.api.TestInstance
 import java.time.Duration
 import com.ridi.oss.proxymonster.controlplane.RoleAssignmentInput
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -341,6 +343,19 @@ class NotificationServiceDbTest {
         svc.drainOnce()
         assertTrue(threads.replies.none { (ref, text) -> "cc@x" in ref && "after removal" in text }, "got: ${threads.replies}")
         assertTrue(threads.replies.any { (ref, text) -> ref == samThread && "after removal" in text })
+    }
+
+    @Test
+    fun `cp-go's request-notified signal enqueues a close and a new CC's thread`() {
+        val task = newTask()
+        val notify = requestNotifier(fx.accessStore, svc)
+        assertTrue(notify(task.id, "cancelled", null))
+        assertEquals(1, countRows(task.id, NotificationEvent.TASK_CANCELLED, task.principal))
+        assertTrue(notify(task.id, "cc-added", "cc@x"))
+        assertEquals(1, countRows(task.id, NotificationEvent.TASK_CC_ADDED, "cc@x"))
+        assertFalse(notify(task.id, "cc-added", null), "a CC signal names the CC")
+        assertTrue(notify(task.id, "commented", null))
+        assertFalse(notify(task.id, "bogus", null))
     }
 
     @Test

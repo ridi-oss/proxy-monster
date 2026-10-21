@@ -357,7 +357,7 @@ of a route and the gate it calls. Paths are relative to
 | Task-completion SSE | `/api/tasks/events` | `App.kt` | resolves the session itself; each push re-filtered through `task.read` |
 | Editor query history | `/api/query-history` | `cpgo/routes/me/me.go` | `requireApi`, own rows only |
 | Query-approval workflow | `/api/approvals**` | `Approvals.kt`; the own-requests list in `cpgo/routes/access/access.go` | `requireApi` + per-route Cedar (`task.read` / `task.approve` / `task.run` / `task.cancel` / `task.assume` / `task.force_run`) |
-| Request threads (every kind) | `/api/requests**` | `RequestThreads.kt` | `requireApi` + per-route Cedar (`task.read` / `task.comment` / `task.cc` / `task.cancel`) |
+| Request threads (every kind) | `/api/requests**` | `cpgo/routes/access/threads.go` | `requireApi` + per-route Cedar (`task.read` / `task.comment` / `task.cc` / `task.cancel`) |
 | JIT access requests and grants | `/api/access-requests**`, `/api/access-grants**` | `cpgo/routes/access/access.go`, `access_write.go` | `requireApi` + `task.read` forward-filtering; create = `task.request` on the datasource; approve and reject = `task.approve` with the `workflow-viewer` channel; revoke = `grant.revoke` |
 | Wire tokens | `/api/wire-tokens`, `/api/tokens**` | `cpgo/routes/tokens/tokens.go` | `requireAuthz(token.mint / token.list / token.revoke)` on the token's real owner and kind |
 | Roles, mask functions | `/api/roles**`, `/api/mask-fns**` | `cpgo/routes/policies/policies.go`, `policies_write.go` | `requireAdmin(admin.policies)`; `GET /api/roles` is `requireApi` |

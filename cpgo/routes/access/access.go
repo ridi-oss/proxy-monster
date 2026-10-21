@@ -19,6 +19,12 @@ func Register(mux *http.ServeMux, pool *pgxpool.Pool, gate api.Gate) {
 	mux.HandleFunc("POST /api/access-requests", gate.RequireAPI(api.Serve(ac.createRequest)))
 	mux.HandleFunc("POST /api/access-requests/{id}/approve", gate.RequireAPI(api.Serve(api.WithID(ac.approve))))
 	mux.HandleFunc("POST /api/access-requests/{id}/reject", gate.RequireAPI(api.Serve(api.WithID(ac.reject))))
+	mux.HandleFunc("GET /api/requests/involved", gate.RequireAPI(api.Serve(ac.involved)))
+	mux.HandleFunc("GET /api/requests/{id}/thread", gate.RequireAPI(api.Serve(api.WithID(ac.thread))))
+	mux.HandleFunc("POST /api/requests/{id}/comments", gate.RequireAPI(api.Serve(api.WithID(ac.comment))))
+	mux.HandleFunc("POST /api/requests/{id}/ccs", gate.RequireAPI(api.Serve(api.WithID(ac.addCC))))
+	mux.HandleFunc("DELETE /api/requests/{id}/ccs/{principal}", gate.RequireAPI(api.Serve(api.WithID(ac.removeCC))))
+	mux.HandleFunc("POST /api/requests/{id}/close", gate.RequireAPI(api.Serve(api.WithID(ac.close))))
 	mux.HandleFunc("POST /api/access-grants/{id}/revoke", gate.RequireAPIElse(api.Serve(ac.unauthenticatedRevoke), api.Serve(api.WithID(ac.revokeGrant))))
 }
 

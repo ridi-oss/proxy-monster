@@ -10,7 +10,6 @@ import com.ridi.oss.proxymonster.controlplane.support.PerConnectionCatalogFixtur
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.controlplane.support.testLoginRoute
 import com.ridi.oss.proxymonster.controlplane.support.webSessionCookie
-import com.ridi.oss.proxymonster.controlplane.authz.cedarPolicyRoutes
 import com.ridi.oss.proxymonster.grpc.ControlPlaneGrpcKt
 import com.ridi.oss.proxymonster.grpc.ControlRunMsg
 import com.ridi.oss.proxymonster.grpc.EnfAction as WireEnfAction
@@ -187,7 +186,6 @@ class ResultCapsE2eDbTest {
                     config, core.accessStore, core.auditStore, core.datasourceStore, core.policyStore,
                     core.userGroupStore, resultStore, core.roleResolver, core.authz, runExecService,
                 )
-                cedarPolicyRoutes(config, core.authz, core.cedarPolicyStore)
             }
         }
     }

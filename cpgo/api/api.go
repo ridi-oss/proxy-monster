@@ -153,6 +153,8 @@ type Authorizer interface {
 	MayRequest(ctx context.Context, principal string, datasourceID int64, requesterIP string) (bool, error)
 	MayConnect(ctx context.Context, principal string, datasourceIDs []int64, requesterIP string) ([]bool, error)
 	Validate(ctx context.Context, cedarSrc string) ([]string, error)
+	// SchemaText is the authorization schema with the context tag actions the policy sources derive.
+	SchemaText(policySources []string) string
 }
 
 // Kotlin is what Go routes tell or ask the Kotlin control plane about the state it holds in memory.

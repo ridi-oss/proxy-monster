@@ -128,6 +128,8 @@ func (c *sqlFileCmd) run(ctx context.Context, env sqlEnv) error {
 	var res struct {
 		Requests []filedRequest `json:"requests"`
 	}
+	// Post even with no files: query executed is a required check, and the server completes it as skipped
+	// so a pull request without SQL can merge.
 	if err := postJSON(ctx, env, c.Server, "/api/github/requests", bearer, body, &res); err != nil {
 		return err
 	}

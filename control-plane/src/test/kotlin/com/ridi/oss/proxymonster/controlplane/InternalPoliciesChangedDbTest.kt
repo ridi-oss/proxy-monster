@@ -13,8 +13,14 @@ import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import io.ktor.client.HttpClient
 import io.ktor.client.request.header
 import io.ktor.client.request.post
+import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
+import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
+import io.ktor.http.contentType
+import io.ktor.serialization.kotlinx.json.json
+import io.ktor.server.application.install
+import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.routing.routing
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
@@ -73,6 +79,27 @@ class InternalPoliciesChangedDbTest {
                 assertEquals(HttpStatusCode.NotFound, client.signal(token = TOKEN).status)
             }
         }
+    }
+
+    @Test
+    fun `request-notified hands over the event and the CC it names`() = testApplication {
+        val seen = mutableListOf<String>()
+        application {
+            install(ContentNegotiation) { json() }
+            routing {
+                internalSignalRoutes(TOKEN, {}, { id, event, principal -> seen += "$id:$event:$principal"; event != "bogus" })
+            }
+        }
+        val client = createClient { expectSuccess = false }
+        suspend fun notify(body: String) = client.post("/internal/request-notified") {
+            header(INTERNAL_TOKEN_HEADER, TOKEN)
+            contentType(ContentType.Application.Json)
+            setBody(body)
+        }.status
+        assertEquals(HttpStatusCode.NoContent, notify("""{"id":7,"event":"cc-added","principal":"cc@example.com"}"""))
+        assertEquals(HttpStatusCode.NoContent, notify("""{"id":7,"event":"commented"}"""))
+        assertEquals(HttpStatusCode.BadRequest, notify("""{"id":7,"event":"bogus"}"""))
+        assertEquals(listOf("7:cc-added:cc@example.com", "7:commented:null", "7:bogus:null"), seen)
     }
 
     private fun ApplicationTestBuilder.app(token: String? = TOKEN): HttpClient {

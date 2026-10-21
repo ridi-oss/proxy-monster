@@ -114,3 +114,17 @@ INSERT INTO group_role (group_id, role_id) VALUES ($1, $2) ON CONFLICT DO NOTHIN
 
 -- name: RemoveGroupRole :execrows
 DELETE FROM group_role WHERE group_id = $1 AND role_id = $2;
+
+-- name: IsActivePrincipal :one
+SELECT EXISTS (
+    SELECT 1 FROM app_user WHERE active AND principal = @principal::text
+    UNION ALL
+    SELECT 1 FROM principal_role pr LEFT JOIN app_user u ON u.principal = pr.principal
+    WHERE (u.id IS NULL OR u.active) AND pr.principal = @principal::text
+    UNION ALL
+    SELECT 1 FROM access_grant ag LEFT JOIN app_user u ON u.principal = ag.principal
+    WHERE ag.revoked_at IS NULL AND (ag.expires_at IS NULL OR ag.expires_at > now())
+      AND (u.id IS NULL OR u.active) AND ag.principal = @principal::text);
+
+-- name: ActivePrincipalsByEmail :many
+SELECT principal FROM app_user WHERE lower(email) = lower(@email::text) AND active LIMIT 2;

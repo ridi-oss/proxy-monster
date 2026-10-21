@@ -130,6 +130,14 @@ class NotificationService(
         }.onFailure { log.warn("notification emit failed task={} event=task.cc_added", req.id, it) }
     }
 
+    /** [emitCcAdded] on its own transaction, then wake the drainer. */
+    fun emitCcAddedEvent(req: AccessRequest, cc: String) {
+        if (!enabled) return
+        runCatching { store.inTransaction { c -> emitCcAdded(c, req, cc) } }
+            .onFailure { log.warn("notification emit failed task={} event=task.cc_added", req.id, it) }
+        wake()
+    }
+
     /** [emit] on its own transaction, then wake the drainer; for an event with no task change to join. */
     fun emitEvent(event: NotificationEvent, req: AccessRequest) {
         if (!enabled) return

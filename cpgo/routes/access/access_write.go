@@ -69,12 +69,12 @@ func (a access) createRequest(w http.ResponseWriter, r *http.Request) error {
 			return api.CodeRequestNotPermitted.Err()
 		}
 	}
-	return a.created(w, r, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (int64, string, error) {
+	return a.created(w, r, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (int64, notice, error) {
 		q := db.New(tx)
 		id, err := q.CreateRoleRequest(ctx, db.CreateRoleRequestParams{Principal: actor.Principal, RoleID: in.RoleID,
 			DatasourceID: in.DatasourceID, Reason: in.Reason, RequestedDurationSec: duration})
 		if err != nil {
-			return 0, "", err
+			return 0, notice{}, err
 		}
 		var role *string
 		name, err := q.RoleNameOf(ctx, *in.RoleID)
@@ -82,45 +82,55 @@ func (a access) createRequest(w http.ResponseWriter, r *http.Request) error {
 		case err == nil:
 			role = &name
 		case !errors.Is(err, pgx.ErrNoRows):
-			return 0, "", err
+			return 0, notice{}, err
 		}
 		idText := strconv.FormatInt(id, 10)
 		if err := audit.Admin(ctx, tx, actor, "task.request", audit.Entity("AccessRequest", idText),
 			"open access request #"+idText+" for role '"+orNull(role)+"'"); err != nil {
-			return 0, "", err
+			return 0, notice{}, err
 		}
-		return id, notifyRequested, timeline.Record(ctx, tx, id, timeline.Requested, &actor.Principal, actor.Channel, nil)
+		_, err = timeline.Record(ctx, tx, id, timeline.Requested, &actor.Principal, actor.Channel, nil)
+		return id, notifyRequested, err
 	})
 }
 
-// The notification Kotlin sends once a write commits, as its AccessService does after its own.
-const (
-	notifyRequested = "requested"
-	notifyDecided   = "decided"
+// notice is the notification Kotlin sends once a write commits, as its services do after their own; the zero
+// value sends none.
+type notice struct{ event, principal string }
+
+var (
+	notifyRequested = notice{event: "requested"}
+	notifyDecided   = notice{event: "decided"}
+	notifyCancelled = notice{event: "cancelled"}
 )
 
 // requestWrite writes on tx and returns the request it names and the notification to send, if any.
-type requestWrite func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (id int64, notify string, err error)
+type requestWrite func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (id int64, notify notice, err error)
 
 // created commits write and answers 201 with the request it opened.
 func (a access) created(w http.ResponseWriter, r *http.Request, write requestWrite) error {
 	return a.decided(w, r, http.StatusCreated, write)
 }
 
+// signal asks Kotlin to send n for the committed request; a lost signal costs a notification, not the write.
+func (a access) signal(ctx context.Context, id int64, n notice) {
+	if err := api.Notify(ctx, func(ctx context.Context) error { return a.kotlin.RequestNotified(ctx, id, n.event, n.principal) }); err != nil {
+		slog.Warn("access: notification not sent", "request", id, "event", n.event, "err", err)
+	}
+}
+
 // decided commits write, asks Kotlin to send its notification, then answers status with the request as committed.
 func (a access) decided(w http.ResponseWriter, r *http.Request, status int, write requestWrite) error {
 	ctx := r.Context()
 	var id int64
-	var notify string
+	var notify notice
 	err := pgx.BeginFunc(ctx, a.pool, func(tx pgx.Tx) error {
 		var err error
 		id, notify, err = write(ctx, tx, api.ActorOf(ctx))
 		return err
 	})
-	if err == nil && notify != "" {
-		if nerr := api.Notify(ctx, func(ctx context.Context) error { return a.kotlin.RequestNotified(ctx, id, notify) }); nerr != nil {
-			slog.Warn("access: notification not sent", "request", id, "event", notify, "err", nerr)
-		}
+	if err == nil && notify.event != "" {
+		a.signal(ctx, id, notify)
 	}
 	var req *accessRequest
 	if err == nil {
@@ -148,6 +158,23 @@ func (a access) requireApprover(ctx context.Context, id int64) (*accessRequest, 
 	if req.Kind == "QUERY" {
 		return nil, api.CodeUseQueryApproval.Err()
 	}
+	may, err := a.decider(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	ok, err := may("task.approve")
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, api.CodeNotApprover.Err()
+	}
+	return req, nil
+}
+
+// decider is Kotlin's RequestThreads.may: the caller's action on req in the workflow viewer, with the tags of
+// req's datasource even when it is deleted.
+func (a access) decider(ctx context.Context, req *accessRequest) (func(action string) (bool, error), error) {
 	tags := []string{}
 	if req.DatasourceID != nil {
 		dsTags, err := db.New(a.pool).DatasourceTags(ctx, *req.DatasourceID)
@@ -158,15 +185,11 @@ func (a access) requireApprover(ctx context.Context, id int64) (*accessRequest, 
 			return nil, err
 		}
 	}
-	ok, _, err := a.authz.AuthorizeIn(ctx, api.Principal(ctx), "task.approve", req.approvalResource(), api.RequesterIP(ctx),
-		bridge.Scope{Channel: "workflow-viewer", Datasource: req.DatasourceName, DatasourceTags: tags})
-	if err != nil {
-		return nil, err
-	}
-	if !ok {
-		return nil, api.CodeNotApprover.Err()
-	}
-	return req, nil
+	scope := bridge.Scope{Channel: "workflow-viewer", Datasource: req.DatasourceName, DatasourceTags: tags}
+	return func(action string) (bool, error) {
+		ok, _, err := a.authz.AuthorizeIn(ctx, api.Principal(ctx), action, req.approvalResource(), api.RequesterIP(ctx), scope)
+		return ok, err
+	}, nil
 }
 
 func (a access) approve(w http.ResponseWriter, r *http.Request, id int64) error {
@@ -184,24 +207,24 @@ func (a access) approve(w http.ResponseWriter, r *http.Request, id int64) error 
 	if in.DurationSec != nil {
 		duration = *in.DurationSec
 	}
-	return a.decided(w, r, http.StatusOK, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (int64, string, error) {
+	return a.decided(w, r, http.StatusOK, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (int64, notice, error) {
 		if req.RoleID == nil {
-			return id, "", nil
+			return id, notice{}, nil
 		}
 		q := db.New(tx)
 		n, err := q.ApproveRequest(ctx, db.ApproveRequestParams{DecidedBy: &actor.Principal, ID: id})
 		if err != nil || n == 0 {
-			return id, "", err
+			return id, notice{}, err
 		}
-		if err := timeline.Record(ctx, tx, id, timeline.Approved, &actor.Principal, actor.Channel, nil); err != nil {
-			return id, "", err
+		if _, err := timeline.Record(ctx, tx, id, timeline.Approved, &actor.Principal, actor.Channel, nil); err != nil {
+			return id, notice{}, err
 		}
 		idText := strconv.FormatInt(id, 10)
 		expires := time.Now().Add(time.Duration(duration) * time.Second)
 		grant, err := q.InsertGrant(ctx, db.InsertGrantParams{RequestID: &id, Principal: req.Principal, RoleID: *req.RoleID,
 			GrantedBy: &actor.Principal, ExpiresAt: &expires})
 		if err != nil {
-			return id, "", err
+			return id, notice{}, err
 		}
 		return id, notifyDecided, audit.Admin(ctx, tx, actor, "task.approve", audit.Entity("AccessGrant", strconv.FormatInt(grant, 10)),
 			"approve access request #"+idText+": grant role '"+orNull(req.RoleName)+"' to '"+req.Principal+"' for "+
@@ -223,13 +246,13 @@ func (a access) reject(w http.ResponseWriter, r *http.Request, id int64) error {
 	if in.Reason == nil {
 		return api.CodeInvalidValue.Err("field", "body")
 	}
-	return a.decided(w, r, http.StatusOK, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (int64, string, error) {
+	return a.decided(w, r, http.StatusOK, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (int64, notice, error) {
 		n, err := db.New(tx).RejectRequest(ctx, db.RejectRequestParams{RejectionReason: in.Reason, DecidedBy: &actor.Principal, ID: id})
 		if err != nil || n == 0 {
-			return id, "", err
+			return id, notice{}, err
 		}
-		if err := timeline.Record(ctx, tx, id, timeline.Rejected, &actor.Principal, actor.Channel, in.Reason); err != nil {
-			return id, "", err
+		if _, err := timeline.Record(ctx, tx, id, timeline.Rejected, &actor.Principal, actor.Channel, in.Reason); err != nil {
+			return id, notice{}, err
 		}
 		idText := strconv.FormatInt(id, 10)
 		return id, notifyDecided, audit.Admin(ctx, tx, actor, "task.approve", audit.Entity("AccessRequest", idText),

@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/ridi-oss/proxy-monster/cpgo/api"
 	"github.com/ridi-oss/proxy-monster/cpgo/store/db"
 )
 
@@ -16,20 +17,57 @@ const (
 	Requested = "requested"
 	Approved  = "approved"
 	Rejected  = "rejected"
+	Closed    = "closed"
+	Comment   = "comment"
+	LGTM      = "lgtm"
+	CCAdded   = "cc_added"
+	CCRemoved = "cc_removed"
 )
 
 var decisions = map[string]bool{Approved: true, Rejected: true, "unapproved": true, "ran": true}
 
-// Record appends kind to the request's timeline on q's transaction. A request that is not a workflow request
-// gets no row. A person's decision also lists them as an approver; a system: actor never is.
-func Record(ctx context.Context, q db.DBTX, requestID int64, kind string, actor *string, origin string, body *string) error {
+// Event is one timeline entry, Kotlin's RequestEvent.
+type Event struct {
+	ID        int64   `json:"id"`
+	Kind      string  `json:"kind"`
+	Actor     *string `json:"actor,omitempty"`
+	Body      *string `json:"body,omitempty"`
+	Revision  *int32  `json:"revision,omitempty"`
+	Origin    string  `json:"origin"`
+	CreatedAt string  `json:"createdAt"`
+	EditedAt  *string `json:"editedAt,omitempty"`
+	Deleted   bool    `json:"deleted"`
+}
+
+func toEvent(r db.RequestTimelineRow) Event {
+	return Event{ID: r.ID, Kind: r.Kind, Actor: r.Actor, Body: r.Body, Revision: r.Revision, Origin: r.Origin,
+		CreatedAt: api.JavaInstant(r.CreatedAt), EditedAt: api.OptInstant(r.EditedAt), Deleted: r.DeletedAt != nil}
+}
+
+// Record appends kind to the request's timeline on q's transaction and returns it, or nil for a request that is
+// not a workflow request. A person's decision also lists them as an approver; a system: actor never is.
+func Record(ctx context.Context, q db.DBTX, requestID int64, kind string, actor *string, origin string, body *string) (*Event, error) {
 	queries := db.New(q)
-	_, err := queries.RecordRequestEvent(ctx, db.RecordRequestEventParams{RequestID: requestID, Kind: kind, Actor: actor, Body: body, Origin: origin})
+	row, err := queries.RecordRequestEvent(ctx, db.RecordRequestEventParams{RequestID: requestID, Kind: kind, Actor: actor, Body: body, Origin: origin})
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil
+		return nil, nil
 	}
-	if err != nil || actor == nil || !decisions[kind] || strings.HasPrefix(*actor, "system:") {
-		return err
+	if err != nil {
+		return nil, err
 	}
-	return queries.AddApprover(ctx, db.AddApproverParams{RequestID: requestID, Principal: *actor})
+	ev := toEvent(db.RequestTimelineRow(row))
+	if actor == nil || !decisions[kind] || strings.HasPrefix(*actor, "system:") {
+		return &ev, nil
+	}
+	return &ev, queries.AddApprover(ctx, db.AddApproverParams{RequestID: requestID, Principal: *actor})
+}
+
+// List is the request's timeline in order.
+func List(ctx context.Context, q db.DBTX, requestID int64) ([]Event, error) {
+	rows, err := db.New(q).RequestTimeline(ctx, requestID)
+	out := make([]Event, len(rows))
+	for i, r := range rows {
+		out[i] = toEvent(r)
+	}
+	return out, err
 }

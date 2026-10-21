@@ -12,7 +12,6 @@ import com.ridi.oss.proxymonster.controlplane.authz.contextTagLint
 import com.ridi.oss.proxymonster.controlplane.management.DatasourceManagementService
 import com.ridi.oss.proxymonster.controlplane.management.IdentityManagementService
 import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
-import com.ridi.oss.proxymonster.controlplane.notify.NotificationEvent
 import com.ridi.oss.proxymonster.controlplane.notify.installNotifications
 import com.ridi.oss.proxymonster.controlplane.source.GitHubAdapter
 import com.ridi.oss.proxymonster.controlplane.source.GitHubSourceFlow
@@ -523,8 +522,6 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
             roleResolver, authz, runExecService, this@module, core.systemClassification, taskCompletionHub,
             notifications, service = approvalService,
         )
-        // What every request shares, whatever it asks for: comments, CCs, the timeline, close.
-        requestRoutes(config, approvalService.threads)
 
         // Self-service: the caller's own display language, which notification delivery reads. Not an admin
         // surface and not an authorization input — it only changes which locale a message renders in.
@@ -563,14 +560,7 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
         // Live decision feed for the UI. Requires a session; each record is then filtered by audit.read.
         internalSignalRoutes(
             config.internalToken, cedarPolicyStore::markCommittedMutation,
-            { id, event ->
-                val req = core.accessStore.getRequest(id)
-                when (event) {
-                    "requested" -> true.also { req?.let { notifications?.emitRequestedEvent(it) } }
-                    "decided" -> true.also { req?.let { notifications?.emitEvent(NotificationEvent.TASK_DECIDED, it) } }
-                    else -> false
-                }
-            },
+            requestNotifier(core.accessStore, notifications),
             runExecService::closeSessionsForPrincipal,
             core.proxyEventsHub::attached,
             { name -> core.connectionCatalog.invalidateDatasource(name) },

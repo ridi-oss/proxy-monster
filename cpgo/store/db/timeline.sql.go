@@ -7,6 +7,7 @@ package db
 
 import (
 	"context"
+	"time"
 )
 
 const addApprover = `-- name: AddApprover :exec
@@ -26,11 +27,29 @@ func (q *Queries) AddApprover(ctx context.Context, arg AddApproverParams) error 
 	return err
 }
 
+const addCC = `-- name: AddCC :exec
+INSERT INTO request_participant (request_id, principal, kind)
+SELECT $1::bigint, $2::text, 'cc'
+WHERE $2::text <> (SELECT principal FROM access_request WHERE id = $1::bigint)
+ON CONFLICT DO NOTHING
+`
+
+type AddCCParams struct {
+	RequestID int64
+	Principal string
+}
+
+func (q *Queries) AddCC(ctx context.Context, arg AddCCParams) error {
+	_, err := q.db.Exec(ctx, addCC, arg.RequestID, arg.Principal)
+	return err
+}
+
 const recordRequestEvent = `-- name: RecordRequestEvent :one
 INSERT INTO request_event (request_id, kind, actor, body, revision, origin)
 SELECT ar.id, $1::text, $2::text, $3::text, ar.revision, $4::text FROM access_request ar
 WHERE ar.id = $5::bigint AND ar.creator_kind = 'WORKFLOW'
-RETURNING request_event.id
+RETURNING request_event.id, request_event.kind, request_event.actor, request_event.body, request_event.revision,
+          request_event.origin, request_event.created_at, request_event.edited_at, request_event.deleted_at
 `
 
 type RecordRequestEventParams struct {
@@ -41,7 +60,19 @@ type RecordRequestEventParams struct {
 	RequestID int64
 }
 
-func (q *Queries) RecordRequestEvent(ctx context.Context, arg RecordRequestEventParams) (int64, error) {
+type RecordRequestEventRow struct {
+	ID        int64
+	Kind      string
+	Actor     *string
+	Body      *string
+	Revision  *int32
+	Origin    string
+	CreatedAt time.Time
+	EditedAt  *time.Time
+	DeletedAt *time.Time
+}
+
+func (q *Queries) RecordRequestEvent(ctx context.Context, arg RecordRequestEventParams) (RecordRequestEventRow, error) {
 	row := q.db.QueryRow(ctx, recordRequestEvent,
 		arg.Kind,
 		arg.Actor,
@@ -49,7 +80,105 @@ func (q *Queries) RecordRequestEvent(ctx context.Context, arg RecordRequestEvent
 		arg.Origin,
 		arg.RequestID,
 	)
-	var id int64
-	err := row.Scan(&id)
-	return id, err
+	var i RecordRequestEventRow
+	err := row.Scan(
+		&i.ID,
+		&i.Kind,
+		&i.Actor,
+		&i.Body,
+		&i.Revision,
+		&i.Origin,
+		&i.CreatedAt,
+		&i.EditedAt,
+		&i.DeletedAt,
+	)
+	return i, err
+}
+
+const removeCC = `-- name: RemoveCC :execrows
+DELETE FROM request_participant WHERE request_id = $1 AND principal = $2 AND kind = 'cc'
+`
+
+type RemoveCCParams struct {
+	RequestID int64
+	Principal string
+}
+
+func (q *Queries) RemoveCC(ctx context.Context, arg RemoveCCParams) (int64, error) {
+	result, err := q.db.Exec(ctx, removeCC, arg.RequestID, arg.Principal)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const requestParticipants = `-- name: RequestParticipants :many
+SELECT DISTINCT principal FROM request_participant WHERE request_id = $1 ORDER BY principal
+`
+
+func (q *Queries) RequestParticipants(ctx context.Context, requestID int64) ([]string, error) {
+	rows, err := q.db.Query(ctx, requestParticipants, requestID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var principal string
+		if err := rows.Scan(&principal); err != nil {
+			return nil, err
+		}
+		items = append(items, principal)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const requestTimeline = `-- name: RequestTimeline :many
+SELECT id, kind, actor, body, revision, origin, created_at, edited_at, deleted_at FROM request_event
+WHERE request_id = $1 ORDER BY id
+`
+
+type RequestTimelineRow struct {
+	ID        int64
+	Kind      string
+	Actor     *string
+	Body      *string
+	Revision  *int32
+	Origin    string
+	CreatedAt time.Time
+	EditedAt  *time.Time
+	DeletedAt *time.Time
+}
+
+func (q *Queries) RequestTimeline(ctx context.Context, requestID int64) ([]RequestTimelineRow, error) {
+	rows, err := q.db.Query(ctx, requestTimeline, requestID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []RequestTimelineRow{}
+	for rows.Next() {
+		var i RequestTimelineRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Kind,
+			&i.Actor,
+			&i.Body,
+			&i.Revision,
+			&i.Origin,
+			&i.CreatedAt,
+			&i.EditedAt,
+			&i.DeletedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }

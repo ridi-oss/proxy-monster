@@ -59,8 +59,6 @@ class RequestThreadsDbTest {
         assertFailsWith<TaskServiceException> { threads.comment(outsider, null, actor(outsider), id, "hi") }
         access.approve(admin, null, actor(admin), id, null)
         assertEquals(listOf("requested", "cc_added", "lgtm", "comment", "approved"), kinds(id))
-        assertEquals(setOf(id), threads.involved(cc).map { it.id }.filter { it == id }.toSet())
-        assertTrue(threads.involved(admin).any { it.id == id }, "the approver lists the role request they decided")
         assertFalse(threads.thread(requester, null, id).canClose, "an approved role request is a grant, not closable")
     }
 

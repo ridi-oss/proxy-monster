@@ -34,7 +34,7 @@ type fakeAuthz struct {
 	Resources []bridge.Resource
 	Scopes    []bridge.Scope
 	Changed   int
-	// Notified is each request-notified signal, as "id:event".
+	// Notified is each request-notified signal, as "id:event", or "id:event:principal" when it names one.
 	Notified []string
 	// Ended is each principal Kotlin was told had its web sessions ended.
 	Ended []string
@@ -65,8 +65,12 @@ func (f *fakeAuthz) SessionsEnded(_ context.Context, p string) error {
 	return nil
 }
 
-func (f *fakeAuthz) RequestNotified(_ context.Context, id int64, event string) error {
-	f.Notified = append(f.Notified, fmt.Sprintf("%d:%s", id, event))
+func (f *fakeAuthz) RequestNotified(_ context.Context, id int64, event, principal string) error {
+	n := fmt.Sprintf("%d:%s", id, event)
+	if principal != "" {
+		n += ":" + principal
+	}
+	f.Notified = append(f.Notified, n)
 	return nil
 }
 

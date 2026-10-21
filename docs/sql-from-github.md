@@ -192,11 +192,11 @@ For a PR that adds files, the control plane runs them when all of these hold:
   PR B branched before PR A's `0041` merged; B's `0042` may depend on the schema
   `0041` creates, and B's CI never ran on top of it
   ([Branches that are behind](#branches-that-are-behind));
-- no other PR's request in the scope is EXECUTING, or EXECUTED but not yet
-  merged, unless that PR's current version of some file has failed. A ran `0041`
-  and waits to merge, so B waits. If A's `0042` failed, A cannot merge until its
-  author pushes a fix, so A stops holding the scope and B is not blocked by a PR
-  that may never merge.
+- no other PR's request in the scope is EXECUTING, EXECUTED but not yet merged,
+  or merged but not yet run, unless that PR's current version of some file has
+  failed. A ran `0041` and waits to merge, so B waits. If A's `0042` failed, A
+  cannot merge until its author pushes a fix, so A stops holding the scope and B
+  is not blocked by a PR that may never merge.
 
 It runs the PR's files in key order, each on its own connection whose statements
 share it, and stops at the first failure. It re-checks a PR on every poll (see
@@ -216,6 +216,17 @@ With auto-merge on, neither mentions it: the check says what it is waiting on
 
 On success `query executed` turns green; it is the last pending check, so GitHub
 merges at once. On failure it turns red and nothing merges.
+
+### Merged before it ran
+
+A PR can still merge first: the base does not require `query executed`, or an
+admin bypassed the rule. Its files at the merged commit then run anyway, as
+whoever merged it (for auto-merge, whoever enabled it): an approved file right
+away, a pending one once approved, in the order the PRs merged. Until it runs it
+holds its scope, so a PR merged after it, or not merged yet, cannot run ahead of
+it; if one of that PR's files fails or is rejected, it stops holding the scope,
+as an unmerged PR does. A file pushed after the last filing does not run; the
+check fails with "Merged before this commit's SQL files were filed".
 
 ### One PR at a time
 

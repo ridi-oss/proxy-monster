@@ -168,6 +168,7 @@ func pullRequestPB(pr PullRequest) *pb.PullRequest {
 		HeadSha:     pr.HeadSHA,
 		BaseRef:     pr.BaseRef,
 		Author:      userPB(pr.Author),
+		MergedBy:    userPB(pr.MergedBy),
 
 		Mergeable:         pr.Mergeable,
 		MergeState:        pr.MergeState,

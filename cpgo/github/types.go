@@ -66,6 +66,7 @@ type PullRequest struct {
 	Draft             bool           `json:"draft"`
 	Merged            bool           `json:"merged"`
 	MergedAt          *time.Time     `json:"mergedAt"`
+	MergedBy          *User          `json:"mergedBy"`
 	MergeCommit       *string        `json:"mergeCommit"`
 	HeadSHA           string         `json:"headSha"`
 	BaseRef           string         `json:"baseRef"`

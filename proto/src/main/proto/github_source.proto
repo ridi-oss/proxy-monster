@@ -169,6 +169,8 @@ message PullRequest {
   string review_decision = 17;
   int32 unresolved_threads = 18;
   bool can_be_rebased = 19;
+  // Who merged it; for auto-merge, the user who enabled it.
+  SourceUser merged_by = 20;
 }
 
 message ReadPullRequestsRequest {

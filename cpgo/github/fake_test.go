@@ -235,7 +235,7 @@ func pr(number int, o prOpts) string {
 
 func merged(number int) string {
 	return fmt.Sprintf(`{"state":"MERGED","merged":true,"mergedAt":"2026-10-08T12:00:00Z","mergeCommit":{"oid":"merge%d"},
-  "headRefOid":"sha2","baseRefName":"main","author":null,"autoMergeRequest":null,
+  "mergedBy":{"login":"dave","databaseId":104},"headRefOid":"sha2","baseRefName":"main","author":null,"autoMergeRequest":null,
   "isDraft":false,"mergeable":"UNKNOWN","canBeRebased":false,"mergeStateStatus":"UNKNOWN","reviewDecision":null,"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},
   "reviews":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"files":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},
   "commits":{"nodes":[{"commit":{"oid":"sha2","statusCheckRollup":null}}]},"authors":{"nodes":[]}}`, number)

@@ -220,6 +220,7 @@ class GitHubAdapter(
             canBeRebased = canBeRebased,
             merged = merged,
             mergedAt = if (hasMergedAt()) mergedAt.instant() else null,
+            mergedBy = if (hasMergedBy()) mergedBy.model() else null,
             mergeCommit = if (hasMergeCommit()) mergeCommit else null,
             headSha = headSha,
             baseRef = baseRef,

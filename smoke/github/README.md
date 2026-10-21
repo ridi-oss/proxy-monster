@@ -37,6 +37,7 @@ end.
 | C8       | only rebase merges allowed               | a squash auto-merge holds the run               |
 | C9       | signed commits required                  | a rule the gate does not evaluate holds the run |
 | C10      | classic branch protection                | classic protection holds the run                |
+| C11      | no ruleset                               | a PR merged before approval runs once approved  |
 
 It takes about 30 minutes. It mints the App's token from `PM_GITHUB_E2E_APP_KEY`
 (default `~/.cache/proxy-monster/github-e2e/app-key.pem`) to post a check run of

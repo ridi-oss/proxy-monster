@@ -122,7 +122,7 @@ func TestTheServiceMapsEveryPullRequestField(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := out.PullRequests[2]
-	if !m.Merged || m.Open || m.GetMergedAt().AsTime().Format(time.RFC3339) != "2026-10-08T12:00:00Z" || m.GetMergeCommit() != "merge2" {
+	if !m.Merged || m.Open || m.GetMergedAt().AsTime().Format(time.RFC3339) != "2026-10-08T12:00:00Z" || m.GetMergeCommit() != "merge2" || m.MergedBy.GetLogin() != "dave" {
 		t.Fatalf("merged %v", m)
 	}
 	o := out.PullRequests[1]

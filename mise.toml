@@ -249,26 +249,26 @@ fi
 '''
 
 [tasks.lint]
-description = "Lint: prettier over docs/config (md, json, yaml, css) + eslint over the web sources"
+description = "Lint: prettier over sources, docs and config (ts, js, md, json, yaml, css) + eslint over the web sources"
 shell = "bash -c"
-# Prettier owns the prose-and-config formats; TypeScript stays with eslint, which already has the
-# Next.js rule set. It is invoked by path from the repo root rather than through `pnpm -C web exec`,
-# because its scope is the whole tree and both `.prettierrc.json` and `.prettierignore` are resolved
-# relative to the working directory. `--write` instead of `--check` reformats in place.
+# Prettier owns formatting and eslint the Next.js rule set. Prettier is invoked by path from the repo
+# root rather than through `pnpm -C web exec`, because its scope is the whole tree and both
+# `.prettierrc.json` and `.prettierignore` are resolved relative to the working directory. `--write`
+# instead of `--check` reformats in place.
 run = '''
 set -euo pipefail
 pnpm -C web install
-./web/node_modules/.bin/prettier --check '**/*.{md,json,yml,yaml,css}'
+./web/node_modules/.bin/prettier --check '**/*.{ts,tsx,js,mjs,cjs,md,json,yml,yaml,css}'
 pnpm -C web lint
 '''
 
 [tasks.format]
-description = "Reformat the prose-and-config files prettier owns (md, json, yaml, css) in place"
+description = "Reformat the files prettier owns (ts, js, md, json, yaml, css) in place"
 shell = "bash -c"
 run = '''
 set -euo pipefail
 pnpm -C web install
-./web/node_modules/.bin/prettier --write '**/*.{md,json,yml,yaml,css}'
+./web/node_modules/.bin/prettier --write '**/*.{ts,tsx,js,mjs,cjs,md,json,yml,yaml,css}'
 '''
 
 [tasks.verify]

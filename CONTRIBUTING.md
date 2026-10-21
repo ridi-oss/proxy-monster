@@ -13,7 +13,7 @@ compiles with `--release 24` and targets JVM 24 — and `mise` supplies it:
 
 ```sh
 mise run dev      # the whole local stack: datastores, control plane, both proxies, web console
-mise run lint     # prettier over md/json/yaml/css + eslint over the web sources
+mise run lint     # prettier over ts/js/md/json/yaml/css + eslint over the web sources
 mise run verify   # the whole gate: lint, JVM tests, Go tests, web unit tests + build
 ```
 
@@ -25,10 +25,10 @@ narrows the Go tests. `mise tasks ls` lists the per-component tasks for running
 one piece at a time; install, run locally, and deploy is
 [INSTALL.md](./INSTALL.md).
 
-Prettier owns the prose-and-config formats (`.md`, `.json`, `.yml`/`.yaml`,
-`.css`); eslint owns TypeScript. `mise run lint` checks both and
-`mise run format` rewrites what prettier owns, so a formatting-only diff never
-has to be argued about in review.
+Prettier owns formatting (`.ts`/`.tsx`/`.js`/`.mjs`, `.md`, `.json`,
+`.yml`/`.yaml`, `.css`); eslint owns the TypeScript rule set. `mise run lint`
+checks both and `mise run format` rewrites what prettier owns, so a
+formatting-only diff never has to be argued about in review.
 
 MySQL is the primary, fully-enforced target and the correctness bar; verify it
 first. PostgreSQL support is experimental.

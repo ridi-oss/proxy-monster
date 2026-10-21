@@ -79,7 +79,7 @@ func TestSplitStatementsFailsClosed(t *testing.T) {
 	}{
 		{"unset engine", "SELECT 1", &pb.EngineConfig{}},
 		{"nil config", "SELECT 1", nil},
-		// openSession requires both for MySQL; splitting under a partial config would use a dialect the
+		// newSessionSettings requires both for MySQL; splitting under a partial config would use a dialect the
 		// target does not, so it fails closed exactly as analysis does.
 		{"mysql without version", "SELECT 1", &pb.EngineConfig{Engine: pb.Engine_MYSQL, Target: &pb.TargetSettings{MysqlLowerCaseTableNames: proto.Int32(1)}}},
 		{"mysql without lower_case_table_names", "SELECT 1", &pb.EngineConfig{Engine: pb.Engine_MYSQL, Target: &pb.TargetSettings{EngineVersion: "8.0.46"}}},

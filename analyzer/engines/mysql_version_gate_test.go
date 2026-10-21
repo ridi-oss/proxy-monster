@@ -143,14 +143,14 @@ func TestExecutableCommentGateRespectsVersionThreshold(t *testing.T) {
 }
 
 func TestCreateEngineRejectsUnspecifiedEngine(t *testing.T) {
-	if _, err := openSession(&pb.EngineConfig{}); err == nil {
-		t.Fatal("openSession with ENGINE_UNSPECIFIED unexpectedly succeeded")
+	if _, err := newSessionSettings(&pb.EngineConfig{}); err == nil {
+		t.Fatal("newSessionSettings with ENGINE_UNSPECIFIED unexpectedly succeeded")
 	}
 }
 
 func TestCreateEngineRejectsNilConfig(t *testing.T) {
-	if _, err := openSession(nil); err == nil {
-		t.Fatal("openSession(nil) unexpectedly succeeded")
+	if _, err := newSessionSettings(nil); err == nil {
+		t.Fatal("newSessionSettings(nil) unexpectedly succeeded")
 	}
 }
 
@@ -158,24 +158,27 @@ func TestCreateEngineRejectsNilConfig(t *testing.T) {
 // builds as if no session facts were observed. The oneof makes a foreign fact unrepresentable rather than
 // something each engine must refuse.
 func TestCreateEngineIgnoresAnotherEnginesSessionArm(t *testing.T) {
-	sess, err := openSession(&pb.EngineConfig{
+	settings, err := newSessionSettings(&pb.EngineConfig{
 		Engine:  pb.Engine_MYSQL,
 		Target:  &pb.TargetSettings{EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(0)},
 		Session: &pb.SessionObservation{Engine: &pb.SessionObservation_Postgres{Postgres: &pb.PostgresSession{SystemXidVisible: proto.Bool(false), FunctionShadowingObserved: true}}},
 	})
-	if _, isMySQL := sess.(*mysqlSession); err != nil || !isMySQL {
-		t.Fatalf("MySQL engine with a PostgreSQL session arm = %v, %v", sess, err)
+	if err != nil || settings == nil {
+		t.Fatalf("MySQL engine with a PostgreSQL session arm = %v, %v", settings, err)
+	}
+	if settings.engine != MySQL {
+		t.Fatalf("MySQL engine with a PostgreSQL session arm = %v, %v", settings, err)
 	}
 }
 
 func TestCreateEngineValidatesPostgresFunctionShadowingContext(t *testing.T) {
-	if _, err := openSession(&pb.EngineConfig{
+	if _, err := newSessionSettings(&pb.EngineConfig{
 		Engine:  pb.Engine_POSTGRES,
 		Session: &pb.SessionObservation{Engine: &pb.SessionObservation_Postgres{Postgres: &pb.PostgresSession{ShadowedFunctions: []string{"unnest"}}}},
 	}); err == nil {
 		t.Fatal("unobserved PostgreSQL function shadow list unexpectedly succeeded")
 	}
-	if _, err := openSession(&pb.EngineConfig{
+	if _, err := newSessionSettings(&pb.EngineConfig{
 		Engine:  pb.Engine_POSTGRES,
 		Session: &pb.SessionObservation{Engine: &pb.SessionObservation_Postgres{Postgres: &pb.PostgresSession{FunctionShadowingObserved: true}}},
 	}); err != nil {

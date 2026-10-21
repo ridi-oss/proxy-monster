@@ -8,8 +8,6 @@ import (
 
 	"github.com/ridi-oss/sqlglot-go/dialects"
 	exp "github.com/ridi-oss/sqlglot-go/expressions"
-	"github.com/ridi-oss/sqlglot-go/optimizer"
-	"github.com/ridi-oss/sqlglot-go/schema"
 
 	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 )
@@ -22,11 +20,20 @@ var MySQL = &Engine{
 		IdentifierQuote:       "`",
 		systemSchemas:         schemas("information_schema", "mysql", "performance_schema", "sys"),
 		// MySQL has one catalog, def, whatever the database.
-		catalogName:       func(string) CatalogName { return CatalogName{"def"} },
-		introspected:      mysqlIntrospected,
-		dialect:           dialects.MySQL,
-		datasourceDialect: mysqlDialect,
-		newSession:        newMySQLSession,
+		catalogName:         func(string) CatalogName { return CatalogName{"def"} },
+		introspected:        mysqlIntrospected,
+		dialect:             dialects.MySQL,
+		datasourceDialect:   mysqlDialect,
+		sessionDialect:      mysqlSessionDialect,
+		bareCallIsBuiltin:   noBuiltinBareCall,
+		showUtilityCommand:  showUtilityCommand,
+		isSafeTypeReference: noSafeTypeReference,
+		// MySQL has no search path; a bare name never resolves in a system schema.
+		systemSchemaFirst: noSystemSchemaFirst,
+		nativeOutputLabel: mysqlNativeOutputLabel,
+		// MySQL diagnostics echo only the operated value (`Truncated incorrect INTEGER value: '010-…'`) —
+		// always an already-referenced column — and never dump unreferenced ones, so the template is the whole set.
+		diagnosticLeakKeys: referencedColumnLeakKeys,
 		normalizeRules: func() normalizeRules {
 			return normalizeRules{dialect: dialects.MySQL(), rejectExecutableComments: true}
 		},
@@ -36,6 +43,7 @@ var MySQL = &Engine{
 		rejectsDuplicateDerivedOutputLabels: true,
 		rightJoinStarOrder:                  starOrderCommonRightLeft,
 	},
+	hooks: mysqlHooks{},
 }
 
 // mysqlDialect folds identifiers as lower_case_table_names does, with MySQL's utf8mb3_general_ci map: under 0
@@ -91,15 +99,9 @@ func mysqlIntrospected(d *dialects.Dialect, rows []*pb.Column) []ColumnName {
 	return out
 }
 
-type mysqlSession struct {
-	datasource Datasource
-	dialect    *dialects.Dialect
-}
-
-func (e *mysqlSession) Datasource() Datasource { return e.datasource }
-
-func newMySQLSession(ds Datasource, observed *pb.SessionObservation) (session, error) {
-	versionID := mysqlVersionID(ds.version)
+// mysqlSessionDialect requires the target's version, which gates executable comments.
+func mysqlSessionDialect(datasource Datasource, observation *pb.SessionObservation) (*dialects.Dialect, error) {
+	versionID := mysqlVersionID(datasource.version)
 	if versionID <= 0 {
 		return nil, fmt.Errorf("engine version is required for mysql")
 	}
@@ -110,40 +112,24 @@ func newMySQLSession(ds Datasource, observed *pb.SessionObservation) (session, e
 	// (applyMySQLAnsiQuotes — `"` becomes a quoted-identifier delimiter, not a string), which only runs at
 	// resolution time. When the target DB's live sql_mode carries ANSI_QUOTES, the analyzer then reads a
 	// masked column quoted with `"` as the real column and still masks it (instead of the proxy having to
-	// fail the connection closed). ds.Dialect only ever sets the strategy, so its
+	// fail the connection closed). datasource.Dialect only ever sets the strategy, so its
 	// SettingsString round-trips losslessly as the base.
-	settings := ds.Dialect().SettingsString() +
+	settings := datasource.Dialect().SettingsString() +
 		fmt.Sprintf(", mysql_version=%d, opaque_functions=true", versionID)
-	if observed.GetMysql().GetAnsiQuotes() {
+	if observation.GetMysql().GetAnsiQuotes() {
 		settings += ", mysql_ansi_quotes=true"
 	}
 	dialect, err := dialects.GetOrRaise(settings)
 	if err != nil {
 		return nil, fmt.Errorf("build mysql dialect: %w", err)
 	}
-	return &mysqlSession{datasource: ds, dialect: dialect}, nil
+	return dialect, nil
 }
-
-func (e *mysqlSession) PrepareStatement(root exp.Expression) (exp.Expression, bool, *pb.StatementFacts, error) {
-	return root, false, nil, nil
-}
-
-func (e *mysqlSession) FinishSubmission(exp.Expression) bool { return false }
-
-func (e *mysqlSession) StampSubmission(*pb.StatementFacts) {}
-
-func (e *mysqlSession) Dialect() *dialects.Dialect { return e.dialect }
-
-func (e *mysqlSession) ConfigureNamespace(opts *optimizer.QualifyOpts, namespace NamespaceConfig) {
-	opts.SearchPath = namespace.SearchPath
-}
-
-func (e *mysqlSession) BareCallIsBuiltin(string) bool { return false }
 
 // MySQL labels an unaliased computed projection with its verbatim source text (`1 +    1` keeps
 // its exact spacing; verified against MySQL 8.0), truncated to 255 runes as the server does for
 // implicit labels. Fails closed on an unstamped node (only parse-time projections carry text).
-func (e *mysqlSession) NativeOutputLabel(projection, _ exp.Expression) (string, bool) {
+func mysqlNativeOutputLabel(_ *sessionSettings, projection, _ exp.Expression) (string, bool) {
 	text, ok := projection.SpanText()
 	if !ok {
 		return "", false
@@ -154,13 +140,15 @@ func (e *mysqlSession) NativeOutputLabel(projection, _ exp.Expression) (string, 
 	return text, true
 }
 
-// RewriteStatement pins a single, session-scoped `SET character_set_results = NULL` — the default MySQL
+type mysqlHooks struct{ sharedHooks }
+
+// rewriteStatement pins a single, session-scoped `SET character_set_results = NULL` — the default MySQL
 // Connector/J (and so DBeaver) session-init, which asks the target DB to return each column in its own charset
 // for client-side decoding — to utf8mb4, so the wire masker keeps decoding results as UTF-8. Only that exact
 // form is rewritten; a compound SET, GLOBAL/PERSIST scope, a same-named user variable, a qualified or
 // bogus-scoped target, or any non-NULL value is left untouched (and still fails closed at the wire session
 // invariant). Recognition is on the parsed AST, so every spelling MySQL accepts reduces to the same check.
-func (e *mysqlSession) RewriteStatement(root exp.Expression) string {
+func (mysqlHooks) rewriteStatement(root exp.Expression) string {
 	if root.Kind() != exp.KindSet {
 		return ""
 	}
@@ -207,23 +195,6 @@ func (e *mysqlSession) RewriteStatement(root exp.Expression) string {
 		return ""
 	}
 	return "SET character_set_results = utf8mb4"
-}
-
-// MySQL diagnostics echo only the operated value (`Truncated incorrect INTEGER value: '010-…'`) —
-// always an already-referenced column — and never dump unreferenced ones, so the template is the whole set.
-func (e *mysqlSession) DiagnosticLeakKeys(report ProbeResult, _ schema.Schema) map[string]bool {
-	return referencedColumnKeys(report)
-}
-
-func (e *mysqlSession) ShowUtilityCommand(root exp.Expression) string {
-	return showUtilityCommand(root)
-}
-
-// MySQL has no search path; a bare name never resolves in a system schema.
-func (e *mysqlSession) SystemSchemaFirst([]string) bool { return false }
-
-func (e *mysqlSession) IsSafeTypeReference(exp.Expression, exp.Expression, NamespaceConfig) bool {
-	return false
 }
 
 // mysqlNormalizationDialect returns a MySQL *Dialect configured with the identifier-normalization

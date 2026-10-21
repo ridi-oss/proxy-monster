@@ -2,7 +2,6 @@ package engines
 
 import (
 	"strings"
-	"unicode"
 	"unicode/utf8"
 
 	sqlglot "github.com/ridi-oss/sqlglot-go"
@@ -10,15 +9,10 @@ import (
 	"github.com/ridi-oss/sqlglot-go/tokens"
 )
 
-// normalizeRules is the per-engine part of SqlNormalize: the dialect that tokenizes, the dialect that
-// classifies a lexeme as a word, whether the lexer switches to Hive mid-stream (Athena DDL inside a Trino
-// stream), whether unquoted identifiers fold, and whether executable comments are refused.
+// normalizeRules is the per-engine part of SqlNormalize: the dialect that tokenizes, whether unquoted
+// identifiers fold, and whether executable comments are refused.
 type normalizeRules struct {
 	dialect *dialects.Dialect
-	// wordDialect classifies raw lexemes as identifiers or keywords; usually dialect itself.
-	wordDialect *dialects.Dialect
-	// hiveDialect takes over on a HIVE_TOKEN_STREAM marker and wordDialect returns on ';'; nil = never.
-	hiveDialect *dialects.Dialect
 	// foldIdentifiers lowercases unquoted identifiers (PostgreSQL, Athena). MySQL keeps them byte-exact:
 	// lower_case_table_names=0 makes `db.T` and `db.t` distinct tables.
 	foldIdentifiers bool
@@ -26,12 +20,11 @@ type normalizeRules struct {
 	rejectExecutableComments bool
 }
 
-// lexeme is one token of a statement walked with its engine's rules: its raw text, the dialect that
-// classifies it as a word, and the text between it and the previous token.
+// lexeme is one token of a statement walked with its engine's rules: its raw text and the text between it
+// and the previous token.
 type lexeme struct {
-	token       tokens.Token
-	raw, gap    string
-	wordDialect *dialects.Dialect
+	token    tokens.Token
+	raw, gap string
 }
 
 // lex walks sql's tokens in wireName's engine rules, without trailing semicolons. false means the engine is
@@ -55,10 +48,8 @@ func lex(sql, wireName string) (normalizeRules, []lexeme, bool) {
 	runes := []rune(sql)
 	previousEnd := -1
 	out := make([]lexeme, 0, len(tokenStream))
-	wordDialect := rules.wordDialect
 	for _, token := range tokenStream {
-		if rules.hiveDialect != nil && token.TokenType == tokens.HIVE_TOKEN_STREAM {
-			wordDialect = rules.hiveDialect
+		if token.Synthetic {
 			continue
 		}
 		if token.Start < 0 || token.End < token.Start || token.Start <= previousEnd || token.End >= len(runes) {
@@ -68,11 +59,8 @@ func lex(sql, wireName string) (normalizeRules, []lexeme, bool) {
 		if rules.rejectExecutableComments && (containsUnsafeMySQLComment(gap) || token.TokenType == tokens.HINT) {
 			return rules, nil, false
 		}
-		out = append(out, lexeme{token: token, raw: string(runes[token.Start : token.End+1]), gap: string(gap), wordDialect: wordDialect})
+		out = append(out, lexeme{token: token, raw: string(runes[token.Start : token.End+1]), gap: string(gap)})
 		previousEnd = token.End
-		if rules.hiveDialect != nil && token.TokenType == tokens.SEMICOLON {
-			wordDialect = rules.wordDialect
-		}
 	}
 	if rules.rejectExecutableComments && containsUnsafeMySQLComment(runes[previousEnd+1:]) {
 		return rules, nil, false
@@ -99,7 +87,7 @@ func SqlNormalize(sql, dialect string) (normalized string, ok bool) {
 	lexemes := make([]string, 0, len(lexed))
 	for _, l := range lexed {
 		raw := l.raw
-		if isWordToken(raw, l.token.TokenType, l.wordDialect) {
+		if isWordToken(l.token) {
 			if rules.foldIdentifiers {
 				raw = d.FoldIdentifierName(raw, false)
 			} else if d.IsReservedKeyword(raw) && !previousWasDot {
@@ -126,14 +114,7 @@ func SqlNormalize(sql, dialect string) (normalized string, ok bool) {
 	return normalized, true
 }
 
-func isWordToken(raw string, tokenType tokens.TokenType, d *dialects.Dialect) bool {
-	if tokenType == tokens.VAR {
-		return true
-	}
-	first, _ := utf8.DecodeRuneInString(raw)
-	if first != '_' && !unicode.IsLetter(first) {
-		return false
-	}
-	configuredType, found := d.TokenizerConfig.Keywords[strings.ToUpper(raw)]
-	return found && configuredType == tokenType
+// isWordToken reports a keyword or unquoted name; Keyword also marks operators, which lowercasing leaves alone.
+func isWordToken(token tokens.Token) bool {
+	return token.Keyword || token.TokenType == tokens.VAR
 }

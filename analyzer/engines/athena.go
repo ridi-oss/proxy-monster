@@ -27,7 +27,7 @@ var Athena = &Engine{
 	dialect:      dialects.Athena,
 	newSession:   newAthenaSession,
 	normalizeRules: func() normalizeRules {
-		return normalizeRules{dialect: dialects.Athena(), wordDialect: dialects.Trino(), hiveDialect: dialects.Hive(), foldIdentifiers: true}
+		return normalizeRules{dialect: dialects.Athena(), foldIdentifiers: true}
 	},
 	foldColumn:                athenaName,
 	normalizeCatalogOnBuild:   true,

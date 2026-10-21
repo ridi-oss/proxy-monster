@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.1.40](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.39...server-v0.1.40) (2026-10-21)
+
+
+### Features
+
+* **control-plane:** name the query executed check after the instance ([888e33d](https://github.com/ridi-oss/proxy-monster/commit/888e33d3bc101c61a4776b61f8de6467e419de80))
+* **control-plane:** run a pull request's SQL that merged before it ran ([0f182de](https://github.com/ridi-oss/proxy-monster/commit/0f182debd1180cd8881d95e41c374bf5f1f05d46))
+* **cpgo:** serve request threads in Go ([d8e0654](https://github.com/ridi-oss/proxy-monster/commit/d8e065499bf9d41d158f1aa5fe660fcb1c0567c6))
+* **cpgo:** serve the MCP OAuth authorization server in Go ([1c1a68a](https://github.com/ridi-oss/proxy-monster/commit/1c1a68a27cda5b712327f301262ce23d5b907783))
+* **sql-action:** post the skipped check from the workflow ([ddd8a7f](https://github.com/ridi-oss/proxy-monster/commit/ddd8a7f04f91c3bf076f155fd2111bcbe2343d8c))
+
+
+### Refactoring
+
+* **analyzer:** rename EngineDatasource to TargetSettings ([ed1e149](https://github.com/ridi-oss/proxy-monster/commit/ed1e14995708779112fdeb30f914e5260e814666))
+
+
+### Build & Dependencies
+
+* check TypeScript formatting with Prettier ([fbddbc9](https://github.com/ridi-oss/proxy-monster/commit/fbddbc9a179caf8ec85219b512de71f548f257d6))
+
 ## [0.1.39](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.38...server-v0.1.39) (2026-10-21)
 
 

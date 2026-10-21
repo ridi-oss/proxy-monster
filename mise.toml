@@ -12,7 +12,7 @@ java = "temurin-24.0.2"
 # Go builds the analyzer's c-shared native lib (analyzer/cmd/libsqlglot, via cgo) as part of the
 # Gradle build; matches analyzer/go.mod. (Zig — the Linux cross C compiler for the all-targets fat-jar
 # build, -Psqlglot.native.all=true — is only needed for that; add it when CI is wired.)
-go = "1.26"
+go = "1.26.10"
 # Go protobuf generation. Buf provides the compiler; the two local plugins emit the checked-in Go files.
 buf = "1.72.0"
 protoc-gen-go = "1.35.2"

@@ -1,6 +1,6 @@
 module github.com/ridi-oss/proxy-monster/cpgo
 
-go 1.26.4
+go 1.26.10
 
 require (
 	github.com/alecthomas/kong v1.16.1

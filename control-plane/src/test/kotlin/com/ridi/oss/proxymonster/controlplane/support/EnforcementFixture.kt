@@ -203,6 +203,8 @@ class EnforcementFixture(
     val targetJdbcUrl: String,
     val targetUser: String,
     val targetPassword: String,
+    // The control-plane store's database name, for a CpGoStack over the same store.
+    val metaDatabase: String,
 ) {
     // principal defaults to the principal seedPolicy() grants ROLE to via a direct principal_role
     // assignment — role resolution is entirely server-side, never a client-asserted list.
@@ -255,7 +257,7 @@ class EnforcementFixture(
             val metaDb = SharedPostgres.migratedDatabase("pm_meta")
             val meta = SharedPostgres.hikari(metaDb)
             return MetaStores(
-                meta, DatasourceStore(meta), PolicyStore(meta), AuditStore(meta), AccessStore(meta),
+                metaDb, meta, DatasourceStore(meta), PolicyStore(meta), AuditStore(meta), AccessStore(meta),
                 UserGroupStore(meta), CedarPolicyStore(meta), TokenStore(meta), PrincipalSessionStore(meta, null),
             )
         }
@@ -543,6 +545,7 @@ class EnforcementFixture(
         }
 
         private data class MetaStores(
+            val metaDatabase: String,
             val meta: DataSource,
             val datasourceStore: DatasourceStore,
             val policyStore: PolicyStore,
@@ -565,7 +568,7 @@ class EnforcementFixture(
                 return EnforcementFixture(
                     datasourceStore, policyStore, auditStore, accessStore, userGroupStore, tokenStore, daemonSessionStore,
                     ds, ROLE, CLEARTEXT, roleResolver, authz, meta, cedarPolicyStore,
-                    targetJdbcUrl, targetUser, targetPassword,
+                    targetJdbcUrl, targetUser, targetPassword, metaDatabase,
                 )
             }
         }

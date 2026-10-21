@@ -73,7 +73,8 @@ func (c *Client) PoliciesChanged(ctx context.Context) error {
 }
 
 // RequestNotified asks Kotlin to send the notification for a request a Go write opened ("requested"), decided
-// ("decided"), commented on ("commented"), closed ("cancelled"), or added principal as a CC to ("cc-added") or removed one from it ("cc-removed").
+// ("decided"), returned to pending ("reopened"), commented on ("commented"), closed ("cancelled"), or added
+// principal as a CC to ("cc-added") or removed one from it ("cc-removed").
 func (c *Client) RequestNotified(ctx context.Context, id int64, event, principal string) error {
 	return c.post(ctx, c.upstream.JoinPath("/internal/request-notified").String(), struct {
 		ID        int64  `json:"id"`

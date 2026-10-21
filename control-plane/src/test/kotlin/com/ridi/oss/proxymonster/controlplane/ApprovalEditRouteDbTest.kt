@@ -1,14 +1,12 @@
 package com.ridi.oss.proxymonster.controlplane
 
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
+import com.ridi.oss.proxymonster.controlplane.support.CpGoStack
 import com.ridi.oss.proxymonster.controlplane.support.EnforcementFixture
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.controlplane.support.testLoginRoute
-import com.ridi.oss.proxymonster.controlplane.support.webSessionCookie
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
-import io.ktor.client.plugins.contentnegotiation.ContentNegotiation as ClientContentNegotiation
-import io.ktor.client.plugins.cookies.HttpCookies
 import io.ktor.client.request.get
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
@@ -16,14 +14,10 @@ import io.ktor.client.statement.HttpResponse
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
-import io.ktor.serialization.kotlinx.json.json
-import io.ktor.server.application.install
-import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.routing.routing
-import io.ktor.server.sessions.Sessions
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
-import kotlinx.serialization.json.Json
+import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.TestInstance
 import kotlin.test.Test
@@ -34,8 +28,8 @@ import kotlin.test.assertTrue
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class ApprovalEditRouteDbTest {
     private lateinit var fx: EnforcementFixture
-    private lateinit var runExecService: RunExecService
     private lateinit var sessionStore: PrincipalSessionStore
+    private lateinit var cpGo: CpGoStack
     private lateinit var config: Config
     private var roleId = 0L
 
@@ -46,7 +40,6 @@ class ApprovalEditRouteDbTest {
     fun setup() {
         requireDockerOrSkip()
         fx = EnforcementFixture.postgres()
-        runExecService = RunExecService(ControlPlaneCore(fx.dataSource))
         sessionStore = PrincipalSessionStore(fx.dataSource, null)
         roleId = fx.policyStore.createRole(RoleInput("edit-runner")).id
         fx.cedarPolicyStore.create(
@@ -58,30 +51,18 @@ class ApprovalEditRouteDbTest {
         )
         config = Config(
             httpPort = 0, dbUrl = "", dbUser = "", dbPassword = "", authDebug = false, secretToken = null,
-            sessionSecret = "edit-route-test-secret", oidc = null, resultKey = null, scimToken = null,
+            sessionSecret = "edit-route-test-secret-of-32-characters", oidc = null, resultKey = null, scimToken = null,
             sessionWindowSeconds = 3600, idpRecheckIntervalSeconds = 600, devMarker = true,
         )
+        cpGo = CpGoStack(config, ControlPlaneCore(fx.dataSource), fx.metaDatabase) { routing { testLoginRoute(sessionStore, config) } }
     }
 
-    private suspend fun ApplicationTestBuilder.wire(): HttpClient {
-        application {
-            attributes.put(PRINCIPAL_SESSION_STORE, sessionStore)
-            install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true; encodeDefaults = true }) }
-            install(Sessions) { webSessionCookie(sessionStore, config.sessionSecret) }
-            routing {
-                testLoginRoute(sessionStore, config)
-                approvalRoutes(
-                    config, fx.accessStore, fx.auditStore, fx.datasourceStore, fx.policyStore,
-                    fx.userGroupStore, null, fx.roleResolver, fx.authz, runExecService,
-                )
-            }
-        }
-        return createClient {
-            expectSuccess = false
-            install(HttpCookies)
-            install(ClientContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
-        }
+    @AfterAll
+    fun teardown() {
+        if (::cpGo.isInitialized) cpGo.close()
     }
+
+    private fun ApplicationTestBuilder.wire(): HttpClient = cpGo.client()
 
     private suspend fun HttpClient.signIn(principal: String) =
         assertEquals(HttpStatusCode.NoContent, post("/test/session/$principal").status)

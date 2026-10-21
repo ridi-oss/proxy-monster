@@ -5,10 +5,10 @@ import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
 import com.ridi.oss.proxymonster.controlplane.grpc.CONTROL_PROTOCOL_VERSION
 import com.ridi.oss.proxymonster.controlplane.grpc.ControlPlaneGrpcService
 import com.ridi.oss.proxymonster.controlplane.grpc.GrpcServer
+import com.ridi.oss.proxymonster.controlplane.support.CpGoStack
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.controlplane.support.testLoginRoute
-import com.ridi.oss.proxymonster.controlplane.support.webSessionCookie
 import com.ridi.oss.proxymonster.grpc.ControlPlaneGrpcKt
 import com.ridi.oss.proxymonster.grpc.EnfAction as WireEnfAction
 import com.ridi.oss.proxymonster.grpc.ProxyRunMsg
@@ -27,8 +27,6 @@ import io.grpc.ManagedChannel
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
-import io.ktor.client.plugins.contentnegotiation.ContentNegotiation as ClientContentNegotiation
-import io.ktor.client.plugins.cookies.HttpCookies
 import io.ktor.client.request.get
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
@@ -36,11 +34,7 @@ import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
-import io.ktor.serialization.kotlinx.json.json
-import io.ktor.server.application.install
-import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.routing.routing
-import io.ktor.server.sessions.Sessions
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
 import kotlinx.coroutines.CompletableDeferred
@@ -53,7 +47,6 @@ import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.withTimeout
-import kotlinx.serialization.json.Json
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.TestInstance
@@ -87,8 +80,8 @@ import kotlin.test.fail
 class ApprovalExecuteRouteDbTest {
     private lateinit var dataSource: DataSource
     private lateinit var core: ControlPlaneCore
-    private lateinit var runExecService: RunExecService
     private lateinit var resultStore: QueryResultStore
+    private lateinit var cpGo: CpGoStack
     private lateinit var datasource: Datasource
     private lateinit var config: Config
     private lateinit var server: GrpcServer
@@ -103,9 +96,9 @@ class ApprovalExecuteRouteDbTest {
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        dataSource = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_exec_route"))
+        val database = SharedPostgres.migratedDatabase("pm_exec_route")
+        dataSource = SharedPostgres.hikari(database)
         core = ControlPlaneCore(dataSource)
-        runExecService = RunExecService(core)
         resultStore = QueryResultStore(dataSource, ResultCrypto(ByteArray(32) { it.toByte() }))
         sessionStore = PrincipalSessionStore(dataSource, null)
 
@@ -134,11 +127,12 @@ class ApprovalExecuteRouteDbTest {
 
         config = Config(
             httpPort = 0, dbUrl = "", dbUser = "", dbPassword = "", authDebug = false, secretToken = null,
-            sessionSecret = "exec-route-test-secret", oidc = null, resultKey = null, scimToken = null,
-            sessionWindowSeconds = 3600, idpRecheckIntervalSeconds = 600, devMarker = true,
+            sessionSecret = "exec-route-test-secret-of-32-characters", oidc = null, resultKey = ByteArray(32) { it.toByte() },
+            scimToken = null, sessionWindowSeconds = 3600, idpRecheckIntervalSeconds = 600, devMarker = true,
         )
+        cpGo = CpGoStack(config, core, database) { routing { testLoginRoute(sessionStore, config) } }
 
-        // The gRPC server + stub is the fake proxy's transport — the SAME core as runExecService above,
+        // The gRPC server + stub is the fake proxy's transport — the SAME core as the stack's RunExecService,
         // so the fake proxy dialed through this stub attaches to the exact proxyEventsHub run() dials
         // (GrpcRunExecDbTest.kt:72-97's shape).
         server = GrpcServer(0, ControlPlaneGrpcService(core), secretToken = null).also { it.start() }
@@ -150,6 +144,7 @@ class ApprovalExecuteRouteDbTest {
     fun teardown() {
         rawChannel.shutdownNow().awaitTermination(5, TimeUnit.SECONDS)
         server.shutdown()
+        if (::cpGo.isInitialized) cpGo.close()
     }
 
     private suspend fun awaitUntil(what: String, predicate: () -> Boolean) {
@@ -160,27 +155,7 @@ class ApprovalExecuteRouteDbTest {
     }
 
     /** The routes plus a client; sign it in with [login] before driving anything. */
-    private fun ApplicationTestBuilder.wire(): HttpClient {
-        application {
-            attributes.put(PRINCIPAL_SESSION_STORE, sessionStore)
-            install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true; encodeDefaults = true }) }
-            install(Sessions) { webSessionCookie(sessionStore, config.sessionSecret) }
-            routing {
-                testLoginRoute(sessionStore, config)
-                approvalRoutes(
-                    config, core.accessStore, core.auditStore, core.datasourceStore, core.policyStore,
-                    core.userGroupStore, resultStore, core.roleResolver,
-                    core.authz, runExecService,
-                )
-                queryRoutes(config, core.datasourceStore, QueryHistoryStore(dataSource), runExecService)
-            }
-        }
-        return createClient {
-            expectSuccess = false
-            install(HttpCookies)
-            install(ClientContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
-        }
-    }
+    private fun ApplicationTestBuilder.wire(): HttpClient = cpGo.client()
 
     /** [wire]'d client, signed in as the approver of record every seeded request defaults to. */
     private suspend fun ApplicationTestBuilder.wireAsExecutor(): HttpClient = wire().also { it.login(executor) }

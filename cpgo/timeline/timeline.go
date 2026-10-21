@@ -14,17 +14,18 @@ import (
 )
 
 const (
-	Requested = "requested"
-	Approved  = "approved"
-	Rejected  = "rejected"
-	Closed    = "closed"
-	Comment   = "comment"
-	LGTM      = "lgtm"
-	CCAdded   = "cc_added"
-	CCRemoved = "cc_removed"
+	Requested  = "requested"
+	Approved   = "approved"
+	Rejected   = "rejected"
+	Closed     = "closed"
+	Comment    = "comment"
+	LGTM       = "lgtm"
+	CCAdded    = "cc_added"
+	CCRemoved  = "cc_removed"
+	Unapproved = "unapproved"
 )
 
-var decisions = map[string]bool{Approved: true, Rejected: true, "unapproved": true, "ran": true}
+var decisions = map[string]bool{Approved: true, Rejected: true, Unapproved: true, "ran": true}
 
 // Event is one timeline entry, Kotlin's RequestEvent.
 type Event struct {

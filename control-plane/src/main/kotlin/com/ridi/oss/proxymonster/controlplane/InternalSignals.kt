@@ -44,7 +44,7 @@ fun Route.internalSignalRoutes(
         policiesChanged()
         call.respond(HttpStatusCode.NoContent)
     }
-    // A write opened, decided, commented on, closed or CC'd a request: send its notification.
+    // A write opened, decided, reopened, commented on, closed or CC'd a request: send its notification.
     post("/internal/request-notified") {
         if (!constantTimeEquals(call.request.headers[INTERNAL_TOKEN_HEADER], token)) {
             return@post call.respond(HttpStatusCode.NotFound)
@@ -88,6 +88,7 @@ fun requestNotifier(accessStore: AccessStore, notifications: NotificationService
             "requested" -> req?.let { notifications?.emitRequestedEvent(it) }
             "decided" -> req?.let { notifications?.emitEvent(NotificationEvent.TASK_DECIDED, it) }
             "cancelled" -> req?.let { notifications?.emitEvent(NotificationEvent.TASK_CANCELLED, it) }
+            "reopened" -> req?.let { notifications?.emitEvent(NotificationEvent.TASK_REOPENED, it) }
             "commented" -> notifications?.wake()
             "cc-added" -> {
                 if (principal == null) return false

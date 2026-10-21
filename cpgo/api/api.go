@@ -92,6 +92,9 @@ var (
 	CodeCCRequester           = Code{"approval.cc_requester", http.StatusBadRequest}
 	CodeCancelForbidden       = Code{"approval.cancel_forbidden", http.StatusForbidden}
 	CodeNotCancelable         = Code{"approval.not_cancelable", http.StatusConflict}
+	CodeAlreadyDecided        = Code{"approval.already_decided", http.StatusConflict}
+	CodeRequestChanged        = Code{"approval.request_changed", http.StatusConflict}
+	CodeNotApproved           = Code{"approval.not_approved", http.StatusConflict}
 	CodeNotConnectable        = Code{"datasource.not_connectable", http.StatusForbidden}
 	CodeNoWireCert            = Code{"datasource.no_wire_cert", http.StatusNotFound}
 	CodeDeprovisioned         = Code{"auth.principal_deprovisioned", http.StatusForbidden}
@@ -164,8 +167,8 @@ type Authorizer interface {
 type Kotlin interface {
 	// PoliciesChanged: a committed policy write; Kotlin's query path rebuilds its cached policy set.
 	PoliciesChanged(ctx context.Context) error
-	// RequestNotified: a committed write opened, decided, commented on, closed or changed the CCs of the
-	// request; send its notification. principal is the added CC for "cc-added", else empty.
+	// RequestNotified: a committed write opened, decided, reopened, commented on, closed or changed the CCs of
+	// the request; send its notification. principal is the added CC for "cc-added", else empty.
 	RequestNotified(ctx context.Context, id int64, event, principal string) error
 	// SessionsEnded: a committed change ended the principal's web sessions; close the editor runs held for them.
 	SessionsEnded(ctx context.Context, principal string) error

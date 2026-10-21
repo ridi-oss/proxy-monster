@@ -19,7 +19,6 @@ import io.ktor.server.routing.routing
 import io.ktor.server.testing.testApplication
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
@@ -28,6 +27,10 @@ import javax.sql.DataSource
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import com.ridi.oss.proxymonster.controlplane.support.CpGoStack
+import com.zaxxer.hikari.HikariDataSource
+import io.ktor.client.HttpClient
+import org.junit.jupiter.api.AfterEach
 
 /**
  * These three routes (`/auth/me`, `/auth/debug`, `/api/ingest/decision`) live inline in
@@ -44,8 +47,8 @@ class AuthAndIngestRoutesDbTest {
 
     @Test
     fun `auth me without a session is unauthenticated`() = testApplication {
-        application { module(config(), ControlPlaneCore(migratedDatabase("pm_auth_ingest_me"))) }
-        val client = wireClient()
+        val dataSource = migratedDatabase("pm_auth_ingest_me")
+        val client = cpGoClient(ControlPlaneCore(dataSource), dataSource)
 
         val response = client.get("/auth/me")
 
@@ -56,8 +59,8 @@ class AuthAndIngestRoutesDbTest {
 
     @Test
     fun `auth debug is a 404 endpoint when PM_AUTH_DEBUG is off`() = testApplication {
-        application { module(config(authDebug = false), ControlPlaneCore(migratedDatabase("pm_auth_ingest_debug"))) }
-        val client = wireClient()
+        val dataSource = migratedDatabase("pm_auth_ingest_debug")
+        val client = cpGoClient(ControlPlaneCore(dataSource), dataSource)
 
         val response = client.post("/auth/debug") {
             contentType(ContentType.Application.Json)
@@ -146,8 +149,7 @@ class AuthAndIngestRoutesDbTest {
     fun `datasource discovery accepts a wire-token Bearer and rejects missing or bad auth`() = testApplication {
         val dataSource = migratedDatabase("pm_ds_bearer")
         val core = ControlPlaneCore(dataSource)
-        application { module(config(authDebug = false), core) }
-        val client = wireClient()
+        val client = cpGoClient(core, dataSource)
 
         core.datasourceStore.create(
             DatasourceInput(name = "ds-bearer", engine = "mysql", host = "h", port = 3306, dbName = "app"),
@@ -190,9 +192,22 @@ class AuthAndIngestRoutesDbTest {
         install(ClientContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
     }
 
+    private val stacks = mutableListOf<CpGoStack>()
+
+    @AfterEach
+    fun closeStacks() {
+        stacks.forEach(CpGoStack::close)
+        stacks.clear()
+    }
+
+    /** A client of cp-go in front of [core], which serves the datasource list. */
+    private fun cpGoClient(core: ControlPlaneCore, dataSource: DataSource): HttpClient {
+        val database = (dataSource as HikariDataSource).jdbcUrl.substringAfterLast('/')
+        return CpGoStack(config(), core, database).also(stacks::add).client()
+    }
+
     private fun migratedDatabase(prefix: String): DataSource {
-        val ds = SharedPostgres.hikari(SharedPostgres.freshDatabase(prefix))
-        Flyway.configure().dataSource(ds).load().migrate()
+        val ds = SharedPostgres.hikari(SharedPostgres.migratedDatabase(prefix))
         return ds
     }
 

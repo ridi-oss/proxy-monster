@@ -44,7 +44,7 @@ import (
 	"github.com/ridi-oss/proxy-monster/mysqlwire"
 	"github.com/ridi-oss/proxy-monster/pmon/conn"
 	"github.com/ridi-oss/proxy-monster/pmon/driver"
-	"github.com/ridi-oss/proxy-monster/pmon/providers"
+	"github.com/ridi-oss/proxy-monster/pmon/internal/providers"
 )
 
 // The fixed identity the broker checks locally. The values are cosmetic to the upstream (the stub

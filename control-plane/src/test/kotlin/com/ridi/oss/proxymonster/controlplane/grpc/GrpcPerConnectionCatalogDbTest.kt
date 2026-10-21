@@ -18,7 +18,6 @@ import io.grpc.Status
 import io.grpc.StatusException
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder
 import kotlinx.coroutines.runBlocking
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Disabled
@@ -44,8 +43,7 @@ class GrpcPerConnectionCatalogDbTest {
     @BeforeAll
     fun setup() {
         requireDocker()
-        dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_grpc_pccat"))
-        Flyway.configure().dataSource(dataSource).load().migrate()
+        dataSource = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_grpc_pccat"))
         core = ControlPlaneCore(dataSource)
         ds = core.datasourceStore.create(DatasourceInput("pccat-ds", "postgres", "", 0, "app"))
         token = core.tokenStore.issue(TokenKind.USER,"pccat-user@example.com", emptyList(), null, 3600).token

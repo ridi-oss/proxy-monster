@@ -1,0 +1,211 @@
+package sqldb_test
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net"
+	"reflect"
+	"testing"
+	"time"
+
+	"github.com/ridi-oss/proxy-monster/goproxy/athena"
+	"github.com/ridi-oss/proxy-monster/goproxy/mysql"
+	"github.com/ridi-oss/proxy-monster/goproxy/postgres"
+
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
+
+	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
+	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	"github.com/ridi-oss/proxy-monster/goproxy/spi"
+)
+
+func TestRegistryProviderContracts(t *testing.T) {
+	registry := registry
+	for _, test := range []struct {
+		name   string
+		engine *engines.Engine
+		server string
+	}{
+		{"mysql", engines.MySQL, "*mysql.Server"},
+		{"postgres", engines.Postgres, "*postgres.Server"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			provider, err := registry.For(test.engine)
+			if err != nil {
+				t.Fatalf("For(%s): %v", test.engine.WireName, err)
+			}
+			if provider.Engine() != test.engine {
+				t.Errorf("Engine() = %s, want %s", provider.Engine().WireName, test.engine.WireName)
+			}
+			config := spi.TargetConfig{Host: "target", Port: 1234, Db: "app", User: "service", Password: "secret"}
+			target, err := provider.OpenTarget(config)
+			if err != nil {
+				t.Fatalf("OpenTarget: %v", err)
+			}
+			defer target.Close()
+			if target.Config() != config {
+				t.Fatalf("Config() = %+v, want %+v", target.Config(), config)
+			}
+			server := target.NewWireServer(spi.Listen{}, nil, nil)
+			if reflect.TypeOf(server).String() != test.server {
+				t.Errorf("NewWireServer() type = %T, want %s", server, test.server)
+			}
+		})
+	}
+
+	for _, unknown := range []*engines.Engine{nil, {WireName: "oracle"}} {
+		if _, err := registry.For(unknown); err == nil {
+			t.Fatalf("For(%v) = nil error without a registered provider", unknown)
+		}
+	}
+}
+
+func TestRegistryIntrospectDelegates(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		engine       *engines.Engine
+		targetConfig dbtest.TargetDb
+		assert       func(*testing.T, *pb.CatalogRequest)
+	}{
+		{
+			name: "mysql", engine: engines.MySQL, targetConfig: dbtest.MySQL(t),
+			assert: func(t *testing.T, catalog *pb.CatalogRequest) {
+				if len(catalog.DefaultSchemas) != 1 || catalog.DefaultSchemas[0] != dbtest.MySQL(t).DB || catalog.MysqlLowerCaseTableNames == nil {
+					t.Fatalf("Introspect = %v/%v, want current database plus case mode", catalog.DefaultSchemas, catalog.MysqlLowerCaseTableNames)
+				}
+			},
+		},
+		{
+			name: "postgres", engine: engines.Postgres, targetConfig: dbtest.Postgres(t),
+			assert: func(t *testing.T, catalog *pb.CatalogRequest) {
+				if catalog.MysqlLowerCaseTableNames != nil || !contains(catalog.DefaultSchemas, "public") || !contains(catalog.DefaultSchemas, "pg_catalog") {
+					t.Fatalf("Introspect = %v/%v, want PostgreSQL search path and nil case mode", catalog.DefaultSchemas, catalog.MysqlLowerCaseTableNames)
+				}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			provider, _ := registry.For(test.engine)
+			target, err := provider.OpenTarget(spi.TargetConfig{Host: test.targetConfig.Host, Port: test.targetConfig.Port, Db: test.targetConfig.DB, User: test.targetConfig.User, Password: test.targetConfig.Password})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer target.Close()
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+			catalog, err := target.Introspect(ctx)
+			if err != nil {
+				t.Fatalf("Introspect: %v", err)
+			}
+			test.assert(t, catalog)
+		})
+	}
+}
+
+func TestNewWireServerStartsExpectedProtocol(t *testing.T) {
+	for _, e := range []*engines.Engine{engines.MySQL, engines.Postgres} {
+		t.Run(e.WireName, func(t *testing.T) {
+			provider, _ := registry.For(e)
+			target, err := provider.OpenTarget(spi.TargetConfig{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer target.Close()
+			server := target.NewWireServer(spi.Listen{}, nil, nil)
+			starter, ok := server.(interface {
+				Listen() error
+				Serve() error
+				Addr() net.Addr
+			})
+			if !ok {
+				t.Fatalf("NewWireServer() type %T lacks testable listener contract", server)
+			}
+			if err := starter.Listen(); err != nil {
+				t.Fatalf("Listen: %v", err)
+			}
+			defer server.Shutdown()
+			go func() { _ = starter.Serve() }()
+			conn, err := net.DialTimeout("tcp", starter.Addr().String(), time.Second)
+			if err != nil {
+				t.Fatalf("dial: %v", err)
+			}
+			defer conn.Close()
+			_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+			buf := make([]byte, 8)
+			n, err := conn.Read(buf)
+			if err != nil {
+				var timeout net.Error
+				if e != engines.Postgres || !errors.As(err, &timeout) || !timeout.Timeout() {
+					t.Fatalf("read protocol greeting: %v", err)
+				}
+			}
+			if e == engines.MySQL && n == 0 {
+				t.Fatal("MySQL server sent no initial greeting")
+			}
+			if e == engines.Postgres && n != 0 {
+				t.Fatalf("PostgreSQL server sent %d unsolicited greeting bytes", n)
+			}
+		})
+	}
+}
+
+func contains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func TestCatalogRefreshObservesNewConnectionDefaults(t *testing.T) {
+	database := dbtest.Postgres(t)
+	seed := dbtest.OpenPostgres(t, "")
+	role := fmt.Sprintf("spi_defaults_%d", time.Now().UnixNano())
+	if _, err := seed.Exec("CREATE ROLE " + role + " LOGIN PASSWORD 'test-secret'"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if _, err := seed.Exec("DROP ROLE " + role); err != nil {
+			t.Error(err)
+		}
+	})
+	if _, err := seed.Exec("ALTER ROLE " + role + " SET search_path TO public"); err != nil {
+		t.Fatal(err)
+	}
+	target := openTarget(t, engines.Postgres, spi.TargetConfig{Host: database.Host, Port: database.Port, Db: database.DB, User: role, Password: "test-secret"})
+	first, err := target.Introspect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.GetCurrentCatalog() != database.DB || !contains(first.DefaultSchemas, "public") {
+		t.Fatalf("initial catalog = %v/%v", first.CurrentCatalog, first.DefaultSchemas)
+	}
+	if _, err := seed.Exec("ALTER ROLE " + role + " SET search_path TO pg_catalog"); err != nil {
+		t.Fatal(err)
+	}
+	second, err := target.Introspect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.GetCurrentCatalog() != database.DB || !reflect.DeepEqual(second.DefaultSchemas, []string{"pg_catalog"}) {
+		t.Fatalf("refreshed catalog = %v/%v", second.CurrentCatalog, second.DefaultSchemas)
+	}
+}
+
+func openTarget(t *testing.T, e *engines.Engine, config spi.TargetConfig) spi.Target {
+	t.Helper()
+	provider, err := registry.For(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := provider.OpenTarget(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = target.Close() })
+	return target
+}
+
+var registry = spi.MustRegistry(athena.Provider{}, mysql.Provider{}, postgres.Provider{})

@@ -5,7 +5,6 @@ import com.ridi.oss.proxymonster.controlplane.AccessService
 import com.ridi.oss.proxymonster.controlplane.ApiError
 import com.ridi.oss.proxymonster.controlplane.AuditService
 import com.ridi.oss.proxymonster.controlplane.QueryHistoryStore
-import com.ridi.oss.proxymonster.controlplane.RateResetRequestInput
 import com.ridi.oss.proxymonster.controlplane.MePermissions
 import com.ridi.oss.proxymonster.controlplane.RoleWithSources
 import com.ridi.oss.proxymonster.controlplane.TokenService
@@ -14,8 +13,11 @@ import com.ridi.oss.proxymonster.controlplane.historyLimit
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzContext
 import com.ridi.oss.proxymonster.controlplane.management.DeleteResult
 import com.ridi.oss.proxymonster.controlplane.ApprovalService
+import com.ridi.oss.proxymonster.controlplane.CatalogColumn
+import com.ridi.oss.proxymonster.controlplane.Config
 import com.ridi.oss.proxymonster.controlplane.ControlPlaneCore
-import com.ridi.oss.proxymonster.controlplane.CreateApprovalInput
+import com.ridi.oss.proxymonster.controlplane.CreateQueryRequestInput
+import com.ridi.oss.proxymonster.controlplane.EditQueryRequestInput
 import com.ridi.oss.proxymonster.controlplane.EditorTaskService
 import com.ridi.oss.proxymonster.controlplane.EngineWireSerializer
 import com.ridi.oss.proxymonster.controlplane.QueryResultMeta
@@ -50,6 +52,15 @@ internal data class ConnectableDatasource(
     val name: String,
     @Serializable(with = EngineWireSerializer::class) val engine: Engine,
     val defaultSchemas: List<String>,
+    val description: String,
+)
+
+@Serializable
+internal data class DatasourceDescription(
+    val name: String,
+    @Serializable(with = EngineWireSerializer::class) val engine: Engine,
+    val description: String,
+    val columns: List<CatalogColumn>,
 )
 
 @Serializable
@@ -79,6 +90,7 @@ internal class McpTaskTools(
     private val audit: AuditService,
     private val history: QueryHistoryStore,
     private val tokens: TokenService,
+    private val config: Config,
 ) {
     suspend fun execute(tool: String, args: JsonObject, ctx: McpRequestContext): JsonObject {
         val p = ctx.principal
@@ -87,14 +99,14 @@ internal class McpTaskTools(
             "list_connectable_datasources" -> structured(
                 core.datasourceStore.list()
                     .filter { mayConnect(core.authz, core.roleResolver, p, ip, it) }
-                    .map { ConnectableDatasource(it.name, it.engine, it.defaultSchemas) },
+                    .map { ConnectableDatasource(it.name, it.engine, it.defaultSchemas, it.description) },
             )
             "describe_datasource" -> {
                 val ds = datasource(args.requiredString("datasource"))
                 if (!mayConnect(core.authz, core.roleResolver, p, ip, ds)) {
                     throw TaskServiceException(HttpStatusCode.Forbidden, ApiError("datasource.not_connectable"))
                 }
-                structured(datasources.browseCatalog(ds.name))
+                structured(DatasourceDescription(ds.name, ds.engine, ds.description, datasources.browseCatalog(ds.name)))
             }
             "run_query" -> structured(runQuery(p, ip, args))
             "get_query_result" -> structured(
@@ -113,19 +125,25 @@ internal class McpTaskTools(
                 if ((decisionId != null) == (dsName != null || sql != null)) {
                     throw TaskServiceException(HttpStatusCode.BadRequest, ApiError("approval.exactly_one_source_required"))
                 }
-                val input = CreateApprovalInput(
+                val input = CreateQueryRequestInput(
                     sourceDecisionId = decisionId,
                     datasourceId = dsName?.let { datasource(it).id },
                     sql = sql,
                     title = args.string("title"),
                     reason = args.requiredString("reason"),
                 )
-                structured(approvals.create(p, ip, actor(ctx), input, roleName = args.requiredString("roleName")))
+                structured(approvals.create(p, ip, actor(ctx), input, roleName = args.requiredString("roleName"), source = "mcp"))
             }
             "list_my_approvals" -> structured(approvals.listOwn(p, args.string("status")))
             "list_approval_inbox" -> structured(approvals.inbox(p, ip))
             "get_approval" -> structured(approvals.detail(p, ip, args.requiredLong("id")))
-            "approve_approval" -> structured(approvals.approve(p, ip, actor(ctx), args.requiredLong("id")))
+            "edit_approval" -> structured(
+                approvals.edit(
+                    p, ip, actor(ctx), args.requiredLong("id"),
+                    EditQueryRequestInput(args.requiredString("sql"), args.string("title"), args.string("reason")),
+                ),
+            )
+            "approve_approval" -> structured(approvals.approve(p, ip, actor(ctx), args.requiredLong("id"), args.requiredLong("revision").toInt()))
             "reject_approval" -> structured(
                 approvals.reject(p, ip, actor(ctx), args.requiredLong("id"), args.requiredString("reason")),
             )
@@ -133,7 +151,20 @@ internal class McpTaskTools(
             "get_approval_result" -> structured(
                 approvals.result(p, ip, args.requiredLong("id"), args.int("statement"), page(args)),
             )
-            "cancel_approval" -> structured(approvals.cancel(p, ip, args.requiredLong("id")))
+            "cancel_approval" -> structured(approvals.cancel(p, ip, actor(ctx), args.requiredLong("id")))
+            "force_run_approval" -> structured(approvals.forceRun(p, ip, actor(ctx), args.requiredLong("id")))
+            "unapprove_approval" -> structured(approvals.unapprove(p, ip, actor(ctx), args.requiredLong("id")))
+            "comment_approval" -> structured(
+                approvals.threads.comment(p, ip, actor(ctx), args.requiredLong("id"), args.string("body"), args.boolean("lgtm") ?: false),
+            )
+            "set_approval_cc" -> structured(
+                approvals.threads.setCc(p, ip, actor(ctx), args.requiredLong("id"), args.requiredString("principal"), add = args.boolean("remove") != true),
+            )
+            "get_pmon_guide" -> structured(
+                pmonGuide(config, core.datasourceStore.list().filter { mayConnect(core.authz, core.roleResolver, p, ip, it) }.map { it.name }),
+            )
+            "get_usage_guide" -> structured(guide("usage.md"))
+            "get_admin_guide" -> structured(guide("admin.md"))
             "get_my_permissions" -> structured(
                 MyPermissions(computeMePermissions(p, core.authz, AuthzContext(requesterIp = ip)), core.roleResolver.resolveWithSources(p)),
             )
@@ -143,13 +174,10 @@ internal class McpTaskTools(
                 val role = core.policyStore.getRoleByName(args.requiredString("roleName")) ?: throw serviceNotFound("role")
                 val ds = args.string("datasource")?.let(::datasource)
                 val input = AccessRequestInput(role.id, ds?.id, args.requiredString("reason"), args.long("durationSec") ?: 3600)
-                structured(access.createRequest(p, ip, actor(ctx), input))
+                structured(access.createRequest(p, ip, actor(ctx), input, source = "mcp"))
             }
             "list_access_requests" -> structured(access.listRequests(p, args.string("status")))
             "list_access_grants" -> structured(access.listGrants(p, args.string("principal"), args.boolean("active") ?: false))
-            "reset_my_rate" -> structured(
-                access.requestRateReset(p, actor(ctx), RateResetRequestInput(args.string("reason").orEmpty(), args.string("denyReason"))),
-            )
             "list_query_history" -> structured(history.recent(p, historyLimit(args.int("limit"))))
             "clear_query_history" -> structured(ClearedResult(history.clear(p)))
             "delete_query_task" -> structured(DeleteResult(editorTasks.delete(p, args.requiredLong("taskId"))))
@@ -189,7 +217,15 @@ internal class McpTaskTools(
         }
         var page: QueryResultView? = null
         var pageError: String? = null
-        if (st.status == "EXECUTED") {
+        val failed = st.statements.firstOrNull { it.status == "FAILED" && it.denyReason == null }
+        if (failed != null) {
+            // Its page carries the target DB's error text in errorDetail; a failure with none has no page.
+            page = try {
+                editorTasks.result(p, ip, taskId, failed.ordinal)
+            } catch (_: TaskServiceException) {
+                null
+            }
+        } else if (st.status == "EXECUTED") {
             val done = st.statements.filter { it.status == "DONE" }
             (done.lastOrNull { (it.rowCount ?: 0) > 0 } ?: done.lastOrNull { it.columns.isNotEmpty() })?.let { last ->
                 try {
@@ -220,3 +256,6 @@ internal class McpTaskTools(
         const val MAX_PAGE = 1000
     }
 }
+
+private fun guide(file: String): String =
+    McpTaskTools::class.java.getResource("/guides/$file")?.readText() ?: error("guides/$file is missing from the jar")

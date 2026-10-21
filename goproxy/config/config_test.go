@@ -1,12 +1,14 @@
 package config
 
 import (
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
+	"net/netip"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
@@ -19,16 +21,17 @@ import (
 // default (blank == absent either way, including the string-typed ports which Load(testRegistry()) parses
 // via parsePort) are set to "" via t.Setenv.
 type configTestProvider struct {
-	dialect engine.Dialect
+	engine *engines.Engine
 }
 
-func (p configTestProvider) Dialect() engine.Dialect          { return p.dialect }
-func (configTestProvider) NewDb(spi.TargetDb) (spi.Db, error) { return nil, nil }
+func (p configTestProvider) Engine() *engines.Engine                       { return p.engine }
+func (configTestProvider) OpenTarget(spi.TargetConfig) (spi.Target, error) { return nil, nil }
 
 func testRegistry() spi.Registry {
 	return spi.MustRegistry(
-		configTestProvider{dialect: engine.MySQL},
-		configTestProvider{dialect: engine.Postgres},
+		configTestProvider{engine: engines.MySQL},
+		configTestProvider{engine: engines.Postgres},
+		configTestProvider{engine: engines.Athena},
 	)
 }
 
@@ -37,7 +40,8 @@ func clearPMEnv(t *testing.T) {
 	for _, v := range []string{
 		"PM_PROXY_PORT", "PM_TARGET_PORT",
 		"PM_DATASOURCE_NAME", "PM_DATASOURCE_TAGS", "PM_SECRET_TOKEN",
-		"PM_TLS_CERT", "PM_TLS_KEY", "PM_ADVERTISE_ADDR", "PM_QUERY_TIMEOUT",
+		"PM_TLS_CERT", "PM_TLS_KEY", "PM_ADVERTISE_ADDR", "PM_QUERY_TIMEOUT", "PM_TARGET_TLS", "PM_TARGET_CA",
+		"PM_DATASOURCE_DESCRIPTION", "PM_PROXY_PROTOCOL_PORT", "PM_TRUSTED_PROXIES",
 	} {
 		t.Setenv(v, "")
 	}
@@ -73,8 +77,8 @@ func TestLoadDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.Engine != "mysql" {
-		t.Errorf("Engine = %q, want mysql", cfg.Engine)
+	if cfg.EngineName != "mysql" {
+		t.Errorf("EngineName = %q, want mysql", cfg.EngineName)
 	}
 	if cfg.ProxyPort != 6033 {
 		t.Errorf("ProxyPort = %d, want 6033 (mysql default)", cfg.ProxyPort)
@@ -194,8 +198,8 @@ func TestLoadPostgresDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.Engine != "postgres" {
-		t.Errorf("Engine = %q, want postgres (lowercased)", cfg.Engine)
+	if cfg.EngineName != "postgres" {
+		t.Errorf("EngineName = %q, want postgres (lowercased)", cfg.EngineName)
 	}
 	if cfg.ProxyPort != 6432 {
 		t.Errorf("ProxyPort = %d, want 6432 (postgres default)", cfg.ProxyPort)
@@ -365,7 +369,7 @@ func TestTLSEnabled(t *testing.T) {
 }
 
 func TestValidateRequiresDatasourceName(t *testing.T) {
-	cfg := &Config{Engine: "mysql"}
+	cfg := &Config{EngineName: "mysql"}
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("Validate() = nil, want error for missing DatasourceName")
 	}
@@ -376,8 +380,8 @@ func TestValidateRejectsPartialTLSConfig(t *testing.T) {
 		name string
 		cfg  *Config
 	}{
-		{"cert only", &Config{Engine: "mysql", DatasourceName: "ds", TLSCertPath: "/cert.pem"}},
-		{"key only", &Config{Engine: "mysql", DatasourceName: "ds", TLSKeyPath: "/key.pem"}},
+		{"cert only", &Config{EngineName: "mysql", DatasourceName: "ds", TLSCertPath: "/cert.pem"}},
+		{"key only", &Config{EngineName: "mysql", DatasourceName: "ds", TLSKeyPath: "/key.pem"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -389,32 +393,30 @@ func TestValidateRejectsPartialTLSConfig(t *testing.T) {
 }
 
 func TestValidateAllowsCompleteOrAbsentTLSConfig(t *testing.T) {
-	provider, _ := testRegistry().For(engine.MySQL)
-	both := &Config{Engine: "mysql", Dialect: engine.MySQL, Provider: provider, DatasourceName: "ds", TLSCertPath: "/cert.pem", TLSKeyPath: "/key.pem"}
+	provider, _ := testRegistry().For(engines.MySQL)
+	both := &Config{EngineName: "mysql", Engine: engines.MySQL, Provider: provider, DatasourceName: "ds", TLSCertPath: "/cert.pem", TLSKeyPath: "/key.pem"}
 	if err := both.Validate(); err != nil {
 		t.Errorf("Validate() with both TLS paths set = %v, want nil", err)
 	}
-	neither := &Config{Engine: "mysql", Dialect: engine.MySQL, Provider: provider, DatasourceName: "ds"}
+	neither := &Config{EngineName: "mysql", Engine: engines.MySQL, Provider: provider, DatasourceName: "ds"}
 	if err := neither.Validate(); err != nil {
 		t.Errorf("Validate() with no TLS paths set = %v, want nil", err)
 	}
 }
 
 func TestValidateRejectsUnsupportedEngine(t *testing.T) {
-	// Load parses PM_ENGINE to Dialect once; an unrecognized value yields the fail-closed sentinel, which
-	// Validate must reject.
-	badDialect, _ := engine.ParseDialect("oracle")
-	cfg := &Config{Engine: "oracle", Dialect: badDialect, DatasourceName: "ds"}
+	// Load parses PM_ENGINE once; an unrecognized value leaves Engine nil, which Validate must reject.
+	cfg := &Config{EngineName: "oracle", DatasourceName: "ds"}
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("Validate() = nil, want error for an unsupported engine")
 	}
 }
 
-func TestValidateAcceptsMySQLAndPostgres(t *testing.T) {
-	for _, name := range []string{"mysql", "postgres"} {
-		dialect, _ := engine.ParseDialect(name)
-		provider, _ := testRegistry().For(dialect)
-		cfg := &Config{Engine: name, Dialect: dialect, Provider: provider, DatasourceName: "ds"}
+func TestValidateAcceptsRegisteredEngines(t *testing.T) {
+	for _, name := range []string{"mysql", "postgres", "athena"} {
+		e, _ := engines.Parse(name)
+		provider, _ := testRegistry().For(e)
+		cfg := &Config{EngineName: name, Engine: e, Provider: provider, DatasourceName: "ds"}
 		if err := cfg.Validate(); err != nil {
 			t.Errorf("Validate() for engine %q = %v, want nil", name, err)
 		}
@@ -424,8 +426,7 @@ func TestValidateAcceptsMySQLAndPostgres(t *testing.T) {
 func TestValidateOrderDatasourceNameCheckedBeforeEngine(t *testing.T) {
 	// Both the datasource name AND the engine are invalid; the datasource-name error must win (it is
 	// checked first), so a caller logging only the first error still gets the actionable one.
-	badDialect, _ := engine.ParseDialect("oracle")
-	cfg := &Config{Engine: "oracle", Dialect: badDialect}
+	cfg := &Config{EngineName: "oracle"}
 	err := cfg.Validate()
 	if err == nil {
 		t.Fatal("Validate() = nil, want error")
@@ -437,5 +438,117 @@ func TestValidateOrderDatasourceNameCheckedBeforeEngine(t *testing.T) {
 	// starts with "unsupported".
 	if strings.HasPrefix(err.Error(), "unsupported") {
 		t.Errorf("Validate() returned the engine error first, want the datasource-name error first: %v", err)
+	}
+}
+
+func TestLoadTargetTLS(t *testing.T) {
+	clearPMEnv(t)
+	cfg, err := Load(testRegistry())
+	if err != nil || cfg.TargetTLS != nil {
+		t.Fatalf("unset PM_TARGET_TLS = %v, %v; want plaintext", cfg.TargetTLS, err)
+	}
+
+	t.Setenv("PM_TARGET_HOST", "db.cluster.example")
+	t.Setenv("PM_TARGET_TLS", "verify-full")
+	cfg, err = Load(testRegistry())
+	if err != nil || cfg.TargetTLS == nil || cfg.TargetTLS.ServerName != "db.cluster.example" || cfg.TargetTLS.InsecureSkipVerify {
+		t.Fatalf("verify-full = %+v, %v; want a verifying config for PM_TARGET_HOST", cfg.TargetTLS, err)
+	}
+
+	t.Setenv("PM_TARGET_TLS", "prefer")
+	if _, err := Load(testRegistry()); err == nil || !strings.Contains(err.Error(), "PM_TARGET_TLS") {
+		t.Fatalf("PM_TARGET_TLS=prefer = %v, want a rejection", err)
+	}
+}
+
+func TestLoadDatasourceDescription(t *testing.T) {
+	clearPMEnv(t)
+	t.Setenv("PM_DATASOURCE_DESCRIPTION", "  Orders and payments  ")
+	t.Setenv("PM_DATASOURCE_NAME", "ds")
+	cfg, err := Load(testRegistry())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.DatasourceDescription != "Orders and payments" {
+		t.Fatalf("DatasourceDescription = %q", cfg.DatasourceDescription)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() = %v", err)
+	}
+	for _, bad := range []string{"line\nbreak", strings.Repeat("x", MaxDatasourceDescription+1)} {
+		cfg.DatasourceDescription = bad
+		if err := cfg.Validate(); err == nil {
+			t.Errorf("Validate() = nil for description %q", bad)
+		}
+	}
+}
+
+func TestLoadProxyProtocolPortAndTrustedProxies(t *testing.T) {
+	clearPMEnv(t)
+	t.Setenv("PM_DATASOURCE_NAME", "ds")
+	t.Setenv("PM_PROXY_PROTOCOL_PORT", "16033")
+	t.Setenv("PM_TRUSTED_PROXIES", " 10.20.0.0/16 , 10.30.1.7,, 10.40.1.9/16 ")
+
+	cfg, err := Load(testRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	listen := cfg.Listen()
+	if listen.Port != 6033 || listen.ProxyProtocolPort != 16033 {
+		t.Fatalf("Listen ports = %d/%d, want 6033/16033", listen.Port, listen.ProxyProtocolPort)
+	}
+	want := []netip.Prefix{
+		netip.MustParsePrefix("10.20.0.0/16"),
+		netip.MustParsePrefix("10.30.1.7/32"),
+		netip.MustParsePrefix("10.40.0.0/16"),
+	}
+	if !slices.Equal(listen.TrustedProxies, want) {
+		t.Fatalf("TrustedProxies = %v, want %v", listen.TrustedProxies, want)
+	}
+}
+
+func TestLoadRejectsAnUnparsableTrustedProxy(t *testing.T) {
+	clearPMEnv(t)
+	t.Setenv("PM_TRUSTED_PROXIES", "10.20.0.0/16,edge.internal")
+	if _, err := Load(testRegistry()); err == nil {
+		t.Fatal("Load accepted a trusted proxy that is not an address")
+	}
+}
+
+func TestLoadRejectsAGarbledProxyProtocolPort(t *testing.T) {
+	clearPMEnv(t)
+	t.Setenv("PM_PROXY_PROTOCOL_PORT", "16o33")
+	if _, err := Load(testRegistry()); err == nil {
+		t.Fatal("Load silently dropped a garbled PROXY protocol port")
+	}
+}
+
+func TestValidateRequiresATrustedSenderForTheProxyProtocolPort(t *testing.T) {
+	clearPMEnv(t)
+	t.Setenv("PM_DATASOURCE_NAME", "ds")
+	t.Setenv("PM_PROXY_PROTOCOL_PORT", "16033")
+	cfg, err := Load(testRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate accepted a PROXY protocol port with no trusted sender")
+	}
+}
+
+func TestValidateRejectsAProxyProtocolPortEqualToTheWirePort(t *testing.T) {
+	clearPMEnv(t)
+	t.Setenv("PM_DATASOURCE_NAME", "ds")
+	t.Setenv("PM_PROXY_PROTOCOL_PORT", "6033")
+	t.Setenv("PM_TRUSTED_PROXIES", "10.20.0.0/16")
+	cfg, err := Load(testRegistry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate accepted a PROXY protocol port that shadows the wire port")
 	}
 }

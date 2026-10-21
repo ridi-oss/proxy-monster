@@ -17,7 +17,6 @@ entity System;
 entity Role;
 
 // Local groups provisioned from the IdP group claim (JIT-on-login by default, or SCIM when enabled).
-// Not referenced by any action or seed policy.
 entity Group;
 
 // Column-authz entities (docs/authz-model.md worked examples). `Table`/`Column` are keyed off the
@@ -54,9 +53,34 @@ entity Function in [Datasource, Tag];
 // not catalog-resolved, so this needs no function catalog).
 entity Utility in [Datasource, Tag];
 
-// The authenticated principal. Its Cedar parents are the role set RoleSource.rolesOf(principal)
-// resolved (Layer 1); "member of Role" is exactly that "principal in Role::..." relationship.
-entity User in [Role];
+entity NativeResource in [Datasource] = {
+    kind: String,
+    id: String,
+    owner?: User,
+};
+
+action "native.invoke" appliesTo {
+    principal: [User, Role],
+    resource: [NativeResource],
+    context: RequestContext,
+};
+
+// A user's parents are its resolved roles and its local groups.
+entity User in [Role, Group];
+
+// A CI workload, keyed by its configured issuer name (`Workload::"github"`). `issuer` is the trusted
+// issuer URL; the optional attributes are the CI token's claims, so a policy must `has`-guard them.
+// A Workload is a principal only for `task.request`.
+entity Workload = {
+    issuer: String,
+    repository?: String,
+    repository_id?: String,
+    ref?: String,
+    base_ref?: String,
+    workflow_ref?: String,
+    event_name?: String,
+    actor?: String,
+};
 
 // A brokered datasource (DESIGN.md's `datasource` table). `name` is best-effort/optional so
 // callers that only have the id can still authorize. It gains a `Tag` parent so every tag it carries
@@ -77,13 +101,15 @@ entity Datasource in [Tag] = {
 // `requester` is always present (required). `released` is a no-op OPTIONAL attribute: no code sets
 // it, so it is always absent, and a has-guarded operator policy that reads it
 // (`resource has released && resource.released`) evaluates false (fail-closed) instead of bricking
-// boot on an undeclared attribute. Optionally scoped to its Datasource and Role
-// parents so lifecycle policies can match the requested execution scope.
+// boot on an undeclared attribute. `source`: console, mcp, or github. Optionally scoped to its
+// Datasource and Role parents so lifecycle policies can match the requested execution scope.
 entity Request in [Datasource, Role] = {
     requester: User,
     approver?: User,
     executedBy?: User,
+    ccs?: Set<User>,
     released?: Bool,
+    source: String,
 };
 
 // An issued JIT access grant (`access_grant` row). `owner`
@@ -127,6 +153,7 @@ type RequestContext = {
     // On a `result.cap` ask for a returned column only: whether this principal's read of it is masked
     // (result-caps.md). Absent on every other decision.
     masked?: Bool,
+    native_operation?: String,
 };
 
 // Global admin surfaces (App.kt route groups gated via requireAdmin). No per-resource scoping —
@@ -149,10 +176,10 @@ action "task.approve"
 // Task lifecycle actions replace code-side group-membership / ownership gates. `task.request` gates
 // creation against a datasource. `task.read` is the metadata gate over Request and AccessGrant;
 // `task.assume` is the confidentiality gate for saved result data. Approval routing is expressed as
-// policies scoped by the Request's Role/Datasource parents.
+// policies scoped by the Request's Role/Datasource parents. A CI Workload may also file requests.
 action "task.request"
   appliesTo {
-    principal: [User, Role],
+    principal: [User, Role, Workload],
     resource: [Datasource],
     context: RequestContext,
   };
@@ -172,6 +199,30 @@ action "task.assume"
   };
 
 action "task.cancel", "task.delete"
+  appliesTo {
+    principal: [User, Role],
+    resource: [Request],
+    context: RequestContext,
+  };
+
+// Comments or LGTMs on a request, and adds or removes its CCs.
+action "task.comment", "task.cc"
+  appliesTo {
+    principal: [User, Role],
+    resource: [Request],
+    context: RequestContext,
+  };
+
+// Runs an APPROVED request under its role R.
+action "task.run"
+  appliesTo {
+    principal: [User, Role],
+    resource: [Request],
+    context: RequestContext,
+  };
+
+// Runs a GitHub request past its scope's freshness and one-PR-at-a-time checks.
+action "task.force_run"
   appliesTo {
     principal: [User, Role],
     resource: [Request],

@@ -1,9 +1,9 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.controlplane.support.CpGoStack
 import com.ridi.oss.proxymonster.controlplane.support.McpTokens
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.errorCode
-import com.ridi.oss.proxymonster.controlplane.support.installControlPlane
 import com.ridi.oss.proxymonster.controlplane.support.login
 import com.ridi.oss.proxymonster.controlplane.support.mcpCall
 import com.ridi.oss.proxymonster.controlplane.support.mcpRaw
@@ -13,6 +13,7 @@ import com.ridi.oss.proxymonster.controlplane.support.okResult
 import com.ridi.oss.proxymonster.controlplane.support.parseJson
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.controlplane.support.str
+import com.ridi.oss.proxymonster.controlplane.support.testLoginRoute
 import io.ktor.client.request.delete
 import io.ktor.client.request.get
 import io.ktor.client.request.post
@@ -34,7 +35,8 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
 import kotlinx.serialization.json.put
-import org.flywaydb.core.Flyway
+import io.ktor.server.routing.routing
+import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
@@ -44,27 +46,34 @@ import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 
-/** The admin tools for group members and roles, principal rates, and datasource CRUD, each against its REST route. */
+/** The admin tools for group members and roles, and datasource CRUD, each against its REST route. */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class McpAdminParityToolsDbTest {
     private lateinit var dataSource: DataSource
     private lateinit var core: ControlPlaneCore
     private lateinit var tokens: McpTokens
+    private lateinit var cpGo: CpGoStack
     private val seq = AtomicInteger()
-    private val config = mcpTestConfig()
+    private val config = mcpTestConfig().copy(mcpResource = "http://127.0.0.1/mcp")
 
     @BeforeAll
     fun setUp() {
         requireDockerOrSkip()
-        dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_mcp_admin_parity"))
-        Flyway.configure().dataSource(dataSource).load().migrate()
+        val database = SharedPostgres.migratedDatabase("pm_mcp_admin_parity")
+        dataSource = SharedPostgres.hikari(database)
         core = ControlPlaneCore(dataSource)
-        tokens = McpTokens(dataSource)
+        tokens = McpTokens(dataSource, config.mcpResource)
+        cpGo = CpGoStack(config, core, database) { routing { testLoginRoute(PrincipalSessionStore(dataSource, null), config) } }
+    }
+
+    @AfterAll
+    fun tearDown() {
+        if (::cpGo.isInitialized) cpGo.close()
     }
 
     @Test
     fun `group members and roles match the REST listing`() = testApplication {
-        val client = installControlPlane(config, core)
+        val client = cpGo.client()
         val admin = admin()
         val n = seq.incrementAndGet()
         val group = core.userGroupStore.createGroup(AppGroupInput("mcp-parity-group-$n"))
@@ -91,35 +100,8 @@ class McpAdminParityToolsDbTest {
     }
 
     @Test
-    fun `a principal rate reset is audited on mcp and read back like REST`() = testApplication {
-        val client = installControlPlane(config, core)
-        val admin = admin()
-        val target = "mcp-rate-target-${seq.incrementAndGet()}@example.com"
-        val token = tokens.token(admin, setOf("mcp:read", "mcp:identity:write"))
-        client.login(admin)
-
-        val never = client.mcpCall(token, "get_principal_rate", buildJsonObject { put("principal", target) }).okResult()
-        assertEquals(JsonNull, never)
-        assertEquals(HttpStatusCode.NoContent, client.get("/api/access/principals/$target/rate-reset").status)
-
-        val blank = client.mcpCall(token, "reset_principal_rate", buildJsonObject { put("principal", target); put("reason", " ") })
-        assertEquals("common.field_required", blank.errorCode())
-
-        val reset = client.mcpCall(token, "reset_principal_rate", buildJsonObject {
-            put("principal", target); put("reason", "support ticket")
-        }).okResult().jsonObject
-        assertEquals(target, reset.str("principal"))
-        assertEquals(admin, reset.str("resetBy"))
-        assertEquals(1L, adminRows(admin, "admin.identity", "User::\"$target\""))
-
-        val read = client.mcpCall(token, "get_principal_rate", buildJsonObject { put("principal", target) }).okResult()
-        assertEquals(reset, read)
-        assertEquals(parseJson(client.get("/api/access/principals/$target/rate-reset").bodyAsText()), read)
-    }
-
-    @Test
     fun `datasource create update refresh test and delete through MCP`() = testApplication {
-        val client = installControlPlane(config, core)
+        val client = cpGo.client()
         val admin = admin()
         val n = seq.incrementAndGet()
         val name = "mcp-crud-$n"
@@ -166,7 +148,7 @@ class McpAdminParityToolsDbTest {
 
     @Test
     fun `invalid engine, engine change and in-use delete answer REST's codes`() = testApplication {
-        val client = installControlPlane(config, core)
+        val client = cpGo.client()
         val admin = admin()
         val n = seq.incrementAndGet()
         val token = tokens.token(admin, setOf("mcp:read", "mcp:datasources:write"))
@@ -199,7 +181,7 @@ class McpAdminParityToolsDbTest {
 
     @Test
     fun `scope is a ceiling on every new admin tool`() = testApplication {
-        val client = installControlPlane(config, core)
+        val client = cpGo.client()
         val admin = admin()
         val queryOnly = tokens.token(admin, setOf("mcp:query"))
         val readOnly = tokens.token(admin, setOf("mcp:read"))
@@ -213,7 +195,7 @@ class McpAdminParityToolsDbTest {
 
     @Test
     fun `a non-admin is refused by Cedar on MCP exactly as on REST`() = testApplication {
-        val client = installControlPlane(config, core)
+        val client = cpGo.client()
         val outsider = "mcp-outsider-${seq.incrementAndGet()}@example.com"
         val token = tokens.token(outsider, setOf("mcp:read", "mcp:identity:write", "mcp:datasources:write"))
         client.login(outsider)
@@ -228,8 +210,6 @@ class McpAdminParityToolsDbTest {
         val rest = listOf(
             client.get("/api/groups/${group.id}/members"),
             client.get("/api/groups/${group.id}/roles"),
-            client.get("/api/access/principals/someone/rate-reset"),
-            client.post("/api/access/principals/someone/rate-reset") { json("""{"reason":"r"}""") },
             client.post("/api/datasources") { json("""{"name":"mcp-outsider-new"}""") },
             client.put("/api/datasources/${ds.id}") { json("""{"name":"${ds.name}"}""") },
             client.delete("/api/datasources/${ds.id}"),
@@ -247,8 +227,6 @@ class McpAdminParityToolsDbTest {
     private fun argsFor(tool: String, group: String = "g", ds: String = "d"): JsonObject = buildJsonObject {
         when (tool) {
             "list_group_members", "list_group_roles" -> put("groupName", group)
-            "get_principal_rate" -> put("principal", "someone")
-            "reset_principal_rate" -> { put("principal", "someone"); put("reason", "r") }
             "create_datasource" -> put("name", "mcp-outsider-new")
             else -> put("datasource", ds)
         }
@@ -279,9 +257,8 @@ class McpAdminParityToolsDbTest {
     }
 
     private companion object {
-        val READS = listOf("list_group_members", "list_group_roles", "get_principal_rate")
+        val READS = listOf("list_group_members", "list_group_roles")
         val WRITES = mapOf(
-            "reset_principal_rate" to "mcp:identity:write",
             "create_datasource" to "mcp:datasources:write",
             "update_datasource" to "mcp:datasources:write",
             "delete_datasource" to "mcp:datasources:write",

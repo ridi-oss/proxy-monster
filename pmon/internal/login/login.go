@@ -9,8 +9,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/cookiejar"
+	"sort"
 	"time"
 )
 
@@ -35,6 +37,9 @@ type Result struct {
 	ExpiresAt        string `json:"expiresAt"`
 	SessionExpiresAt string `json:"sessionExpiresAt"`
 	RenewalToken     string `json:"renewalToken"`
+	// Scopes beyond mcp:read and mcp:query last until ElevatedUntil.
+	Scopes        []string `json:"scopes,omitempty"`
+	ElevatedUntil string   `json:"elevatedUntil,omitempty"`
 }
 
 // deviceStartResponse is the body of POST {cp}/auth/device/start.
@@ -49,18 +54,22 @@ type deviceStartResponse struct {
 // devicePollResponse is the body of POST {cp}/auth/device/poll: either the 202 "still waiting" shape
 // ({status: "authorization_pending"}) or the 200 "done" shape.
 type devicePollResponse struct {
-	Status           string `json:"status"`
-	Token            string `json:"token"`
-	ExpiresAt        string `json:"expiresAt"`
-	Principal        string `json:"principal"`
-	SessionExpiresAt string `json:"sessionExpiresAt"`
-	RenewalToken     string `json:"renewalToken"`
+	Status           string   `json:"status"`
+	Token            string   `json:"token"`
+	ExpiresAt        string   `json:"expiresAt"`
+	Principal        string   `json:"principal"`
+	SessionExpiresAt string   `json:"sessionExpiresAt"`
+	RenewalToken     string   `json:"renewalToken"`
+	Scopes           []string `json:"scopes"`
+	ElevatedUntil    string   `json:"elevatedUntil"`
 }
 
 // Options configures one device-auth run. Sleep is injected so tests can supply a no-op.
 type Options struct {
 	ControlPlane string
 	TTLSeconds   int
+	// Scopes replaces the server's default scopes when non-empty.
+	Scopes []string
 	// OnPrompt receives the verification URI + user code as soon as the flow starts, before polling. It must
 	// not block for long — the poll loop is waiting on it.
 	OnPrompt   func(Prompt)
@@ -89,8 +98,12 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		sleep = sleepCtx
 	}
 
+	body := map[string]any{"ttlSeconds": ttl}
+	if len(opts.Scopes) > 0 {
+		body["scopes"] = opts.Scopes
+	}
 	var start deviceStartResponse
-	if err := postJSON(ctx, client, cp+"/auth/device/start", map[string]any{"ttlSeconds": ttl}, &start); err != nil {
+	if err := postJSON(ctx, client, cp+"/auth/device/start", body, &start); err != nil {
 		return nil, fmt.Errorf("could not start device login: %w", err)
 	}
 
@@ -135,6 +148,8 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			ExpiresAt:        poll.ExpiresAt,
 			SessionExpiresAt: poll.SessionExpiresAt,
 			RenewalToken:     poll.RenewalToken,
+			Scopes:           poll.Scopes,
+			ElevatedUntil:    poll.ElevatedUntil,
 		}, nil
 	}
 }
@@ -179,6 +194,71 @@ func Renew(ctx context.Context, client *http.Client, controlPlane, renewalToken 
 	return &out, nil
 }
 
+// MCPToken is a short-lived MCP access token minted from a session.
+type MCPToken struct {
+	AccessToken string `json:"accessToken"`
+	ExpiresAt   string `json:"expiresAt"`
+	Scope       string `json:"scope"`
+}
+
+// ErrMCPRefused: the control plane will not mint from this session again; only a fresh login recovers.
+var ErrMCPRefused = errors.New("the login no longer grants MCP access")
+
+// ErrMCPUnsupported: the control plane has no MCP token endpoint, because it predates `pmon mcp`.
+var ErrMCPUnsupported = errors.New("the server does not support pmon mcp")
+
+// ExchangeMCP trades the session's renewal token for an MCP access token carrying the session's scopes.
+func ExchangeMCP(ctx context.Context, client *http.Client, controlPlane, renewalToken string) (*MCPToken, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, controlPlane+"/auth/session/mcp-token", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+renewalToken)
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	switch {
+	case resp.StatusCode == http.StatusUnauthorized:
+		return nil, ErrMCPRefused
+	case resp.StatusCode == http.StatusNotFound:
+		return nil, ErrMCPUnsupported
+	case resp.StatusCode != http.StatusOK:
+		return nil, apiError(resp)
+	}
+	var out MCPToken
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	if out.AccessToken == "" {
+		return nil, errors.New("the MCP token exchange returned no token")
+	}
+	return &out, nil
+}
+
+// Logout ends the session on the control plane; a [replaced] one keeps its open SQL connections.
+func Logout(ctx context.Context, client *http.Client, controlPlane, renewalToken string, replaced bool) error {
+	url := controlPlane + "/auth/session/logout"
+	if replaced {
+		url += "?replaced=true"
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+renewalToken)
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return apiError(resp)
+	}
+	return nil
+}
+
 // postJSON POSTs body as JSON and, if out is non-nil, decodes the response into it. HTTP 202 is treated as
 // success — the device poll endpoint uses it for "still waiting on the user".
 func postJSON(ctx context.Context, client *http.Client, url string, body, out any) error {
@@ -194,12 +274,48 @@ func postJSON(ctx context.Context, client *http.Client, url string, body, out an
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 && resp.StatusCode != http.StatusAccepted {
-		return fmt.Errorf("HTTP %d", resp.StatusCode)
+		return apiError(resp)
 	}
 	if out != nil {
 		return json.NewDecoder(resp.Body).Decode(out)
 	}
 	return nil
+}
+
+// APIError is a control-plane error body: a stable code and its parameters.
+type APIError struct {
+	Status int               `json:"-"`
+	Code   string            `json:"code"`
+	Params map[string]string `json:"params"`
+}
+
+func (e *APIError) Error() string {
+	switch e.Code {
+	case "device.unknown_scope":
+		return fmt.Sprintf("unknown scope %q", e.Params["scope"])
+	case "device.no_scopes":
+		return "no scopes given"
+	case "auth.scopes_expired":
+		return "the login's extra scopes expired and it grants nothing else"
+	case "":
+		return fmt.Sprintf("HTTP %d", e.Status)
+	}
+	keys := make([]string, 0, len(e.Params))
+	for k := range e.Params {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	msg := fmt.Sprintf("HTTP %d: %s", e.Status, e.Code)
+	for _, k := range keys {
+		msg += fmt.Sprintf(" %s=%s", k, e.Params[k])
+	}
+	return msg
+}
+
+func apiError(resp *http.Response) error {
+	e := &APIError{Status: resp.StatusCode}
+	_ = json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(e)
+	return e
 }
 
 // sleepCtx sleeps for d, or returns early when ctx ends, so a shutdown mid-poll is prompt.

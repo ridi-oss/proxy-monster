@@ -1,0 +1,42 @@
+{
+  "check": {
+    "no_sql": "실행할 SQL이 없습니다",
+    "requester_unmapped": "풀 리퀘스트 작성자가 proxy-monster 사용자와 연결되어 있지 않습니다",
+    "awaiting_approval": "{path} 승인 대기 중",
+    "approved_enable_automerge": "승인됨 — 자동 머지를 켜면 실행 후 머지됩니다",
+    "waiting_checks": "다른 체크를 기다리는 중",
+    "waiting_draft": "풀 리퀘스트가 리뷰 준비 상태가 되기를 기다리는 중",
+    "conflicts": "베이스 브랜치와의 충돌을 해결하세요",
+    "waiting_mergeable": "GitHub에서 병합할 수 있게 되기를 기다리는 중",
+    "waiting_reviews": "베이스 브랜치에 필요한 리뷰를 기다리는 중",
+    "waiting_threads": "리뷰 대화를 해결하세요",
+    "merge_method": "베이스 브랜치는 {method} 병합을 허용하지 않습니다. 자동 병합 방식을 바꾸세요",
+    "cannot_rebase": "GitHub가 이 풀 리퀘스트를 리베이스할 수 없습니다. 자동 병합 방식을 바꾸거나 직접 리베이스하세요",
+    "unchecked_rule": "베이스 브랜치의 {rule} 규칙은 병합 전에 확인할 수 없습니다",
+    "waiting_merge": "#{pr} 머지를 기다리는 중",
+    "update_branch": "브랜치를 최신으로 업데이트하세요",
+    "update_branch_behind": "브랜치를 업데이트하세요 — #{pr}이(가) 먼저 머지되었습니다",
+    "waiting_files": "이 커밋의 SQL 파일이 등록되기를 기다리는 중",
+    "executor_unmapped": "자동 머지를 켠 사용자가 proxy-monster 사용자와 연결되어 있지 않습니다",
+    "cannot_run": "SQL을 실행할 수 없습니다. 요청을 열어 확인하세요",
+    "running": "{path} 실행 중",
+    "executed": "실행 완료",
+    "failed": "{path} 실패"
+  },
+  "review": {
+    "dismissed": "{path}이(가) 바뀌었습니다. 다시 승인해 주세요"
+  },
+  "comment": {
+    "requester_unmapped": "proxy-monster가 이 풀 리퀘스트의 작성자를 사용자와 연결하지 못해 SQL 요청을 만들지 않았습니다. 관리자에게 GitHub 계정 연결을 요청한 뒤 다시 push하세요.",
+    "requested": "**{schema}**의 `{path}` — 승인 대기 중 (구문 {statementCount}개). [요청 열기]({link})",
+    "decided_approved": "**{schema}**의 `{path}` — **{decidedBy}** 님이 승인했습니다. 풀 리퀘스트를 머지할 준비가 되면 실행됩니다. [요청 열기]({link})",
+    "decided_rejected": "**{schema}**의 `{path}` — **{decidedBy}** 님이 반려했습니다. [요청 열기]({link})",
+    "executed": "**{schema}**의 `{path}` — 실행 완료, 구문 {statementCount}개. **{decidedBy}** 님이 승인했습니다. [요청 열기]({link})",
+    "failed": "**{schema}**의 `{path}` — 실패했습니다. **{decidedBy}** 님이 승인했습니다.\n\n```\n{error}\n```\n\n[요청 열기]({link})",
+    "failed_at": "**{schema}**의 `{path}` — 구문 {statementCount}개 중 {ordinal}번째에서 실패했습니다. **{decidedBy}** 님이 승인했습니다.\n\n```sql\n{statement}\n```\n\n```\n{error}\n```\n\n[요청 열기]({link})",
+    "cancelled": "**{schema}**의 `{path}` — 취소되었습니다. [요청 열기]({link})",
+    "closed_after_run": "**{schema}**의 `{path}`이(가) 실행되었지만, 이 풀 리퀘스트는 머지되지 않고 닫혔습니다. 이 파일이 main에 들어갈 때까지 스코프는 막혀 있습니다. 이 풀 리퀘스트를 다시 열어 머지하거나, 같은 파일을 새 풀 리퀘스트에 추가하세요. [요청 열기]({link})",
+    "merged_without_file": "**{schema}**의 `{path}`이(가) 실행되었지만, 이 풀 리퀘스트는 그 파일 없이 머지되어 main에 없는 SQL이 대상 DB에 남았습니다. 관리자에게 알렸습니다. [요청 열기]({link})",
+    "force_run": "**{forcedBy}** 님이 강제 실행으로 지정했습니다: **{schema}**의 `{path}`은(는) 스코프의 브랜치 최신 여부 확인과 한 번에 한 PR만 실행하는 규칙을 건너뜁니다. 풀 리퀘스트가 머지될 준비가 되었을 때만 실행됩니다. [요청 열기]({link})"
+  }
+}

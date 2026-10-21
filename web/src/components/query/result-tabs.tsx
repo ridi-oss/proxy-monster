@@ -15,11 +15,11 @@ import type { ResultTab, ResultTabsApi } from './use-result-tabs'
 export function ResultTabs({
   api,
   onRequestAccess,
-  onRequestRateReset,
+  onRequestRateBoost,
 }: {
   api: ResultTabsApi
   onRequestAccess: (denyReason?: string | null) => void
-  onRequestRateReset?: (denyReason?: string | null) => void
+  onRequestRateBoost?: (denyReason?: string | null) => void
 }) {
   const t = useTranslations('Query')
   const { tabs, activeId, active, logs, clearLogs } = api
@@ -34,6 +34,12 @@ export function ResultTabs({
     if (tabs.length > prevTabCount.current) setViewingLogs(false)
     prevTabCount.current = tabs.length
   }, [tabs.length])
+  // Opening a table that already has a tab adds no tab, so the strip leaves Logs on this separate signal.
+  const [seenReveal, setSeenReveal] = useState(api.revealSeq)
+  if (api.revealSeq !== seenReveal) {
+    setSeenReveal(api.revealSeq)
+    setViewingLogs(false)
+  }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -71,7 +77,13 @@ export function ResultTabs({
         {viewingLogs ? (
           <QueryLogs logs={logs} clearLogs={clearLogs} />
         ) : active?.kind === 'table' ? (
-          <TableView tab={active} onRequestAccess={onRequestAccess} onRequestRateReset={onRequestRateReset} />
+          <TableView
+            tab={active}
+            onViewChange={(view) => api.setTableView(active.id, view)}
+            onFocusShown={() => api.clearFocus(active.id)}
+            onRequestAccess={onRequestAccess}
+            onRequestRateBoost={onRequestRateBoost}
+          />
         ) : active ? (
           <ResultsPanel
             result={active.res.result}
@@ -81,7 +93,7 @@ export function ResultTabs({
             error={active.res.error}
             onCancel={active.res.loading && active.taskId != null ? () => api.cancel(active.id) : undefined}
             onRequestAccess={() => onRequestAccess(active.res.result?.denyReason)}
-            onRequestRateReset={onRequestRateReset && (() => onRequestRateReset(active.res.result?.denyReason))}
+            onRequestRateBoost={onRequestRateBoost && (() => onRequestRateBoost(active.res.result?.denyReason))}
           />
         ) : (
           <ResultsPanel

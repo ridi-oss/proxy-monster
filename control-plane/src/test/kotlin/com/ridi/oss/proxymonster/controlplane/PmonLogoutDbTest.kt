@@ -1,0 +1,188 @@
+package com.ridi.oss.proxymonster.controlplane
+
+import com.ridi.oss.proxymonster.controlplane.support.CpGoStack
+import com.ridi.oss.proxymonster.controlplane.support.MCP_TEST_JSON
+import com.ridi.oss.proxymonster.controlplane.support.PmonMcpTokenResponse
+import com.ridi.oss.proxymonster.controlplane.support.RenewSessionResponse
+import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
+import com.ridi.oss.proxymonster.controlplane.support.bearerPost
+import com.ridi.oss.proxymonster.controlplane.support.mcpCall
+import com.ridi.oss.proxymonster.controlplane.support.mcpRaw
+import com.ridi.oss.proxymonster.controlplane.support.mcpTestConfig
+import com.ridi.oss.proxymonster.controlplane.support.ok
+import com.ridi.oss.proxymonster.controlplane.support.pmonLogin
+import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
+import com.ridi.oss.proxymonster.controlplane.support.testLoginRoute
+import com.ridi.oss.proxymonster.grpc.ControlPlaneGrpcKt
+import com.ridi.oss.proxymonster.grpc.validateTokenRequest
+import io.grpc.ManagedChannel
+import io.grpc.Status
+import io.grpc.StatusException
+import io.ktor.client.HttpClient
+import io.ktor.client.request.delete
+import io.ktor.client.request.get
+import io.ktor.client.request.header
+import io.ktor.client.request.post
+import io.ktor.client.statement.bodyAsText
+import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpStatusCode
+import io.ktor.server.routing.routing
+import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import org.junit.jupiter.api.AfterAll
+import org.junit.jupiter.api.BeforeAll
+import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.TestInstance
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+import javax.sql.DataSource
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+
+/** `POST /auth/session/logout` on cp-go: pmon ends its daemon session on the server, with every token it minted. */
+@TestInstance(TestInstance.Lifecycle.PER_CLASS)
+class PmonLogoutDbTest {
+    private lateinit var dataSource: DataSource
+    private lateinit var core: ControlPlaneCore
+    private lateinit var datasource: Datasource
+    private lateinit var stack: CpGoStack
+    private lateinit var channel: ManagedChannel
+    private lateinit var grpc: ControlPlaneGrpcKt.ControlPlaneCoroutineStub
+    private val config = mcpTestConfig().copy(mcpResource = "http://127.0.0.1/mcp")
+    private val seq = AtomicInteger()
+
+    @BeforeAll
+    fun setUp() {
+        requireDockerOrSkip()
+        val database = SharedPostgres.migratedDatabase("pm_pmon_logout")
+        dataSource = SharedPostgres.hikari(database)
+        core = ControlPlaneCore(dataSource)
+        datasource = core.datasourceStore.create(DatasourceInput("pmon-logout-ds", "postgres"))
+        stack = CpGoStack(config, core, database, withGrpc = true) { routing { testLoginRoute(PrincipalSessionStore(dataSource, null), config) } }
+        channel = stack.channel()
+        grpc = ControlPlaneGrpcKt.ControlPlaneCoroutineStub(channel)
+    }
+
+    @AfterAll
+    fun teardown() {
+        if (::channel.isInitialized) channel.shutdownNow().awaitTermination(5, TimeUnit.SECONDS)
+        if (::stack.isInitialized) stack.close()
+    }
+
+    private suspend fun HttpClient.mint(renewalToken: String): PmonMcpTokenResponse {
+        val res = bearerPost("/auth/session/mcp-token", renewalToken)
+        assertEquals(HttpStatusCode.OK, res.status, res.bodyAsText())
+        return MCP_TEST_JSON.decodeFromString(res.bodyAsText())
+    }
+
+    private suspend fun validate(token: String) =
+        grpc.validateToken(validateTokenRequest { this.token = token; datasourceName = datasource.name; clientAddr = "127.0.0.1" })
+
+    private suspend fun wireValid(token: String): Boolean = try {
+        validate(token)
+        true
+    } catch (e: StatusException) {
+        assertEquals(Status.Code.UNAUTHENTICATED, e.status.code)
+        false
+    }
+
+    @Test
+    fun `logout refuses renew and the exchange, and revokes the login's wire and MCP tokens`() = runBlocking<Unit> {
+        val client = stack.client()
+        val caller = principal()
+        val login = client.pmonLogin(caller)
+        val renewed = MCP_TEST_JSON.decodeFromString<RenewSessionResponse>(
+            client.bearerPost("/auth/session/renew", login.renewalToken).bodyAsText(),
+        )
+        val mcp = client.mint(login.renewalToken)
+        val other = client.pmonLogin(caller)
+        val otherMcp = client.mint(other.renewalToken)
+        assertEquals(true, wireValid(login.token))
+        assertEquals(true, wireValid(renewed.token))
+        client.mcpCall(mcp.accessToken, "get_my_permissions").ok()
+
+        assertEquals(HttpStatusCode.NoContent, client.bearerPost("/auth/session/logout", login.renewalToken).status)
+
+        assertEquals(HttpStatusCode.Unauthorized, client.bearerPost("/auth/session/renew", login.renewalToken).status)
+        assertEquals(HttpStatusCode.Unauthorized, client.bearerPost("/auth/session/mcp-token", login.renewalToken).status)
+        assertEquals(false, wireValid(login.token))
+        assertEquals(false, wireValid(renewed.token))
+        assertFailsWith<StatusException> { core.resolveRequestIdentity(login.token, null) }
+        assertEquals(HttpStatusCode.Unauthorized, client.mcpRaw(mcp.accessToken, "get_my_permissions").status)
+
+        assertEquals(true, wireValid(other.token), "another login of the same principal stays up")
+        client.mcpCall(otherMcp.accessToken, "get_my_permissions").ok()
+        client.mcpCall(client.mint(other.renewalToken).accessToken, "get_my_permissions").ok()
+    }
+
+    @Test
+    fun `a replaced login keeps its open connections but opens no new one`() = runBlocking<Unit> {
+        val client = stack.client()
+        val login = client.pmonLogin(principal())
+        val pmon = stack.client()
+        val discover = suspend { pmon.get("/api/datasources") { header(HttpHeaders.Authorization, "Bearer ${login.token}") }.status }
+        assertEquals(HttpStatusCode.OK, discover())
+        val mcp = client.mint(login.renewalToken)
+
+        assertEquals(HttpStatusCode.NoContent, client.bearerPost("/auth/session/logout?replaced=true", login.renewalToken).status)
+
+        assertEquals(HttpStatusCode.Unauthorized, client.mcpRaw(mcp.accessToken, "get_my_permissions").status)
+
+        assertEquals(HttpStatusCode.Unauthorized, client.bearerPost("/auth/session/renew", login.renewalToken).status)
+        assertEquals(false, wireValid(login.token), "a new connection is refused")
+        assertEquals(login.principal, core.resolveRequestIdentity(login.token, null).identity.principal, "an open connection's statements still run")
+        assertEquals(HttpStatusCode.Unauthorized, discover(), "a retired token is refused as a fresh bearer")
+    }
+
+    @Test
+    fun `revoking the pmon consent on the web ends the pmon login`() = runBlocking<Unit> {
+        val client = stack.client()
+        val login = client.pmonLogin(principal())
+        val mcp = client.mint(login.renewalToken)
+        val listed = MCP_TEST_JSON.parseToJsonElement(client.get("/oauth/consents").bodyAsText()).jsonObject
+        val consent = listed["consents"]!!.jsonArray.map { it.jsonObject }.single { it["clientId"]!!.jsonPrimitive.content == "pmon" }
+
+        val revoke = client.delete("/oauth/consents/${consent["id"]!!.jsonPrimitive.content}") {
+            header("X-PM-CSRF", listed["csrfToken"]!!.jsonPrimitive.content)
+        }
+        assertEquals(HttpStatusCode.NoContent, revoke.status)
+
+        assertEquals(HttpStatusCode.Unauthorized, client.mcpRaw(mcp.accessToken, "get_my_permissions").status)
+        assertEquals(HttpStatusCode.Unauthorized, client.bearerPost("/auth/session/mcp-token", login.renewalToken).status, "pmon cannot mint it back")
+        assertEquals(HttpStatusCode.Unauthorized, client.bearerPost("/auth/session/renew", login.renewalToken).status)
+        assertEquals(false, wireValid(login.token))
+    }
+
+    @Test
+    fun `logout is idempotent, reveals nothing, and is audited once without the token`() = runBlocking<Unit> {
+        val client = stack.client()
+        val caller = principal()
+        val login = client.pmonLogin(caller)
+        repeat(2) { assertEquals(HttpStatusCode.NoContent, client.bearerPost("/auth/session/logout", login.renewalToken).status) }
+        assertEquals(HttpStatusCode.NoContent, client.bearerPost("/auth/session/logout", "pmr_not-a-session").status)
+        assertEquals(HttpStatusCode.Unauthorized, client.post("/auth/session/logout").status)
+
+        assertEquals(
+            1L,
+            count(
+                "SELECT count(*) FROM audit_event WHERE principal=? AND action=? AND channel='pmon' AND kind='auth'",
+                caller, AuthAuditRecorder.ACTION_LOGOUT,
+            ),
+        )
+        for (secret in listOf(login.renewalToken, login.token)) {
+            assertEquals(0L, count("SELECT count(*) FROM audit_event WHERE statement LIKE ? OR detail LIKE ? OR resource LIKE ?", "%$secret%", "%$secret%", "%$secret%"))
+        }
+        assertFailsWith<StatusException> { validate(login.token) }
+    }
+
+    private fun count(sql: String, vararg args: String): Long = dataSource.connection.use { c ->
+        c.prepareStatement(sql).use { ps ->
+            args.forEachIndexed { i, v -> ps.setString(i + 1, v) }
+            ps.executeQuery().use { rs -> rs.next(); rs.getLong(1) }
+        }
+    }
+
+    private fun principal() = "pmon-logout-${seq.incrementAndGet()}@example.com"
+}

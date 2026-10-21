@@ -1,6 +1,10 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import org.junit.jupiter.api.AfterAll
+import com.ridi.oss.proxymonster.controlplane.support.OidcProvisioner
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
+import com.ridi.oss.proxymonster.controlplane.support.daemonWithinWindow
+import com.ridi.oss.proxymonster.controlplane.support.seedDaemonSession
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -8,7 +12,6 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
@@ -33,18 +36,35 @@ class ProvisionMergeDbTest {
     private lateinit var accessStore: AccessStore
     private lateinit var daemonSessionStore: PrincipalSessionStore
     private lateinit var policyStore: PolicyStore
+    private lateinit var provisioner: OidcProvisioner
 
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        val dbName = SharedPostgres.freshDatabase("pm_provision_merge")
+        val dbName = SharedPostgres.migratedDatabase("pm_provision_merge")
         ds = SharedPostgres.hikari(dbName)
-        Flyway.configure().dataSource(ds).load().migrate()
         store = UserGroupStore(ds)
         tokenStore = TokenStore(ds)
         accessStore = AccessStore(ds)
         daemonSessionStore = PrincipalSessionStore(ds, null)
         policyStore = PolicyStore(ds)
+        provisioner = OidcProvisioner(ControlPlaneCore(ds), dbName)
+    }
+
+    /** JIT provisioning, now done by cp-go: a real OIDC login with these claims, then the row it left. */
+    private fun UserGroupStore.provisionFromOidc(
+        principal: String,
+        email: String?,
+        idpGroups: List<String>,
+        mapping: OidcGroupMapping = OidcGroupMapping(emptyMap(), null),
+    ): AppUser {
+        provisioner.login(principal, email, idpGroups, mapping)
+        return checkNotNull(getUserByPrincipal(email ?: principal))
+    }
+
+    @AfterAll
+    fun closeProvisioner() {
+        if (::provisioner.isInitialized) provisioner.close()
     }
 
     @Test
@@ -102,7 +122,7 @@ class ProvisionMergeDbTest {
 
     @Test
     fun `JIT never clobbers a source=SCIM user's fields`() {
-        val principal = "scim-owned@example.com"
+        val principal = "attacker-supplied@evil.com"
         val scimUser = store.upsertScimUser(
             externalId = "ext-1", principal = principal, email = "scim-owned@example.com",
             displayName = "SCIM Name", active = true,
@@ -170,9 +190,9 @@ class ProvisionMergeDbTest {
         val token = tokenStore.issue(TokenKind.SESSION, oldPrincipal, emptyList(), name = null, ttlSeconds = 3600)
         val req = accessStore.createRequest(oldPrincipal, AccessRequestInput(roleId = role.id))
         accessStore.approve(req.id, durationSec = 3600, decidedBy = "approver@example.com")
-        daemonSessionStore.create(oldPrincipal, "dvc_atomic_rename", null, windowSeconds = 3600, ttlSeconds = 900)
+        ds.seedDaemonSession(oldPrincipal)
         val webId = daemonSessionStore.mintWeb(oldPrincipal, null, 3600, 900, "atomic-rename-web")
-        assertTrue(daemonSessionStore.withinWindow(oldPrincipal), "sanity: the old principal's daemon session is in-window before the rename")
+        assertTrue(ds.daemonWithinWindow(oldPrincipal), "sanity: the old principal's daemon session is in-window before the rename")
 
         // The rename (matched by external_id, userName changes) goes through the stores-threaded
         // overload — the ONLY code path that atomically tears down the old principal's credentials.
@@ -185,7 +205,7 @@ class ProvisionMergeDbTest {
 
         assertNotNull(tokenStore.get(token.id)!!.revokedAt, "the old principal's token must be revoked by the atomic rename teardown")
         assertEquals(0, accessStore.listGrants(oldPrincipal, activeOnly = true).size, "the old principal's grant must be revoked")
-        assertFalse(daemonSessionStore.withinWindow(oldPrincipal), "the old principal's daemon session window must be closed")
+        assertFalse(ds.daemonWithinWindow(oldPrincipal), "the old principal's daemon session window must be closed")
         assertNull(daemonSessionStore.resolveWeb(webId, "atomic-rename-web"))
         assertEquals(ENDED_DEACTIVATED, daemonSessionStore.webEndedReason(webId))
         assertTrue(store.isDeactivated(oldPrincipal), "the old principal remains tombstoned")
@@ -204,16 +224,16 @@ class ProvisionMergeDbTest {
         val role = policyStore.createRole(RoleInput("provision-merge-5arg-rename-role"))
         val req = accessStore.createRequest(oldPrincipal, AccessRequestInput(roleId = role.id))
         accessStore.approve(req.id, durationSec = 3600, decidedBy = "approver@example.com")
-        daemonSessionStore.create(oldPrincipal, "dvc_5arg_rename", null, windowSeconds = 3600, ttlSeconds = 900)
+        ds.seedDaemonSession(oldPrincipal)
         val webId = daemonSessionStore.mintWeb(oldPrincipal, null, 3600, 900, "five-arg-rename-web")
-        assertTrue(daemonSessionStore.withinWindow(oldPrincipal), "sanity: the old principal's daemon session is in-window before the rename")
+        assertTrue(ds.daemonWithinWindow(oldPrincipal), "sanity: the old principal's daemon session is in-window before the rename")
 
         val renamed = store.upsertScimUser(externalId = "ext-5arg-rename", principal = newPrincipal, email = "new-5arg@example.com", displayName = "New", active = true)
         assertEquals(newPrincipal, renamed.principal)
 
         assertNotNull(tokenStore.get(token.id)!!.revokedAt, "the 5-arg overload's rename must still revoke the old principal's token")
         assertEquals(0, accessStore.listGrants(oldPrincipal, activeOnly = true).size, "the 5-arg overload's rename must still revoke the old principal's grant")
-        assertFalse(daemonSessionStore.withinWindow(oldPrincipal), "the 5-arg overload's rename must still close the old principal's daemon session window")
+        assertFalse(ds.daemonWithinWindow(oldPrincipal), "the 5-arg overload's rename must still close the old principal's daemon session window")
         assertNull(daemonSessionStore.resolveWeb(webId, "five-arg-rename-web"))
         assertEquals(ENDED_DEACTIVATED, daemonSessionStore.webEndedReason(webId))
         assertTrue(store.isDeactivated(oldPrincipal), "the old principal remains tombstoned")
@@ -227,9 +247,9 @@ class ProvisionMergeDbTest {
         val role = policyStore.createRole(RoleInput("scim-deactivate-atomic-role"))
         val req = accessStore.createRequest(principal, AccessRequestInput(roleId = role.id))
         accessStore.approve(req.id, durationSec = 3600, decidedBy = "approver@example.com")
-        daemonSessionStore.create(principal, "dvc_scim_deact", null, windowSeconds = 3600, ttlSeconds = 900)
+        ds.seedDaemonSession(principal)
         val webId = daemonSessionStore.mintWeb(principal, null, 3600, 900, "scim-deactivate-web")
-        assertTrue(daemonSessionStore.withinWindow(principal), "sanity: in-window before the deactivate")
+        assertTrue(ds.daemonWithinWindow(principal), "sanity: in-window before the deactivate")
 
         // The stores-threaded overload revokes in the same committed transaction as the app_user
         // active=false write, so a crash cannot leave an inactive principal with live credentials.
@@ -241,7 +261,7 @@ class ProvisionMergeDbTest {
         assertTrue(store.isDeactivated(principal))
         assertNotNull(tokenStore.get(token.id)!!.revokedAt, "deactivate must revoke the token")
         assertEquals(0, accessStore.listGrants(principal, activeOnly = true).size, "deactivate must revoke the grant")
-        assertFalse(daemonSessionStore.withinWindow(principal), "deactivate must close the daemon session window")
+        assertFalse(ds.daemonWithinWindow(principal), "deactivate must close the daemon session window")
         assertNull(daemonSessionStore.resolveWeb(webId, "scim-deactivate-web"))
         assertEquals(ENDED_DEACTIVATED, daemonSessionStore.webEndedReason(webId))
     }
@@ -251,16 +271,16 @@ class ProvisionMergeDbTest {
         val principal = "scim-patch-delete@example.com"
         val user = store.upsertScimUser(externalId = "ext-patchdel", principal = principal, email = null, displayName = null, active = true)
         val token = tokenStore.issue(TokenKind.SESSION, principal, emptyList(), name = null, ttlSeconds = 3600)
-        daemonSessionStore.create(principal, "dvc_patchdel", null, windowSeconds = 3600, ttlSeconds = 900)
+        ds.seedDaemonSession(principal)
         val webId = daemonSessionStore.mintWeb(principal, null, 3600, 900, "patch-delete-web")
-        assertTrue(daemonSessionStore.withinWindow(principal))
+        assertTrue(ds.daemonWithinWindow(principal))
 
         val updated = store.setActiveById(user.id, false, tokenStore, accessStore, daemonSessionStore)
 
         assertEquals(false, updated?.active)
         assertTrue(store.isDeactivated(principal))
         assertNotNull(tokenStore.get(token.id)!!.revokedAt, "the token must be revoked")
-        assertFalse(daemonSessionStore.withinWindow(principal), "the daemon session window must be closed")
+        assertFalse(ds.daemonWithinWindow(principal), "the daemon session window must be closed")
         assertNull(daemonSessionStore.resolveWeb(webId, "patch-delete-web"))
         assertEquals(ENDED_DEACTIVATED, daemonSessionStore.webEndedReason(webId))
     }

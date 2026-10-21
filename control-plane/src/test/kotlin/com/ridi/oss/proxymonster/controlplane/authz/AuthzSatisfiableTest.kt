@@ -37,7 +37,7 @@ class AuthzSatisfiableTest {
         roles: Set<String>,
         channel: String? = null,
         unknown: Set<String> = emptySet(),
-    ) = satisfiableAs("bob@example.com", roles, approve, resource, knownChannel = channel, unknownContextKeys = unknown)
+    ) = satisfiableAs("bob@example.com", UserParents(roles), approve, resource, knownChannel = channel, unknownContextKeys = unknown)
 
     @Test
     fun `an unconditional permit is ALLOWED regardless of the unknowns`() {

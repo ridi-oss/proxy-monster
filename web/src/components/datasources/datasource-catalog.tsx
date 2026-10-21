@@ -12,7 +12,6 @@ import {
   Download,
   KeyRound,
   RefreshCw,
-  Search,
   Table2,
   Upload,
 } from 'lucide-react'
@@ -24,8 +23,9 @@ import { connectionEndpoint, groupCatalogTables, tableKey } from '@/lib/catalog'
 import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import { LoadingState, ErrorState, EmptyState } from '@/components/page-scaffold'
+import { buildTree } from '@/components/query/catalog-schema'
+import { SchemaTree } from '@/components/query/schema-tree'
 import { ClassifyPopover } from './classify-popover'
 
 export function DatasourceCatalog({ id }: { id: number }) {
@@ -36,15 +36,12 @@ export function DatasourceCatalog({ id }: { id: number }) {
 
   const tables = useMemo(() => groupCatalogTables(catalog ?? []), [catalog])
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
-  const [filter, setFilter] = useState('')
   const [importing, setImporting] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
 
-  const selected = tables.find((t) => t.key === selectedKey) ?? tables[0] ?? null
-  const filteredTables = useMemo(() => {
-    const q = filter.trim().toLowerCase()
-    return q ? tables.filter((t) => t.label.toLowerCase().includes(q)) : tables
-  }, [tables, filter])
+  const tree = useMemo(() => buildTree(catalog ?? [], ds), [catalog, ds])
+  const firstKey = (tree.find((table) => !table.system) ?? tree[0])?.key
+  const selected = tables.find((t) => t.key === selectedKey) ?? tables.find((t) => t.key === firstKey) ?? null
 
   const classifiedCount = (catalog ?? []).filter((c) => c.classification).length
 
@@ -207,47 +204,22 @@ export function DatasourceCatalog({ id }: { id: number }) {
         <div className="flex min-h-0 flex-1">
           {/* Tables (LHS) */}
           <aside className="flex w-72 shrink-0 flex-col border-r">
-            <div className="relative p-2">
-              <Search className="text-muted-foreground absolute top-1/2 left-4 size-3.5 -translate-y-1/2" />
-              <Input
-                value={filter}
-                onChange={(e) => setFilter(e.target.value)}
-                placeholder={t('catalog.filterPlaceholder')}
-                className="h-7 pl-7 text-xs"
-              />
-            </div>
-            <div className="min-h-0 flex-1 overflow-y-auto px-1 pb-2">
-              {filteredTables.map((t) => (
-                <button
-                  key={t.key}
-                  onClick={() => setSelectedKey(t.key)}
-                  className={cn(
-                    'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left',
-                    selected?.key === t.key ? 'bg-accent' : 'hover:bg-muted/50',
-                  )}
-                >
-                  <Table2 className="text-muted-foreground size-3.5 shrink-0" />
-                  <span className="min-w-0 flex-1 truncate font-mono text-xs">{t.label}</span>
-                  <span className="text-muted-foreground text-[10px]">{t.columns.length}</span>
-                  {t.piiCount > 0 && (
-                    <span className="rounded border border-red-500/25 bg-red-500/10 px-1 font-mono text-[10px] text-red-500">
-                      {t.piiCount}
-                    </span>
-                  )}
-                </button>
-              ))}
-            </div>
+            <SchemaTree
+              datasourceId={id}
+              tables={tree}
+              onOpenTable={(table) => setSelectedKey(table.key)}
+            />
           </aside>
 
           {/* Columns (RHS) */}
           <div className="min-h-0 flex-1 overflow-auto">
             {selected && (
-              <table className="w-full border-collapse text-sm">
+              <table className="w-full table-fixed border-collapse text-sm">
                 <thead className="bg-muted/50 text-muted-foreground sticky top-0">
                   <tr>
-                    <th className="border-b px-4 py-2 text-left font-medium">{t('catalog.colColumn')}</th>
+                    <th className="w-[35%] border-b px-4 py-2 text-left font-medium">{t('catalog.colColumn')}</th>
                     <th className="border-b px-4 py-2 text-left font-medium">{t('catalog.colType')}</th>
-                    <th className="border-b px-4 py-2 text-left font-medium">{t('catalog.colNullable')}</th>
+                    <th className="w-24 border-b px-4 py-2 text-left font-medium">{t('catalog.colNullable')}</th>
                     <th className="w-40 border-b px-4 py-2 text-left font-medium">{t('catalog.colClassification')}</th>
                   </tr>
                 </thead>
@@ -257,12 +229,15 @@ export function DatasourceCatalog({ id }: { id: number }) {
                     return (
                       <tr key={JSON.stringify([tableKey(c), c.column])} className="hover:bg-muted/40">
                         <td className="border-b px-4 py-1.5">
-                          <span className="flex items-center gap-1.5">
-                            {pii && <KeyRound className="size-3 text-red-500" />}
-                            <code className={cn('font-mono text-xs', pii && 'text-red-500')}>{c.column}</code>
+                          <span className="flex min-w-0 items-center gap-1.5" title={c.column}>
+                            {pii && <KeyRound className="size-3 shrink-0 text-red-500" />}
+                            <code className={cn('truncate font-mono text-xs', pii && 'text-red-500')}>{c.column}</code>
                           </span>
                         </td>
-                        <td className="text-muted-foreground border-b px-4 py-1.5 font-mono text-xs lowercase">
+                        <td
+                          title={c.dataType}
+                          className="text-muted-foreground truncate border-b px-4 py-1.5 font-mono text-xs lowercase"
+                        >
                           {c.dataType}
                         </td>
                         <td className="text-muted-foreground border-b px-4 py-1.5 text-xs">

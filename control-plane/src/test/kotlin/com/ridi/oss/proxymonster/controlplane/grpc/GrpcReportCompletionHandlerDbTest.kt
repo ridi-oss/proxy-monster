@@ -1,18 +1,18 @@
 package com.ridi.oss.proxymonster.controlplane.grpc
 
 import com.ridi.oss.proxymonster.controlplane.AuditCanonical
+import com.ridi.oss.proxymonster.controlplane.Config
 import com.ridi.oss.proxymonster.controlplane.AuditEvent
 import com.ridi.oss.proxymonster.controlplane.ControlPlaneCore
 import com.ridi.oss.proxymonster.controlplane.Decision
+import com.ridi.oss.proxymonster.controlplane.support.CpGoStack
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.grpc.ControlPlaneGrpcKt
 import com.ridi.oss.proxymonster.grpc.completionReport
 import io.grpc.Status
 import io.grpc.StatusException
-import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder
 import kotlinx.coroutines.runBlocking
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.TestInstance
@@ -27,32 +27,37 @@ import kotlin.test.assertFailsWith
 /**
  * DB-backed coverage for the ReportCompletion gRPC handler: the proxy's post-relay result-volume report
  * lands as a chained `kind="completion"` audit event referencing the decision id, and the handler rejects
- * a report that names no decision. Runs against a real control-plane Postgres + [ControlPlaneCore] + a
- * running gRPC server (gate open — the secret-token interceptor is covered by [GrpcServerTest]).
+ * a report that names no decision. Runs behind cp-go (support/CpGoStack.kt), which serves ReportCompletion,
+ * with the gate open — the secret-token interceptor is covered by cp-go's grpcsvc tests.
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class GrpcReportCompletionHandlerDbTest {
     private lateinit var dataSource: DataSource
     private lateinit var core: ControlPlaneCore
-    private lateinit var server: GrpcServer
+    private lateinit var stack: CpGoStack
     private lateinit var stub: ControlPlaneGrpcKt.ControlPlaneCoroutineStub
     private lateinit var rawChannel: io.grpc.ManagedChannel
 
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_grpc_completion"))
-        Flyway.configure().dataSource(dataSource).load().migrate()
+        val database = SharedPostgres.migratedDatabase("pm_grpc_completion")
+        dataSource = SharedPostgres.hikari(database)
         core = ControlPlaneCore(dataSource)
-        server = GrpcServer(0, ControlPlaneGrpcService(core), secretToken = null).also { it.start() }
-        rawChannel = NettyChannelBuilder.forAddress("localhost", server.boundPort).usePlaintext().build()
+        val config = Config(
+            httpPort = 0, dbUrl = "", dbUser = "", dbPassword = "", authDebug = false, secretToken = null,
+            sessionSecret = "grpc-completion-test-secret", oidc = null, resultKey = null, scimToken = null,
+            sessionWindowSeconds = 3600, idpRecheckIntervalSeconds = 600, devMarker = true,
+        )
+        stack = CpGoStack(config, core, database)
+        rawChannel = stack.channel()
         stub = ControlPlaneGrpcKt.ControlPlaneCoroutineStub(rawChannel)
     }
 
     @AfterAll
     fun teardown() {
-        rawChannel.shutdownNow().awaitTermination(5, TimeUnit.SECONDS)
-        server.shutdown()
+        if (::rawChannel.isInitialized) rawChannel.shutdownNow().awaitTermination(5, TimeUnit.SECONDS)
+        if (::stack.isInitialized) stack.close()
     }
 
     private fun statusOf(block: suspend () -> Unit): Status.Code =

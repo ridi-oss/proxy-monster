@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.controlplane.authz.UserParents
 import javax.sql.DataSource
 
 /**
@@ -83,13 +84,18 @@ class RoleResolver(
      * local `principal_role`-only identity, never synced into the directory) is unaffected — it
      * keeps its direct roles, since there's nothing to deactivate.
      */
-    fun resolve(principal: String): Set<String> {
-        if (userGroupStore.isDeactivated(principal)) return emptySet()
-        return effectiveRoles(
+    fun resolve(principal: String): Set<String> = resolveParents(principal).roles
+
+    /** [resolve]'s roles plus the principal's local groups and attributes, sharing one directory lookup. */
+    fun resolveParents(principal: String): UserParents {
+        if (userGroupStore.isDeactivated(principal)) return UserParents(emptySet())
+        val viaGroups = userGroupStore.groupParents(principal)
+        val roles = effectiveRoles(
             directRoles(principal),
             accessStore.listGrants(principal, activeOnly = true).map { it.roleName },
-            userGroupStore.rolesForPrincipal(principal),
+            viaGroups.roles.toList(),
         )
+        return viaGroups.copy(roles = roles)
     }
 
     /** [resolve]'s roles, each with every source that grants it; a deactivated principal has none. */
@@ -98,7 +104,7 @@ class RoleResolver(
         val sources = linkedMapOf<String, MutableList<RoleSource>>()
         fun add(role: String, source: RoleSource) = sources.getOrPut(role) { mutableListOf() }.add(source)
         directRoles(principal).forEach { add(it, RoleSource("direct")) }
-        userGroupStore.rolesForPrincipal(principal).forEach { add(it, RoleSource("group")) }
+        userGroupStore.groupParents(principal).roles.forEach { add(it, RoleSource("group")) }
         accessStore.listGrants(principal, activeOnly = true).forEach {
             add(it.roleName, RoleSource("grant", grantId = it.id, expiresAt = it.expiresAt))
         }

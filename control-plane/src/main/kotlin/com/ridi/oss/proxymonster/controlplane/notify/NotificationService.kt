@@ -2,7 +2,12 @@ package com.ridi.oss.proxymonster.controlplane.notify
 
 import com.ridi.oss.proxymonster.controlplane.AccessRequest
 import com.ridi.oss.proxymonster.controlplane.AccessStore
+import com.ridi.oss.proxymonster.controlplane.ParticipantKind
+import com.ridi.oss.proxymonster.controlplane.PullRequestRef
 import com.ridi.oss.proxymonster.controlplane.QueryResultStore
+import com.ridi.oss.proxymonster.controlplane.RequestEventKind
+import com.ridi.oss.proxymonster.controlplane.RequestEvent
+import com.ridi.oss.proxymonster.controlplane.RequestParticipants
 import io.ktor.http.URLBuilder
 import io.ktor.http.appendPathSegments
 import kotlinx.coroutines.TimeoutCancellationException
@@ -28,6 +33,7 @@ class NotificationService(
     private val webBaseUrl: String,
     private val disclosure: StatementDisclosure,
     private val defaultLocale: String,
+    private val renderer: NotificationRenderer = NotificationRenderer(),
 ) {
     private val log = LoggerFactory.getLogger(NotificationService::class.java)
 
@@ -79,6 +85,10 @@ class NotificationService(
             val targets: List<Pair<String, NotificationKind>> = when (event) {
                 // emit() only carries later events; a pending request is enqueued by emitRequested. Kept total.
                 NotificationEvent.TASK_REQUESTED -> recipients.recipientsFor(req).map { it to NotificationKind.APPROVER }
+                // An alert reaches everyone who may approve (admins included) and every party, fresh.
+                NotificationEvent.TASK_CLOSED_AFTER_RUN, NotificationEvent.TASK_MERGED_WITHOUT_FILE, NotificationEvent.TASK_FORCE_RUN ->
+                    recipients.recipientsFor(req, listOfNotNull(req.principal, req.decidedBy, req.executedBy))
+                        .map { it to NotificationKind.APPROVER }
                 // Every later event edits the threads of exactly the people who were TOLD about the request —
                 // the approver side is those who got it (recomputing eligibility would skip an approver whose
                 // role was revoked since, stranding their live buttons), the requester side is the requester's
@@ -89,14 +99,43 @@ class NotificationService(
                         add(r to NotificationKind.APPROVER)
                     }
                     add(req.principal to NotificationKind.REQUESTER)
+                    for (cc in req.ccs) add(cc to NotificationKind.CC)
                 }
             }
-            for (transport in transports) {
-                for ((recipient, kind) in targets) {
+            for (transport in transports.filter { it.serves(req) }) {
+                for ((recipient, kind) in targetsOn(transport, req, targets)) {
                     store.enqueue(c, req.id, event, transport.name, recipient, kind)
                 }
             }
         }.onFailure { log.warn("notification emit failed task={} event={}", req.id, event.wire, it) }
+    }
+
+    /** A task-addressed transport gets one row at the task's address, or none; a person-addressed one gets [targets]. */
+    private fun targetsOn(
+        transport: NotificationTransport,
+        req: AccessRequest,
+        targets: List<Pair<String, NotificationKind>>,
+    ): List<Pair<String, NotificationKind>> = when {
+        !transport.addressesTasks -> targets
+        else -> listOfNotNull(transport.taskAddress(req)?.let { it to NotificationKind.APPROVER })
+    }
+
+    /** Open [cc]'s own thread on a request they were just added to. Person-addressed transports only. */
+    fun emitCcAdded(c: Connection, req: AccessRequest, cc: String) {
+        if (!enabled) return
+        runCatching {
+            for (transport in transports.filter { !it.addressesTasks && it.serves(req) }) {
+                store.enqueue(c, req.id, NotificationEvent.TASK_CC_ADDED, transport.name, cc, NotificationKind.CC)
+            }
+        }.onFailure { log.warn("notification emit failed task={} event=task.cc_added", req.id, it) }
+    }
+
+    /** [emit] on its own transaction, then wake the drainer; for an event with no task change to join. */
+    fun emitEvent(event: NotificationEvent, req: AccessRequest) {
+        if (!enabled) return
+        runCatching { store.inTransaction { c -> emit(c, event, req) } }
+            .onFailure { log.warn("notification emit failed task={} event={}", req.id, event.wire, it) }
+        wake()
     }
 
     /**
@@ -111,21 +150,41 @@ class NotificationService(
         requester: String,
         ds: com.ridi.oss.proxymonster.controlplane.Datasource,
         roleName: String?,
+        source: String = "console",
+        pullRequest: PullRequestRef? = null,
     ) {
         if (!enabled) return
+        val subject = AccessRequest(
+            id = taskId,
+            principal = requester,
+            datasourceId = ds.id,
+            datasourceName = ds.name,
+            roleName = roleName,
+            requestedDurationSec = 0,
+            status = "PENDING",
+            createdAt = "",
+            revision = 1,
+            source = source,
+            pullRequest = pullRequest,
+        )
+        emitRequested(c, subject)
+    }
+
+    /** Queue the "needs approval" messages and the requester's receipt for a request just filed. */
+    fun emitRequested(c: Connection, subject: AccessRequest) {
+        if (!enabled) return
+        val taskId = subject.id
+        val requester = subject.principal
         runCatching {
-            val subject = AccessRequest(
-                id = taskId,
-                principal = requester,
-                datasourceId = ds.id,
-                datasourceName = ds.name,
-                roleName = roleName,
-                requestedDurationSec = 0,
-                status = "PENDING",
-                createdAt = "",
-            )
             val approvers = recipients.recipientsFor(subject)
-            for (transport in transports) {
+            RequestParticipants.add(c, taskId, approvers, ParticipantKind.APPROVER)
+            for (transport in transports.filter { it.serves(subject) }) {
+                if (transport.addressesTasks) {
+                    transport.taskAddress(subject)?.let {
+                        store.enqueue(c, taskId, NotificationEvent.TASK_REQUESTED, transport.name, it, NotificationKind.APPROVER)
+                    }
+                    continue
+                }
                 for (recipient in approvers) {
                     store.enqueue(c, taskId, NotificationEvent.TASK_REQUESTED, transport.name, recipient, NotificationKind.APPROVER)
                 }
@@ -134,6 +193,14 @@ class NotificationService(
                 store.enqueue(c, taskId, NotificationEvent.TASK_SUBMITTED, transport.name, requester, NotificationKind.REQUESTER)
             }
         }.onFailure { log.warn("notification emit failed task={} event=task.requested", taskId, it) }
+    }
+
+    /** [emitRequested] on its own transaction, for a request whose creation could not take the notification along. */
+    fun emitRequestedEvent(req: AccessRequest) {
+        if (!enabled) return
+        runCatching { store.inTransaction { c -> emitRequested(c, req) } }
+            .onFailure { log.warn("notification emit failed task={} event=task.requested", req.id, it) }
+        wake()
     }
 
     /**
@@ -167,7 +234,45 @@ class NotificationService(
                     retryOrGiveUp(row, "unhandled: ${it.message}")
                 }
         }
+        runCatching { drainThreads() }.onFailure { log.warn("thread replies failed", it) }
         return rows.size
+    }
+
+    /**
+     * Post each thread's new timeline entries into it as replies, in order. A thread never gets back the
+     * comment written in it, nor the request itself, which its first message already is. A transient failure
+     * leaves the cursor where it is, so the rest of that thread waits for the next drain.
+     */
+    private suspend fun drainThreads() {
+        val replying = transports.filter { it.supportsReplies }.associateBy { it.name }
+        if (replying.isEmpty()) return
+        for (thread in store.threadsBehind(replying.keys)) {
+            val transport = replying.getValue(thread.transport)
+            // A removed CC's thread stops getting new entries; the cursor still moves so it is not retried.
+            val removed = thread.kind == NotificationKind.CC &&
+                accessStore.getRequest(thread.taskId)?.ccs?.contains(thread.recipient) != true
+            val locale = store.localeOf(thread.recipient) ?: defaultLocale
+            for ((event, sourceThread) in store.eventsAfter(thread.taskId, thread.lastEventId)) {
+                if (!removed && event.kind != RequestEventKind.REQUESTED.wire && sourceThread != thread.externalRef && !event.deleted) {
+                    when (val r = transport.reply(thread.externalRef, renderer.threadLine(event, locale))) {
+                        is DeliveryResult.Sent -> store.addPost(event.id, r.externalRef)
+                        is DeliveryResult.Retry -> break
+                        is DeliveryResult.Drop -> log.warn("thread reply dropped task={} event={}: {}", thread.taskId, event.id, r.reason)
+                    }
+                }
+                store.advanceThread(thread, event.id)
+            }
+        }
+    }
+
+    /** Carry an edited or deleted comment to every copy of it posted into other threads. */
+    suspend fun propagate(event: RequestEvent) {
+        val transport = transports.firstOrNull { it.supportsReplies } ?: return
+        for (ref in store.postsOf(event.id)) {
+            val text = if (event.deleted) null else renderer.threadLine(event, defaultLocale)
+            val result = runCatching { transport.editReply(ref, text) }.getOrElse { DeliveryResult.Retry(it.message ?: "") }
+            if (result !is DeliveryResult.Sent) log.warn("thread reply edit failed event={} ref={}: {}", event.id, ref, result)
+        }
     }
 
     private suspend fun deliver(row: OutboxRow) {
@@ -189,7 +294,7 @@ class NotificationService(
         // A non-update row that already left a ref was delivered by a prior attempt whose markSent did not
         // commit (the post succeeded, then the bookkeeping failed). Re-posting would double-send and strand
         // the first message's live approve/deny buttons — adopt the ref and finish the row instead.
-        if (!row.event.isUpdate && existingRef != null) return store.markSent(row.id)
+        if (row.event.isCreation && existingRef != null) return store.markSent(row.id)
 
         // Editing an existing message needs only its ref, not the recipient's address — so an update skips
         // the address lookup entirely. For Slack that is two saved round-trips per update
@@ -211,7 +316,10 @@ class NotificationService(
 
         when (result) {
             is DeliveryResult.Sent -> {
-                store.rememberMessage(row.taskId, transport.name, row.recipient, row.kind, result.externalRef)
+                // An alert's fresh post must not displace the message later events edit.
+                if (row.event.isCreation || row.event.isUpdate) {
+                    store.rememberMessage(row.taskId, transport.name, row.recipient, row.kind, result.externalRef)
+                }
                 store.markSent(row.id)
             }
             is DeliveryResult.Drop -> store.markDead(row.id, result.reason)
@@ -243,7 +351,8 @@ class NotificationService(
         // `pending` is the LIVE task state, not merely the request event: a backed-off task.requested that
         // finally delivers after the task was decided must not be the first to surface a flagged statement
         // under FULL. Once the status leaves PENDING, FULL falls back to the hint like every handled message.
-        val pending = row.event == NotificationEvent.TASK_REQUESTED && req.status == "PENDING"
+        val pending = !transport.sharedAudience && row.kind == NotificationKind.APPROVER &&
+            row.event in ASKS_FOR_APPROVAL && req.status == "PENDING"
         val show = row.event != NotificationEvent.TASK_SUBMITTED &&
             discloseStatement(disclosure, pending = pending, cleared = cleared)
         val statement = renderStatement(req.sql, show, transport.statementHardLimit)
@@ -262,11 +371,25 @@ class NotificationService(
         val meta = queryResultStore
             ?.takeIf { row.recipient == req.principal || row.recipient == req.executedBy }
             ?.meta(req.id)
+        // The redacted error goes to the run's parties and to the task's own address (the pull request).
+        val failedRun = if (
+            row.event == NotificationEvent.TASK_FAILED &&
+            (row.recipient == req.principal || row.recipient == req.executedBy || transport.taskAddress(req) == row.recipient)
+        ) {
+            runCatching { queryResultStore?.accessFor(req.id) }.getOrNull()
+        } else {
+            null
+        }
+        val failure = runCatching { failedRun?.errorDetail?.message }.getOrNull()?.takeIf { it.isNotBlank() }
         return NotificationMessage(
             event = row.event,
             taskId = req.id,
+            revision = req.revision,
             requester = req.principal,
-            datasource = req.datasourceName ?: "—",
+            datasource = req.datasourceName ?: if (req.kind == "QUERY") "—" else "",
+            requestKind = req.kind,
+            durationSec = req.requestedDurationSec,
+            spentRate = req.denyReason.takeIf { req.kind == "RATE_RESET" },
             roleName = req.roleName,
             reason = req.reason,
             statement = statement,
@@ -279,31 +402,77 @@ class NotificationService(
             rowCount = meta?.rowCount,
             errorCode = meta?.errorCode,
             deepLink = URLBuilder(webBaseUrl).appendPathSegments("workflows", req.id.toString()).buildString(),
-            actions = actionsFor(row.event, req, statement),
+            actions = if (transport.sharedAudience) reviewActions(row.event, req) else actionsFor(row.event, row.kind, req, statement),
             notifiedApprovers = notifiedApprovers,
+            source = req.source,
+            path = req.pullRequest?.path,
+            prUrl = req.pullRequest?.prUrl,
+            schema = req.pullRequest?.defaultSchema,
+            autoMergeEnabled = req.pullRequest?.prAutoMerge ?: false,
+            statementCount = req.statementCount,
+            failure = failure,
+            failedStatement = failedRun?.takeIf { it.meta.status == "FAILED" && !it.sql.isNullOrBlank() }
+                ?.let { FailedStatement(it.meta.ordinal, it.sql!!) },
+            forcedBy = req.forceRunBy,
+            approvers = if (transport.sharedAudience) store.approversOf(req.id) else emptyList(),
+            ccs = if (transport.sharedAudience) req.ccs else emptyList(),
         )
     }
 
+    /** A shared message offers Review, which opens each clicker's own view of what they may do. */
+    private fun reviewActions(event: NotificationEvent, req: AccessRequest): Set<NotificationAction> = buildSet {
+        add(NotificationAction.OPEN)
+        if ((event.isCreation || event.isUpdate) && req.status in setOf("PENDING", "APPROVED")) add(NotificationAction.REVIEW)
+    }
+
     /**
-     * What the recipient may do from the message.
+     * What the recipient may do from the message, from the request's live status and which side of it they are.
+     * Every click is re-authorized, so this only decides what is worth offering.
      *
-     * `[open]` is always there. `[approve and run]` is offered ONLY while the task is still pending AND the
-     * message carries the WHOLE statement — approving is vouching for a specific statement, and a truncated
-     * one is worse than none, since the elided tail is exactly where a dangerous predicate would sit. The
-     * test is what was rendered, never which mode the operator configured. `[deny]` needs no such gate:
-     * refusing something you have not fully read is always safe.
+     * Approving needs the WHOLE statement in the message: approving vouches for a specific statement, and the
+     * elided tail of a truncated one is exactly where a dangerous predicate would sit. Deny and close need no
+     * such gate. A pull request's merge runs its request, so it never offers Run.
      */
     private fun actionsFor(
         event: NotificationEvent,
+        kind: NotificationKind,
         req: AccessRequest,
         statement: RenderedStatement,
     ): Set<NotificationAction> = buildSet {
         add(NotificationAction.OPEN)
-        if (event == NotificationEvent.TASK_REQUESTED && req.status == "PENDING") {
-            add(NotificationAction.DENY)
-            // Approve-and-run also RUNS the query, which needs result storage — without it the click would
-            // approve but never start the run, so the button is not offered when it cannot be honored.
-            if (statement.complete && queryResultStore != null) add(NotificationAction.APPROVE_AND_RUN)
+        if (!event.isCreation && !event.isUpdate) return@buildSet
+        val runnable = !req.fromPullRequest && queryResultStore != null
+        val approver = kind == NotificationKind.APPROVER
+        if (kind == NotificationKind.CC) {
+            if (req.status == "PENDING" || req.status == "APPROVED") add(NotificationAction.LGTM)
+            return@buildSet
+        }
+        // A role or rate-reset request has no statement and nothing to run: approving it is the whole action.
+        if (req.kind != "QUERY") {
+            if (req.status == "PENDING") {
+                if (approver) addAll(listOf(NotificationAction.APPROVE, NotificationAction.DENY)) else add(NotificationAction.CLOSE)
+            }
+            return@buildSet
+        }
+        when (req.status) {
+            "PENDING" -> if (approver) {
+                add(NotificationAction.DENY)
+                if (statement.complete) {
+                    add(NotificationAction.APPROVE)
+                    if (runnable) add(NotificationAction.APPROVE_AND_RUN)
+                }
+            } else if (!req.fromPullRequest) {
+                add(NotificationAction.CLOSE)
+            }
+            "APPROVED" -> if (!req.fromPullRequest) {
+                if (runnable) add(NotificationAction.RUN)
+                if (approver) {
+                    add(NotificationAction.UNAPPROVE)
+                    add(NotificationAction.DENY)
+                } else {
+                    add(NotificationAction.CLOSE)
+                }
+            }
         }
     }
 

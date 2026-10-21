@@ -1,0 +1,35 @@
+name: desktop feed (windows)
+
+# Point Proxy Monster Desktop's Windows update feed at a release, once its MSIs are signed and attached by
+# pmon/tray/sign-windows.sh: gh workflow run desktop-feed-windows.yml --ref pmon-v<version>
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  feed:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    environment: release
+    # Shared with the macOS feed job: both rewrite the rolling desktop-feed release.
+    concurrency:
+      group: desktop-feed
+      cancel-in-progress: false
+    env:
+      TAG: ${{ github.ref_name }}
+
+    steps:
+      - name: Require a pmon-v* tag
+        shell: bash
+        run: |
+          [[ "$GITHUB_REF" == refs/tags/pmon-v* ]] || { echo "::error::run this on a pmon-v* tag, not $GITHUB_REF"; exit 1; }
+
+      - uses: actions/checkout@v7
+
+      - name: Sign and publish the feed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SPARKLE_ED_KEY: ${{ secrets.SPARKLE_ED_KEY }}
+        run: pwsh .github/scripts/desktop-feed-windows.ps1 -Tag $env:TAG

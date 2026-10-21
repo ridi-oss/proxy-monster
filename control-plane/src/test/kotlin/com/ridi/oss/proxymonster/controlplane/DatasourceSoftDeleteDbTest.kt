@@ -14,7 +14,6 @@ import com.ridi.oss.proxymonster.grpc.schemaFragmentPush
 import com.google.protobuf.ByteString
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.runBlocking
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
@@ -45,8 +44,7 @@ class DatasourceSoftDeleteDbTest {
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_ds_soft_delete"))
-        Flyway.configure().dataSource(dataSource).load().migrate()
+        dataSource = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_ds_soft_delete"))
         core = ControlPlaneCore(dataSource)
         store = core.datasourceStore
         datasources = DatasourceManagementService(
@@ -209,7 +207,7 @@ class DatasourceSoftDeleteDbTest {
     private fun insertQueryRequest(datasourceId: Long, principal: String, status: String = "EXECUTED") {
         dataSource.connection.use { c ->
             c.prepareStatement(
-                "INSERT INTO access_request (kind, principal, datasource_id, status) VALUES ('QUERY', ?, ?, ?)",
+                "INSERT INTO access_request (kind, principal, datasource_id, status, creator_kind) VALUES ('QUERY', ?, ?, ?, 'WORKFLOW')",
             ).use { ps ->
                 ps.setString(1, principal)
                 ps.setLong(2, datasourceId)

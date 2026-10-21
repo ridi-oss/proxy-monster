@@ -29,14 +29,25 @@ weighing review findings, and weight MySQL accordingly.
 
 Modules:
 
-- `goproxy/` — Go data-plane wire proxy: MySQL/PostgreSQL codecs, token auth,
-  the per-statement `Decide` call, inline result masking, and the target-DB
-  broker.
+- `goproxy/` — Go data-plane wire proxy: token auth, the per-statement `Decide`
+  call, inline result masking, and the target-DB broker. Three levels: the
+  engine, the target it connects to, and a session on that target. One package
+  per engine (`mysql/`, `postgres/`, `athena/`) holds its provider, SQL, table
+  detail, and wire broker; `sqldb/` is what MySQL and PostgreSQL share through
+  database/sql (introspection, the schema refetcher, table detail, pools);
+  `relay/` is the engine-agnostic Decide, masking and serving; `spi/` defines
+  the contracts between them. `cmd/goproxy` builds the provider registry;
+  generic packages never import an engine package.
+- `cpgo/` — Go front door of the control plane: owns its public HTTP and gRPC
+  ports, runs the Kotlin control plane as a child on loopback, and forwards to
+  it what Go does not serve yet
+  ([docs/cp-go-migration.md](./docs/cp-go-migration.md)).
 - `control-plane/` — Kotlin control plane: identity and roles, Cedar
   authorization, the catalog, the per-statement decision, and the admin +
   console API (HTTP and gRPC).
-- `analyzer/` — the Go sqlglot-go lineage probe (`probe/`) and its JVM FFM
-  binding (`jvm/`); emits each statement's required grants.
+- `analyzer/` — `engines/` is the one list of target engines: each engine's
+  facts, canonical names, and sqlglot-go lineage analyzer, which emits each
+  statement's required grants. `jvm/` is its JVM FFM binding.
 - `engine/` — shared Kotlin enforcement code the control plane calls: the
   JVM-side wrapper around the sqlglot-go analyzer, system classification (the
   dangerous-function and system-catalog manifests), SQL normalization, and the
@@ -45,7 +56,14 @@ Modules:
 - `auditmon/` — Go audit-trail monitor: verifies the hash chain, anchors
   off-box, detects anomalies, and exports to a SIEM.
 - `pmon/` — Go client daemon: connect with a saved password while it brokers a
-  short-lived token upstream.
+  short-lived token upstream. Its menu-bar app is `pmon/tray/`.
+  Connection-string formatters and brokers use its
+  [provider SPI](./pmon/AGENTS.md).
+- `auto-approver/` — `pmon-auto-approver-agent`, the TypeScript auto-approval
+  agent cp-go runs once per review, compiled with bun into the server image.
+- `sql-action/` — the GitHub Action that files a pull request's SQL files, and
+  `pm-ci`, the Go binary it runs
+  ([docs/sql-from-github.md](./docs/sql-from-github.md)).
 - `mysqlwire/` — Go MySQL wire-protocol codec library (shared by `goproxy` and
   `pmon`).
 - `proto/` — protobuf contracts: the proxy↔control-plane gRPC surface and the
@@ -107,6 +125,33 @@ Key docs:
 - Web console (`web/`): a SQL editor plus admin for datasources, policies,
   access, and audit, in Next.js.
 
+## New control-plane code: Go first
+
+The control plane is moving to Go slice by slice
+([docs/cp-go-migration.md](./docs/cp-go-migration.md)). New control-plane code
+goes in `cpgo/`, not `control-plane/`, unless it only extends a Kotlin path that
+has not moved yet. Kotlin that stays is the smallest change that keeps a
+not-yet-moved path working.
+
+When Kotlin must call Go, use gRPC with a proto contract, never hand-written
+JSON DTOs on both sides:
+
+- One service per slice (e.g. `GitHubSource`), in its own file under
+  `proto/src/main/proto/`. The generated types are the data classes on both
+  sides.
+- cp-go serves it on a loopback gRPC listener it starts before the Kotlin child,
+  and passes the address to the child. The per-boot `PM_CP_INTERNAL_TOKEN`
+  travels in gRPC metadata. Register the Go side on `cpgo/gobridge`; build the
+  Kotlin stub on `CpGoBridge.channel`.
+- Forward whole operations, which Go runs in its own transaction. A single row
+  written inside a Kotlin transaction (a `request_event`, say) stays a Kotlin
+  insert until that call site moves; an RPC there would split the transaction.
+- A service exists only while its slice is half-moved: delete it when the Kotlin
+  caller moves to Go, and list it in `docs/cp-go-migration.md` until then.
+
+Go calling Kotlin stays on the existing `/internal/*` HTTP bridge
+(`cpgo/bridge`), which only shrinks.
+
 ## Control-plane HTTP API
 
 There is no API reference and no OpenAPI spec. The routes are the surface and
@@ -167,15 +212,17 @@ in [CONTRIBUTING.md](./CONTRIBUTING.md#build-test-run). Install and deploy:
 
 ## Releases
 
-release-please cuts three trains (server, `pmon`, `mysqlwire`) from one config;
-see [CONTRIBUTING.md](./CONTRIBUTING.md#releases). The paths a commit touches
-decide its train.
+release-please cuts four trains (server, `pmon`, `pm-ci`, `mysqlwire`) from one
+config; see [CONTRIBUTING.md](./CONTRIBUTING.md#releases). The paths a commit
+touches decide its train.
 
 Never force a version with an empty commit carrying a `Release-As:` footer. An
 empty commit touches no path, so release-please counts it toward every train:
 `Release-As: 0.1.21` meant for the server also set `pmon` to 0.1.21. Put the
 footer on a commit that edits a file in that train's directory, such as its
-`CHANGELOG.md`.
+`CHANGELOG.md`. The one such commit already on `main` is fenced off by
+`last-release-sha` in `release-please-config.json`; move that floor forward if
+another ever lands.
 
 ## Design docs
 

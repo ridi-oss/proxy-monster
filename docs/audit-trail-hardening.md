@@ -195,7 +195,9 @@ catch "few wide rows / big blob"), terminal status in `outcome`
 it relays. One completion is emitted at statement end, so mass-export is caught
 after the rows left, which is fine for alerting (Cedar is the enforcement gate).
 DENY → no completion; error/cancel → a completion with `outcome` + partial
-counts.
+counts. An unanalyzable statement the target rejects is an ALLOW whose
+completion is `error` with zero counts (see
+[facts-emission.md](./facts-emission.md)).
 
 <!-- prettier-ignore -->
 | Rule | Fires on | Primary signal |

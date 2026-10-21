@@ -9,6 +9,7 @@ import com.ridi.oss.proxymonster.analyzer.pb.SessionObservation
 import com.ridi.oss.proxymonster.analyzer.pb.engineConfig
 import com.ridi.oss.proxymonster.controlplane.CatalogColumn
 import com.ridi.oss.proxymonster.controlplane.Datasource
+import com.ridi.oss.proxymonster.controlplane.engineDatasource
 import com.ridi.oss.proxymonster.controlplane.EngineDefinition
 import com.ridi.oss.proxymonster.controlplane.MetadataRequestAuthorizer
 import com.ridi.oss.proxymonster.controlplane.RequestAuthorizer
@@ -26,26 +27,18 @@ internal object MySqlEngineDefinition : EngineDefinition {
     override val systemSchemas = setOf("information_schema", "mysql", "performance_schema", "sys")
     // MySQL temporary tables are absent from information_schema.COLUMNS.
     override val catalogIsConnectionIndependent = true
+    override val checksTargetErrors = true
 
     override fun catalogName(dbName: String): String = "def"
     override fun defaultSchema(dbName: String): String = dbName
 
-    override fun requireCaseMode(lowerCaseTableNames: Int?): Int = requireNotNull(lowerCaseTableNames) {
-        "MySQL lower_case_table_names has not been captured by introspection"
-    }
-
     override fun isFixedSystemSchema(schema: String): Boolean = schema.lowercase() in systemSchemas
     override fun isSystemSchema(schema: String): Boolean = isFixedSystemSchema(schema)
-
-    override fun splitEngineConfig(datasource: Datasource): EngineConfig? {
-        if (datasource.engineVersion.isNullOrBlank() || datasource.mysqlLowerCaseTableNames == null) return null
-        return analyzerEngineConfig(datasource, SessionObservation.getDefaultInstance())
-    }
+    override val defaultSchemaStatement = { schema: String -> "USE `${schema.replace("`", "``")}`" }
 
     override fun analyzerEngineConfig(datasource: Datasource, session: SessionObservation): EngineConfig = engineConfig {
         engine = this@MySqlEngineDefinition.engine
-        engineVersion = datasource.engineVersion ?: ""
-        mysqlLowerCaseTableNames = requireCaseMode(datasource.mysqlLowerCaseTableNames)
+        this.datasource = datasource.engineDatasource()
         this.session = session
     }
 

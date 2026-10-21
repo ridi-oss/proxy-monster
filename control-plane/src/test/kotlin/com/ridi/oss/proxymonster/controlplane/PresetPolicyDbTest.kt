@@ -1,6 +1,7 @@
 package com.ridi.oss.proxymonster.controlplane
 
 import com.ridi.oss.proxymonster.grpc.EnfAction
+import com.ridi.oss.proxymonster.controlplane.authz.UserParents
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzContext
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzDecision
@@ -10,6 +11,7 @@ import com.ridi.oss.proxymonster.controlplane.authz.authorizeColumns
 import com.ridi.oss.proxymonster.controlplane.authz.authorizeDatasourceActionId
 import com.ridi.oss.proxymonster.controlplane.support.EnforcementFixture
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
+import com.ridi.oss.proxymonster.controlplane.support.seedOidcUser
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -62,11 +64,9 @@ class PresetPolicyDbTest {
             fx.policyStore.createAssignment(RoleAssignmentInput(principal, roles.getValue(roleName).id))
         }
         // Exercise the real default aggregate group rather than manually assigning its five roles.
-        fx.userGroupStore.provisionFromOidc(
-            developer,
-            developer,
-            listOf("okta-developers"),
-            OidcGroupMapping(mapOf("okta-developers" to "system:developer"), null),
+        fx.userGroupStore.addMember(
+            checkNotNull(fx.userGroupStore.getGroupByName("system:developer")).id,
+            fx.userGroupStore.seedOidcUser(developer, developer).id,
         )
         // No test-authored trusted-network producer: the shipped -300 example (100.100.0.0/16) is the producer.
     }
@@ -109,7 +109,7 @@ class PresetPolicyDbTest {
         val ds = fx.datasourceStore.get(fx.datasource.id)!!
         return fx.authz.authorizeDatasourceActionId(
             principal,
-            fx.roleResolver.resolve(principal),
+            fx.roleResolver.resolveParents(principal),
             cedarActionId,
             ds.name,
             datasourceTags = ds.tags,
@@ -327,19 +327,19 @@ class PresetPolicyDbTest {
         // On the DATASOURCE: every column under it is in system:development via its datasource parent.
         assertEquals(
             ColumnVerdict.UNMASKED,
-            fx.authz.authorizeColumns(nobody, emptySet(), fx.datasource.name, listOf(plain), datasourceTags = listOf("system:development"))["k"],
+            fx.authz.authorizeColumns(nobody, UserParents(emptySet()), fx.datasource.name, listOf(plain), datasourceTags = listOf("system:development"))["k"],
             "system:development on the DATASOURCE unmasks its columns (the -200 permit)",
         )
         // On the COLUMN: the same name, reaching the same permit directly.
         assertEquals(
             ColumnVerdict.UNMASKED,
-            fx.authz.authorizeColumns(nobody, emptySet(), fx.datasource.name, listOf(tagged), datasourceTags = listOf("system:production"))["k"],
+            fx.authz.authorizeColumns(nobody, UserParents(emptySet()), fx.datasource.name, listOf(tagged), datasourceTags = listOf("system:production"))["k"],
             "system:development on the COLUMN reaches the same permit — no tag is filtered by resource type",
         )
         // And the verdict comes from the tag: with neither, -200 cannot fire and deny-by-default holds.
         assertEquals(
             ColumnVerdict.DENIED,
-            fx.authz.authorizeColumns(nobody, emptySet(), fx.datasource.name, listOf(plain), datasourceTags = listOf("system:production"))["k"],
+            fx.authz.authorizeColumns(nobody, UserParents(emptySet()), fx.datasource.name, listOf(plain), datasourceTags = listOf("system:production"))["k"],
             "untagged on a production datasource, the same read is denied",
         )
     }

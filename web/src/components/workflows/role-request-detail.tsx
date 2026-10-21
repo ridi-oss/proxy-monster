@@ -7,9 +7,11 @@ import { Clock } from 'lucide-react'
 import { toast } from 'sonner'
 import { approveAccessRequest } from '@/lib/api/client'
 import type { AccessRequest } from '@/lib/api/types'
-import { swrKeys } from '@/lib/hooks'
+import { swrKeys, useRequestThread } from '@/lib/hooks'
 import { cn } from '@/lib/utils'
 import { RejectDialog } from '@/components/access/reject-dialog'
+import { CloseRequestButton, RequestTimeline } from '@/components/approvals/request-timeline'
+import { useAuth } from '@/lib/auth'
 import { ErrorState } from '@/components/page-scaffold'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -38,6 +40,7 @@ const STATUS_STYLE: Record<string, string> = {
   PENDING: 'border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400',
   APPROVED: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400',
   REJECTED: 'border-red-500/30 bg-red-500/10 text-red-500',
+  CANCELLED: 'border-border text-muted-foreground',
 }
 
 function formatDuration(seconds: number, t: Translator): string {
@@ -63,7 +66,9 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
   )
 }
 
-function refreshRoleWorkflow() {
+function refreshRoleWorkflow(id: number) {
+  void mutate(swrKeys.requestThread(id))
+  void mutate(swrKeys.involvedApprovals)
   void mutate(swrKeys.accessRequests('PENDING'))
   void mutate(swrKeys.accessRequests(undefined))
   void mutate(swrKeys.accessGrants(true))
@@ -77,6 +82,8 @@ export function RoleRequestDetail({ request }: { request: AccessRequest }) {
   })
   const [approving, setApproving] = useState(false)
   const [rejectingId, setRejectingId] = useState<number | null>(null)
+  const { identity } = useAuth()
+  const canDecide = useRequestThread(request.id).data?.canDecide ?? false
 
   if (request.kind !== 'ROLE') {
     return (
@@ -108,7 +115,7 @@ export function RoleRequestDetail({ request }: { request: AccessRequest }) {
     try {
       await approveAccessRequest(request.id, durationSec)
       toast.success(t('roleDetail.approvedToast', { principal: request.principal, role }))
-      refreshRoleWorkflow()
+      refreshRoleWorkflow(request.id)
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t('roleDetail.approveFailed'))
     } finally {
@@ -135,47 +142,52 @@ export function RoleRequestDetail({ request }: { request: AccessRequest }) {
 
             {request.status === 'PENDING' && (
               <div className="flex flex-wrap items-end justify-end gap-2">
-                <div className="space-y-1.5">
-                  <Label htmlFor={`role-request-duration-override-${request.id}`}>
-                    {t('fields.grantDuration')}
-                  </Label>
-                  <Select
-                    value={durationOverride}
-                    onValueChange={(value: string | null) =>
-                      setDurationSelection({
-                        requestId: request.id,
-                        value: value ?? '__requested__',
-                      })
-                    }
-                  >
-                    <SelectTrigger
-                      id={`role-request-duration-override-${request.id}`}
-                      size="sm"
-                      className="w-36"
+                <CloseRequestButton request={request} onClosed={() => refreshRoleWorkflow(request.id)} />
+                {canDecide && (
+                  <>
+                  <div className="space-y-1.5">
+                    <Label htmlFor={`role-request-duration-override-${request.id}`}>
+                      {t('fields.grantDuration')}
+                    </Label>
+                    <Select
+                      value={durationOverride}
+                      onValueChange={(value: string | null) =>
+                        setDurationSelection({
+                          requestId: request.id,
+                          value: value ?? '__requested__',
+                        })
+                      }
                     >
-                      <Clock className="text-muted-foreground size-3.5" />
-                      <SelectValue>{durationLabel}</SelectValue>
-                    </SelectTrigger>
-                    <SelectContent>
-                      {durationOverrides.map((option) => (
-                        <SelectItem key={option.value} value={option.value}>
-                          {option.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <Button
-                  variant="outline"
-                  onClick={() => setRejectingId(request.id)}
-                  disabled={approving}
-                  className="border-red-500/30 text-red-500 hover:bg-red-500/10 hover:text-red-500"
-                >
-                  {t('actions.reject')}
-                </Button>
-                <Button onClick={handleApprove} disabled={approving}>
-                  {approving ? t('actions.approving') : t('actions.approve')}
-                </Button>
+                      <SelectTrigger
+                        id={`role-request-duration-override-${request.id}`}
+                        size="sm"
+                        className="w-36"
+                      >
+                        <Clock className="text-muted-foreground size-3.5" />
+                        <SelectValue>{durationLabel}</SelectValue>
+                      </SelectTrigger>
+                      <SelectContent>
+                        {durationOverrides.map((option) => (
+                          <SelectItem key={option.value} value={option.value}>
+                            {option.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <Button
+                    variant="outline"
+                    onClick={() => setRejectingId(request.id)}
+                    disabled={approving}
+                    className="border-red-500/30 text-red-500 hover:bg-red-500/10 hover:text-red-500"
+                  >
+                    {t('actions.reject')}
+                  </Button>
+                  <Button onClick={handleApprove} disabled={approving}>
+                    {approving ? t('actions.approving') : t('actions.approve')}
+                  </Button>
+                  </>
+                )}
               </div>
             )}
           </div>
@@ -214,6 +226,8 @@ export function RoleRequestDetail({ request }: { request: AccessRequest }) {
               <span className="text-red-500">{request.rejectionReason}</span>
             </Field>
           )}
+
+          <RequestTimeline request={request} principal={identity?.principal} onChanged={() => refreshRoleWorkflow(request.id)} />
         </CardContent>
       </Card>
 
@@ -223,7 +237,7 @@ export function RoleRequestDetail({ request }: { request: AccessRequest }) {
           onClose={() => setRejectingId(null)}
           onRejected={() => {
             toast.success(t('roleDetail.rejectedToast', { principal: request.principal }))
-            refreshRoleWorkflow()
+            refreshRoleWorkflow(request.id)
           }}
         />
       )}

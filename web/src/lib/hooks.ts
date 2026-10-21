@@ -11,6 +11,8 @@ import {
   getAccessRequests,
   getApproval,
   getApprovalInbox,
+  getInvolvedApprovals,
+  getRequestThread,
   getAuthConfig,
   getCatalog,
   getCedarPolicies,
@@ -23,8 +25,8 @@ import {
   getGroupRoles,
   getGroups,
   getMaskFns,
+  getMcpConnect,
   getMePermissions,
-  getMyApprovals,
   getQueryHistory,
   getRoleAssignments,
   getRoles,
@@ -45,7 +47,8 @@ const KEYS = {
   auditEvent: (id: number) => ['audit-event', id] as const,
   approval: (id: number) => ['approval', id] as const,
   approvalInbox: 'approval-inbox',
-  myApprovals: (status?: string) => ['my-approvals', status ?? null] as const,
+  involvedApprovals: 'approvals-involved',
+  requestThread: (id: number) => ['request-thread', id] as const,
   roles: 'roles',
   users: 'users',
   groups: 'groups',
@@ -54,6 +57,7 @@ const KEYS = {
   maskFns: 'mask-fns',
   queryHistory: 'query-history',
   tokens: 'tokens',
+  mcpConnect: 'mcp-connect',
   roleAssignments: 'role-assignments',
   cedarPolicies: 'cedar-policies',
   cedarSchema: 'cedar-schema',
@@ -124,8 +128,12 @@ export function useApprovalInbox(opts?: SWRConfiguration) {
   return useSWR(KEYS.approvalInbox, getApprovalInbox, opts)
 }
 
-export function useMyApprovals(status?: string, opts?: SWRConfiguration) {
-  return useSWR(KEYS.myApprovals(status), () => getMyApprovals(status), opts)
+export function useRequestThread(id: number, opts?: SWRConfiguration) {
+  return useSWR(KEYS.requestThread(id), () => getRequestThread(id), opts)
+}
+
+export function useInvolvedApprovals(opts?: SWRConfiguration) {
+  return useSWR(KEYS.involvedApprovals, getInvolvedApprovals, opts)
 }
 
 export function useRoles() {
@@ -154,6 +162,10 @@ export function useMaskFns() {
 
 export function useQueryHistory() {
   return useSWR(KEYS.queryHistory, () => getQueryHistory(50))
+}
+
+export function useMcpConnect() {
+  return useSWR(KEYS.mcpConnect, getMcpConnect)
 }
 
 export function useTokens(opts?: SWRConfiguration) {

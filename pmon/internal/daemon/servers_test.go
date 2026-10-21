@@ -8,13 +8,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/ridi-oss/proxy-monster/pmon/control"
 	"github.com/ridi-oss/proxy-monster/pmon/driver"
-	"github.com/ridi-oss/proxy-monster/pmon/providers"
-	"github.com/ridi-oss/proxy-monster/pmon/state"
+	"github.com/ridi-oss/proxy-monster/pmon/internal/providers"
+	"github.com/ridi-oss/proxy-monster/pmon/internal/state"
 )
 
 func loginTo(t *testing.T, d *Daemon, server, url string) {
@@ -65,7 +66,7 @@ func TestTwoServersBrokerTheSameNameSeparately(t *testing.T) {
 		t.Fatalf("ports default=%d dev=%d, want two distinct live brokers", pa, pb)
 	}
 
-	if err := d.Logout(control.LogoutRequest{Server: "dev"}); err != nil {
+	if _, err := d.Logout(control.LogoutRequest{Server: "dev"}); err != nil {
 		t.Fatalf("Logout dev: %v", err)
 	}
 	waitFor(t, "dev's broker to close", func() bool { return !dialable(pb) })
@@ -77,7 +78,7 @@ func TestTwoServersBrokerTheSameNameSeparately(t *testing.T) {
 		t.Errorf("servers after logout dev = %+v", s.Servers)
 	}
 
-	if err := d.Logout(control.LogoutRequest{All: true}); err != nil {
+	if _, err := d.Logout(control.LogoutRequest{All: true}); err != nil {
 		t.Fatalf("Logout all: %v", err)
 	}
 	waitFor(t, "default's broker to close", func() bool { return !dialable(pa) })
@@ -112,7 +113,7 @@ func TestSetServerToANewURLLogsItOut(t *testing.T) {
 	if err != nil || res.Changed || res.LoggedOut {
 		t.Fatalf("SetServer to the same URL = %+v, %v; want a no-op", res, err)
 	}
-	res, err = d.SetServer(control.SetServerRequest{ControlPlane: "https://elsewhere.example"})
+	res, err = d.SetServer(control.SetServerRequest{Name: "default", ControlPlane: "https://elsewhere.example"})
 	if err != nil || !res.LoggedOut {
 		t.Fatalf("SetServer to a new URL = %+v, %v; want it logged out", res, err)
 	}
@@ -145,7 +146,7 @@ func TestUnsetServerLogsOutAndDeletesIt(t *testing.T) {
 	loginTo(t, d, "dev", cp.URL)
 	port := portOf(t, d.Status(), "dev", "acme-mysql")
 
-	if err := d.UnsetServer(control.UnsetServerRequest{Name: "dev"}); err != nil {
+	if _, err := d.UnsetServer(control.UnsetServerRequest{Name: "dev"}); err != nil {
 		t.Fatalf("UnsetServer: %v", err)
 	}
 	waitFor(t, "the broker to close", func() bool { return !dialable(port) })
@@ -159,7 +160,7 @@ func TestUnsetServerLogsOutAndDeletesIt(t *testing.T) {
 	if len(onDisk.Servers) != 0 {
 		t.Errorf("servers on disk after unset = %+v", onDisk.Servers)
 	}
-	if err := d.UnsetServer(control.UnsetServerRequest{Name: "dev"}); err == nil {
+	if _, err := d.UnsetServer(control.UnsetServerRequest{Name: "dev"}); err == nil {
 		t.Error("unsetting an unknown server succeeded")
 	}
 }
@@ -261,12 +262,133 @@ func TestLogoutDuringDiscoveryLeavesNoRows(t *testing.T) {
 	done := make(chan struct{})
 	go func() { defer close(done); d.openListeners(context.Background()) }()
 	<-discovering
-	if err := d.UnsetServer(control.UnsetServerRequest{Name: "dev"}); err != nil {
+	if _, err := d.UnsetServer(control.UnsetServerRequest{Name: "dev"}); err != nil {
 		t.Fatal(err)
 	}
 	close(release)
 	<-done
 	if s := d.Status(); len(s.Datasources) != 0 || len(s.Servers) != 0 {
 		t.Errorf("status after unset during discovery = %+v, want nothing", s)
+	}
+}
+
+// A URL set without a name names the server after its instance, or reuses the server already at that URL.
+func TestServerNamedAfterItsInstance(t *testing.T) {
+	isolate(t)
+	advertise := func(name string) *httptest.Server {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/api/instance" {
+				http.NotFound(w, r)
+				return
+			}
+			_, _ = w.Write([]byte(`{"name":"` + name + `"}`))
+		}))
+		t.Cleanup(srv.Close)
+		return srv
+	}
+	hr, hr2, old := advertise("hr-pmon"), advertise("hr-pmon"), httptest.NewServer(http.NotFoundHandler())
+	defer old.Close()
+	d := New("test", providers.Builtins())
+
+	res, err := d.SetServer(control.SetServerRequest{ControlPlane: hr.URL})
+	if err != nil || res.Name != "hr-pmon" || !res.Created || !res.Default {
+		t.Fatalf("SetServer = %+v, %v; want a new default server hr-pmon", res, err)
+	}
+	if res, err := d.SetServer(control.SetServerRequest{ControlPlane: hr.URL + "/"}); err != nil || res.Name != "hr-pmon" || res.Created {
+		t.Errorf("the same URL again = %+v, %v; want hr-pmon unchanged", res, err)
+	}
+	if _, err := d.SetServer(control.SetServerRequest{ControlPlane: hr2.URL}); err == nil || !strings.Contains(err.Error(), `"hr-pmon" already points at`) {
+		t.Errorf("another server advertising the same name: %v", err)
+	}
+	if res, err := d.SetServer(control.SetServerRequest{ControlPlane: old.URL}); err != nil || res.Name != "default" || res.Default {
+		t.Errorf("a server too old to say = %+v, %v; want default, not made the default", res, err)
+	}
+	broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusBadGateway) }))
+	defer broken.Close()
+	if _, err := d.SetServer(control.SetServerRequest{ControlPlane: broken.URL}); err == nil || !strings.Contains(err.Error(), "could not ask") {
+		t.Errorf("a server that failed to answer was named anyway: %v", err)
+	}
+}
+
+func TestRenameServerRefusesATakenName(t *testing.T) {
+	isolate(t)
+	d := New("test", providers.Builtins())
+	for _, name := range []string{"dev", "prod"} {
+		if _, err := d.SetServer(control.SetServerRequest{Name: name, ControlPlane: "https://" + name + ".example"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := d.RenameServer(context.Background(), control.RenameServerRequest{Name: "dev", To: "prod"}); err == nil || !strings.Contains(err.Error(), `"prod" already exists`) {
+		t.Errorf("rename onto another server: %v", err)
+	}
+	if _, err := d.RenameServer(context.Background(), control.RenameServerRequest{Name: "nope", To: "x"}); err == nil {
+		t.Error("renamed an unknown server")
+	}
+	if res, err := d.RenameServer(context.Background(), control.RenameServerRequest{Name: "prod", To: "live"}); err != nil || res.To != "live" {
+		t.Fatalf("rename = %+v, %v", res, err)
+	}
+	s := d.Status()
+	if s.Server("prod") != nil || s.Server("live") == nil || s.DefaultServer != "dev" {
+		t.Errorf("after renaming a server that is not the default: %+v", s.Servers)
+	}
+}
+
+// The daemon reads a new server's version from /api/instance and reports it in its status.
+func TestStatusReportsTheServerVersion(t *testing.T) {
+	isolate(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/instance" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`{"name":"hr-pmon","version":"0.1.31"}`))
+	}))
+	defer srv.Close()
+	d := New("test", providers.Builtins())
+	if _, err := d.SetServer(control.SetServerRequest{ControlPlane: srv.URL}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the server version", func() bool {
+		s := d.Status().Server("hr-pmon")
+		return s != nil && s.ServerVersion == "0.1.31"
+	})
+}
+
+// A rename re-reads the version, and a response that is not one leaves the last version in place.
+func TestServerVersionFollowsRenameAndSurvivesABadAnswer(t *testing.T) {
+	isolate(t)
+	var mu sync.Mutex
+	body := `{"name":"hr-pmon","version":"0.1.31"}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/instance" {
+			http.NotFound(w, r)
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+	set := func(b string) { mu.Lock(); body = b; mu.Unlock() }
+	d := New("test", providers.Builtins())
+	version := func(name string) string {
+		if s := d.Status().Server(name); s != nil {
+			return s.ServerVersion
+		}
+		return ""
+	}
+	if _, err := d.SetServer(control.SetServerRequest{Name: "hr", ControlPlane: srv.URL}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "0.1.31", func() bool { return version("hr") == "0.1.31" })
+	set(`{"name":"hr-pmon","version":"0.1.32"}`)
+	if _, err := d.RenameServer(context.Background(), control.RenameServerRequest{Name: "hr", To: "people"}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the renamed server's fresh version", func() bool { return version("people") == "0.1.32" })
+	set(`<html>maintenance</html>`)
+	d.refreshVersions(context.Background())
+	if v := version("people"); v != "0.1.32" {
+		t.Errorf("a non-JSON answer replaced the version with %q", v)
 	}
 }

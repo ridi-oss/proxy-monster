@@ -2,7 +2,7 @@ package com.ridi.oss.proxymonster.controlplane
 
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
-import org.flywaydb.core.Flyway
+import com.ridi.oss.proxymonster.controlplane.support.seedOidcUser
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
@@ -33,8 +33,7 @@ class ScimUsersDbTest {
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        val ds = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_scim_users"))
-        Flyway.configure().dataSource(ds).load().migrate()
+        val ds = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_scim_users"))
         userGroupStore = UserGroupStore(ds)
         tokenStore = TokenStore(ds)
         accessStore = AccessStore(ds)
@@ -95,11 +94,7 @@ class ScimUsersDbTest {
         // JIT-on-login provisions this principal first (source=OIDC), matching docs/auth-model.md's
         // "SCIM vs JIT" decision: "a JIT (source=OIDC) user is reconciled to SCIM when the IdP later
         // manages it via SCIM."
-        val jit = userGroupStore.provisionFromOidc(
-            principal = "reconcile-me@example.com",
-            email = "reconcile-me@example.com",
-            idpGroups = emptyList(),
-        )
+        val jit = userGroupStore.seedOidcUser("reconcile-me@example.com", "reconcile-me@example.com")
         assertEquals("OIDC", jit.source)
         assertNull(jit.externalId)
 

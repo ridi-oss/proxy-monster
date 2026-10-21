@@ -202,7 +202,7 @@ test('an executing workflow can be canceled and refreshes to CANCELLED', async (
       errorCode: canceled ? 'approval.canceled' : null,
     },
   }))
-  await page.route('**/api/approvals', (route) => fulfillJson(route, 200, [
+  await page.route('**/api/requests/involved', (route) => fulfillJson(route, 200, [
     request(7, canceled ? 'CANCELLED' : 'EXECUTING'),
   ]))
 

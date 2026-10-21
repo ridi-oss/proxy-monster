@@ -1,9 +1,30 @@
 package com.ridi.oss.proxymonster.controlplane
 
 import com.ridi.oss.proxymonster.auth.clampTtlSeconds
+import com.ridi.oss.proxymonster.controlplane.authz.UserAttribute
 import java.net.URI
 
 typealias OidcGroupMapping = com.ridi.oss.proxymonster.auth.OidcGroupMapping
+
+/** A trusted CI OIDC issuer; [name] keys the Cedar principal (`Workload::"github"`). */
+data class CiOidcIssuer(val name: String, val issuer: String, val audience: String)
+
+enum class GitHubIdentityResolver(val key: String) {
+    EXTERNAL_IDENTITY("external-identity"),
+    VERIFIED_EMAIL("verified-email"),
+    COMMIT_EMAIL("commit-email"),
+}
+
+/** The SQL-from-GitHub source, whose GitHub App cp-go holds; [identity] is the ordered user-to-principal resolver list. */
+data class GitHubConfig(
+    val apiUrl: String,
+    val identity: List<GitHubIdentityResolver>,
+)
+
+/** cp-go's loopback gRPC server for the Go services Kotlin calls, at [address], authenticated with [token]. */
+data class CpGoBridgeConfig(val address: String, val token: String) {
+    override fun toString(): String = "CpGoBridgeConfig(address=$address, token=***)"
+}
 
 /**
  * Generic OIDC settings (docs/auth-model.md) — provider-agnostic: endpoints are resolved from
@@ -19,6 +40,7 @@ data class OidcConfig(
     val redirectUri: String,
     val scopes: String,
     val groupMapping: OidcGroupMapping,
+    val userAttributes: List<UserAttribute> = emptyList(),
 )
 
 /**
@@ -31,6 +53,10 @@ data class Config(
     // the web UI keeps talking HTTP/JSON; only the proxy<->control-plane wire protocol is gRPC.
     // Defaulted so the many HTTP-route tests that build a Config by name need not name it.
     val grpcPort: Int = DEFAULT_GRPC_PORT,
+    // cp-go sets 127.0.0.1 so this process is reachable only through it.
+    val bindHost: String = "0.0.0.0",
+    // Set by cp-go per boot; enables /internal/authorize.
+    val internalToken: String? = null,
     val dbUrl: String,
     val dbUser: String,
     val dbPassword: String,
@@ -93,6 +119,8 @@ data class Config(
     val webOrigin: String = "",
     val mcpAccessTtlSeconds: Long = 600,
     val mcpRefreshTtlSeconds: Long = 21_600,
+    // PM_ELEVATED_SCOPE_TTL: how long scopes beyond mcp:read and mcp:query last after approval.
+    val elevatedScopeTtlSeconds: Long = 3_600,
     val mcpDebugAutoConsent: Boolean = true,
     val queryTimeoutSeconds: Long = 600,
     // Out-of-band task notifications (docs/notifications.md). Both Slack tokens must be present for the
@@ -103,6 +131,20 @@ data class Config(
     val notifyStatement: String = "auto",
     // Fallback language for a recipient who has never set one (app_user.locale).
     val notifyLocale: String = "en",
+    // Datasource tag → Slack channel, first match wins; a request on an unmatched datasource goes to DMs only.
+    val slackChannels: List<SlackChannelRoute> = emptyList(),
+    // True when a request posted to a channel is not also sent as DMs.
+    val slackChannelOnly: Boolean = false,
+    // Names this deployment to agents and in the MCP install name `pmon-<instanceName>`.
+    val instanceName: String = defaultInstanceName("http://127.0.0.1:8080/mcp"),
+    val instanceDescription: String = "",
+    // PM_CI_OIDC_ISSUERS="<name>=<issuerUrl>,…", e.g. github=https://token.actions.githubusercontent.com;
+    // empty disables CI token exchange. Every issuer's tokens must carry PM_CI_OIDC_AUDIENCE.
+    val ciOidcIssuers: List<CiOidcIssuer> = emptyList(),
+    // Null when PM_GITHUB_APP_ID is unset: the GitHub source is off.
+    val github: GitHubConfig? = null,
+    // Null when PM_CP_GO_GRPC_ADDR is unset: the control plane runs without cp-go.
+    val cpGoBridge: CpGoBridgeConfig? = null,
 ) {
     init {
         require(webSessionSlideSeconds < webSessionIdleSeconds) {
@@ -175,6 +217,7 @@ data class Config(
                         // refresh-grant IdP liveness check (docs/auth-model.md).
                         scopes = env("PM_OIDC_SCOPES") ?: "openid profile email groups offline_access",
                         groupMapping = OidcGroupMapping.parse(env("PM_OIDC_GROUP_MAP"), env("PM_OIDC_GROUP_PREFIX")),
+                        userAttributes = UserAttribute.parseList(env("PM_OIDC_USER_ATTRIBUTES")),
                     )
                 } else {
                     null
@@ -245,9 +288,56 @@ data class Config(
             val notifyLocale = (env("PM_NOTIFY_LOCALE") ?: "en").trim().lowercase()
             require(notifyLocale in setOf("en", "ko")) { "PM_NOTIFY_LOCALE must be one of en|ko; got '$notifyLocale'" }
 
+            val slackMode = (env("PM_SLACK_MODE") ?: "both").trim().lowercase()
+            require(slackMode in setOf("both", "channel")) { "PM_SLACK_MODE must be one of both|channel; got '$slackMode'" }
+            val slackChannels = parseSlackChannels(env("PM_SLACK_CHANNELS"))
+
+            val instanceName = env("PM_INSTANCE_NAME")?.trim()?.takeIf(String::isNotEmpty)?.also {
+                require(INSTANCE_NAME.matches(it)) {
+                    "PM_INSTANCE_NAME must be 1-$MAX_INSTANCE_NAME lowercase letters, digits, or inner hyphens; got '$it'"
+                }
+            } ?: defaultInstanceName(mcpResource)
+            val instanceDescription = env("PM_INSTANCE_DESCRIPTION")?.trim().orEmpty()
+            require(instanceDescription.length <= MAX_INSTANCE_DESCRIPTION && instanceDescription.none(Char::isISOControl)) {
+                "PM_INSTANCE_DESCRIPTION must be one line of at most $MAX_INSTANCE_DESCRIPTION characters"
+            }
+
+            val cpGoBridge = env("PM_CP_GO_GRPC_ADDR")?.trim()?.takeIf { it.isNotBlank() }?.let { address ->
+                CpGoBridgeConfig(
+                    address,
+                    requireNotNull(env("PM_CP_INTERNAL_TOKEN")?.takeIf { it.isNotEmpty() }) {
+                        "PM_CP_GO_GRPC_ADDR needs PM_CP_INTERNAL_TOKEN, which cp-go sets for the control plane it starts"
+                    },
+                )
+            }
+            val github = run {
+                env("PM_GITHUB_APP_ID")?.takeIf { it.isNotBlank() } ?: return@run null
+                requireNotNull(cpGoBridge) {
+                    "PM_GITHUB_APP_ID needs PM_CP_GO_GRPC_ADDR, which cp-go sets for the control plane it starts"
+                }
+                val validIdentity = GitHubIdentityResolver.entries.joinToString(", ") { it.key }
+                val identity = (env("PM_GITHUB_IDENTITY")?.takeIf { it.isNotBlank() } ?: "external-identity,verified-email")
+                    .split(',').map { it.trim() }.filter { it.isNotEmpty() }
+                    .map { raw ->
+                        requireNotNull(GitHubIdentityResolver.entries.firstOrNull { it.key == raw }) {
+                            "PM_GITHUB_IDENTITY: unknown value '$raw'; valid values: $validIdentity"
+                        }
+                    }
+                require(identity.isNotEmpty() && identity.distinct().size == identity.size) {
+                    "PM_GITHUB_IDENTITY must list distinct values from: $validIdentity"
+                }
+                GitHubConfig(
+                    apiUrl = (env("PM_GITHUB_API_URL")?.trim()?.takeIf { it.isNotBlank() } ?: "https://api.github.com")
+                        .trimEnd('/'),
+                    identity = identity,
+                )
+            }
+
             return Config(
                 httpPort = env("PM_HTTP_PORT")?.toIntOrNull() ?: 8080,
                 grpcPort = env("PM_GRPC_PORT")?.toIntOrNull() ?: DEFAULT_GRPC_PORT,
+                bindHost = env("PM_BIND_HOST")?.trim()?.takeIf { it.isNotEmpty() } ?: "0.0.0.0",
+                internalToken = env("PM_CP_INTERNAL_TOKEN")?.takeIf { it.isNotEmpty() },
                 dbUrl = env("PM_DB_URL") ?: "jdbc:postgresql://localhost:5432/proxymonster",
                 dbUser = env("PM_DB_USER") ?: "proxymonster",
                 dbPassword = env("PM_DB_PASSWORD") ?: "proxymonster",
@@ -282,13 +372,33 @@ data class Config(
                 webOrigin = env("PM_WEB_ORIGIN") ?: "",
                 mcpAccessTtlSeconds = clampTtlSeconds(env("PM_OAUTH_ACCESS_TTL")?.toLongOrNull() ?: 600),
                 mcpRefreshTtlSeconds = clampTtlSeconds(env("PM_OAUTH_REFRESH_TTL")?.toLongOrNull() ?: 21_600),
+                elevatedScopeTtlSeconds = clampTtlSeconds(env("PM_ELEVATED_SCOPE_TTL")?.toLongOrNull() ?: 3_600),
                 mcpDebugAutoConsent = env("PM_OAUTH_DEBUG_AUTO_CONSENT")?.toBooleanStrictOrNull() ?: true,
                 queryTimeoutSeconds = queryTimeoutSeconds,
                 slackBotToken = env("PM_SLACK_BOT_TOKEN")?.takeIf { it.isNotBlank() },
                 slackAppToken = env("PM_SLACK_APP_TOKEN")?.takeIf { it.isNotBlank() },
                 notifyStatement = notifyStatement,
                 notifyLocale = notifyLocale,
+                slackChannels = slackChannels,
+                slackChannelOnly = slackMode == "channel",
+                instanceName = instanceName,
+                instanceDescription = instanceDescription,
+                ciOidcIssuers = parseCiOidcIssuers(env, env("PM_CI_OIDC_AUDIENCE")?.trim()?.ifEmpty { null } ?: mcpIssuer),
+                github = github,
+                cpGoBridge = cpGoBridge,
             )
+        }
+
+        const val MAX_INSTANCE_NAME = 40
+        const val MAX_INSTANCE_DESCRIPTION = 500
+        private val INSTANCE_NAME = Regex("[a-z0-9](?:[a-z0-9-]{0,${MAX_INSTANCE_NAME - 2}}[a-z0-9])?")
+
+        /** The first DNS label of the MCP resource host, e.g. `https://pm.example.com/mcp` -> `pm`; `local` for an IP. */
+        fun defaultInstanceName(mcpResource: String): String {
+            val host = URI(mcpResource).host.orEmpty().removeSurrounding("[", "]").lowercase()
+            if (host.isEmpty() || host == "localhost" || ':' in host || host.matches(Regex("[0-9.]+"))) return "local"
+            return host.substringBefore('.').replace(Regex("[^a-z0-9]+"), "-").trim('-')
+                .take(MAX_INSTANCE_NAME).trimEnd('-').ifEmpty { "local" }
         }
 
         private fun canonicalMcpResource(raw: String, requireHttps: Boolean): String {
@@ -313,6 +423,40 @@ data class Config(
                 uri.scheme == "https" && uri.host != null && uri.userInfo == null &&
                     uri.query == null && uri.fragment == null,
             ) { "$name must be an HTTPS issuer URI" }
+        }
+
+        private val CI_ISSUER_NAME = Regex("[a-z0-9][a-z0-9-]*")
+        private val SLACK_CHANNEL_ID = Regex("[CG][A-Z0-9]+")
+
+        // `tag=channel,…`, split on each entry's last `=` since a tag may itself contain `=` but a channel id never does.
+        internal fun parseSlackChannels(raw: String?): List<SlackChannelRoute> {
+            val routes = raw.orEmpty().split(',').map { it.trim() }.filter { it.isNotEmpty() }.map { entry ->
+                val tag = entry.substringBeforeLast('=', "").trim()
+                val channel = entry.substringAfterLast('=', "").trim()
+                require(tag.isNotEmpty() && SLACK_CHANNEL_ID.matches(channel)) {
+                    "PM_SLACK_CHANNELS entry '$entry' must be '<datasource tag>=<Slack channel id>'"
+                }
+                SlackChannelRoute(tag, channel)
+            }
+            require(routes.map { it.tag }.toSet().size == routes.size) { "PM_SLACK_CHANNELS lists a tag twice" }
+            return routes
+        }
+
+        // The audience names this control plane, so it is one value for every issuer: its public origin unless
+        // PM_CI_OIDC_AUDIENCE overrides it.
+        private fun parseCiOidcIssuers(env: (String) -> String?, audience: String): List<CiOidcIssuer> {
+            val raw = env("PM_CI_OIDC_ISSUERS") ?: return emptyList()
+            val issuers = raw.split(',').map { it.trim() }.filter { it.isNotEmpty() }.map { entry ->
+                val name = entry.substringBefore('=', "").trim()
+                val issuer = entry.substringAfter('=', "").trim()
+                require(CI_ISSUER_NAME.matches(name) && issuer.isNotEmpty()) {
+                    "PM_CI_OIDC_ISSUERS entry '$entry' must be '<name>=<issuerUrl>' with name [a-z0-9-]"
+                }
+                requireSecureOidcUri(issuer, "PM_CI_OIDC_ISSUERS issuer")
+                CiOidcIssuer(name, issuer, audience)
+            }
+            require(issuers.map { it.name }.toSet().size == issuers.size) { "PM_CI_OIDC_ISSUERS names must be unique" }
+            return issuers
         }
 
     }
@@ -343,3 +487,6 @@ internal fun parseDuration(raw: String): Long = try {
 } catch (e: ArithmeticException) {
     throw IllegalArgumentException("duration is too large: $raw", e)
 }
+
+/** Requests on a datasource carrying [tag] are posted to the Slack channel [channel]. */
+data class SlackChannelRoute(val tag: String, val channel: String)

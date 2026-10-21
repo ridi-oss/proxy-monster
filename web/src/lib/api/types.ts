@@ -44,6 +44,14 @@ export interface Identity {
 }
 
 /** Coarse Cedar-backed capabilities for the authenticated principal. */
+/** GET /api/mcp/connect — what the "Connect an agent" page installs. */
+export interface McpConnectInfo {
+  instanceName: string
+  instanceDescription: string
+  mcpUrl: string
+  installName: string
+}
+
 export interface MePermissions {
   isAdmin: boolean
   canReadAllAudit: boolean
@@ -100,6 +108,7 @@ export interface Datasource {
   dbName: string
   currentCatalog?: string | null
   connectionInfo?: ConnectionInfo | null
+  description?: string
   /** Policy-posture tags (`preset:*`, docs/access-model.md) — set by the proxy's `PM_DATASOURCE_TAGS` at
    *  registration, or by an admin edit. Empty by default (safe "production" posture). */
   tags: string[]
@@ -120,6 +129,8 @@ export interface Datasource {
   /** Whether the proxy serves TLS at all. Independent of the chain: an operator may serve a publicly-trusted
    *  certificate and publish nothing, so clients verify against their own trust store. Only false is plaintext. */
   advertiseWireTls?: boolean
+  /** Whether an editor session on it can set its default schema (Athena cannot). */
+  defaultSchemaSettable?: boolean
 }
 
 /**
@@ -170,6 +181,7 @@ export interface CatalogColumn {
   ordinal: number
   nullable: boolean
   classification?: Classification | null
+  system?: boolean
 }
 
 // ---- Live table detail ------------------------------------------------------
@@ -338,7 +350,7 @@ export interface MaskFnInput {
 
 export type AccessRequestStatus =
   | 'DRAFT' | 'PENDING' | 'APPROVED' | 'REJECTED'
-  | 'EXECUTING' | 'EXECUTED' | 'FAILED' | 'CANCELLED' | 'DELETED'
+  | 'EXECUTING' | 'EXECUTED' | 'FAILED' | 'CANCELLED' | 'DELETED' | 'ALREADY_RAN'
 
 export interface AccessRequest {
   id: number
@@ -369,6 +381,58 @@ export interface AccessRequest {
   executedAt?: string | null
   executeAs: string[]
   creatorKind?: 'WIRE' | 'EDITOR' | 'WORKFLOW' | null
+  /** Grows with each edit of the SQL; an approval names the revision it approves. */
+  revision: number
+  revisedAt?: string | null
+  source?: 'console' | 'mcp' | 'github'
+  scope?: string | null
+  changeKey?: string | null
+  mergedAt?: string | null
+  pullRequest?: PullRequestRef | null
+  /** An admin let this GitHub request skip its scope's freshness and one-PR-at-a-time checks. */
+  forceRun?: boolean
+  forceRunBy?: string | null
+  ccs?: string[]
+}
+
+/** One entry of a query request's timeline. `actor` is null for an event the system made. */
+export interface RequestEvent {
+  id: number
+  kind:
+    | 'requested' | 'edited' | 'approved' | 'rejected' | 'unapproved' | 'expired' | 'withdrawn' | 'closed'
+    | 'ran' | 'executed' | 'failed' | 'cancelled' | 'comment' | 'lgtm' | 'cc_added' | 'cc_removed'
+  actor?: string | null
+  body?: string | null
+  revision?: number | null
+  origin: string
+  createdAt: string
+  editedAt?: string | null
+  deleted?: boolean
+}
+
+/** A request's thread and what the caller may do on it. Shared by every request kind. */
+export interface RequestThread {
+  requestId: number
+  ccs: string[]
+  /** Approvers who were notified or acted, and CCs. */
+  participants: string[]
+  timeline: RequestEvent[]
+  canComment: boolean
+  canCc: boolean
+  canClose: boolean
+  canDecide: boolean
+}
+
+/** The pull request a GitHub request came from. */
+export interface PullRequestRef {
+  /** `owner/name` of the pull request's repository. */
+  repository: string
+  pr: number
+  prUrl?: string | null
+  /** The file's path in git. */
+  path?: string | null
+  headSha?: string | null
+  mergeSha?: string | null
 }
 
 export interface AccessRequestInput {
@@ -376,20 +440,6 @@ export interface AccessRequestInput {
   datasourceId?: number | null
   reason?: string | null
   requestedDurationSec: number
-}
-
-/** Ask an approver to reset the caller's spent result rates (docs/result-caps.md). */
-export interface RateResetRequestInput {
-  reason: string
-  denyReason?: string | null
-}
-
-/** One rate reset marker: relayed volume before `resetAt` no longer counts toward any rate. */
-export interface RateReset {
-  principal: string
-  resetAt: string
-  resetBy: string
-  reason: string
 }
 
 export interface AccessGrant {
@@ -403,11 +453,11 @@ export interface AccessGrant {
   revokedAt?: string | null
 }
 
-export type CreateApprovalInput =
+export type CreateQueryRequestInput =
   | { sourceDecisionId: number; reason: string; title?: string; roleId?: number }
   | { datasourceId: number; sql: string; title: string; reason: string; roleId?: number }
 
-export interface CreateApprovalResponse {
+export interface CreateQueryRequestResponse {
   request: AccessRequest
   wouldAllow: boolean
 }
@@ -455,14 +505,21 @@ export interface QueryResultMeta {
   columns: string[]
 }
 
-export interface ApprovalDetail {
+export interface QueryRequestDetail {
   request: AccessRequest
   canDecide: boolean
+  canApproveAndRun?: boolean
+  canReject?: boolean
+  canUnapprove?: boolean
+  /** Close a request that has not run; canCancel stops a running one. */
+  canClose?: boolean
   result?: QueryResultMeta | null
   /** Every statement of the batch, in run order. One entry for a single-statement request. */
   statements?: QueryResultMeta[]
   canExecute?: boolean
   canCancel?: boolean
+  canEdit?: boolean
+  canForceRun?: boolean
 }
 
 /** Decrypted rows of an APPROVER_EXEC result (returned only to an authorized viewer). */
@@ -487,7 +544,7 @@ export interface QueryResultView {
 }
 
 /** Submit acknowledgement; completion is observed through task polling. */
-export interface ExecuteApprovalResponse {
+export interface ExecuteQueryRequestResponse {
   decision: 'EXECUTING'
 }
 
@@ -545,6 +602,8 @@ export interface QueryResponse {
   decision: 'ALLOW' | 'MASK' | 'DENY'
   decisionId?: number | null
   denyReason?: string | null
+  /** A stable code for denyReason: `rate_spent` when a result rate is spent. */
+  denyCode?: string | null
   maskedColumns: string[]
   piiTouched: string[]
   effectiveRoles: string[]
@@ -562,6 +621,13 @@ export interface QueryResponse {
 // inline), the result is saved server-side, and the client polls status → fetches rows when DONE.
 
 /** POST /api/editor/sessions/{id}/query ack: the born-APPROVED task + its single result child. */
+/** POST /api/editor/sessions/{id}/default-schema: the statement the server ran, its outcome, and the new path. */
+export interface DefaultSchemaResult {
+  statement: string
+  result: QueryResultMeta | null
+  searchPath: string[] | null
+}
+
 export interface EditorSubmitResponse {
   taskId: number
   childId: number

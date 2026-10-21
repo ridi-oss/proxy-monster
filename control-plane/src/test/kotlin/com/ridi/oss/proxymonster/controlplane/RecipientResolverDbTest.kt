@@ -10,6 +10,7 @@ import com.cedarpolicy.value.EntityUID
 import com.cedarpolicy.value.PrimString
 import com.cedarpolicy.value.Unknown
 import com.cedarpolicy.value.Value
+import com.ridi.oss.proxymonster.controlplane.authz.UserParents
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzContext
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzDecision
@@ -75,7 +76,7 @@ class RecipientResolverDbTest {
         val resolver = RecipientResolver(fx.authz, fx.roleResolver) { candidates }
         val req = AccessRequest(
             id = 1, principal = requester, datasourceName = fx.datasource.name,
-            requestedDurationSec = 0, status = "PENDING", createdAt = "",
+            requestedDurationSec = 0, status = "PENDING", createdAt = "", revision = 1,
         )
         val notified = resolver.recipientsFor(req)
 
@@ -145,7 +146,7 @@ class RecipientResolverDbTest {
     private fun liveDecision(candidate: String, requestOwner: String, requesterIp: String?): AuthzDecision =
         fx.authz.authorizeAs(
             candidate,
-            fx.roleResolver.resolve(candidate),
+            fx.roleResolver.resolveParents(candidate),
             AuthzAction.TASK_APPROVE,
             AuthzResource.ApprovalRequest(
                 requester = requestOwner,

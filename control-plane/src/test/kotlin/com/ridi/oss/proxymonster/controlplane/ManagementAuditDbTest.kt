@@ -13,7 +13,6 @@ import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.auditChainHead
 import com.ridi.oss.proxymonster.controlplane.support.verifyAuditChain
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
@@ -35,8 +34,7 @@ class ManagementAuditDbTest {
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_management_audit"))
-        Flyway.configure().dataSource(dataSource).load().migrate()
+        dataSource = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_management_audit"))
         core = ControlPlaneCore(dataSource)
         val recorder = ManagementAuditRecorder(core.auditStore)
         datasources = DatasourceManagementService(core.datasourceStore, core.proxyEventsHub, TableDetailService(core), recorder)

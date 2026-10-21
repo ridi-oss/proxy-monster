@@ -16,7 +16,7 @@ approve it, so each gets a Slack DM:
 
 > **alice** wants to run `SELECT ssn, name FROM users WHERE order_id = 8842` on
 > **acme-mysql** as **pii-reader** _investigating a billing dispute_
-> `[approve and run]` `[deny]` `[open request]`
+> `[approve and run]` `[approve]` `[deny]` `[open request]`
 
 Bob taps **deny**. His message and Carol's both become:
 
@@ -24,9 +24,10 @@ Bob taps **deny**. His message and Carol's both become:
 > **acme-mysql** was denied by **bob** `[open request]`
 
 Had Bob tapped **approve and run**, the query runs and the message becomes
-"approved by bob, running", then updates again to "finished, 3 rows" or
-"failed". The rows themselves never appear in Slack — Alice reads them in the
-console.
+"approved by bob", then updates again to "finished, 3 rows" or "failed". Had he
+tapped **approve**, the messages become "approved by bob" with `[run]`; Alice's
+own receipt gets `[run]` too, since the requester may run an approved request.
+The rows themselves never appear in Slack — Alice reads them in the console.
 
 Alice's statement is short, so Bob sees all of it and can approve from the DM.
 Had any of it been elided — too long for Slack, or withheld because it carried a
@@ -48,12 +49,16 @@ touching the workflow.
 
 ## Events
 
-| Event                                          | When                 | Who hears it                                                                                  |
-| ---------------------------------------------- | -------------------- | --------------------------------------------------------------------------------------------- |
-| `task.requested`                               | a request is filed   | everyone Cedar says may approve it (the requester too, where policy allows)                   |
-| `task.submitted`                               | a request is filed   | the requester — their own receipt (plus the approver message above, if they may also approve) |
-| `task.decided`                                 | approved or rejected | the requester, and everyone told above                                                        |
-| `task.executed` `task.failed` `task.cancelled` | the run ends         | the requester and the approver                                                                |
+| Event                                          | When                             | Who hears it                                                                                  |
+| ---------------------------------------------- | -------------------------------- | --------------------------------------------------------------------------------------------- |
+| `task.requested`                               | a request is filed               | everyone Cedar says may approve it (the requester too, where policy allows)                   |
+| `task.submitted`                               | a request is filed               | the requester — their own receipt (plus the approver message above, if they may also approve) |
+| `task.decided`                                 | approved or rejected             | the requester, and everyone told above                                                        |
+| `task.edited`                                  | the requester edits              | the requester, and everyone told above; it shows the new SQL and asks for approval again      |
+| `task.reopened`                                | unapproved, or 24 hours unrun    | the requester, and everyone told above; it asks for approval again                            |
+| `task.cc_added`                                | someone is added as a CC         | that CC, in a thread of their own that later events edit                                      |
+| `task.executed` `task.failed` `task.cancelled` | the run ends, or it is closed    | the requester and the approver                                                                |
+| `task.force_run`                               | an admin forces a GitHub request | everyone who may approve it and its parties, fresh; and the PR                                |
 
 Anyone told about a request is told how it ended. That is what stops a stale
 "needs your approval" sitting in a DM after someone else already handled it —
@@ -433,17 +438,24 @@ Slack.
 
 ### The buttons
 
-**approve and run** does both steps, because whoever approves is the one who
-must execute. It is offered only when the message shows the full statement (see
-[above](#never-approve-what-you-cannot-see)). **deny** rejects, and is offered
-whatever the message shows. **open request** links to the console and is always
-there, even when the other two are policy-disabled.
+The buttons follow the request's live state and which side of it the recipient
+is on.
 
-Both go through the same code the HTTP routes use. Today approve, reject, and
-execute live inside the route handlers; they move into an `ApprovalService`, and
-the routes become one caller of it while Slack becomes another. **This is a real
-refactor of `Approvals.kt`, not an incidental one** — it is the part of this
-design most worth reviewing before building.
+| State    | Approver                       | Requester          |
+| -------- | ------------------------------ | ------------------ |
+| PENDING  | approve and run, approve, deny | close request      |
+| APPROVED | run, unapprove, deny           | run, close request |
+
+A CC's message offers **LGTM** while the request is pending or approved. An LGTM
+is recorded on the request and shown to everyone, but never approves.
+
+**approve and run** and **approve** are offered only when the message shows the
+full statement (see [above](#never-approve-what-you-cannot-see)). A GitHub
+request offers approve, never run: its merge runs it. **open request** links to
+the console and is always there. Each click is re-authorized by the same
+`ApprovalService` call the console makes (`task.approve`, `task.run`,
+`task.cancel`), on the `slack` channel. An expired or withdrawn approval sends
+`task.reopened`, which redraws the messages as pending again.
 
 Two people tapping approve at once resolve exactly as two console users do — one
 wins the same compare-and-swap, and the loser's message is rewritten to show
@@ -453,6 +465,70 @@ Results never reach Slack. A finished run says "3 rows" or "failed", nothing
 more. The rows stay in the console, which is the only place that re-checks who
 may see them.
 
+### Channels
+
+A request can also be posted to a channel. `PM_SLACK_CHANNELS` maps datasource
+tags to channel ids; the first entry whose tag the request's datasource carries
+picks the channel, so a request has at most one channel message. Put specific
+tags first and a broad one such as `system:production` last. A request on no
+datasource — a role on every datasource — goes to the first entry.
+
+```
+PM_SLACK_MODE=both
+PM_SLACK_CHANNELS=service:billing=C0123ABC,service:search=C0456DEF,system:production=C0789GHI
+```
+
+In `both` mode (the default) a matched request goes to the channel and to the
+DMs above. In `channel` mode it goes to the channel only. A request on a
+datasource no entry matches goes to DMs in either mode. The bot must be invited
+to each channel.
+
+Everyone in the channel reads the message, whatever their access, so it never
+carries the `full` statement: `full` acts as `auto` there. It mentions who may
+approve and the CCs, and offers **review** instead of decision buttons. Review
+opens a modal private to the clicker, built from their own Cedar decisions: the
+whole statement when they may read the request, and only the buttons they may
+use. A click inside the modal goes through the same `ApprovalService` call as a
+DM button and redraws the modal with the outcome.
+
+### Threads
+
+Every message about a request is the start of a thread: each approver's and CC's
+DM, the requester's receipt, and the channel message. A reply in any of them
+becomes a comment on the request, and the request's later timeline entries —
+comments from the console or another thread, LGTMs, CC changes, approvals,
+expiry, runs — are posted into every thread as replies. A comment is never
+posted back into the thread it was written in, and the bot ignores messages from
+any bot, its own copies included.
+
+- A channel reply is recorded without a Cedar check, since the channel already
+  saw it, under the author's principal or, when no active user matches their
+  verified email, `slack:<name>`. The console marks a comment by someone who is
+  not on the request.
+- A DM reply is a comment by the DM's owner and needs their `task.comment`.
+- Neither adds a participant, so a reply never grants access.
+- A reply by a participant that @-mentions someone adds them as a CC, under the
+  replier's own `task.cc`. A mention of a Slack user with no active user, or a
+  reply from no active user, adds nobody.
+- Editing or deleting a reply in Slack edits or deletes the comment and every
+  copy of it in the other threads.
+
+Each thread keeps a cursor (`notification_message.last_event_id`); a thread
+created later starts at the request's latest entry rather than replaying it.
+
+The Slack app needs, on top of `chat:write`, `im:write`, `users:read`, and
+`users:read.email`: the `channels:history`, `groups:history`, and `im:history`
+scopes, and the `message.channels`, `message.groups`, and `message.im` event
+subscriptions, delivered over Socket Mode.
+
+### Role requests
+
+They get the same messages, threads, and Review modal as a query request, with
+their own text and no statement. Approvers get **approve** and **deny** (there
+is nothing to run: approving grants the role); the requester gets **close
+request** while it is pending; a CC gets **LGTM**. A click goes through
+`AccessService` or `RequestThreads` on the `slack` channel.
+
 ## Configuration
 
 | Variable              | Default | Meaning                                                                                                                                                                                         |
@@ -461,22 +537,23 @@ may see them.
 | `PM_SLACK_APP_TOKEN`  | unset   | Socket Mode token; unset = no Slack                                                                                                                                                             |
 | `PM_NOTIFY_STATEMENT` | `auto`  | `omit` · `auto` · `full`. `auto` shows a hint-cleared statement; `full` shows it to pending approvers, then hides a flagged one once handled. Legacy `truncated` boots as `auto` with a warning |
 | `PM_NOTIFY_LOCALE`    | `en`    | fallback when the recipient has saved no language                                                                                                                                               |
+| `PM_SLACK_CHANNELS`   | unset   | `tag=channel`, comma-separated; the first entry whose tag the datasource carries picks the channel                                                                                              |
+| `PM_SLACK_MODE`       | `both`  | `both` posts a matched request to its channel and DMs; `channel` posts it to the channel only                                                                                                   |
 
 ## What this exposes
 
 Slack becomes a place where the requester, the datasource, the role, and (unless
-`omit`) part of the query are readable by anyone who can read the DM — and a
-place from which a query can be approved. `ARCHITECTURE.md` gains the outbound
-edge. The workspace is pinned, and the tokens are standing secrets like
-`PM_SCIM_TOKEN`: absent means the feature is off, never degraded.
+`omit`) part of the query are readable by anyone who can read the DM or the
+channel — and a place from which a query can be approved. A channel's members
+are its audience: route a datasource only to a channel whose members may see its
+requests. `ARCHITECTURE.md` gains the outbound edge. The workspace is pinned,
+and the tokens are standing secrets like `PM_SCIM_TOKEN`: absent means the
+feature is off, never degraded.
 
 ## Not covered
 
 - Per-user opt-out. Language is now stored per user; a mute switch is the same
   shape and a natural follow-up.
-- Posting to a channel. Eligibility is per person; a channel cannot express it.
 - Digests and reminders. One event, one message.
 - Multi-replica delivery. The queue assumes one instance, like the rest of the
   system.
-- Role-elevation (JIT access-grant) requests. Only query approvals notify today;
-  a `Grant` resource and its own event are the natural extension.

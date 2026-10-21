@@ -58,11 +58,23 @@ datasource has its own window: 10,000 rows from `ridi-dev` leave `ridi-prod`'s
 `10000/1h` untouched. A spent rate denies statements that return rows; `COMMIT`,
 `ROLLBACK`, `SET`, and `USE` still pass. A connection's next `Decide` waits for
 its own previous completion report; parallel connections can overshoot by up to
-one statement cap each (`KNOWN_LIMITATIONS.md`). A rate is reset by a marker row
-(`result_rate_reset`), never by touching the audit trail: an admin writes it
-from the principal's access page, or the user files a `RATE_RESET` request
-through the approval workflow. A reset clears every window on every datasource;
-it never touches a cap.
+one statement cap each (`KNOWN_LIMITATIONS.md`).
+
+**Boosts** raise rates for a while. `@boost("N")` on a `result.cap` permit
+multiplies every rate the statement collected by N, a number greater than 1
+(`1.5`, `2`), rounding down, after the tightest-wins fold; the largest boost
+among the matched permits applies, and caps are never boosted. The shipped
+`system:rate-boost-2x` (`-308`) and `system:rate-boost-5x` (`-309`) roles carry
+one each; a user whose rate is spent requests one in a workflow, and the
+time-boxed grant ends the boost. Volume relayed while boosted still counts in
+the rolling window afterwards.
+
+```cedar
+@boost("2")
+permit(principal in Role::"system:rate-boost-2x", action == Action::"result.cap", resource);
+```
+
+A boosted rate names its factor in the denial: `rate 10000/1h x2 spent`.
 
 **Unbounded** is the shipped `forbid` for `system:production-exporter`, a
 pii-accessor with no cap or rate: request it in a workflow, or hold it for a
@@ -98,23 +110,22 @@ to the viewer's rates.
 - `Authz.resolveResultCaps` asks `result.cap` per resource, reads the
   annotations of the policies `getReason()` names (parsed once beside the cached
   policy set), and folds as above. `Query.kt` stamps `maxRows` / `maxBytes` on
-  every non-DENY exit; a malformed `@cap`, or one on a policy whose action is
-  not `result.cap`, is refused at save.
+  every non-DENY exit; a malformed `@cap` or `@boost`, or one on a policy whose
+  action is not `result.cap`, is refused at save.
 - Relayed volume:
-  `SELECT sum(rows_returned) FILTER (WHERE ts >= ?), … FROM audit_event WHERE kind = 'completion' AND principal = ? AND datasource = ? AND ts >= GREATEST(?, last reset)`,
+  `SELECT sum(rows_returned) FILTER (WHERE ts >= ?), … FROM audit_event WHERE kind = 'completion' AND principal = ? AND datasource = ? AND ts >= ?`,
   one `FILTER` pair per distinct window, run only when a rate was collected.
 - Schema: `action "result.cap"` on
   `[Column, Table, Tag, Datasource, Function, Utility]`; `Column.tagged: Bool`;
   `RequestContext.masked?: Bool` ([authz-context.md](./authz-context.md)).
-- Shipped rows `-305`/`-306`/`-307` ([policy-store.md](./policy-store.md));
-  `audit_event (principal, datasource, ts) WHERE kind = 'completion'` indexed;
-  `result_rate_reset(principal, reset_at, reset_by, reason)`; `RATE_RESET` joins
-  the `access_request` kinds.
-- Proxy: `engine.Decision.MaxRows` / `MaxBytes` (0 = uncapped, negative denies);
-  `relayResultSet` (mysqlproxy) and `streamResult` (pgproxy) enforce; a PG
-  portal's volume accumulates across Executes.
+- Shipped rows `-305`/`-306`/`-307` and the boosts `-308`/`-309`
+  ([policy-store.md](./policy-store.md));
+  `audit_event (principal, datasource, ts) WHERE kind = 'completion'` indexed.
+- Proxy: `spi.Decision.MaxRows` / `MaxBytes` (0 = uncapped, negative denies);
+  `relayResultSet` (goproxy/mysql) and `streamResult` (goproxy/postgres)
+  enforce; a PG portal's volume accumulates across Executes.
 - Web: the editor's page sizes stop at the default cap; a capped or truncated
-  result shows a notice; a spent-rate denial offers a `RATE_RESET` request.
+  result shows a notice; a spent-rate denial offers a request for a boost role.
 - auditmon: a cap hit is a completion with `outcome = error`; a spent rate is a
   DENY whose reason names it, so `repeated_deny` fires on retries. Keep
   `mass_export` below the daily rate so alerts precede denials.
@@ -125,11 +136,11 @@ to the viewer's rates.
   tagged → `-306`, under any tag name; masked → default, or an admin
   `masked = true` row; predicate-only → default; `max(ssn)` and `RETURNING ssn`
   unmasked → `-306`; a `forbid` → uncapped; both rows off → the constant); save
-  rejects a malformed entry and a `@cap` off `result.cap`; a rate denies at its
-  threshold from seeded completions and not below; volume on another datasource
-  leaves the rate unspent; an admin `3h` window is honoured; a reset clears the
-  window and leaves the cap; a `RATE_RESET` approval writes the reset; a view
-  truncates to the viewer's caps.
+  rejects a malformed entry and a `@cap` or `@boost` off `result.cap`; a rate
+  denies at its threshold from seeded completions and not below; volume on
+  another datasource leaves the rate unspent; an admin `3h` window is honoured;
+  a boost grant multiplies every rate, the largest held wins, revoking it
+  restores the rate, and the cap stays; a view truncates to the viewer's caps.
 - Proxy, DB-backed on MySQL and PG: a 10,000-row read under a 500 cap returns
   exactly 500 rows then the error, the session and an open transaction survive,
   the completion reports 500/`error`; an uncapped verdict relays all rows.

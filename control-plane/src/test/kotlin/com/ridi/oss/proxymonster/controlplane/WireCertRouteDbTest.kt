@@ -1,32 +1,21 @@
 package com.ridi.oss.proxymonster.controlplane
 
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
+import com.ridi.oss.proxymonster.controlplane.support.CpGoStack
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
-import com.ridi.oss.proxymonster.controlplane.support.webSessionCookie
+import com.ridi.oss.proxymonster.controlplane.support.testLoginRoute
 import com.ridi.oss.proxymonster.grpc.Engine
 import io.ktor.client.HttpClient
-import io.ktor.client.plugins.contentnegotiation.ContentNegotiation as ClientContentNegotiation
-import io.ktor.client.plugins.cookies.HttpCookies
 import io.ktor.client.request.get
 import io.ktor.client.request.post
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
-import io.ktor.serialization.kotlinx.json.json
-import io.ktor.server.application.Application
-import io.ktor.server.application.install
-import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
-import io.ktor.server.response.respond
-import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
-import io.ktor.server.sessions.Sessions
-import io.ktor.server.sessions.sessions
-import io.ktor.server.sessions.set
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
-import kotlinx.serialization.json.Json
-import org.flywaydb.core.Flyway
+import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.TestInstance
 import javax.sql.DataSource
@@ -57,6 +46,7 @@ class WireCertRouteDbTest {
     private lateinit var config: Config
     private lateinit var withChain: Datasource
     private lateinit var noChain: Datasource
+    private lateinit var cpGo: CpGoStack
 
     private val connector = "connector@example.com"
     private val stranger = "stranger@example.com"
@@ -79,8 +69,8 @@ class WireCertRouteDbTest {
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_wire_cert_route"))
-        Flyway.configure().dataSource(dataSource).load().migrate()
+        val database = SharedPostgres.migratedDatabase("pm_wire_cert_route")
+        dataSource = SharedPostgres.hikari(database)
         core = ControlPlaneCore(dataSource)
 
         // Registered through the STORE's register(), the same path the proxy's gRPC Register drives, so the
@@ -116,44 +106,16 @@ class WireCertRouteDbTest {
             sessionSecret = "wire-cert-route-test-secret", oidc = null, resultKey = null, scimToken = null,
             sessionWindowSeconds = 3600, idpRecheckIntervalSeconds = 600, devMarker = true,
         )
+        cpGo = CpGoStack(config, core, database) { routing { testLoginRoute(PrincipalSessionStore(dataSource, null), config) } }
     }
 
-    private fun ApplicationTestBuilder.wire(): HttpClient {
-        application { installRoutes() }
-        return createClient {
-            expectSuccess = false
-            install(HttpCookies)
-            install(ClientContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
-        }
+    @AfterAll
+    fun teardown() {
+        if (::cpGo.isInitialized) cpGo.close()
     }
 
-    private fun Application.installRoutes() {
-        val sessionStore = PrincipalSessionStore(dataSource, null)
-        attributes.put(PRINCIPAL_SESSION_STORE, sessionStore)
-        install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true; encodeDefaults = true }) }
-        install(Sessions) { webSessionCookie(sessionStore, config.sessionSecret) }
-        routing {
-            post("/test/session/{principal}") {
-                val deviceId = call.ensureDeviceCookie(secure = false)
-                call.sessions.set(
-                    WebSessionRef(
-                        sessionStore.mintWeb(
-                            requireNotNull(call.parameters["principal"]),
-                            null,
-                            config.webSessionAbsoluteSeconds,
-                            config.webSessionIdleSeconds,
-                            deviceId,
-                        ),
-                    ),
-                )
-                call.respond(HttpStatusCode.NoContent)
-            }
-            datasourceRoutes(
-                config, core.authz, core.roleResolver, core.datasourceStore, core.proxyEventsHub,
-                TableDetailService(core), core.tokenStore, core.userGroupStore,
-            )
-        }
-    }
+    @Suppress("UnusedReceiverParameter")
+    private fun ApplicationTestBuilder.wire(): HttpClient = cpGo.client()
 
     @Test
     fun `an unauthenticated caller gets 401, never a debug-user fallback`() = testApplication {

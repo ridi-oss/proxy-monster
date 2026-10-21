@@ -4,7 +4,6 @@ import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import io.ktor.client.request.get
 import io.ktor.server.testing.testApplication
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
@@ -25,8 +24,7 @@ class TaskReconcileStartupDbTest {
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        ds = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_reconcile_startup"))
-        Flyway.configure().dataSource(ds).load().migrate()
+        ds = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_reconcile_startup"))
     }
 
     @Test

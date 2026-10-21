@@ -1,28 +1,19 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.controlplane.support.CpGoStack
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.controlplane.support.testLoginRoute
-import com.ridi.oss.proxymonster.controlplane.support.webSessionCookie
-import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
 import io.ktor.client.HttpClient
-import io.ktor.client.plugins.contentnegotiation.ContentNegotiation as ClientContentNegotiation
-import io.ktor.client.plugins.cookies.HttpCookies
 import io.ktor.client.call.body
 import io.ktor.client.request.get
 import io.ktor.client.request.post
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpStatusCode
-import io.ktor.serialization.kotlinx.json.json
-import io.ktor.server.application.Application
-import io.ktor.server.application.install
-import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.routing.routing
-import io.ktor.server.sessions.Sessions
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
-import kotlinx.serialization.json.Json
-import org.flywaydb.core.Flyway
+import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.TestInstance
 import javax.sql.DataSource
@@ -45,6 +36,7 @@ class AccessListingForwardFilterDbTest {
     private lateinit var dataSource: DataSource
     private lateinit var core: ControlPlaneCore
     private lateinit var config: Config
+    private lateinit var cpGo: CpGoStack
     private var roleId: Long = 0
 
     private val owner = "owner@example.com"
@@ -53,8 +45,8 @@ class AccessListingForwardFilterDbTest {
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_access_forward_filter"))
-        Flyway.configure().dataSource(dataSource).load().migrate()
+        val database = SharedPostgres.migratedDatabase("pm_access_forward_filter")
+        dataSource = SharedPostgres.hikari(database)
         core = ControlPlaneCore(dataSource)
 
         val sessionStore = PrincipalSessionStore(dataSource, null)
@@ -74,30 +66,17 @@ class AccessListingForwardFilterDbTest {
             sessionSecret = "access-forward-filter-secret", oidc = null, resultKey = null, scimToken = null,
             sessionWindowSeconds = 3600, idpRecheckIntervalSeconds = 600, devMarker = true,
         )
+        cpGo = CpGoStack(config, core, database) { routing { testLoginRoute(sessionStore, config) } }
     }
 
-    private fun ApplicationTestBuilder.wire(): HttpClient {
-        application { installRoutes() }
-        return createClient {
-            expectSuccess = false
-            install(HttpCookies)
-            install(ClientContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
-        }
+    @AfterAll
+    fun teardown() {
+        if (::cpGo.isInitialized) cpGo.close()
     }
 
-    private fun Application.installRoutes() {
-        val sessionStore = PrincipalSessionStore(dataSource, null)
-        attributes.put(PRINCIPAL_SESSION_STORE, sessionStore)
-        install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true; encodeDefaults = true }) }
-        install(Sessions) { webSessionCookie(sessionStore, config.sessionSecret) }
-        routing {
-            testLoginRoute(sessionStore, config)
-            accessRoutes(
-                config, core.accessStore, core.authz, core.datasourceStore, core.roleResolver,
-                ManagementAuditRecorder(AuditStore(dataSource)),
-            )
-        }
-    }
+    /** A client of cp-go, which serves both listings. */
+    @Suppress("UnusedReceiverParameter")
+    private fun ApplicationTestBuilder.wire(): HttpClient = cpGo.client()
 
     @Test
     fun `the requests listing shows a principal its own rows and never another's`() = testApplication {

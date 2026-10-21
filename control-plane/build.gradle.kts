@@ -80,6 +80,7 @@ dependencies {
     testImplementation(kotlin("test"))
     // Route-level gate tests (requireAdmin wired into cedarPolicyRoutes) exercise real Ktor routing.
     testImplementation("io.ktor:ktor-server-test-host:$ktorVersion")
+    testImplementation("io.ktor:ktor-client-mock:$ktorVersion")
     testImplementation("io.modelcontextprotocol:kotlin-sdk-client:$mcpVersion")
     // The mock Slack server the transport/socket tests run against is a real embedded server on an ephemeral
     // port, so they exercise their true wire encoding (form vs JSON, the Socket Mode WebSocket). Netty is
@@ -103,12 +104,38 @@ application {
 }
 
 
+// get_usage_guide / get_admin_guide serve the guides themselves, so the MCP text and the published docs cannot drift.
+tasks.processResources {
+    from(rootProject.file("docs/guides")) {
+        include("usage.md", "admin.md")
+        into("guides")
+    }
+}
+
+// cp-go built from this checkout, for the tests that run the control plane behind it (support/CpGoStack.kt).
+val cpGoTestBinary = layout.buildDirectory.file("cp-go-test/cp-go")
+val buildCpGoForTests by tasks.registering(Exec::class) {
+    workingDir = rootProject.file("cpgo")
+    inputs.file(rootProject.file("go.work"))
+    for (module in listOf("cpgo", "auditmon", "analyzer")) {
+        inputs.files(fileTree(rootProject.file(module)) { include("**/*.go", "go.mod", "go.sum"); exclude("**/build/**") })
+    }
+    outputs.file(cpGoTestBinary)
+    commandLine("go", "build", "-o", cpGoTestBinary.get().asFile.absolutePath, "./cmd/cp-go")
+}
+
 tasks.test {
     useJUnitPlatform()
+    dependsOn(buildCpGoForTests)
+    inputs.file(cpGoTestBinary)
+    systemProperty("pm.cpgo.bin", cpGoTestBinary.get().asFile.absolutePath)
+    systemProperty("pm.cpgo.logs", layout.buildDirectory.dir("cp-go-test").get().asFile.absolutePath)
     // DbSupportMatrixTest reads these from outside the source tree, so Gradle cannot infer them.
     // Undeclared, the test task stays UP-TO-DATE after a supported version is added or removed and the
     // guard never re-runs — it would report the previous run's pass against the new declaration.
     inputs.file(rootProject.file("db-support.json"))
+    inputs.file(rootProject.file(".release-please-manifest.json"))
+    inputs.file(rootProject.file("release-please-config.json"))
     inputs.dir(rootProject.file(".github/workflows")).optional()
     // The image env vars select which database version the DB-backed tests run against, so a run under
     // a different version is a different run. Without this Gradle would treat the second version's run
@@ -138,6 +165,9 @@ tasks.test {
     // Ryuk (the resource reaper) can't attach to the Desktop raw socket cleanly; the shared-container
     // singletons never stop mid-run and the JVM exit frees them, so disable it.
     environment("TESTCONTAINERS_RYUK_DISABLED", "true")
+    // Each fork starts its own PostgreSQL and MySQL container once, so N forks run 2N database servers.
+    maxParallelForks = (findProperty("pm.testForks") as String?)?.toInt()
+        ?: (Runtime.getRuntime().availableProcessors() / 2).coerceIn(1, 4)
     // The FFM binding's native-access jvmArg is added to every module's Test task in the root build;
     // :control-plane depends (transitively) on :analyzer:jvm, whose processResources builds the lib.
 }

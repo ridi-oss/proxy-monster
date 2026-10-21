@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.controlplane.authz.UserParents
 import com.ridi.oss.proxymonster.controlplane.authz.Authz
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzContext
@@ -53,7 +54,7 @@ class ChannelContextAuthzTest {
     private fun connect(channel: String?): AuthzDecision =
         authz(wireOnlyConnect).authorizeDatasourceAction(
             principal = "alice",
-            roles = setOf("wire-only"),
+            parents = UserParents(setOf("wire-only")),
             action = AuthzAction.DATASOURCE_CONNECT,
             datasource = "acme-mysql",
             context = AuthzContext(channel = channel),
@@ -96,7 +97,7 @@ class ChannelContextAuthzTest {
             ),
         )
         fun decide(ctx: AuthzContext) =
-            gate.authorizeDatasourceAction("alice", emptySet(), AuthzAction.DATASOURCE_CONNECT, "acme-mysql", ctx)
+            gate.authorizeDatasourceAction("alice", UserParents(emptySet()), AuthzAction.DATASOURCE_CONNECT, "acme-mysql", ctx)
 
         assertEquals(AuthzDecision.Allow, decide(AuthzContext(masked = false)))
         assertIs<AuthzDecision.Deny>(decide(AuthzContext(masked = true)))

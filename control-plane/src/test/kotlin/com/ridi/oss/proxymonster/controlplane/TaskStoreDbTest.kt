@@ -333,12 +333,12 @@ class TaskStoreDbTest {
     @Test
     fun `decideQueryRequest approve stamps approved_at, reject leaves it null`() {
         val approved = seedTask("PENDING")
-        val a = store.decideQueryRequest(approved, approved = true, rejectionReason = null, decidedBy = "approver@example.com")
+        val a = store.decideQueryRequest(approved, approved = true, rejectionReason = null, decidedBy = "approver@example.com", revision = 1)
         assertEquals("APPROVED", a?.status)
         assertNotNull(a?.approvedAt, "approve stamps approved_at")
 
         val rejected = seedTask("PENDING")
-        val r = store.decideQueryRequest(rejected, approved = false, rejectionReason = "no", decidedBy = "approver@example.com")
+        val r = store.decideQueryRequest(rejected, approved = false, rejectionReason = "no", decidedBy = "approver@example.com", revision = 1)
         assertEquals("REJECTED", r?.status)
         assertNull(r?.approvedAt, "reject must not stamp approved_at")
     }

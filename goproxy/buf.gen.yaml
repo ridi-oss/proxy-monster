@@ -4,7 +4,7 @@ version: v2
 # analyzer.proto (owned by analyzer/buf.gen.yaml).
 #
 # controlplane.proto imports the shared engine.proto (proxymonster.v1.Engine) but this module does
-# NOT generate a second copy of it: goproxy links analyzer/probe into the same binary (introspect.go,
+# NOT generate a second copy of it: goproxy links analyzer/engines into the same binary (introspect.go,
 # db.go), which already generates engine.proto into analyzer/probe/pb — two independently-generated
 # Go types for the same logical .proto file panic the protobuf runtime's global file registry at
 # init ("file already registered") the instant both packages are imported into one process. The

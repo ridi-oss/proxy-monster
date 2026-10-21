@@ -3,7 +3,7 @@
 import { useMemo } from 'react'
 import { useAuth } from '@/lib/auth'
 import type { AccessRequest } from '@/lib/api/types'
-import { useAccessRequests, useApprovalInbox, useMyApprovals } from '@/lib/hooks'
+import { useAccessRequests, useApprovalInbox, useInvolvedApprovals } from '@/lib/hooks'
 
 export type WorkflowTab = 'all' | 'incoming' | 'outgoing'
 
@@ -46,7 +46,7 @@ export function useWorkflowIncomingRequests(): {
   const requests = useMemo(() => {
     const byId = new Map<number, AccessRequest>()
     for (const request of roleRequests.data ?? []) {
-      if (request.kind === 'ROLE' || request.kind === 'RATE_RESET') byId.set(request.id, request)
+      if (request.kind === 'ROLE') byId.set(request.id, request)
     }
     for (const request of queryRequests.data ?? []) {
       if (request.kind === 'QUERY') byId.set(request.id, request)
@@ -74,7 +74,7 @@ export function useWorkflowRequests(): {
   const { identity } = useAuth()
   const incoming = useWorkflowIncomingRequests()
   const roleLookup = useAccessRequests(undefined, POLL_OPTIONS)
-  const queryOutgoing = useMyApprovals(undefined, POLL_OPTIONS)
+  const queryInvolved = useInvolvedApprovals(POLL_OPTIONS)
 
   const outgoingRequests = useMemo(() => {
     const principal = identity?.principal
@@ -82,9 +82,19 @@ export function useWorkflowRequests(): {
       ...(roleLookup.data ?? []).filter(
         (request) => (request.kind === 'ROLE' || request.kind === 'RATE_RESET') && request.principal === principal,
       ),
-      ...(queryOutgoing.data ?? []).filter((request) => request.kind === 'QUERY'),
+      ...(queryInvolved.data ?? []).filter((request) => request.principal === principal),
     ]
-  }, [identity?.principal, queryOutgoing.data, roleLookup.data])
+  }, [identity?.principal, queryInvolved.data, roleLookup.data])
+
+  // Others' requests the caller approved, ran, or was notified about.
+  // A role or rate-reset row shows only while the task.read-filtered access list still has it; its detail renders
+  // from the row, while a query's detail is fetched with a live check.
+  const involvedRequests = useMemo(() => {
+    const readable = new Set((roleLookup.data ?? []).map((request) => request.id))
+    return (queryInvolved.data ?? []).filter(
+      (request) => request.principal !== identity?.principal && (request.kind === 'QUERY' || readable.has(request.id)),
+    )
+  }, [identity?.principal, queryInvolved.data, roleLookup.data])
 
   const lists = useMemo<Record<WorkflowTab, WorkflowRequestEntry[]>>(() => {
     const byId = new Map<number, WorkflowRequestEntry>()
@@ -99,13 +109,17 @@ export function useWorkflowRequests(): {
         : { request, incoming: false, outgoing: true })
     }
 
+    for (const request of involvedRequests) {
+      if (!byId.has(request.id)) byId.set(request.id, { request, incoming: false, outgoing: false })
+    }
+
     const all = sortedEntries([...byId.values()])
     return {
       all,
       incoming: all.filter((entry) => entry.incoming),
       outgoing: all.filter((entry) => entry.outgoing),
     }
-  }, [incoming.requests, outgoingRequests])
+  }, [incoming.requests, involvedRequests, outgoingRequests])
 
   const roleRequestsById = useMemo<ReadonlyMap<number, AccessRequest>>(
     () => new Map(
@@ -120,8 +134,8 @@ export function useWorkflowRequests(): {
     lists,
     incomingCount: incoming.count,
     roleRequestsById,
-    isLoading: incoming.isLoading || roleLookup.isLoading || queryOutgoing.isLoading,
-    error: firstError(incoming.error, roleLookup.error, queryOutgoing.error),
+    isLoading: incoming.isLoading || roleLookup.isLoading || queryInvolved.isLoading,
+    error: firstError(incoming.error, roleLookup.error, queryInvolved.error),
     roleLookupLoading: roleLookup.isLoading,
     roleLookupError: roleLookup.error,
   }

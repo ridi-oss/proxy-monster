@@ -108,6 +108,7 @@ class ApprovalResultAssumeMysqlDbTest {
         sql = sql,
         executeAs = listOf(roleName),
         creatorKind = "WORKFLOW",
+        revision = 1,
     )
 
     @Test

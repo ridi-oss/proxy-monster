@@ -6,20 +6,17 @@ import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicy
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyStore
 import com.ridi.oss.proxymonster.controlplane.authz.RoleSource
-import com.ridi.oss.proxymonster.controlplane.authz.cedarPolicyRoutes
 import com.ridi.oss.proxymonster.controlplane.authz.CedarSchema
 import com.ridi.oss.proxymonster.controlplane.management.AuditActor
 import com.ridi.oss.proxymonster.controlplane.management.AuditSource
 import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
 import com.ridi.oss.proxymonster.controlplane.management.PolicyManagementService
+import com.ridi.oss.proxymonster.controlplane.support.CpGoStack
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.controlplane.support.testLoginRoute
-import com.ridi.oss.proxymonster.controlplane.support.webSessionCookie
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
-import io.ktor.client.plugins.contentnegotiation.ContentNegotiation as ClientContentNegotiation
-import io.ktor.client.plugins.cookies.HttpCookies
 import io.ktor.client.request.delete
 import io.ktor.client.request.get
 import io.ktor.client.request.post
@@ -28,15 +25,10 @@ import io.ktor.client.request.setBody
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
-import io.ktor.serialization.kotlinx.json.json
-import io.ktor.server.application.install
-import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.routing.routing
-import io.ktor.server.sessions.Sessions
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
-import kotlinx.serialization.json.Json
-import org.flywaydb.core.Flyway
+import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
@@ -56,20 +48,33 @@ class CedarPolicyRoutesTest {
     private lateinit var store: CedarPolicyStore
     private lateinit var sessionStore: PrincipalSessionStore
     private lateinit var authz: Authz
+    private lateinit var stack: CpGoStack
 
     private val admin = "dev@example.com"
 
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        ds = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_cedar_policy_routes"))
-        Flyway.configure().dataSource(ds).load().migrate()
+        val database = SharedPostgres.migratedDatabase("pm_cedar_policy_routes")
+        ds = SharedPostgres.hikari(database)
         store = CedarPolicyStore(ds)
         sessionStore = PrincipalSessionStore(ds, null)
         // These routes are admin-gated, so the caller needs a real role: system:admin, which the seeded
         // bootstrap policy grants admin.* to. Roles come from the RoleSource port rather than a seeded
         // assignment, keeping the fixture's authority explicit.
         authz = Authz(CedarEngine(store), store, RoleSource { setOf("system:admin") })
+        // cp-go serves the routes it owns and forwards the rest to the Kotlin child, which reads roles from
+        // the database, so the admin holds system:admin there too.
+        val core = ControlPlaneCore(ds)
+        core.userGroupStore.createUser(AppUserInput(principal = admin), core.tokenStore, core.accessStore, sessionStore)
+        core.policyStore.createAssignment(RoleAssignmentInput(admin, core.policyStore.getRoleByName("system:admin")!!.id))
+        val config = config()
+        stack = CpGoStack(config, core, database) { routing { testLoginRoute(sessionStore, config) } }
+    }
+
+    @AfterAll
+    fun teardown() {
+        if (::stack.isInitialized) stack.close()
     }
 
     @Test
@@ -156,6 +161,8 @@ class CedarPolicyRoutesTest {
         // The row names the principal the authorization decision ran against, so the trail and the gate
         // cannot disagree about who acted.
         assertEquals(listOf("admin.policies", "Policy::\"-1\"", "console", admin), row)
+        // The admin's own access rides on this policy, and the cases share one database.
+        store.setEnabled(-1, enabled = true, updatedBy = "setup@example.com")
     }
 
     @Test
@@ -241,22 +248,10 @@ class CedarPolicyRoutesTest {
         """permit(principal, action == Action::"context.tag::$tag", resource) when { context has channel };"""
 
     /** The routes plus a client already signed in as [admin] — every case below is an admin mutation. */
+    /** A client signed in as [admin], talking to cp-go. */
+    @Suppress("UnusedReceiverParameter")
     private suspend fun ApplicationTestBuilder.policyClient(): HttpClient {
-        val config = config()
-        application {
-            attributes.put(PRINCIPAL_SESSION_STORE, sessionStore)
-            install(ContentNegotiation) { json(Json { encodeDefaults = true }) }
-            install(Sessions) { webSessionCookie(sessionStore, config.sessionSecret) }
-            routing {
-                testLoginRoute(sessionStore, config)
-                cedarPolicyRoutes(config, authz, store)
-            }
-        }
-        val client = createClient {
-            expectSuccess = false
-            install(HttpCookies)
-            install(ClientContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
-        }
+        val client = stack.client()
         assertEquals(HttpStatusCode.NoContent, client.post("/test/session/$admin").status)
         return client
     }

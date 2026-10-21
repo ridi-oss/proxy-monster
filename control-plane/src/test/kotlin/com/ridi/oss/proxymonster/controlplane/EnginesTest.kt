@@ -1,7 +1,10 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.probe.splitStatements
 import com.ridi.oss.proxymonster.analyzer.pb.SessionObservation
 import com.ridi.oss.proxymonster.analyzer.pb.sessionObservation
+import com.ridi.oss.proxymonster.analyzer.pb.mySqlSession
+import com.ridi.oss.proxymonster.classification.AthenaNativeFunctions
 import com.ridi.oss.proxymonster.classification.MysqlNativeFunctions
 import com.ridi.oss.proxymonster.classification.PostgresGrammarFunctions
 import com.ridi.oss.proxymonster.grpc.Engine
@@ -70,24 +73,22 @@ class EnginesTest {
     @Test fun `registered definitions own analyzer configuration and manifest series`() {
         val mysql = Datasource(1, "mysql", Engine.MYSQL, "", 0, "app", engineVersion = "8.0.44", mysqlLowerCaseTableNames = 1)
         val postgres = mysql.copy(engine = Engine.POSTGRES, engineVersion = "17.9", mysqlLowerCaseTableNames = null)
-        val mysqlConfig = mysql.engine.definition.analyzerEngineConfig(mysql, sessionObservation { mysqlAnsiQuotes = true })
+        val mysqlConfig = mysql.engine.definition.analyzerEngineConfig(mysql, sessionObservation { this.mysql = mySqlSession { ansiQuotes = true } })
         assertEquals(Engine.MYSQL, mysqlConfig.engine)
-        assertEquals("8.0.44", mysqlConfig.engineVersion)
-        assertEquals(1, mysqlConfig.mysqlLowerCaseTableNames)
-        assertTrue(mysqlConfig.session.mysqlAnsiQuotes)
-        assertEquals("8.0", mysql.engine.definition.manifestSeries(mysqlConfig.engineVersion))
-        assertFalse(mysql.splitEngineConfig()!!.session.mysqlAnsiQuotes)
-        assertNull(mysql.copy(engineVersion = null).splitEngineConfig())
-        assertNull(mysql.copy(mysqlLowerCaseTableNames = null).splitEngineConfig())
-        assertFailsWith<IllegalArgumentException> {
-            mysql.engine.definition.analyzerEngineConfig(mysql.copy(mysqlLowerCaseTableNames = null), SessionObservation.getDefaultInstance())
-        }
-        val postgresConfig = postgres.splitEngineConfig()!!
+        assertEquals("8.0.44", mysqlConfig.datasource.engineVersion)
+        assertEquals(1, mysqlConfig.datasource.mysqlLowerCaseTableNames)
+        assertTrue(mysqlConfig.session.mysql.ansiQuotes)
+        assertEquals("8.0", mysql.engine.definition.manifestSeries(mysqlConfig.datasource.engineVersion))
+        assertFalse(mysql.splitEngineConfig().session.mysql.ansiQuotes)
+        // The analyzer, not the control plane, refuses a MySQL datasource introspection has not reported.
+        assertNull(splitStatements("SELECT 1", mysql.copy(engineVersion = null).splitEngineConfig()))
+        assertNull(splitStatements("SELECT 1", mysql.copy(mysqlLowerCaseTableNames = null).splitEngineConfig()))
+        val postgresConfig = postgres.splitEngineConfig()
         assertEquals(Engine.POSTGRES, postgresConfig.engine)
-        assertEquals("17.9", postgresConfig.engineVersion)
-        assertFalse(postgresConfig.hasMysqlLowerCaseTableNames())
-        assertEquals("17", postgres.engine.definition.manifestSeries(postgresConfig.engineVersion))
-        assertEquals("", postgres.copy(engineVersion = null).splitEngineConfig()!!.engineVersion)
+        assertEquals("17.9", postgresConfig.datasource.engineVersion)
+        assertFalse(postgresConfig.datasource.hasMysqlLowerCaseTableNames())
+        assertEquals("17", postgres.engine.definition.manifestSeries(postgresConfig.datasource.engineVersion))
+        assertEquals("", postgres.copy(engineVersion = null).splitEngineConfig().datasource.engineVersion)
     }
 
     @Test fun `unregistered engines have no metadata or version fallback`() {
@@ -96,6 +97,12 @@ class EnginesTest {
             assertFailsWith<IllegalStateException> { engine.parseServerVersion("17.9") }
             assertFailsWith<IllegalStateException> { engine.parseServerVersion(null) }
         }
+    }
+
+    @Test fun `only engines whose proxy can prepare without running ask for a target error check`() {
+        assertTrue(Engine.MYSQL.checksTargetErrors)
+        assertTrue(Engine.POSTGRES.checksTargetErrors)
+        assertFalse(Engine.ATHENA.checksTargetErrors)
     }
 
     @Test fun `systemSchemas is the concrete enumerable set per engine`() {
@@ -166,6 +173,14 @@ class EnginesTest {
             "every other schema's routines are stored functions, system schemas included",
         )
         assertTrue(tiered.systemFunctionSchemasList.isEmpty(), "MySQL natives are never schema-qualified")
+    }
+
+    @Test fun `Athena function catalog is the pinned builtin list for the engine version`() {
+        val catalog = Engine.ATHENA.functionCatalog(mapOf("sample" to listOf("ignored")), "3")
+        assertEquals(AthenaNativeFunctions.forVersion("3"), catalog.builtinFunctionsList)
+        assertTrue("upper" in catalog.builtinFunctionsList && "invoker_principal" in catalog.builtinFunctionsList)
+        assertTrue(catalog.udfSchemasList.isEmpty() && catalog.systemFunctionSchemasList.isEmpty(), "Athena has no routine catalog")
+        assertEquals(catalog.builtinFunctionsList, Engine.ATHENA.functionCatalog(emptyMap(), null).builtinFunctionsList, "an unknown version pins to 3")
     }
 
     @Test fun `Postgres function catalog tiers pg_catalog, information_schema, and user schemas`() {

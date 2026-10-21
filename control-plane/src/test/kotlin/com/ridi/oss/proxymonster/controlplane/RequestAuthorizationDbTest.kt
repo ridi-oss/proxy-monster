@@ -8,6 +8,7 @@ import com.ridi.oss.proxymonster.controlplane.grpc.GrpcServer
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.grpc.ControlPlaneGrpcKt
+import com.ridi.oss.proxymonster.athena.pb.AthenaNativeDescriptor
 import com.ridi.oss.proxymonster.grpc.RequestAuthorization
 import com.ridi.oss.proxymonster.grpc.objectRef
 import com.ridi.oss.proxymonster.grpc.readCatalog
@@ -17,7 +18,6 @@ import io.grpc.Status
 import io.grpc.StatusException
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder
 import kotlinx.coroutines.runBlocking
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
@@ -42,8 +42,7 @@ class RequestAuthorizationDbTest {
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        database = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_request_authorization"))
-        Flyway.configure().dataSource(database).load().migrate()
+        database = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_request_authorization"))
         core = ControlPlaneCore(database)
         server = GrpcServer(0, ControlPlaneGrpcService(core), secretToken = null).also { it.start() }
         channel = NettyChannelBuilder.forAddress("localhost", server.boundPort).usePlaintext().build()
@@ -95,7 +94,7 @@ class RequestAuthorizationDbTest {
             val token = issue(kind, principal, listOf("system:admin")).token
             core.runRequesterIps.put(tokenHash(token), "10.0.0.1")
             val resolved = core.resolveRequestIdentity(token, "198.51.100.7:45100")
-            assertEquals(setOf(liveRole.name), resolved.effectiveRoles)
+            assertEquals(setOf(liveRole.name), resolved.effectiveParents.roles)
             assertNull(resolved.providedRoles)
             assertEquals(Channel.WIRE, resolved.channel)
             assertEquals("wire", resolved.context.channel)
@@ -110,9 +109,9 @@ class RequestAuthorizationDbTest {
         val role = role()
         core.policyStore.createAssignment(RoleAssignmentInput(principal, role.id))
         val token = issue(TokenKind.USER, principal).token
-        assertEquals(setOf(role.name), core.resolveRequestIdentity(token, null).effectiveRoles)
+        assertEquals(setOf(role.name), core.resolveRequestIdentity(token, null).effectiveParents.roles)
         core.policyStore.deleteRole(role.id)
-        assertEquals(emptySet(), core.resolveRequestIdentity(token, null).effectiveRoles)
+        assertEquals(emptySet(), core.resolveRequestIdentity(token, null).effectiveParents.roles)
     }
 
     @Test
@@ -125,7 +124,7 @@ class RequestAuthorizationDbTest {
             val token = issue(kind, principal, listOf(assumed.name, "missing-role")).token
             core.runRequesterIps.put(tokenHash(token), "203.0.113.8")
             val resolved = core.resolveRequestIdentity(token, "10.0.0.1:49152")
-            assertEquals(setOf(assumed.name), resolved.effectiveRoles)
+            assertEquals(setOf(assumed.name), resolved.effectiveParents.roles)
             assertEquals(setOf(assumed.name, "missing-role"), resolved.providedRoles)
             assertEquals(if (kind == TokenKind.EDITOR) Channel.EDITOR else Channel.WORKFLOW_EXECUTOR, resolved.channel)
             assertEquals(resolved.channel.contextValue, resolved.context.channel)
@@ -142,7 +141,7 @@ class RequestAuthorizationDbTest {
         val token = issue(TokenKind.APPROVER_EXEC, principal, listOf(assumed.name)).token
         core.policyStore.deleteRole(assumed.id)
         val resolved = core.resolveRequestIdentity(token, null)
-        assertEquals(emptySet(), resolved.effectiveRoles)
+        assertEquals(emptySet(), resolved.effectiveParents.roles)
         assertEquals(Channel.WORKFLOW_EXECUTOR, resolved.channel)
     }
 
@@ -154,7 +153,7 @@ class RequestAuthorizationDbTest {
         for (kind in listOf(TokenKind.EDITOR, TokenKind.APPROVER_EXEC)) {
             val token = issue(kind, principal).token
             val resolved = core.resolveRequestIdentity(token, "10.0.0.1:49152")
-            assertEquals(setOf(own.name), resolved.effectiveRoles)
+            assertEquals(setOf(own.name), resolved.effectiveParents.roles)
             assertEquals(Channel.EDITOR, resolved.channel)
             assertNull(resolved.providedRoles)
             assertNull(resolved.context.requesterIp)
@@ -222,6 +221,33 @@ class RequestAuthorizationDbTest {
         }
         assertEquals(0, core.connectionCatalog.connectionCount())
         assertEquals(0, core.connectionCatalog.poolSize())
+    }
+
+    @Test
+    fun `native RPC refuses task tokens and relational engines refuse its descriptor`() {
+        val principal = principal()
+        val own = role()
+        val assumed = role()
+        core.policyStore.createAssignment(RoleAssignmentInput(principal, own.id))
+        val ds = core.datasourceStore.create(DatasourceInput("native-${UUID.randomUUID()}", engine = "mysql", dbName = "app"))
+        val request = RequestAuthorization.newBuilder().setDatasourceName(ds.name)
+            .setAthena(AthenaNativeDescriptor.newBuilder().setService("athena").setOperation("ListWorkGroups"))
+        for (kind in listOf(TokenKind.EDITOR, TokenKind.APPROVER_EXEC)) {
+            val token = issue(kind, principal, listOf(assumed.name)).token
+            val failure = assertFailsWith<StatusException> { runBlocking { stub.authorizeRequest(request.setToken(token).build()) } }
+            assertEquals(Status.Code.UNAUTHENTICATED, failure.status.code)
+        }
+        val token = issue(TokenKind.USER, principal, listOf("system:admin")).token
+        val result = runBlocking { stub.authorizeRequest(request.setToken(token).build()) }
+        assertFalse(result.allowed)
+        assertEquals(setOf(own.name), result.effectiveRolesList.toSet())
+        core.userGroupStore.createUser(
+            AppUserInput(principal = principal), core.tokenStore, core.accessStore, PrincipalSessionStore(database, null),
+        )
+        core.userGroupStore.setUserActive(principal, false)
+        val failure = assertFailsWith<StatusException> { runBlocking { stub.authorizeRequest(request.build()) } }
+        assertEquals(Status.Code.UNAUTHENTICATED, failure.status.code)
+        assertEquals(0, core.connectionCatalog.connectionCount())
     }
 
     private fun assertUnauthenticated(token: String) {

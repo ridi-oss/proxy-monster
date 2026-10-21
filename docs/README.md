@@ -15,13 +15,26 @@ work lives in [`backlog.md`](./backlog.md). To build, test, and contribute see
 
 proxy-monster runs on `main`: the enforcing wire proxy for MySQL and PostgreSQL,
 the Cedar authorization core, the sqlglot-go lineage analyzer, OIDC and session
-auth, the query-approval workflow, and the tamper-evident audit trail with its
-independent monitor. Two tracks are still moving: the OAuth-2.1-authenticated
-MCP surface covers administration, queries, and query approvals but not yet
-audit browsing or JIT grants, and a port of the control-plane to Go (the data
-plane is already Go) is a proposal under evaluation.
+auth, the query-approval workflow with SQL files run from GitHub pull requests,
+and the tamper-evident audit trail with its independent monitor. Two tracks are
+still moving: the OAuth-2.1-authenticated MCP surface covers administration,
+queries, and query approvals but not yet audit browsing or JIT grants, and a
+port of the control-plane to Go (the data plane is already Go) is a proposal
+under evaluation ([`cp-go-migration.md`](./cp-go-migration.md)).
 
 ## Documents
+
+### Guides — for people using proxy-monster
+
+Everything else on this page is a design doc, written for people building
+proxy-monster. [`guides/`](./guides) is the other direction: onboarding material
+meant to be read by an agent, which then walks a human through the system.
+
+<!-- prettier-ignore -->
+| Doc | Reader |
+| --- | --- |
+| [`guides/usage.md`](./guides/usage.md) | A developer querying through it — console, masked results, requesting access, local SQL clients |
+| [`guides/admin.md`](./guides/admin.md) | An admin configuring it — tags, roles, policy, MCP |
 
 ### Access model and enforcement
 
@@ -57,6 +70,7 @@ a facts layer.
 | [`auth-model.md`](./auth-model.md) | Authentication: OIDC web login + CP-brokered device-auth; roles resolved locally. |
 | [`session-lifetime.md`](./session-lifetime.md) | Server-side sessions on a unified `principal_session` table; two clocks; newest-wins / device-bind; ≤5-min IdP revalidation. |
 | [`approval-workflow.md`](./approval-workflow.md) | Run a query under role R, once, via an approver: role discovery + execute-under-R + view-as-R. |
+| [`sql-from-github.md`](./sql-from-github.md) | SQL files in a pull request become approval requests, approved in proxy-monster and run in key order as the PR merges. |
 | [`task-execution.md`](./task-execution.md) | The execute-under-R task model behind the approval workflow: executor context, masking, viewing. |
 | [`mcp-access-control.md`](./mcp-access-control.md) | OAuth-2.1-authenticated MCP access-control tools over the live Cedar/RoleResolver authority; co-hosted authorization server. |
 
@@ -66,7 +80,7 @@ a facts layer.
 | Doc | Summary |
 | --- | --- |
 | [`datasource-registration.md`](./datasource-registration.md) | gRPC self-registration; Decide cutover; Register / PushCatalog + proxy introspection; events. |
-| [`athena.md`](./athena.md) | Proposal: forward Athena operations with authentication, authorization, masking, and a minimal enforcement-context cache. |
+| [`athena.md`](./athena.md) | Forward Athena operations with authentication, authorization, masking, and a minimal enforcement-context cache. |
 | [`web-console.md`](./web-console.md) | The `web/` console: Editor / Workflows / Access / Audit / Admin. |
 | [`notifications.md`](./notifications.md) | Task events delivered out of band: event/route/transport seam, the approver lookup, Slack over Socket Mode. |
 | [`cedar-reverse-query.md`](./cedar-reverse-query.md) | "Who may approve this?" — Cedar partial evaluation measured against the pinned engine; three silent failure modes and why we ask once per principal instead. |
@@ -80,6 +94,8 @@ a facts layer.
 | Doc | Summary |
 | --- | --- |
 | [`backlog.md`](./backlog.md) | Roadmap: planned and open work. |
+| [`cp-go-migration.md`](./cp-go-migration.md) | Proposal: move the control plane to Go behind a Go front door, slice by slice. |
+| [`remote-daemon.md`](./remote-daemon.md) | Proposal: drive a pmon daemon on a macOS or Linux machine over SSH from the laptop's tray and CLI. |
 | [`cedar-sim/`](./cedar-sim/) | Runnable Cedar verification behind the approval workflow's assume-role-at-view options. |
 
 ## Relationships

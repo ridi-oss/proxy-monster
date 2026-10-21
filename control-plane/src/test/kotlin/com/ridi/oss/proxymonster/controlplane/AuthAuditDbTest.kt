@@ -5,24 +5,18 @@ import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.ACTION
 import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.ACTION_WIRE_VALIDATE
 import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.CHANNEL_WIRE
 import com.ridi.oss.proxymonster.controlplane.AuthAuditRecorder.Companion.PRINCIPAL_UNATTRIBUTED
-import com.ridi.oss.proxymonster.controlplane.authz.Authz
-import com.ridi.oss.proxymonster.controlplane.authz.CedarEngine
-import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyStore
-import com.ridi.oss.proxymonster.controlplane.authz.RoleSource
 import com.ridi.oss.proxymonster.controlplane.grpc.ControlPlaneGrpcService
 import com.ridi.oss.proxymonster.controlplane.management.auditEntity
+import com.ridi.oss.proxymonster.controlplane.support.CpGoStack
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.auditChainHead
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.controlplane.support.verifyAuditChain
-import com.ridi.oss.proxymonster.controlplane.support.webSessionCookie
 import com.ridi.oss.proxymonster.grpc.validateTokenRequest
 import io.grpc.Status
 import io.grpc.StatusException
 import io.ktor.client.call.body
-import io.ktor.client.plugins.contentnegotiation.ContentNegotiation as ClientContentNegotiation
-import io.ktor.client.plugins.DefaultRequest
-import io.ktor.client.plugins.cookies.HttpCookies
+import io.ktor.client.plugins.defaultRequest
 import io.ktor.client.request.delete
 import io.ktor.client.request.header
 import io.ktor.client.request.post
@@ -30,22 +24,15 @@ import io.ktor.client.request.setBody
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
-import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.call
-import io.ktor.server.application.install
-import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
-import io.ktor.server.plugins.statuspages.StatusPages
 import io.ktor.server.response.respond
 import io.ktor.server.routing.post as serverPost
 import io.ktor.server.routing.routing
-import io.ktor.server.sessions.Sessions
 import io.ktor.server.sessions.sessions
 import io.ktor.server.sessions.set
-import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
 import kotlinx.coroutines.runBlocking
-import kotlinx.serialization.json.Json
-import org.flywaydb.core.Flyway
+import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
@@ -70,50 +57,25 @@ class AuthAuditDbTest {
     private lateinit var dataSource: DataSource
     private lateinit var core: ControlPlaneCore
     private lateinit var grpc: ControlPlaneGrpcService
-    private lateinit var authz: Authz
+    private lateinit var cpGo: CpGoStack
     private lateinit var sessionStore: PrincipalSessionStore
     private lateinit var datasourceName: String
 
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_auth_audit"))
-        Flyway.configure().dataSource(dataSource).load().migrate()
+        val database = SharedPostgres.migratedDatabase("pm_auth_audit")
+        dataSource = SharedPostgres.hikari(database)
         core = ControlPlaneCore(dataSource)
         grpc = ControlPlaneGrpcService(core)
-        val policyStore = CedarPolicyStore(dataSource)
         // token-admin@example.com holds system:admin so the seeded token.revoke oversight policy applies to
         // it — the cross-principal revoke below is the case under test, and it has to be authorized for real.
-        // Everyone else resolves to no roles, so their own token.mint still comes from the token.self seed.
-        authz = Authz(
-            CedarEngine(policyStore),
-            policyStore,
-            RoleSource { principal -> if (principal == "token-admin@example.com") setOf("system:admin") else emptySet() },
-        )
+        // Everyone else holds no role, so their own token.mint still comes from the token.self seed.
+        core.policyStore.createAssignment(RoleAssignmentInput("token-admin@example.com", core.policyStore.getRoleByName("system:admin")!!.id))
         sessionStore = PrincipalSessionStore(dataSource, null)
         datasourceName = core.datasourceStore.create(DatasourceInput("auth-audit-ds", "postgres")).name
-    }
-
-    /** The point here is who the audit row NAMES, not whether the route admits — a signed-in caller is
-     *  established through the same web-session cookie the app uses, and authorizes on its real roles.
-     *  The test host's socket peer is trusted as an edge so [CALLER_ADDR] resolves off `X-Forwarded-For`,
-     *  which is how the recorder's client-address wiring is pinned to a known value. */
-    private fun testConfig() = Config(
-        httpPort = 0, dbUrl = "", dbUser = "", dbPassword = "", authDebug = true, secretToken = null,
-        sessionSecret = "auth-audit-test-secret-at-least-32-bytes", oidc = null, resultKey = null,
-        scimToken = null, sessionWindowSeconds = 3600, idpRecheckIntervalSeconds = 600, devMarker = true,
-        trustedProxies = setOf("localhost"),
-    )
-
-    private fun ApplicationTestBuilder.installTokenRoutes() {
         val config = testConfig()
-        application {
-            attributes.put(PRINCIPAL_SESSION_STORE, sessionStore)
-            install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true; encodeDefaults = true }) }
-            // Mirrors the application-level fallback module() installs, so a route that throws answers 500
-            // here the way it would in the running server instead of surfacing as a transport failure.
-            install(StatusPages) { exception<Throwable> { call, _ -> call.respond(HttpStatusCode.InternalServerError) } }
-            install(Sessions) { webSessionCookie(sessionStore, config.sessionSecret) }
+        cpGo = CpGoStack(config, core, database, extraEnv = mapOf("PM_TRUSTED_PROXIES" to "127.0.0.1")) {
             routing {
                 serverPost("/test/login/{principal}") {
                     val principal = requireNotNull(call.parameters["principal"])
@@ -127,22 +89,31 @@ class AuthAuditDbTest {
                     )
                     call.respond(HttpStatusCode.NoContent)
                 }
-                tokenRoutes(config, core.tokenStore, core.userGroupStore, authz, core.authAudit)
             }
         }
     }
 
-    /** A cookie-jar client that presents [CALLER_ADDR] as its forwarded source on every request. */
-    private fun ApplicationTestBuilder.callerClient() = createClient {
-        expectSuccess = false
-        install(HttpCookies)
-        install(ClientContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
-        install(DefaultRequest) { header("X-Forwarded-For", CALLER_ADDR) }
+    @AfterAll
+    fun teardown() {
+        if (::cpGo.isInitialized) cpGo.close()
     }
+
+    /** The point here is who the audit row NAMES, not whether the route admits — a signed-in caller is
+     *  established through the same web-session cookie the app uses, and authorizes on its real roles.
+     *  The test host's socket peer is trusted as an edge so [CALLER_ADDR] resolves off `X-Forwarded-For`,
+     *  which is how the recorder's client-address wiring is pinned to a known value. */
+    private fun testConfig() = Config(
+        httpPort = 0, dbUrl = "", dbUser = "", dbPassword = "", authDebug = true, secretToken = null,
+        sessionSecret = "auth-audit-test-secret-at-least-32-bytes", oidc = null, resultKey = null,
+        scimToken = null, sessionWindowSeconds = 3600, idpRecheckIntervalSeconds = 600, devMarker = true,
+        trustedProxies = setOf("localhost"),
+    )
+
+    /** A cookie-jar client that presents [CALLER_ADDR] as its forwarded source on every request. */
+    private fun callerClient() = cpGo.client().config { defaultRequest { header("X-Forwarded-For", CALLER_ADDR) } }
 
     @Test
     fun `token mint and revoke are audited through their routes and name the caller`() = testApplication {
-        installTokenRoutes()
         val client = callerClient()
 
         val owner = "token-owner@example.com"
@@ -185,7 +156,6 @@ class AuthAuditDbTest {
      */
     @Test
     fun `a rejected auth audit insert rolls the token route's own mutation back`() = testApplication {
-        installTokenRoutes()
         val client = callerClient()
         val principal = "auth-audit-rollback@example.com"
         client.post("/test/login/$principal")
@@ -231,7 +201,6 @@ class AuthAuditDbTest {
 
     @Test
     fun `session wire-token mint is audited through its route and names the caller`() = testApplication {
-        installTokenRoutes()
         val client = callerClient()
 
         val owner = "wire-token-owner@example.com"
@@ -252,7 +221,6 @@ class AuthAuditDbTest {
 
     @Test
     fun `a rejected auth audit insert rolls the wire-token route's own mint back`() = testApplication {
-        installTokenRoutes()
         val client = callerClient()
         val principal = "wire-audit-rollback@example.com"
         client.post("/test/login/$principal")

@@ -19,7 +19,30 @@ import java.util.concurrent.atomic.AtomicInteger
 class FakeTransport(
     override val name: String = "fake",
     override val supportsUpdate: Boolean = true,
+    // Set to act as a channel: every request goes to this one address, which everyone there reads.
+    private val channel: String? = null,
+    // Threads: each delivery gets its own ref, and replies into it are recorded.
+    override val supportsReplies: Boolean = false,
 ) : NotificationTransport {
+    /** (thread ref, text) for each reply posted into a thread, and (reply ref, new text or null) for each edit. */
+    val replies: MutableList<Pair<String, String>> = Collections.synchronizedList(mutableListOf())
+    val replyEdits: MutableList<Pair<String, String?>> = Collections.synchronizedList(mutableListOf())
+
+    override suspend fun reply(threadRef: String, text: String): DeliveryResult {
+        replies += threadRef to text
+        return DeliveryResult.Sent("$threadRef/reply${replies.size}")
+    }
+
+    override suspend fun editReply(replyRef: String, text: String?): DeliveryResult {
+        replyEdits += replyRef to text
+        return DeliveryResult.Sent(replyRef)
+    }
+
+    override val addressesTasks: Boolean = channel != null
+    override val sharedAudience: Boolean = channel != null
+
+    override fun taskAddress(req: com.ridi.oss.proxymonster.controlplane.AccessRequest): String? = channel
+
     override val statementHardLimit: Int = 0
 
     /** Principal → address; return null to exercise the no-address drop. */
@@ -40,8 +63,16 @@ class FakeTransport(
         // The disclosure outcome and receipt list, so a drain test can see what actually rendered.
         val statement: RenderedStatement = RenderedStatement(null, false),
         val notifiedApprovers: List<String> = emptyList(),
+        val approvers: List<String> = emptyList(),
+        val ccs: List<String> = emptyList(),
     )
-    data class Updated(val ref: String, val event: NotificationEvent, val statement: RenderedStatement = RenderedStatement(null, false))
+    data class Updated(
+        val ref: String,
+        val event: NotificationEvent,
+        val statement: RenderedStatement = RenderedStatement(null, false),
+        val actions: Set<NotificationAction> = emptySet(),
+        val revision: Int = 1,
+    )
 
     val delivered: MutableList<Delivered> = Collections.synchronizedList(mutableListOf())
     val updated: MutableList<Updated> = Collections.synchronizedList(mutableListOf())
@@ -51,18 +82,22 @@ class FakeTransport(
 
     override suspend fun addressOf(principal: String, email: String?): String? {
         addressCalls.incrementAndGet()
-        return address(principal)
+        return if (channel != null) principal else address(principal)
     }
 
     override suspend fun deliver(to: String, message: NotificationMessage, locale: String): DeliveryResult {
-        delivered += Delivered(to, message.event, message.actions, message.rowCount, message.statement, message.notifiedApprovers)
+        delivered += Delivered(
+            to, message.event, message.actions, message.rowCount, message.statement, message.notifiedApprovers,
+            message.approvers, message.ccs,
+        )
         deliverSignal.trySend(Unit)
         deliverThrows?.let { throw it }
+        if (supportsReplies) return DeliveryResult.Sent("thread:$to:${message.event.wire}")
         return deliverResult
     }
 
     override suspend fun update(externalRef: String, message: NotificationMessage, locale: String): DeliveryResult {
-        updated += Updated(externalRef, message.event, message.statement)
+        updated += Updated(externalRef, message.event, message.statement, message.actions, message.revision)
         return updateResult
     }
 

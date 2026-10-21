@@ -17,6 +17,7 @@ import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
 import java.security.MessageDigest
@@ -37,6 +38,7 @@ enum class TokenKind {
     USER,           // generated PAT, pasted / injected by the user
     EDITOR,         // stateful editor session
     APPROVER_EXEC,  // approver running an approved query under role R
+    WORKLOAD,       // CI OIDC exchange; HTTP bearer only, never a wire credential
     ;
 
     companion object {
@@ -66,6 +68,9 @@ data class IssuedToken(val token: String, val id: Long, val kind: String, val na
 /** Resolved identity for a presented wire token (the proxy's validate result). */
 @Serializable
 data class WireIdentity(val principal: String, val roles: List<String>, val kind: String)
+
+/** A resolved WORKLOAD token: the CI issuer name and the allow-listed claims it was minted with. */
+data class WorkloadIdentity(val name: String, val claims: Map<String, String>)
 
 @Serializable
 data class MintSessionTokenInput(val ttlSeconds: Long? = null)
@@ -100,6 +105,7 @@ internal fun tokenHash(token: String): String {
 class TokenStore(internal val dataSource: DataSource) {
     private val json = Json
     private val stringList = ListSerializer(String.serializer())
+    private val stringMap = MapSerializer(String.serializer(), String.serializer())
     private val rng = SecureRandom()
 
     val sessionTtlSeconds = SESSION_TTL_SECONDS
@@ -113,8 +119,8 @@ class TokenStore(internal val dataSource: DataSource) {
     }
 
     /**
-     * Issue an expiring token. [kind] is SESSION (daemon, prefix `pmt_`) or USER (generated,
-     * prefix `pmk_`). [ttlSeconds] is clamped to [60, maxTtlSeconds]; there is no no-expiry option.
+     * Issue an expiring token: prefix `pmt_` for SESSION, `pmk_` otherwise (`pmw_` is [issueWorkload]'s).
+     * [ttlSeconds] is clamped to [60, maxTtlSeconds]; there is no no-expiry option.
      */
     fun issue(kind: TokenKind, principal: String, roles: List<String>, name: String?, ttlSeconds: Long): IssuedToken =
         dataSource.connection.use { c -> issue(kind, principal, roles, name, ttlSeconds, c) }
@@ -126,13 +132,21 @@ class TokenStore(internal val dataSource: DataSource) {
      * from `RETURNING` on this SAME connection (never the plain no-connection [get], which would open a
      * second connection and could read a different/uncommitted view of the row).
      */
-    fun issue(kind: TokenKind, principal: String, roles: List<String>, name: String?, ttlSeconds: Long, c: Connection): IssuedToken {
+    fun issue(
+        kind: TokenKind,
+        principal: String,
+        roles: List<String>,
+        name: String?,
+        ttlSeconds: Long,
+        c: Connection,
+        principalSessionId: Long? = null,
+    ): IssuedToken {
         val ttl = clampTtlSeconds(ttlSeconds)
         val prefix = if (kind == TokenKind.SESSION) "pmt_" else "pmk_"
         val token = randomToken(prefix)
         val (id, expiresAt) = c.prepareStatement(
-            """INSERT INTO proxy_token (token_hash, kind, principal, roles, name, expires_at)
-               VALUES (?, ?, ?, ?::jsonb, ?, now() + (?::bigint * interval '1 second'))
+            """INSERT INTO proxy_token (token_hash, kind, principal, roles, name, expires_at, principal_session_id)
+               VALUES (?, ?, ?, ?::jsonb, ?, now() + (?::bigint * interval '1 second'), ?)
                RETURNING id, expires_at""",
         ).use { ps ->
             ps.setString(1, hash(token))
@@ -141,9 +155,47 @@ class TokenStore(internal val dataSource: DataSource) {
             ps.setString(4, json.encodeToString(stringList, roles))
             ps.setString(5, name)
             ps.setLong(6, ttl)
+            ps.setObject(7, principalSessionId, java.sql.Types.BIGINT)
             ps.executeQuery().use { rs -> rs.next(); rs.getLong(1) to rs.getTimestamp(2).toInstant().toString() }
         }
         return IssuedToken(token, id, kind.name, name, expiresAt)
+    }
+
+    /** Issue a WORKLOAD token on [c]; [claims] become the Workload principal's Cedar attributes. */
+    fun issueWorkload(name: String, claims: Map<String, String>, ttlSeconds: Long, c: Connection): IssuedToken {
+        val token = randomToken("pmw_")
+        val (id, expiresAt) = c.prepareStatement(
+            """INSERT INTO proxy_token (token_hash, kind, principal, roles, name, expires_at, claims)
+               VALUES (?, ?, ?, '[]'::jsonb, NULL, now() + (?::bigint * interval '1 second'), ?::jsonb)
+               RETURNING id, expires_at""",
+        ).use { ps ->
+            ps.setString(1, hash(token))
+            ps.setString(2, TokenKind.WORKLOAD.name)
+            ps.setString(3, "workload:$name")
+            ps.setLong(4, clampTtlSeconds(ttlSeconds))
+            ps.setString(5, json.encodeToString(stringMap, claims))
+            ps.executeQuery().use { rs -> rs.next(); rs.getLong(1) to rs.getTimestamp(2).toInstant().toString() }
+        }
+        return IssuedToken(token, id, TokenKind.WORKLOAD.name, null, expiresAt)
+    }
+
+    /** Resolve a live WORKLOAD token; null for any other kind, so it is never a wire or datasource credential. */
+    fun resolveWorkload(token: String): WorkloadIdentity? = dataSource.connection.use { c ->
+        c.prepareStatement(
+            "SELECT principal, claims FROM proxy_token WHERE token_hash = ? AND kind = 'WORKLOAD' AND revoked_at IS NULL AND expires_at > now()",
+        ).use { ps ->
+            ps.setString(1, hash(token))
+            ps.executeQuery().use { rs ->
+                if (rs.next()) {
+                    WorkloadIdentity(
+                        rs.getString("principal").removePrefix("workload:"),
+                        rs.getString("claims")?.let { json.decodeFromString(stringMap, it) } ?: emptyMap(),
+                    )
+                } else {
+                    null
+                }
+            }
+        }
     }
 
     /**
@@ -153,11 +205,12 @@ class TokenStore(internal val dataSource: DataSource) {
      * lock (or generate WAL per query). `last_used_at` is stamped once per session by [validate] at the
      * handshake, which is freshness enough for a "recently used" signal.
      */
-    fun resolve(token: String): WireIdentity? = dataSource.connection.use { c ->
+    fun resolve(token: String, allowRetired: Boolean = true): WireIdentity? = dataSource.connection.use { c ->
         c.prepareStatement(
-            "SELECT principal, roles, kind FROM proxy_token WHERE token_hash = ? AND kind IN ('SESSION', 'USER', 'EDITOR', 'APPROVER_EXEC') AND revoked_at IS NULL AND expires_at > now()",
+            "SELECT principal, roles, kind FROM proxy_token WHERE token_hash = ? AND kind IN ('SESSION', 'USER', 'EDITOR', 'APPROVER_EXEC') AND revoked_at IS NULL AND (? OR retired_at IS NULL) AND expires_at > now()",
         ).use { ps ->
             ps.setString(1, hash(token))
+            ps.setBoolean(2, allowRetired)
             ps.executeQuery().use { rs ->
                 if (rs.next()) {
                     WireIdentity(
@@ -175,7 +228,7 @@ class TokenStore(internal val dataSource: DataSource) {
     /**
      * Validate a presented token: must exist, not be revoked, and not be expired. On success,
      * stamp `last_used_at` and return the principal + base roles. Null otherwise. Used for the session
-     * handshake (per-query enforcement uses [resolve], which skips the write).
+     * handshake (per-query enforcement uses [resolve], which skips the write). A retired token fails here only.
      */
     fun validate(token: String): WireIdentity? = dataSource.connection.use { c ->
         c.prepareStatement(
@@ -184,7 +237,7 @@ class TokenStore(internal val dataSource: DataSource) {
             // token can't open a native MySQL/PG session as that principal within its short TTL. Both
             // ephemeral kinds (editor and approver-exec) are excluded here.
             """UPDATE proxy_token SET last_used_at = now()
-               WHERE token_hash = ? AND kind IN ('SESSION', 'USER') AND revoked_at IS NULL AND expires_at > now()
+               WHERE token_hash = ? AND kind IN ('SESSION', 'USER') AND revoked_at IS NULL AND retired_at IS NULL AND expires_at > now()
                RETURNING principal, roles, kind""",
         ).use { ps ->
             ps.setString(1, hash(token))
@@ -265,98 +318,4 @@ class TokenStore(internal val dataSource: DataSource) {
         revokedAt = getTimestamp("revoked_at")?.toInstant()?.toString(),
         lastUsedAt = getTimestamp("last_used_at")?.toInstant()?.toString(),
     )
-}
-
-// ---- Routes -----------------------------------------------------------------
-
-// Nullable, unlike a gated route's principal: these routes resolve the caller to BUILD the Token resource
-// they then authorize against, so this necessarily runs before any gate. Null means no session, and each
-// caller answers 401 itself rather than asserting a name it has not yet had approved.
-private fun principalOf(call: io.ktor.server.application.ApplicationCall) = call.userSession()?.principal
-private fun rolesOf(call: io.ktor.server.application.ApplicationCall) = call.userSession()?.roles ?: emptyList()
-
-/** The audited actor of a token route: whoever made the request, resolved the same way the route's own
- *  authorization resolves it — never the token's owner, who may be someone else on the revoke path. */
-private fun callerActor(principal: String, call: io.ktor.server.application.ApplicationCall, config: Config) =
-    AuditActor(principal, clientAddr = call.httpRequesterIp(config), channel = CHANNEL_WIRE)
-
-fun Route.tokenRoutes(
-    config: Config,
-    store: TokenStore,
-    userGroupStore: UserGroupStore,
-    authz: Authz,
-    authAudit: AuthAuditRecorder,
-    service: TokenService = TokenService(store, userGroupStore, authz, authAudit),
-) {
-    // Mint a short-lived SESSION token for the daemon (`pm login`) — held locally, refreshed.
-    // Credential issuance is a Cedar decision (token.mint on Token{owner, kind}); the self seed permits a
-    // principal to mint its own, a kind-scoped forbid can bar a role from long-lived PATs.
-    post("/api/wire-tokens") {
-        val principal = principalOf(call)
-            ?: return@post call.respond(HttpStatusCode.Unauthorized, ApiError("common.unauthenticated"))
-        if (!call.requireAuthz(config, authz, AuthzAction.TOKEN_MINT, AuthzResource.Token(principal, TokenKind.SESSION))) return@post
-        val ttl = call.receive<MintSessionTokenInput>().ttlSeconds ?: store.sessionTtlSeconds
-        val roles = rolesOf(call)
-        // A deprovisioned principal must not mint fresh wire credentials, even mid-session — and the
-        // check + the INSERT run on ONE transaction under the per-principal advisory lock,
-        // so a concurrent SCIM/liveness teardown can't slip its revoke between them and leave a
-        // token that survives the deprovision (resurrectable on a later reactivation).
-        val minter = callerActor(principal, call, config)
-        val issued = store.dataSource.mintForActivePrincipalLocked(principal, userGroupStore) { c ->
-            store.issue(TokenKind.SESSION, principal, roles, name = null, ttlSeconds = ttl, c).also { token ->
-                authAudit.success(
-                    c,
-                    minter,
-                    ACTION_TOKEN_MINT,
-                    auditEntity("Token", token.id.toString()),
-                    "Minted SESSION wire token",
-                )
-            }
-        }
-        if (issued == null) {
-            call.respond(HttpStatusCode.Forbidden, ApiError("auth.principal_deprovisioned")); return@post
-        }
-        call.respond(issued)
-    }
-
-    // Managed user tokens (expiring): generate / list / revoke from the web UI or the `pm` CLI.
-    get("/api/tokens") {
-        val principal = principalOf(call)
-            ?: return@get call.respond(HttpStatusCode.Unauthorized, ApiError("common.unauthenticated"))
-        try {
-            call.respond(service.list(principal, call.httpRequesterIp(config), call.request.queryParameters["principal"]))
-        } catch (e: TaskServiceException) {
-            call.respondServiceError(e)
-        }
-    }
-    post("/api/tokens") {
-        val principal = principalOf(call)
-            ?: return@post call.respond(HttpStatusCode.Unauthorized, ApiError("common.unauthenticated"))
-        try {
-            service.authorizeMintUser(principal, call.httpRequesterIp(config))
-            val input = call.receive<CreateTokenInput>()
-            val issued = service.issueUser(
-                principal, rolesOf(call), callerActor(principal, call, config), input.name, input.ttlSeconds,
-            )
-            call.respond(HttpStatusCode.Created, issued)
-        } catch (e: TaskServiceException) {
-            call.respondServiceError(e)
-        }
-    }
-    delete("/api/tokens/{id}") {
-        val id = call.parameters["id"]?.toLongOrNull()
-            ?: return@delete call.badId()
-        // A missing token is a 404 before any authorization is revealed, session or not.
-        val principal = principalOf(call) ?: return@delete if (store.get(id) == null) {
-            call.notFound("token")
-        } else {
-            call.respond(HttpStatusCode.Unauthorized, ApiError("common.unauthenticated"))
-        }
-        try {
-            service.revoke(principal, call.httpRequesterIp(config), callerActor(principal, call, config), id)
-            call.respond(HttpStatusCode.NoContent)
-        } catch (e: TaskServiceException) {
-            call.respondServiceError(e)
-        }
-    }
 }

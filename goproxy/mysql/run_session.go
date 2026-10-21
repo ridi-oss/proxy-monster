@@ -1,0 +1,158 @@
+package mysql
+
+import (
+	"context"
+	"errors"
+	"math"
+	"net"
+	"strconv"
+	"time"
+
+	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
+
+	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	"github.com/ridi-oss/proxy-monster/goproxy/relay"
+	"github.com/ridi-oss/proxy-monster/goproxy/spi"
+	"github.com/ridi-oss/proxy-monster/goproxy/wire"
+	"github.com/ridi-oss/proxy-monster/mysqlwire"
+)
+
+type RunSession struct {
+	conn   net.Conn
+	connID uint32
+	config spi.TargetConfig
+	authz  *spi.Authorizer
+	ref    *sqldb.Refetcher
+	guard  spi.ExecGuard
+}
+
+func (t *target) NewRunSession(ctx context.Context, authz *spi.Authorizer, guard spi.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.Session, error) {
+	config := t.config
+	if defaultSchema != "" {
+		config.Db = defaultSchema
+	}
+	conn, greeting, err := dialTargetDbAuthID(ctx, config, true)
+	if err != nil {
+		return nil, err
+	}
+	conn = wire.WithTargetDbReadTimeout(conn, readTimeout)
+	generation, ok := wire.NextBackendGeneration()
+	if !ok {
+		_ = conn.Close()
+		return nil, errors.New("run backend generation out of range")
+	}
+	s := &RunSession{
+		conn:   conn,
+		connID: greeting.ConnectionID,
+		config: config,
+		authz:  authz,
+		guard:  guard,
+	}
+	s.ref = sqldb.NewRefetcher(Queries, authz.ConnectionID(), generation, func(sql string, expectedColumns int) ([][]*string, error) {
+		return runInternalQuery(s.conn, true, sql, expectedColumns)
+	}, authz.Client().PushSchemaFragment)
+	s.ref.Catalog = "def"
+	return s, nil
+}
+
+// OnOpen runs the on-open catalog fetch over the target DB conn. A cancel of ctx (the control-plane closed the
+// run, or the proxy is draining, during the target-DB open) closes the conn, which unwinds an in-flight fetch read
+// at once instead of holding the target DB until readTimeout.
+func (s *RunSession) OnOpen(ctx context.Context, cmds []*pb.ProxyCommand) error {
+	defer context.AfterFunc(ctx, func() { _ = s.conn.Close() })()
+	return s.ref.RunAll(cmds, nil)
+}
+
+func (s *RunSession) ServeStatement(sql string, maxRows int) (result spi.StatementResult, err error) {
+	result.Decision, result.Denied, err = relay.ServeStatement(s.authz, spi.AuthzInput{
+		SQL:          sql,
+		ProbeSession: func() (spi.SessionObservation, error) { return probeSession(s.conn, true) },
+		RunCommands:  s.ref.RunAll,
+	}, s.ref, s.guard, func(toSend string, masks []*pb.ColumnMask, dec *spi.Decision) (clean bool, runErr error) {
+		payload := mysqlwire.ComQueryPayload(toSend)
+		if len(payload) >= mysqlwire.MaxPacketPayload {
+			return false, errors.New("query exceeds the maximum MySQL packet payload")
+		}
+		pageRows := dec.PageRows(maxRows)
+		limited := pageRows > 0
+		if limited {
+			if pageRows == math.MaxInt {
+				return false, errors.New("max rows exceeds MySQL SQL_SELECT_LIMIT range")
+			}
+			if err := execTargetDbSet(s.conn, "SET SQL_SELECT_LIMIT = "+strconv.Itoa(pageRows+1)); err != nil {
+				return false, err
+			}
+		}
+		reset := func() error {
+			if !limited {
+				return nil
+			}
+			return execTargetDbSet(s.conn, "SET SQL_SELECT_LIMIT = DEFAULT")
+		}
+
+		if err := mysqlwire.WritePacket(s.conn, 0, payload); err != nil {
+			_ = reset()
+			return false, err
+		}
+		collect := textResultCollector{
+			budget: relay.RowBudget{MaxRows: pageRows, MaxBytes: dec.MaxBytes},
+			masks:  masks,
+			result: &result,
+		}
+		h := collect.hooks()
+		h.OnSysVars = checkSysVarInvariants
+		// A run result is stored and re-gated per viewer at view time, so — unlike the wire path — redaction
+		// is NOT decided here; the run captures BOTH forms of a target-DB ERR. The hook keeps the raw packet
+		// for the full-reader view and hands the collector the redacted form for the masked view.
+		var rawErrPacket []byte
+		h.RedactErr = func(raw []byte) []byte {
+			rawErrPacket = append([]byte(nil), raw...)
+			return sanitizeErrPacket(raw)
+		}
+		clean, _, relayErr := relayResultSet(s.conn, true, h)
+		s.authz.MarkNamespaceDirty()
+		resetErr := reset()
+		if relayErr != nil {
+			return false, relayErr
+		}
+		if collect.targetDbErr != nil {
+			// The target DB's own ERR for THIS executed statement — raw for a full-reader view, the redacted form
+			// for a masked view. An internal probe/refetch ERR never reaches here.
+			raw := collect.targetDbErr.Error()
+			redacted := collect.targetDbErr.Error()
+			if len(rawErrPacket) > 0 {
+				raw = mysqlwire.ErrString(rawErrPacket)
+				redacted = redactedErrString(rawErrPacket)
+			}
+			return false, relay.TargetDbError{Message: raw, Redacted: redacted}
+		}
+		if resetErr != nil {
+			return false, resetErr
+		}
+		result.TruncatedByCap = collect.budget.CapTruncated(dec, maxRows)
+		return clean, nil
+	})
+	return result, err
+}
+
+func (s *RunSession) Namespace() (string, []string, error) {
+	session, err := probeSession(s.conn, true)
+	return session.CurrentCatalog, session.Namespace, err
+}
+
+func (s *RunSession) Cancel() error {
+	conn, _, err := dialTargetDbAuthID(context.Background(), s.config, true)
+	if err != nil {
+		_ = s.conn.Close()
+		return err
+	}
+	conn = wire.WithIODeadlines(conn, 5*time.Second, 5*time.Second)
+	defer conn.Close()
+	if err := execTargetDbSet(conn, "KILL QUERY "+strconv.FormatUint(uint64(s.connID), 10)); err != nil {
+		_ = s.conn.Close()
+		return err
+	}
+	return nil
+}
+
+func (s *RunSession) Close() error { return s.conn.Close() }

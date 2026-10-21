@@ -25,6 +25,7 @@ import com.ridi.oss.proxymonster.grpc.EnfAction as WireEnfAction
 import com.ridi.oss.proxymonster.grpc.ProxyRunMsg
 import com.ridi.oss.proxymonster.grpc.proxyRunMsg
 import com.ridi.oss.proxymonster.grpc.runDecision
+import com.ridi.oss.proxymonster.grpc.runError
 import com.ridi.oss.proxymonster.grpc.runDone
 import com.ridi.oss.proxymonster.grpc.runResultRows
 import com.ridi.oss.proxymonster.grpc.runRow
@@ -130,7 +131,7 @@ class McpQueryToolsDbTest {
         val client = createClient { expectSuccess = false }
         val principal = analyst("scope")
         val taskTools = McpCapabilityRegistry.entries.filter { it.gate == McpGate.RESOURCE }
-        assertEquals(32, taskTools.size)
+        assertEquals(39, taskTools.size)
         for (tool in taskTools) {
             val allButOwn = token(principal, McpCapabilityRegistry.supportedScopes - tool.requiredScope)
             val response = client.rawCall(allButOwn, tool.toolName)
@@ -139,7 +140,7 @@ class McpQueryToolsDbTest {
             assertEquals("mcp.insufficient_scope", structured(response.bodyAsText()).code(), tool.toolName)
         }
         val queryOnly = token(principal, setOf("mcp:query"))
-        for (tool in listOf("approve_approval", "reject_approval", "execute_approval")) {
+        for (tool in listOf("approve_approval", "reject_approval", "execute_approval", "force_run_approval")) {
             val response = client.rawCall(queryOnly, tool, buildJsonObject { put("id", 1) })
             assertEquals(HttpStatusCode.Forbidden, response.status, tool)
             assertContains(assertNotNull(response.headers[HttpHeaders.WWWAuthenticate]), "scope=\"mcp:approvals:write\"")
@@ -186,7 +187,7 @@ class McpQueryToolsDbTest {
         val policy = core.cedarPolicyStore.create(
             CedarPolicyInput(
                 "mcp-approver-${seq.incrementAndGet()}",
-                """permit(principal == User::"$approver", action in [Action::"task.approve", Action::"task.read"], resource);""",
+                """permit(principal == User::"$approver", action in [Action::"task.approve", Action::"task.run", Action::"task.read"], resource);""",
             ),
             "test",
         )
@@ -224,7 +225,7 @@ class McpQueryToolsDbTest {
 
                     val inbox = client.call(approverToken, "list_approval_inbox").ok().getValue("result").jsonArray
                     assertTrue(inbox.any { it.jsonObject.getValue("id").jsonPrimitive.long == id })
-                    assertEquals("APPROVED", client.call(approverToken, "approve_approval", idArg(id)).ok().result().str("status"))
+                    assertEquals("APPROVED", client.call(approverToken, "approve_approval", approveArgs(id)).ok().result().str("status"))
                     assertEquals("EXECUTING", client.call(approverToken, "execute_approval", idArg(id)).ok().result().str("decision"))
 
                     withTimeout(10_000) {
@@ -261,9 +262,68 @@ class McpQueryToolsDbTest {
         )
         try {
             val id = pendingRequest(requester, fx.datasource.id)
-            val result = client.call(token(requester, setOf("mcp:query", "mcp:approvals:write")), "approve_approval", idArg(id))
+            val result = client.call(token(requester, setOf("mcp:query", "mcp:approvals:write")), "approve_approval", approveArgs(id))
             assertEquals("approval.not_approver", result.error())
             assertEquals("PENDING", core.accessStore.getRequest(id)?.status)
+        } finally {
+            core.cedarPolicyStore.delete(policy.id)
+        }
+    }
+
+    @Test
+    fun `approve_approval approves a GitHub request without running it, and execute_approval refuses it`() = testApplication {
+        application { installTestMcp() }
+        val client = createClient { expectSuccess = false }
+        val requester = analyst("github")
+        val approver = "mcp-github-approver-${seq.incrementAndGet()}@example.com"
+        val policy = core.cedarPolicyStore.create(
+            CedarPolicyInput(
+                "mcp-github-approver-${seq.incrementAndGet()}",
+                """permit(principal == User::"$approver", action in [Action::"task.approve", Action::"task.run", Action::"task.read"], resource);""",
+            ),
+            "test",
+        )
+        val runs = AtomicInteger()
+        try {
+            val id = pendingRequest(requester, fx.datasource.id)
+            fx.dataSource.connection.use { c ->
+                c.prepareStatement("UPDATE access_request SET source = 'github', scope = 'gh-mcp', repository = 'acme/shop', pr = 1 WHERE id = ?")
+                    .use { ps -> ps.setLong(1, id); ps.executeUpdate() }
+            }
+            val token = token(approver, setOf("mcp:query", "mcp:approvals:write"))
+            withFakeProxy({ _, _, _ -> runs.incrementAndGet(); emptyList() }) {
+                assertEquals("APPROVED", client.call(token, "approve_approval", approveArgs(id)).ok().result().str("status"))
+                assertEquals("approval.github_runs_on_merge", client.call(token, "execute_approval", idArg(id)).error())
+            }
+            assertEquals("APPROVED", core.accessStore.getRequest(id)?.status)
+            assertEquals(0, runs.get())
+        } finally {
+            core.cedarPolicyStore.delete(policy.id)
+        }
+    }
+
+    @Test
+    fun `force_run_approval needs task force_run, not task approve`() = testApplication {
+        application { installTestMcp() }
+        val client = createClient { expectSuccess = false }
+        val requester = analyst("force")
+        val approver = "mcp-force-approver-${seq.incrementAndGet()}@example.com"
+        val policy = core.cedarPolicyStore.create(
+            CedarPolicyInput(
+                "mcp-force-approver-${seq.incrementAndGet()}",
+                """permit(principal == User::"$approver", action in [Action::"task.approve", Action::"task.run", Action::"task.read"], resource);""",
+            ),
+            "test",
+        )
+        try {
+            val id = pendingRequest(requester, fx.datasource.id)
+            fx.dataSource.connection.use { c ->
+                c.prepareStatement("UPDATE access_request SET source = 'github', scope = 'gh-force', repository = 'acme/shop', pr = 2 WHERE id = ?")
+                    .use { ps -> ps.setLong(1, id); ps.executeUpdate() }
+            }
+            val result = client.call(token(approver, setOf("mcp:query", "mcp:approvals:write")), "force_run_approval", idArg(id))
+            assertEquals("approval.not_approver", result.error())
+            assertEquals(false, core.accessStore.getRequest(id)?.forceRun)
         } finally {
             core.cedarPolicyStore.delete(policy.id)
         }
@@ -293,8 +353,8 @@ class McpQueryToolsDbTest {
                 .map { it.jsonObject.getValue("id").jsonPrimitive.long }
             assertTrue(onA in inbox, "inbox $inbox")
             assertFalse(onB in inbox, "inbox $inbox")
-            assertEquals("approval.not_approver", client.call(token, "approve_approval", idArg(onB)).error())
-            assertEquals("APPROVED", client.call(token, "approve_approval", idArg(onA)).ok().result().str("status"))
+            assertEquals("approval.not_approver", client.call(token, "approve_approval", approveArgs(onB)).error())
+            assertEquals("APPROVED", client.call(token, "approve_approval", approveArgs(onA)).ok().result().str("status"))
         } finally {
             core.cedarPolicyStore.delete(policy.id)
         }
@@ -426,6 +486,29 @@ class McpQueryToolsDbTest {
     }
 
     @Test
+    fun `a failed run_query carries the target DB's error text`() = testApplication {
+        application { installTestMcp() }
+        val client = createClient { expectSuccess = false }
+        val principal = analyst("dberror")
+        val token = token(principal, setOf("mcp:query"))
+        withFakeProxy({ _, _, _ ->
+            listOf(
+                proxyRunMsg { decision = runDecision { decision = WireEnfAction.ALLOW; decisionId = executionDecision(principal, Channel.EDITOR) } },
+                proxyRunMsg { error = runError { message = "ERROR: 42501 insufficient_privilege"; rawMessage = "ERROR: permission denied for database hris"; targetDbError = true } },
+            )
+        }) {
+            val run = client.call(token, "run_query", buildJsonObject {
+                put("datasource", fx.datasource.name)
+                put("sql", sql)
+            }).ok().result()
+            assertEquals("FAILED", run.str("status"))
+            assertEquals("approval.query_failed", run.getValue("statements").jsonArray[0].jsonObject.str("errorCode"))
+            // The analyst reads a masked column, so it gets the sanitized form, not the raw text.
+            assertEquals("ERROR: 42501 insufficient_privilege", run.getValue("page").jsonObject.str("errorDetail"))
+        }
+    }
+
+    @Test
     fun `run_query keeps the taskId when the page view is denied`() = testApplication {
         application { installTestMcp() }
         val client = createClient { expectSuccess = false }
@@ -503,7 +586,7 @@ class McpQueryToolsDbTest {
             val policy = core.cedarPolicyStore.create(
                 CedarPolicyInput(
                     "mcp-channel-approver-${seq.incrementAndGet()}",
-                    """permit(principal == User::"$approver", action in [Action::"task.approve", Action::"task.read", Action::"task.assume", Action::"task.cancel"], resource) when { context has channel && context.channel == "$channel" };""",
+                    """permit(principal == User::"$approver", action in [Action::"task.approve", Action::"task.run", Action::"task.read", Action::"task.assume", Action::"task.cancel"], resource) when { context has channel && context.channel == "$channel" };""",
                 ),
                 "test",
             )
@@ -515,13 +598,13 @@ class McpQueryToolsDbTest {
                     .map { it.jsonObject.getValue("id").jsonPrimitive.long }
                 if (channel == "mcp") {
                     assertFalse(id in inbox, "inbox $inbox")
-                    assertEquals("approval.not_approver", client.call(approverToken, "approve_approval", idArg(id)).error())
+                    assertEquals("approval.not_approver", client.call(approverToken, "approve_approval", approveArgs(id)).error())
                     assertEquals("common.not_found", client.call(approverToken, "get_approval", idArg(id)).error())
                     assertEquals("PENDING", core.accessStore.getRequest(id)?.status)
                     continue
                 }
                 assertTrue(id in inbox, "inbox $inbox")
-                assertEquals("APPROVED", client.call(approverToken, "approve_approval", idArg(id)).ok().result().str("status"))
+                assertEquals("APPROVED", client.call(approverToken, "approve_approval", approveArgs(id)).ok().result().str("status"))
                 assertEquals(
                     1L,
                     scalar(
@@ -665,14 +748,19 @@ class McpQueryToolsDbTest {
         val principal = analyst("smoke")
         val token = token(principal, setOf("mcp:query"))
         val hidden = core.datasourceStore.create(DatasourceInput("mcp-hidden-${seq.incrementAndGet()}", "mysql", "localhost", 3306, "app"))
+        val shown = fx.datasource
+        core.datasourceStore.register(shown.name, shown.engine, shown.host, shown.port, shown.dbName, emptyList(), "", null, false, description = "Orders and payments")
 
         val listed = client.call(token, "list_connectable_datasources").ok().getValue("result").jsonArray.map { it.jsonObject }
         assertContains(listed.map { it.str("name") }, fx.datasource.name)
         assertFalse(hidden.name in listed.map { it.str("name") })
         assertTrue(listed.none { "host" in it || "port" in it }, listed.toString())
+        assertEquals("Orders and payments", listed.single { it.str("name") == fx.datasource.name }.str("description"))
 
-        val described = client.call(token, "describe_datasource", buildJsonObject { put("datasource", fx.datasource.name) })
-        assertTrue(described.ok().getValue("result").jsonArray.isNotEmpty())
+        val described = client.call(token, "describe_datasource", buildJsonObject { put("datasource", fx.datasource.name) }).ok().result()
+        assertEquals("Orders and payments", described.str("description"))
+        assertEquals("mysql", described.str("engine"))
+        assertTrue(described.getValue("columns").jsonArray.isNotEmpty())
         assertEquals(
             "datasource.not_connectable",
             client.call(token, "describe_datasource", buildJsonObject { put("datasource", hidden.name) }).error(),
@@ -780,6 +868,7 @@ class McpQueryToolsDbTest {
     }
 
     private fun idArg(id: Long) = buildJsonObject { put("id", id) }
+    private fun approveArgs(id: Long) = buildJsonObject { put("id", id); put("revision", 1) }
 
     private suspend fun HttpClient.rawCall(
         token: String,

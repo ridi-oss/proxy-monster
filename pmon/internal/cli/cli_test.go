@@ -1,0 +1,646 @@
+package cli
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"math/rand/v2"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+// End-to-end tests over the REAL binary and a REAL spawned daemon, so the peer-symmetry claims are exercised
+// through the actual control socket rather than an in-process fake: the CLI starts a daemon, logs in through
+// it, reads status, formats connection strings, and stops it.
+
+var pmonBin string
+
+// TestMain compiles the binary once for the package.
+//
+// Built with the race detector whenever the tests are, because the daemon these tests drive runs as a
+// separate process: instrumenting the test binary says nothing about the goroutines actually serving the
+// control socket and brokering tokens. A race there aborts the daemon with exit 2 and a report on its
+// stderr, which is the daemon log — see [assertNoDaemonRace].
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "pmon-cli-test")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	pmonBin = filepath.Join(dir, "pmon")
+	if runtime.GOOS == "windows" {
+		pmonBin += ".exe"
+	}
+	args := []string{"build", "-o", pmonBin}
+	if raceEnabled {
+		args = append(args, "-race")
+	}
+	if out, err := exec.Command("go", append(args, "../..")...).CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "go build: %v\n%s", err, out)
+		os.Exit(1)
+	}
+	code := m.Run()
+	_ = os.RemoveAll(dir)
+	os.Exit(code)
+}
+
+// assertNoDaemonRace fails the test if the daemon logged a race report. The daemon is detached, so its
+// failure never surfaces as a non-zero exit here: a race aborts it mid-run and the CLI sees only a daemon
+// that stopped answering, which reads as a timeout in whatever the test was doing next.
+func assertNoDaemonRace(t *testing.T, stateDir string) {
+	t.Helper()
+	if !raceEnabled {
+		return
+	}
+	log, err := os.ReadFile(filepath.Join(stateDir, "daemon.log"))
+	if err != nil {
+		return // no log means the daemon never started, which the test's own assertions cover
+	}
+	if bytes.Contains(log, []byte("WARNING: DATA RACE")) {
+		t.Errorf("the daemon reported a data race:\n%s", log)
+	}
+}
+
+// env isolates a pmon invocation: its own state dir, broker port range and HOME, so it neither touches the
+// real user config nor fights another test's daemon, and the tests run in parallel.
+type env struct {
+	bin      string
+	stateDir string
+	portBase int
+	home     string
+}
+
+func newEnv(t *testing.T) *env {
+	t.Helper()
+	t.Parallel()
+	e := &env{bin: pmonBin, stateDir: t.TempDir(), portBase: freePortRange(t, 4), home: t.TempDir()}
+	t.Cleanup(func() {
+		// Always stop the daemon this env may have started, or it outlives the test (it is detached by design).
+		_, _ = e.run("stop", "--force")
+		// After the stop, so the log holds everything the daemon ever wrote.
+		assertNoDaemonRace(t, e.stateDir)
+	})
+	return e
+}
+
+// nextPort hands out disjoint ranges to this package's parallel tests, starting at a random point so
+// concurrently running packages are unlikely to probe the same ports.
+var nextPort atomic.Int32
+
+func init() { nextPort.Store(int32(20000 + rand.IntN(3000))) }
+
+// freePortRange returns the first of n consecutive free ports below Linux's ephemeral range (32768+), so
+// neither a test server nor an outbound connection is handed one of them by the kernel.
+func freePortRange(t *testing.T, n int) int {
+	t.Helper()
+	for {
+		base := int(nextPort.Add(int32(n))) - n
+		if base+n > 32768 {
+			t.Fatal("no free port range below 32768")
+		}
+		ok := true
+		for p := base; p < base+n && ok; p++ {
+			ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", p))
+			if err != nil {
+				ok = false
+				continue
+			}
+			ln.Close()
+		}
+		if ok {
+			return base
+		}
+	}
+}
+
+// run invokes pmon and returns its combined output.
+func (e *env) run(args ...string) (string, error) {
+	cmd := exec.Command(e.bin, args...)
+	cmd.Env = e.environ()
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+// environ is the child environment. PMON_NO_BROWSER: these drive a real login, and a real $BROWSER would
+// open a tab per run.
+func (e *env) environ() []string {
+	return append(os.Environ(),
+		"PMON_CONFIG_DIR="+e.stateDir,
+		fmt.Sprintf("PMON_PORT_BASE=%d", e.portBase),
+		"PMON_NO_BROWSER=1",
+		"HOME="+e.home,
+		"USERPROFILE="+e.home,
+		"APPDATA="+filepath.Join(e.home, "AppData", "Roaming"),
+		"LOCALAPPDATA="+filepath.Join(e.home, "AppData", "Local"),
+	)
+}
+
+// mustRun fails the test if pmon exits non-zero.
+func (e *env) mustRun(t *testing.T, args ...string) string {
+	t.Helper()
+	out, err := e.run(args...)
+	if err != nil {
+		t.Fatalf("pmon %s: %v\n%s", strings.Join(args, " "), err, out)
+	}
+	return out
+}
+
+// fakeCP serves the device-auth flow plus a datasource list.
+func fakeCP(t *testing.T, datasources []map[string]any) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/auth/device/start":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"verificationUri":         "https://idp.example/activate",
+				"verificationUriComplete": "https://idp.example/activate?c=1",
+				"userCode":                "ABCD-EFGH", "handle": "h-1", "interval": 1,
+			})
+		case "/auth/device/poll":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"principal": "you@example.com", "token": "pmk_tok",
+				"expiresAt":    time.Now().Add(12 * time.Hour).Format(time.RFC3339),
+				"renewalToken": "pmr_abc",
+			})
+		case "/auth/session/logout":
+			w.WriteHeader(http.StatusNoContent)
+		case "/api/datasources":
+			_ = json.NewEncoder(w).Encode(datasources)
+		case "/api/instance":
+			http.NotFound(w, r)
+		default:
+			t.Errorf("unexpected control-plane path %q", r.URL.Path)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// dummyProxy accepts and immediately closes, standing in for a proxy at an advertised address.
+func dummyProxy(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			c.Close()
+		}
+	}()
+	return ln.Addr().String()
+}
+
+// TestPeerCommandsWorkWhenTheDaemonIsDown is the symmetry requirement's first half: every command must be
+// usable with no daemon running, reporting the state and pointing at the fix rather than erroring opaquely.
+func TestPeerCommandsWorkWhenTheDaemonIsDown(t *testing.T) {
+	e := newEnv(t)
+
+	out := e.mustRun(t, "status")
+	if !strings.Contains(out, "not running") {
+		t.Errorf("status with no daemon = %q, want it to say the daemon is not running", out)
+	}
+	if !strings.Contains(out, "pmon start") {
+		t.Errorf("status with no daemon = %q, want it to point at `pmon start`", out)
+	}
+
+	// stop is idempotent: stopping nothing is success, not an error.
+	if out := e.mustRun(t, "stop"); !strings.Contains(out, "not running") {
+		t.Errorf("stop with no daemon = %q, want it to report nothing was running", out)
+	}
+	if out := e.mustRun(t, "logout"); !strings.Contains(out, "not running") {
+		t.Errorf("logout with no daemon = %q, want it to report nothing was running", out)
+	}
+	// show cannot succeed, but it must explain what to do.
+	out, err := e.run("show", "acme-mysql")
+	if err == nil {
+		t.Error("show with no daemon succeeded; expected a non-zero exit")
+	}
+	if !strings.Contains(out, "pmon login") {
+		t.Errorf("show with no daemon = %q, want it to point at `pmon login`", out)
+	}
+}
+
+// TestStartStopLifecycle covers a peer owning the daemon's lifecycle: start brings it up idle (no credentials
+// is NOT a startup failure), and stop takes it down.
+func TestStartStopLifecycle(t *testing.T) {
+	e := newEnv(t)
+
+	out := e.mustRun(t, "start")
+	if !strings.Contains(out, "not logged in") {
+		t.Errorf("start with no credentials = %q, want a running-but-idle daemon", out)
+	}
+	if out := e.mustRun(t, "status"); !strings.Contains(out, "running, idle") {
+		t.Errorf("status after start = %q, want running+idle", out)
+	}
+	// A second start is a no-op rather than a second daemon.
+	if out := e.mustRun(t, "start"); !strings.Contains(out, "already running") {
+		t.Errorf("second start = %q, want it to report one is already running", out)
+	}
+
+	if out := e.mustRun(t, "stop"); !strings.Contains(out, "stopped") {
+		t.Errorf("stop = %q, want it to confirm the daemon stopped", out)
+	}
+	if out := e.mustRun(t, "status"); !strings.Contains(out, "not running") {
+		t.Errorf("status after stop = %q, want not running", out)
+	}
+}
+
+// TestLoginStartsTheDaemonAndOpensBrokers is the headline behavior: `pmon login` alone — no daemon running, no
+// separate brokering step — leaves a connectable local port and a renderable connection string.
+func TestLoginStartsTheDaemonAndOpensBrokers(t *testing.T) {
+	e := newEnv(t)
+	proxy := dummyProxy(t)
+	cp := fakeCP(t, []map[string]any{
+		{"name": "acme-mysql", "engine": "mysql", "dbName": "my_database", "advertiseAddr": proxy},
+	})
+
+	out := e.mustRun(t, "login", "--url", cp.URL)
+	if !strings.Contains(out, "ABCD-EFGH") {
+		t.Errorf("login = %q, want the user code shown", out)
+	}
+	if !strings.Contains(out, "logged in as you@example.com") {
+		t.Errorf("login = %q, want the principal confirmed", out)
+	}
+	if !strings.Contains(out, "1 datasource(s) brokered") {
+		t.Errorf("login = %q, want it to report the broker came up", out)
+	}
+
+	status := e.mustRun(t, "status")
+	if !strings.Contains(status, "acme-mysql") || !strings.Contains(status, "127.0.0.1:") {
+		t.Errorf("status = %q, want the datasource on a local port", status)
+	}
+
+	// The port in the connection string really accepts connections.
+	url := strings.TrimSpace(e.mustRun(t, "show", "acme-mysql"))
+	if !strings.HasPrefix(url, "mysql://") || !strings.Contains(url, "/my_database") {
+		t.Fatalf("show = %q, want a mysql:// URI for my_database", url)
+	}
+	hostPort := url[strings.LastIndex(url, "@")+1 : strings.LastIndex(url, "/")]
+	c, err := net.DialTimeout("tcp", hostPort, 2*time.Second)
+	if err != nil {
+		t.Fatalf("dial the brokered port %s from the connection string: %v", hostPort, err)
+	}
+	c.Close()
+}
+
+// TestShowFormats locks the four documented flavors, including --url as the default.
+func TestShowFormats(t *testing.T) {
+	e := newEnv(t)
+	cp := fakeCP(t, []map[string]any{
+		{"name": "acme-mysql", "engine": "mysql", "dbName": "my_database", "advertiseAddr": dummyProxy(t)},
+	})
+	e.mustRun(t, "login", "--url", cp.URL)
+
+	bare := strings.TrimSpace(e.mustRun(t, "show", "acme-mysql"))
+	explicit := strings.TrimSpace(e.mustRun(t, "show", "acme-mysql", "--url"))
+	if bare != explicit {
+		t.Errorf("bare show = %q but --url = %q; --url must be the default", bare, explicit)
+	}
+	if !strings.HasPrefix(bare, "mysql://") {
+		t.Errorf("--url = %q, want a mysql:// URI", bare)
+	}
+
+	jdbc := strings.TrimSpace(e.mustRun(t, "show", "acme-mysql", "--jdbc"))
+	if !strings.HasPrefix(jdbc, "jdbc:mysql://") || !strings.Contains(jdbc, "user=") {
+		t.Errorf("--jdbc = %q, want a jdbc:mysql:// URL with credentials", jdbc)
+	}
+	if !strings.Contains(jdbc, "jdbcCompliantTruncation=false") {
+		t.Errorf("--jdbc = %q, want the conservative JDBC diagnostic setting", jdbc)
+	}
+	jdbcDiagnostics := strings.TrimSpace(e.mustRun(t, "show", "acme-mysql", "--jdbc", "--jdbc-with-truncation-diagnostics"))
+	if strings.Contains(jdbcDiagnostics, "jdbcCompliantTruncation") {
+		t.Errorf("--jdbc --jdbc-with-truncation-diagnostics = %q, want no JDBC compliant-truncation parameter", jdbcDiagnostics)
+	}
+
+	dsn := strings.TrimSpace(e.mustRun(t, "show", "acme-mysql", "--go-dsn"))
+	if !strings.Contains(dsn, "@tcp(127.0.0.1:") || !strings.Contains(dsn, "parseTime=true") {
+		t.Errorf("--go-dsn = %q, want the go-sql-driver DSN form", dsn)
+	}
+
+	cli := strings.TrimSpace(e.mustRun(t, "show", "acme-mysql", "--cli"))
+	if !strings.HasPrefix(cli, "mysql -h 127.0.0.1") {
+		t.Errorf("--cli = %q, want a mysql command line", cli)
+	}
+
+	// Output is the bare string, so it pipes straight into a client or an env var.
+	for _, s := range []string{bare, jdbc, dsn, cli} {
+		if strings.Count(s, "\n") != 0 {
+			t.Errorf("show output %q spans multiple lines; it must be pipeable", s)
+		}
+	}
+}
+
+func TestShowJDBCTruncationDiagnosticsRequiresJDBC(t *testing.T) {
+	e := newEnv(t)
+	out, err := e.run("show", "acme-mysql", "--jdbc-with-truncation-diagnostics")
+	if err == nil {
+		t.Fatalf("show --jdbc-with-truncation-diagnostics succeeded, want an error")
+	}
+	if !strings.Contains(out, "--jdbc-with-truncation-diagnostics requires --jdbc") {
+		t.Errorf("show --jdbc-with-truncation-diagnostics = %q, want a --jdbc requirement error", out)
+	}
+}
+
+// TestShowRejectsAnUnknownDatasourceWithTheKnownOnes: a typo must list what IS available rather than just fail.
+func TestShowRejectsAnUnknownDatasourceWithTheKnownOnes(t *testing.T) {
+	e := newEnv(t)
+	cp := fakeCP(t, []map[string]any{
+		{"name": "acme-mysql", "engine": "mysql", "dbName": "app", "advertiseAddr": dummyProxy(t)},
+	})
+	e.mustRun(t, "login", "--url", cp.URL)
+
+	out, err := e.run("show", "acme-mysq")
+	if err == nil {
+		t.Fatal("show with a typo'd datasource succeeded")
+	}
+	if !strings.Contains(out, "acme-mysql") {
+		t.Errorf("show error = %q, want it to list the known datasources", out)
+	}
+}
+
+func TestPostgresShowFormats(t *testing.T) {
+	e := newEnv(t)
+	cp := fakeCP(t, []map[string]any{
+		{"name": "acme-postgres", "engine": "postgres", "dbName": "app", "advertiseAddr": dummyProxy(t)},
+	})
+	if out := e.mustRun(t, "login", "--url", cp.URL); !strings.Contains(out, "1 datasource(s) brokered") {
+		t.Fatalf("login = %q, want the PostgreSQL broker to open", out)
+	}
+
+	cases := []struct {
+		flag string
+		want string
+	}{
+		{"", "postgresql://"},
+		{"--jdbc", "jdbc:postgresql://"},
+		{"--go-dsn", "host=127.0.0.1"},
+		{"--cli", "psql 'host=127.0.0.1"},
+	}
+	for _, tc := range cases {
+		args := []string{"show", "acme-postgres"}
+		if tc.flag != "" {
+			args = append(args, tc.flag)
+		}
+		if got := strings.TrimSpace(e.mustRun(t, args...)); !strings.HasPrefix(got, tc.want) {
+			t.Errorf("pmon %s = %q, want prefix %q", strings.Join(args, " "), got, tc.want)
+		}
+	}
+}
+
+func TestShowExplainsAnUnsupportedDatasource(t *testing.T) {
+	e := newEnv(t)
+	cp := fakeCP(t, []map[string]any{
+		{"name": "unsupported", "engine": "sqlite", "dbName": "app", "advertiseAddr": dummyProxy(t)},
+	})
+	e.mustRun(t, "login", "--url", cp.URL)
+
+	out, err := e.run("show", "unsupported")
+	if err == nil {
+		t.Fatal("show for an unsupported datasource succeeded")
+	}
+	if !strings.Contains(out, "sqlite") {
+		t.Errorf("show error = %q, want the unsupported engine named", out)
+	}
+}
+
+// TestLogoutClosesBrokersAndKeepsTheDaemonUp: logging out must leave the daemon available to log back in
+// through, which is what makes a menu-bar "Re-authenticate" work without a restart.
+func TestLogoutClosesBrokersAndKeepsTheDaemonUp(t *testing.T) {
+	e := newEnv(t)
+	cp := fakeCP(t, []map[string]any{
+		{"name": "acme-mysql", "engine": "mysql", "dbName": "app", "advertiseAddr": dummyProxy(t)},
+	})
+	e.mustRun(t, "login", "--url", cp.URL)
+
+	if out := e.mustRun(t, "logout"); !strings.Contains(out, "logged out") {
+		t.Errorf("logout = %q, want a confirmation", out)
+	}
+	status := e.mustRun(t, "status")
+	if !strings.Contains(status, "running") {
+		t.Errorf("status after logout = %q, want the daemon still running", status)
+	}
+	if !strings.Contains(status, "not logged in") {
+		t.Errorf("status after logout = %q, want it logged out", status)
+	}
+
+	// A second login reuses the same daemon and brings the brokers back.
+	if out := e.mustRun(t, "login", "--url", cp.URL); !strings.Contains(out, "1 datasource(s) brokered") {
+		t.Errorf("re-login = %q, want the broker to come back up", out)
+	}
+}
+
+// TestTwoServers covers the multi-server surface end to end: `server set`, `login <server>`, a status listing
+// both servers' datasources, `show [server] <ds>`, per-server logout, and `server unset`.
+func TestTwoServers(t *testing.T) {
+	e := newEnv(t)
+	ds := []map[string]any{{"name": "acme-mysql", "engine": "mysql", "dbName": "app", "advertiseAddr": dummyProxy(t)}}
+	prod, dev := fakeCP(t, ds), fakeCP(t, ds)
+
+	if out, err := e.run("login"); err == nil || !strings.Contains(out, "pmon server set --url") {
+		t.Fatalf("login with no server = %q, %v; want a hint to set one", out, err)
+	}
+	e.mustRun(t, "server", "set", "--url", prod.URL)
+	e.mustRun(t, "login")
+	if out := e.mustRun(t, "login", "--url", dev.URL, "dev"); !strings.Contains(out, `brokered from "dev"`) {
+		t.Errorf("login dev = %q", out)
+	}
+
+	status := e.mustRun(t, "status")
+	for _, want := range []string{"server:    default  " + prod.URL, "server:    dev  " + dev.URL, "SERVER", "dev      acme-mysql"} {
+		if !strings.Contains(status, want) {
+			t.Errorf("status missing %q:\n%s", want, status)
+		}
+	}
+	list := e.mustRun(t, "server", "list")
+	if !strings.Contains(list, "default") || !strings.Contains(list, "dev") {
+		t.Errorf("server list = %q", list)
+	}
+
+	def := strings.TrimSpace(e.mustRun(t, "show", "acme-mysql"))
+	devURL := strings.TrimSpace(e.mustRun(t, "show", "dev", "acme-mysql"))
+	if def == devURL || !strings.HasPrefix(devURL, "mysql://") {
+		t.Errorf("show default = %q, show dev = %q; want two different ports", def, devURL)
+	}
+	if out, err := e.run("show", "staging", "acme-mysql"); err == nil || !strings.Contains(out, "default, dev") {
+		t.Errorf("show on an unknown server = %q, %v; want the known servers listed", out, err)
+	}
+
+	e.mustRun(t, "logout", "dev")
+	if _, err := e.run("show", "dev", "acme-mysql"); err == nil {
+		t.Error("show dev succeeded after logging out of dev")
+	}
+	if got := strings.TrimSpace(e.mustRun(t, "show", "acme-mysql")); got != def {
+		t.Errorf("logging out of dev changed default's connection string: %q -> %q", def, got)
+	}
+
+	e.mustRun(t, "server", "unset", "dev")
+	if strings.Contains(e.mustRun(t, "server", "list"), "dev") {
+		t.Error("dev is still listed after unset")
+	}
+	e.mustRun(t, "logout", "--all")
+	if !strings.Contains(e.mustRun(t, "status"), "not logged in") {
+		t.Error("still logged in after logout --all")
+	}
+}
+
+// TestRestartKeepsStickyPortsAndPassword is what makes a saved client connection survive: the local port and
+// the password must be identical across a daemon restart.
+func TestRestartKeepsStickyPortsAndPassword(t *testing.T) {
+	e := newEnv(t)
+	cp := fakeCP(t, []map[string]any{
+		{"name": "acme-mysql", "engine": "mysql", "dbName": "app", "advertiseAddr": dummyProxy(t)},
+	})
+	e.mustRun(t, "login", "--url", cp.URL)
+
+	before := strings.TrimSpace(e.mustRun(t, "show", "acme-mysql"))
+	if out := e.mustRun(t, "restart"); !strings.Contains(out, "restarted") {
+		t.Errorf("restart = %q, want a confirmation", out)
+	}
+	after := strings.TrimSpace(e.mustRun(t, "show", "acme-mysql"))
+	if before != after {
+		t.Errorf("connection string changed across a restart:\n before %q\n after  %q", before, after)
+	}
+}
+
+// TestOnlyOneDaemonRunsAtATime locks the single-instance guard from the outside: a second foreground daemon
+// must refuse rather than fight the first for the socket and the broker ports.
+func TestOnlyOneDaemonRunsAtATime(t *testing.T) {
+	e := newEnv(t)
+	e.mustRun(t, "start")
+
+	out, err := e.run("daemon")
+	if err == nil {
+		t.Fatal("a second daemon started alongside the first")
+	}
+	if !strings.Contains(out, "already running") {
+		t.Errorf("second daemon = %q, want it to report one is already running", out)
+	}
+}
+
+func TestReloginWarnsWhenTheReplacedLoginStaysValid(t *testing.T) {
+	e := newEnv(t)
+	var polls atomic.Int32
+	var endFails atomic.Bool
+	cp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/auth/device/start":
+			_ = json.NewEncoder(w).Encode(map[string]any{"verificationUri": "https://idp.example/activate", "userCode": "ABCD-EFGH", "handle": "h-1", "interval": 1})
+		case "/auth/device/poll":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"principal": "you@example.com", "token": "pmk_tok", "renewalToken": fmt.Sprintf("pmr_%d", polls.Add(1)),
+				"expiresAt": time.Now().Add(12 * time.Hour).Format(time.RFC3339),
+			})
+		case "/auth/session/logout":
+			if endFails.Load() {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		case "/api/datasources":
+			_ = json.NewEncoder(w).Encode([]any{})
+		}
+	}))
+	defer cp.Close()
+
+	e.mustRun(t, "login", "hr", "--url", cp.URL)
+	if out := e.mustRun(t, "login", "hr"); strings.Contains(out, "warning") {
+		t.Errorf("re-login = %q, want no warning when the replaced login was ended", out)
+	}
+	endFails.Store(true)
+	out := e.mustRun(t, "login", "hr")
+	if !strings.Contains(out, `warning: could not end the previous "hr" login on the server; it stays valid there until its TTL ends`) {
+		t.Errorf("re-login with the end failing = %q, want the warning", out)
+	}
+	if !strings.Contains(out, "logged in as you@example.com") {
+		t.Errorf("re-login = %q, want the new login to land anyway", out)
+	}
+}
+
+func TestLogoutEndsTheServerLoginOrWarns(t *testing.T) {
+	e := newEnv(t)
+	var ended atomic.Int32
+	cp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/auth/device/start":
+			_ = json.NewEncoder(w).Encode(map[string]any{"verificationUri": "https://idp.example/activate", "userCode": "ABCD-EFGH", "handle": "h-1", "interval": 1})
+		case "/auth/device/poll":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"principal": "you@example.com", "token": "pmk_tok", "renewalToken": "pmr_abc",
+				"expiresAt": time.Now().Add(12 * time.Hour).Format(time.RFC3339),
+			})
+		case "/auth/session/logout":
+			if r.Header.Get("Authorization") == "Bearer pmr_abc" {
+				ended.Add(1)
+			}
+			w.WriteHeader(http.StatusNoContent)
+		case "/api/datasources":
+			_ = json.NewEncoder(w).Encode([]any{})
+		}
+	}))
+	defer cp.Close()
+
+	e.mustRun(t, "login", "hr", "--url", cp.URL)
+	out := e.mustRun(t, "logout", "hr")
+	if ended.Load() != 1 || strings.Contains(out, "warning") {
+		t.Errorf("logout = %q with %d server logouts, want one and no warning", out, ended.Load())
+	}
+
+	e.mustRun(t, "login", "hr")
+	cp.Close()
+	out = e.mustRun(t, "logout", "hr")
+	if !strings.Contains(out, `warning: could not end the "hr" login on the server; it stays valid there until its TTL ends`) {
+		t.Errorf("logout with the server down = %q, want the warning", out)
+	}
+	if status := e.mustRun(t, "status"); !strings.Contains(status, "not logged in") {
+		t.Errorf("status = %q, want the login cleared here anyway", status)
+	}
+}
+
+// Bare commands address the default server, which `pmon server default` changes; deleting it leaves none until
+// another server is created or chosen.
+func TestDefaultServerCanBeChosen(t *testing.T) {
+	e := newEnv(t)
+	ds := []map[string]any{{"name": "acme-mysql", "engine": "mysql", "dbName": "app", "advertiseAddr": dummyProxy(t)}}
+	prod, dev := fakeCP(t, ds), fakeCP(t, ds)
+	e.mustRun(t, "server", "set", "prod", "--url", prod.URL)
+	e.mustRun(t, "server", "set", "dev", "--url", dev.URL)
+	if out := strings.TrimSpace(e.mustRun(t, "server", "default")); out != "prod" {
+		t.Fatalf("the first server is not the default: %q", out)
+	}
+	e.mustRun(t, "server", "default", "dev")
+	if out := e.mustRun(t, "login"); !strings.Contains(out, `brokered from "dev"`) {
+		t.Errorf("bare login after `server default dev`:\n%s", out)
+	}
+	if out := e.mustRun(t, "server", "list"); !strings.Contains(out, "dev (default)") {
+		t.Errorf("server list does not mark the default:\n%s", out)
+	}
+	if out := e.mustRun(t, "show", "acme-mysql"); !strings.Contains(out, "127.0.0.1") {
+		t.Errorf("bare show on the default server:\n%s", out)
+	}
+	if out, err := e.run("server", "default", "nope"); err == nil || !strings.Contains(out, `unknown server "nope"`) {
+		t.Errorf("default to an unknown server: %v\n%s", err, out)
+	}
+	e.mustRun(t, "server", "unset", "--force")
+	if out, err := e.run("logout"); err == nil || !strings.Contains(out, "no default server") {
+		t.Errorf("bare logout with no default server: %v\n%s", err, out)
+	}
+	e.mustRun(t, "server", "set", "stage", "--url", dev.URL)
+	if out := strings.TrimSpace(e.mustRun(t, "server", "default")); out != "stage" {
+		t.Errorf("a server created with no default left is not the default: %q", out)
+	}
+}

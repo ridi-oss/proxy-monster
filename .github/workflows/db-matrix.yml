@@ -45,10 +45,11 @@ jobs:
           #
           # An empty cross product would silently produce zero legs, and a workflow with no legs
           # reports success — the exact "misconfig laundered into a pass" shape. Assert non-empty.
+          # Each pair runs as three parallel shards of the test classes.
           jvm=$(jq -ce '
             [ .storage[]  | select(.engine == "postgres") | .image ] as $pg
             | [ .target[] | select(.engine == "mysql")    | .image ] as $my
-            | [ $pg[] as $p | $my[] as $m | {pg: $p, mysql: $m} ]
+            | [ $pg[] as $p | $my[] as $m | range(1; 4) as $i | {pg: $p, mysql: $m, shard: "\($i)/3"} ]
           ' db-support.json)
 
           # goproxy proxies TO databases, so its PostgreSQL axis is the target set, not the store set.
@@ -78,7 +79,8 @@ jobs:
           jq -r '.[] | "  auditmon: \(.)"' <<<"$am"
 
   control-plane:
-    name: control-plane ${{ matrix.pg }} + ${{ matrix.mysql }}
+    name:
+      control-plane ${{ matrix.pg }} + ${{ matrix.mysql }} (${{ matrix.shard }})
     needs: matrix
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -91,6 +93,7 @@ jobs:
     env:
       PM_TEST_POSTGRES_IMAGE: ${{ matrix.pg }}
       PM_TEST_MYSQL_IMAGE: ${{ matrix.mysql }}
+      PM_TEST_SHARD: ${{ matrix.shard }}
       # Without Docker, Testcontainers tests SKIP and the suite still reports success — a pass for a
       # version nothing ran. On CI, missing Docker is a hard failure.
       PM_REQUIRE_DB_TESTS: "true"
@@ -100,29 +103,29 @@ jobs:
       # Installs java/gradle/go/node/pnpm from mise.toml, so versions are never restated here. Go is
       # needed for the JVM leg too: :analyzer:jvm's processResources shells out to
       # `go build -buildmode=c-shared`.
-      - uses: jdx/mise-action@v4
+      - uses: ./.github/actions/setup
+        with:
+          go-cache: jvm
+          gradle: true
 
-      - uses: gradle/actions/setup-gradle@v6
-
-      # --no-build-cache: Gradle's Test task is cacheable and setup-gradle restores the build cache, so
-      # without this a leg could satisfy :control-plane:test from a cache entry and report a pass for a
-      # version whose containers never started. The task's declared inputs include the image env vars, so
-      # a cache hit across legs is unlikely — but "unlikely" is not the property this workflow exists to
-      # guarantee.
       - name: Test
-        run: ./gradlew --no-daemon --no-build-cache :control-plane:test
+        run:
+          ./gradlew --no-daemon :control-plane:test
+          -Ppm.testShard="$PM_TEST_SHARD"
 
       # The report names which versions the leg ran, so a green check can be traced to a version
       # rather than taken on trust. An artifact name may not contain a colon, and expressions have no
       # string-replace function, so the safe name is computed in a step.
       - name: Name this leg
+        if: always()
         id: leg
         run: |
           set -euo pipefail
-          echo "slug=$(printf '%s__%s' "$PG" "$MYSQL" | tr ':/' '--')" >>"$GITHUB_OUTPUT"
+          echo "slug=$(printf '%s__%s__%s' "$PG" "$MYSQL" "$SHARD" | tr ':/' '---')" >>"$GITHUB_OUTPUT"
         env:
           PG: ${{ matrix.pg }}
           MYSQL: ${{ matrix.mysql }}
+          SHARD: ${{ matrix.shard }}
 
       - uses: actions/upload-artifact@v7
         if: always()
@@ -144,12 +147,14 @@ jobs:
       PM_TEST_MYSQL_IMAGE: ${{ matrix.mysql }}
     steps:
       - uses: actions/checkout@v7
-      - uses: jdx/mise-action@v4
+      - uses: ./.github/actions/setup
+        with:
+          go-cache: test-goproxy
       # goproxy's dbtest helpers t.Fatal without Docker rather than skipping, so no opt-in flag is
       # needed here to make a Docker-less run fail.
       - name: Test
         working-directory: goproxy
-        run: go test -race ./...
+        run: go test -race -count=1 ./...
 
   auditmon:
     name: auditmon ${{ matrix.pg }}
@@ -164,10 +169,12 @@ jobs:
       PM_TEST_POSTGRES_IMAGE: ${{ matrix.pg }}
     steps:
       - uses: actions/checkout@v7
-      - uses: jdx/mise-action@v4
+      - uses: ./.github/actions/setup
+        with:
+          go-cache: test-rest
       - name: Test
         working-directory: auditmon
-        run: go test -race ./...
+        run: go test -race -count=1 ./...
 
   # A single required check that is green only when every leg is. Without it, a branch protection rule
   # would have to name each matrix leg, and adding a version to db-support.json would silently create

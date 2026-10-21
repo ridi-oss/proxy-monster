@@ -1,0 +1,150 @@
+name: proxy-monster SQL
+description:
+  File a pull request's new SQL files as proxy-monster approval requests.
+
+inputs:
+  server:
+    description: Control-plane base URL.
+    required: true
+  audience:
+    description:
+      OIDC audience the control plane trusts (PM_CI_OIDC_AUDIENCE). Empty uses
+      the server's origin, the control plane's default.
+    required: false
+    default: ""
+  dir:
+    description: Directory holding the SQL files.
+    required: true
+  datasource:
+    description: Datasource the files run on.
+    required: true
+  schema:
+    description: Default schema of the run's connection.
+    required: true
+  role:
+    description: Role the files run under.
+    required: true
+  scope:
+    description:
+      Name of the scope whose query executions happen one PR at a time.
+    required: false
+    default: ""
+  files:
+    description:
+      Regular expression a file name must match to be filed. A `(?P<key>…)`
+      group is the file key; without one, the whole name is.
+    required: false
+    default: '^(?P<key>[0-9]+)_.+\.sql$'
+  order:
+    description: "How file keys sort: `numeric` (9 before 10) or `string`."
+    required: false
+    default: numeric
+  version:
+    description: "`latest`, a pm-ci release such as `0.1.0`, or `source`."
+    required: false
+    default: latest
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Go
+      if: inputs.version == 'source'
+      uses: actions/setup-go@v7
+      with:
+        go-version-file: ${{ github.action_path }}/go.mod
+        cache-dependency-path: ${{ github.action_path }}/go.sum
+
+    - name: Build pm-ci from source
+      if: inputs.version == 'source'
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd "$GITHUB_ACTION_PATH"
+        GOWORK=off CGO_ENABLED=0 go build -o "$RUNNER_TEMP/pm-ci-bin/pm-ci" .
+        echo "$RUNNER_TEMP/pm-ci-bin" >> "$GITHUB_PATH"
+
+    - name: Install pm-ci
+      if: inputs.version != 'source'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        case "$RUNNER_OS" in
+          Linux) os=linux ;;
+          macOS) os=darwin ;;
+          *) os= ;;
+        esac
+        case "$RUNNER_ARCH" in
+          X64) arch=amd64 ;;
+          ARM64) arch=arm64 ;;
+          *) arch= ;;
+        esac
+        if [ -z "$os" ] || [ -z "$arch" ]; then
+          echo "::error::no pm-ci release for $RUNNER_OS/$RUNNER_ARCH; set version: source"
+          exit 1
+        fi
+
+        v="${VERSION#pm-ci-v}"
+        if [ "$v" = latest ]; then
+          v="$(gh release list --repo ridi-oss/proxy-monster --limit 100 \
+            --exclude-drafts --exclude-pre-releases --json tagName \
+            --jq '[.[].tagName | select(startswith("pm-ci-v"))][0] // empty')"
+          v="${v#pm-ci-v}"
+          if [ -z "$v" ]; then
+            echo "::error::no pm-ci release found in ridi-oss/proxy-monster"
+            exit 1
+          fi
+        fi
+
+        asset="pm-ci_${v}_${os}_${arch}.tar.gz"
+        base="https://github.com/ridi-oss/proxy-monster/releases/download/pm-ci-v$v"
+        tmp="$RUNNER_TEMP/pm-ci-download"
+        mkdir -p "$tmp" "$RUNNER_TEMP/pm-ci-bin"
+        curl -fsSL -o "$tmp/$asset" "$base/$asset"
+        curl -fsSL -o "$tmp/checksums.txt" "$base/checksums.txt"
+        if command -v sha256sum >/dev/null; then sum=(sha256sum); else sum=(shasum -a 256); fi
+        line="$(grep "  $asset\$" "$tmp/checksums.txt" || true)"
+        if [ -z "$line" ]; then
+          echo "::error::checksums.txt has no entry for $asset"
+          exit 1
+        fi
+        (cd "$tmp" && echo "$line" | "${sum[@]}" -c -)
+        tar -xzf "$tmp/$asset" -C "$RUNNER_TEMP/pm-ci-bin" pm-ci
+        echo "$RUNNER_TEMP/pm-ci-bin" >> "$GITHUB_PATH"
+
+    - name: Run
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      env:
+        PM_CI_SERVER_URL: ${{ inputs.server }}
+        PM_CI_AUDIENCE: ${{ inputs.audience }}
+        DIR: ${{ inputs.dir }}
+        DATASOURCE: ${{ inputs.datasource }}
+        SCHEMA: ${{ inputs.schema }}
+        ROLE: ${{ inputs.role }}
+        SCOPE: ${{ inputs.scope }}
+        FILES: ${{ inputs.files }}
+        ORDER: ${{ inputs.order }}
+        REPOSITORY: ${{ github.repository }}
+        PR: ${{ github.event.pull_request.number }}
+        BASE: ${{ github.event.pull_request.base.sha }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      run: |
+        set -euo pipefail
+        if [ -z "$PR" ]; then
+          echo "::error::sql-action runs on pull_request events"
+          exit 1
+        fi
+        for name in DIR DATASOURCE SCHEMA ROLE; do
+          if [ -z "${!name}" ]; then
+            echo "::error::input $(echo "$name" | tr '[:upper:]' '[:lower:]') is required"
+            exit 1
+          fi
+        done
+        args=(file --dir "$DIR" --datasource "$DATASOURCE" --schema "$SCHEMA"
+          --role "$ROLE" --files "$FILES" --order "$ORDER" --repository "$REPOSITORY"
+          --pr "$PR" --base "$BASE" --head "$HEAD_SHA")
+        if [ -n "$SCOPE" ]; then args+=(--scope "$SCOPE"); fi
+        pm-ci "${args[@]}"

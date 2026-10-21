@@ -1,21 +1,17 @@
 'use client'
 
-// A RATE_RESET request (docs/result-caps.md): approving writes the requester's reset marker, so relayed
-// volume before the approval stops counting toward every rate window. Decided like a ROLE request.
-import { useState, type ReactNode } from 'react'
+// A RATE_RESET request is history only: resets are gone, so none is ever pending again.
+import type { ReactNode } from 'react'
 import { useTranslations } from 'next-intl'
 import { mutate } from 'swr'
-import { toast } from 'sonner'
-import { approveAccessRequest } from '@/lib/api/client'
 import type { AccessRequest } from '@/lib/api/types'
 import { swrKeys } from '@/lib/hooks'
 import { cn } from '@/lib/utils'
-import { RejectDialog } from '@/components/access/reject-dialog'
-import { Button } from '@/components/ui/button'
+import { RequestTimeline } from '@/components/approvals/request-timeline'
+import { useAuth } from '@/lib/auth'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 
 const STATUS_STYLE: Record<string, string> = {
-  PENDING: 'border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400',
   APPROVED: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400',
   REJECTED: 'border-red-500/30 bg-red-500/10 text-red-500',
 }
@@ -29,28 +25,16 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
   )
 }
 
-function refresh() {
+function refresh(id: number) {
+  void mutate(swrKeys.requestThread(id))
+  void mutate(swrKeys.involvedApprovals)
   void mutate(swrKeys.accessRequests('PENDING'))
   void mutate(swrKeys.accessRequests(undefined))
 }
 
 export function RateResetRequestDetail({ request }: { request: AccessRequest }) {
   const t = useTranslations('Workflows')
-  const [approving, setApproving] = useState(false)
-  const [rejecting, setRejecting] = useState<AccessRequest | null>(null)
-
-  const handleApprove = async () => {
-    setApproving(true)
-    try {
-      await approveAccessRequest(request.id)
-      toast.success(t('rateResetDetail.approvedToast', { principal: request.principal }))
-      refresh()
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : t('roleDetail.approveFailed'))
-    } finally {
-      setApproving(false)
-    }
-  }
+  const { identity } = useAuth()
 
   return (
     <div data-workflow-detail-kind="RATE_RESET">
@@ -68,21 +52,6 @@ export function RateResetRequestDetail({ request }: { request: AccessRequest }) 
                 {request.status}
               </span>
             </div>
-            {request.status === 'PENDING' && (
-              <div className="flex flex-wrap items-end justify-end gap-2">
-                <Button
-                  variant="outline"
-                  onClick={() => setRejecting(request)}
-                  disabled={approving}
-                  className="border-red-500/30 text-red-500 hover:bg-red-500/10 hover:text-red-500"
-                >
-                  {t('actions.reject')}
-                </Button>
-                <Button onClick={handleApprove} disabled={approving}>
-                  {approving ? t('actions.approving') : t('actions.approve')}
-                </Button>
-              </div>
-            )}
           </div>
         </CardHeader>
         <CardContent className="space-y-5">
@@ -109,10 +78,10 @@ export function RateResetRequestDetail({ request }: { request: AccessRequest }) 
               <span className="text-red-500">{request.rejectionReason}</span>
             </Field>
           )}
-          <p className="text-muted-foreground text-xs">{t('rateResetDetail.note', { principal: request.principal })}</p>
+          <p className="text-muted-foreground text-xs">{t('rateResetDetail.note')}</p>
+          <RequestTimeline request={request} principal={identity?.principal} onChanged={() => refresh(request.id)} />
         </CardContent>
       </Card>
-      <RejectDialog request={rejecting} onClose={() => setRejecting(null)} onRejected={refresh} />
     </div>
   )
 }

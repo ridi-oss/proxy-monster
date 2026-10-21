@@ -54,6 +54,10 @@ var (
 	mysqlB    TargetDb
 	mysqlErr  error
 
+	mysqlLower1Once sync.Once
+	mysqlLower1B    TargetDb
+	mysqlLower1Err  error
+
 	pgOnce sync.Once
 	pgB    TargetDb
 	pgErr  error
@@ -68,6 +72,24 @@ func MySQL(t testing.TB) TargetDb {
 		t.Fatalf("shared MySQL test container unavailable (Docker is required for DB-backed tests): %v", mysqlErr)
 	}
 	return mysqlB
+}
+
+// MySQLLowerCase1 returns a second shared MySQL target DB initialized with lower_case_table_names=1,
+// which MySQL only accepts at initdb, so it cannot share the default container.
+func MySQLLowerCase1(t testing.TB) TargetDb {
+	t.Helper()
+	mysqlLower1Once.Do(func() {
+		mysqlLower1B, mysqlLower1Err = startMySQLWith("pm-goproxy-it-mysql-lctn1", "--lower-case-table-names=1")
+	})
+	if mysqlLower1Err != nil {
+		t.Fatalf("shared MySQL lower_case_table_names=1 test container unavailable (Docker is required for DB-backed tests): %v", mysqlLower1Err)
+	}
+	return mysqlLower1B
+}
+
+// OpenMySQLLowerCase1 opens (and pings) a *sql.DB against the lower_case_table_names=1 target DB.
+func OpenMySQLLowerCase1(t testing.TB, db string) *sql.DB {
+	return open(t, "mysql", MySQLLowerCase1(t).MySQLDSN(db))
 }
 
 // Postgres returns the shared PostgreSQL 16 target DB, starting it once and reusing it across the whole
@@ -88,6 +110,9 @@ func OpenMySQL(t testing.TB, db string) *sql.DB { return open(t, "mysql", MySQL(
 func OpenPostgres(t testing.TB, db string) *sql.DB {
 	return open(t, "pgx", Postgres(t).PostgresDSN(db))
 }
+
+// Open opens (and pings) a *sql.DB for any DSN, version-checked like OpenMySQL/OpenPostgres.
+func Open(t testing.TB, driver, dsn string) *sql.DB { return open(t, driver, dsn) }
 
 func open(t testing.TB, driver, dsn string) *sql.DB {
 	t.Helper()
@@ -148,12 +173,15 @@ func containerName(prefix, img string) string {
 	return name
 }
 
-func startMySQL() (TargetDb, error) {
+func startMySQL() (TargetDb, error) { return startMySQLWith("pm-goproxy-it-mysql") }
+
+func startMySQLWith(namePrefix string, args ...string) (TargetDb, error) {
 	const user, pass, db = "root", "rootpw", "app"
 	img := image("PM_TEST_MYSQL_IMAGE", defaultMySQLImage)
 	req := testcontainers.ContainerRequest{
 		Image:        img,
-		Name:         containerName("pm-goproxy-it-mysql", img),
+		Name:         containerName(namePrefix, img),
+		Cmd:          args,
 		ExposedPorts: []string{"3306/tcp"},
 		Env:          map[string]string{"MYSQL_ROOT_PASSWORD": pass, "MYSQL_DATABASE": db},
 		WaitingFor: wait.ForSQL("3306/tcp", "mysql", func(host string, port network.Port) string {

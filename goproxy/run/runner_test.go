@@ -12,14 +12,18 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ridi-oss/proxy-monster/goproxy/athena"
+	"github.com/ridi-oss/proxy-monster/goproxy/mysql"
+	"github.com/ridi-oss/proxy-monster/goproxy/postgres"
+
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
+
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/ridi-oss/proxy-monster/goproxy/cp"
-	"github.com/ridi-oss/proxy-monster/goproxy/dialects"
-	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/run"
@@ -56,6 +60,7 @@ type runFakeCP struct {
 	readyOnce       sync.Once
 	runServing      chan struct{}
 	servingOnce     sync.Once
+	serving         *pb.RunServing
 	progressCount   int
 }
 
@@ -136,6 +141,7 @@ func (f *runFakeCP) RunExec(stream grpc.BidiStreamingServer[pb.ProxyRunMsg, pb.C
 			case message.GetServing() != nil:
 				f.mu.Lock()
 				f.events = append(f.events, "serving")
+				f.serving = proto.Clone(message.GetServing()).(*pb.RunServing)
 				f.mu.Unlock()
 				f.servingOnce.Do(func() { close(f.runServing) })
 			default:
@@ -216,21 +222,21 @@ func (f *runFakeCP) runSetFragmentPushError(err error) {
 }
 
 type runEngineFixture struct {
-	runDialect   engine.Dialect
-	runDb        spi.Db
-	runTarget    spi.TargetDb
+	runEngine    *engines.Engine
+	runTarget    spi.Target
+	runConfig    spi.TargetConfig
 	runTable     string
 	runNamespace []string
 }
 
 type runCapturingDb struct {
-	spi.Db
+	spi.Target
 	readTimeout chan time.Duration
 }
 
-func (p *runCapturingDb) NewRunSession(ctx context.Context, client spi.SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration) (spi.TargetDbSession, error) {
+func (p *runCapturingDb) NewRunSession(ctx context.Context, authz *spi.Authorizer, guard spi.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.Session, error) {
 	p.readTimeout <- readTimeout
-	return p.Db.NewRunSession(ctx, client, token, connectionID, guard, readTimeout)
+	return p.Target.NewRunSession(ctx, authz, guard, readTimeout, defaultSchema)
 }
 
 // runSlowOpenProvider blocks the target DB dial until release is closed, modeling a slow open against a large
@@ -240,7 +246,7 @@ func (p *runCapturingDb) NewRunSession(ctx context.Context, client spi.SessionCl
 // at once, standing in for a real dialect whose dial/auth aborts on cancel. entered, when non-nil, is closed
 // the first time the dial is reached so a test can wait until the open is genuinely in flight before cutting it.
 type runSlowOpenDb struct {
-	spi.Db
+	spi.Target
 	release   chan struct{}
 	entered   chan struct{}
 	enterOnce sync.Once
@@ -249,7 +255,7 @@ type runSlowOpenDb struct {
 	beforeDelegate func()
 }
 
-func (p *runSlowOpenDb) NewRunSession(ctx context.Context, client spi.SessionClient, token string, connectionID []byte, guard engine.ExecGuard, readTimeout time.Duration) (spi.TargetDbSession, error) {
+func (p *runSlowOpenDb) NewRunSession(ctx context.Context, authz *spi.Authorizer, guard spi.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.Session, error) {
 	if p.entered != nil {
 		p.enterOnce.Do(func() { close(p.entered) })
 	}
@@ -258,7 +264,7 @@ func (p *runSlowOpenDb) NewRunSession(ctx context.Context, client spi.SessionCli
 		if p.beforeDelegate != nil {
 			p.beforeDelegate()
 		}
-		return p.Db.NewRunSession(ctx, client, token, connectionID, guard, readTimeout)
+		return p.Target.NewRunSession(ctx, authz, guard, readTimeout, defaultSchema)
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
@@ -283,14 +289,14 @@ func TestRunnerPostgresTempTablesAreSessionIsolated(t *testing.T) {
 		SessionID:    runSessionID + "-temp-1",
 		Token:        runToken,
 		ConnectionID: []byte("temp-session-001"),
-		OnOpen:       []*pb.Refetch{{Catalog: fixture.runTarget.Db, Schema: runPGSchema}},
+		OnOpen:       []*pb.ProxyCommand{&pb.ProxyCommand{Command: &pb.ProxyCommand_Refetch{Refetch: &pb.Refetch{Catalog: fixture.runConfig.Db, Schema: runPGSchema}}}},
 	})
 	fake2, client2 := runStartFakeCP(t, runSessionID+"-temp-2")
 	runLaunchOpen(t, fake2, client2, fixture, spi.RunOpen{
 		SessionID:    runSessionID + "-temp-2",
 		Token:        runToken,
 		ConnectionID: []byte("temp-session-002"),
-		OnOpen:       []*pb.Refetch{{Catalog: fixture.runTarget.Db, Schema: runPGSchema}},
+		OnOpen:       []*pb.ProxyCommand{&pb.ProxyCommand{Command: &pb.ProxyCommand_Refetch{Refetch: &pb.Refetch{Catalog: fixture.runConfig.Db, Schema: runPGSchema}}}},
 	})
 
 	runSendQuery(fake1, createSQL, 20)
@@ -302,8 +308,8 @@ func TestRunnerPostgresTempTablesAreSessionIsolated(t *testing.T) {
 	requests1 := fake1.runRecordedRequests()
 	last1 := requests1[len(requests1)-1]
 	for _, column := range last1.GetTempColumns() {
-		if column.GetCatalog() != fixture.runTarget.Db {
-			t.Fatalf("temp column catalog = %v, want %s", column.Catalog, fixture.runTarget.Db)
+		if column.GetCatalog() != fixture.runConfig.Db {
+			t.Fatalf("temp column catalog = %v, want %s", column.Catalog, fixture.runConfig.Db)
 		}
 	}
 	if !runRequestHasTempTable(last1, tempTable, "id") || !runRequestHasTempTable(last1, tempTable, "note") {
@@ -365,7 +371,7 @@ func TestRunnerMalformedOpen(t *testing.T) {
 			fake, client := runStartFakeCP(t, test.open.SessionID)
 			done := make(chan struct{})
 			go func() {
-				run.NewRunner(client, fixture.runDb, 0).Run(test.open, nil)
+				run.NewRunner(client, fixture.runTarget, 0).Run(test.open, nil)
 				close(done)
 			}()
 			// The stream sends its run id (RunReady) the instant it opens, before the open is validated, so even
@@ -439,7 +445,7 @@ func runEngineContract(t *testing.T, fixture runEngineFixture) {
 				Masks:          []*pb.ColumnMask{{Column: "secret", Kind: "FIXED", Ordinal: &ordinal}},
 			})
 		case denySQL:
-			return wireVerdict(&pb.Verdict{Decision: pb.EnfAction_DENY, DecisionId: 103, DenyReason: "not granted"})
+			return wireVerdict(&pb.Verdict{Decision: pb.EnfAction_DENY, DecisionId: 103, DenyReason: "not granted", DenyCode: "rate_spent"})
 		case badMaskSQL:
 			ordinal := int32(99)
 			return wireVerdict(&pb.Verdict{
@@ -488,7 +494,11 @@ func runEngineContract(t *testing.T, fixture runEngineFixture) {
 	runExpectDone(t, runRecv(t, fake), -1)
 
 	runSendQuery(fake, denySQL, 20)
-	runExpectDecision(t, runRecv(t, fake), pb.EnfAction_DENY, nil, "not granted")
+	denied := runRecv(t, fake)
+	runExpectDecision(t, denied, pb.EnfAction_DENY, nil, "not granted")
+	if code := denied.GetDecision().GetDenyCode(); code != "rate_spent" {
+		t.Fatalf("deny code = %q, want the verdict's rate_spent echoed", code)
+	}
 	runExpectSilence(t, fake, 200*time.Millisecond)
 
 	runSendQuery(fake, allowSQL, 20)
@@ -635,7 +645,7 @@ func runCatalogRefreshContract(t *testing.T, fixture runEngineFixture) {
 		table := runUniqueTable("pm_run_routine_refresh")
 		var callSQL string
 		directSchema := fixture.runNamespaceForTable()
-		if fixture.runDialect == engine.MySQL {
+		if fixture.runEngine == engines.MySQL {
 			procedure := runUniqueTable("pm_run_routine")
 			direct := dbtest.OpenMySQL(t, directSchema)
 			if _, err := direct.Exec("CREATE PROCEDURE " + procedure + "() CREATE TABLE " + table + " (id INT PRIMARY KEY)"); err != nil {
@@ -809,7 +819,7 @@ func runCatalogRefreshContract(t *testing.T, fixture runEngineFixture) {
 		runExpectSingleClose(t, fake)
 	})
 
-	if fixture.runDialect == engine.Postgres {
+	if fixture.runEngine == engines.Postgres {
 		t.Run("transactional DDL refetches inside the open transaction", func(t *testing.T) {
 			fake, client := runStartFakeCP(t, runSessionID)
 			runLaunch(t, fake, client, fixture)
@@ -856,14 +866,14 @@ func runCreateTableSQL(fixture runEngineFixture, table string) string {
 }
 
 func (f runEngineFixture) runCatalog() string {
-	if f.runDialect == engine.MySQL {
+	if f.runEngine == engines.MySQL {
 		return "def"
 	}
-	return f.runTarget.Db
+	return f.runConfig.Db
 }
 
 func (f runEngineFixture) runNamespaceForTable() string {
-	if f.runDialect == engine.MySQL {
+	if f.runEngine == engines.MySQL {
 		return runMySQLSchema
 	}
 	return runPGSchema
@@ -975,8 +985,155 @@ func TestRunnerMySQLReprobesNamespaceAfterTrackerBypass(t *testing.T) {
 	}
 }
 
+func TestRunnerMySQLReportsNamespaceAfterUse(t *testing.T) {
+	fixture := runSeedMySQL(t)
+	const altSchema = runMySQLSchema + "_ns"
+	seed := dbtest.OpenMySQL(t, "")
+	for _, statement := range []string{
+		"CREATE DATABASE IF NOT EXISTS " + altSchema,
+		"GRANT ALL ON " + altSchema + ".* TO '" + runMySQLService + "'@'%'",
+		"FLUSH PRIVILEGES",
+	} {
+		if _, err := seed.Exec(statement); err != nil {
+			t.Fatalf("seed %q: %v", statement, err)
+		}
+	}
+	fake, client := runStartFakeCP(t, runSessionID)
+	runLaunch(t, fake, client, fixture)
+	runExpectServingNamespace(t, fake, []string{runMySQLSchema})
+
+	runSendQuery(fake, "USE "+altSchema, 20)
+	runExpectDecision(t, runRecv(t, fake), pb.EnfAction_ALLOW, nil, "")
+	runExpectRows(t, runRecv(t, fake), nil)
+	afterUse := runRecv(t, fake)
+	runExpectDoneNamespace(t, afterUse, []string{altSchema})
+	if got := afterUse.GetDone().GetNamespace().GetCatalog(); got != "def" {
+		t.Fatalf("RunDone catalog = %q, want def", got)
+	}
+
+	before := len(fake.runRecordedRequests())
+	runSendQuery(fake, "SELECT 1", 20)
+	runExpectDecision(t, runRecv(t, fake), pb.EnfAction_ALLOW, nil, "")
+	runExpectRows(t, runRecv(t, fake), []string{"1"})
+	runExpectDoneNamespace(t, runRecv(t, fake), []string{altSchema})
+	requests := fake.runRecordedRequests()
+	if len(requests) != before+1 || !reflect.DeepEqual(requests[len(requests)-1].GetSearchPath(), []string{altSchema}) {
+		t.Fatalf("Decide after USE = %v, want one request with search_path %v", requests[before:], []string{altSchema})
+	}
+}
+
+func TestRunnerMySQLOpensInDefaultSchema(t *testing.T) {
+	fixture := runSeedMySQL(t)
+	const altSchema = runMySQLSchema + "_default"
+	seed := dbtest.OpenMySQL(t, "")
+	for _, statement := range []string{
+		"CREATE DATABASE IF NOT EXISTS " + altSchema,
+		"GRANT ALL ON " + altSchema + ".* TO '" + runMySQLService + "'@'%'",
+		"FLUSH PRIVILEGES",
+	} {
+		if _, err := seed.Exec(statement); err != nil {
+			t.Fatalf("seed %q: %v", statement, err)
+		}
+	}
+	fake, client := runStartFakeCP(t, runSessionID)
+	open := runOpen(fixture)
+	open.DefaultSchema = altSchema
+	runLaunchOpen(t, fake, client, fixture, open)
+	runExpectServingNamespace(t, fake, []string{altSchema})
+}
+
+func TestRunnerPostgresOpensInDefaultSchema(t *testing.T) {
+	fixture := runSeedPostgres(t)
+	fake, client := runStartFakeCP(t, runSessionID)
+	open := runOpen(fixture)
+	open.DefaultSchema = runPGSchema
+	runLaunchOpen(t, fake, client, fixture, open)
+	runExpectServingNamespace(t, fake, []string{"pg_catalog", runPGSchema})
+}
+
+func TestRunnerPostgresReportsNamespaceAfterSetSearchPath(t *testing.T) {
+	fixture := runSeedPostgres(t)
+	fake, client := runStartFakeCP(t, runSessionID)
+	runLaunch(t, fake, client, fixture)
+	initial := runServingNamespace(t, fake)
+	if len(initial) == 0 || initial[0] != "pg_catalog" {
+		t.Fatalf("RunServing namespace = %v, want the effective current_schemas(true) list", initial)
+	}
+
+	runSendQuery(fake, "SET search_path TO "+runPGSchema, 20)
+	runExpectDecision(t, runRecv(t, fake), pb.EnfAction_ALLOW, nil, "")
+	runExpectRows(t, runRecv(t, fake), nil)
+	afterSet := runRecv(t, fake)
+	runExpectDoneNamespace(t, afterSet, []string{"pg_catalog", runPGSchema})
+	if got := afterSet.GetDone().GetNamespace().GetCatalog(); got != fixture.runConfig.Db {
+		t.Fatalf("RunDone catalog = %q, want %s", got, fixture.runConfig.Db)
+	}
+
+	runSendQuery(fake, "SELECT 1", 20)
+	runExpectDecision(t, runRecv(t, fake), pb.EnfAction_ALLOW, nil, "")
+	runExpectRows(t, runRecv(t, fake), []string{"?column?"})
+	runExpectDoneNamespace(t, runRecv(t, fake), []string{"pg_catalog", runPGSchema})
+	requests := fake.runRecordedRequests()
+	if got := requests[len(requests)-1].GetSearchPath(); !reflect.DeepEqual(got, []string{"pg_catalog", runPGSchema}) {
+		t.Fatalf("Decide after SET search_path = %v, want %v", got, []string{"pg_catalog", runPGSchema})
+	}
+}
+
+// The reported namespace must not stand in for authorization's own probe: another connection can change
+// what the session resolves between two statements.
+func TestRunnerPostgresAuthorizesAgainstANamespaceChangedBetweenStatements(t *testing.T) {
+	fixture := runSeedPostgres(t)
+	schema := runUniqueTable("pm_run_ns_late")
+	seed := dbtest.OpenPostgres(t, "")
+	t.Cleanup(func() { _, _ = seed.Exec("DROP SCHEMA IF EXISTS " + schema) })
+	fake, client := runStartFakeCP(t, runSessionID)
+	runLaunch(t, fake, client, fixture)
+
+	runSendQuery(fake, "SET search_path TO "+schema+", public", 20)
+	runExpectDecision(t, runRecv(t, fake), pb.EnfAction_ALLOW, nil, "")
+	runExpectRows(t, runRecv(t, fake), nil)
+	runExpectDoneNamespace(t, runRecv(t, fake), []string{"pg_catalog", "public"})
+
+	if _, err := seed.Exec("CREATE SCHEMA " + schema); err != nil {
+		t.Fatalf("create schema: %v", err)
+	}
+	runSendQuery(fake, "SELECT 1", 20)
+	runExpectDecision(t, runRecv(t, fake), pb.EnfAction_ALLOW, nil, "")
+	runExpectRows(t, runRecv(t, fake), []string{"?column?"})
+	runExpectDoneNamespace(t, runRecv(t, fake), []string{"pg_catalog", schema, "public"})
+	requests := fake.runRecordedRequests()
+	if got := requests[len(requests)-1].GetSearchPath(); !reflect.DeepEqual(got, []string{"pg_catalog", schema, "public"}) {
+		t.Fatalf("Decide after another connection created %s = %v, want it probed fresh", schema, got)
+	}
+}
+
+func runServingNamespace(t *testing.T, fake *runFakeCP) []string {
+	t.Helper()
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if fake.serving.GetNamespace() == nil {
+		t.Fatalf("RunServing = %v, want a namespace", fake.serving)
+	}
+	return fake.serving.GetNamespace().GetSearchPath()
+}
+
+func runExpectServingNamespace(t *testing.T, fake *runFakeCP, want []string) {
+	t.Helper()
+	if got := runServingNamespace(t, fake); !reflect.DeepEqual(got, want) {
+		t.Fatalf("RunServing namespace = %v, want %v", got, want)
+	}
+}
+
+func runExpectDoneNamespace(t *testing.T, message *pb.ProxyRunMsg, want []string) {
+	t.Helper()
+	namespace := message.GetDone().GetNamespace()
+	if namespace == nil || !reflect.DeepEqual(namespace.GetSearchPath(), want) {
+		t.Fatalf("RunDone = %v, want namespace %v", message, want)
+	}
+}
+
 // TestRunnerPostgresRejectsUnsafeGUC proves the persistent PostgreSQL session holds the UTF-8 and
-// on-mode invariants the wire relay enforces (pgproxy/relay.go), so a session-scoped GUC change that
+// on-mode invariants the wire relay enforces (postgres/relay.go), so a session-scoped GUC change that
 // would let the control plane and the target DB bind different objects for the same bytes fails closed and
 // terminates the session before any follow-up query can run.
 func TestRunnerPostgresRejectsUnsafeGUC(t *testing.T) {
@@ -1177,7 +1334,7 @@ func TestRunnerDrainReturnsWhenIdle(t *testing.T) {
 	draining := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
-		run.NewRunner(client, fixture.runDb, 0).Run(runOpen(fixture), draining)
+		run.NewRunner(client, fixture.runTarget, 0).Run(runOpen(fixture), draining)
 		close(done)
 	}()
 
@@ -1199,7 +1356,7 @@ func TestRunnerDrainLetsInFlightStatementFinish(t *testing.T) {
 	draining := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
-		run.NewRunner(client, fixture.runDb, 0).Run(runOpen(fixture), draining)
+		run.NewRunner(client, fixture.runTarget, 0).Run(runOpen(fixture), draining)
 		close(done)
 	}()
 
@@ -1231,7 +1388,7 @@ func TestRunnerDrainDoesNotStartAQueuedQuery(t *testing.T) {
 	draining := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
-		run.NewRunner(client, fixture.runDb, 0).Run(runOpen(fixture), draining)
+		run.NewRunner(client, fixture.runTarget, 0).Run(runOpen(fixture), draining)
 		close(done)
 	}()
 
@@ -1257,11 +1414,11 @@ func TestRunnerDrainDoesNotStartAQueuedQuery(t *testing.T) {
 func TestRunnerSendsRunReadyBeforeTargetDbOpenAndHeartbeats(t *testing.T) {
 	fixture := runSeedMySQL(t)
 	release := make(chan struct{})
-	fixture.runDb = &runSlowOpenDb{Db: fixture.runDb, release: release}
+	fixture.runTarget = &runSlowOpenDb{Target: fixture.runTarget, release: release}
 	fake, client := runStartFakeCP(t, runSessionID)
 	done := make(chan struct{})
 	go func() {
-		run.NewRunner(client, fixture.runDb, 0).Run(runOpen(fixture), nil)
+		run.NewRunner(client, fixture.runTarget, 0).Run(runOpen(fixture), nil)
 		close(done)
 	}()
 
@@ -1313,11 +1470,11 @@ func TestRunnerSendsRunReadyBeforeTargetDbOpenAndHeartbeats(t *testing.T) {
 func TestRunnerCloseDuringTargetDbOpenAbortsTargetDb(t *testing.T) {
 	fixture := runSeedMySQL(t)
 	entered := make(chan struct{})
-	fixture.runDb = &runSlowOpenDb{Db: fixture.runDb, release: make(chan struct{}), entered: entered}
+	fixture.runTarget = &runSlowOpenDb{Target: fixture.runTarget, release: make(chan struct{}), entered: entered}
 	fake, client := runStartFakeCP(t, runSessionID)
 	done := make(chan struct{})
 	go func() {
-		run.NewRunner(client, fixture.runDb, 0).Run(runOpen(fixture), nil)
+		run.NewRunner(client, fixture.runTarget, 0).Run(runOpen(fixture), nil)
 		close(done)
 	}()
 
@@ -1340,12 +1497,12 @@ func TestRunnerCloseDuringTargetDbOpenAbortsTargetDb(t *testing.T) {
 func TestRunnerDrainDuringTargetDbOpenAbortsTargetDb(t *testing.T) {
 	fixture := runSeedMySQL(t)
 	entered := make(chan struct{})
-	fixture.runDb = &runSlowOpenDb{Db: fixture.runDb, release: make(chan struct{}), entered: entered}
+	fixture.runTarget = &runSlowOpenDb{Target: fixture.runTarget, release: make(chan struct{}), entered: entered}
 	fake, client := runStartFakeCP(t, runSessionID)
 	draining := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
-		run.NewRunner(client, fixture.runDb, 0).Run(runOpen(fixture), draining)
+		run.NewRunner(client, fixture.runTarget, 0).Run(runOpen(fixture), draining)
 		close(done)
 	}()
 
@@ -1373,15 +1530,15 @@ func TestRunnerDrainAsTargetDbOpenCompletesInstallsNoSession(t *testing.T) {
 	release := make(chan struct{})
 	draining := make(chan struct{})
 	var drainOnce sync.Once
-	fixture.runDb = &runSlowOpenDb{
-		Db:             fixture.runDb,
+	fixture.runTarget = &runSlowOpenDb{
+		Target:         fixture.runTarget,
 		release:        release,
 		beforeDelegate: func() { drainOnce.Do(func() { close(draining) }) },
 	}
 	fake, client := runStartFakeCP(t, runSessionID)
 	done := make(chan struct{})
 	go func() {
-		run.NewRunner(client, fixture.runDb, 0).Run(runOpen(fixture), draining)
+		run.NewRunner(client, fixture.runTarget, 0).Run(runOpen(fixture), draining)
 		close(done)
 	}()
 
@@ -1418,7 +1575,7 @@ func TestRunnerCloseDuringRealDialAbortsIt(t *testing.T) {
 	fake, client := runStartFakeCP(t, runSessionID)
 	done := make(chan struct{})
 	go func() {
-		run.NewRunner(client, mustDb(t, engine.MySQL, stall.target), 0).Run(runStallOpen(), nil)
+		run.NewRunner(client, mustTarget(t, engines.MySQL, stall.config), 0).Run(runStallOpen(), nil)
 		close(done)
 	}()
 
@@ -1445,7 +1602,7 @@ func TestRunnerDrainDuringRealDialAbortsIt(t *testing.T) {
 	draining := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
-		run.NewRunner(client, mustDb(t, engine.MySQL, stall.target), 0).Run(runStallOpen(), draining)
+		run.NewRunner(client, mustTarget(t, engines.MySQL, stall.config), 0).Run(runStallOpen(), draining)
 		close(done)
 	}()
 
@@ -1482,8 +1639,8 @@ func TestRunnerCloseInFlightCancelsTargetDb(t *testing.T) {
 
 func TestRunnerPassesQueryTimeoutPlusGraceToRunSession(t *testing.T) {
 	fixture := runSeedMySQL(t)
-	capturing := &runCapturingDb{Db: fixture.runDb, readTimeout: make(chan time.Duration, 1)}
-	fixture.runDb = capturing
+	capturing := &runCapturingDb{Target: fixture.runTarget, readTimeout: make(chan time.Duration, 1)}
+	fixture.runTarget = capturing
 	fake, client := runStartFakeCP(t, runSessionID)
 	waitDone := runLaunchWithTimeout(t, fake, client, fixture, 17*time.Second)
 
@@ -1525,7 +1682,7 @@ func runLaunchOpen(t *testing.T, fake *runFakeCP, client *cp.Client, fixture run
 
 func runLaunchOpenConfigured(t *testing.T, fake *runFakeCP, client *cp.Client, fixture runEngineFixture, open spi.RunOpen, queryTimeout time.Duration, configure func(*run.Runner)) func() {
 	t.Helper()
-	runner := run.NewRunner(client, fixture.runDb, queryTimeout)
+	runner := run.NewRunner(client, fixture.runTarget, queryTimeout)
 	if configure != nil {
 		configure(runner)
 	}
@@ -1575,10 +1732,10 @@ func runOpen(fixture runEngineFixture) spi.RunOpen {
 		SessionID:    runSessionID,
 		Token:        runToken,
 		ConnectionID: []byte(runConnectionID),
-		OnOpen: []*pb.Refetch{{
+		OnOpen: []*pb.ProxyCommand{{Command: &pb.ProxyCommand_Refetch{Refetch: &pb.Refetch{
 			Catalog: fixture.runCatalog(),
 			Schema:  fixture.runNamespaceForTable(),
-		}},
+		}}}},
 	}
 }
 
@@ -1608,7 +1765,7 @@ func runStartFakeCP(t *testing.T, datasourceName string) (*runFakeCP, *cp.Client
 
 func runSeedMySQL(t *testing.T) runEngineFixture {
 	t.Helper()
-	targetDb := dbtest.MySQL(t)
+	targetConfig := dbtest.MySQL(t)
 	seed := dbtest.OpenMySQL(t, "")
 	statements := []string{
 		"CREATE DATABASE IF NOT EXISTS " + runMySQLSchema,
@@ -1627,14 +1784,14 @@ func runSeedMySQL(t *testing.T) runEngineFixture {
 		}
 	}
 	runSeedRows(t, seed, "INSERT INTO "+runMySQLSchema+".pm_run_rows (id, secret) VALUES ")
-	target := spi.TargetDb{
-		Host: targetDb.Host, Port: targetDb.Port, Db: runMySQLSchema,
+	config := spi.TargetConfig{
+		Host: targetConfig.Host, Port: targetConfig.Port, Db: runMySQLSchema,
 		User: runMySQLService, Password: runMySQLServicePwd,
 	}
 	return runEngineFixture{
-		runDialect:   engine.MySQL,
-		runDb:        mustDb(t, engine.MySQL, target),
-		runTarget:    target,
+		runEngine:    engines.MySQL,
+		runTarget:    mustTarget(t, engines.MySQL, config),
+		runConfig:    config,
 		runTable:     runMySQLSchema + ".pm_run_rows",
 		runNamespace: []string{runMySQLSchema},
 	}
@@ -1642,7 +1799,7 @@ func runSeedMySQL(t *testing.T) runEngineFixture {
 
 func runSeedPostgres(t *testing.T) runEngineFixture {
 	t.Helper()
-	targetDb := dbtest.Postgres(t)
+	targetConfig := dbtest.Postgres(t)
 	seed := dbtest.OpenPostgres(t, "")
 	statements := []string{
 		"CREATE SCHEMA IF NOT EXISTS " + runPGSchema,
@@ -1655,31 +1812,31 @@ func runSeedPostgres(t *testing.T) runEngineFixture {
 		}
 	}
 	runSeedRows(t, seed, "INSERT INTO "+runPGSchema+".pm_run_rows (id, secret) VALUES ")
-	target := spi.TargetDb{
-		Host: targetDb.Host, Port: targetDb.Port, Db: targetDb.DB,
-		User: targetDb.User, Password: targetDb.Password,
+	config := spi.TargetConfig{
+		Host: targetConfig.Host, Port: targetConfig.Port, Db: targetConfig.DB,
+		User: targetConfig.User, Password: targetConfig.Password,
 	}
 	return runEngineFixture{
-		runDialect:   engine.Postgres,
-		runDb:        mustDb(t, engine.Postgres, target),
-		runTarget:    target,
+		runEngine:    engines.Postgres,
+		runTarget:    mustTarget(t, engines.Postgres, config),
+		runConfig:    config,
 		runTable:     runPGSchema + ".pm_run_rows",
 		runNamespace: []string{"pg_catalog", "public"},
 	}
 }
 
-func mustDb(t *testing.T, dialect engine.Dialect, target spi.TargetDb) spi.Db {
+func mustTarget(t *testing.T, e *engines.Engine, config spi.TargetConfig) spi.Target {
 	t.Helper()
-	provider, err := dialects.For(dialect)
+	provider, err := registry.For(e)
 	if err != nil {
-		t.Fatalf("dialects.For(%v): %v", dialect, err)
+		t.Fatalf("registry.For(%s): %v", e.WireName, err)
 	}
-	targetDb, err := provider.NewDb(target)
+	target, err := provider.OpenTarget(config)
 	if err != nil {
-		t.Fatalf("NewDb(%v): %v", dialect, err)
+		t.Fatalf("OpenTarget(%s): %v", e.WireName, err)
 	}
-	t.Cleanup(func() { _ = targetDb.Close() })
-	return targetDb
+	t.Cleanup(func() { _ = target.Close() })
+	return target
 }
 
 func runSeedRows(t *testing.T, seed *sql.DB, prefix string) {
@@ -1759,7 +1916,7 @@ func runWaitForClosesWithin(t *testing.T, fake *runFakeCP, count int, within tim
 // runStallingTarget is a TCP endpoint that accepts connections and holds them open without ever writing, so a
 // target-DB handshake read against it stalls. accepted fires on the first accepted connection.
 type runStallingTarget struct {
-	target   spi.TargetDb
+	config   spi.TargetConfig
 	accepted <-chan struct{}
 }
 
@@ -1800,7 +1957,7 @@ func runStartStallingTarget(t *testing.T) runStallingTarget {
 	})
 	addr := listener.Addr().(*net.TCPAddr)
 	return runStallingTarget{
-		target: spi.TargetDb{
+		config: spi.TargetConfig{
 			Host: addr.IP.String(), Port: addr.Port, Db: runMySQLSchema,
 			User: runMySQLService, Password: runMySQLServicePwd,
 		},
@@ -1815,7 +1972,7 @@ func runStallOpen() spi.RunOpen {
 		SessionID:    runSessionID,
 		Token:        runToken,
 		ConnectionID: []byte(runConnectionID),
-		OnOpen:       []*pb.Refetch{{Catalog: "def", Schema: runMySQLSchema}},
+		OnOpen:       []*pb.ProxyCommand{&pb.ProxyCommand{Command: &pb.ProxyCommand_Refetch{Refetch: &pb.Refetch{Catalog: "def", Schema: runMySQLSchema}}}},
 	}
 }
 
@@ -1860,7 +2017,7 @@ func runWaitForMySQLSleep(t *testing.T, fixture runEngineFixture, sleepSQL strin
 
 func runWaitForPostgresSleep(t *testing.T, fixture runEngineFixture) {
 	t.Helper()
-	dsn := fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable", fixture.runTarget.User, fixture.runTarget.Password, fixture.runTarget.Host, fixture.runTarget.Port, fixture.runTarget.Db)
+	dsn := fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable", fixture.runConfig.User, fixture.runConfig.Password, fixture.runConfig.Host, fixture.runConfig.Port, fixture.runConfig.Db)
 	direct, err := sql.Open("pgx", dsn)
 	if err != nil {
 		t.Fatalf("open Postgres activity inspector: %v", err)
@@ -1882,7 +2039,7 @@ func runWaitForPostgresSleep(t *testing.T, fixture runEngineFixture) {
 
 func runOpenMySQLInspector(t *testing.T, fixture runEngineFixture) *sql.DB {
 	t.Helper()
-	direct, err := sql.Open("mysql", fmt.Sprintf("%s:%s@tcp(%s:%d)/%s", fixture.runTarget.User, fixture.runTarget.Password, fixture.runTarget.Host, fixture.runTarget.Port, fixture.runTarget.Db))
+	direct, err := sql.Open("mysql", fmt.Sprintf("%s:%s@tcp(%s:%d)/%s", fixture.runConfig.User, fixture.runConfig.Password, fixture.runConfig.Host, fixture.runConfig.Port, fixture.runConfig.Db))
 	if err != nil {
 		t.Fatalf("open MySQL process inspector: %v", err)
 	}
@@ -2034,3 +2191,5 @@ func runExpectNoServing(t *testing.T, fake *runFakeCP) {
 	default:
 	}
 }
+
+var registry = spi.MustRegistry(athena.Provider{}, mysql.Provider{}, postgres.Provider{})

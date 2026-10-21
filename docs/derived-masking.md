@@ -78,7 +78,7 @@ walk runs before redaction), independent of the whitelist.
 
 ## Design
 
-- Analyzer (`analyzer/probe/probe.go`): `OriginInfo.Derived`.
+- Analyzer (`analyzer/engines/probe.go`): `OriginInfo.Derived`.
   `redactableTransform(proj)` implements the whitelist + literal-numeric-arg +
   identity-column-leaf walk; the probe marks a projection `Derived=true` only
   when it holds. Otherwise the projection stays a plain derived reference and
@@ -90,12 +90,12 @@ walk runs before redaction), independent of the whitelist.
   valid for every column type where a fixed text token would be a wire type
   mismatch. A denied base still denies. A direct identity projection masks with
   the column's own kind.
-- Proxy: no change — `engine.applyMaskKind` (`goproxy/engine/masking.go`)
-  already renders `NULL` to nil.
+- Proxy: no change — `relay.applyMaskKind` (`goproxy/relay/masking.go`) already
+  renders `NULL` to nil.
 
 ## Tests
 
-- `analyzer/probe/derived_masking_test.go`: `TestRedactableWhitelistGate`
+- `analyzer/engines/derived_masking_test.go`: `TestRedactableWhitelistGate`
   (MySQL + PostgreSQL) locks the boundary — total transforms redact;
   cast/arithmetic/`CASE`/comparison/overflow/coercion-arg and subquery-hidden
   transforms deny. `TestDerivedProjectionFacts` locks the per-ordinal facts.

@@ -20,8 +20,9 @@ import com.ridi.oss.proxymonster.controlplane.support.EnforcementFixture
 import com.ridi.oss.proxymonster.controlplane.support.PerConnectionCatalogFixture
 import com.ridi.oss.proxymonster.controlplane.support.requireDocker
 import com.ridi.oss.proxymonster.grpc.EnfAction
+import com.ridi.oss.proxymonster.grpc.TargetCheck
 import com.ridi.oss.proxymonster.grpc.WireDecision
-import com.ridi.oss.proxymonster.grpc.completionReport
+import com.ridi.oss.proxymonster.grpc.targetCheck
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeAll
@@ -29,6 +30,7 @@ import org.junit.jupiter.api.TestInstance
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import kotlin.test.fail
@@ -63,6 +65,7 @@ abstract class WireTaskDecideDbContract {
         opened: OpenConnection,
         sql: String,
         channel: Channel = Channel.WIRE,
+        targetCheck: TargetCheck? = null,
     ): EnforcementOutcome = decideConnection(
         core = fixture.core,
         connectionId = opened.connectionId,
@@ -72,6 +75,7 @@ abstract class WireTaskDecideDbContract {
         searchPath = schemas(),
         clientAddr = "127.0.0.1:54321",
         channel = channel,
+        targetCheck = targetCheck,
     ) ?: fail("connection disappeared during decision")
 
     private fun preChangeWireDecision(sql: String): WireDecision {
@@ -134,16 +138,8 @@ abstract class WireTaskDecideDbContract {
 
     private fun wireTaskForDecision(decisionId: Long) = wireTasks().single { it.sourceDecisionId == decisionId }
 
-    private suspend fun complete(decisionId: Long, status: String) {
-        service.reportCompletion(
-            completionReport {
-                this.decisionId = decisionId
-                this.status = status
-                rowsReturned = 1
-                bytesReturned = 10
-                durationMs = 1
-            },
-        )
+    private fun auditRows(): Long = fixture.core.dataSource.connection.use { c ->
+        c.prepareStatement("SELECT count(*) FROM audit_event").use { ps -> ps.executeQuery().use { rs -> rs.next(); rs.getLong(1) } }
     }
 
     private fun childCount(taskId: Long): Int = fixture.core.dataSource.connection.use { c ->
@@ -164,7 +160,7 @@ abstract class WireTaskDecideDbContract {
     }
 
     @Test
-    fun `ALLOW stays approved until a clean completion executes it and preserves relay bytes`() = runBlocking {
+    fun `ALLOW leaves an approved wire task and preserves relay bytes`() = runBlocking {
         val opened = openAndPush()
         val expected = preChangeWireDecision("select id from users")
 
@@ -177,48 +173,10 @@ abstract class WireTaskDecideDbContract {
         assertEquals(verdict.decisionId, task.sourceDecisionId)
         assertEquals(listOf(enforcement.role), task.executeAs)
         assertEquals(0, childCount(task.id))
-
-        complete(verdict.decisionId, "ok")
-
-        val executed = fixture.core.accessStore.getRequest(task.id)!!
-        assertEquals("EXECUTED", executed.status)
-        assertTrue(executed.executingAt != null)
-        assertTrue(executed.executedAt != null)
     }
 
     @Test
-    fun `error and canceled completions fail their wire tasks`() = runBlocking {
-        val opened = openAndPush()
-        for (status in listOf("error", "canceled")) {
-            val verdict = assertIs<EnforcementOutcome.Verdict>(decide(opened, "select id from users"))
-            val task = wireTaskForDecision(verdict.decisionId)
-            assertEquals("APPROVED", task.status)
-
-            complete(verdict.decisionId, status)
-
-            val failed = fixture.core.accessStore.getRequest(task.id)!!
-            assertEquals("FAILED", failed.status)
-            assertTrue(failed.executingAt != null)
-            assertEquals(null, failed.executedAt)
-        }
-    }
-
-    @Test
-    fun `only the completed decision executes in a prepare then execute pair`() = runBlocking {
-        val opened = openAndPush()
-        val before = wireTasks().map { it.id }.toSet()
-        val prepared = assertIs<EnforcementOutcome.Verdict>(decide(opened, "select id from users"))
-        val executed = assertIs<EnforcementOutcome.Verdict>(decide(opened, "select id from users"))
-
-        complete(executed.decisionId, "ok")
-
-        assertEquals("APPROVED", wireTaskForDecision(prepared.decisionId).status)
-        assertEquals("EXECUTED", wireTaskForDecision(executed.decisionId).status)
-        assertEquals(1, wireTasks().count { it.id !in before && it.status == "EXECUTED" })
-    }
-
-    @Test
-    fun `MASK stays approved until completion and preserves mask relay bytes`() = runBlocking {
+    fun `MASK leaves an approved wire task and preserves mask relay bytes`() = runBlocking {
         val opened = openAndPush()
         val expected = preChangeWireDecision("select ssn from users")
 
@@ -232,10 +190,6 @@ abstract class WireTaskDecideDbContract {
         assertEquals("APPROVED", task.status)
         assertEquals(listOf(enforcement.role), task.executeAs)
         assertEquals(0, childCount(task.id))
-
-        complete(verdict.decisionId, "ok")
-
-        assertEquals("EXECUTED", fixture.core.accessStore.getRequest(task.id)?.status)
     }
 
     @Test
@@ -255,18 +209,37 @@ abstract class WireTaskDecideDbContract {
     }
 
     @Test
-    fun `duplicate clean completions leave the wire task executed`() = runBlocking {
+    fun `an unanalyzable deny asks for a target error check and records the target's error as an errored ALLOW`() = runBlocking {
         val opened = openAndPush()
-        val verdict = assertIs<EnforcementOutcome.Verdict>(decide(opened, "select id from users"))
-        val task = wireTaskForDecision(verdict.decisionId)
+        val sql = "select no_such_column from users"
+        val tasksBefore = wireTasks().size
+        val auditBefore = auditRows()
 
-        complete(verdict.decisionId, "ok")
-        complete(verdict.decisionId, "ok")
+        val ask = assertIs<EnforcementOutcome.BeforeDecide>(decide(opened, sql))
+        assertTrue(ask.commands.single().hasCheckTargetError())
+        assertEquals(tasksBefore, wireTasks().size, "asking for the check creates no task")
+        assertEquals(auditBefore, auditRows(), "asking for the check records nothing")
 
-        assertEquals("EXECUTED", fixture.core.accessStore.getRequest(task.id)?.status)
+        val forwarded = assertIs<EnforcementOutcome.Verdict>(decide(opened, sql, targetCheck = targetCheck { errorCode = "1054" }))
+        assertEquals(EnfAction.ALLOW, forwarded.ctx.action)
+        assertTrue(forwarded.ctx.forwardTargetError && forwarded.ctx.sanitizeDiagnostics)
+        assertEquals("unanalyzable; the target rejected it (error 1054)", forwarded.ctx.detail)
+        assertTrue(forwarded.afterStatement.isEmpty())
+        val task = wireTaskForDecision(forwarded.decisionId)
+        assertEquals("APPROVED", task.status)
+
+        val denied = assertIs<EnforcementOutcome.Verdict>(decide(opened, sql, targetCheck = targetCheck {}))
+        assertEquals(EnfAction.DENY, denied.ctx.action)
+        assertFalse(denied.ctx.forwardTargetError)
+        assertEquals("FAILED", wireTaskForDecision(denied.decisionId).status)
+
+        val unparsed = assertIs<EnforcementOutcome.BeforeDecide>(decide(opened, "selec 1"))
+        assertTrue(unparsed.commands.single().hasCheckTargetError())
+        val syntax = assertIs<EnforcementOutcome.Verdict>(decide(opened, "selec 1", targetCheck = targetCheck { errorCode = "1064" }))
+        assertEquals(EnfAction.ALLOW, syntax.ctx.action)
+        assertTrue(syntax.ctx.forwardTargetError)
     }
 
-    @Test
     fun `task request forbid overrides enforcement to deny without creating a task`() = runBlocking {
         addForbid(
             "wire-task-request-forbid",

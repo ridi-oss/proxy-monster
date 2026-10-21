@@ -57,14 +57,29 @@ task exists but no rows.
    a workflow rule — it is whatever Cedar says (production typically ships a
    `forbid` requester ≠ approver; dev/eval may drop it). Create lands `PENDING`
    (default status); there is no separate DRAFT→submit step on the current
-   routes.
-4. Execute. After approval, the approver of record runs the query under role R
-   at the `workflow-executor` channel (`POST /api/approvals/{id}/execute`,
-   returns `202` with `decision: EXECUTING`; completion is polled). The proxy
-   stores R's execution-enforced result encrypted on the `query_result` child.
-   Gated by `task.approve`; an execute-once CAS (`APPROVED → EXECUTING` via
-   `AccessStore.claimExecution`) rejects a second `/execute` with
-   `409 approval.already_executed`.
+   routes. The requester can edit a PENDING or APPROVED request
+   (`POST /api/approvals/{id}/edit`, `task.request` on the datasource). New SQL
+   whose content hash differs (the hash ignores comments, whitespace, and
+   keyword case) is split and analyzed again, the request returns to PENDING,
+   and its `revision` goes up. SQL with the same hash keeps the stored text, the
+   revision, and the approval; only the title or reason changes. An approval
+   names the revision the approver read (`{"revision": n}`, required) and is
+   refused with `409 approval.request_changed` once the request has moved past
+   it, so no one approves SQL they did not see. Slack buttons carry the revision
+   too; an edit redraws the approvers' messages with the new SQL.
+4. Execute. After approval, whoever `task.run` allows runs the query under role
+   R at the `workflow-executor` channel (`POST /api/approvals/{id}/execute`,
+   returns `202` with `decision: EXECUTING`; completion is polled). The seeded
+   policies allow the requester and every `system:admin`. The proxy stores R's
+   execution-enforced result encrypted on the `query_result` child. An
+   execute-once CAS (`APPROVED → EXECUTING` via `AccessStore.claimExecution`)
+   rejects a second `/execute` with `409 approval.already_executed`. An approval
+   lasts 24 hours (`APPROVAL_TTL`): the claim refuses an older one with
+   `409 approval.expired`, and a one-minute sweep returns it to PENDING. GitHub
+   requests are exempt; their merge runs them. Before the run, any approver can
+   unapprove (`POST .../unapprove`, back to PENDING) or reject, and
+   `task.cancel` closes a PENDING or APPROVED request (`POST .../cancel`, ends
+   CANCELLED).
 5. View. `GET /api/approvals/{id}/result` first authorizes `task.assume` — may
    the viewer act as R for this task. An allowed viewer sees every column masked
    or unmasked by R's own grants, re-decided live at the `workflow-viewer`
@@ -73,6 +88,26 @@ task exists but no rows.
 6. Expire. Results expire → `410 Gone` + payload purge
    (`QueryResultStore.purgeExpired`, swept with `RESULT_PURGE_INTERVAL_MS` = 15
    min).
+
+Every workflow request — a query approval or a role request — has a thread,
+served by `RequestThreads` under kind-neutral routes.
+`GET /api/requests/{id}/thread` returns the timeline (`request_event`: state
+changes plus comments, LGTMs, and CC changes) and what the caller may do.
+`POST /api/requests/{id}/comments` adds a comment or, with `lgtm`, an LGTM,
+gated by `task.comment`; an LGTM is shown but never approves. A CC is added with
+`POST /api/requests/{id}/ccs` and removed with
+`DELETE /api/requests/{id}/ccs/{principal}`, gated by `task.cc`.
+`POST /api/requests/{id}/close` ends a request that has not started
+(`task.cancel`): a pending one of any kind, or an approved query that has not
+run. CCs are `request_participant` rows of kind `cc`, read by Cedar as
+`resource.ccs`: the seeded `system:task-cc-parties` lets the requester and CCs
+read, comment, and manage CCs, and `system:admin` gets the same. A CC gets a
+Slack DM with an LGTM button.
+
+`GET /api/requests/involved` lists the caller's own requests and those they took
+part in, from `request_participant`. That table only drives the list; a row can
+outlive its holder's access, and opening the request is a live `task.read`.
+Another person's statement is listed only when it carries no protected literal.
 
 A new request must carry R — the create route rejects a null `roleId`
 (`approval.role_required`) — so every approval is execute-under-R + view-as-R.
@@ -146,7 +181,9 @@ Verified on the real Cedar engine in [docs/cedar-sim/](./cedar-sim/)
 ## How it uses authz
 
 - Approve / execute: `authorize(approver, task.approve, request, context)` — one
-  action, `request in Role::R`.
+  action, `request in Role::R`. `resource.requester` carries the requester's
+  groups and [user attributes](./auth-model.md#user-attributes), so
+  `resource.requester.manager == principal` routes approval to their manager.
 - Execute run: `decideQuery` under `assumeRoles={R}` on the `workflow-executor`
   channel (via `RunExecService.run` + proxy `Decide`) → R's enforced result. A
   column R cannot read at all ⇒ Q-under-R denied ⇒ pick another role / narrow Q.

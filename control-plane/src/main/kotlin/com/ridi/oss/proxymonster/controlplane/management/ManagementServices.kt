@@ -16,6 +16,7 @@ import com.ridi.oss.proxymonster.controlplane.DatasourceInput
 import com.ridi.oss.proxymonster.controlplane.RefreshResult
 import com.ridi.oss.proxymonster.controlplane.TestResult
 import com.ridi.oss.proxymonster.controlplane.engineFromWireOrNull
+import com.ridi.oss.proxymonster.controlplane.isSystemSchema
 import com.ridi.oss.proxymonster.controlplane.wireName
 import com.ridi.oss.proxymonster.controlplane.columnRef
 import com.ridi.oss.proxymonster.controlplane.requireCatalog
@@ -108,7 +109,7 @@ class DatasourceManagementService(
 
     fun browseCatalog(name: String): List<CatalogColumn> {
         val datasource = datasource(name)
-        return store.catalog(datasource.id).columns
+        return store.catalog(datasource.id).columns.map { it.copy(system = datasource.engine.isSystemSchema(it.schema)) }
     }
 
     suspend fun getTableDetail(name: String, catalog: String, schema: String, table: String): TableDetail {
@@ -437,9 +438,6 @@ class PolicyManagementService(
         val roleId = roleName?.let { name -> store.getRoleByName(name)?.id ?: notFound("role") }
         return store.listAssignments(principal, roleId)
     }
-
-    fun listAssignmentsByRoleId(principal: String?, roleId: Long?): List<RoleAssignment> =
-        store.listAssignments(principal, roleId)
 
     fun listMaskFns(): List<MaskFn> = store.listMaskFns()
     fun getMaskFn(name: String): MaskFn = store.getMaskFnByName(name) ?: notFound("mask function")

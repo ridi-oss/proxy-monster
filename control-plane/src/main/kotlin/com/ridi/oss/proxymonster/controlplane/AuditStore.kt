@@ -17,10 +17,6 @@ import javax.sql.DataSource
 /** One principal's relayed rows and bytes over one rolling window (docs/result-caps.md). */
 data class RelayedVolume(val rows: Long, val bytes: Long)
 
-/** One rate reset marker (docs/result-caps.md): the relayed-volume scan counts nothing before [resetAt]. */
-@Serializable
-data class RateReset(val principal: String, val resetAt: String, val resetBy: String, val reason: String)
-
 /**
  * Plain-JDBC persistence for [AuditEvent]s. Every new event is linked to the current chain head while
  * holding a row lock until commit; recent/detail reads retain the normal audit.read visibility model.
@@ -32,8 +28,7 @@ class AuditStore(private val dataSource: DataSource) {
     /**
      * This principal's relayed volume from [datasource] over each of [windows], summed from the completion
      * events every relay and release writes, in ONE scan bounded by the widest window
-     * (`audit_event_completion_principal_datasource_ts`). A rate reset (docs/result-caps.md) is a marker, not
-     * a deletion: rows before the principal's last reset are not counted, whatever the window.
+     * (`audit_event_completion_principal_datasource_ts`).
      */
     fun relayedVolume(principal: String, datasource: String, windows: Collection<Duration>, now: Instant): Map<Duration, RelayedVolume> {
         val distinct = windows.toSortedSet()
@@ -45,7 +40,6 @@ class AuditStore(private val dataSource: DataSource) {
             SELECT $filters
             FROM audit_event
             WHERE kind = 'completion' AND principal = ? AND datasource = ? AND ts >= ?
-              AND ts >= COALESCE((SELECT max(reset_at) FROM result_rate_reset WHERE principal = ?), '-infinity'::timestamptz)
         """
         return dataSource.connection.use { c ->
             c.prepareStatement(sql).use { ps ->
@@ -57,8 +51,7 @@ class AuditStore(private val dataSource: DataSource) {
                 }
                 ps.setString(i++, principal)
                 ps.setString(i++, datasource)
-                ps.setObject(i++, OffsetDateTime.ofInstant(now.minus(distinct.last()), ZoneOffset.UTC))
-                ps.setString(i, principal)
+                ps.setObject(i, OffsetDateTime.ofInstant(now.minus(distinct.last()), ZoneOffset.UTC))
                 ps.executeQuery().use { rs ->
                     check(rs.next()) { "audit relayed-volume aggregate returned no row" }
                     distinct.withIndex().associate { (k, w) -> w to RelayedVolume(rs.getLong(2 * k + 1), rs.getLong(2 * k + 2)) }
@@ -66,34 +59,6 @@ class AuditStore(private val dataSource: DataSource) {
             }
         }
     }
-
-    /** The principal's last rate reset, if any (docs/result-caps.md). */
-    fun lastRateReset(principal: String): RateReset? = dataSource.connection.use { c ->
-        c.prepareStatement(
-            "SELECT principal, reset_at, reset_by, reason FROM result_rate_reset WHERE principal = ? ORDER BY reset_at DESC LIMIT 1",
-        ).use { ps ->
-            ps.setString(1, principal)
-            ps.executeQuery().use { rs -> if (rs.next()) rs.toRateReset() else null }
-        }
-    }
-
-    /** Record a rate reset on the caller's transaction so it commits with its management-audit row. */
-    fun insertRateReset(conn: Connection, principal: String, resetBy: String, reason: String): RateReset =
-        conn.prepareStatement(
-            "INSERT INTO result_rate_reset (principal, reset_by, reason) VALUES (?, ?, ?) RETURNING principal, reset_at, reset_by, reason",
-        ).use { ps ->
-            ps.setString(1, principal)
-            ps.setString(2, resetBy)
-            ps.setString(3, reason)
-            ps.executeQuery().use { rs -> rs.next(); rs.toRateReset() }
-        }
-
-    private fun java.sql.ResultSet.toRateReset() = RateReset(
-        principal = getString("principal"),
-        resetAt = getTimestamp("reset_at").toInstant().toString(),
-        resetBy = getString("reset_by"),
-        reason = getString("reason"),
-    )
 
     /** Insert one audit event in its own transaction and return its app-allocated id. */
     fun insert(rec: AuditEvent): Long = dataSource.inTx { insert(it, rec) }

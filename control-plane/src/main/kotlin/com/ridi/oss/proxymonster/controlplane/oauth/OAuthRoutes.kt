@@ -403,6 +403,7 @@ fun Route.mcpOAuthRoutes(
                 )
             }
         }.getOrElse { log.warn("OAuth consent revoke did not record", it); true }
+        if (revoked) principalSessionStore.endDaemonsByConsent(id, user.principal)
         if (revoked) call.respond(HttpStatusCode.NoContent) else call.respond(HttpStatusCode.NotFound, OAuthError("invalid_request"))
     }
 }

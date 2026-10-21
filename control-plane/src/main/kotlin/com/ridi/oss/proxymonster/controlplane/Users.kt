@@ -1,20 +1,10 @@
 package com.ridi.oss.proxymonster.controlplane
 
-import com.ridi.oss.proxymonster.controlplane.authz.Authz
-import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
-import com.ridi.oss.proxymonster.controlplane.authz.requireAdmin
-import com.ridi.oss.proxymonster.controlplane.management.IdentityManagementService
-import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
-import com.ridi.oss.proxymonster.controlplane.management.ManagementException
-import io.ktor.http.HttpStatusCode
-import io.ktor.server.request.receive
-import io.ktor.server.response.respond
-import io.ktor.server.routing.Route
-import io.ktor.server.routing.delete
-import io.ktor.server.routing.get
-import io.ktor.server.routing.post
-import io.ktor.server.routing.put
+import com.ridi.oss.proxymonster.controlplane.authz.UserParents
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
 import java.sql.Connection
 import java.sql.PreparedStatement
 import java.sql.ResultSet
@@ -59,9 +49,7 @@ data class AppGroup(
 
 @Serializable data class AppGroupInput(val name: String, val description: String? = null)
 @Serializable data class GroupMemberEntry(val userId: Long, val principal: String, val displayName: String? = null)
-@Serializable data class GroupMemberInput(val userId: Long)
 @Serializable data class GroupRoleEntry(val roleId: Long, val roleName: String)
-@Serializable data class GroupRoleInput(val roleId: Long)
 
 // ---- Store -------------------------------------------------------------------------------
 
@@ -310,8 +298,7 @@ class UserGroupStore(internal val dataSource: DataSource) {
 
     /**
      * True if the group is SYSTEM-owned (e.g. the seeded `system:admin`). Such groups are immutable
-     * through the API/SCIM (docs/backlog.md) — the routes reject mutation. The internal
-     * OIDC-sync ([provisionFromOidc]) still manages membership by calling the store methods directly.
+     * through the API/SCIM (docs/backlog.md) — the routes reject mutation.
      */
     fun isSystemGroup(id: Long): Boolean = dataSource.connection.use { isSystemGroup(id, it) }
 
@@ -334,34 +321,7 @@ class UserGroupStore(internal val dataSource: DataSource) {
         }
     }
 
-    // ---- OIDC JIT provisioning + SCIM reconciliation (docs/auth-model.md) -------------------
-
-    /**
-     * JIT-provision an `app_user` from a validated OIDC login (id_token `sub`/`email` + the
-     * `groups` claim) and additively mirror `groups` into local group membership. Never removes a
-     * membership (SCIM push is the only path that revokes `group_member` rows) and never clobbers
-     * a `source=SCIM` user — SCIM is authoritative once it manages a principal.
-     */
-    /**
-     * Upsert an OIDC-authenticated user and **sync** their group membership to the IdP group claim
-     * (docs/backlog.md): [idpGroups] is resolved through [mapping] to the authoritative
-     * pm-group set, then the user's membership is reconciled to exactly it — added where missing, REMOVED
-     * where no longer claimed (so dropping someone from the IdP admin group revokes their `system:admin`
-     * on their next login). OIDC is authoritative for an OIDC user's membership; a manual/SCIM group
-     * assignment for that user is reconciled away (accepted for now — no membership-origin column yet;
-     * see the backlog). The internal add/remove intentionally bypasses the route-level SYSTEM-group
-     * immutability guard: membership of `system:admin` is system-managed here, not hand-edited.
-     */
-    fun provisionFromOidc(
-        principal: String,
-        email: String?,
-        idpGroups: List<String>,
-        mapping: OidcGroupMapping = OidcGroupMapping(emptyMap(), null),
-    ): AppUser {
-        val userId = com.ridi.oss.proxymonster.auth.OidcDirectoryProvisioner(dataSource)
-            .provision(principal, email, idpGroups, mapping)
-        return getUser(userId)!!
-    }
+    // ---- SCIM reconciliation (docs/auth-model.md) ----------------------------------------------
 
     private fun groupIdsForUser(userId: Long): Set<Long> = dataSource.connection.use { c ->
         c.prepareStatement("SELECT group_id FROM group_member WHERE user_id = ?").use { ps ->
@@ -648,24 +608,31 @@ class UserGroupStore(internal val dataSource: DataSource) {
         "DELETE FROM group_role WHERE group_id=? AND role_id=?",
     ).use { ps -> ps.setLong(1, groupId); ps.setLong(2, roleId); ps.executeUpdate() > 0 }
 
-    /** Role names this principal gets via group membership. Empty if no (active) app_user row. */
-    fun rolesForPrincipal(principal: String): List<String> =
-        // INNER JOINs from app_user: an unknown or inactive principal yields zero rows (fail-closed).
+    /** This principal's groups, the roles they grant, and its attributes. Empty if no (active) app_user row. */
+    fun groupParents(principal: String): UserParents =
+        // Rows only for an active app_user: an unknown or inactive principal yields none (fail-closed). The
+        // LEFT JOINs keep a user in no group (for its attributes) and a group that grants no role.
         dataSource.connection.use { c ->
             c.prepareStatement(
-                """SELECT DISTINCT r.name
+                """SELECT u.attributes::text, g.name, r.name
                    FROM app_user u
-                   JOIN group_member gm ON gm.user_id = u.id
-                   JOIN app_group g ON g.id = gm.group_id AND g.deleted_at IS NULL
-                   JOIN group_role gr ON gr.group_id = gm.group_id
-                   JOIN app_role r ON r.id = gr.role_id AND r.deleted_at IS NULL
+                   LEFT JOIN group_member gm ON gm.user_id = u.id
+                   LEFT JOIN app_group g ON g.id = gm.group_id AND g.deleted_at IS NULL
+                   LEFT JOIN group_role gr ON gr.group_id = g.id
+                   LEFT JOIN app_role r ON r.id = gr.role_id AND r.deleted_at IS NULL
                    WHERE u.principal = ? AND u.active""",
             ).use { ps ->
                 ps.setString(1, principal)
                 ps.executeQuery().use { rs ->
-                    val out = ArrayList<String>()
-                    while (rs.next()) out += rs.getString(1)
-                    out
+                    val groups = sortedSetOf<String>()
+                    val roles = sortedSetOf<String>()
+                    var attributes: JsonObject? = null
+                    while (rs.next()) {
+                        if (attributes == null) attributes = Json.parseToJsonElement(rs.getString(1)).jsonObject
+                        rs.getString(2)?.let { groups += it }
+                        rs.getString(3)?.let { roles += it }
+                    }
+                    UserParents(roles, groups, attributes ?: JsonObject(emptyMap()))
                 }
             }
         }
@@ -907,6 +874,14 @@ class UserGroupStore(internal val dataSource: DataSource) {
         }
     }
 
+    /** [principal] when an active directory user holds it, else null. */
+    fun activePrincipal(principal: String): String? = dataSource.connection.use { c ->
+        c.prepareStatement("SELECT principal FROM app_user WHERE principal = ? AND active").use { ps ->
+            ps.setString(1, principal)
+            ps.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
+        }
+    }
+
     private fun findGroupIdByExternalId(externalId: String): Long? = dataSource.connection.use { c ->
         c.prepareStatement("SELECT id FROM app_group WHERE external_id=? AND deleted_at IS NULL").use { ps ->
             ps.setString(1, externalId)
@@ -946,154 +921,4 @@ class UserGroupStore(internal val dataSource: DataSource) {
         dataSource.connection.use { c -> c.prepareStatement(sql).use { ps -> bind(ps); ps.executeUpdate() } }
 }
 
-// ---- Routes ------------------------------------------------------------------------------
-
 internal fun SQLException.isUniqueViolation(): Boolean = sqlState == "23505"
-
-fun Route.userGroupRoutes(
-    config: Config,
-    authz: Authz,
-    store: UserGroupStore,
-    tokenStore: TokenStore,
-    accessStore: AccessStore,
-    daemonSessionStore: PrincipalSessionStore,
-    management: IdentityManagementService = IdentityManagementService(
-        store.dataSource, store, PolicyStore(store.dataSource), tokenStore, accessStore, daemonSessionStore,
-        ManagementAuditRecorder(AuditStore(store.dataSource)),
-    ),
-) {
-    get("/api/users") {
-        if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_IDENTITY)) return@get
-        call.respond(management.listUsers())
-    }
-    post("/api/users") {
-        if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_IDENTITY)) return@post
-        val input = call.receive<AppUserInput>()
-        try {
-            call.respond(HttpStatusCode.Created, management.createUser(input, call.auditActor(config)))
-        } catch (e: ManagementException) {
-            call.respondManagementError(e)
-        }
-    }
-    // A principal rename or an active-flip true->false here goes through the SAME atomic,
-    // per-principal-locked teardown as a SCIM rename/deactivate — see
-    // UserGroupStore.updateUser.
-    put("/api/users/{id}") {
-        if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_IDENTITY)) return@put
-        val id = call.idParam() ?: return@put call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        val input = call.receive<AppUserInput>()
-        try {
-            call.respond(management.updateUser(id, input, call.auditActor(config)))
-        } catch (e: ManagementException) {
-            call.respondManagementError(e)
-        }
-    }
-    // Deprovision, not hard-delete (mirrors SCIM DELETE) — tombstone + revoke active credentials
-    // atomically.
-    delete("/api/users/{id}") {
-        if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_IDENTITY)) return@delete
-        val id = call.idParam() ?: return@delete call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        try {
-            management.deprovisionUser(id, call.auditActor(config))
-            call.respond(HttpStatusCode.NoContent)
-        } catch (e: ManagementException) {
-            call.respondManagementError(e)
-        }
-    }
-
-    get("/api/groups") {
-        if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_IDENTITY)) return@get
-        call.respond(management.listGroups())
-    }
-    post("/api/groups") {
-        if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_IDENTITY)) return@post
-        val input = call.receive<AppGroupInput>()
-        try {
-            call.respond(HttpStatusCode.Created, management.createGroup(input, call.auditActor(config)))
-        } catch (e: ManagementException) {
-            call.respondManagementError(e)
-        }
-    }
-    put("/api/groups/{id}") {
-        if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_IDENTITY)) return@put
-        val id = call.idParam() ?: return@put call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        val input = call.receive<AppGroupInput>()
-        try {
-            call.respond(management.updateGroup(id, input, call.auditActor(config)))
-        } catch (e: ManagementException) {
-            call.respondManagementError(e)
-        }
-    }
-    delete("/api/groups/{id}") {
-        if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_IDENTITY)) return@delete
-        val id = call.idParam() ?: return@delete call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        try {
-            management.deleteGroup(id, call.auditActor(config))
-            call.respond(HttpStatusCode.NoContent)
-        } catch (e: ManagementException) {
-            call.respondManagementError(e)
-        }
-    }
-
-    get("/api/groups/{id}/members") {
-        if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_IDENTITY)) return@get
-        val id = call.idParam() ?: return@get call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        try {
-            call.respond(management.listGroupMembers(id))
-        } catch (e: ManagementException) {
-            call.respondManagementError(e)
-        }
-    }
-    post("/api/groups/{id}/members") {
-        if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_IDENTITY)) return@post
-        val id = call.idParam() ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        val input = call.receive<GroupMemberInput>()
-        try {
-            call.respond(HttpStatusCode.Created, management.addGroupMember(id, input.userId, call.auditActor(config)))
-        } catch (e: ManagementException) {
-            call.respondManagementError(e)
-        }
-    }
-    delete("/api/groups/{id}/members/{userId}") {
-        if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_IDENTITY)) return@delete
-        val id = call.idParam() ?: return@delete call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        val userId = call.parameters["userId"]?.toLongOrNull() ?: return@delete call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        try {
-            if (management.removeGroupMember(id, userId, call.auditActor(config)).deleted) call.respond(HttpStatusCode.NoContent)
-            else call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "group member")))
-        } catch (e: ManagementException) {
-            call.respondManagementError(e)
-        }
-    }
-
-    get("/api/groups/{id}/roles") {
-        if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_IDENTITY)) return@get
-        val id = call.idParam() ?: return@get call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        try {
-            call.respond(management.listGroupRoles(id))
-        } catch (e: ManagementException) {
-            call.respondManagementError(e)
-        }
-    }
-    post("/api/groups/{id}/roles") {
-        if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_IDENTITY)) return@post
-        val id = call.idParam() ?: return@post call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        val input = call.receive<GroupRoleInput>()
-        try {
-            call.respond(HttpStatusCode.Created, management.addGroupRole(id, input.roleId, call.auditActor(config)))
-        } catch (e: ManagementException) {
-            call.respondManagementError(e)
-        }
-    }
-    delete("/api/groups/{id}/roles/{roleId}") {
-        if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_IDENTITY)) return@delete
-        val id = call.idParam() ?: return@delete call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        val roleId = call.parameters["roleId"]?.toLongOrNull() ?: return@delete call.respond(HttpStatusCode.BadRequest, ApiError("common.bad_id"))
-        try {
-            if (management.removeGroupRole(id, roleId, call.auditActor(config)).deleted) call.respond(HttpStatusCode.NoContent)
-            else call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "group role mapping")))
-        } catch (e: ManagementException) {
-            call.respondManagementError(e)
-        }
-    }
-}

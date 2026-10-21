@@ -1,8 +1,9 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import org.junit.jupiter.api.AfterAll
+import com.ridi.oss.proxymonster.controlplane.support.OidcProvisioner
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
@@ -25,16 +26,34 @@ class BootstrapAdminDbTest {
     private lateinit var store: UserGroupStore
     private lateinit var accessStore: AccessStore
     private lateinit var roleResolver: RoleResolver
+    private lateinit var provisioner: OidcProvisioner
     private val adminMap = OidcGroupMapping(mapOf("proxy-monster-admin" to "system:admin"), "proxy-monster-")
 
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        ds = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_bootstrap_admin"))
-        Flyway.configure().dataSource(ds).load().migrate()
+        val database = SharedPostgres.migratedDatabase("pm_bootstrap_admin")
+        ds = SharedPostgres.hikari(database)
         store = UserGroupStore(ds)
         accessStore = AccessStore(ds)
         roleResolver = RoleResolver(ds, store, accessStore)
+        provisioner = OidcProvisioner(ControlPlaneCore(ds), database)
+    }
+
+    /** JIT provisioning, now done by cp-go: a real OIDC login with these claims, then the row it left. */
+    private fun UserGroupStore.provisionFromOidc(
+        principal: String,
+        email: String?,
+        idpGroups: List<String>,
+        mapping: OidcGroupMapping = OidcGroupMapping(emptyMap(), null),
+    ): AppUser {
+        provisioner.login(principal, email, idpGroups, mapping)
+        return checkNotNull(getUserByPrincipal(email ?: principal))
+    }
+
+    @AfterAll
+    fun closeProvisioner() {
+        if (::provisioner.isInitialized) provisioner.close()
     }
 
     @Test
@@ -156,8 +175,7 @@ class BootstrapAdminDbTest {
         //
         // Its own database: the class-scoped one is shared, and a sibling test provisions an admin
         // member into it, so "no members" only holds on an untouched store.
-        val fresh = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_bootstrap_seed_shape"))
-        Flyway.configure().dataSource(fresh).load().migrate()
+        val fresh = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_bootstrap_seed_shape"))
         val freshStore = UserGroupStore(fresh)
 
         val group = freshStore.listGroups().first { it.name == "system:admin" }

@@ -14,15 +14,31 @@ enum class NotificationEvent(val wire: String) {
     TASK_REQUESTED("task.requested"),
     TASK_SUBMITTED("task.submitted"),
     TASK_DECIDED("task.decided"),
+    /** The requester replaced the SQL: the request is pending again, under a new revision. */
+    TASK_EDITED("task.edited"),
+    /** An approval was withdrawn or expired: the request is pending again. */
+    TASK_REOPENED("task.reopened"),
+    /** Someone was added as a CC: their own thread, like a receipt. */
+    TASK_CC_ADDED("task.cc_added"),
     TASK_EXECUTED("task.executed"),
     TASK_FAILED("task.failed"),
     TASK_CANCELLED("task.cancelled"),
+    /** A pull request closed without merging after its SQL ran: an alert, so a fresh message. */
+    TASK_CLOSED_AFTER_RUN("task.closed_after_run"),
+    /** A pull request merged without a file whose SQL ran: an alert, so a fresh message. */
+    TASK_MERGED_WITHOUT_FILE("task.merged_without_file"),
+    /** An admin forced a pull request's request past its scope checks: an alert, so a fresh message. */
+    TASK_FORCE_RUN("task.force_run"),
     ;
 
     /** True when this event should edit an existing message rather than start a new thread of its own. The two
      *  creation events — the approvers' request and the requester's own receipt — start threads; every later
-     *  event edits the message its recipient already holds. */
-    val isUpdate: Boolean get() = this != TASK_REQUESTED && this != TASK_SUBMITTED
+     *  event edits the message its recipient already holds, except an alert. */
+    val isUpdate: Boolean get() =
+        this !in setOf(TASK_REQUESTED, TASK_SUBMITTED, TASK_CC_ADDED, TASK_CLOSED_AFTER_RUN, TASK_MERGED_WITHOUT_FILE, TASK_FORCE_RUN)
+
+    /** The events that open a task's thread; a ref already left for one means a prior attempt delivered it. */
+    val isCreation: Boolean get() = this == TASK_REQUESTED || this == TASK_SUBMITTED || this == TASK_CC_ADDED
 
     companion object {
         fun fromWire(wire: String): NotificationEvent? = entries.firstOrNull { it.wire == wire }
@@ -37,6 +53,9 @@ enum class NotificationEvent(val wire: String) {
     }
 }
 
+/** The events whose message asks the approvers to decide. */
+val ASKS_FOR_APPROVAL = setOf(NotificationEvent.TASK_REQUESTED, NotificationEvent.TASK_EDITED, NotificationEvent.TASK_REOPENED)
+
 /**
  * Which side of a request a message serves. One person can hold both for the same task — a requester whom
  * policy lets approve their own request is [REQUESTER] (their receipt) AND [APPROVER] (the actionable copy).
@@ -45,6 +64,7 @@ enum class NotificationEvent(val wire: String) {
 enum class NotificationKind(val wire: String) {
     APPROVER("approver"),
     REQUESTER("requester"),
+    CC("cc"),
     ;
 
     companion object {
@@ -118,8 +138,8 @@ fun discloseStatement(disclosure: StatementDisclosure, pending: Boolean, cleared
         StatementDisclosure.FULL -> pending || cleared
     }
 
-/** An action a message may offer. [OPEN] is always available; the other two are gated. */
-enum class NotificationAction { APPROVE_AND_RUN, DENY, OPEN }
+/** An action a message may offer. [OPEN] is always available; the others are gated by the request's state. */
+enum class NotificationAction { APPROVE_AND_RUN, APPROVE, RUN, LGTM, UNAPPROVE, DENY, CLOSE, REVIEW, OPEN }
 
 /**
  * One notification, transport-neutral. Carries message KEYS and their values rather than finished prose, so
@@ -130,6 +150,7 @@ enum class NotificationAction { APPROVE_AND_RUN, DENY, OPEN }
 data class NotificationMessage(
     val event: NotificationEvent,
     val taskId: Long,
+    val revision: Int,
     val requester: String,
     val datasource: String,
     val roleName: String?,
@@ -146,7 +167,33 @@ data class NotificationMessage(
     /** SUBMITTED only: the approvers the request was routed to, shown to the requester as their receipt.
      *  Plain identities, not `<@id>` mentions — the requester learns who can act without re-pinging them. */
     val notifiedApprovers: List<String> = emptyList(),
+    val source: String = "console",
+    /** A source request's file path, pull request, and the schema its run opens on. */
+    val path: String? = null,
+    val prUrl: String? = null,
+    val schema: String? = null,
+    /** DECIDED on a pull-request request: whether auto-merge is already on, so the message need not ask. */
+    val autoMergeEnabled: Boolean = false,
+    val statementCount: Int = 1,
+    /** FAILED only: the failed statement's redacted error. Never rows. */
+    val failure: String? = null,
+    /** FAILED only: which statement of the batch failed, and its SQL. */
+    val failedStatement: FailedStatement? = null,
+    /** FORCE_RUN only: the admin who forced the run. */
+    val forcedBy: String? = null,
+    /** QUERY, ROLE or RATE_RESET; picks the message text. */
+    val requestKind: String = "QUERY",
+    /** A role request's requested grant length. */
+    val durationSec: Long = 0,
+    /** A rate reset's spent rate, as the requester's denial named it. */
+    val spentRate: String? = null,
+    /** Mentioned on a message everyone in a channel reads: who may approve, and the CCs. */
+    val approvers: List<String> = emptyList(),
+    val ccs: List<String> = emptyList(),
 )
+
+/** [ordinal] is 0-based, as stored on the `query_result` child. */
+data class FailedStatement(val ordinal: Int, val sql: String)
 
 /** The outcome of one delivery attempt. Only the transport knows which failures are worth another try. */
 sealed interface DeliveryResult {
@@ -175,6 +222,18 @@ interface NotificationTransport {
     /** False for a transport with no edit primitive (email); an update then sends a fresh message. */
     val supportsUpdate: Boolean get() = false
 
+    /** True when this transport addresses a task rather than a person; it then hears only tasks [taskAddress] names. */
+    val addressesTasks: Boolean get() = false
+
+    /** The one address every event of [req] goes to on this transport, or null to address people. */
+    fun taskAddress(req: com.ridi.oss.proxymonster.controlplane.AccessRequest): String? = null
+
+    /** True when everyone at the address reads the message, such as a channel, whatever their access. */
+    val sharedAudience: Boolean get() = false
+
+    /** False when [req]'s events skip this transport, such as DMs for a request posted to a channel only. */
+    fun serves(req: com.ridi.oss.proxymonster.controlplane.AccessRequest): Boolean = true
+
     /**
      * This principal's address on this transport, or null when they have none — a null DROPS the row, since no
      * number of attempts will conjure an address. A TRANSIENT failure (a network blip, a rate limit) THROWS
@@ -186,4 +245,13 @@ interface NotificationTransport {
 
     /** Edit a previously delivered message in place. Only called when [supportsUpdate]. */
     suspend fun update(externalRef: String, message: NotificationMessage, locale: String): DeliveryResult
+
+    /** True when a delivered message is a thread that later timeline entries are posted into. */
+    val supportsReplies: Boolean get() = false
+
+    /** Post [text] into the thread of [threadRef]; a Sent result carries the reply's own ref. */
+    suspend fun reply(threadRef: String, text: String): DeliveryResult = DeliveryResult.Drop("no threads")
+
+    /** Replace a posted reply's text, or remove it when [text] is null. */
+    suspend fun editReply(replyRef: String, text: String?): DeliveryResult = DeliveryResult.Drop("no threads")
 }

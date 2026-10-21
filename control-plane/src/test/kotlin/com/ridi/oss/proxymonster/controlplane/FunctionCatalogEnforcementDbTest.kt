@@ -13,6 +13,7 @@ import com.ridi.oss.proxymonster.analyzer.pb.CatalogSnapshot
 import com.ridi.oss.proxymonster.grpc.EnfAction
 import com.ridi.oss.proxymonster.grpc.schemaFragmentPush
 import com.ridi.oss.proxymonster.analyzer.pb.catalogSnapshot
+import com.ridi.oss.proxymonster.grpc.targetCheck
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -46,6 +47,7 @@ class FunctionCatalogEnforcementDbTest {
         suspend fun decide(connectionId: com.google.protobuf.ByteString, sql: String): DecisionContext {
             val verdict = assertIs<EnforcementOutcome.Verdict>(decideConnection(
                 core, connectionId, "analyst@example.com", ds, sql, ds.defaultSchemas, "127.0.0.1:12345",
+                targetCheck = targetCheck {},
             ))
             for (refetch in verdict.afterStatement) {
                 val held = core.connectionCatalog.find(connectionId)!!.held.getValue(namespace(ds.effectiveCatalog, refetch.schema))

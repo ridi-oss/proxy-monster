@@ -27,7 +27,6 @@ import io.ktor.server.sessions.set
 import io.ktor.server.testing.ApplicationTestBuilder
 import io.ktor.server.testing.testApplication
 import kotlinx.serialization.json.Json
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.TestInstance
 import javax.sql.DataSource
@@ -35,6 +34,9 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import com.ridi.oss.proxymonster.controlplane.support.CpGoStack
+import com.ridi.oss.proxymonster.controlplane.support.testLoginRoute
+import org.junit.jupiter.api.AfterAll
 
 /**
  * The `datasource.connect` gate on the per-datasource metadata reads: `GET /api/datasources/{id}` and
@@ -57,6 +59,7 @@ class DatasourceMetadataConnectGateDbTest {
     private lateinit var config: Config
     private lateinit var datasource: Datasource
     private lateinit var ungranted: Datasource
+    private lateinit var cpGo: CpGoStack
 
     private val connector = "connector@example.com"
     private val stranger = "stranger@example.com"
@@ -78,14 +81,14 @@ class DatasourceMetadataConnectGateDbTest {
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_ds_metadata_gate"))
-        Flyway.configure().dataSource(dataSource).load().migrate()
+        val database = SharedPostgres.migratedDatabase("pm_ds_metadata_gate")
+        dataSource = SharedPostgres.hikari(database)
         core = ControlPlaneCore(dataSource)
 
         core.datasourceStore.register(
             name = "gated-ds", engine = Engine.MYSQL, host = "db", port = 3306, dbName = "app",
             tags = emptyList(), advertiseAddr = "proxy.example.com:6033",
-            advertiseCertChain = chainPem, advertiseWireTls = true,
+            advertiseCertChain = chainPem, advertiseWireTls = true, description = "Gated orders DB",
         )
         datasource = core.datasourceStore.getByName("gated-ds")!!
 
@@ -116,44 +119,17 @@ class DatasourceMetadataConnectGateDbTest {
             sessionSecret = "ds-metadata-gate-test-secret", oidc = null, resultKey = null, scimToken = null,
             sessionWindowSeconds = 3600, idpRecheckIntervalSeconds = 600, devMarker = true,
         )
+        cpGo = CpGoStack(config, core, database) { routing { testLoginRoute(PrincipalSessionStore(dataSource, null), config) } }
     }
 
-    private fun ApplicationTestBuilder.wire(): HttpClient {
-        application { installRoutes() }
-        return createClient {
-            expectSuccess = false
-            install(HttpCookies)
-            install(ClientContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
-        }
+    @AfterAll
+    fun teardown() {
+        if (::cpGo.isInitialized) cpGo.close()
     }
 
-    private fun Application.installRoutes() {
-        val sessionStore = PrincipalSessionStore(dataSource, null)
-        attributes.put(PRINCIPAL_SESSION_STORE, sessionStore)
-        install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true; encodeDefaults = true }) }
-        install(Sessions) { webSessionCookie(sessionStore, config.sessionSecret) }
-        routing {
-            post("/test/session/{principal}") {
-                val deviceId = call.ensureDeviceCookie(secure = false)
-                call.sessions.set(
-                    WebSessionRef(
-                        sessionStore.mintWeb(
-                            requireNotNull(call.parameters["principal"]),
-                            null,
-                            config.webSessionAbsoluteSeconds,
-                            config.webSessionIdleSeconds,
-                            deviceId,
-                        ),
-                    ),
-                )
-                call.respond(HttpStatusCode.NoContent)
-            }
-            datasourceRoutes(
-                config, core.authz, core.roleResolver, core.datasourceStore, core.proxyEventsHub,
-                TableDetailService(core), core.tokenStore, core.userGroupStore,
-            )
-        }
-    }
+    /** A client of cp-go: it serves the datasource list and forwards the row and table detail to Kotlin. */
+    @Suppress("UnusedReceiverParameter")
+    private fun ApplicationTestBuilder.wire(): HttpClient = cpGo.client()
 
     @Test
     fun `the datasource row is 401 unauthenticated`() = testApplication {
@@ -247,6 +223,7 @@ class DatasourceMetadataConnectGateDbTest {
             "the list must not answer what {id} and {id}/wire-cert refuse; got: $body",
         )
         assertFalse(body.contains("proxy.example.com"), "the advertised address is connection material too")
+        assertFalse(body.contains("Gated orders DB"), "the description rides only on connectable rows")
     }
 
     @Test
@@ -256,6 +233,7 @@ class DatasourceMetadataConnectGateDbTest {
         val body = client.get("/api/datasources").bodyAsText()
         assertTrue(body.contains("BEGIN CERTIFICATE"), "a caller granted connect must still get the chain")
         assertTrue(body.contains("proxy.example.com"), "a caller granted connect must still get the address")
+        assertTrue(body.contains("\"description\":\"Gated orders DB\""), body)
     }
 
     @Test

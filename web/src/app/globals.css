@@ -11,6 +11,19 @@
  * DENY) are applied from lib/decision.ts using Tailwind's palette utilities.
  */
 @theme inline {
+  --animate-row-flash: row-flash 1.6s ease-out;
+  @keyframes row-flash {
+    from {
+      background-color: color-mix(
+        in oklab,
+        var(--color-yellow-400) 40%,
+        transparent
+      );
+    }
+    to {
+      background-color: transparent;
+    }
+  }
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);

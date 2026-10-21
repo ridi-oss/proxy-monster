@@ -48,8 +48,27 @@ COPY engine ./engine
 COPY auth ./auth
 COPY proto ./proto
 COPY control-plane ./control-plane
+COPY docs/guides/usage.md docs/guides/admin.md ./docs/guides/
 
 RUN ./gradlew --no-daemon :control-plane:installDist -x test
+
+# pmon-auto-approver-agent, the auto-approval agent cp-go runs once per review (auto-approver/), as one self-contained binary.
+FROM oven/bun:1.3.14 AS agent
+WORKDIR /workspace/auto-approver
+COPY auto-approver/package.json auto-approver/bun.lock ./
+RUN bun install --frozen-lockfile
+COPY auto-approver/tsconfig.json ./
+COPY auto-approver/src ./src
+RUN bun build --compile src/main.ts --outfile /out/pmon-auto-approver-agent
+
+# cp-go, the front door that owns the public ports and runs the Kotlin control plane as its child.
+FROM go AS cpgo
+WORKDIR /workspace/cpgo
+COPY auditmon /workspace/auditmon
+COPY analyzer /workspace/analyzer
+COPY cpgo ./
+ENV GOTOOLCHAIN=local CGO_ENABLED=0 GOWORK=off
+RUN go build -trimpath -o /out/cp-go ./cmd/cp-go
 
 # ---- Runtime ----
 FROM eclipse-temurin:24-jre-noble
@@ -63,17 +82,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl \
 RUN groupadd --system --gid 10001 pm && useradd --system --uid 10001 --gid pm --create-home pm
 WORKDIR /app
 COPY --from=build /workspace/control-plane/build/install/control-plane ./
+COPY --from=cpgo /out/cp-go ./bin/cp-go
+COPY --from=agent /out/pmon-auto-approver-agent ./bin/pmon-auto-approver-agent
 RUN chown -R pm:pm /app
 USER pm
 
-# FFM restricted-method grant for the analyzer's native downcall (java.lang.foreign); the generated
-# start script appends $JAVA_OPTS to its java invocation, same as the root Gradle build's
-# JavaExec/Test jvmArgs locally. Override PM_HTTP_PORT via env; the healthcheck reads it back.
-ENV JAVA_OPTS="--enable-native-access=ALL-UNNAMED"
+# JDK_JAVA_OPTIONS, not JAVA_OPTS: the java launcher reads it on its own, so an operator's JAVA_OPTS
+# adds to these flags instead of dropping the analyzer's FFM grant (--enable-native-access).
+# 60% of RAM leaves room for the analyzer's native memory and cp-go; exit on OOM so the container is replaced.
+# Override PM_HTTP_PORT via env; the healthcheck reads it back.
+ENV JDK_JAVA_OPTIONS="--enable-native-access=ALL-UNNAMED -XX:MaxRAMPercentage=60 -XX:+ExitOnOutOfMemoryError"
 ENV PM_HTTP_PORT=8080
 EXPOSE 8080
 
 HEALTHCHECK --interval=10s --timeout=3s --start-period=20s --retries=5 \
     CMD curl -fsS "http://127.0.0.1:${PM_HTTP_PORT}/health" || exit 1
 
-ENTRYPOINT ["./bin/control-plane"]
+ENTRYPOINT ["./bin/cp-go"]

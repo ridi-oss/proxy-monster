@@ -202,8 +202,8 @@ func TestParseHandshakeV10MySQL8Greeting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseHandshakeV10: %v", err)
 	}
-	if got.ConnectionID != 1234 {
-		t.Errorf("ConnectionID = %d, want 1234", got.ConnectionID)
+	if got.ServerVersion != "80.0.36" || got.ConnectionID != 1234 {
+		t.Errorf("ServerVersion = %q, ConnectionID = %d, want 80.0.36 and 1234", got.ServerVersion, got.ConnectionID)
 	}
 	if string(got.Scramble) != "abcdefghijklmnopqrst" {
 		t.Errorf("Scramble = %q", got.Scramble)

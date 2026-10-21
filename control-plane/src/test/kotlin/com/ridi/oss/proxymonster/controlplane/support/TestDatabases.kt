@@ -2,6 +2,7 @@ package com.ridi.oss.proxymonster.controlplane.support
 
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
+import org.flywaydb.core.Flyway
 import org.testcontainers.DockerClientFactory
 import org.testcontainers.containers.MySQLContainer
 import org.testcontainers.containers.PostgreSQLContainer
@@ -42,6 +43,29 @@ fun requireDocker() {
  */
 private fun imageFor(envVar: String, default: String): String =
     System.getenv(envVar)?.takeIf { it.isNotBlank() } ?: default
+
+/** A test database server; the credentials default to Testcontainers' own. */
+private data class DbServer(val host: String, val port: Int, val user: String = "test", val password: String = "test", val database: String = "test")
+
+/** The server `mise run verify` starts for all forks (`host:port` in [envVar]) once it accepts connections, else null. */
+private fun externalServer(envVar: String, url: (DbServer) -> String): DbServer? {
+    val server = System.getenv(envVar)?.takeIf { it.isNotBlank() }?.let {
+        DbServer(it.substringBeforeLast(':'), it.substringAfterLast(':').toInt())
+    } ?: return null
+    val deadline = System.nanoTime() + 180_000_000_000L
+    while (true) {
+        try {
+            DriverManager.getConnection(url(server), server.user, server.password).close()
+            return server
+        } catch (e: java.sql.SQLException) {
+            if (System.nanoTime() > deadline) throw e
+            Thread.sleep(500)
+        }
+    }
+}
+
+// Forks sharing one server need distinct database names.
+private val forkTag = System.getProperty("org.gradle.test.worker")?.let { "w${it}_" } ?: ""
 
 /**
  * The version series an image tag names (`mysql:8.0` → `8.0`, `postgres:16-alpine` → `16`), or null
@@ -99,18 +123,35 @@ object SharedPostgres {
     val IMAGE: String = imageFor("PM_TEST_POSTGRES_IMAGE", "postgres:17")
     private val counter = AtomicInteger()
 
-    private val container: PostgreSQLContainer<*> by lazy {
-        // Generous max_connections: every DB-backed test class opens its own pool against this ONE shared
-        // container, and no pool is ever closed, so the suite's ceiling scales with the number of DB test
-        // classes rather than with how many run at once. This is test-infra headroom only.
-        PostgreSQLContainer(IMAGE).apply { withCommand("postgres", "-c", "max_connections=500"); start() }
+    private val server: DbServer by lazy {
+        externalServer("PM_TEST_POSTGRES_SERVER") { "jdbc:postgresql://${it.host}:${it.port}/${it.database}" }
+            // Generous max_connections: every DB-backed test class opens its own pool against this ONE shared
+            // container, and no pool is ever closed, so the suite's ceiling scales with the number of DB test
+            // classes rather than with how many run at once. This is test-infra headroom only.
+            ?: PostgreSQLContainer(IMAGE).apply { withCommand("postgres", "-c", "max_connections=500"); start() }
+                .let { DbServer(it.host, it.getMappedPort(5432), it.username, it.password, it.databaseName) }
     }
 
     /** Create a fresh, uniquely-named database in the shared container and return its name. */
     fun freshDatabase(prefix: String): String {
-        val name = "${prefix}_${counter.incrementAndGet()}"
+        val name = "${prefix}_$forkTag${counter.incrementAndGet()}"
         adminConnection().use { c ->
             c.createStatement().use { it.executeUpdate("CREATE DATABASE \"$name\"") }
+        }
+        return name
+    }
+
+    private val migratedTemplate: String by lazy {
+        freshDatabase("pm_migrated_template").also { name ->
+            Flyway.configure().dataSource(jdbcUrlFor(name), server.user, server.password).load().migrate()
+        }
+    }
+
+    /** A fresh database already migrated to the latest control-plane schema, cloned from a once-migrated template. */
+    fun migratedDatabase(prefix: String): String {
+        val name = "${prefix}_$forkTag${counter.incrementAndGet()}"
+        adminConnection().use { c ->
+            c.createStatement().use { it.executeUpdate("CREATE DATABASE \"$name\" TEMPLATE \"$migratedTemplate\"") }
         }
         return name
     }
@@ -118,15 +159,15 @@ object SharedPostgres {
     fun hikari(dbName: String): DataSource = HikariDataSource(
         HikariConfig().apply {
             jdbcUrl = jdbcUrlFor(dbName)
-            username = container.username
-            password = container.password
+            username = server.user
+            password = server.password
             driverClassName = "org.postgresql.Driver"
             maximumPoolSize = 4
             applyTestPoolReclaim()
         },
     )
 
-    fun jdbcUrlFor(dbName: String): String = "jdbc:postgresql://${container.host}:${container.getMappedPort(5432)}/$dbName"
+    fun jdbcUrlFor(dbName: String): String = "jdbc:postgresql://${server.host}:${server.port}/$dbName"
 
     /** `server_version` as the major series alone ("17"), for asserting which version a run covered. */
     fun serverSeries(): String = adminConnection().use { c ->
@@ -138,16 +179,20 @@ object SharedPostgres {
         }
     }
 
-    fun host(): String = container.host
-    fun port(): Int = container.getMappedPort(5432)
-    fun username(): String = container.username
-    fun password(): String = container.password
+    fun host(): String = server.host
+    fun port(): Int = server.port
+    fun username(): String = server.user
+    fun password(): String = server.password
 
-    private fun adminConnection() =
-        DriverManager.getConnection(container.jdbcUrl, container.username, container.password)
+    private fun adminConnection() = DriverManager.getConnection(jdbcUrlFor(server.database), server.user, server.password)
 }
 
-object SharedMySql {
+object SharedMySql : SharedMySqlServer(lowerCaseTableNames = null)
+
+/** A second MySQL server initialized with lower_case_table_names=1, started on first use. */
+object SharedMySqlLowerCaseTableNames1 : SharedMySqlServer(lowerCaseTableNames = 1)
+
+open class SharedMySqlServer(private val lowerCaseTableNames: Int?) {
     val IMAGE: String = imageFor("PM_TEST_MYSQL_IMAGE", "mysql:8.4")
     private val counter = AtomicInteger()
 
@@ -179,17 +224,24 @@ object SharedMySql {
         }
     }
 
-    private val container: MySQLContainer<*> by lazy {
-        MySQLContainer(IMAGE).apply {
-            start()
-            DriverManager.getConnection(jdbcUrl, "root", password).use { c ->
-                c.createStatement().use { it.executeUpdate("GRANT SELECT ON mysql.func TO '$username'@'%'") }
+    private val server: DbServer by lazy {
+        val external = if (lowerCaseTableNames == null) externalServer("PM_TEST_MYSQL_SERVER") { urlFor(it, it.database) } else null
+        (
+            external ?: MySQLContainer(IMAGE).apply {
+                lowerCaseTableNames?.let { withCommand("--lower-case-table-names=$it") }
+                start()
+            }.let { DbServer(it.host, it.getMappedPort(3306), it.username, it.password, it.databaseName) }
+        ).also { s ->
+            DriverManager.getConnection(urlFor(s, s.database), "root", s.password).use { c ->
+                c.createStatement().use { it.executeUpdate("GRANT SELECT ON mysql.func TO '${s.user}'@'%'") }
             }
         }
     }
 
-    /** The container's original database, retained for the older single-schema fixtures. */
-    fun defaultDatabase(): String = container.databaseName
+    private val defaultDatabase: String by lazy { freshDatabase("test") }
+
+    /** A database of this JVM's own, retained for the older single-schema fixtures. */
+    fun defaultDatabase(): String = defaultDatabase
 
     /**
      * Create a fresh database and grant the container's normal test user access to it. The root
@@ -198,37 +250,39 @@ object SharedMySql {
      */
     fun freshDatabase(prefix: String): String {
         require(prefix.matches(Regex("[a-zA-Z][a-zA-Z0-9_]*"))) { "unsafe MySQL database prefix: $prefix" }
-        val name = "${prefix}_${counter.incrementAndGet()}"
+        val name = "${prefix}_$forkTag${counter.incrementAndGet()}"
         adminConnection().use { c ->
             c.createStatement().use { st ->
                 st.executeUpdate("CREATE DATABASE `$name`")
-                st.executeUpdate("GRANT ALL PRIVILEGES ON `$name`.* TO '${container.username}'@'%'")
+                st.executeUpdate("GRANT ALL PRIVILEGES ON `$name`.* TO '${server.user}'@'%'")
             }
         }
         return name
     }
 
-    fun jdbcUrlFor(dbName: String): String =
-        "jdbc:mysql://${container.host}:${container.getMappedPort(3306)}/$dbName?allowPublicKeyRetrieval=true&sslMode=DISABLED"
+    fun jdbcUrlFor(dbName: String): String = urlFor(server, dbName)
+
+    private fun urlFor(s: DbServer, dbName: String) =
+        "jdbc:mysql://${s.host}:${s.port}/$dbName?allowPublicKeyRetrieval=true&sslMode=DISABLED"
 
     fun hikari(dbName: String): DataSource = HikariDataSource(
         HikariConfig().apply {
             jdbcUrl = jdbcUrlFor(dbName)
-            username = container.username
-            password = container.password
+            username = server.user
+            password = server.password
             driverClassName = "com.mysql.cj.jdbc.Driver"
             maximumPoolSize = 4
             applyTestPoolReclaim()
         },
     )
 
-    fun host(): String = container.host
-    fun port(): Int = container.getMappedPort(3306)
-    fun username(): String = container.username
-    fun password(): String = container.password
+    fun host(): String = server.host
+    fun port(): Int = server.port
+    fun username(): String = server.user
+    fun password(): String = server.password
 
     fun executeAdmin(sql: String) = adminConnection().use { c -> c.createStatement().use { it.execute(sql) } }
 
     /** MySQLContainer configures root with the same generated test password. */
-    private fun adminConnection() = DriverManager.getConnection(jdbcUrlFor("mysql"), "root", container.password)
+    private fun adminConnection() = DriverManager.getConnection(jdbcUrlFor("mysql"), "root", server.password)
 }

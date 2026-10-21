@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.controlplane.authz.UserParents
 import com.ridi.oss.proxymonster.controlplane.authz.Authz
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzContext
@@ -52,11 +53,11 @@ class EditorTaskService(
 
     /** Submit on a held editor session (its one target-DB connection). */
     fun submitOnSession(principal: String, requesterIp: String?, sessionId: String, sql: String, maxRows: Int): Submission {
-        val ownRoles = submitterRoles(principal, sql)
+        val own = submitterParents(principal, sql)
         // Owner-scoped: a leaked session id can't target another principal's connection.
         val dsName = runExecService.sessionDatasourceName(sessionId, principal) ?: throw serviceNotFound("editor session")
         val ds = datasourceStore.getByName(dsName) ?: throw serviceNotFound("datasource")
-        val submission = start(principal, requesterIp, ds, ownRoles, sql) { b ->
+        val submission = start(principal, requesterIp, ds, own, sql) { b ->
             // One mutex hold for the batch, so a concurrent submit cannot land inside its transaction.
             runExecService.runBatchOnSession(
                 sessionId, principal, statementCount = b.statementCount, maxRows = maxRows,
@@ -75,9 +76,9 @@ class EditorTaskService(
 
     /** Submit on a one-shot connection that lives for this batch only. */
     fun submitOneShot(principal: String, requesterIp: String?, datasourceName: String, sql: String, maxRows: Int): Submission {
-        val ownRoles = submitterRoles(principal, sql)
+        val own = submitterParents(principal, sql)
         val ds = datasourceStore.getByName(datasourceName) ?: throw serviceNotFound("datasource")
-        return start(principal, requesterIp, ds, ownRoles, sql) { b ->
+        return start(principal, requesterIp, ds, own, sql) { b ->
             // No assumeRoles: an EDITOR token, so every statement decides on the editor channel.
             runExecService.runBatch(
                 principal, ds, statementCount = b.statementCount, maxRows = maxRows,
@@ -88,33 +89,32 @@ class EditorTaskService(
         }
     }
 
-    private fun submitterRoles(principal: String, sql: String): Set<String> {
+    private fun submitterParents(principal: String, sql: String): UserParents {
         if (sql.isBlank()) {
             throw TaskServiceException(HttpStatusCode.BadRequest, ApiError("common.field_required", mapOf("fields" to "sql")))
         }
         // Resolved at THIS submit, never frozen across submits: a revoked role fails closed on the next run.
-        val ownRoles = roleResolver.resolve(principal)
-        if (ownRoles.isEmpty()) throw serviceForbidden()
-        return ownRoles
+        val own = roleResolver.resolveParents(principal)
+        if (own.roles.isEmpty()) throw serviceForbidden()
+        return own
     }
 
     private fun start(
         principal: String,
         requesterIp: String?,
         ds: Datasource,
-        ownRoles: Set<String>,
+        own: UserParents,
         sql: String,
         runner: suspend (Batch) -> Unit,
     ): Submission {
         val store = queryResultStore
             ?: throw resultStorageNotConfigured()
         // Self-approve on the editor channel: must clear task.request AND task.approve.
-        if (!autoApproveTask(principal, ownRoles, ds, AuthzContext(requesterIp = requesterIp), authz, Channel.EDITOR)) {
+        if (!autoApproveTask(principal, own, ds, AuthzContext(requesterIp = requesterIp), authz, Channel.EDITOR)) {
             throw serviceForbidden()
         }
-        val splitConfig = ds.splitEngineConfig() ?: throw unsplittableSql()
-        val statements = splitStatements(sql, splitConfig) ?: throw unsplittableSql()
-        val task = accessStore.createEditorTask(principal, ds.id, statements, ownRoles.toList(), approver = principal)
+        val statements = splitStatements(sql, ds.splitEngineConfig()) ?: throw unsplittableSql()
+        val task = accessStore.createEditorTask(principal, ds.id, statements, own.roles.toList(), approver = principal)
         val childId = accessStore.editorChildId(task.id) ?: -1L
         // APPROVED → EXECUTING and the child NULL → RUNNING commit together, so a cancel can't slip into a gap.
         if (store.claimAndStartRun(task.id, principal) { c -> accessStore.claimExecution(task.id, c) } == null) {
@@ -145,7 +145,7 @@ class EditorTaskService(
                                 denyReason = response.denyReason
                                 denyDecisionId = response.decisionId
                                 // Reuses the channel-agnostic approval.* result codes the web already localizes.
-                                batchFailure = "approval.execute_denied"
+                                batchFailure = if (response.denyCode == RATE_SPENT_CODE) "approval.rate_spent" else "approval.execute_denied"
                                 false
                             } else {
                                 val result = DecryptedResult(response.columns, response.rows, response.rowsAffected, response.resultFingerprint, response.truncatedByCap)

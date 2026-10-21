@@ -28,7 +28,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/ridi-oss/proxy-monster/goproxy/engine"
+	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 
 	// The shared proxymonster.v1.Engine enum lives in analyzer/probe/pb (see engine/engine.go's
@@ -42,7 +42,7 @@ import (
 // error instead of a stalled run channel. Bump it on any incompatible wire change. It MUST match the
 // control-plane's CONTROL_PROTOCOL_VERSION; the two are separate constants in separate languages kept in
 // lockstep by hand — a server-v* release always ships both at the same value.
-const ProtocolVersion int32 = 4
+const ProtocolVersion int32 = 5
 
 // ErrIncompatibleControlPlane means the control-plane speaks a different wire-protocol version than this
 // proxy — a PERMANENT deploy-skew condition, not a transient failure. boot treats it as fatal (refuse to
@@ -104,7 +104,7 @@ func defaultEventLoopTimings() eventLoopTimings {
 	}
 }
 
-// Client is the proxy's gRPC client to the control plane. It satisfies engine.Decider.
+// Client is the proxy's gRPC client to the control plane. It satisfies spi.ControlPlane.
 type Client struct {
 	conn           *grpc.ClientConn
 	stub           pb.ControlPlaneClient
@@ -148,28 +148,25 @@ func (c *Client) outCtx(parent context.Context) context.Context {
 	return metadata.AppendToOutgoingContext(parent, secretTokenHeader, c.secretToken)
 }
 
-// refetchesFromWire unwraps the only supported mechanical command arm (Refetch) from the generic
-// ProxyCommand envelope. Unknown arms and blank schemas are malformed and fail closed rather than degrading
-// to a broader refresh. Each Refetch is deep-copied so the returned commands never alias the wire message's
-// mutable backing arrays.
-func refetchesFromWire(commands []*pb.ProxyCommand) ([]*pb.Refetch, error) {
-	mapped := make([]*pb.Refetch, 0, len(commands))
+// commandsFromWire validates the generic ProxyCommand envelope and deep-copies each command so the returned
+// list never aliases the wire message's mutable backing arrays. The client does not interpret an arm — the
+// dialect's command runner does — it only rejects an empty command or a Refetch missing its selector, so a
+// malformed list fails closed here rather than degrading to a broader refresh downstream.
+func commandsFromWire(commands []*pb.ProxyCommand) ([]*pb.ProxyCommand, error) {
+	mapped := make([]*pb.ProxyCommand, 0, len(commands))
 	for i, command := range commands {
-		refetch := command.GetRefetch()
-		if refetch == nil {
-			return nil, fmt.Errorf("command %d is not a refetch", i)
+		if command.GetCommand() == nil {
+			return nil, fmt.Errorf("command %d has no arm", i)
 		}
-		if refetch.GetCatalog() == "" {
-			return nil, fmt.Errorf("command %d has blank catalog", i)
+		if refetch := command.GetRefetch(); refetch != nil {
+			if refetch.GetCatalog() == "" {
+				return nil, fmt.Errorf("command %d has blank catalog", i)
+			}
+			if refetch.GetSchema() == "" {
+				return nil, fmt.Errorf("command %d has blank schema", i)
+			}
 		}
-		if refetch.GetSchema() == "" {
-			return nil, fmt.Errorf("command %d has blank schema", i)
-		}
-		mapped = append(mapped, &pb.Refetch{
-			Schema:        refetch.GetSchema(),
-			IfHashDiffers: append([]byte(nil), refetch.GetIfHashDiffers()...),
-			Catalog:       refetch.GetCatalog(),
-		})
+		mapped = append(mapped, proto.Clone(command).(*pb.ProxyCommand))
 	}
 	return mapped, nil
 }
@@ -200,7 +197,7 @@ func identityFromWire(id *pb.WireIdentity) (spi.Identity, error) {
 	if len(id.GetConnectionId()) != 16 {
 		return spi.Identity{}, fmt.Errorf("control plane returned connection_id with %d bytes, want 16", len(id.GetConnectionId()))
 	}
-	onOpen, err := refetchesFromWire(id.GetOnOpen())
+	onOpen, err := commandsFromWire(id.GetOnOpen())
 	if err != nil {
 		return spi.Identity{}, fmt.Errorf("control plane returned malformed on_open: %w", err)
 	}
@@ -238,17 +235,20 @@ func (c *Client) ValidateToken(token, clientAddr string) (spi.Identity, error) {
 // denyClosed builds a fail-closed DENY decision for a wire response the proxy cannot safely honor
 // (an absent outcome, a not-yet-supported outcome arm, or an unhonorable command). Masks is an empty
 // (non-nil) slice so callers never dereference a nil.
-func denyClosed(reason string) *engine.Decision {
-	return &engine.Decision{Action: "DENY", DenyReason: reason, Masks: []*pb.ColumnMask{}}
+func denyClosed(reason string) *spi.Decision {
+	return &spi.Decision{Action: "DENY", DenyReason: reason, Masks: []*pb.ColumnMask{}}
 }
 
 // decisionFromWire maps the control plane's WireDecision onto the engine's dialect-agnostic outcome.
 // Before-decision commands are returned separately and take precedence over any verdict accessor.
-func decisionFromWire(d *pb.WireDecision) ([]*pb.Refetch, *engine.Decision) {
+func decisionFromWire(d *pb.WireDecision) ([]*pb.ProxyCommand, *spi.Decision) {
 	if before := d.GetBeforeDecide(); before != nil {
-		commands, err := refetchesFromWire(before.GetCommands())
+		commands, err := commandsFromWire(before.GetCommands())
 		if err != nil {
 			return nil, denyClosed("control plane returned malformed before-decision commands: " + err.Error())
+		}
+		if len(commands) == 0 {
+			return nil, denyClosed("control plane returned an empty before-decision round")
 		}
 		return commands, nil
 	}
@@ -258,7 +258,7 @@ func decisionFromWire(d *pb.WireDecision) ([]*pb.Refetch, *engine.Decision) {
 		return nil, denyClosed("control plane returned no verdict")
 	}
 
-	action := engine.EnfActionName(v.GetDecision())
+	action := relay.EnfActionName(v.GetDecision())
 
 	// The proto ColumnMask is the mask data class — carry it through verbatim. An absent ordinal keeps its
 	// explicit-presence nil (BindMasks fails closed on it); do NOT normalize it to a sentinel here.
@@ -269,7 +269,14 @@ func decisionFromWire(d *pb.WireDecision) ([]*pb.Refetch, *engine.Decision) {
 		rewrittenSQL := *v.RewrittenSql
 		rewritten = &rewrittenSQL
 	}
-	afterStatement, err := refetchesFromWire(v.GetAfterStatement())
+	var submission *enginepb.Submission
+	if v.Submission != nil {
+		if rewritten == nil {
+			return nil, denyClosed("control plane returned a submission without rewritten SQL")
+		}
+		submission = proto.Clone(v.Submission).(*enginepb.Submission)
+	}
+	afterStatement, err := commandsFromWire(v.GetAfterStatement())
 	if err != nil {
 		return nil, denyClosed("control plane returned malformed after-statement commands: " + err.Error())
 	}
@@ -278,12 +285,13 @@ func decisionFromWire(d *pb.WireDecision) ([]*pb.Refetch, *engine.Decision) {
 	if v.GetMaxRows() < 0 || v.GetMaxBytes() < 0 {
 		return nil, denyClosed("control plane returned a negative result cap")
 	}
-	return nil, &engine.Decision{
+	return nil, &spi.Decision{
 		Action:              action,
 		MaxRows:             v.GetMaxRows(),
 		MaxBytes:            v.GetMaxBytes(),
 		DecisionID:          v.GetDecisionId(),
 		DenyReason:          v.GetDenyReason(),
+		DenyCode:            v.GetDenyCode(),
 		Masks:               masks,
 		EffectiveRoles:      append([]string(nil), v.GetEffectiveRoles()...),
 		RewrittenSQL:        rewritten,
@@ -291,13 +299,15 @@ func decisionFromWire(d *pb.WireDecision) ([]*pb.Refetch, *engine.Decision) {
 		AfterStatement:      afterStatement,
 		Generation:          v.GetGeneration(),
 		SanitizeDiagnostics: v.GetSanitizeDiagnostics(),
+		ForwardTargetError:  v.GetForwardTargetError(),
+		Submission:          submission,
 		ResultFingerprint:   v.GetResultFingerprint(),
 	}
 }
 
-// Decide satisfies engine.Decider: it re-sends the same raw request after mechanically satisfying at
+// Decide implements spi.ControlPlane: it re-sends the same raw request after mechanically satisfying at
 // most three before_decide command rounds. Every failure path yields a non-empty Err (fail closed).
-func (c *Client) Decide(req engine.DecideRequest) engine.DecisionOutcome {
+func (c *Client) Decide(req spi.DecideRequest) spi.DecisionOutcome {
 	temps := make([]*pb.TempColumn, 0, len(req.TempColumns))
 	for _, t := range req.TempColumns {
 		temps = append(temps, &pb.TempColumn{
@@ -321,6 +331,7 @@ func (c *Client) Decide(req engine.DecideRequest) engine.DecisionOutcome {
 		CurrentCatalog: req.Session.CurrentCatalog,
 	}
 
+	var targetErr *spi.TargetError
 	for round := 0; ; round++ {
 		ctx, cancel := context.WithTimeout(context.Background(), rpcDeadline)
 		resp, err := c.stub.Decide(c.outCtx(ctx), wireReq)
@@ -331,35 +342,68 @@ func (c *Client) Decide(req engine.DecideRequest) engine.DecisionOutcome {
 				if msg == "" {
 					msg = st.Code().String()
 				}
-				return engine.DecisionOutcome{Err: msg}
+				return spi.DecisionOutcome{Err: msg}
 			}
-			return engine.DecisionOutcome{Err: "control plane unreachable: " + err.Error()}
+			return spi.DecisionOutcome{Err: "control plane unreachable: " + err.Error()}
 		}
 		if resp == nil {
-			return engine.DecisionOutcome{Err: "control plane returned an empty decision"}
+			return spi.DecisionOutcome{Err: "control plane returned an empty decision"}
 		}
 
 		commands, decision := decisionFromWire(resp)
 		if commands == nil {
-			return engine.DecisionOutcome{Decision: decision}
+			return spi.DecisionOutcome{Decision: decision, TargetError: targetErr}
 		}
 		if round >= 3 {
-			return engine.DecisionOutcome{Err: fmt.Sprintf("control plane demanded pre-decision commands %d times", round+1)}
+			return spi.DecisionOutcome{Err: fmt.Sprintf("control plane demanded pre-decision commands %d times", round+1)}
 		}
-		if req.RunCommands == nil {
-			return engine.DecisionOutcome{Err: "control plane demanded pre-decision commands but no runner is configured"}
-		}
-		if err := req.RunCommands(commands); err != nil {
-			return engine.DecisionOutcome{Err: "pre-decision commands failed: " + err.Error()}
+		if err := runBeforeDecide(commands, &req, wireReq, &targetErr); err != nil {
+			return spi.DecisionOutcome{Err: "pre-decision commands failed: " + err.Error()}
 		}
 	}
 }
 
+// runBeforeDecide executes one before-decide round through the dialect's command runner. A command may
+// extend the session facts the re-sent request carries (a fetched prepared definition), so the runner gets
+// the request's session and the wire request is rebuilt from it.
+func runBeforeDecide(commands []*pb.ProxyCommand, req *spi.DecideRequest, wireReq *pb.DecisionRequest, targetErr **spi.TargetError) error {
+	var run []*pb.ProxyCommand
+	for _, cmd := range commands {
+		if cmd.GetCheckTargetError() == nil {
+			run = append(run, cmd)
+			continue
+		}
+		if req.CheckTargetError == nil {
+			return errors.New("control plane demanded a target error check but no checker is configured")
+		}
+		observed, err := req.CheckTargetError(req.SQL)
+		if err != nil {
+			return err
+		}
+		*targetErr = observed
+		wireReq.TargetCheck = &pb.TargetCheck{}
+		if observed != nil {
+			wireReq.TargetCheck.ErrorCode = observed.Code
+		}
+	}
+	if len(run) == 0 {
+		return nil
+	}
+	if req.RunCommands == nil {
+		return errors.New("control plane demanded pre-decision commands but no runner is configured")
+	}
+	if err := req.RunCommands(run, &req.Session); err != nil {
+		return err
+	}
+	wireReq.Session = req.Session.Clone().SessionObservation
+	return nil
+}
+
 // ReportCompletion sends a post-relay completion report (audit-only result volume) to the control plane.
 // It is synchronous with its own deadline; callers keep it off the client session's critical path (see
-// engine.EmitCompletion, which runs it on its own goroutine). A failure is logged, never returned — a lost
+// relay.EmitCompletion, which runs it on its own goroutine). A failure is logged, never returned — a lost
 // completion only degrades the audit monitor's volume signal and must never affect the client session.
-func (c *Client) ReportCompletion(report engine.CompletionReport) {
+func (c *Client) ReportCompletion(report spi.CompletionReport) {
 	ctx, cancel := context.WithTimeout(context.Background(), rpcDeadline)
 	defer cancel()
 	if _, err := c.stub.ReportCompletion(c.outCtx(ctx), &pb.CompletionReport{
@@ -383,7 +427,7 @@ func (c *Client) ReportCompletion(report engine.CompletionReport) {
 // advertiseCertChain is a pointer for explicit presence. nil means "no opinion" and preserves whatever the
 // control plane stores (a transient read at re-register); a non-nil empty string is authoritative and CLEARS
 // the stored chain, so an operator who stops publishing does not leave clients on dead roots.
-func (c *Client) Register(registrationEngine enginepb.Engine, host string, port int, dbName string, tags []string, advertiseAddr string, advertiseCertChain *string, wireTLS bool, connectionInfo *pb.ConnectionInfo) error {
+func (c *Client) Register(registrationEngine enginepb.Engine, host string, port int, dbName string, tags []string, advertiseAddr string, advertiseCertChain *string, wireTLS bool, connectionInfo *pb.ConnectionInfo, description *string) error {
 	// Fail-closed defense-in-depth — never send an unspecified engine (boot already validated the provider).
 	if registrationEngine == enginepb.Engine_ENGINE_UNSPECIFIED {
 		return fmt.Errorf("cp: refusing to register datasource %q with an unspecified engine", c.datasourceName)
@@ -404,6 +448,7 @@ func (c *Client) Register(registrationEngine enginepb.Engine, host string, port 
 		AdvertiseWireTls:   wireTLS,
 		ProtocolVersion:    ProtocolVersion,
 		ConnectionInfo:     connectionInfo,
+		Description:        description,
 	})
 	if err != nil {
 		// A control-plane on a LATER protocol rejects our version with FAILED_PRECONDITION — a permanent
@@ -438,7 +483,7 @@ func (c *Client) PushCatalog(catalog *pb.CatalogRequest) error {
 	if err != nil {
 		return fmt.Errorf("cp: push catalog for %q: %w", c.datasourceName, err)
 	}
-	// Paired with introspect.Run's phase breakdown, this closes the refresh cycle: a slow refresh is
+	// Paired with sqldb.Introspect's phase breakdown, this closes the refresh cycle: a slow refresh is
 	// either the target DB scan or this push, and the two logs together say which.
 	slog.Info("pushed catalog", "datasource", c.datasourceName, "columns", ack.GetColumns(),
 		"push_ms", time.Since(started).Milliseconds())
@@ -540,16 +585,17 @@ func (c *Client) streamEvents(
 			onRefresh()
 		case ev.GetOpenRunChannel() != nil:
 			e := ev.GetOpenRunChannel()
-			onOpen, mapErr := refetchesFromWire(e.GetOnOpen())
+			onOpen, mapErr := commandsFromWire(e.GetOnOpen())
 			if len(e.GetConnectionId()) != 16 {
 				mapErr = fmt.Errorf("control plane returned run connection_id with %d bytes, want 16", len(e.GetConnectionId()))
 			}
 			onOpenRun(spi.RunOpen{
-				SessionID:    e.GetSessionId(),
-				Token:        e.GetEphemeralToken(),
-				ConnectionID: append([]byte(nil), e.GetConnectionId()...),
-				OnOpen:       onOpen,
-				MapErr:       mapErr,
+				SessionID:     e.GetSessionId(),
+				Token:         e.GetEphemeralToken(),
+				ConnectionID:  append([]byte(nil), e.GetConnectionId()...),
+				OnOpen:        onOpen,
+				DefaultSchema: e.GetDefaultSchema(),
+				MapErr:        mapErr,
 			})
 		case ev.GetOpenTableDetailChannel() != nil:
 			t := ev.GetOpenTableDetailChannel()
@@ -647,10 +693,7 @@ func (c *Client) OpenTableDetailStream(ctx context.Context) (spi.TableDetailStre
 	return c.TableDetailExec(ctx)
 }
 
-var (
-	_ engine.Decider            = (*Client)(nil)
-	_ engine.CompletionReporter = (*Client)(nil)
-	_ spi.EnforcementClient     = (*Client)(nil)
-	_ spi.RunClient             = (*Client)(nil)
-	_ spi.TableDetailClient     = (*Client)(nil)
-)
+var _ spi.ControlPlane = (*Client)(nil)
+
+// DatasourceName is the one datasource this client fronts.
+func (c *Client) DatasourceName() string { return c.datasourceName }

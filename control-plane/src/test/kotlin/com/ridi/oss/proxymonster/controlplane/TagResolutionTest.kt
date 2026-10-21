@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.controlplane.authz.UserParents
 import com.ridi.oss.proxymonster.controlplane.authz.Authz
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzContext
@@ -51,7 +52,7 @@ class TagResolutionTest {
     private fun tags(authz: Authz, requesterIp: String?, datasource: String = "acme-prod"): Set<String> =
         authz.resolveContextTags(
             principal = "alice",
-            roles = emptySet(),
+            parents = UserParents(emptySet()),
             datasource = datasource,
             rawContext = AuthzContext(requesterIp = requesterIp),
         )
@@ -100,9 +101,9 @@ class TagResolutionTest {
                 ) when { context has tags && context.tags.contains("trusted-network") };""",
             ),
         )
-        val earned = az.resolveContextTags("alice", setOf("analyst"), "acme-prod", AuthzContext(requesterIp = "100.100.5.5"))
+        val earned = az.resolveContextTags("alice", UserParents(setOf("analyst")), "acme-prod", AuthzContext(requesterIp = "100.100.5.5"))
         fun connect(t: Set<String>) = az.authorizeDatasourceAction(
-            principal = "alice", roles = setOf("analyst"), action = AuthzAction.DATASOURCE_CONNECT,
+            principal = "alice", parents = UserParents(setOf("analyst")), action = AuthzAction.DATASOURCE_CONNECT,
             datasource = "acme-prod", context = AuthzContext(requesterIp = "100.100.5.5", tags = t),
         )
         assertEquals(AuthzDecision.Allow, connect(earned), "the derived trusted-network tag must satisfy the grant")
@@ -131,7 +132,7 @@ class TagResolutionTest {
             ),
         )
         assertTrue(
-            guardedTagOnTag.resolveContextTags("alice", emptySet(), "acme-prod", AuthzContext(tags = setOf("other"))).isEmpty(),
+            guardedTagOnTag.resolveContextTags("alice", UserParents(emptySet()), "acme-prod", AuthzContext(tags = setOf("other"))).isEmpty(),
             "a tag rule must not be able to earn a tag by reading context.tags",
         )
     }
@@ -143,14 +144,14 @@ class TagResolutionTest {
         // trust client input. This pins the exact overlay decideQuery relies on.
         val az = authz(listOf(cidrTagRule))
         val caller = AuthzContext(channel = "editor", tags = setOf("injected", "trusted-network"), requesterIp = "10.0.0.1")
-        val eff = effectiveAuthzContext(caller, Channel.WIRE, az, "alice", emptySet(), "acme-prod", emptyList())
+        val eff = effectiveAuthzContext(caller, Channel.WIRE, az, "alice", UserParents(emptySet()), "acme-prod", emptyList())
         assertEquals("wire", eff.channel, "the Channel enum must override a caller-supplied channel")
         // requesterIp 10.0.0.1 is outside the rule's range -> no tag earned -> the caller's injected tags are gone.
         assertTrue(eff.tags.isEmpty(), "caller-supplied tags must be discarded, replaced by the derived set")
 
         // And when the raw signal DOES earn a tag, only the derived tag survives (still never the injected one).
         val eff2 = effectiveAuthzContext(
-            caller.copy(requesterIp = "100.100.5.5"), Channel.WIRE, az, "alice", emptySet(), "acme-prod", emptyList(),
+            caller.copy(requesterIp = "100.100.5.5"), Channel.WIRE, az, "alice", UserParents(emptySet()), "acme-prod", emptyList(),
         )
         assertEquals(setOf("trusted-network"), eff2.tags, "only the derived tag survives; injected is dropped")
     }

@@ -1,5 +1,13 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import org.junit.jupiter.api.AfterEach
+import io.ktor.client.plugins.defaultRequest
+import com.zaxxer.hikari.HikariDataSource
+import com.ridi.oss.proxymonster.controlplane.support.CpGoStack
+import com.ridi.oss.proxymonster.controlplane.support.DeviceStartResponse
+import com.ridi.oss.proxymonster.controlplane.support.MCP_TEST_JSON
+import io.ktor.client.statement.bodyAsText
+import kotlinx.coroutines.runBlocking
 import com.nimbusds.jose.JWSAlgorithm
 import com.nimbusds.jose.JWSHeader
 import com.nimbusds.jose.crypto.RSASSASigner
@@ -9,6 +17,7 @@ import com.nimbusds.jose.jwk.gen.RSAKeyGenerator
 import com.nimbusds.jwt.JWTClaimsSet
 import com.nimbusds.jwt.SignedJWT
 import com.ridi.oss.proxymonster.auth.pkceS256
+import com.ridi.oss.proxymonster.controlplane.authz.UserAttribute
 import com.ridi.oss.proxymonster.controlplane.management.auditEntity
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
@@ -44,7 +53,6 @@ import io.ktor.server.sessions.Sessions
 import io.ktor.server.sessions.cookie
 import io.ktor.server.testing.testApplication
 import kotlinx.serialization.json.Json
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
@@ -69,6 +77,7 @@ class OidcWebSessionDbTest {
     private val nonce = AtomicReference<String>()
     private val tokenCodeVerifier = AtomicReference<String>()
     private val callbackPrincipal = AtomicReference("oidc-web@example.com")
+    private val callbackManager = AtomicReference<String?>(null)
     private var port = 0
     private val issuer get() = "http://127.0.0.1:$port"
 
@@ -117,6 +126,21 @@ class OidcWebSessionDbTest {
     }
 
     @Test
+    fun `oidc callback stores a declared claim on the user`() {
+        callbackManager.set("lead@example.com")
+        try {
+            verifyCallback(
+                scopes = "openid email",
+                resultKey = null,
+                expectRefresh = false,
+                expectAttributes = """{"manager": "lead@example.com"}""",
+            )
+        } finally {
+            callbackManager.set(null)
+        }
+    }
+
+    @Test
     fun `oidc callback denies a principal with zero effective roles without minting a session`() {
         verifyCallback(
             scopes = "openid email offline_access",
@@ -131,8 +155,7 @@ class OidcWebSessionDbTest {
     @Test
     fun `a session mint failure after id_token validation is audited and leaves no session`() = testApplication {
         requireDockerOrSkip()
-        val dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_oidc_web"))
-        Flyway.configure().dataSource(dataSource).load().migrate()
+        val dataSource = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_oidc_web"))
         val principal = "oidc-mint-fail@example.com"
         callbackPrincipal.set(principal)
         val policyStore = PolicyStore(dataSource)
@@ -156,13 +179,8 @@ class OidcWebSessionDbTest {
             }
         }
 
-        application { installOidcWebApp(config("openid email", resultKey = ByteArray(32) { it.toByte() }), dataSource) }
-        val client = createClient {
-            expectSuccess = false
-            followRedirects = false
-            install(HttpCookies)
-            install(DefaultRequest) { header("X-Forwarded-For", CALLER_ADDR) }
-        }
+        val stack = stack(config("openid email", resultKey = ByteArray(32) { it.toByte() }), dataSource)
+        val client = stack.client().config { defaultRequest { header("X-Forwarded-For", CALLER_ADDR) } }
 
         val login = client.get("/auth/oidc/login")
         val query = parseQueryString(assertNotNull(login.headers[HttpHeaders.Location]).substringAfter('?'))
@@ -218,27 +236,22 @@ class OidcWebSessionDbTest {
     @Test
     fun `a device login authenticates via SSO before confirming and approving the handle`() = testApplication {
         requireDockerOrSkip()
-        val dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_oidc_web"))
-        Flyway.configure().dataSource(dataSource).load().migrate()
+        val dataSource = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_oidc_web"))
         val principal = "oidc-device@example.com"
         callbackPrincipal.set(principal)
         val policyStore = PolicyStore(dataSource)
         val role = policyStore.createRole(RoleInput("oidc-device-role"))
         policyStore.createAssignment(RoleAssignmentInput(principal, role.id))
 
-        // A pmon login already in flight: a PENDING device_login row keyed by a user_code (as /auth/device/start makes).
-        val deviceStore = DeviceLoginStore(dataSource, ResultCrypto(ByteArray(32) { it.toByte() }))
-        val started = deviceStore.createPending(intervalSec = 2, ttlSeconds = 3600, expiresAt = Instant.now().plusSeconds(600))
-        val userCode = started.userCode!!
-
-        application {
-            installOidcWebApp(
-                config("openid email offline_access", resultKey = ByteArray(32) { it.toByte() })
-                    .copy(webOrigin = "https://console.example"),
-                dataSource,
-            )
-        }
-        val client = createClient { expectSuccess = false; followRedirects = false; install(HttpCookies) }
+        val stack = stack(
+            config("openid email offline_access", resultKey = ByteArray(32) { it.toByte() })
+                .copy(webOrigin = "https://console.example"),
+            dataSource,
+        )
+        val client = stack.client()
+        // A pmon login already in flight, started by the daemon.
+        val started = startDeviceLogin(stack)
+        val userCode = started.userCode
 
         // The unauthenticated /device page sends this exact continuation through the login page.
         val returnTo = "/device?user_code=${userCode.encodeURLParameter()}"
@@ -271,14 +284,14 @@ class OidcWebSessionDbTest {
         assertEquals(HttpStatusCode.Found, approve.status)
         assertEquals("https://console.example/device/success", approve.headers[HttpHeaders.Location])
 
-        val approved = deviceStore.get(started.handle)!!
+        val approved = deviceRow(dataSource, started.handle)
         assertEquals("APPROVED", approved.status)
         assertEquals(principal, approved.principal, "approved for the SSO principal, never a debug default")
         // The approving session's IdP refresh token must ride onto the device login, or the daemon session
         // minted at poll has nothing for its timer-driven IdP-liveness revalidation to run.
         assertEquals(
             "web-refresh-secret",
-            deviceStore.decryptRefresh(approved),
+            approved.refreshEnc?.let { String(ResultCrypto(ByteArray(32) { it.toByte() }).decrypt(it)) },
             "the IdP refresh token is carried onto the device login for daemon IdP-liveness",
         )
     }
@@ -286,19 +299,16 @@ class OidcWebSessionDbTest {
     @Test
     fun `a direct authorize link with no device-page confirm approves no handle`() = testApplication {
         requireDockerOrSkip()
-        val dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_oidc_web"))
-        Flyway.configure().dataSource(dataSource).load().migrate()
+        val dataSource = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_oidc_web"))
         val principal = "oidc-phish@example.com"
         callbackPrincipal.set(principal)
         val policyStore = PolicyStore(dataSource)
         val role = policyStore.createRole(RoleInput("oidc-phish-role"))
         policyStore.createAssignment(RoleAssignmentInput(principal, role.id))
 
-        val deviceStore = DeviceLoginStore(dataSource)
-        val started = deviceStore.createPending(intervalSec = 2, ttlSeconds = 3600, expiresAt = Instant.now().plusSeconds(600))
-
-        application { installOidcWebApp(config("openid email", resultKey = ByteArray(32) { it.toByte() }), dataSource) }
-        val client = createClient { expectSuccess = false; followRedirects = false; install(HttpCookies) }
+        val stack = stack(config("openid email", resultKey = ByteArray(32) { it.toByte() }), dataSource)
+        val client = stack.client()
+        val started = startDeviceLogin(stack)
 
         // The phishing shape: the victim is handed an authorize link for the ATTACKER's code and logs in
         // normally — but never confirmed that code on /device, so there is no verify cookie in this browser.
@@ -307,13 +317,28 @@ class OidcWebSessionDbTest {
         nonce.set(assertNotNull(query["nonce"]))
         assertEquals(HttpStatusCode.Found, client.get("/auth/oidc/callback?code=ok&state=${assertNotNull(query["state"])}").status)
 
-        val authorize = client.get("/auth/device/authorize?user_code=${started.userCode!!.encodeURLParameter()}")
+        val authorize = client.get("/auth/device/authorize?user_code=${started.userCode.encodeURLParameter()}")
         assertEquals(HttpStatusCode.Found, authorize.status)
         assertTrue(
             authorize.headers[HttpHeaders.Location]!!.startsWith("/device"),
             "an unconfirmed authorize bounces to the device page, got ${authorize.headers[HttpHeaders.Location]}",
         )
-        assertEquals("PENDING", deviceStore.get(started.handle)!!.status, "the attacker's handle is NOT approved by a victim's login")
+        assertEquals("PENDING", deviceRow(dataSource, started.handle).status, "the attacker's handle is NOT approved by a victim's login")
+    }
+
+    private fun startDeviceLogin(stack: CpGoStack): DeviceStartResponse = runBlocking {
+        val start = stack.client().post("/auth/device/start") { contentType(ContentType.Application.Json); setBody("{}") }
+        assertEquals(HttpStatusCode.OK, start.status)
+        MCP_TEST_JSON.decodeFromString<DeviceStartResponse>(start.bodyAsText())
+    }
+
+    private class DeviceRow(val status: String, val principal: String?, val refreshEnc: ByteArray?)
+
+    private fun deviceRow(dataSource: DataSource, handle: String): DeviceRow = dataSource.connection.use { c ->
+        c.prepareStatement("SELECT status, principal, refresh_token_enc FROM device_login WHERE handle = ?").use { ps ->
+            ps.setString(1, handle)
+            ps.executeQuery().use { rs -> assertTrue(rs.next()); DeviceRow(rs.getString(1), rs.getString(2), rs.getBytes(3)) }
+        }
     }
 
     private fun verifyCallback(
@@ -324,10 +349,10 @@ class OidcWebSessionDbTest {
         seedRole: Boolean = true,
         expectSession: Boolean = true,
         returnTo: String? = null,
+        expectAttributes: String = "{}",
     ) = testApplication {
         requireDockerOrSkip()
-        val dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_oidc_web"))
-        Flyway.configure().dataSource(dataSource).load().migrate()
+        val dataSource = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_oidc_web"))
         callbackPrincipal.set(principal)
         if (seedRole) {
             val policyStore = PolicyStore(dataSource)
@@ -335,13 +360,8 @@ class OidcWebSessionDbTest {
             policyStore.createAssignment(RoleAssignmentInput(principal, role.id))
         }
         val config = config(scopes, resultKey)
-        application { installOidcWebApp(config, dataSource) }
-        val client = createClient {
-            expectSuccess = false
-            followRedirects = false
-            install(HttpCookies)
-            install(DefaultRequest) { header("X-Forwarded-For", CALLER_ADDR) }
-        }
+        val stack = stack(config, dataSource)
+        val client = stack.client().config { defaultRequest { header("X-Forwarded-For", CALLER_ADDR) } }
 
         val login = client.get(
             if (returnTo == null) "/auth/oidc/login" else "/auth/oidc/login?return_to=${returnTo.encodeURLParameter()}",
@@ -352,6 +372,12 @@ class OidcWebSessionDbTest {
         nonce.set(assertNotNull(query["nonce"]))
         val callback = client.get("/auth/oidc/callback?code=ok&state=$state")
         assertEquals(HttpStatusCode.Found, callback.status)
+        dataSource.connection.use { c ->
+            c.prepareStatement("SELECT attributes::text FROM app_user WHERE principal = ?").use { ps ->
+                ps.setString(1, principal)
+                ps.executeQuery().use { rs -> assertTrue(rs.next()); assertEquals(expectAttributes, rs.getString(1)) }
+            }
+        }
         val setCookies = assertNotNull(callback.headers.getAll(HttpHeaders.SetCookie))
         if (!expectSession) {
             assertEquals("/login?error=no_access", callback.headers[HttpHeaders.Location])
@@ -431,52 +457,28 @@ class OidcWebSessionDbTest {
         }
     }
 
-    private fun Application.installOidcWebApp(config: Config, dataSource: DataSource) {
-        val http = oidcHttpClient()
+    private val stacks = mutableListOf<CpGoStack>()
+
+    @AfterEach
+    fun closeStacks() {
+        stacks.forEach { it.close() }
+        stacks.clear()
+    }
+
+    /** The control plane behind cp-go on [dataSource], with cp-go given the same OIDC settings as [config]. */
+    private fun stack(config: Config, dataSource: DataSource): CpGoStack {
         val oidc = requireNotNull(config.oidc)
-        val discovery = OidcDiscovery(http, oidc.issuer)
-        val validator = IdTokenValidator(discovery, oidc.issuer, oidc.clientId)
-        val store = PrincipalSessionStore(
-            dataSource,
-            config.resultKey?.let(::ResultCrypto),
-            config.webSessionIdleSeconds,
-            config.webSessionSlideSeconds,
+        val env = mapOf(
+            "PM_OIDC_ISSUER" to oidc.issuer,
+            "PM_OIDC_CLIENT_ID" to oidc.clientId,
+            "PM_OIDC_CLIENT_SECRET" to oidc.clientSecret,
+            "PM_OIDC_REDIRECT_URI" to oidc.redirectUri,
+            "PM_OIDC_SCOPES" to oidc.scopes,
+            "PM_OIDC_USER_ATTRIBUTES" to oidc.userAttributes.joinToString(",") { "${it.name}:${it.type.cedar}" },
+            "PM_TRUSTED_PROXIES" to "127.0.0.1",
         )
-        val userGroupStore = UserGroupStore(dataSource)
-        val roleResolver = RoleResolver(dataSource, userGroupStore, AccessStore(dataSource))
-        val deviceLoginStore = DeviceLoginStore(dataSource, config.resultKey?.let(::ResultCrypto))
-        attributes.put(PRINCIPAL_SESSION_STORE, store)
-        install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
-        install(Sessions) {
-            webSessionCookie(store, config.sessionSecret) {
-                cookie.maxAgeInSeconds = config.webSessionAbsoluteSeconds
-            }
-            cookie<OAuthStateSession>(OAUTH_STATE_COOKIE) {
-                serializer = jsonSessionSerializer()
-                transform(SessionTransportTransformerMessageAuthentication(config.sessionSecret.toByteArray()))
-            }
-            cookie<OAuthNonceSession>(OAUTH_NONCE_COOKIE) {
-                serializer = jsonSessionSerializer()
-                transform(SessionTransportTransformerMessageAuthentication(config.sessionSecret.toByteArray()))
-            }
-            cookie<DeviceVerifySession>(DEVICE_VERIFY_COOKIE) {
-                serializer = jsonSessionSerializer()
-                transform(SessionTransportTransformerMessageAuthentication(config.sessionSecret.toByteArray()))
-            }
-            // oidcRoutes clears this on every login and every callback, so it must be registered
-            // even when the IdP advertises no PKCE — an unregistered session name throws.
-            cookie<OAuthVerifierSession>(OAUTH_VERIFIER_COOKIE) {
-                serializer = jsonSessionSerializer()
-                transform(SessionTransportTransformerMessageAuthentication(config.sessionSecret.toByteArray()))
-            }
-        }
-        routing {
-            val authAudit = AuthAuditRecorder(AuditStore(dataSource))
-            oidcRoutes(config, discovery, validator, http, userGroupStore, roleResolver, store, authAudit, environment.log)
-            deviceSessionRoutes(
-                config, deviceLoginStore, store, TokenStore(dataSource), userGroupStore, authAudit, environment.log,
-            )
-        }
+        val database = (dataSource as HikariDataSource).jdbcUrl.substringAfterLast('/')
+        return CpGoStack(config, ControlPlaneCore(dataSource), database, extraEnv = env).also(stacks::add)
     }
 
     private fun config(scopes: String, resultKey: ByteArray?) = Config(
@@ -494,6 +496,7 @@ class OidcWebSessionDbTest {
             redirectUri = "http://control-plane.test/auth/oidc/callback",
             scopes = scopes,
             groupMapping = OidcGroupMapping(emptyMap(), null),
+            userAttributes = UserAttribute.parseList("manager:User"),
         ),
         resultKey = resultKey,
         scimToken = null,
@@ -511,9 +514,11 @@ class OidcWebSessionDbTest {
             .issuer(issuer)
             .subject("oidc-user")
             .audience("oidc-web-client")
+            .issueTime(Date())
             .expirationTime(Date(System.currentTimeMillis() + 300_000))
             .claim("nonce", expectedNonce)
             .claim("email", callbackPrincipal.get())
+            .apply { callbackManager.get()?.let { claim("manager", it) } }
             .build()
         return SignedJWT(JWSHeader.Builder(JWSAlgorithm.RS256).keyID(key.keyID).build(), claims).also {
             it.sign(RSASSASigner(key))

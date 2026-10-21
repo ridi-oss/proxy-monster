@@ -5,6 +5,7 @@ import io.grpc.Server
 import io.grpc.ServerInterceptors
 import io.grpc.netty.shaded.io.grpc.netty.NettyServerBuilder
 import org.slf4j.LoggerFactory
+import java.net.InetSocketAddress
 import java.util.concurrent.TimeUnit
 
 /**
@@ -21,11 +22,12 @@ class GrpcServer(
     // service", which lets tests bind a probe handler without opening the production class.
     service: ControlPlaneGrpcKt.ControlPlaneCoroutineImplBase,
     secretToken: String?,
+    host: String = "0.0.0.0",
 ) {
     private val log = LoggerFactory.getLogger(GrpcServer::class.java)
     private val secretTokenConfigured = secretToken != null
 
-    private val server: Server = NettyServerBuilder.forPort(port)
+    private val server: Server = NettyServerBuilder.forAddress(InetSocketAddress(host, port))
         // A full PushCatalog (every column, system schemas included) can exceed gRPC's 4 MiB default inbound
         // limit on a large database — raise it so a big catalog pushes in one unary call instead of failing
         // and falling into the proxy's empty-catalog fail-closed boot state.

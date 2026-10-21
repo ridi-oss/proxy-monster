@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ridi-oss/proxy-monster/pmon/state"
+	"github.com/ridi-oss/proxy-monster/pmon/internal/state"
 )
 
 // Backend is what the daemon implements for the control API to drive. It exists so the socket server holds no
@@ -22,17 +22,31 @@ type Backend interface {
 	// Login runs a device-auth flow, reporting each step through onEvent. It returns when the flow finishes.
 	Login(ctx context.Context, req LoginRequest, onEvent func(LoginEvent)) error
 	// Logout clears credentials and closes brokers, leaving the daemon running.
-	Logout(req LogoutRequest) error
+	Logout(req LogoutRequest) ([]string, error)
 	// SetServer creates a server or changes its URL.
 	SetServer(req SetServerRequest) (SetServerResult, error)
 	// UnsetServer logs a server out and deletes it.
-	UnsetServer(req UnsetServerRequest) error
+	UnsetServer(req UnsetServerRequest) ([]string, error)
+	// SetDefault makes a server the one a command addresses when it names none.
+	SetDefault(req SetDefaultRequest) error
+	// RenameServer renames a server, keeping its login and sticky ports.
+	RenameServer(ctx context.Context, req RenameServerRequest) (RenameServerResult, error)
+	// AddRemote saves an SSH target and keeps a connection to its daemon.
+	AddRemote(req RemoteRequest) error
+	// RemoveRemote closes a remote's connection and forgets it.
+	RemoveRemote(req RemoteRequest) error
+	// ReconnectRemote makes a remote that is not connected try again now.
+	ReconnectRemote(req RemoteRequest) error
+	// StartRemote starts the pmon daemon on a connected remote and returns once it answers.
+	StartRemote(ctx context.Context, req RemoteRequest) error
 	// Reload forces an immediate rediscovery.
 	Reload()
 	// Subscribe opens a state-change stream; the returned cancel must be called when the stream ends.
 	Subscribe() (<-chan Event, func())
 	// Shutdown asks the daemon to exit gracefully.
 	Shutdown()
+	// MCPToken mints an MCP access token from a server's login.
+	MCPToken(ctx context.Context, req MCPTokenRequest) (MCPToken, error)
 }
 
 // Server serves the control API on the daemon's unix socket.
@@ -83,9 +97,18 @@ func Listen(backend Backend) (*Server, error) {
 	mux.HandleFunc(PathLogout, s.handleLogout)
 	mux.HandleFunc(PathServerSet, s.handleServerSet)
 	mux.HandleFunc(PathServerUnset, s.handleServerUnset)
+	mux.HandleFunc(PathServerDefault, s.handleServerDefault)
+	mux.HandleFunc(PathServerRename, s.handleServerRename)
+	mux.HandleFunc(PathRemoteAdd, s.remoteHandler(s.backend.AddRemote))
+	mux.HandleFunc(PathRemoteRemove, s.remoteHandler(s.backend.RemoveRemote))
+	mux.HandleFunc(PathRemoteReconnect, s.remoteHandler(s.backend.ReconnectRemote))
+	mux.HandleFunc(PathRemoteStart, func(w http.ResponseWriter, r *http.Request) {
+		s.remoteHandler(func(req RemoteRequest) error { return s.backend.StartRemote(r.Context(), req) })(w, r)
+	})
 	mux.HandleFunc(PathReload, s.handleReload)
 	mux.HandleFunc(PathShutdown, s.handleShutdown)
 	mux.HandleFunc(PathEvents, s.handleEvents)
+	mux.HandleFunc(PathMCPToken, s.handleMCPToken)
 	s.srv = &http.Server{Handler: mux}
 	return s, nil
 }
@@ -179,11 +202,12 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if r.Body != nil {
 		_ = json.NewDecoder(r.Body).Decode(&req) // an empty body logs out the default server
 	}
-	if err := s.backend.Logout(req); err != nil {
+	notEnded, err := s.backend.Logout(req)
+	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, s.backend.Status())
+	writeJSON(w, http.StatusOK, LogoutResult{Status: s.backend.Status(), NotEndedOnServer: notEnded})
 }
 
 func (s *Server) handleServerSet(w http.ResponseWriter, r *http.Request) {
@@ -212,11 +236,63 @@ func (s *Server) handleServerUnset(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	if err := s.backend.UnsetServer(req); err != nil {
+	notEnded, err := s.backend.UnsetServer(req)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, LogoutResult{Status: s.backend.Status(), NotEndedOnServer: notEnded})
+}
+
+func (s *Server) handleServerDefault(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	var req SetDefaultRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.backend.SetDefault(req); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, s.backend.Status())
+}
+
+func (s *Server) remoteHandler(apply func(RemoteRequest) error) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !requireMethod(w, r, http.MethodPost) {
+			return
+		}
+		var req RemoteRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := apply(req); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, s.backend.Status())
+	}
+}
+
+func (s *Server) handleServerRename(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	var req RenameServerRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	res, err := s.backend.RenameServer(r.Context(), req)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 func (s *Server) handleReload(w http.ResponseWriter, r *http.Request) {
@@ -236,6 +312,22 @@ func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
 		f.Flush()
 	}
 	s.backend.Shutdown()
+}
+
+func (s *Server) handleMCPToken(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	var req MCPTokenRequest
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&req) // an empty body names the default server
+	}
+	tok, err := s.backend.MCPToken(r.Context(), req)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, tok)
 }
 
 // eventKeepalive bounds how long /events can sit silent, so a peer notices a dead socket promptly.

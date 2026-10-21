@@ -36,11 +36,11 @@ every admin API. The client learns the viewer's coarse capabilities from
   a target) and returned over the table-detail channel — MySQL
   `information_schema` + `SHOW INDEX` / `SHOW TABLE STATUS`, PostgreSQL
   `information_schema` + `pg_index`/`pg_constraint`/`pg_class`
-  (`goproxy/dialects/table_detail.go`); the control-plane overlays persisted
-  column classification onto that payload. The admin Refresh
-  (`POST /api/datasources/{id}/refresh`) nudges catalog freshness. A Data tab
-  runs `SELECT * … LIMIT 100` through the same enforced editor session so
-  masking and deny apply — not a bypass of the policy engine.
+  (`goproxy/mysql/tabledetail.go`, `goproxy/postgres/tabledetail.go`); the
+  control-plane overlays persisted column classification onto that payload. The
+  admin Refresh (`POST /api/datasources/{id}/refresh`) nudges catalog freshness.
+  A Data tab runs `SELECT * … LIMIT 100` through the same enforced editor
+  session so masking and deny apply — not a bypass of the policy engine.
 - A logs tab (`query-logs` in `result-tabs`): a SQL-console-style log of
   statements run this session — statement text, ALLOW/MASK/DENY with deny
   reason, rows, latency, errors, timestamp.

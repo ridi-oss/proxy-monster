@@ -9,7 +9,6 @@ import com.ridi.oss.proxymonster.auth.RefreshTokenInput
 import com.ridi.oss.proxymonster.auth.pkceS256
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
@@ -31,8 +30,7 @@ class McpOAuthStoreDbTest {
     @BeforeAll
     fun setUp() {
         requireDockerOrSkip()
-        dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_mcp_oauth"))
-        Flyway.configure().dataSource(dataSource).load().migrate()
+        dataSource = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_mcp_oauth"))
         store = OAuthAuthorizationStore(dataSource)
         tokens = McpTokenStore(dataSource)
     }

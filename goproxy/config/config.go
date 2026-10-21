@@ -4,15 +4,19 @@
 package config
 
 import (
+	"crypto/tls"
 	"fmt"
 	"net"
+	"net/netip"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/alecthomas/kong"
-	"github.com/ridi-oss/proxy-monster/goproxy/engine"
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
+	"github.com/ridi-oss/proxy-monster/goproxy/targettls"
 )
 
 // rawFlags is the kong grammar: every field is bound to its PM_* environment variable. This struct is
@@ -29,15 +33,20 @@ type rawFlags struct {
 	TargetDb               string `env:"PM_TARGET_DB" default:"acme"`
 	TargetUser             string `env:"PM_TARGET_USER" default:"acme"`
 	TargetPassword         string `env:"PM_TARGET_PASSWORD" default:"acme"`
+	TargetTLS              string `env:"PM_TARGET_TLS"`
+	TargetCA               string `env:"PM_TARGET_CA"`
 	ControlPlaneGrpcTarget string `env:"PM_CONTROL_PLANE_GRPC" default:"localhost:9090"`
 	DatasourceName         string `env:"PM_DATASOURCE_NAME"`
 	DatasourceTags         string `env:"PM_DATASOURCE_TAGS"`
+	DatasourceDescription  string `env:"PM_DATASOURCE_DESCRIPTION"`
 	AdvertiseAddr          string `env:"PM_ADVERTISE_ADDR"`
 	SecretToken            string `env:"PM_SECRET_TOKEN"`
 	TLSCertPath            string `env:"PM_TLS_CERT"`
 	TLSKeyPath             string `env:"PM_TLS_KEY"`
 	TLSNoAdvertise         string `env:"PM_TLS_NO_ADVERTISE"`
 	QueryTimeout           string `env:"PM_QUERY_TIMEOUT"`
+	ProxyProtocolPort      string `env:"PM_PROXY_PROTOCOL_PORT"`
+	TrustedProxies         string `env:"PM_TRUSTED_PROXIES"`
 }
 
 // parsePort turns a blank, non-numeric, or out-of-range value into 0, which Load() then replaces with the
@@ -66,24 +75,31 @@ func blankToAbsent(s string) string {
 	return s
 }
 
+// MaxDatasourceDescription matches the control plane's Register limit.
+const MaxDatasourceDescription = 500
+
 // Config is the proxy's normalized configuration. A blank string field means "absent"; there is no
 // separate presence flag.
 type Config struct {
-	// Engine is the raw, lowercased PM_ENGINE value — the genuine string source kept for error messages
-	// and the boot log. Dialect is the typed form every downstream consumer uses; the string is parsed to
-	// it exactly once, here at the config boundary.
-	Engine                 string
-	Dialect                engine.Dialect
-	Provider               spi.Provider
-	ProxyPort              int
-	TargetHost             string
-	TargetPort             int
-	TargetDb               string
-	TargetUser             string
-	TargetPassword         string
+	// EngineName is the raw, lowercased PM_ENGINE value, kept for error messages and the boot log. Engine is
+	// what every downstream consumer uses; the string is parsed to it exactly once, here at the config boundary.
+	EngineName     string
+	Engine         *engines.Engine
+	Provider       spi.Provider
+	ProxyPort      int
+	TargetHost     string
+	TargetPort     int
+	TargetDb       string
+	TargetUser     string
+	TargetPassword string
+	// TargetTLS is the proxy's TLS config toward the target DB (PM_TARGET_TLS, PM_TARGET_CA); nil is plaintext.
+	TargetTLS              *tls.Config
 	ControlPlaneGrpcTarget string
 	DatasourceName         string
 	DatasourceTags         []string
+	// DatasourceDescription is one line telling people and agents what the datasource holds. Sent on every
+	// Register, so unsetting it clears the stored value.
+	DatasourceDescription string
 	// AdvertiseAddr is the client-facing host:port a wire client (pmon) dials to reach THIS proxy — distinct
 	// from Target* (the upstream db). Registered with the control plane so GET /api/datasources can hand a
 	// client the per-datasource connect address. NO default: empty unless PM_ADVERTISE_ADDR is set (the proxy
@@ -98,8 +114,10 @@ type Config struct {
 	// already distributed by your fleet management) and you would rather not publish the certificate through
 	// the console at all. Advertising is otherwise harmless — a leaf and its issuers are public material — so
 	// this exists for deployments that prefer the control plane hold nothing it does not need.
-	TLSNoAdvertise bool
-	QueryTimeout   time.Duration
+	TLSNoAdvertise    bool
+	QueryTimeout      time.Duration
+	ProxyProtocolPort int
+	TrustedProxies    []netip.Prefix
 }
 
 // Load reads the proxy configuration from the environment, applying the engine-dependent port defaults
@@ -120,20 +138,20 @@ func Load(registry spi.Registry) (*Config, error) {
 	}
 
 	engineName := strings.ToLower(raw.Engine)
-	dialect, parseErr := engine.ParseDialect(engineName)
+	e, parseErr := engines.Parse(engineName)
 	var provider spi.Provider
 	if parseErr == nil {
-		provider, _ = registry.For(dialect)
+		provider, _ = registry.For(e)
 	}
 
 	proxyPort := parsePort(raw.ProxyPort)
 	if proxyPort == 0 && provider != nil {
-		proxyPort = dialect.DefaultProxyPort()
+		proxyPort = e.DefaultProxyPort
 	}
 
 	targetPort := parsePort(raw.TargetPort)
 	if targetPort == 0 && provider != nil {
-		targetPort = dialect.DefaultTargetPort()
+		targetPort = e.DefaultTargetPort
 	}
 
 	queryTimeout := 600 * time.Second
@@ -147,6 +165,24 @@ func Load(registry spi.Registry) (*Config, error) {
 			return nil, fmt.Errorf("PM_QUERY_TIMEOUT is too large, got %q", raw.QueryTimeout)
 		}
 		queryTimeout = time.Duration(seconds) * time.Second
+	}
+
+	proxyProtocolPort := parsePort(raw.ProxyProtocolPort)
+	if proxyProtocolPort == 0 && strings.TrimSpace(raw.ProxyProtocolPort) != "" {
+		return nil, fmt.Errorf("PM_PROXY_PROTOCOL_PORT=%q has an invalid port (want 1-65535)", raw.ProxyProtocolPort)
+	}
+	trustedProxies, err := parseTrustedProxies(raw.TrustedProxies)
+	if err != nil {
+		return nil, err
+	}
+
+	targetTLSMode, err := targettls.ParseMode(raw.TargetTLS)
+	if err != nil {
+		return nil, err
+	}
+	targetTLS, err := targettls.Config(targetTLSMode, raw.TargetCA, raw.TargetHost)
+	if err != nil {
+		return nil, err
 	}
 
 	var tags []string
@@ -165,8 +201,8 @@ func Load(registry spi.Registry) (*Config, error) {
 	advertiseAddr := strings.TrimSpace(raw.AdvertiseAddr)
 
 	return &Config{
-		Engine:                 engineName,
-		Dialect:                dialect,
+		EngineName:             engineName,
+		Engine:                 e,
 		Provider:               provider,
 		ProxyPort:              proxyPort,
 		TargetHost:             raw.TargetHost,
@@ -174,18 +210,46 @@ func Load(registry spi.Registry) (*Config, error) {
 		TargetDb:               raw.TargetDb,
 		TargetUser:             raw.TargetUser,
 		TargetPassword:         raw.TargetPassword,
+		TargetTLS:              targetTLS,
 		ControlPlaneGrpcTarget: raw.ControlPlaneGrpcTarget,
 		// A whitespace-only value is absent, so Validate()/TLSEnabled() treat it as unset rather than a
 		// usable name/path.
-		DatasourceName: blankToAbsent(raw.DatasourceName),
-		DatasourceTags: tags,
-		AdvertiseAddr:  advertiseAddr,
-		SecretToken:    raw.SecretToken,
-		TLSCertPath:    blankToAbsent(raw.TLSCertPath),
-		TLSKeyPath:     blankToAbsent(raw.TLSKeyPath),
-		TLSNoAdvertise: parseBoolEnv(raw.TLSNoAdvertise),
-		QueryTimeout:   queryTimeout,
+		DatasourceName:        blankToAbsent(raw.DatasourceName),
+		DatasourceTags:        tags,
+		DatasourceDescription: strings.TrimSpace(raw.DatasourceDescription),
+		AdvertiseAddr:         advertiseAddr,
+		SecretToken:           raw.SecretToken,
+		TLSCertPath:           blankToAbsent(raw.TLSCertPath),
+		TLSKeyPath:            blankToAbsent(raw.TLSKeyPath),
+		TLSNoAdvertise:        parseBoolEnv(raw.TLSNoAdvertise),
+		QueryTimeout:          queryTimeout,
+		ProxyProtocolPort:     proxyProtocolPort,
+		TrustedProxies:        trustedProxies,
 	}, nil
+}
+
+func parseTrustedProxies(raw string) ([]netip.Prefix, error) {
+	var prefixes []netip.Prefix
+	for _, entry := range strings.Split(raw, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		if prefix, err := netip.ParsePrefix(entry); err == nil {
+			prefixes = append(prefixes, prefix.Masked())
+			continue
+		}
+		addr, err := netip.ParseAddr(entry)
+		if err != nil {
+			return nil, fmt.Errorf("PM_TRUSTED_PROXIES entry %q is neither an IP address nor a CIDR block", entry)
+		}
+		prefixes = append(prefixes, netip.PrefixFrom(addr, addr.BitLen()))
+	}
+	return prefixes, nil
+}
+
+func (c *Config) Listen() spi.Listen {
+	return spi.Listen{Port: c.ProxyPort, ProxyProtocolPort: c.ProxyProtocolPort, TrustedProxies: c.TrustedProxies}
 }
 
 // parseBoolEnv treats the usual truthy spellings as true and anything else — including blank — as false, so
@@ -205,12 +269,12 @@ func (c *Config) TLSEnabled() bool {
 }
 
 // Validate runs the three fail-closed boot checks IN ORDER, so a typo'd PM_ENGINE can never clobber a
-// live datasource's stored dialect via a stray register call.
+// live datasource's stored engine via a stray register call.
 func (c *Config) Validate() error {
 	// (1) The datasource identity is required — otherwise boot would start and NOT_FOUND every query
 	// instead of failing fast.
 	if c.DatasourceName == "" {
-		return fmt.Errorf("PM_DATASOURCE_NAME is required for the %s proxy (which datasource it fronts)", c.Engine)
+		return fmt.Errorf("PM_DATASOURCE_NAME is required for the %s proxy (which datasource it fronts)", c.EngineName)
 	}
 
 	// (2) Fail closed on a partial TLS config — a typo'd/empty env var must not silently boot plaintext.
@@ -220,8 +284,8 @@ func (c *Config) Validate() error {
 
 	// (3) Validate the engine BEFORE any register. The injected registry is the supported-engine authority;
 	// adding a provider changes only its wiring row, not config or the engine core.
-	if !c.Dialect.Valid() || c.Provider == nil {
-		return fmt.Errorf("unsupported PM_ENGINE=%s", c.Engine)
+	if c.Engine == nil || c.Provider == nil {
+		return fmt.Errorf("unsupported PM_ENGINE=%s", c.EngineName)
 	}
 
 	// (4) A configured advertise address must be a real host:port (port 1-65535) — a typo would register a
@@ -234,6 +298,19 @@ func (c *Config) Validate() error {
 		if p, perr := strconv.Atoi(port); perr != nil || p < 1 || p > 65535 {
 			return fmt.Errorf("PM_ADVERTISE_ADDR=%q has an invalid port (want 1-65535)", c.AdvertiseAddr)
 		}
+	}
+
+	if c.ProxyProtocolPort != 0 {
+		if len(c.TrustedProxies) == 0 {
+			return fmt.Errorf("PM_PROXY_PROTOCOL_PORT needs PM_TRUSTED_PROXIES: with no trusted sender, no connection there could ever be accepted")
+		}
+		if c.ProxyProtocolPort == c.ProxyPort {
+			return fmt.Errorf("PM_PROXY_PROTOCOL_PORT=%d must differ from the plain wire port", c.ProxyProtocolPort)
+		}
+	}
+
+	if len([]rune(c.DatasourceDescription)) > MaxDatasourceDescription || strings.IndexFunc(c.DatasourceDescription, unicode.IsControl) >= 0 {
+		return fmt.Errorf("PM_DATASOURCE_DESCRIPTION must be one line of at most %d characters", MaxDatasourceDescription)
 	}
 
 	return nil

@@ -48,7 +48,8 @@ discovery (`OidcDiscovery.kt`), so the flow is provider-agnostic:
                       issued) at the IdP /token
                       → VALIDATE id_token (IdTokenValidator): JWKS signature, iss, aud, exp, AND nonce
                       → principal = email ?? sub
-                      → JIT-provision the app_user (+ map groups claim → local groups)
+                      → JIT-provision the app_user (+ map groups claim → local groups,
+                        + store the PM_OIDC_USER_ATTRIBUTES claims)
                       → set signed-cookie session { principal }
 ```
 
@@ -66,6 +67,36 @@ discovery (`OidcDiscovery.kt`), so the flow is provider-agnostic:
   roles. Roles come from `RoleResolver` over the local directory, never from the
   token.
 
+### User attributes
+
+`PM_OIDC_USER_ATTRIBUTES` copies named id_token claims onto the Cedar `User`
+entity, as optional attributes of the same name. Types are `String`, `Long`,
+`Bool`, `Set<String>`, and `User` (a principal name, compared as an entity):
+
+```
+PM_OIDC_USER_ATTRIBUTES=manager:User,department:String
+```
+
+Route each approval to the requester's manager, with no per-team policy.
+`task.read` lets the manager open the request from their inbox:
+
+```cedar
+permit (principal, action in [Action::"task.approve", Action::"task.read"], resource is Request)
+when { resource.requester has manager && resource.requester.manager == principal };
+```
+
+- Values are stored on `app_user.attributes` at every login and daemon refresh.
+  A claim that is absent or of the wrong type removes the attribute. A change in
+  the IdP takes effect at the user's next login.
+- A `User` value must use the same form as the principal (`email`, else `sub`).
+  In Okta, add an app token claim `manager` = `user.profile.managerId` when
+  `managerId` holds the manager's email.
+- Cedar types `has <undeclared>` as false. A policy that reads an attribute
+  removed from the list stops matching instead of failing to load, and `/health`
+  lists it.
+- A run under a task's frozen `execute_as` roles carries neither groups nor
+  attributes.
+
 ## CLI / daemon login — web verification page
 
 `pmon login` follows the familiar device-code flow: the browser authenticates
@@ -76,8 +107,9 @@ polls; the IdP is reached in the browser via the ordinary auth-code flow, never
 a device grant.
 
 ```
-pmon:  POST /auth/device/start
-cp:    → mint a PENDING login: an opaque handle (pmon polls it) + a short user_code (shown to the human)
+pmon:  POST /auth/device/start { ttlSeconds, scopes? }
+cp:    → refuse an unknown scope (device.unknown_scope); no list means mcp:read + mcp:query
+       → mint a PENDING login: an opaque handle (pmon polls it) + a short user_code (shown to the human)
        → return { verificationUri={origin}/device, verificationUriComplete={origin}/device?user_code=…, userCode, handle, interval }
 pmon:  print the plain URL + the code (best-effort auto-open uses the complete URL, which prefills it),
        then POST /auth/device/poll { handle } every interval
@@ -85,11 +117,15 @@ user:  open /device (web)
 web:   signed in already? → show the code field
        not signed in?     → /login?return_to=/device… → SSO or debug → back to /device
 user:  confirm the prefilled code, or type the code from the terminal → Continue
-web:   POST /auth/device/confirm { userCode }   → CP validates it's a live pending login, sets the verify cookie
+web:   POST /auth/device/confirm { userCode }   → CP validates it's a live pending login, sets the verify cookie,
+       and answers { scopes, elevatedTtlSeconds }
+       scopes beyond mcp:read + mcp:query? → list each in plain words with its window → Approve
        → GET /auth/device/authorize?user_code=…
 cp:    approve the handle with the same live session that confirmed the code → 302 /device/success
+       extra scopes? → stamp elevated_until = now + PM_ELEVATED_SCOPE_TTL
        session missing or replaced? → back to /device to authenticate and confirm again
        → /auth/device/poll: 202 while PENDING; once approved, mint a wire SESSION token (one-time claim per handle)
+         and copy the scopes + elevated_until onto the daemon session
 pmon:  store the wire token; open the loopback brokers (one per datasource) immediately
 ```
 
@@ -119,6 +155,11 @@ pmon:  store the wire token; open the loopback brokers (one per datasource) imme
   confirmed, and a replaced session must authenticate and confirm again. The
   residual (a victim who confirms someone else's code anyway) is tracked in
   `docs/backlog.md`.
+- **Scopes are consented in the browser.** `pmon login --scopes` only asks; the
+  `/device` page shows every scope beyond `mcp:read` and `mcp:query`, and only
+  the human's approval grants them, for `PM_ELEVATED_SCOPE_TTL` from that
+  approval. The daemon session uses them to mint MCP tokens
+  ([mcp-access-control.md](./mcp-access-control.md#pmon-session-exchange)).
 - **Session renewal (decided).** A login opens a **session window**
   (`PM_SESSION_WINDOW`, default 2h). _Within_ it the daemon **silently
   re-mints** its wire SESSION token — **no re-prompt**. _After_ it, renewal is
@@ -147,6 +188,35 @@ pmon:  store the wire token; open the loopback brokers (one per datasource) imme
     local-admin deprovision path (§ SCIM), which revokes wire tokens, JIT
     grants, daemon windows, and web rows together. Bounded staleness = the
     interval; the session window is the hard cap.
+
+## CI OIDC token exchange
+
+A CI job (GitHub Actions, or any CI that issues OIDC tokens) exchanges its OIDC
+JWT for a control-plane bearer token at `POST /api/workload/token` with body
+`{"token": "<JWT>"}`.
+
+- **Trusted issuers.** `PM_CI_OIDC_ISSUERS=<name>=<issuerUrl>,…`, e.g.
+  `github=https://token.actions.githubusercontent.com`. `name` is `[a-z0-9-]`,
+  unique; the issuer URL must be HTTPS. Unset or empty turns the endpoint off
+  (404 `workload.not_configured`).
+- **Audience.** `PM_CI_OIDC_AUDIENCE`, one value for every issuer since it names
+  this control plane. It defaults to the public origin of `PM_MCP_RESOURCE`,
+  e.g. `https://pm.example.com`.
+- **Checks.** `iss` must be a configured issuer; the RS256 signature verifies
+  against that issuer's JWKS (from its discovery document); `aud` contains the
+  configured audience; `exp`, `nbf`, and `iat` hold within 60s of skew; `sub` is
+  present. An untrusted issuer answers 401 `workload.issuer_not_trusted`; any
+  other failure answers 401 `common.invalid_token`.
+- **Result.** A `WORKLOAD` token (`pmw_`, 15 minutes). Only the
+  `requireWorkload` gate accepts it; it never passes the wire handshake, the
+  per-query `Decide`, or the datasource bearer path. A token whose issuer is
+  removed from `PM_CI_OIDC_ISSUERS` stops working.
+- **Audit.** `auth.workload.exchange` on the `workload` channel: SUCCESS names
+  `workload:<name>` with the kept claims; FAILURE is unattributed (`unknown`).
+- **Principal.** `Workload::"<name>"` with `issuer` (the issuer URL) and the
+  token's `repository`, `repository_id`, `ref`, `base_ref`, `workflow_ref`,
+  `event_name`, and `actor` claims as optional attributes; other claims are
+  dropped. A Workload is a principal only for `task.request`.
 
 ## SCIM 2.0 provisioning — IdP → local directory (opt-in)
 

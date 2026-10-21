@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.auth.sha256Hex
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
 import com.ridi.oss.proxymonster.controlplane.management.AuditActor
 import com.ridi.oss.proxymonster.controlplane.management.AuditSource
@@ -8,7 +9,6 @@ import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.auditChainHead
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.controlplane.support.verifyAuditChain
-import org.flywaydb.core.Flyway
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
@@ -37,8 +37,7 @@ class JitApprovalAuditDbTest {
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_jit_approval_audit"))
-        Flyway.configure().dataSource(dataSource).load().migrate()
+        dataSource = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_jit_approval_audit"))
         core = ControlPlaneCore(dataSource)
         recorder = ManagementAuditRecorder(core.auditStore)
         role = core.policyStore.createRole(RoleInput("jit-audit-role"))
@@ -107,13 +106,38 @@ class JitApprovalAuditDbTest {
         )
         assertEvent(actor.principal, AuthzAction.TASK_REQUEST, "AccessRequest::\"${request.id}\"", "open query request #${request.id} under role '${role.name}'")
 
-        val approved = core.accessStore.decideQueryRequest(request.id, approved = true, rejectionReason = null, decidedBy = "approver@example.com", actor = actor, recorder = recorder)
+        val approved = core.accessStore.decideQueryRequest(request.id, approved = true, rejectionReason = null, decidedBy = "approver@example.com", actor = actor, recorder = recorder, revision = 1)
         assertEquals("APPROVED", approved?.status)
-        assertEvent(actor.principal, AuthzAction.TASK_APPROVE, "AccessRequest::\"${request.id}\"", "approve query request #${request.id} under role '${role.name}'")
+        assertEvent(actor.principal, AuthzAction.TASK_APPROVE, "AccessRequest::\"${request.id}\"", "approve query request #${request.id} revision 1 under role '${role.name}'")
 
         val toReject = seedQueryRequest()
-        core.accessStore.decideQueryRequest(toReject.id, approved = false, rejectionReason = "no", decidedBy = "approver@example.com", actor = actor, recorder = recorder)
-        assertEvent(actor.principal, AuthzAction.TASK_APPROVE, "AccessRequest::\"${toReject.id}\"", "reject query request #${toReject.id}")
+        core.accessStore.decideQueryRequest(toReject.id, approved = false, rejectionReason = "no", decidedBy = "approver@example.com", actor = actor, recorder = recorder, revision = 1)
+        assertEvent(actor.principal, AuthzAction.TASK_APPROVE, "AccessRequest::\"${toReject.id}\"", "reject query request #${toReject.id} revision 1")
+        verifyAuditChain(dataSource)
+    }
+
+    @Test
+    fun `a query edit records one admin event, and the approval names the new revision`() {
+        val actor = actor()
+        val request = seedQueryRequest()
+        core.accessStore.decideQueryRequest(request.id, approved = true, rejectionReason = null, decidedBy = "approver@example.com", actor = actor, recorder = recorder, revision = 1)
+
+        val edited = core.accessStore.editQueryRequest(
+            request.id, listOf("select 2"), RequestEdit(contentHash = "h", denyReason = null, evaluatedDecision = "ALLOW", carriesProtectedLiteral = false),
+            actor, recorder,
+        )
+        assertEquals("PENDING", edited?.status)
+        assertEquals(2, edited?.revision)
+        assertEquals(null, edited?.decidedBy)
+        assertEquals("select 2", edited?.sql)
+        assertEvent(
+            actor.principal, AuthzAction.TASK_REQUEST, "AccessRequest::\"${request.id}\"",
+            "edit query request #${request.id} to revision 2 (sql ${sha256Hex("select 2").take(12)})",
+        )
+
+        assertEquals(null, core.accessStore.decideQueryRequest(request.id, approved = true, rejectionReason = null, decidedBy = "approver@example.com", actor = actor, recorder = recorder, revision = 1))
+        assertEquals("APPROVED", core.accessStore.decideQueryRequest(request.id, approved = true, rejectionReason = null, decidedBy = "approver@example.com", actor = actor, recorder = recorder, revision = 2)?.status)
+        assertEvent(actor.principal, AuthzAction.TASK_APPROVE, "AccessRequest::\"${request.id}\"", "approve query request #${request.id} revision 2 under role '${role.name}'")
         verifyAuditChain(dataSource)
     }
 

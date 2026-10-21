@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"net"
 	"reflect"
 	"strings"
@@ -13,11 +12,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
+	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
+
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/ridi-oss/proxy-monster/goproxy/cp"
-	"github.com/ridi-oss/proxy-monster/goproxy/engine"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/run"
@@ -103,12 +104,12 @@ func tableDetailRun(
 	t *testing.T,
 	tableDetailClient *cp.Client,
 	tableDetailFake *tableDetailFakeCP,
-	tableDetailDb spi.Db,
+	tableDetailTarget spi.Target,
 	tableDetailSessionID, catalog, schema, table string,
 ) *pb.ProxyTableDetailMsg {
 	t.Helper()
 	tableDetailFake.tableDetailExpect(tableDetailSessionID)
-	run.NewTableDetailRunner(tableDetailClient, tableDetailDb).Run(tableDetailSessionID, &enginepb.ObjectRef{Catalog: catalog, Schema: schema, Table: table})
+	run.NewRunner(tableDetailClient, tableDetailTarget, 0).RunTableDetail(tableDetailSessionID, &enginepb.ObjectRef{Catalog: catalog, Schema: schema, Table: table})
 	select {
 	case tableDetailObservation := <-tableDetailFake.observed:
 		if tableDetailObservation.err != nil {
@@ -124,13 +125,13 @@ func tableDetailRun(
 	}
 }
 
-func tableDetailTargetDb(tableDetailDBTargetDb dbtest.TargetDb) spi.TargetDb {
-	return spi.TargetDb{
-		Host:     tableDetailDBTargetDb.Host,
-		Port:     tableDetailDBTargetDb.Port,
-		Db:       tableDetailDBTargetDb.DB,
-		User:     tableDetailDBTargetDb.User,
-		Password: tableDetailDBTargetDb.Password,
+func tableDetailTargetConfig(tableDetailConfig dbtest.TargetDb) spi.TargetConfig {
+	return spi.TargetConfig{
+		Host:     tableDetailConfig.Host,
+		Port:     tableDetailConfig.Port,
+		Db:       tableDetailConfig.DB,
+		User:     tableDetailConfig.User,
+		Password: tableDetailConfig.Password,
 	}
 }
 
@@ -253,8 +254,8 @@ func tableDetailAssertSeededTablesExist(t *testing.T, tableDetailSQLDB *sql.DB, 
 }
 
 func TestTableDetailMySQL(t *testing.T) {
-	tableDetailDBTargetDb := dbtest.MySQL(t)
-	tableDetailSQLDB := dbtest.OpenMySQL(t, tableDetailDBTargetDb.DB)
+	tableDetailConfig := dbtest.MySQL(t)
+	tableDetailSQLDB := dbtest.OpenMySQL(t, tableDetailConfig.DB)
 	tableDetailExec(t, tableDetailSQLDB, `
 DROP TABLE IF EXISTS pm_tdetail_orders;
 DROP TABLE IF EXISTS pm_tdetail_users;
@@ -282,18 +283,18 @@ CREATE TABLE pm_tdetail_plain (
 ) ENGINE=InnoDB;`)
 
 	tableDetailClient, tableDetailFake := tableDetailStartFakeCP(t)
-	tableDetailTarget := mustDb(t, engine.MySQL, tableDetailTargetDb(tableDetailDBTargetDb))
+	tableDetailTarget := mustTarget(t, engines.MySQL, tableDetailTargetConfig(tableDetailConfig))
 
 	tableDetailUsersPayload := tableDetailRequireResult(t, tableDetailRun(
 		t, tableDetailClient, tableDetailFake, tableDetailTarget,
-		"pm_tdetail_mysql_users", "def", tableDetailDBTargetDb.DB, "pm_tdetail_users",
+		"pm_tdetail_mysql_users", "def", tableDetailConfig.DB, "pm_tdetail_users",
 	))
 	tableDetailUsers, tableDetailUsersTop := tableDetailDecode(t, tableDetailUsersPayload)
 	if tableDetailUsers.Catalog != "def" {
 		t.Fatalf("catalog = %v, want def", tableDetailUsers.Catalog)
 	}
-	if tableDetailUsers.Schema != tableDetailDBTargetDb.DB || tableDetailUsers.Table != "pm_tdetail_users" {
-		t.Fatalf("MySQL table detail resolved to %s.%s, want %s.pm_tdetail_users", tableDetailUsers.Schema, tableDetailUsers.Table, tableDetailDBTargetDb.DB)
+	if tableDetailUsers.Schema != tableDetailConfig.DB || tableDetailUsers.Table != "pm_tdetail_users" {
+		t.Fatalf("MySQL table detail resolved to %s.%s, want %s.pm_tdetail_users", tableDetailUsers.Schema, tableDetailUsers.Table, tableDetailConfig.DB)
 	}
 	tableDetailAssertColumns(t, tableDetailUsers, tableDetailUsersTop, map[string]struct {
 		dataType string
@@ -308,14 +309,14 @@ CREATE TABLE pm_tdetail_plain (
 
 	tableDetailOrdersPayload := tableDetailRequireResult(t, tableDetailRun(
 		t, tableDetailClient, tableDetailFake, tableDetailTarget,
-		"pm_tdetail_mysql_orders", "def", tableDetailDBTargetDb.DB, "pm_tdetail_orders",
+		"pm_tdetail_mysql_orders", "def", tableDetailConfig.DB, "pm_tdetail_orders",
 	))
 	tableDetailOrders, _ := tableDetailDecode(t, tableDetailOrdersPayload)
 	tableDetailAssertRelation(t, tableDetailOrders.ForeignKeys, "pm_tdetail_orders_user_fk", "pm_tdetail_orders", "pm_tdetail_users")
 
 	tableDetailPlainPayload := tableDetailRequireResult(t, tableDetailRun(
 		t, tableDetailClient, tableDetailFake, tableDetailTarget,
-		"pm_tdetail_mysql_plain", "def", tableDetailDBTargetDb.DB, "pm_tdetail_plain",
+		"pm_tdetail_mysql_plain", "def", tableDetailConfig.DB, "pm_tdetail_plain",
 	))
 	tableDetailPlain, _ := tableDetailDecode(t, tableDetailPlainPayload)
 	if len(tableDetailPlain.ForeignKeys) != 0 || len(tableDetailPlain.ReferencedBy) != 0 {
@@ -327,9 +328,9 @@ CREATE TABLE pm_tdetail_plain (
 		"pm_tdetail_mysql_other_schema", "def", "other", "pm_tdetail_users",
 	))
 	for tableDetailIndex, tableDetailSelector := range []struct{ schema, table string }{
-		{schema: tableDetailDBTargetDb.DB, table: "pm_tdetail_missing"},
-		{schema: tableDetailDBTargetDb.DB, table: `x"; DROP TABLE pm_tdetail_users; --`},
-		{schema: tableDetailDBTargetDb.DB, table: "pm_tdetail_users` WHERE 1=1 --"},
+		{schema: tableDetailConfig.DB, table: "pm_tdetail_missing"},
+		{schema: tableDetailConfig.DB, table: `x"; DROP TABLE pm_tdetail_users; --`},
+		{schema: tableDetailConfig.DB, table: "pm_tdetail_users` WHERE 1=1 --"},
 	} {
 		tableDetailRequireNull(t, tableDetailRun(
 			t, tableDetailClient, tableDetailFake, tableDetailTarget,
@@ -338,13 +339,13 @@ CREATE TABLE pm_tdetail_plain (
 	}
 	tableDetailAssertSeededTablesExist(t, tableDetailSQLDB,
 		"SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = ? AND table_name IN (?, ?, ?)",
-		tableDetailDBTargetDb.DB, "pm_tdetail_users", "pm_tdetail_orders", "pm_tdetail_plain",
+		tableDetailConfig.DB, "pm_tdetail_users", "pm_tdetail_orders", "pm_tdetail_plain",
 	)
 }
 
 func TestTableDetailPostgres(t *testing.T) {
-	tableDetailDBTargetDb := dbtest.Postgres(t)
-	tableDetailSQLDB := dbtest.OpenPostgres(t, tableDetailDBTargetDb.DB)
+	tableDetailConfig := dbtest.Postgres(t)
+	tableDetailSQLDB := dbtest.OpenPostgres(t, tableDetailConfig.DB)
 	tableDetailExec(t, tableDetailSQLDB, `
 DROP SCHEMA IF EXISTS pm_tdetail_it CASCADE;
 CREATE SCHEMA pm_tdetail_it;
@@ -371,11 +372,11 @@ CREATE TABLE pm_tdetail_it.pm_tdetail_plain (
 );`)
 
 	tableDetailClient, tableDetailFake := tableDetailStartFakeCP(t)
-	tableDetailTarget := mustDb(t, engine.Postgres, tableDetailTargetDb(tableDetailDBTargetDb))
+	tableDetailTarget := mustTarget(t, engines.Postgres, tableDetailTargetConfig(tableDetailConfig))
 
 	tableDetailUsersPayload := tableDetailRequireResult(t, tableDetailRun(
 		t, tableDetailClient, tableDetailFake, tableDetailTarget,
-		"pm_tdetail_pg_users", tableDetailDBTargetDb.DB, "pm_tdetail_it", "pm_tdetail_users",
+		"pm_tdetail_pg_users", tableDetailConfig.DB, "pm_tdetail_it", "pm_tdetail_users",
 	))
 	tableDetailUsers, tableDetailUsersTop := tableDetailDecode(t, tableDetailUsersPayload)
 	if tableDetailUsers.Schema != "pm_tdetail_it" || tableDetailUsers.Table != "pm_tdetail_users" {
@@ -394,14 +395,14 @@ CREATE TABLE pm_tdetail_it.pm_tdetail_plain (
 
 	tableDetailOrdersPayload := tableDetailRequireResult(t, tableDetailRun(
 		t, tableDetailClient, tableDetailFake, tableDetailTarget,
-		"pm_tdetail_pg_orders", tableDetailDBTargetDb.DB, "pm_tdetail_it", "pm_tdetail_orders",
+		"pm_tdetail_pg_orders", tableDetailConfig.DB, "pm_tdetail_it", "pm_tdetail_orders",
 	))
 	tableDetailOrders, _ := tableDetailDecode(t, tableDetailOrdersPayload)
 	tableDetailAssertRelation(t, tableDetailOrders.ForeignKeys, "pm_tdetail_orders_user_fk", "pm_tdetail_orders", "pm_tdetail_users")
 
 	tableDetailPlainPayload := tableDetailRequireResult(t, tableDetailRun(
 		t, tableDetailClient, tableDetailFake, tableDetailTarget,
-		"pm_tdetail_pg_plain", tableDetailDBTargetDb.DB, "pm_tdetail_it", "pm_tdetail_plain",
+		"pm_tdetail_pg_plain", tableDetailConfig.DB, "pm_tdetail_it", "pm_tdetail_plain",
 	))
 	tableDetailPlain, _ := tableDetailDecode(t, tableDetailPlainPayload)
 	if len(tableDetailPlain.ForeignKeys) != 0 || len(tableDetailPlain.ReferencedBy) != 0 {
@@ -416,7 +417,7 @@ CREATE TABLE pm_tdetail_it.pm_tdetail_plain (
 	} {
 		tableDetailRequireNull(t, tableDetailRun(
 			t, tableDetailClient, tableDetailFake, tableDetailTarget,
-			fmt.Sprintf("pm_tdetail_pg_hostile_%d", tableDetailIndex), tableDetailDBTargetDb.DB, tableDetailSelector.schema, tableDetailSelector.table,
+			fmt.Sprintf("pm_tdetail_pg_hostile_%d", tableDetailIndex), tableDetailConfig.DB, tableDetailSelector.schema, tableDetailSelector.table,
 		))
 	}
 	tableDetailAssertSeededTablesExist(t, tableDetailSQLDB,

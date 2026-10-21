@@ -68,6 +68,7 @@ Closed set (a value outside it is a config error → fail-closed deny):
 | `workflow-viewer` | the unelevated human side of a task: viewing a stored result, and approving or rejecting one | the control-plane view + task-decision routes |
 | `slack` | a task decided from a Slack button rather than a console session | the Slack interaction handler (`Channel.SLACK`) |
 | `mcp` | an access-control change over the MCP admin surface | the MCP request handler (`Channel.MCP`) |
+| `github` | a task approved from a pull-request review | the GitHub source flow (`Channel.GITHUB`) |
 
 For the proxy-mediated paths the value is derived from the ephemeral-token kind
 (the control-plane mints the kind; the proxy cannot assert it); the view and
@@ -107,7 +108,10 @@ disjoint resolution cases, never blended (plus a development-only exception,
 [below](#the-development-only-simulated-address)):
 
 - Wire path: the proxy's socket peer (`client_addr` on `DecisionRequest`) is the
-  requester.
+  requester. On the optional PROXY protocol port (`PM_PROXY_PROTOCOL_PORT`), the
+  header's source address takes the peer's place; that port accepts only peers
+  in the proxy's `PM_TRUSTED_PROXIES` and requires the header from them, and the
+  plain wire port never reads one.
 - HTTP path (`resolveHttpRequesterIp`, `RequesterIp.kt`): resolved by the trust
   status of the socket peer. `X-Forwarded-For` is client-settable, so it is
   honored only when the socket peer matches a `PM_TRUSTED_PROXIES` entry (a load

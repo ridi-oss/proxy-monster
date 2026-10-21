@@ -363,7 +363,7 @@ of a route and the gate it calls. Paths are relative to
 | Roles, mask functions | `/api/roles**`, `/api/mask-fns**` | `cpgo/routes/policies/policies.go`, `policies_write.go` | `requireAdmin(admin.policies)`; `GET /api/roles` is `requireApi` |
 | Principal-to-role assignment | `/api/role-assignments**` | `cpgo/routes/policies/policies.go`, `policies_write.go` | `requireAdmin(admin.identity)` |
 | Users, groups, group-to-role map | `/api/users**`, `/api/groups**` | `cpgo/routes/identity/identity.go` | `requireAdmin(admin.identity)` |
-| Cedar policies | `/api/policies**` | `cpgo/routes/policies/policies_cedar.go`; `/api/policies/schema` in `authz/CedarPolicyStore.kt` | `requireAdmin(admin.policies)` |
+| Cedar policies | `/api/policies**` | `cpgo/routes/policies/policies_cedar.go` | `requireAdmin(admin.policies)` |
 
 - `requireApi()` (`Datasources.kt`) — a live web session, returning the caller
   principal so a route never re-reads it behind an assertion. Authentication

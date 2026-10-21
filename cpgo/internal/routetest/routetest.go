@@ -53,6 +53,15 @@ func (f *fakeAuthz) Validate(_ context.Context, src string) ([]string, error) {
 	return nil, nil
 }
 
+// SchemaText is the real schema's, since it decides nothing.
+func (f *fakeAuthz) SchemaText(srcs []string) string {
+	s, err := authz.NewSchema(nil)
+	if err != nil {
+		panic(err)
+	}
+	return s.TextFor(srcs)
+}
+
 func (f *fakeAuthz) ProxiesAttached(context.Context) ([]string, error) { return f.Attached, nil }
 
 func (f *fakeAuthz) DatasourceDeleted(_ context.Context, name string) error {

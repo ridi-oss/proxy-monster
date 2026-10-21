@@ -29,6 +29,7 @@ func Register(mux *http.ServeMux, pool *pgxpool.Pool, gate api.Gate) {
 	mux.HandleFunc("DELETE /api/policies/{id}", gate.RequireAdmin("admin.policies", api.Serve(api.WithID(p.deletePolicy))))
 	mux.HandleFunc("POST /api/policies/{id}/enable", gate.RequireAdmin("admin.policies", api.Serve(api.WithID(p.setPolicyEnabled(true)))))
 	mux.HandleFunc("POST /api/policies/{id}/disable", gate.RequireAdmin("admin.policies", api.Serve(api.WithID(p.setPolicyEnabled(false)))))
+	mux.HandleFunc("GET /api/policies/schema", gate.RequireAdmin("admin.policies", api.Serve(p.schema)))
 	mux.HandleFunc("POST /api/policies/validate", gate.RequireAdmin("admin.policies", api.Serve(p.validatePolicy)))
 	mux.HandleFunc("GET /api/me/permissions", gate.RequireAPI(api.Serve(permissions(gate.Authz))))
 }

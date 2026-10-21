@@ -7,7 +7,6 @@ import com.ridi.oss.proxymonster.controlplane.authz.AuthzDecision
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzResource
 import com.ridi.oss.proxymonster.controlplane.authz.CedarSchema
 import com.ridi.oss.proxymonster.controlplane.authz.authorizeWithContext
-import com.ridi.oss.proxymonster.controlplane.authz.cedarPolicyRoutes
 import com.ridi.oss.proxymonster.controlplane.authz.contextTagLint
 import com.ridi.oss.proxymonster.controlplane.management.DatasourceManagementService
 import com.ridi.oss.proxymonster.controlplane.management.IdentityManagementService
@@ -540,9 +539,6 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
         taskEventsRoute(config, taskCompletionHub, accessStore, authz, datasourceStore, principalSessionStore, appJson)
 
         // Per-principal editor query history (auto-saved on each run; recalled in the editor).
-
-        // Cedar policy admin: put/enable/disable + validate-on-write. Admin-gated: admin.policies.
-        cedarPolicyRoutes(config, authz, cedarPolicyStore, policyManagement)
 
         // Decision ingest from the proxy/data plane. Optionally token-gated.
         post("/api/ingest/decision") {

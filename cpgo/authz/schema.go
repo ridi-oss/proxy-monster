@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/cedar-policy/cedar-go/x/exp/schema"
 )
 
 // bundledSchema is the authorization schema. It is a copy of the Kotlin control plane's
@@ -122,4 +124,25 @@ func (sc *Schema) textFor(tagNames []string) string {
 			`context: { channel?: String, requester_ip?: ipaddr, tailscale_caps?: Set<String>, native_operation?: String } };`)
 	}
 	return b.String()
+}
+
+// TextFor is textFor over the tags srcs derive, or the base text when one bad name breaks the schema.
+func (sc *Schema) TextFor(srcs []string) string {
+	var tags []string
+	for _, src := range srcs {
+		for _, n := range contextTagNames(src) {
+			if !slices.Contains(tags, n) {
+				tags = append(tags, n)
+			}
+		}
+	}
+	text := sc.textFor(tags)
+	var s schema.Schema
+	if err := s.UnmarshalCedar([]byte(text)); err != nil {
+		return sc.text
+	}
+	if _, err := s.Resolve(); err != nil {
+		return sc.text
+	}
+	return text
 }

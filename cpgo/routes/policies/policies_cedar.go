@@ -212,3 +212,19 @@ func (p policies) validatePolicy(w http.ResponseWriter, r *http.Request) error {
 	}{len(errs) == 0, api.NonNil(errs)})
 	return nil
 }
+
+// schema derives its tag actions from every live policy, disabled ones included: drafts are edited too.
+func (p policies) schema(w http.ResponseWriter, r *http.Request) error {
+	rows, err := db.New(p.pool).Policies(r.Context())
+	if err != nil {
+		return err
+	}
+	srcs := make([]string, len(rows))
+	for i, row := range rows {
+		srcs[i] = row.CedarSrc
+	}
+	api.WriteJSON(w, http.StatusOK, struct {
+		Schema string `json:"schema"`
+	}{p.authz.SchemaText(srcs)})
+	return nil
+}

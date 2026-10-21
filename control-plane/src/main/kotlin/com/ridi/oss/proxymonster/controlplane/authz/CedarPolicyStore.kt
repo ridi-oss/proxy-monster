@@ -1,14 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane.authz
 
-import com.ridi.oss.proxymonster.controlplane.AuditStore
-import com.ridi.oss.proxymonster.controlplane.Config
-import com.ridi.oss.proxymonster.controlplane.PolicyStore
 import com.ridi.oss.proxymonster.controlplane.inTx
-import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
-import com.ridi.oss.proxymonster.controlplane.management.PolicyManagementService
-import io.ktor.server.response.respond
-import io.ktor.server.routing.Route
-import io.ktor.server.routing.get
 import kotlinx.serialization.Serializable
 import java.sql.ResultSet
 import javax.sql.DataSource
@@ -36,9 +28,7 @@ data class CedarValidateInput(val cedarSrc: String)
 @Serializable
 data class CedarValidateResult(val valid: Boolean, val errors: List<String> = emptyList())
 
-/** The authz Cedar schema text, with the `context.tag::<name>` actions the stored policies derive —
- *  served to the policy editor so it can offer schema-aware linting/completion in the browser (the
- *  schema is the authz model, not secret). Changes as policies do. */
+/** The authz Cedar schema text, with the `context.tag::<name>` actions the stored policies derive. */
 @Serializable
 data class CedarSchemaResult(val schema: String)
 
@@ -210,25 +200,5 @@ class CedarPolicyStore(internal val dataSource: DataSource) {
     }
     private fun insertReturningId(sql: String, bind: (java.sql.PreparedStatement) -> Unit): Long = dataSource.connection.use { c ->
         c.prepareStatement(sql).use { ps -> bind(ps); ps.executeQuery().use { rs -> rs.next(); rs.getLong(1) } }
-    }
-}
-
-// ---- Routes — /api/policies ---------------------------------------------------------------------
-
-/**
- * The Cedar policy admin API. Every route is gated via [requireAdmin]`(config, authz,
- * AuthzAction.ADMIN_POLICIES)` — this is itself part of what closes the "admin = any session" hole,
- * since editing policies is the most privileged surface in the whole authz boundary.
- */
-fun Route.cedarPolicyRoutes(
-    config: Config,
-    authz: Authz,
-    store: CedarPolicyStore,
-    management: PolicyManagementService =
-        PolicyManagementService(store, PolicyStore(store.dataSource), ManagementAuditRecorder(AuditStore(store.dataSource))),
-) {
-    get("/api/policies/schema") {
-        if (!call.requireAdmin(config, authz, AuthzAction.ADMIN_POLICIES)) return@get
-        call.respond(management.policySchema())
     }
 }

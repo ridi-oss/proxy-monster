@@ -117,11 +117,8 @@ func (t tokens) mint(w http.ResponseWriter, r *http.Request, status int, kind st
 		if kind == "SESSION" {
 			prefix = "pmt_"
 		}
-		secret := make([]byte, 32)
-		_, _ = rand.Read(secret)
-		token := prefix + base64.RawURLEncoding.EncodeToString(secret)
-		sum := sha256.Sum256([]byte(token))
-		minted, err := q.MintToken(ctx, db.MintTokenParams{TokenHash: hex.EncodeToString(sum[:]), Kind: kind, Principal: principal, Name: name, Ttl: ttl})
+		token, hash := NewSecret(prefix)
+		minted, err := q.MintToken(ctx, db.MintTokenParams{TokenHash: hash, Kind: kind, Principal: principal, Name: name, Ttl: ttl})
 		if err != nil {
 			return err
 		}
@@ -134,6 +131,15 @@ func (t tokens) mint(w http.ResponseWriter, r *http.Request, status int, kind st
 	}
 	api.WriteJSON(w, status, out)
 	return nil
+}
+
+// NewSecret is a fresh token under prefix and the hash proxy_token stores for it.
+func NewSecret(prefix string) (token, hash string) {
+	secret := make([]byte, 32)
+	_, _ = rand.Read(secret)
+	token = prefix + base64.RawURLEncoding.EncodeToString(secret)
+	sum := sha256.Sum256([]byte(token))
+	return token, hex.EncodeToString(sum[:])
 }
 
 // mintSession is the daemon's SESSION token for `pmon login`.

@@ -95,7 +95,7 @@ echo "smoke: starting the console on :$WEB"
 ) &
 pids+=($!)
 
-# The fake GitHub (smoke/fake_github.py, run inside smoke.py): its HTTPS cert, which cp-go (PM_GITHUB_CA_FILE) and the
+# The fake GitHub (smoke/fake_github.py, run inside smoke.py): its HTTPS cert, which cp-go (PM_GITHUB_CA_FILE and PM_CI_OIDC_CA_FILE) and the
 # Kotlin control plane (a throwaway truststore) trust, the key that signs its CI tokens, and the App key cp-go signs with.
 GH="$SMOKE_DIR/github"
 rm -f "$GH"/*
@@ -119,6 +119,7 @@ echo "smoke: starting control plane on :$CP_HTTP"
     PM_GITHUB_APP_ID=1 PM_GITHUB_APP_PRIVATE_KEY_FILE="$GH/app-key.pem" PM_GITHUB_API_URL="https://127.0.0.1:$GITHUB_TLS" \
     PM_GITHUB_IDENTITY=commit-email \
     PM_CI_OIDC_ISSUERS="smoke=https://127.0.0.1:$GITHUB_TLS" PM_CI_OIDC_AUDIENCE=smoke-github \
+    PM_CI_OIDC_CA_FILE="$GH/tls-cert.pem" \
     PM_GITHUB_CA_FILE="$GH/tls-cert.pem" \
     JAVA_OPTS="-Djavax.net.ssl.trustStore=$GH/truststore.p12 -Djavax.net.ssl.trustStoreType=PKCS12 -Djavax.net.ssl.trustStorePassword=smoke-github" \
     "$SMOKE_DIR/bin/cp-go" > "$SMOKE_DIR/logs/control-plane.log" 2>&1

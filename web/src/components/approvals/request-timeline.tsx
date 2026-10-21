@@ -1,11 +1,11 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { toast } from 'sonner';
 import { X } from 'lucide-react';
-import { addApprovalCc, closeRequest, commentOnApproval, removeApprovalCc } from '@/lib/api/client';
-import type { AccessRequest, Person, RequestEvent } from '@/lib/api/types';
+import { addApprovalCc, closeRequest, commentOnApproval, removeApprovalCc, searchCcCandidates } from '@/lib/api/client';
+import type { AccessRequest, CcCandidate, Person, RequestEvent } from '@/lib/api/types';
 import { useRequestThread } from '@/lib/hooks';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -96,7 +96,6 @@ export function RequestTimeline({
   const id = request.id;
   const { data: thread, mutate } = useRequestThread(id, { refreshInterval: 15_000 });
   const [body, setBody] = useState('');
-  const [cc, setCc] = useState('');
   const [busy, setBusy] = useState<'comment' | 'lgtm' | 'cc' | null>(null);
   if (!thread) return null;
   const ccs = thread.ccs;
@@ -148,29 +147,12 @@ export function RequestTimeline({
           ))}
         </div>
         {thread.canCc && (
-          <form
-            className="flex max-w-md gap-2"
-            onSubmit={(e) => {
-              e.preventDefault();
-              if (cc.trim())
-                void run(
-                  'cc',
-                  () => addApprovalCc(id, cc.trim()),
-                  () => setCc(''),
-                );
-            }}
-          >
-            <Input
-              id="approval-cc"
-              value={cc}
-              onChange={(e) => setCc(e.target.value)}
-              placeholder={t('timeline.ccPlaceholder')}
-              aria-label={t('timeline.ccPlaceholder')}
-            />
-            <Button type="submit" variant="outline" size="sm" disabled={!cc.trim() || busy !== null}>
-              {t('timeline.addCc')}
-            </Button>
-          </form>
+          <CcPicker
+            requestId={id}
+            exclude={[request.principal, ...ccs]}
+            busy={busy !== null}
+            onPick={(principal, clear) => run('cc', () => addApprovalCc(id, principal), clear)}
+          />
         )}
       </div>
 
@@ -234,6 +216,123 @@ export function RequestTimeline({
         </div>
       )}
     </div>
+  );
+}
+
+/** The suggestions shown for `q`, and who submitting adds: an exact principal or email first, then the highlighted row, then `q` itself. */
+export function ccChoice(
+  q: string,
+  found: { q: string; rows: CcCandidate[] },
+  exclude: string[],
+  active: number,
+): { options: CcCandidate[]; chosen: string } {
+  const options = q && found.q === q ? found.rows.filter((c) => !exclude.includes(c.principal)) : [];
+  const lower = q.toLowerCase();
+  const exact = options.find((c) => c.principal.toLowerCase() === lower || c.email?.toLowerCase() === lower);
+  return { options, chosen: (exact ?? options[active])?.principal ?? q };
+}
+
+/** Adds a CC by name or email, suggesting active users as the caller types. */
+function CcPicker({
+  requestId,
+  exclude,
+  busy,
+  onPick,
+}: {
+  requestId: number;
+  exclude: string[];
+  busy: boolean;
+  onPick: (principal: string, clear: () => void) => Promise<void>;
+}) {
+  const t = useTranslations('Workflows');
+  const [query, setQuery] = useState('');
+  const [found, setFound] = useState<{ q: string; rows: CcCandidate[] }>({ q: '', rows: [] });
+  const [active, setActive] = useState(0);
+  const q = query.trim();
+  useEffect(() => {
+    if (!q) return;
+    let stale = false;
+    const timer = setTimeout(() => {
+      searchCcCandidates(requestId, q)
+        .then((rows) => {
+          if (!stale) {
+            setFound({ q, rows });
+            setActive(0);
+          }
+        })
+        .catch(() => {});
+    }, 200);
+    return () => {
+      stale = true;
+      clearTimeout(timer);
+    };
+  }, [requestId, q]);
+  const { options, chosen } = ccChoice(q, found, exclude, active);
+  const pick = (principal: string) => {
+    if (busy) return;
+    void onPick(principal, () => {
+      setQuery('');
+      setFound({ q: '', rows: [] });
+    });
+  };
+
+  return (
+    <form
+      className="relative flex max-w-md gap-2"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (chosen) pick(chosen);
+      }}
+    >
+      <Input
+        id="approval-cc"
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'ArrowDown' && options.length) {
+            e.preventDefault();
+            setActive((i) => (i + 1) % options.length);
+          } else if (e.key === 'ArrowUp' && options.length) {
+            e.preventDefault();
+            setActive((i) => (i - 1 + options.length) % options.length);
+          } else if (e.key === 'Escape') {
+            setFound({ q: '', rows: [] });
+          }
+        }}
+        placeholder={t('timeline.ccPlaceholder')}
+        aria-label={t('timeline.ccPlaceholder')}
+        autoComplete="off"
+        role="combobox"
+        aria-expanded={options.length > 0}
+        aria-controls="approval-cc-options"
+      />
+      <Button type="submit" variant="outline" size="sm" disabled={!q || busy}>
+        {t('timeline.addCc')}
+      </Button>
+      {options.length > 0 && (
+        <ul
+          id="approval-cc-options"
+          role="listbox"
+          className="bg-popover absolute top-full left-0 z-10 mt-1 w-full max-w-sm overflow-hidden rounded-md border text-sm shadow-md"
+        >
+          {options.map((c, i) => (
+            <li
+              key={c.principal}
+              role="option"
+              aria-selected={i === active}
+              className={`cursor-pointer px-3 py-1.5 ${i === active ? 'bg-muted' : ''}`}
+              onMouseEnter={() => setActive(i)}
+              onMouseDown={(e) => {
+                e.preventDefault();
+                pick(c.principal);
+              }}
+            >
+              <PersonName principal={c.principal} people={{ [c.principal]: c }} />
+            </li>
+          ))}
+        </ul>
+      )}
+    </form>
   );
 }
 

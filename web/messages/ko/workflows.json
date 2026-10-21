@@ -250,7 +250,7 @@
     "heading": "타임라인",
     "ccs": "참조",
     "addCc": "참조 추가",
-    "ccPlaceholder": "사용자 이름 또는 이메일",
+    "ccPlaceholder": "이름이나 이메일로 검색",
     "removeCc": "{principal} 제거",
     "commentPlaceholder": "댓글 쓰기",
     "comment": "댓글 달기",

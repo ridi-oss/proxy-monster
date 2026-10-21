@@ -212,3 +212,35 @@ func (q *Queries) RequestTimeline(ctx context.Context, requestID int64) ([]Reque
 	}
 	return items, nil
 }
+
+const searchActiveUsers = `-- name: SearchActiveUsers :many
+SELECT principal, display_name, email FROM app_user
+WHERE active AND (principal ILIKE $1::text OR email ILIKE $1::text OR display_name ILIKE $1::text)
+ORDER BY coalesce(display_name, principal), principal LIMIT 10
+`
+
+type SearchActiveUsersRow struct {
+	Principal   string
+	DisplayName *string
+	Email       *string
+}
+
+func (q *Queries) SearchActiveUsers(ctx context.Context, pattern string) ([]SearchActiveUsersRow, error) {
+	rows, err := q.db.Query(ctx, searchActiveUsers, pattern)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SearchActiveUsersRow{}
+	for rows.Next() {
+		var i SearchActiveUsersRow
+		if err := rows.Scan(&i.Principal, &i.DisplayName, &i.Email); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}

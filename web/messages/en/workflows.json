@@ -250,7 +250,7 @@
     "heading": "Timeline",
     "ccs": "CC",
     "addCc": "Add CC",
-    "ccPlaceholder": "Principal or email",
+    "ccPlaceholder": "Search by name or email",
     "removeCc": "Remove {principal}",
     "commentPlaceholder": "Write a comment",
     "comment": "Comment",

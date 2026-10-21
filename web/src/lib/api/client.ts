@@ -47,6 +47,7 @@ import type {
   QueryResultView,
   RefreshResult,
   RequestEvent,
+  CcCandidate,
   RequestThread,
   Role,
   RoleAssignment,
@@ -614,6 +615,10 @@ export function addApprovalCc(id: number, principal: string): Promise<AccessRequ
 
 export function removeApprovalCc(id: number, principal: string): Promise<AccessRequest> {
   return request<AccessRequest>(`/api/requests/${id}/ccs/${encodeURIComponent(principal)}`, { method: 'DELETE' });
+}
+
+export function searchCcCandidates(id: number, q: string): Promise<CcCandidate[]> {
+  return request<CcCandidate[]>(`/api/requests/${id}/cc-candidates?q=${encodeURIComponent(q)}`);
 }
 
 export function getRequestThread(id: number): Promise<RequestThread> {

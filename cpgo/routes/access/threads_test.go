@@ -373,3 +373,31 @@ func TestRequestsInvolved(t *testing.T) {
 		t.Fatalf("without a session: %d", status)
 	}
 }
+
+func TestCCCandidates(t *testing.T) {
+	e := setupThreads(t)
+	alice := e.St.WebSession(t, requester, "k-alice", "dev-1")
+	role := e.roleRequest("PENDING")
+	e.Exec(t, `UPDATE app_user SET display_name = 'Carol 100%' WHERE principal = $1`, ccUser)
+	e.Exec(t, `UPDATE app_user SET active = false WHERE principal = 'twin-b'`)
+	path := fmt.Sprintf("/api/requests/%d/cc-candidates?q=", role)
+
+	if body := e.do(http.MethodGet, path+"cc", "", alice, http.StatusForbidden); body != `{"code":"approval.cc_forbidden","params":{}}` {
+		t.Fatalf("denied: %s", body)
+	}
+	e.Authz.Allow = map[string]bool{requester + " task.cc ApprovalRequest:" + requester: true}
+	for q, want := range map[string]string{
+		"":        `[]`,
+		"carol":   `[{"principal":"cc@example.com","name":"Carol 100%","email":"CC-Mail@Example.com"}]`,
+		"cc-mail": `[{"principal":"cc@example.com","name":"Carol 100%","email":"CC-Mail@Example.com"}]`,
+		"100%25":  `[{"principal":"cc@example.com","name":"Carol 100%","email":"CC-Mail@Example.com"}]`,
+		"0%25":    `[{"principal":"cc@example.com","name":"Carol 100%","email":"CC-Mail@Example.com"}]`,
+		"%25":     `[{"principal":"cc@example.com","name":"Carol 100%","email":"CC-Mail@Example.com"}]`,
+		"_":       `[]`,
+		"twin":    `[{"principal":"twin-a","email":"twin@example.com"}]`,
+	} {
+		if body := e.do(http.MethodGet, path+q, "", alice, http.StatusOK); body != want {
+			t.Fatalf("q=%q: %s, want %s", q, body, want)
+		}
+	}
+}

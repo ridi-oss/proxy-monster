@@ -5,11 +5,12 @@ import { useTranslations } from 'next-intl';
 import { toast } from 'sonner';
 import { X } from 'lucide-react';
 import { addApprovalCc, closeRequest, commentOnApproval, removeApprovalCc } from '@/lib/api/client';
-import type { AccessRequest, RequestEvent } from '@/lib/api/types';
+import type { AccessRequest, Person, RequestEvent } from '@/lib/api/types';
 import { useRequestThread } from '@/lib/hooks';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
+import { PersonName } from './person-name';
 
 function errorText(err: unknown, fallback: string): string {
   return err instanceof Error ? err.message : fallback;
@@ -30,14 +31,22 @@ export function Linkified({ text }: { text: string }) {
   );
 }
 
-function EventLine({ event, onRequest }: { event: RequestEvent; onRequest: boolean }) {
+function EventLine({
+  event,
+  onRequest,
+  people,
+}: {
+  event: RequestEvent;
+  onRequest: boolean;
+  people?: Record<string, Person>;
+}) {
   const t = useTranslations('Workflows');
   const when = new Date(event.createdAt).toLocaleString();
   if (event.kind === 'comment' || event.kind === 'lgtm') {
     return (
       <li className="space-y-1" data-testid={`timeline-${event.kind}`}>
         <div className="text-muted-foreground flex flex-wrap items-center gap-1 text-xs">
-          <span className="text-foreground font-medium">{event.actor}</span>
+          {event.actor && <PersonName principal={event.actor} people={people} />}
           {event.kind === 'lgtm' && (
             <span className="rounded-full bg-emerald-500/15 px-1.5 font-semibold text-emerald-600 dark:text-emerald-400">
               {t('timeline.lgtmBadge')}
@@ -63,7 +72,11 @@ function EventLine({ event, onRequest }: { event: RequestEvent; onRequest: boole
   const text = t(`timeline.events.${event.kind}`, { body: event.body ?? '', revision: event.revision ?? 1 });
   return (
     <li className="text-muted-foreground text-xs" data-testid={`timeline-${event.kind}`}>
-      {event.actor && <span className="text-foreground font-medium">{event.actor} </span>}
+      {event.actor && (
+        <>
+          <PersonName principal={event.actor} people={people} />{' '}
+        </>
+      )}
       {text} · {when}
     </li>
   );
@@ -113,11 +126,8 @@ export function RequestTimeline({
         <div className="flex flex-wrap items-center gap-2">
           {ccs.length === 0 && <span className="text-muted-foreground text-sm">—</span>}
           {ccs.map((p) => (
-            <span
-              key={p}
-              className="bg-muted inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-mono text-xs"
-            >
-              {p}
+            <span key={p} className="bg-muted inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs">
+              <PersonName principal={p} people={thread.people} />
               {thread.canCc && (
                 <button
                   type="button"
@@ -170,7 +180,12 @@ export function RequestTimeline({
         </p>
         <ol className="space-y-3">
           {thread.timeline.map((event) => (
-            <EventLine key={event.id} event={event} onRequest={event.origin !== 'slack' || onRequest(event.actor)} />
+            <EventLine
+              key={event.id}
+              event={event}
+              people={thread.people}
+              onRequest={event.origin !== 'slack' || onRequest(event.actor)}
+            />
           ))}
         </ol>
       </div>

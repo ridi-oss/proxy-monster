@@ -77,6 +77,7 @@ class MockSlack private constructor() : AutoCloseable {
         // set it false.
         val emailConfirmed: Boolean? = true,
         val name: String? = null,
+        val displayName: String? = null,
     )
 
     /** users.info: the profile a Slack user id resolves to; absent → user_not_found. */
@@ -205,7 +206,7 @@ class MockSlack private constructor() : AutoCloseable {
                 if (u.emailConfirmed != null) append(""","is_email_confirmed":${u.emailConfirmed}""")
                 if (u.name != null) append(""","name":"${u.name}"""")
                 append(""","profile":{""")
-                if (u.email != null) append(""""email":"${u.email}"""")
+                append(listOfNotNull(u.email?.let { """"email":"$it"""" }, u.displayName?.let { """"display_name":"$it"""" }).joinToString(","))
                 append("}}}")
             }
         }

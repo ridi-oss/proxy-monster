@@ -475,6 +475,13 @@ export interface RequestThread {
   canCc: boolean;
   canClose: boolean;
   canDecide: boolean;
+  /** Name and email of each principal on the request, keyed by principal. */
+  people?: Record<string, Person>;
+}
+
+export interface Person {
+  name?: string | null;
+  email?: string | null;
 }
 
 /** The pull request a GitHub request came from. */

@@ -26,3 +26,6 @@ ON CONFLICT DO NOTHING;
 
 -- name: RemoveCC :execrows
 DELETE FROM request_participant WHERE request_id = $1 AND principal = $2 AND kind = 'cc';
+
+-- name: PeopleByPrincipal :many
+SELECT principal, display_name, email FROM app_user WHERE principal = ANY(@principals::text[]);

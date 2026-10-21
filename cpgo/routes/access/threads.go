@@ -28,6 +28,13 @@ type requestThread struct {
 	CanCC        bool             `json:"canCc"`
 	CanClose     bool             `json:"canClose"`
 	CanDecide    bool             `json:"canDecide"`
+	// People names each principal on the request: its requester, deciders, participants, CCs and actors.
+	People map[string]person `json:"people"`
+}
+
+type person struct {
+	Name  *string `json:"name,omitempty"`
+	Email *string `json:"email,omitempty"`
 }
 
 // workflowRequest is the request, unless it is missing or an editor's or the wire proxy's own task row.
@@ -82,6 +89,9 @@ func (a access) thread(w http.ResponseWriter, r *http.Request, id int64) error {
 		return err
 	}
 	if t.Timeline, err = timeline.List(ctx, a.pool, id); err != nil {
+		return err
+	}
+	if t.People, err = a.people(ctx, req, t); err != nil {
 		return err
 	}
 	if t.CanComment, err = may("task.comment"); err != nil {
@@ -154,6 +164,27 @@ func (a access) comment(w http.ResponseWriter, r *http.Request, id int64) error 
 	a.signal(ctx, id, notice{event: "commented"})
 	api.WriteJSON(w, http.StatusCreated, ev)
 	return nil
+}
+
+func (a access) people(ctx context.Context, req *accessRequest, t requestThread) (map[string]person, error) {
+	principals := append([]string{req.Principal}, t.Participants...)
+	principals = append(principals, t.CCs...)
+	for _, p := range []*string{req.DecidedBy, req.ExecutedBy, req.ForceRunBy} {
+		if p != nil {
+			principals = append(principals, *p)
+		}
+	}
+	for _, e := range t.Timeline {
+		if e.Actor != nil {
+			principals = append(principals, *e.Actor)
+		}
+	}
+	rows, err := db.New(a.pool).PeopleByPrincipal(ctx, principals)
+	out := make(map[string]person, len(rows))
+	for _, r := range rows {
+		out[r.Principal] = person{Name: r.DisplayName, Email: r.Email}
+	}
+	return out, err
 }
 
 func (a access) require(ctx context.Context, req *accessRequest, action string, denied api.Code) error {

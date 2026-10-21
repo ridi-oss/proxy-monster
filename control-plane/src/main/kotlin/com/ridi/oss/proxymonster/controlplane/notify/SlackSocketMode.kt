@@ -267,22 +267,24 @@ class SlackSocketMode(
         onMessage(message)
     }
 
-    /** Each Slack user the text @-mentions, with their active principal and Slack username; a failed lookup is (null, null). */
+    /** Each Slack user the text @-mentions, with their active principal and Slack name; a failed lookup is (null, null). */
     private suspend fun mentionedUsers(text: String): Map<String, Pair<String?, String?>> =
         SlackMarkup.mentionedIds(text).associateWith { id ->
             runCatching {
                 val user = userInfo(id)
-                user?.let(::principalOf) to user?.get("name")?.jsonPrimitive?.content
+                user?.let(::principalOf) to user?.let(::slackName)
             }.getOrDefault(null to null)
         }
 
     private suspend fun resolveAuthor(slackUserId: String): Pair<String?, String?> {
         val user = userInfo(slackUserId) ?: return null to null
+        return principalOf(user) to (slackName(user) ?: slackUserId)
+    }
+
+    private fun slackName(user: JsonObject): String? {
         val profile = user["profile"]?.jsonObject
-        val name = listOf("display_name", "real_name").firstNotNullOfOrNull { key ->
-            profile?.get(key)?.jsonPrimitive?.content?.takeIf { it.isNotBlank() }
-        } ?: slackUserId
-        return principalOf(user) to name
+        return listOf(profile?.get("display_name"), profile?.get("real_name"), user["name"])
+            .firstNotNullOfOrNull { it?.jsonPrimitive?.content?.takeIf(String::isNotBlank) }
     }
 
     /**

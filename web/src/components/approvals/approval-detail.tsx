@@ -13,7 +13,7 @@ import {
   unapproveApproval,
 } from '@/lib/api/client';
 import { onTaskEvent, subscribeTaskEvents } from '@/lib/api/task-events';
-import { swrKeys, useApproval } from '@/lib/hooks';
+import { swrKeys, useApproval, useRequestThread } from '@/lib/hooks';
 import type { AccessRequest } from '@/lib/api/types';
 import { runsOnMerge } from '@/lib/approvals';
 import { cn } from '@/lib/utils';
@@ -33,6 +33,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { ErrorState, LoadingState } from '@/components/page-scaffold';
 import { ApprovalResultTabs } from './approval-result-tabs';
 import { ApproveQueryDialog } from './approve-query-dialog';
+import { PersonName } from './person-name';
 import { RequestTimeline } from './request-timeline';
 import { useAuth } from '@/lib/auth';
 import { Field, RequestOrigin, RunsAs } from './request-origin';
@@ -83,6 +84,7 @@ function Pill({ value, styles }: { value?: string | null; styles: Record<string,
 export function ApprovalDetail({ id }: { id: number }) {
   const t = useTranslations('Workflows');
   const { data, error, isLoading } = useApproval(id, { refreshInterval: 15000 });
+  const people = useRequestThread(id).data?.people;
   const [busy, setBusy] = useState<'reject' | 'run' | 'cancel' | 'close' | 'unapprove' | 'edit' | 'forceRun' | null>(
     null,
   );
@@ -330,7 +332,7 @@ export function ApprovalDetail({ id }: { id: number }) {
                 <CardContent className="space-y-5">
                   <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                     <Field label={t('fields.requester')}>
-                      <code className="font-mono">{request.principal}</code>
+                      <PersonName principal={request.principal} people={people} />
                     </Field>
                     <Field label={t('fields.datasource')}>
                       <code className="font-mono">
@@ -345,7 +347,7 @@ export function ApprovalDetail({ id }: { id: number }) {
                       <code className="font-mono">{formatTimestamp(request.decidedAt)}</code>
                     </Field>
                     <Field label={t('fields.decidedBy')}>
-                      <code className="font-mono">{request.decidedBy ?? '—'}</code>
+                      {request.decidedBy ? <PersonName principal={request.decidedBy} people={people} /> : '—'}
                     </Field>
                     <Field label={t('fields.sourceDecision')}>
                       <code className="font-mono">

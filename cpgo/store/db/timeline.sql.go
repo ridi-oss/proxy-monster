@@ -44,6 +44,36 @@ func (q *Queries) AddCC(ctx context.Context, arg AddCCParams) error {
 	return err
 }
 
+const peopleByPrincipal = `-- name: PeopleByPrincipal :many
+SELECT principal, display_name, email FROM app_user WHERE principal = ANY($1::text[])
+`
+
+type PeopleByPrincipalRow struct {
+	Principal   string
+	DisplayName *string
+	Email       *string
+}
+
+func (q *Queries) PeopleByPrincipal(ctx context.Context, principals []string) ([]PeopleByPrincipalRow, error) {
+	rows, err := q.db.Query(ctx, peopleByPrincipal, principals)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []PeopleByPrincipalRow{}
+	for rows.Next() {
+		var i PeopleByPrincipalRow
+		if err := rows.Scan(&i.Principal, &i.DisplayName, &i.Email); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const recordRequestEvent = `-- name: RecordRequestEvent :one
 INSERT INTO request_event (request_id, kind, actor, body, revision, origin)
 SELECT ar.id, $1::text, $2::text, $3::text, ar.revision, $4::text FROM access_request ar

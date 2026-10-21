@@ -50,7 +50,7 @@ describe('runTarget', () => {
     expect(runTarget(state(doc, 10, doc.length))).toEqual({ kind: 'run', sql: 'select 2;' })
   })
 
-  it('refuses a selection of several statements in favour of Run All', () => {
+  it('refuses a selection of several statements in favor of Run All', () => {
     expect(runTarget(state('select 1; select 2;', 0, 19))).toEqual({ kind: 'useRunAll' })
   })
 

@@ -1,11 +1,11 @@
-'use client'
+'use client';
 
 // Typed SWR read hooks over the API client. SWR gives us caching, focus
 // revalidation, and clean loading/error states for the polished feel. Writes
 // go through the client functions directly; call `mutate(key)` after to refresh.
 
-import useSWR, { type SWRConfiguration } from 'swr'
-import { useAuth } from './auth'
+import useSWR, { type SWRConfiguration } from 'swr';
+import { useAuth } from './auth';
 import {
   getAccessGrants,
   getAccessRequests,
@@ -33,7 +33,7 @@ import {
   getTableDetail,
   getTokens,
   getUsers,
-} from './api/client'
+} from './api/client';
 
 const KEYS = {
   authConfig: 'auth-config',
@@ -63,37 +63,34 @@ const KEYS = {
   cedarSchema: 'cedar-schema',
   accessRequests: (status?: string) => ['access-requests', status ?? null] as const,
   accessGrants: (active?: boolean) => ['access-grants', active ?? null] as const,
-}
+};
 
-export { KEYS as swrKeys }
+export { KEYS as swrKeys };
 
 export function useAuthConfig() {
-  return useSWR(KEYS.authConfig, getAuthConfig)
+  return useSWR(KEYS.authConfig, getAuthConfig);
 }
 
 export function useMePermissions() {
-  const { identity, status } = useAuth()
-  const key = status === 'authenticated' && identity
-    ? KEYS.mePermissions(identity.principal)
-    : null
-  return useSWR(key, getMePermissions)
+  const { identity, status } = useAuth();
+  const key = status === 'authenticated' && identity ? KEYS.mePermissions(identity.principal) : null;
+  return useSWR(key, getMePermissions);
 }
 
 export function useDatasources(connectableOnly = false) {
-  return useSWR(
-    connectableOnly ? `${KEYS.datasources}:connectable` : KEYS.datasources,
-    () => getDatasources(connectableOnly),
-  )
+  return useSWR(connectableOnly ? `${KEYS.datasources}:connectable` : KEYS.datasources, () =>
+    getDatasources(connectableOnly),
+  );
 }
 
 /** Names of datasources with a proxy CURRENTLY attached — polled, since a proxy can disconnect
  *  between renders without the client otherwise finding out. */
 export function useDatasourcesLive() {
-  return useSWR(KEYS.datasourcesLive, getDatasourcesLive, { refreshInterval: 10_000 })
+  return useSWR(KEYS.datasourcesLive, getDatasourcesLive, { refreshInterval: 10_000 });
 }
 
 export function useCatalog(id: number | null) {
-  return useSWR(id == null ? null : KEYS.catalog(id), () => getCatalog(id!))
+  return useSWR(id == null ? null : KEYS.catalog(id), () => getCatalog(id!));
 }
 
 export function useTableDetail(
@@ -102,94 +99,95 @@ export function useTableDetail(
   schema: string | null,
   table: string | null,
 ) {
-  const key = datasourceId == null || catalog == null || schema == null || table == null
-    ? null
-    : KEYS.tableDetail(datasourceId, catalog, schema, table)
+  const key =
+    datasourceId == null || catalog == null || schema == null || table == null
+      ? null
+      : KEYS.tableDetail(datasourceId, catalog, schema, table);
   return useSWR(key, () => getTableDetail(datasourceId!, catalog!, schema!, table!), {
     revalidateOnMount: true,
     revalidateOnFocus: true,
     dedupingInterval: 0,
-  })
+  });
 }
 
 export function useAuditEvents(limit = 100, opts?: SWRConfiguration) {
-  return useSWR(KEYS.auditEvents(limit), () => getAuditEvents(limit), opts)
+  return useSWR(KEYS.auditEvents(limit), () => getAuditEvents(limit), opts);
 }
 
 export function useAuditEvent(id: number | null) {
-  return useSWR(id == null ? null : KEYS.auditEvent(id), () => getAuditEvent(id!))
+  return useSWR(id == null ? null : KEYS.auditEvent(id), () => getAuditEvent(id!));
 }
 
 export function useApproval(id: number | null, opts?: SWRConfiguration) {
-  return useSWR(id == null ? null : KEYS.approval(id), () => getApproval(id!), opts)
+  return useSWR(id == null ? null : KEYS.approval(id), () => getApproval(id!), opts);
 }
 
 export function useApprovalInbox(opts?: SWRConfiguration) {
-  return useSWR(KEYS.approvalInbox, getApprovalInbox, opts)
+  return useSWR(KEYS.approvalInbox, getApprovalInbox, opts);
 }
 
 export function useRequestThread(id: number, opts?: SWRConfiguration) {
-  return useSWR(KEYS.requestThread(id), () => getRequestThread(id), opts)
+  return useSWR(KEYS.requestThread(id), () => getRequestThread(id), opts);
 }
 
 export function useInvolvedApprovals(opts?: SWRConfiguration) {
-  return useSWR(KEYS.involvedApprovals, getInvolvedApprovals, opts)
+  return useSWR(KEYS.involvedApprovals, getInvolvedApprovals, opts);
 }
 
 export function useRoles() {
-  return useSWR(KEYS.roles, getRoles)
+  return useSWR(KEYS.roles, getRoles);
 }
 
 export function useUsers() {
-  return useSWR(KEYS.users, getUsers)
+  return useSWR(KEYS.users, getUsers);
 }
 
 export function useGroups() {
-  return useSWR(KEYS.groups, getGroups)
+  return useSWR(KEYS.groups, getGroups);
 }
 
 export function useGroupMembers(id: number | null) {
-  return useSWR(id == null ? null : KEYS.groupMembers(id), () => getGroupMembers(id!))
+  return useSWR(id == null ? null : KEYS.groupMembers(id), () => getGroupMembers(id!));
 }
 
 export function useGroupRoles(id: number | null) {
-  return useSWR(id == null ? null : KEYS.groupRoles(id), () => getGroupRoles(id!))
+  return useSWR(id == null ? null : KEYS.groupRoles(id), () => getGroupRoles(id!));
 }
 
 export function useMaskFns() {
-  return useSWR(KEYS.maskFns, getMaskFns)
+  return useSWR(KEYS.maskFns, getMaskFns);
 }
 
 export function useQueryHistory() {
-  return useSWR(KEYS.queryHistory, () => getQueryHistory(50))
+  return useSWR(KEYS.queryHistory, () => getQueryHistory(50));
 }
 
 export function useMcpConnect() {
-  return useSWR(KEYS.mcpConnect, getMcpConnect)
+  return useSWR(KEYS.mcpConnect, getMcpConnect);
 }
 
 export function useTokens(opts?: SWRConfiguration) {
-  return useSWR(KEYS.tokens, getTokens, opts)
+  return useSWR(KEYS.tokens, getTokens, opts);
 }
 
 export function useRoleAssignments() {
-  return useSWR(KEYS.roleAssignments, () => getRoleAssignments())
+  return useSWR(KEYS.roleAssignments, () => getRoleAssignments());
 }
 
 export function useCedarPolicies() {
-  return useSWR(KEYS.cedarPolicies, getCedarPolicies)
+  return useSWR(KEYS.cedarPolicies, getCedarPolicies);
 }
 
 /** The authz Cedar schema text, for the policy editor's schema-aware lint/completion. Carries the
  *  context.tag actions derived from stored policies, so it changes when policies do. */
 export function useCedarSchema() {
-  return useSWR(KEYS.cedarSchema, getCedarSchema, { revalidateOnFocus: false })
+  return useSWR(KEYS.cedarSchema, getCedarSchema, { revalidateOnFocus: false });
 }
 
 export function useAccessRequests(status?: string, opts?: SWRConfiguration) {
-  return useSWR(KEYS.accessRequests(status), () => getAccessRequests(status), opts)
+  return useSWR(KEYS.accessRequests(status), () => getAccessRequests(status), opts);
 }
 
 export function useAccessGrants(active?: boolean, opts?: SWRConfiguration) {
-  return useSWR(KEYS.accessGrants(active), () => getAccessGrants({ active }), opts)
+  return useSWR(KEYS.accessGrants(active), () => getAccessGrants({ active }), opts);
 }

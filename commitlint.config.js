@@ -18,4 +18,4 @@ module.exports = {
     // effect was renaming every dependency PR by hand. PascalCase and ALL CAPS stay rejected.
     'subject-case': [2, 'never', ['pascal-case', 'upper-case']],
   },
-}
+};

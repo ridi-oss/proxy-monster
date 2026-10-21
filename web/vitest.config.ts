@@ -1,5 +1,5 @@
-import { fileURLToPath } from 'node:url'
-import { defineConfig } from 'vitest/config'
+import { fileURLToPath } from 'node:url';
+import { defineConfig } from 'vitest/config';
 
 // Unit tests only. `tests/` is Playwright's directory (playwright.config.ts testDir), and its specs
 // import from 'playwright/test' — picking them up here would fail at import time, so the include
@@ -9,4 +9,4 @@ export default defineConfig({
   test: {
     include: ['src/**/*.test.{ts,tsx}', 'messages/**/*.test.ts'],
   },
-})
+});

@@ -1,11 +1,11 @@
-'use client'
+'use client';
 
 // Result-tab workspace (DataGrip/BigQuery-style). Each distinct query (and each opened table)
 // gets a tab. Re-running the same query refreshes its tab; a new query reuses the single
 // unpinned "scratch" tab — pinning a tab keeps it and forces the next run into a fresh one.
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { useTranslations } from 'next-intl'
-import { toast } from 'sonner'
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { useTranslations } from 'next-intl';
+import { toast } from 'sonner';
 import {
   cancelEditorTask,
   closeEditorSession,
@@ -16,326 +16,321 @@ import {
   openEditorSession,
   setEditorDefaultSchema,
   submitEditorQuery,
-} from '@/lib/api/client'
-import { subscribeTaskEvents, waitForTaskEvent } from '@/lib/api/task-events'
-import { translateApiError } from '@/lib/i18n/errors'
-import type { Decision, QueryResponse } from '@/lib/api/types'
-import type { TreeTable } from './catalog-schema'
+} from '@/lib/api/client';
+import { subscribeTaskEvents, waitForTaskEvent } from '@/lib/api/task-events';
+import { translateApiError } from '@/lib/i18n/errors';
+import type { Decision, QueryResponse } from '@/lib/api/types';
+import type { TreeTable } from './catalog-schema';
 
 export interface QueryLogEntry {
-  id: string
-  datasourceId: number
-  statement: string
-  decision: Decision
-  denyReason: string | null
-  rowsReturned: number
-  latencyMs: number
-  error: string | null
-  timestamp: string
+  id: string;
+  datasourceId: number;
+  statement: string;
+  decision: Decision;
+  denyReason: string | null;
+  rowsReturned: number;
+  latencyMs: number;
+  error: string | null;
+  timestamp: string;
 }
 
 export interface ResultState {
-  loading: boolean
-  canceling: boolean
-  canceled: boolean
-  result: QueryResponse | null
-  error: string | null
+  loading: boolean;
+  canceling: boolean;
+  canceled: boolean;
+  result: QueryResponse | null;
+  error: string | null;
 }
 
 interface BaseTab {
-  id: string
-  key: string
-  title: string
-  pinned: boolean
-  res: ResultState
+  id: string;
+  key: string;
+  title: string;
+  pinned: boolean;
+  res: ResultState;
   // The async editor task backing this tab's current run: the tab polls it to completion and
   // deletes it on re-run/close. Null before the first submit (or for a table tab yet to load).
   // Tabs of one batch share a taskId; it is reaped when the last of them closes.
-  taskId: number | null
+  taskId: number | null;
   // Which statement of [taskId] this tab shows.
-  ordinal: number
+  ordinal: number;
 }
 export interface QueryTab extends BaseTab {
-  kind: 'query'
-  sql: string
+  kind: 'query';
+  sql: string;
 }
 export interface TableTab extends BaseTab {
-  kind: 'table'
-  datasourceId: number
-  table: TreeTable
+  kind: 'table';
+  datasourceId: number;
+  table: TreeTable;
   /** The column to flash in the Columns view; `seq` changes on every request so a repeat re-flashes. */
-  focus: { column: string; seq: number } | null
+  focus: { column: string; seq: number } | null;
   /** The open sub-view (columns, indexes, …), kept per tab. */
-  view: string
+  view: string;
 }
-export type ResultTab = QueryTab | TableTab
+export type ResultTab = QueryTab | TableTab;
 
-const TABLE_PREVIEW_ROWS = 100
+const TABLE_PREVIEW_ROWS = 100;
 const EMPTY: ResultState = {
   loading: false,
   canceling: false,
   canceled: false,
   result: null,
   error: null,
-}
+};
 // Fallback poll tick. The task's SSE completion event normally wakes the poll well before this
 // fires; it is a FOREGROUND best-effort ceiling on completion latency only when the push stream is absent or
 // dropped (a backgrounded tab throttles timers and may reconcile later, typically on focus). A couple of
 // seconds keeps the fallback snappy while cutting poll traffic for in-flight runs.
-const POLL_INTERVAL_MS = 2500
+const POLL_INTERVAL_MS = 2500;
 // A newer run replaced this tab's poll — thrown to unwind the poll loop and dropped without patching/logging.
-const SUPERSEDED = Symbol('superseded')
+const SUPERSEDED = Symbol('superseded');
 
-const norm = (sql: string) => sql.trim().replace(/\s+/g, ' ')
+const norm = (sql: string) => sql.trim().replace(/\s+/g, ' ');
 const label = (sql: string) => {
-  const s = norm(sql)
-  return s.length > 36 ? s.slice(0, 36) + '…' : s
-}
+  const s = norm(sql);
+  return s.length > 36 ? s.slice(0, 36) + '…' : s;
+};
 
 export interface ResultTabsApi {
-  tabs: ResultTab[]
-  activeId: string | null
-  active: ResultTab | null
-  logs: QueryLogEntry[]
-  run: (sql: string) => void
-  openTable: (table: TreeTable, column?: string) => void
-  setActive: (id: string) => void
-  pin: (id: string) => void
-  cancel: (id: string) => void
-  close: (id: string) => void
-  clearLogs: () => void
-  clearFocus: (id: string) => void
-  setTableView: (id: string, view: string) => void
+  tabs: ResultTab[];
+  activeId: string | null;
+  active: ResultTab | null;
+  logs: QueryLogEntry[];
+  run: (sql: string) => void;
+  openTable: (table: TreeTable, column?: string) => void;
+  setActive: (id: string) => void;
+  pin: (id: string) => void;
+  cancel: (id: string) => void;
+  close: (id: string) => void;
+  clearLogs: () => void;
+  clearFocus: (id: string) => void;
+  setTableView: (id: string, view: string) => void;
   /** Bumps on every openTable, so the strip can leave Logs even when the tab already existed. */
-  revealSeq: number
+  revealSeq: number;
   /** The session's effective namespace as the proxy last reported it: undefined before the session opens,
    *  null when the proxy could not read it. */
-  searchPath: string[] | null | undefined
+  searchPath: string[] | null | undefined;
   /** Make a schema the session's default (the server builds the statement); logged, without a result tab. */
-  setDefaultSchema: (schema: string) => void
+  setDefaultSchema: (schema: string) => void;
 }
 
 export function useResultTabs(datasourceId: number | null, maxRows: number): ResultTabsApi {
-  const t = useTranslations('Query')
-  const [tabs, setTabs] = useState<ResultTab[]>([])
-  const [activeId, setActiveId] = useState<string | null>(null)
-  const [logs, setLogs] = useState<QueryLogEntry[]>([])
+  const t = useTranslations('Query');
+  const [tabs, setTabs] = useState<ResultTab[]>([]);
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [logs, setLogs] = useState<QueryLogEntry[]>([]);
 
   // Mirror state in a ref so the imperative handlers read the latest without stale closures.
-  const tabsRef = useRef<ResultTab[]>([])
-  const focusSeq = useRef(0)
-  const [revealSeq, setRevealSeq] = useState(0)
+  const tabsRef = useRef<ResultTab[]>([]);
+  const focusSeq = useRef(0);
+  const [revealSeq, setRevealSeq] = useState(0);
   useEffect(() => {
-    tabsRef.current = tabs
-  }, [tabs])
+    tabsRef.current = tabs;
+  }, [tabs]);
 
   // Keep the shared task-event stream open while the editor is mounted: its completion events
   // wake each tab's poll loop instantly (see waitForTaskEvent). Ref-counted, so it degrades to poll on absence.
-  useEffect(() => subscribeTaskEvents(), [])
-  const idRef = useRef(0)
-  const executionRef = useRef(0)
-  const executionOrderRef = useRef(new Map<string, number>())
-  const tokenRef = useRef<Record<string, number>>({}) // per-tab fetch token (race guard)
-  const newId = () => `t${++idRef.current}`
+  useEffect(() => subscribeTaskEvents(), []);
+  const idRef = useRef(0);
+  const executionRef = useRef(0);
+  const executionOrderRef = useRef(new Map<string, number>());
+  const tokenRef = useRef<Record<string, number>>({}); // per-tab fetch token (race guard)
+  const newId = () => `t${++idRef.current}`;
 
   // One persistent editor session (one held target-DB connection) per datasource, so SET/USE/temp
   // persist across queries. Opened lazily on the first query and reused; closed on datasource change/unmount.
-  const sessionIdRef = useRef<string | null>(null)
-  const sessionDsRef = useRef<number | null>(null)
-  const openingRef = useRef<Promise<string> | null>(null)
+  const sessionIdRef = useRef<string | null>(null);
+  const sessionDsRef = useRef<number | null>(null);
+  const openingRef = useRef<Promise<string> | null>(null);
 
-  const [searchPath, setSearchPath] = useState<string[] | null | undefined>(undefined)
-  const searchPathSeq = useRef(0)
+  const [searchPath, setSearchPath] = useState<string[] | null | undefined>(undefined);
+  const searchPathSeq = useRef(0);
   const refreshSearchPath = useCallback(() => {
-    const sid = sessionIdRef.current
-    if (!sid) return
+    const sid = sessionIdRef.current;
+    if (!sid) return;
     // Overlapping refreshes can land out of order; only the latest request may set the value.
-    const seq = ++searchPathSeq.current
+    const seq = ++searchPathSeq.current;
     getEditorSession(sid)
       .then(({ searchPath: path }) => {
-        if (seq === searchPathSeq.current && sessionIdRef.current === sid) setSearchPath(path)
+        if (seq === searchPathSeq.current && sessionIdRef.current === sid) setSearchPath(path);
       })
-      .catch(() => {})
-  }, [])
+      .catch(() => {});
+  }, []);
 
   const ensureSession = useCallback(async (): Promise<string> => {
-    if (datasourceId == null) throw new Error('no datasource selected')
-    if (sessionIdRef.current && sessionDsRef.current === datasourceId) return sessionIdRef.current
+    if (datasourceId == null) throw new Error('no datasource selected');
+    if (sessionIdRef.current && sessionDsRef.current === datasourceId) return sessionIdRef.current;
     // De-dupe concurrent opens (two statements fired before the session is ready share one open).
-    if (openingRef.current) return openingRef.current
+    if (openingRef.current) return openingRef.current;
     const p = openEditorSession(datasourceId).then(({ sessionId }) => {
-      sessionIdRef.current = sessionId
-      sessionDsRef.current = datasourceId
-      refreshSearchPath()
-      return sessionId
-    })
-    openingRef.current = p
+      sessionIdRef.current = sessionId;
+      sessionDsRef.current = datasourceId;
+      refreshSearchPath();
+      return sessionId;
+    });
+    openingRef.current = p;
     try {
-      return await p
+      return await p;
     } finally {
-      openingRef.current = null
+      openingRef.current = null;
     }
-  }, [datasourceId, refreshSearchPath])
+  }, [datasourceId, refreshSearchPath]);
 
   // Switching datasource invalidates every tab (catalog + rows differ) and closes the previous session's
   // held connection (the cleanup runs on datasource change AND on unmount).
   useEffect(() => {
-    setTabs([])
-    setActiveId(null)
-    setSearchPath(undefined)
+    setTabs([]);
+    setActiveId(null);
+    setSearchPath(undefined);
     return () => {
       // Drop any live tab tasks (their saved rows) alongside closing the held session — the previous
       // datasource's tabs are being discarded, so their server-side results should go too (best-effort).
       for (const tab of tabsRef.current) {
-        if (tab.taskId != null) void deleteEditorTask(tab.taskId).catch(() => {})
+        if (tab.taskId != null) void deleteEditorTask(tab.taskId).catch(() => {});
       }
-      const sid = sessionIdRef.current
+      const sid = sessionIdRef.current;
       if (sid) {
-        void closeEditorSession(sid).catch(() => {})
-        sessionIdRef.current = null
-        sessionDsRef.current = null
+        void closeEditorSession(sid).catch(() => {});
+        sessionIdRef.current = null;
+        sessionDsRef.current = null;
       }
-    }
-  }, [datasourceId])
+    };
+  }, [datasourceId]);
 
   const patch = useCallback((id: string, res: Partial<ResultState>) => {
-    setTabs((ts) => ts.map((t) => (t.id === id ? { ...t, res: { ...t.res, ...res } } : t)))
-  }, [])
+    setTabs((ts) => ts.map((t) => (t.id === id ? { ...t, res: { ...t.res, ...res } } : t)));
+  }, []);
 
   const setTabTaskId = useCallback((id: string, taskId: number | null, ordinal = 0) => {
-    setTabs((ts) => ts.map((t) => (t.id === id ? { ...t, taskId, ordinal } : t)))
-  }, [])
+    setTabs((ts) => ts.map((t) => (t.id === id ? { ...t, taskId, ordinal } : t)));
+  }, []);
 
   /** Drop a task's saved results, but only once no tab still shows one of its statements. */
   const releaseTask = useCallback((taskId: number | null, keepTabIds: string[] = []) => {
-    if (taskId == null) return
-    const stillUsed = tabsRef.current.some((t) => t.taskId === taskId && !keepTabIds.includes(t.id))
-    if (!stillUsed) void deleteEditorTask(taskId).catch(() => {})
-  }, [])
+    if (taskId == null) return;
+    const stillUsed = tabsRef.current.some((t) => t.taskId === taskId && !keepTabIds.includes(t.id));
+    if (!stillUsed) void deleteEditorTask(taskId).catch(() => {});
+  }, []);
 
   const appendLog = useCallback((entry: QueryLogEntry, execution: number) => {
-    executionOrderRef.current.set(entry.id, execution)
+    executionOrderRef.current.set(entry.id, execution);
     setLogs((current) =>
       [...current, entry].sort(
-        (a, b) =>
-          (executionOrderRef.current.get(b.id) ?? 0) -
-          (executionOrderRef.current.get(a.id) ?? 0),
+        (a, b) => (executionOrderRef.current.get(b.id) ?? 0) - (executionOrderRef.current.get(a.id) ?? 0),
       ),
-    )
-  }, [])
+    );
+  }, []);
 
   const clearLogs = useCallback(() => {
-    setLogs([])
-    executionOrderRef.current.clear()
-  }, [])
+    setLogs([]);
+    executionOrderRef.current.clear();
+  }, []);
 
   // fetchInto and openSiblingTabs are mutually recursive, so siblings reach it through a ref.
   const fetchIntoRef = useRef<
     (id: string, sql: string, rows: number, attach?: { taskId: number; ordinal: number }) => void
-  >(() => {})
+  >(() => {});
 
   /** Open a tab per remaining statement (1..N-1), each on the same task at its own ordinal. */
-  const openSiblingTabs = useCallback(
-    (afterTabId: string, taskId: number, statements: string[], rows: number) => {
-      const siblings = statements.map((sql, index) => ({
-        tab: {
-          id: newId(),
-          kind: 'query' as const,
-          key: `${norm(sql)}#${taskId}:${index + 1}`,
-          title: label(sql),
-          sql,
-          pinned: false,
-          taskId,
-          ordinal: index + 1,
-          res: { ...EMPTY, loading: true },
-        },
+  const openSiblingTabs = useCallback((afterTabId: string, taskId: number, statements: string[], rows: number) => {
+    const siblings = statements.map((sql, index) => ({
+      tab: {
+        id: newId(),
+        kind: 'query' as const,
+        key: `${norm(sql)}#${taskId}:${index + 1}`,
+        title: label(sql),
+        sql,
+        pinned: false,
+        taskId,
         ordinal: index + 1,
-      }))
-      setTabs((ts) => {
-        const at = ts.findIndex((t) => t.id === afterTabId)
-        const next = [...ts]
-        next.splice(at < 0 ? next.length : at + 1, 0, ...siblings.map((s) => s.tab))
-        return next
-      })
-      for (const { tab, ordinal } of siblings) {
-        fetchIntoRef.current(tab.id, tab.sql, rows, { taskId, ordinal })
-      }
-    },
-    [],
-  )
+        res: { ...EMPTY, loading: true },
+      },
+      ordinal: index + 1,
+    }));
+    setTabs((ts) => {
+      const at = ts.findIndex((t) => t.id === afterTabId);
+      const next = [...ts];
+      next.splice(at < 0 ? next.length : at + 1, 0, ...siblings.map((s) => s.tab));
+      return next;
+    });
+    for (const { tab, ordinal } of siblings) {
+      fetchIntoRef.current(tab.id, tab.sql, rows, { taskId, ordinal });
+    }
+  }, []);
 
   const fetchInto = useCallback(
     // [attach] binds this tab to a statement of an already-submitted batch instead of submitting.
     (id: string, sql: string, rows: number, attach?: { taskId: number; ordinal: number }) => {
-      if (datasourceId == null) return
-      const token = (tokenRef.current[id] = (tokenRef.current[id] ?? 0) + 1)
-      const statement = norm(sql)
-      const execution = ++executionRef.current
-      const executionId = `execution-${execution}`
-      const timestamp = new Date().toISOString()
-      const startedAt = performance.now()
+      if (datasourceId == null) return;
+      const token = (tokenRef.current[id] = (tokenRef.current[id] ?? 0) + 1);
+      const statement = norm(sql);
+      const execution = ++executionRef.current;
+      const executionId = `execution-${execution}`;
+      const timestamp = new Date().toISOString();
+      const startedAt = performance.now();
       // A superseded poll (a newer run bumped this tab's token) is dropped without patching or logging.
-      const current = () => tokenRef.current[id] === token
-      patch(id, { loading: true, canceling: false, canceled: false, error: null })
+      const current = () => tokenRef.current[id] === token;
+      patch(id, { loading: true, canceling: false, canceled: false, error: null });
 
       // Submit the run; supersede the tab's previous task first (best-effort) so a re-run REPLACES it.
       const submitOnce = async (sid: string) => {
-        releaseTask(tabsRef.current.find((t) => t.id === id)?.taskId ?? null, [id])
-        return submitEditorQuery(sid, { sql: statement, maxRows: rows })
-      }
+        releaseTask(tabsRef.current.find((t) => t.id === id)?.taskId ?? null, [id]);
+        return submitEditorQuery(sid, { sql: statement, maxRows: rows });
+      };
 
       const run = async (): Promise<QueryResponse | null> => {
-        let submit: { taskId: number; ordinal: number }
+        let submit: { taskId: number; ordinal: number };
         if (attach) {
-          submit = attach
+          submit = attach;
         } else {
-          let posted
+          let posted;
           try {
-            posted = await submitOnce(await ensureSession())
+            posted = await submitOnce(await ensureSession());
           } catch (e) {
             // The held session may have been reaped (idle) or expired — reopen once and retry.
             if (e instanceof Error && /session/i.test(e.message)) {
-              sessionIdRef.current = null
-              posted = await submitOnce(await ensureSession())
+              sessionIdRef.current = null;
+              posted = await submitOnce(await ensureSession());
             } else {
-              throw e
+              throw e;
             }
           }
           if (!current()) {
             // The tab was superseded (re-run) or closed while this POST was in flight — the server task now
             // exists but no tab owns its id, so delete-on-close/re-run can never reach it. Reap it here
             // (best-effort) before unwinding, so a slow submit can't leak a persisted result.
-            void deleteEditorTask(posted.taskId).catch(() => {})
-            throw SUPERSEDED
+            void deleteEditorTask(posted.taskId).catch(() => {});
+            throw SUPERSEDED;
           }
-          submit = { taskId: posted.taskId, ordinal: 0 }
-          const split = posted.statements ?? []
-          const rest = split.slice(1)
+          submit = { taskId: posted.taskId, ordinal: 0 };
+          const split = posted.statements ?? [];
+          const rest = split.slice(1);
           if (rest.length > 0) {
             // Relabel: left as the whole selection it would title the batch while holding only its rows.
-            const own = split[0]!
+            const own = split[0]!;
             setTabs((ts) =>
               ts.map((t) =>
                 t.id === id && t.kind === 'query'
                   ? { ...t, sql: own, title: label(own), key: `${norm(own)}#${posted.taskId}:0` }
                   : t,
               ),
-            )
-            openSiblingTabs(id, posted.taskId, rest, rows)
+            );
+            openSiblingTabs(id, posted.taskId, rest, rows);
           }
         }
-        setTabTaskId(id, submit.taskId, submit.ordinal)
+        setTabTaskId(id, submit.taskId, submit.ordinal);
 
         // Poll the task to a terminal state, then fetch the saved rows on DONE (the editor never blocks —
         // each tab polls independently). A FAILED task (incl. a DENY at execute) surfaces its error code.
         for (;;) {
-          if (!current()) throw SUPERSEDED
-          const status = await getEditorTask(submit.taskId)
-          if (!current()) throw SUPERSEDED
+          if (!current()) throw SUPERSEDED;
+          const status = await getEditorTask(submit.taskId);
+          if (!current()) throw SUPERSEDED;
           // THIS tab's statement: the active child would show another statement's verdict here.
           const child =
             status.statements?.find((sc) => sc.ordinal === submit.ordinal) ??
-            (submit.ordinal === 0 ? status.result : null)
+            (submit.ordinal === 0 ? status.result : null);
           if (child?.status === 'SKIPPED') {
             if (current()) {
               patch(id, {
@@ -344,12 +339,12 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
                 canceled: false,
                 result: null,
                 error: translateApiError('approval.statement_skipped'),
-              })
+              });
             }
-            return null
+            return null;
           }
           if (child?.status === 'DONE') {
-            const view = await getEditorResult(submit.taskId, submit.ordinal)
+            const view = await getEditorResult(submit.taskId, submit.ordinal);
             return {
               // From the server's re-decision, never assumed: these rows are released under the viewer's
               // live context, which can mask columns the execution itself returned in the clear. Only a
@@ -366,7 +361,7 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
               truncatedByCap: view.truncatedByCap || view.truncatedAt != null,
               capRows: view.truncatedAt ?? null,
               latencyMs: Math.max(0, Math.round(performance.now() - startedAt)),
-            }
+            };
           }
           if (status.status === 'FAILED' || child?.status === 'FAILED') {
             // A policy DENY is a decision, not an error: returning it as a DENY result is what gives the
@@ -385,15 +380,15 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
                 rows: [],
                 rowsAffected: null,
                 latencyMs: Math.max(0, Math.round(performance.now() - startedAt)),
-              }
+              };
             }
             // Any other failure really is one. Localize the catalog code, and append the /result errorDetail
             // when present; the code is the real signal, so any detail-fetch failure falls back to it alone.
-            const code = translateApiError(child?.errorCode ?? 'approval.query_failed')
+            const code = translateApiError(child?.errorCode ?? 'approval.query_failed');
             const detail = await getEditorResult(submit.taskId, submit.ordinal)
               .then((view) => view.errorDetail)
-              .catch(() => null)
-            throw new Error(detail ? `${code}: ${detail}` : code)
+              .catch(() => null);
+            throw new Error(detail ? `${code}: ${detail}` : code);
           }
           if (status.status === 'CANCELLED' || child?.status === 'CANCELLED') {
             appendLog(
@@ -411,7 +406,7 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
                 timestamp,
               },
               execution,
-            )
+            );
             if (current()) {
               patch(id, {
                 loading: false,
@@ -419,19 +414,19 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
                 canceled: true,
                 result: null,
                 error: null,
-              })
+              });
             }
-            return null
+            return null;
           }
           // Wait for this task's push (instant on completion) or the fallback tick, whichever comes first.
-          await waitForTaskEvent(submit.taskId, POLL_INTERVAL_MS)
+          await waitForTaskEvent(submit.taskId, POLL_INTERVAL_MS);
         }
-      }
+      };
 
       run()
         .finally(refreshSearchPath)
         .then((r) => {
-          if (r == null) return
+          if (r == null) return;
           appendLog(
             {
               id: executionId,
@@ -445,7 +440,7 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
               timestamp,
             },
             execution,
-          )
+          );
           if (current()) {
             patch(id, {
               loading: false,
@@ -453,14 +448,14 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
               canceled: false,
               result: r,
               error: null,
-            })
+            });
           }
         })
         .catch((e) => {
           // A newer run replaced this tab (or deleted its task mid-poll, surfacing as a 404) — drop
           // silently: no patch, and no misleading ERROR log for a run the user already superseded.
-          if (e === SUPERSEDED || !current()) return
-          const message = e instanceof Error ? e.message : typeof e === 'string' ? e : 'query failed'
+          if (e === SUPERSEDED || !current()) return;
+          const message = e instanceof Error ? e.message : typeof e === 'string' ? e : 'query failed';
           appendLog(
             {
               id: executionId,
@@ -474,7 +469,7 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
               timestamp,
             },
             execution,
-          )
+          );
           if (current()) {
             patch(id, {
               loading: false,
@@ -482,20 +477,20 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
               canceled: false,
               result: null,
               error: message,
-            })
+            });
           }
-        })
+        });
     },
     [appendLog, datasourceId, patch, ensureSession, setTabTaskId, openSiblingTabs, releaseTask, refreshSearchPath, t],
-  )
-  fetchIntoRef.current = fetchInto
+  );
+  fetchIntoRef.current = fetchInto;
 
   const setDefaultSchema = useCallback(
     (schema: string) => {
-      if (datasourceId == null) return
-      const execution = ++executionRef.current
-      const timestamp = new Date().toISOString()
-      const startedAt = performance.now()
+      if (datasourceId == null) return;
+      const execution = ++executionRef.current;
+      const timestamp = new Date().toISOString();
+      const startedAt = performance.now();
       const log = (statement: string, entry: Pick<QueryLogEntry, 'decision' | 'denyReason' | 'error'>) =>
         appendLog(
           {
@@ -508,81 +503,93 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
             ...entry,
           },
           execution,
-        )
+        );
       void (async () => {
         try {
-          const call = async () => setEditorDefaultSchema(await ensureSession(), schema)
-          let response
+          const call = async () => setEditorDefaultSchema(await ensureSession(), schema);
+          let response;
           try {
-            response = await call()
+            response = await call();
           } catch (e) {
             // The held session may have been reaped (idle) or expired — reopen once and retry, as a run does.
-            if (!(e instanceof Error && /session/i.test(e.message))) throw e
-            sessionIdRef.current = null
-            response = await call()
+            if (!(e instanceof Error && /session/i.test(e.message))) throw e;
+            sessionIdRef.current = null;
+            response = await call();
           }
-          const { statement, result } = response
+          const { statement, result } = response;
           // Newer than any refresh still in flight, so taking a fresh token makes those land as stale.
-          searchPathSeq.current++
-          setSearchPath(response.searchPath)
+          searchPathSeq.current++;
+          setSearchPath(response.searchPath);
           if (result?.status === 'DONE') {
-            log(statement, { decision: 'ALLOW', denyReason: null, error: null })
+            log(statement, { decision: 'ALLOW', denyReason: null, error: null });
           } else if (result?.errorCode === 'approval.execute_denied' || result?.errorCode === 'approval.rate_spent') {
-            log(statement, { decision: 'DENY', denyReason: result.denyReason ?? null, error: null })
-            toast.error(result.denyReason ?? translateApiError(result.errorCode))
+            log(statement, { decision: 'DENY', denyReason: result.denyReason ?? null, error: null });
+            toast.error(result.denyReason ?? translateApiError(result.errorCode));
           } else {
-            const message = translateApiError(result?.errorCode ?? 'approval.query_failed')
-            log(statement, { decision: 'ERROR', denyReason: null, error: message })
-            toast.error(message)
+            const message = translateApiError(result?.errorCode ?? 'approval.query_failed');
+            log(statement, { decision: 'ERROR', denyReason: null, error: message });
+            toast.error(message);
           }
         } catch (e) {
-          const message = e instanceof Error ? e.message : 'query failed'
-          log(t('schema.useSchema', { name: schema }), { decision: 'ERROR', denyReason: null, error: message })
-          toast.error(message)
-          refreshSearchPath()
+          const message = e instanceof Error ? e.message : 'query failed';
+          log(t('schema.useSchema', { name: schema }), { decision: 'ERROR', denyReason: null, error: message });
+          toast.error(message);
+          refreshSearchPath();
         }
-      })()
+      })();
     },
     [appendLog, datasourceId, ensureSession, refreshSearchPath, t],
-  )
+  );
 
   const run = useCallback(
     (sql: string) => {
-      const key = norm(sql)
-      if (!key || datasourceId == null) return
+      const key = norm(sql);
+      if (!key || datasourceId == null) return;
       // Re-running the same query refreshes its (unpinned) tab in place; a different query opens
       // its own tab — running never closes another tab. A pinned tab is a frozen snapshot, so
       // re-running it opens a fresh tab instead of overwriting it.
-      const existing = tabsRef.current.find((t) => t.kind === 'query' && t.key === key && !t.pinned)
+      const existing = tabsRef.current.find((t) => t.kind === 'query' && t.key === key && !t.pinned);
       if (existing) {
-        setActiveId(existing.id)
-        fetchInto(existing.id, sql, maxRows)
-        return
+        setActiveId(existing.id);
+        fetchInto(existing.id, sql, maxRows);
+        return;
       }
-      const id = newId()
-      const tab: QueryTab = { id, kind: 'query', key, title: label(sql), sql, pinned: false, taskId: null, ordinal: 0, res: { ...EMPTY, loading: true } }
-      setTabs((ts) => [...ts, tab])
-      setActiveId(id)
-      fetchInto(id, sql, maxRows)
+      const id = newId();
+      const tab: QueryTab = {
+        id,
+        kind: 'query',
+        key,
+        title: label(sql),
+        sql,
+        pinned: false,
+        taskId: null,
+        ordinal: 0,
+        res: { ...EMPTY, loading: true },
+      };
+      setTabs((ts) => [...ts, tab]);
+      setActiveId(id);
+      fetchInto(id, sql, maxRows);
     },
     [datasourceId, fetchInto, maxRows],
-  )
+  );
 
   const openTable = useCallback(
     (table: TreeTable, column?: string) => {
-      if (datasourceId == null) return
-      const key = JSON.stringify(['table', datasourceId, table.key])
-      const focus = column == null ? null : { column, seq: ++focusSeq.current }
-      setRevealSeq((n) => n + 1)
-      const existing = tabsRef.current.find((t) => t.kind === 'table' && t.key === key)
+      if (datasourceId == null) return;
+      const key = JSON.stringify(['table', datasourceId, table.key]);
+      const focus = column == null ? null : { column, seq: ++focusSeq.current };
+      setRevealSeq((n) => n + 1);
+      const existing = tabsRef.current.find((t) => t.kind === 'table' && t.key === key);
       if (existing) {
         if (focus) {
-          setTabs((ts) => ts.map((t) => (t.id === existing.id && t.kind === 'table' ? { ...t, focus, view: 'columns' } : t)))
+          setTabs((ts) =>
+            ts.map((t) => (t.id === existing.id && t.kind === 'table' ? { ...t, focus, view: 'columns' } : t)),
+          );
         }
-        setActiveId(existing.id)
-        return
+        setActiveId(existing.id);
+        return;
       }
-      const id = newId()
+      const id = newId();
       const tab: TableTab = {
         id,
         kind: 'table',
@@ -596,62 +603,62 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
         taskId: null,
         ordinal: 0,
         res: { ...EMPTY, loading: table.insert != null },
-      }
-      setTabs((ts) => [...ts, tab])
-      setActiveId(id)
+      };
+      setTabs((ts) => [...ts, tab]);
+      setActiveId(id);
       if (table.insert != null) {
-        fetchInto(id, `SELECT * FROM ${table.insert} LIMIT ${TABLE_PREVIEW_ROWS}`, TABLE_PREVIEW_ROWS)
+        fetchInto(id, `SELECT * FROM ${table.insert} LIMIT ${TABLE_PREVIEW_ROWS}`, TABLE_PREVIEW_ROWS);
       }
     },
     [datasourceId, fetchInto],
-  )
+  );
 
   const clearFocus = useCallback((id: string) => {
-    setTabs((ts) => ts.map((t) => (t.id === id && t.kind === 'table' && t.focus ? { ...t, focus: null } : t)))
-  }, [])
+    setTabs((ts) => ts.map((t) => (t.id === id && t.kind === 'table' && t.focus ? { ...t, focus: null } : t)));
+  }, []);
 
   const setTableView = useCallback((id: string, view: string) => {
-    setTabs((ts) => ts.map((t) => (t.id === id && t.kind === 'table' ? { ...t, view } : t)))
-  }, [])
+    setTabs((ts) => ts.map((t) => (t.id === id && t.kind === 'table' ? { ...t, view } : t)));
+  }, []);
 
   const pin = useCallback((id: string) => {
-    setTabs((ts) => ts.map((t) => (t.id === id ? { ...t, pinned: !t.pinned } : t)))
-  }, [])
+    setTabs((ts) => ts.map((t) => (t.id === id ? { ...t, pinned: !t.pinned } : t)));
+  }, []);
 
   const cancel = useCallback(
     (id: string) => {
-      const tab = tabsRef.current.find((candidate) => candidate.id === id)
-      if (tab?.taskId == null || !tab.res.loading || tab.res.canceling) return
-      patch(id, { canceling: true })
+      const tab = tabsRef.current.find((candidate) => candidate.id === id);
+      if (tab?.taskId == null || !tab.res.loading || tab.res.canceling) return;
+      patch(id, { canceling: true });
       void cancelEditorTask(tab.taskId).catch((error) => {
-        patch(id, { canceling: false })
-        toast.error(error instanceof Error ? error.message : translateApiError('common.fallback'))
-      })
+        patch(id, { canceling: false });
+        toast.error(error instanceof Error ? error.message : translateApiError('common.fallback'));
+      });
     },
     [patch],
-  )
+  );
 
   const close = useCallback(
     (id: string) => {
       // Delete-on-close: drop the tab's saved result server-side (best-effort, idempotent). The statements
       // of one batch share a task, so it is released only once no other tab still shows one of them.
-      const closing = tabsRef.current.find((t) => t.id === id)
-      releaseTask(closing?.taskId ?? null, [id])
+      const closing = tabsRef.current.find((t) => t.id === id);
+      releaseTask(closing?.taskId ?? null, [id]);
       setTabs((ts) => {
-        const idx = ts.findIndex((t) => t.id === id)
-        const next = ts.filter((t) => t.id !== id)
+        const idx = ts.findIndex((t) => t.id === id);
+        const next = ts.filter((t) => t.id !== id);
         setActiveId((cur) => {
-          if (cur !== id) return cur
-          if (next.length === 0) return null
-          return next[Math.min(idx, next.length - 1)].id
-        })
-        return next
-      })
+          if (cur !== id) return cur;
+          if (next.length === 0) return null;
+          return next[Math.min(idx, next.length - 1)].id;
+        });
+        return next;
+      });
     },
     [releaseTask],
-  )
+  );
 
-  const active = tabs.find((t) => t.id === activeId) ?? null
+  const active = tabs.find((t) => t.id === activeId) ?? null;
   return {
     tabs,
     activeId,
@@ -669,5 +676,5 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
     revealSeq,
     searchPath,
     setDefaultSchema,
-  }
+  };
 }

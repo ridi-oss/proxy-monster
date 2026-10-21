@@ -1,13 +1,13 @@
-'use client'
+'use client';
 
-import { useEffect, useState } from 'react'
-import { useTranslations } from 'next-intl'
-import Link from 'next/link'
-import { Bot, Clock3, LogOut, Network, RefreshCw, User } from 'lucide-react'
-import { useAuth } from '@/lib/auth'
-import { openReauthPopup } from '@/lib/reauth'
-import { useSessionLifecycle } from '@/lib/session'
-import { Button } from '@/components/ui/button'
+import { useEffect, useState } from 'react';
+import { useTranslations } from 'next-intl';
+import Link from 'next/link';
+import { Bot, Clock3, LogOut, Network, RefreshCw, User } from 'lucide-react';
+import { useAuth } from '@/lib/auth';
+import { openReauthPopup } from '@/lib/reauth';
+import { useSessionLifecycle } from '@/lib/session';
+import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -16,32 +16,32 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
+} from '@/components/ui/dropdown-menu';
 
 function formatRemaining(remainingMs: number, t: ReturnType<typeof useTranslations>): string {
-  const totalMinutes = Math.max(0, Math.ceil(remainingMs / 60_000))
-  const hours = Math.floor(totalMinutes / 60)
-  const minutes = totalMinutes % 60
-  if (hours > 0 && minutes > 0) return t('countdown.hoursMinutes', { hours, minutes })
-  if (hours > 0) return t('countdown.hours', { hours })
-  return t('countdown.minutes', { minutes })
+  const totalMinutes = Math.max(0, Math.ceil(remainingMs / 60_000));
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours > 0 && minutes > 0) return t('countdown.hoursMinutes', { hours, minutes });
+  if (hours > 0) return t('countdown.hours', { hours });
+  return t('countdown.minutes', { minutes });
 }
 
 /** Shows the resolved principal, session lifetime, and account actions. */
 export function IdentityMenu() {
-  const commonT = useTranslations('Common')
-  const t = useTranslations('Session')
-  const connectT = useTranslations('Connect')
-  const { identity, logout } = useAuth()
-  const { absoluteExpiresAt } = useSessionLifecycle()
-  const [now, setNow] = useState(() => Date.now())
+  const commonT = useTranslations('Common');
+  const t = useTranslations('Session');
+  const connectT = useTranslations('Connect');
+  const { identity, logout } = useAuth();
+  const { absoluteExpiresAt } = useSessionLifecycle();
+  const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
-    const ticker = setInterval(() => setNow(Date.now()), 1000)
-    return () => clearInterval(ticker)
-  }, [])
+    const ticker = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(ticker);
+  }, []);
 
-  if (!identity) return null
+  if (!identity) return null;
 
   return (
     <DropdownMenu>
@@ -96,5 +96,5 @@ export function IdentityMenu() {
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
-  )
+  );
 }

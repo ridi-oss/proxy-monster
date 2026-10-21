@@ -8,13 +8,13 @@
  * between them.
  */
 export function safeInternalPath(candidate: string | null | undefined): string | null {
-  if (!candidate) return null
+  if (!candidate) return null;
   // Must start with exactly one '/', and not '//' or '/\' (both resolve to an off-site host in a browser).
-  if (!candidate.startsWith('/') || candidate.startsWith('//') || candidate.startsWith('/\\')) return null
+  if (!candidate.startsWith('/') || candidate.startsWith('//') || candidate.startsWith('/\\')) return null;
   // A control character or whitespace has no place in a path and is a common normalization-bypass vector.
-  if (/[\x00-\x1f\x7f\s]/.test(candidate)) return null
-  return candidate
+  if (/[\x00-\x1f\x7f\s]/.test(candidate)) return null;
+  return candidate;
 }
 
 /** Session-storage key carrying the intended path across the OIDC full-page round-trip. */
-export const NEXT_STORAGE_KEY = 'pm.login.next'
+export const NEXT_STORAGE_KEY = 'pm.login.next';

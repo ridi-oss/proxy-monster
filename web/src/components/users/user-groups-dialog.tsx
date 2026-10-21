@@ -1,16 +1,16 @@
-'use client'
+'use client';
 
 // Manage one user's group memberships from the flat Users page.
 
-import { useState } from 'react'
-import { useTranslations } from 'next-intl'
-import { Loader2, Plus, Trash2 } from 'lucide-react'
-import { toast } from 'sonner'
-import { mutate } from 'swr'
-import { addGroupMember, removeGroupMember } from '@/lib/api/client'
-import { swrKeys, useGroups, useUsers } from '@/lib/hooks'
-import type { AppUser, GroupRef } from '@/lib/api/types'
-import { Button } from '@/components/ui/button'
+import { useState } from 'react';
+import { useTranslations } from 'next-intl';
+import { Loader2, Plus, Trash2 } from 'lucide-react';
+import { toast } from 'sonner';
+import { mutate } from 'swr';
+import { addGroupMember, removeGroupMember } from '@/lib/api/client';
+import { swrKeys, useGroups, useUsers } from '@/lib/hooks';
+import type { AppUser, GroupRef } from '@/lib/api/types';
+import { Button } from '@/components/ui/button';
 import {
   Dialog,
   DialogContent,
@@ -18,87 +18,77 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from '@/components/ui/dialog'
-import { Label } from '@/components/ui/label'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
+} from '@/components/ui/dialog';
+import { Label } from '@/components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 interface Props {
-  user: AppUser | null
-  onClose: () => void
+  user: AppUser | null;
+  onClose: () => void;
 }
 
 export function UserGroupsDialog({ user, onClose }: Props) {
-  const t = useTranslations('Users')
-  const { data: users } = useUsers()
-  const { data: groups, isLoading, error } = useGroups()
-  const currentUser = user ? (users?.find((u) => u.id === user.id) ?? user) : null
-  const currentGroups = currentUser?.groups ?? []
-  const joinedIds = new Set(currentGroups.map((g) => g.id))
-  const available = (groups ?? []).filter((g) => !joinedIds.has(g.id))
+  const t = useTranslations('Users');
+  const { data: users } = useUsers();
+  const { data: groups, isLoading, error } = useGroups();
+  const currentUser = user ? (users?.find((u) => u.id === user.id) ?? user) : null;
+  const currentGroups = currentUser?.groups ?? [];
+  const joinedIds = new Set(currentGroups.map((g) => g.id));
+  const available = (groups ?? []).filter((g) => !joinedIds.has(g.id));
 
-  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null)
-  const [addBusy, setAddBusy] = useState(false)
-  const [busyGroupId, setBusyGroupId] = useState<number | null>(null)
-  const [errorMessage, setErrorMessage] = useState<string | null>(null)
+  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
+  const [addBusy, setAddBusy] = useState(false);
+  const [busyGroupId, setBusyGroupId] = useState<number | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  const selectedGroup = selectedGroupId
-    ? available.find((g) => String(g.id) === selectedGroupId)
-    : null
+  const selectedGroup = selectedGroupId ? available.find((g) => String(g.id) === selectedGroupId) : null;
 
   const refreshAfterWrite = async (groupId: number) => {
-    await mutate(swrKeys.users)
-    await mutate(swrKeys.groups)
-    await mutate(swrKeys.groupMembers(groupId))
-  }
+    await mutate(swrKeys.users);
+    await mutate(swrKeys.groups);
+    await mutate(swrKeys.groupMembers(groupId));
+  };
 
   const handleAdd = async () => {
-    if (!currentUser || !selectedGroup) return
-    setAddBusy(true)
-    setErrorMessage(null)
+    if (!currentUser || !selectedGroup) return;
+    setAddBusy(true);
+    setErrorMessage(null);
     try {
-      await addGroupMember(selectedGroup.id, currentUser.id)
-      await refreshAfterWrite(selectedGroup.id)
+      await addGroupMember(selectedGroup.id, currentUser.id);
+      await refreshAfterWrite(selectedGroup.id);
       toast.success(
         t('groupsDialog.toastAdded', {
           principal: currentUser.principal,
           group: selectedGroup.name,
         }),
-      )
-      setSelectedGroupId(null)
+      );
+      setSelectedGroupId(null);
     } catch (err) {
-      setErrorMessage(err instanceof Error ? err.message : t('groupsDialog.addFailed'))
+      setErrorMessage(err instanceof Error ? err.message : t('groupsDialog.addFailed'));
     } finally {
-      setAddBusy(false)
+      setAddBusy(false);
     }
-  }
+  };
 
   const handleRemove = async (group: GroupRef) => {
-    if (!currentUser) return
-    setBusyGroupId(group.id)
-    setErrorMessage(null)
+    if (!currentUser) return;
+    setBusyGroupId(group.id);
+    setErrorMessage(null);
     try {
-      await removeGroupMember(group.id, currentUser.id)
-      await refreshAfterWrite(group.id)
-      toast.success(
-        t('groupsDialog.toastRemoved', { principal: currentUser.principal, group: group.name }),
-      )
+      await removeGroupMember(group.id, currentUser.id);
+      await refreshAfterWrite(group.id);
+      toast.success(t('groupsDialog.toastRemoved', { principal: currentUser.principal, group: group.name }));
     } catch (err) {
-      setErrorMessage(err instanceof Error ? err.message : t('groupsDialog.removeFailed'))
+      setErrorMessage(err instanceof Error ? err.message : t('groupsDialog.removeFailed'));
     } finally {
-      setBusyGroupId(null)
+      setBusyGroupId(null);
     }
-  }
+  };
 
   const groupLabel = (v: string | null) => {
-    if (!v) return t('groupsDialog.selectGroup')
-    return available.find((g) => String(g.id) === v)?.name ?? t('groupsDialog.selectGroup')
-  }
+    if (!v) return t('groupsDialog.selectGroup');
+    return available.find((g) => String(g.id) === v)?.name ?? t('groupsDialog.selectGroup');
+  };
 
   return (
     <Dialog open={user !== null} onOpenChange={(open) => !open && onClose()}>
@@ -193,5 +183,5 @@ export function UserGroupsDialog({ user, onClose }: Props) {
         </DialogFooter>
       </DialogContent>
     </Dialog>
-  )
+  );
 }

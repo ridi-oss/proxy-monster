@@ -1,53 +1,53 @@
-'use client'
+'use client';
 
 // A table tab's content: live physical metadata/classification tabs plus a live, enforced Data
 // preview (SELECT * through the policy engine, so PII is masked/denied just like a query).
-import { useEffect } from 'react'
-import { useTranslations } from 'next-intl'
-import { KeyRound } from 'lucide-react'
-import type { TableRelation } from '@/lib/api/types'
-import { toneForTags } from '@/lib/decision'
-import { useTableDetail } from '@/lib/hooks'
-import { cn } from '@/lib/utils'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { ResultsPanel } from './results-panel'
-import type { TableTab } from './use-result-tabs'
+import { useEffect } from 'react';
+import { useTranslations } from 'next-intl';
+import { KeyRound } from 'lucide-react';
+import type { TableRelation } from '@/lib/api/types';
+import { toneForTags } from '@/lib/decision';
+import { useTableDetail } from '@/lib/hooks';
+import { cn } from '@/lib/utils';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { ResultsPanel } from './results-panel';
+import type { TableTab } from './use-result-tabs';
 
-const EM_DASH = '—'
+const EM_DASH = '—';
 
 function formatColumnType(column: {
-  dataType: string
-  characterMaximumLength: number | null
-  numericPrecision: number | null
-  numericScale: number | null
+  dataType: string;
+  characterMaximumLength: number | null;
+  numericPrecision: number | null;
+  numericScale: number | null;
 }) {
   if (column.characterMaximumLength != null) {
-    return `${column.dataType}(${column.characterMaximumLength})`
+    return `${column.dataType}(${column.characterMaximumLength})`;
   }
   // Only exact-numeric types (decimal/numeric) carry a meaningful (precision, scale). Integers report
   // a numeric_precision with numeric_scale=0 in information_schema on both engines, so appending it
   // unconditionally would render misleading pseudo-types like `bigint(20, 0)` / `integer(32, 0)`.
-  const isExactNumeric = /^(decimal|numeric|dec|fixed)$/i.test(column.dataType)
+  const isExactNumeric = /^(decimal|numeric|dec|fixed)$/i.test(column.dataType);
   if (isExactNumeric && column.numericPrecision != null) {
     return column.numericScale == null || column.numericScale === 0
       ? `${column.dataType}(${column.numericPrecision})`
-      : `${column.dataType}(${column.numericPrecision}, ${column.numericScale})`
+      : `${column.dataType}(${column.numericPrecision}, ${column.numericScale})`;
   }
-  return column.dataType
+  return column.dataType;
 }
 
 function formatBytes(bytes: number) {
-  if (bytes === 0) return '0 B'
-  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
-  const exponent = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1)
-  const value = bytes / 1024 ** exponent
-  return `${value >= 10 || exponent === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[exponent]}`
+  if (bytes === 0) return '0 B';
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+  const exponent = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  const value = bytes / 1024 ** exponent;
+  return `${value >= 10 || exponent === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[exponent]}`;
 }
 
 function LiveState({ loading, error }: { loading: boolean; error: unknown }) {
-  const t = useTranslations('Query')
+  const t = useTranslations('Query');
   if (error) {
-    const message = error instanceof Error ? error.message : t('table.loadErrorFallback')
+    const message = error instanceof Error ? error.message : t('table.loadErrorFallback');
     return (
       <div className="flex min-h-40 items-center justify-center p-6 text-center">
         <div>
@@ -55,16 +55,16 @@ function LiveState({ loading, error }: { loading: boolean; error: unknown }) {
           <p className="text-muted-foreground mt-1 max-w-xl text-xs">{message}</p>
         </div>
       </div>
-    )
+    );
   }
   if (loading) {
     return (
       <div className="text-muted-foreground flex min-h-40 items-center justify-center p-6 text-xs">
         {t('table.loading')}
       </div>
-    )
+    );
   }
-  return null
+  return null;
 }
 
 export function TableView({
@@ -74,32 +74,28 @@ export function TableView({
   onRequestAccess,
   onRequestRateBoost,
 }: {
-  tab: TableTab
-  onViewChange: (view: string) => void
-  onFocusShown: () => void
-  onRequestAccess: (denyReason?: string | null) => void
-  onRequestRateBoost?: (denyReason?: string | null) => void
+  tab: TableTab;
+  onViewChange: (view: string) => void;
+  onFocusShown: () => void;
+  onRequestAccess: (denyReason?: string | null) => void;
+  onRequestRateBoost?: (denyReason?: string | null) => void;
 }) {
-  const t = useTranslations('Query')
-  const unavailable = t('table.unavailable')
-  const { data: detail, error } = useTableDetail(
-    tab.datasourceId,
-    tab.table.catalog,
-    tab.table.schema,
-    tab.table.name,
-  )
+  const t = useTranslations('Query');
+  const unavailable = t('table.unavailable');
+  const { data: detail, error } = useTableDetail(tab.datasourceId, tab.table.catalog, tab.table.schema, tab.table.name);
   // First-load only: keep the rendered detail visible during SWR background revalidation
   // (useTableDetail runs revalidateOnFocus), instead of flashing "Loading…" over all four tabs
   // on every tab refocus while the ~8 live target queries re-run.
-  const loadingDetail = !detail && !error
-  const showDetail = detail && !error
+  const loadingDetail = !detail && !error;
+  const showDetail = detail && !error;
 
   // No row to flash (the load failed, or the live table lacks the column): drop the request.
-  const focusColumn = tab.focus?.column
-  const focusRowMissing = focusColumn != null && (error != null || (detail != null && !detail.columns.some((c) => c.name === focusColumn)))
+  const focusColumn = tab.focus?.column;
+  const focusRowMissing =
+    focusColumn != null && (error != null || (detail != null && !detail.columns.some((c) => c.name === focusColumn)));
   useEffect(() => {
-    if (focusRowMissing) onFocusShown()
-  }, [focusRowMissing, onFocusShown])
+    if (focusRowMissing) onFocusShown();
+  }, [focusRowMissing, onFocusShown]);
 
   return (
     <Tabs
@@ -126,11 +122,7 @@ export function TableView({
         </div>
       </div>
 
-      <TabsContent
-        value="columns"
-        data-testid="table-columns-panel"
-        className="min-h-0 min-w-0 flex-1 overflow-auto"
-      >
+      <TabsContent value="columns" data-testid="table-columns-panel" className="min-h-0 min-w-0 flex-1 overflow-auto">
         {!showDetail ? (
           <LiveState loading={loadingDetail} error={error} />
         ) : detail.columns.length === 0 ? (
@@ -159,9 +151,9 @@ export function TableView({
               {[...detail.columns]
                 .sort((a, b) => a.ordinal - b.ordinal)
                 .map((column) => {
-                  const tags = column.classification?.tags ?? []
-                  const pii = tags.includes('pii')
-                  const focused = tab.focus?.column === column.name
+                  const tags = column.classification?.tags ?? [];
+                  const pii = tags.includes('pii');
+                  const focused = tab.focus?.column === column.name;
                   return (
                     <tr
                       key={focused ? `${column.name}:${tab.focus!.seq}` : column.name}
@@ -226,7 +218,7 @@ export function TableView({
                         {column.classification?.maskFnName ?? EM_DASH}
                       </td>
                     </tr>
-                  )
+                  );
                 })}
             </tbody>
           </table>
@@ -369,11 +361,11 @@ export function TableView({
         )}
       </TabsContent>
     </Tabs>
-  )
+  );
 }
 
 function RelationCard({ relation }: { relation: TableRelation }) {
-  const t = useTranslations('Query')
+  const t = useTranslations('Query');
   return (
     <div className="rounded-md border p-3">
       <p className="font-mono font-medium">{relation.name}</p>
@@ -401,22 +393,14 @@ function RelationCard({ relation }: { relation: TableRelation }) {
         </div>
       )}
     </div>
-  )
+  );
 }
 
-function MetadataRow({
-  label,
-  value,
-  mono = false,
-}: {
-  label: string
-  value: React.ReactNode
-  mono?: boolean
-}) {
+function MetadataRow({ label, value, mono = false }: { label: string; value: React.ReactNode; mono?: boolean }) {
   return (
     <div className="contents">
       <dt className="bg-muted/40 text-muted-foreground border-b px-3 py-2 font-medium">{label}</dt>
       <dd className={cn('border-b px-3 py-2', mono && 'font-mono')}>{value}</dd>
     </div>
-  )
+  );
 }

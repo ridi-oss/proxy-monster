@@ -1,56 +1,35 @@
-'use client'
+'use client';
 
 // /admin/datasources — register and manage target databases
 // (docs/datasource-registration.md). The list is the primary surface; each row lets the user test the
 // connection, nudge a connected proxy to refresh its catalog, and open the
 // full catalog browser with inline classification.
 
-import { useCallback, useState } from 'react'
-import { useRouter } from 'next/navigation'
-import { useTranslations } from 'next-intl'
-import {
-  Database,
-  FlaskConical,
-  MoreHorizontal,
-  Pencil,
-  Plus,
-  RefreshCw,
-  Trash2,
-} from 'lucide-react'
-import { toast } from 'sonner'
-import { mutate } from 'swr'
-import { refreshDatasource, testDatasource } from '@/lib/api/client'
-import { connectionEndpoint } from '@/lib/catalog'
-import { useDatasources, useDatasourcesLive, swrKeys } from '@/lib/hooks'
-import type { Datasource, RefreshResult, TestResult } from '@/lib/api/types'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
+import { useCallback, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { useTranslations } from 'next-intl';
+import { Database, FlaskConical, MoreHorizontal, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-react';
+import { toast } from 'sonner';
+import { mutate } from 'swr';
+import { refreshDatasource, testDatasource } from '@/lib/api/client';
+import { connectionEndpoint } from '@/lib/catalog';
+import { useDatasources, useDatasourcesLive, swrKeys } from '@/lib/hooks';
+import type { Datasource, RefreshResult, TestResult } from '@/lib/api/types';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import {
-  PageHeader,
-  PageContainer,
-  LoadingState,
-  ErrorState,
-  EmptyState,
-} from '@/components/page-scaffold'
-import { DatasourceFormDialog } from '@/components/datasources/datasource-form-dialog'
-import { DeleteConfirmDialog } from '@/components/datasources/delete-confirm-dialog'
-import { cn } from '@/lib/utils'
+} from '@/components/ui/dropdown-menu';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { PageHeader, PageContainer, LoadingState, ErrorState, EmptyState } from '@/components/page-scaffold';
+import { DatasourceFormDialog } from '@/components/datasources/datasource-form-dialog';
+import { DeleteConfirmDialog } from '@/components/datasources/delete-confirm-dialog';
+import { cn } from '@/lib/utils';
 
 // Per-row probe state: idle | testing | refreshing | test result | refresh result | error.
 type ProbeState =
@@ -59,122 +38,122 @@ type ProbeState =
   | { kind: 'refreshing' }
   | { kind: 'test'; result: TestResult }
   | { kind: 'refresh'; result: RefreshResult }
-  | { kind: 'error'; message: string }
+  | { kind: 'error'; message: string };
 
 type RelativeLabel =
   | { kind: 'justNow' }
   | { kind: 'minutes'; mins: number }
   | { kind: 'hours'; hrs: number }
   | { kind: 'days'; days: number }
-  | { kind: 'absolute'; text: string }
+  | { kind: 'absolute'; text: string };
 
 /** Bucket an ISO-8601 instant into a relative-time descriptor; the component maps it to a locale string. */
 function relativeLabel(iso: string): RelativeLabel {
-  const ms = Date.now() - new Date(iso).getTime()
-  const secs = Math.floor(ms / 1000)
-  if (secs < 60) return { kind: 'justNow' }
-  const mins = Math.floor(secs / 60)
-  if (mins < 60) return { kind: 'minutes', mins }
-  const hrs = Math.floor(mins / 60)
-  if (hrs < 24) return { kind: 'hours', hrs }
-  const days = Math.floor(hrs / 24)
-  if (days < 30) return { kind: 'days', days }
-  return { kind: 'absolute', text: new Date(iso).toLocaleDateString() }
+  const ms = Date.now() - new Date(iso).getTime();
+  const secs = Math.floor(ms / 1000);
+  if (secs < 60) return { kind: 'justNow' };
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return { kind: 'minutes', mins };
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return { kind: 'hours', hrs };
+  const days = Math.floor(hrs / 24);
+  if (days < 30) return { kind: 'days', days };
+  return { kind: 'absolute', text: new Date(iso).toLocaleDateString() };
 }
 
 /** Engine → short display label. */
 function engineLabel(engine: string): string {
-  if (engine === 'postgres') return 'PG'
-  if (engine === 'mysql') return 'MySQL'
-  return engine
+  if (engine === 'postgres') return 'PG';
+  if (engine === 'mysql') return 'MySQL';
+  return engine;
 }
 
 export default function DatasourcesPage() {
-  const t = useTranslations('Datasources')
-  const { data: datasources, isLoading, error } = useDatasources()
-  const { data: liveNames } = useDatasourcesLive()
-  const router = useRouter()
+  const t = useTranslations('Datasources');
+  const { data: datasources, isLoading, error } = useDatasources();
+  const { data: liveNames } = useDatasourcesLive();
+  const router = useRouter();
 
   // Map the relative-time descriptor to a locale string.
   const formatRelative = (iso: string): string => {
-    const r = relativeLabel(iso)
+    const r = relativeLabel(iso);
     switch (r.kind) {
       case 'justNow':
-        return t('relative.justNow')
+        return t('relative.justNow');
       case 'minutes':
-        return t('relative.minutes', { mins: r.mins })
+        return t('relative.minutes', { mins: r.mins });
       case 'hours':
-        return t('relative.hours', { hrs: r.hrs })
+        return t('relative.hours', { hrs: r.hrs });
       case 'days':
-        return t('relative.days', { days: r.days })
+        return t('relative.days', { days: r.days });
       case 'absolute':
-        return r.text
+        return r.text;
     }
-  }
+  };
 
   // Form dialog state.
-  const [formOpen, setFormOpen] = useState(false)
-  const [editing, setEditing] = useState<Datasource | null>(null)
+  const [formOpen, setFormOpen] = useState(false);
+  const [editing, setEditing] = useState<Datasource | null>(null);
 
   // Delete confirm state.
-  const [deleting, setDeleting] = useState<Datasource | null>(null)
+  const [deleting, setDeleting] = useState<Datasource | null>(null);
 
   // Per-row probe states.
-  const [probes, setProbes] = useState<Record<number, ProbeState>>({})
+  const [probes, setProbes] = useState<Record<number, ProbeState>>({});
   const setProbe = useCallback((id: number, state: ProbeState) => {
-    setProbes((prev) => ({ ...prev, [id]: state }))
-  }, [])
+    setProbes((prev) => ({ ...prev, [id]: state }));
+  }, []);
 
   const handleTest = async (ds: Datasource) => {
-    setProbe(ds.id, { kind: 'testing' })
+    setProbe(ds.id, { kind: 'testing' });
     try {
-      const result = await testDatasource(ds.id)
-      setProbe(ds.id, { kind: 'test', result })
+      const result = await testDatasource(ds.id);
+      setProbe(ds.id, { kind: 'test', result });
       if (result.ok) {
-        toast.success(t('list.toast.connected', { name: ds.name }), { description: result.message })
+        toast.success(t('list.toast.connected', { name: ds.name }), { description: result.message });
       } else {
-        toast.error(t('list.toast.connectionFailed', { name: ds.name }), { description: result.message })
+        toast.error(t('list.toast.connectionFailed', { name: ds.name }), { description: result.message });
       }
     } catch (err) {
-      const message = err instanceof Error ? err.message : t('list.toast.testFailed')
-      setProbe(ds.id, { kind: 'error', message })
-      toast.error(t('list.toast.testError', { name: ds.name }), { description: message })
+      const message = err instanceof Error ? err.message : t('list.toast.testFailed');
+      setProbe(ds.id, { kind: 'error', message });
+      toast.error(t('list.toast.testError', { name: ds.name }), { description: message });
     }
-  }
+  };
 
   const handleRefresh = async (ds: Datasource) => {
-    setProbe(ds.id, { kind: 'refreshing' })
+    setProbe(ds.id, { kind: 'refreshing' });
     try {
-      const result = await refreshDatasource(ds.id)
-      setProbe(ds.id, { kind: 'refresh', result })
+      const result = await refreshDatasource(ds.id);
+      setProbe(ds.id, { kind: 'refresh', result });
       // The catalog itself lands later, async, once the nudged proxy pushes its schema — these
       // just pick up any change to catalogSyncedAt that's already landed by the time this resolves.
-      await mutate(swrKeys.datasources)
-      await mutate(swrKeys.catalog(ds.id))
+      await mutate(swrKeys.datasources);
+      await mutate(swrKeys.catalog(ds.id));
       if (result.notified > 0) {
         toast.success(t('list.toast.refreshRequested', { name: ds.name }), {
           description: t('list.toast.refreshNotified', { notified: result.notified }),
-        })
+        });
       } else {
         toast.warning(t('list.toast.refreshRequested', { name: ds.name }), {
           description: t('list.toast.refreshNoProxy'),
-        })
+        });
       }
     } catch (err) {
-      const message = err instanceof Error ? err.message : t('list.toast.refreshFailed')
-      setProbe(ds.id, { kind: 'error', message })
-      toast.error(t('list.toast.refreshError', { name: ds.name }), { description: message })
+      const message = err instanceof Error ? err.message : t('list.toast.refreshFailed');
+      setProbe(ds.id, { kind: 'error', message });
+      toast.error(t('list.toast.refreshError', { name: ds.name }), { description: message });
     }
-  }
+  };
 
   const openCreate = () => {
-    setEditing(null)
-    setFormOpen(true)
-  }
+    setEditing(null);
+    setFormOpen(true);
+  };
   const openEdit = (ds: Datasource) => {
-    setEditing(ds)
-    setFormOpen(true)
-  }
+    setEditing(ds);
+    setFormOpen(true);
+  };
 
   return (
     <>
@@ -222,8 +201,8 @@ export default function DatasourcesPage() {
               </TableHeader>
               <TableBody>
                 {datasources.map((ds) => {
-                  const probe = probes[ds.id] ?? { kind: 'idle' }
-                  const isBusy = probe.kind === 'testing' || probe.kind === 'refreshing'
+                  const probe = probes[ds.id] ?? { kind: 'idle' };
+                  const isBusy = probe.kind === 'testing' || probe.kind === 'refreshing';
                   return (
                     <TableRow
                       key={ds.id}
@@ -244,9 +223,7 @@ export default function DatasourcesPage() {
 
                       {/* Connection string */}
                       <TableCell>
-                        <span className="text-muted-foreground font-mono text-xs">
-                          {connectionEndpoint(ds)}
-                        </span>
+                        <span className="text-muted-foreground font-mono text-xs">{connectionEndpoint(ds)}</span>
                       </TableCell>
 
                       {/* Datasource-level tags (policy posture, e.g. preset:*) */}
@@ -320,9 +297,7 @@ export default function DatasourcesPage() {
 
                           <DropdownMenu>
                             <DropdownMenuTrigger
-                              render={
-                                <Button variant="ghost" size="icon-xs" aria-label={t('list.moreActions')} />
-                              }
+                              render={<Button variant="ghost" size="icon-xs" aria-label={t('list.moreActions')} />}
                             >
                               <MoreHorizontal className="size-3.5" />
                             </DropdownMenuTrigger>
@@ -332,10 +307,7 @@ export default function DatasourcesPage() {
                                 {t('list.edit')}
                               </DropdownMenuItem>
                               <DropdownMenuSeparator />
-                              <DropdownMenuItem
-                                variant="destructive"
-                                onClick={() => setDeleting(ds)}
-                              >
+                              <DropdownMenuItem variant="destructive" onClick={() => setDeleting(ds)}>
                                 <Trash2 className="size-3.5" />
                                 {t('list.delete')}
                               </DropdownMenuItem>
@@ -344,7 +316,7 @@ export default function DatasourcesPage() {
                         </div>
                       </TableCell>
                     </TableRow>
-                  )
+                  );
                 })}
               </TableBody>
             </Table>
@@ -353,19 +325,12 @@ export default function DatasourcesPage() {
       </PageContainer>
 
       {/* Add / edit dialog */}
-      <DatasourceFormDialog
-        open={formOpen}
-        onOpenChange={setFormOpen}
-        editing={editing}
-      />
+      <DatasourceFormDialog open={formOpen} onOpenChange={setFormOpen} editing={editing} />
 
       {/* Delete confirm dialog */}
-      <DeleteConfirmDialog
-        datasource={deleting}
-        onClose={() => setDeleting(null)}
-      />
+      <DeleteConfirmDialog datasource={deleting} onClose={() => setDeleting(null)} />
     </>
-  )
+  );
 }
 
 /**
@@ -375,42 +340,33 @@ export default function DatasourcesPage() {
  * means the live set hasn't loaded yet.
  */
 function ProbeCell({ probe, isLive }: { probe: ProbeState; isLive: boolean | null }) {
-  const t = useTranslations('Datasources')
+  const t = useTranslations('Datasources');
   switch (probe.kind) {
     case 'testing':
-      return <span className="text-muted-foreground text-xs">{t('probe.testing')}</span>
+      return <span className="text-muted-foreground text-xs">{t('probe.testing')}</span>;
     case 'refreshing':
-      return <span className="text-muted-foreground text-xs">{t('probe.refreshing')}</span>
+      return <span className="text-muted-foreground text-xs">{t('probe.refreshing')}</span>;
     case 'test':
       return (
         <div className="space-y-0.5">
-          <span
-            className={cn(
-              'text-xs font-medium',
-              probe.result.ok ? 'text-emerald-500' : 'text-red-500',
-            )}
-          >
+          <span className={cn('text-xs font-medium', probe.result.ok ? 'text-emerald-500' : 'text-red-500')}>
             {probe.result.ok ? t('probe.connected') : t('probe.failed')}
           </span>
           {probe.result.message && (
-            <p className="text-muted-foreground max-w-[180px] truncate text-[10px]">
-              {probe.result.message}
-            </p>
+            <p className="text-muted-foreground max-w-[180px] truncate text-[10px]">{probe.result.message}</p>
           )}
         </div>
-      )
+      );
     case 'refresh':
       return (
         <span className={cn('text-xs', probe.result.notified > 0 ? 'text-emerald-500' : 'text-muted-foreground')}>
           {t('probe.refreshNotified', { notified: probe.result.notified })}
         </span>
-      )
+      );
     case 'error':
-      return (
-        <p className="max-w-[180px] truncate text-xs text-red-500">{probe.message}</p>
-      )
+      return <p className="max-w-[180px] truncate text-xs text-red-500">{probe.message}</p>;
     default:
-      if (isLive == null) return <span className="text-muted-foreground text-xs">—</span>
+      if (isLive == null) return <span className="text-muted-foreground text-xs">—</span>;
       return isLive ? (
         <span className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-500">
           <span className="size-1.5 rounded-full bg-emerald-500" />
@@ -421,6 +377,6 @@ function ProbeCell({ probe, isLive }: { probe: ProbeState; isLive: boolean | nul
           <span className="bg-muted-foreground/40 size-1.5 rounded-full" />
           {t('list.liveNotConnected')}
         </span>
-      )
+      );
   }
 }

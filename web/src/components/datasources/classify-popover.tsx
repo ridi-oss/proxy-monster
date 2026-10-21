@@ -1,79 +1,69 @@
-'use client'
+'use client';
 
 // Inline column classifier. A Popover anchored on each
 // catalog row: add free tags + optionally pick a mask function, then PUT
 // .../classification; or DELETE to clear. Seeds from the existing
 // classification each time the popover opens.
 
-import { useEffect, useState } from 'react'
-import { useTranslations } from 'next-intl'
-import { Loader2 } from 'lucide-react'
-import { deleteClassification, putClassification } from '@/lib/api/client'
-import { mutate } from 'swr'
-import { swrKeys, useMaskFns } from '@/lib/hooks'
-import { toneForTags } from '@/lib/decision'
-import type { CatalogColumn, Classification } from '@/lib/api/types'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from '@/components/ui/popover'
-import { Label } from '@/components/ui/label'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
-import { TagsInput } from '@/components/tags-input'
-import { cn } from '@/lib/utils'
+import { useEffect, useState } from 'react';
+import { useTranslations } from 'next-intl';
+import { Loader2 } from 'lucide-react';
+import { deleteClassification, putClassification } from '@/lib/api/client';
+import { mutate } from 'swr';
+import { swrKeys, useMaskFns } from '@/lib/hooks';
+import { toneForTags } from '@/lib/decision';
+import type { CatalogColumn, Classification } from '@/lib/api/types';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { Label } from '@/components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { TagsInput } from '@/components/tags-input';
+import { cn } from '@/lib/utils';
 
 interface Props {
-  datasourceId: number
-  col: CatalogColumn
+  datasourceId: number;
+  col: CatalogColumn;
 }
 
 export function ClassifyPopover({ datasourceId, col }: Props) {
-  const t = useTranslations('Datasources')
-  const { data: maskFns } = useMaskFns()
+  const t = useTranslations('Datasources');
+  const { data: maskFns } = useMaskFns();
 
   // Trigger label: a tags summary when tagged, else the mask-fn name for a mask-only classification,
   // else the "add" affordance. A classification can be mask-only (tags empty, mask fn set) — it's still
   // classified, so it must not read as unclassified ('+ classify').
   const triggerLabel = (cl: Classification | null | undefined): string => {
-    if (!cl) return t('classify.triggerClassify')
-    const tags = cl.tags ?? []
-    if (tags.length === 1) return tags[0]
-    if (tags.length > 1) return `${tags[0]} +${tags.length - 1}`
-    if (cl.maskFnName) return t('classify.triggerMask', { name: cl.maskFnName })
-    return t('classify.triggerClassified')
-  }
+    if (!cl) return t('classify.triggerClassify');
+    const tags = cl.tags ?? [];
+    if (tags.length === 1) return tags[0];
+    if (tags.length > 1) return `${tags[0]} +${tags.length - 1}`;
+    if (cl.maskFnName) return t('classify.triggerMask', { name: cl.maskFnName });
+    return t('classify.triggerClassified');
+  };
 
-  const [open, setOpen] = useState(false)
-  const [tags, setTags] = useState<string[]>([])
-  const [maskFnId, setMaskFnId] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [open, setOpen] = useState(false);
+  const [tags, setTags] = useState<string[]>([]);
+  const [maskFnId, setMaskFnId] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   // Seed from existing classification each time the popover opens.
   useEffect(() => {
-    if (!open) return
-    setError(null)
+    if (!open) return;
+    setError(null);
     if (col.classification) {
-      setTags(col.classification.tags ?? [])
-      setMaskFnId(col.classification.maskFnId != null ? String(col.classification.maskFnId) : null)
+      setTags(col.classification.tags ?? []);
+      setMaskFnId(col.classification.maskFnId != null ? String(col.classification.maskFnId) : null);
     } else {
-      setTags([])
-      setMaskFnId(null)
+      setTags([]);
+      setMaskFnId(null);
     }
-  }, [open, col.classification])
+  }, [open, col.classification]);
 
   const handleSave = async () => {
-    setBusy(true)
-    setError(null)
+    setBusy(true);
+    setError(null);
     try {
       await putClassification(datasourceId, {
         catalog: col.catalog,
@@ -82,36 +72,36 @@ export function ClassifyPopover({ datasourceId, col }: Props) {
         column: col.column,
         tags,
         maskFnId: maskFnId != null ? Number(maskFnId) : null,
-      })
-      await mutate(swrKeys.catalog(datasourceId))
-      setOpen(false)
+      });
+      await mutate(swrKeys.catalog(datasourceId));
+      setOpen(false);
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('classify.classifyFailed'))
+      setError(err instanceof Error ? err.message : t('classify.classifyFailed'));
     } finally {
-      setBusy(false)
+      setBusy(false);
     }
-  }
+  };
 
   const handleClear = async () => {
-    setBusy(true)
-    setError(null)
+    setBusy(true);
+    setError(null);
     try {
       await deleteClassification(datasourceId, {
         catalog: col.catalog,
         schema: col.schema,
         table: col.table,
         column: col.column,
-      })
-      await mutate(swrKeys.catalog(datasourceId))
-      setOpen(false)
+      });
+      await mutate(swrKeys.catalog(datasourceId));
+      setOpen(false);
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('classify.clearFailed'))
+      setError(err instanceof Error ? err.message : t('classify.clearFailed'));
     } finally {
-      setBusy(false)
+      setBusy(false);
     }
-  }
+  };
 
-  const currentTags = col.classification?.tags ?? []
+  const currentTags = col.classification?.tags ?? [];
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -120,9 +110,7 @@ export function ClassifyPopover({ datasourceId, col }: Props) {
         nativeButton={false}
         render={
           col.classification ? (
-            <Badge
-              className={cn('cursor-pointer border font-mono text-[10px]', toneForTags(currentTags))}
-            />
+            <Badge className={cn('cursor-pointer border font-mono text-[10px]', toneForTags(currentTags))} />
           ) : (
             <span className="text-muted-foreground hover:text-foreground cursor-pointer text-xs transition-colors" />
           )
@@ -156,9 +144,7 @@ export function ClassifyPopover({ datasourceId, col }: Props) {
               <SelectTrigger className="w-full" size="sm">
                 <SelectValue placeholder={t('classify.maskFnNone')}>
                   {(v: string | null) =>
-                    v
-                      ? (maskFns?.find((m) => String(m.id) === v)?.name ?? '')
-                      : t('classify.maskFnNone')
+                    v ? (maskFns?.find((m) => String(m.id) === v)?.name ?? '') : t('classify.maskFnNone')
                   }
                 </SelectValue>
               </SelectTrigger>
@@ -203,5 +189,5 @@ export function ClassifyPopover({ datasourceId, col }: Props) {
         </div>
       </PopoverContent>
     </Popover>
-  )
+  );
 }

@@ -1,44 +1,36 @@
-'use client'
+'use client';
 
-import Link from 'next/link'
-import { useRouter } from 'next/navigation'
-import { useState } from 'react'
-import { useTranslations } from 'next-intl'
-import { ChevronDown, Inbox, Plus, ShieldCheck } from 'lucide-react'
-import type { AccessRequest } from '@/lib/api/types'
-import {
-  type WorkflowTab,
-  useWorkflowRequests,
-} from '@/lib/workflow-requests'
-import { ApprovalDetail } from '@/components/approvals/approval-detail'
-import {
-  EmptyState,
-  ErrorState,
-  LoadingState,
-  PageHeader,
-} from '@/components/page-scaffold'
-import { Button } from '@/components/ui/button'
+import Link from 'next/link';
+import { useRouter } from 'next/navigation';
+import { useState } from 'react';
+import { useTranslations } from 'next-intl';
+import { ChevronDown, Inbox, Plus, ShieldCheck } from 'lucide-react';
+import type { AccessRequest } from '@/lib/api/types';
+import { type WorkflowTab, useWorkflowRequests } from '@/lib/workflow-requests';
+import { ApprovalDetail } from '@/components/approvals/approval-detail';
+import { EmptyState, ErrorState, LoadingState, PageHeader } from '@/components/page-scaffold';
+import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { ActiveRoleGrants } from './active-role-grants'
-import { QueryRequestComposer } from './query-request-composer'
-import { RoleRequestComposer } from './role-request-composer'
-import { RoleRequestDetail } from './role-request-detail'
-import { RateResetRequestDetail } from './rate-reset-request-detail'
-import { WorkflowRequestList } from './workflow-request-list'
+} from '@/components/ui/dropdown-menu';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { ActiveRoleGrants } from './active-role-grants';
+import { QueryRequestComposer } from './query-request-composer';
+import { RoleRequestComposer } from './role-request-composer';
+import { RoleRequestDetail } from './role-request-detail';
+import { RateResetRequestDetail } from './rate-reset-request-detail';
+import { WorkflowRequestList } from './workflow-request-list';
 
 export type WorkflowComposeDraft =
   | { kind: 'ROLE' }
   | {
-      kind: 'QUERY'
-      sourceDecisionId: number | null
-      sourceDecisionError?: string | null
-    }
+      kind: 'QUERY';
+      sourceDecisionId: number | null;
+      sourceDecisionError?: string | null;
+    };
 
 /** The scroll + centered padding every detail view but the query one (which owns its full height) uses. */
 function DetailScroll({ children }: { children: React.ReactNode }) {
@@ -46,7 +38,7 @@ function DetailScroll({ children }: { children: React.ReactNode }) {
     <div className="min-h-0 flex-1 overflow-y-auto">
       <div className="mx-auto w-full max-w-5xl p-6">{children}</div>
     </div>
-  )
+  );
 }
 
 function DetailPanel({
@@ -60,54 +52,77 @@ function DetailPanel({
   onCreated,
   onCancel,
 }: {
-  selectedId?: number | null
-  compose?: WorkflowComposeDraft | null
-  auxiliary?: 'ACTIVE_GRANTS' | null
-  lists: ReturnType<typeof useWorkflowRequests>['lists']
-  roleRequestsById: ReturnType<typeof useWorkflowRequests>['roleRequestsById']
-  roleLookupLoading: boolean
-  roleLookupError: unknown
-  onCreated: (request: AccessRequest) => void
-  onCancel: () => void
+  selectedId?: number | null;
+  compose?: WorkflowComposeDraft | null;
+  auxiliary?: 'ACTIVE_GRANTS' | null;
+  lists: ReturnType<typeof useWorkflowRequests>['lists'];
+  roleRequestsById: ReturnType<typeof useWorkflowRequests>['roleRequestsById'];
+  roleLookupLoading: boolean;
+  roleLookupError: unknown;
+  onCreated: (request: AccessRequest) => void;
+  onCancel: () => void;
 }) {
-  const t = useTranslations('Workflows')
-  const invalidSelectedId = selectedId != null && (!Number.isFinite(selectedId) || selectedId <= 0)
-  const composeError = compose?.kind === 'QUERY' ? compose.sourceDecisionError : null
+  const t = useTranslations('Workflows');
+  const invalidSelectedId = selectedId != null && (!Number.isFinite(selectedId) || selectedId <= 0);
+  const composeError = compose?.kind === 'QUERY' ? compose.sourceDecisionError : null;
 
   if (invalidSelectedId) {
-    return <DetailScroll><ErrorState error={t('masterDetail.invalidRequestId')} /></DetailScroll>
+    return (
+      <DetailScroll>
+        <ErrorState error={t('masterDetail.invalidRequestId')} />
+      </DetailScroll>
+    );
   }
   if (composeError) {
-    return <DetailScroll><ErrorState error={composeError} /></DetailScroll>
+    return (
+      <DetailScroll>
+        <ErrorState error={composeError} />
+      </DetailScroll>
+    );
   }
   if (auxiliary === 'ACTIVE_GRANTS') {
-    return <DetailScroll><ActiveRoleGrants /></DetailScroll>
+    return (
+      <DetailScroll>
+        <ActiveRoleGrants />
+      </DetailScroll>
+    );
   }
   if (compose?.kind === 'ROLE') {
-    return <DetailScroll><RoleRequestComposer onCreated={onCreated} onCancel={onCancel} /></DetailScroll>
+    return (
+      <DetailScroll>
+        <RoleRequestComposer onCreated={onCreated} onCancel={onCancel} />
+      </DetailScroll>
+    );
   }
   if (compose?.kind === 'QUERY') {
     return (
       <DetailScroll>
-        <QueryRequestComposer
-          sourceDecisionId={compose.sourceDecisionId}
-          onCreated={onCreated}
-          onCancel={onCancel}
-        />
+        <QueryRequestComposer sourceDecisionId={compose.sourceDecisionId} onCreated={onCreated} onCancel={onCancel} />
       </DetailScroll>
-    )
+    );
   }
 
   if (selectedId != null) {
-    const selectedEntry = lists.all.find((entry) => entry.request.id === selectedId)
-    const selectedRoleRequest = roleRequestsById.get(selectedId)
-      ?? (selectedEntry?.request.kind === 'ROLE' || selectedEntry?.request.kind === 'RATE_RESET' ? selectedEntry.request : null)
+    const selectedEntry = lists.all.find((entry) => entry.request.id === selectedId);
+    const selectedRoleRequest =
+      roleRequestsById.get(selectedId) ??
+      (selectedEntry?.request.kind === 'ROLE' || selectedEntry?.request.kind === 'RATE_RESET'
+        ? selectedEntry.request
+        : null);
 
     if (selectedRoleRequest?.kind === 'RATE_RESET') {
-      return <DetailScroll><RateResetRequestDetail request={selectedRoleRequest} /></DetailScroll>
+      return (
+        <DetailScroll>
+          <RateResetRequestDetail request={selectedRoleRequest} />
+        </DetailScroll>
+      );
     }
     if (selectedRoleRequest) {
-      return <DetailScroll><RoleRequestDetail request={selectedRoleRequest} /></DetailScroll>
+      return (
+        <DetailScroll>
+          <RoleRequestDetail request={selectedRoleRequest} />
+        </DetailScroll>
+      );
     }
     if (selectedEntry?.request.kind === 'QUERY') {
       // Full height, no wrapper scroll: this one docks its results panel at the bottom and scrolls its
@@ -116,20 +131,28 @@ function DetailPanel({
         <div data-workflow-detail-kind="QUERY" className="flex min-h-0 flex-1 flex-col">
           <ApprovalDetail id={selectedId} />
         </div>
-      )
+      );
     }
     if (roleLookupLoading) {
-      return <DetailScroll><LoadingState label={t('masterDetail.lookingUpType')} /></DetailScroll>
+      return (
+        <DetailScroll>
+          <LoadingState label={t('masterDetail.lookingUpType')} />
+        </DetailScroll>
+      );
     }
     if (roleLookupError) {
-      return <DetailScroll><ErrorState error={roleLookupError} /></DetailScroll>
+      return (
+        <DetailScroll>
+          <ErrorState error={roleLookupError} />
+        </DetailScroll>
+      );
     }
 
     return (
       <div data-workflow-detail-kind="QUERY" className="flex min-h-0 flex-1 flex-col">
         <ApprovalDetail id={selectedId} />
       </div>
-    )
+    );
   }
 
   return (
@@ -140,7 +163,7 @@ function DetailPanel({
         hint={t('masterDetail.selectRequestHint')}
       />
     </DetailScroll>
-  )
+  );
 }
 
 export function WorkflowsMasterDetail({
@@ -148,38 +171,31 @@ export function WorkflowsMasterDetail({
   compose,
   auxiliary,
 }: {
-  selectedId?: number | null
-  compose?: WorkflowComposeDraft | null
-  auxiliary?: 'ACTIVE_GRANTS' | null
+  selectedId?: number | null;
+  compose?: WorkflowComposeDraft | null;
+  auxiliary?: 'ACTIVE_GRANTS' | null;
 }) {
-  const t = useTranslations('Workflows')
-  const router = useRouter()
-  const [tab, setTab] = useState<WorkflowTab>('all')
-  const {
-    lists,
-    incomingCount,
-    roleRequestsById,
-    isLoading,
-    error,
-    roleLookupLoading,
-    roleLookupError,
-  } = useWorkflowRequests()
-  const entries = lists[tab]
+  const t = useTranslations('Workflows');
+  const router = useRouter();
+  const [tab, setTab] = useState<WorkflowTab>('all');
+  const { lists, incomingCount, roleRequestsById, isLoading, error, roleLookupLoading, roleLookupError } =
+    useWorkflowRequests();
+  const entries = lists[tab];
   const tabs: { value: WorkflowTab; label: string }[] = [
     { value: 'all', label: t('masterDetail.tabs.all') },
     { value: 'incoming', label: t('masterDetail.tabs.incoming') },
     { value: 'outgoing', label: t('masterDetail.tabs.outgoing') },
-  ]
+  ];
   const emptyCopy =
     tab === 'incoming'
       ? { title: t('masterDetail.empty.incomingTitle'), hint: t('masterDetail.empty.incomingHint') }
       : tab === 'outgoing'
         ? { title: t('masterDetail.empty.outgoingTitle'), hint: t('masterDetail.empty.outgoingHint') }
-        : { title: t('masterDetail.empty.allTitle'), hint: t('masterDetail.empty.allHint') }
+        : { title: t('masterDetail.empty.allTitle'), hint: t('masterDetail.empty.allHint') };
 
   const handleCreated = (request: AccessRequest) => {
-    router.push(`/workflows/${request.id}`)
-  }
+    router.push(`/workflows/${request.id}`);
+  };
 
   return (
     <div data-testid="workflows-master-detail" className="flex min-h-0 flex-1 flex-col">
@@ -220,11 +236,7 @@ export function WorkflowsMasterDetail({
 
       <div className="flex min-h-0 flex-1">
         <div className="flex h-full w-80 shrink-0 min-h-0 flex-col border-r">
-          <Tabs
-            value={tab}
-            onValueChange={(value) => setTab(value as WorkflowTab)}
-            className="shrink-0 gap-0 border-b"
-          >
+          <Tabs value={tab} onValueChange={(value) => setTab(value as WorkflowTab)} className="shrink-0 gap-0 border-b">
             <TabsList variant="line" className="h-10 w-full justify-start gap-3 px-4">
               {tabs.map((item) => (
                 <TabsTrigger key={item.value} value={item.value} className="flex-none px-1">
@@ -276,5 +288,5 @@ export function WorkflowsMasterDetail({
         </div>
       </div>
     </div>
-  )
+  );
 }

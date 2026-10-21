@@ -1,21 +1,21 @@
-'use client'
+'use client';
 
-import { useEffect, useState } from 'react'
-import { useTranslations } from 'next-intl'
-import { Loader2, ShieldHalf } from 'lucide-react'
-import { API_BASE } from '@/lib/api/client'
-import { ConsentForm, type PendingConsent } from '@/components/consent/consent-form'
+import { useEffect, useState } from 'react';
+import { useTranslations } from 'next-intl';
+import { Loader2, ShieldHalf } from 'lucide-react';
+import { API_BASE } from '@/lib/api/client';
+import { ConsentForm, type PendingConsent } from '@/components/consent/consent-form';
 
 export default function ConsentPage() {
-  const t = useTranslations('Consent')
-  const tDevice = useTranslations('Device')
-  const [pending, setPending] = useState<PendingConsent | null | 'invalid'>(null)
+  const t = useTranslations('Consent');
+  const tDevice = useTranslations('Device');
+  const [pending, setPending] = useState<PendingConsent | null | 'invalid'>(null);
 
   useEffect(() => {
     fetch(`${API_BASE}/oauth/pending`, { credentials: 'include' })
       .then(async (res) => setPending(res.ok ? ((await res.json()) as PendingConsent) : 'invalid'))
-      .catch(() => setPending('invalid'))
-  }, [])
+      .catch(() => setPending('invalid'));
+  }, []);
 
   return (
     <div className="flex min-h-svh flex-col items-center justify-center gap-6 px-4">
@@ -37,5 +37,5 @@ export default function ConsentPage() {
         )}
       </div>
     </div>
-  )
+  );
 }

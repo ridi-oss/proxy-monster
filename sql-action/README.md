@@ -12,6 +12,7 @@ workflow are in [sql-from-github.md](../docs/sql-from-github.md).
 | `datasource` | (required)                  | Datasource the files run on                                              |
 | `schema`     | (required)                  | Default schema of the run's connection                                   |
 | `role`       | (required)                  | Role the files run under                                                 |
+| `instance`   | `''`                        | The control plane's `PM_INSTANCE_NAME`; posts the skipped check itself   |
 | `scope`      | `''`                        | Scope whose query executions happen one PR at a time                     |
 | `files`      | `^(?P<key>[0-9]+)_.+\.sql$` | Regex a file name must match; its `key` group, else the name, is the key |
 | `order`      | `numeric`                   | How keys sort: `numeric` (9 before 10) or `string`                       |
@@ -19,7 +20,11 @@ workflow are in [sql-from-github.md](../docs/sql-from-github.md).
 
 Requirements:
 
-- The job has `permissions: { id-token: write, contents: read }`.
+- The job has `permissions: { id-token: write, contents: read }`, plus
+  `checks: write` with `instance`: a PR that adds no SQL then gets
+  `<instance>/query executed` as skipped from the workflow, even while the
+  control plane is down. A mismatched `instance` fails the step on the next PR
+  that files SQL.
 - `actions/checkout` runs with `fetch-depth: 0`: the base...head diff needs both
   commits.
 - When the control plane is on an internal network, a `tailscale/github-action`

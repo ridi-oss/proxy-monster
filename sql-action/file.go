@@ -36,6 +36,7 @@ type sqlFileCmd struct {
 	Scope      string `help:"Scope whose query executions happen one PR at a time (default: datasource/schema)."`
 	Files      string `default:"^(?P<key>[0-9]+)_.+\\.sql$" help:"Regex a file name must match; a (?P<key>…) group is the file key, else the whole name."`
 	Order      string `enum:"numeric,string" default:"numeric" help:"How file keys sort: numeric or string."`
+	Instance   string `help:"The control plane's instance name (PM_INSTANCE_NAME). With it, a pull request that adds no SQL gets its <instance>/query executed check as skipped from GITHUB_TOKEN, without the control plane."`
 	Base       string `required:"" help:"Base commit SHA of the pull request."`
 	Head       string `required:"" help:"Head commit SHA of the pull request."`
 }
@@ -86,6 +87,11 @@ func (r filedRequest) path() string {
 
 var repositoryRe = regexp.MustCompile(`^[^/\s]+/[^/\s]+$`)
 
+// PM_INSTANCE_NAME's grammar on the control plane.
+var instanceRe = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$`)
+
+const checkSuffix = "query executed"
+
 func (p prRef) validate() error {
 	if !repositoryRe.MatchString(p.Repository) {
 		return fmt.Errorf("invalid --repository %q: want owner/name", p.Repository)
@@ -102,6 +108,9 @@ func (c *sqlFileCmd) run(ctx context.Context, env sqlEnv) error {
 	if err := c.validate(); err != nil {
 		return err
 	}
+	if c.Instance != "" && !instanceRe.MatchString(c.Instance) {
+		return fmt.Errorf("invalid --instance %q: want lowercase letters, digits and inner hyphens", c.Instance)
+	}
 	re, err := regexp.Compile(c.Files)
 	if err != nil {
 		return fmt.Errorf("invalid --files regex: %w", err)
@@ -114,23 +123,20 @@ func (c *sqlFileCmd) run(ctx context.Context, env sqlEnv) error {
 	if err != nil {
 		return err
 	}
-	bearer, err := authenticate(ctx, env, c.sqlConn)
+	checkName := c.Instance + "/" + checkSuffix
+	if len(files) == 0 && c.Instance != "" {
+		if err := postSkipped(ctx, env, c.Repository, headSha, checkName); err != nil {
+			return err
+		}
+		fmt.Fprintf(env.out, "no new files in %s match %s; %s is skipped\n", c.Dir, c.Files, checkName)
+		// The control plane drops what an earlier commit filed; while it is down, those requests end at the merge.
+		if _, err := c.file(ctx, env, files, headSha, checkName); err != nil {
+			fmt.Fprintf(env.out, "the control plane did not take the empty filing: %v\n", err)
+		}
+		return nil
+	}
+	res, err := c.file(ctx, env, files, headSha, checkName)
 	if err != nil {
-		return err
-	}
-	body := fileRequestBody{
-		Repository: c.Repository, PR: c.PR, Datasource: c.Datasource, Schema: c.Schema, Role: c.Role, HeadSha: headSha,
-		Files: files, Order: c.Order,
-	}
-	if c.Scope != "" {
-		body.Scope = &c.Scope
-	}
-	var res struct {
-		Requests []filedRequest `json:"requests"`
-	}
-	// Post even with no files: query executed is a required check, and the server completes it as skipped
-	// so a pull request without SQL can merge.
-	if err := postJSON(ctx, env, c.Server, "/api/github/requests", bearer, body, &res); err != nil {
 		return err
 	}
 	switch {
@@ -143,6 +149,50 @@ func (c *sqlFileCmd) run(ctx context.Context, env sqlEnv) error {
 		fmt.Fprintf(env.out, "filed %s as request %d (%s)\n", r.path(), r.ID, r.Status)
 	}
 	return nil
+}
+
+type fileResponse struct {
+	Requests  []filedRequest `json:"requests"`
+	CheckName string         `json:"checkName"`
+}
+
+// file sends the filing to the control plane and refuses one that posts a check other than checkName.
+func (c *sqlFileCmd) file(ctx context.Context, env sqlEnv, files []fileInput, headSha, checkName string) (fileResponse, error) {
+	var res fileResponse
+	bearer, err := authenticate(ctx, env, c.sqlConn)
+	if err != nil {
+		return res, err
+	}
+	body := fileRequestBody{
+		Repository: c.Repository, PR: c.PR, Datasource: c.Datasource, Schema: c.Schema, Role: c.Role, HeadSha: headSha,
+		Files: files, Order: c.Order,
+	}
+	if c.Scope != "" {
+		body.Scope = &c.Scope
+	}
+	if err := postJSON(ctx, env, c.Server, "/api/github/requests", bearer, body, &res); err != nil {
+		return res, err
+	}
+	if c.Instance != "" && res.CheckName != "" && res.CheckName != checkName {
+		return res, fmt.Errorf("--instance %q posts %q, but the control plane posts %q", c.Instance, checkName, res.CheckName)
+	}
+	return res, nil
+}
+
+// postSkipped posts checkName on headSha as skipped, as the workflow's GITHUB_TOKEN.
+func postSkipped(ctx context.Context, env sqlEnv, repository, headSha, checkName string) error {
+	token := env.getenv("GITHUB_TOKEN")
+	if token == "" {
+		return errors.New("GITHUB_TOKEN is not set: pass it to the step, with `permissions: checks: write`")
+	}
+	api := env.getenv("GITHUB_API_URL")
+	if api == "" {
+		api = "https://api.github.com"
+	}
+	return postJSON(ctx, env, api, "/repos/"+repository+"/check-runs", token, map[string]any{
+		"name": checkName, "head_sha": headSha, "status": "completed", "conclusion": "skipped",
+		"output": map[string]string{"title": "No SQL to run", "summary": "This commit adds no SQL file for proxy-monster."},
+	}, nil)
 }
 
 func authenticate(ctx context.Context, env sqlEnv, conn sqlConn) (string, error) {

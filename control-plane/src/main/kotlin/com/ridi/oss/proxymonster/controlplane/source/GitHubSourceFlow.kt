@@ -58,7 +58,8 @@ data class GitHubRequestsInput(
 )
 
 @Serializable
-data class GitHubRequestsResponse(val requests: List<AccessRequest>)
+/** [checkName] is the check this control plane posts, so the Action can confirm it posts the same one. */
+data class GitHubRequestsResponse(val requests: List<AccessRequest>, val checkName: String)
 
 /**
  * SQL files from GitHub pull requests (docs/sql-from-github.md): files each pull request's new files as
@@ -75,7 +76,7 @@ class GitHubSourceFlow(
     private val notifications: NotificationService?,
     private val catalog: MessageCatalog = MessageCatalog(DOMAIN),
     private val locale: String,
-    private val checkName: String,
+    val checkName: String,
     private val clock: Clock = Clock.systemUTC(),
     private val log: Logger = LoggerFactory.getLogger(GitHubSourceFlow::class.java),
     private val webUrl: String = "https://github.com",
@@ -425,6 +426,10 @@ class GitHubSourceFlow(
         title: String,
         summary: String,
     ) {
+        // The Action posts this check as skipped on a commit with no SQL in its step's directory; with nothing to
+        // run here either, that one is enough. Any other result is posted beside it, so it still holds the merge.
+        val checks = pr.checks.orEmpty().filter { it.name == checkName }
+        if (conclusion == CheckConclusion.SKIPPED && checks.any { !it.own } && checks.none { it.own }) return
         val key = repo.fullName to number
         val state = PostedState(pr.headSha, status, conclusion, title)
         if (posted[key] == state) return

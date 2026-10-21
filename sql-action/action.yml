@@ -24,6 +24,14 @@ inputs:
   role:
     description: Role the files run under.
     required: true
+  instance:
+    description: >-
+      The control plane's instance name (PM_INSTANCE_NAME). With it, a pull
+      request that adds no SQL gets `<instance>/query executed` as skipped from
+      this workflow, even while the control plane is down; the job then needs
+      the checks write permission.
+    required: false
+    default: ""
   scope:
     description:
       Name of the scope whose query executions happen one PR at a time.
@@ -125,6 +133,8 @@ runs:
         SCHEMA: ${{ inputs.schema }}
         ROLE: ${{ inputs.role }}
         SCOPE: ${{ inputs.scope }}
+        INSTANCE: ${{ inputs.instance }}
+        GITHUB_TOKEN: ${{ github.token }}
         FILES: ${{ inputs.files }}
         ORDER: ${{ inputs.order }}
         REPOSITORY: ${{ github.repository }}
@@ -147,4 +157,5 @@ runs:
           --role "$ROLE" --files "$FILES" --order "$ORDER" --repository "$REPOSITORY"
           --pr "$PR" --base "$BASE" --head "$HEAD_SHA")
         if [ -n "$SCOPE" ]; then args+=(--scope "$SCOPE"); fi
+        if [ -n "$INSTANCE" ]; then args+=(--instance "$INSTANCE"); fi
         pm-ci "${args[@]}"

@@ -34,7 +34,7 @@ acme/shop
 # .github/workflows/sql.yml
 on:
   pull_request: { types: [opened, synchronize, reopened] }
-permissions: { id-token: write, contents: read }
+permissions: { id-token: write, contents: read, checks: write }
 jobs:
   file:
     runs-on: ubuntu-latest
@@ -51,6 +51,7 @@ jobs:
       - uses: ridi-oss/proxy-monster/sql-action@v1
         with:
           server: https://proxy-monster.internal.example
+          instance: shop
           dir: db/orders
           datasource: shop-mysql
           schema: orders
@@ -147,11 +148,19 @@ where the head commit is the one the Action filed from.
 GitHub App, where `<instance>` is the control plane's `PM_INSTANCE_NAME`; below
 it is `query executed` for short. Each control plane posts its own, so a dev and
 a prod instance on one repository never share a check, and renaming an instance
-renames its check, which the ruleset must follow. The ruleset requires it with
-its source pinned to the App, so an Actions job cannot post a passing check
-under that name, and the ruleset's bypass list is empty. For a PR that adds no
-matching file, `query executed` completes as `skipped` at once, which GitHub
-counts as passing.
+renames its check, which the ruleset must follow. The ruleset's bypass list is
+empty.
+
+For a commit that adds no matching file, the Action posts `query executed` as
+`skipped` itself with the workflow's `GITHUB_TOKEN`, which GitHub counts as
+passing; with its `instance` input set, it does so without the control plane, so
+a PR without SQL merges while the control plane is down. The control plane posts
+nothing on such a commit, and a check it posted there earlier completes as
+`skipped`. A commit that adds SQL waits for the control plane. Since the ruleset
+then cannot pin the check to the App, a PR author who edits a workflow can post
+a passing `query executed` too; that merges the SQL before it runs, never runs
+it unapproved: once merged, it still runs when approved
+([Merged before it ran](#merged-before-it-ran)).
 
 For a PR that adds files, the control plane runs them when all of these hold:
 

@@ -6,17 +6,18 @@ the control plane files, approves, runs, and merges them. It is run by hand,
 before a release that touches this flow. CI runs the `github` leg of
 `smoke/run.sh` instead, which drives the same flow against a fake GitHub.
 
-| Scenario | What it checks                                                                |
-| -------- | ----------------------------------------------------------------------------- |
-| S1       | a file that fails partway turns the check red and leaves the PR open          |
-| S2       | another PR still runs and merges                                              |
-| S1b      | the fix needs a new approval and an update onto S2's merge                    |
-| S3       | of two approved PRs, one merges first and the other waits for an update       |
-| S4       | SQL changed after approval edits the same request, which needs approval again |
-| S5       | editing a file that already merged fails the Action                           |
-| S6       | numeric keys run `9_` before `10_`                                            |
-| S7       | an admin's force-run lets a PR that is behind run without an update           |
-| S8       | a push that only reformats the SQL keeps the approval                         |
+| Scenario | What it checks                                                                                                  |
+| -------- | --------------------------------------------------------------------------------------------------------------- |
+| S1       | a file that fails partway turns the check red and leaves the PR open                                            |
+| S2       | another PR still runs and merges                                                                                |
+| S1b      | the fix needs a new approval and an update onto S2's merge                                                      |
+| S3       | of two approved PRs, one merges first and the other waits for an update                                         |
+| S4       | SQL changed after approval edits the same request, which needs approval again                                   |
+| S5       | editing a file that already merged fails the Action                                                             |
+| S6       | numeric keys run `9_` before `10_`                                                                              |
+| S7       | an admin's force-run lets a PR that is behind run without an update                                             |
+| S8       | a push that only reformats the SQL keeps the approval                                                           |
+| S9       | a PR without SQL gets the check as skipped from the workflow and merges, also while the control plane is paused |
 
 A full run takes about 20 minutes and leaves its tables in the target database.
 
@@ -65,7 +66,7 @@ It creates, recording each step so a rerun skips what is done:
    control-plane URL, audience, datasource, schema, role, and directory;
 3. the App's installation on that repository only: it opens the install page,
    where you click **Install**;
-4. the ruleset in [ruleset.json](./ruleset.json), requiring the App's
+4. the ruleset in [ruleset.json](./ruleset.json), requiring the
    `github-e2e/query executed` check;
 5. a self-hosted runner labeled `pm-github-e2e`, running a pm-ci built from this
    checkout;

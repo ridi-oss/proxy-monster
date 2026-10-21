@@ -3,19 +3,19 @@
 // reads identically everywhere: deny = red (always loudest), mask = amber,
 // allow = emerald, error = zinc. Fail-closed posture made visual.
 
-import type { Decision } from './api/types'
+import type { Decision } from './api/types';
 
 export interface DecisionTone {
   /** Solid accent text (e.g. for the verdict label). */
-  text: string
+  text: string;
   /** Tinted surface for callouts. */
-  surface: string
+  surface: string;
   /** Hairline border for callouts. */
-  border: string
+  border: string;
   /** Solid bar/dot — the loud accent (banner inset bar, status dot). */
-  solid: string
+  solid: string;
   /** Badge classes — DENY is filled (loudest); others are subtle tints. */
-  badge: string
+  badge: string;
 }
 
 export const decisionTone: Record<Decision, DecisionTone> = {
@@ -47,21 +47,21 @@ export const decisionTone: Record<Decision, DecisionTone> = {
     solid: 'bg-zinc-500',
     badge: 'bg-zinc-500/15 text-zinc-500 dark:text-zinc-400 border-zinc-500/25',
   },
-}
+};
 
 /** Known tag → badge classes for catalog/column chips. Unknown tags fall back to neutral zinc. */
 export const tagTone: Record<string, string> = {
   pii: 'bg-red-500/15 text-red-600 dark:text-red-400 border-red-500/25',
   financial: 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/25',
-}
+};
 
-const neutralTone = 'bg-zinc-500/15 text-zinc-500 dark:text-zinc-400 border-zinc-500/25'
+const neutralTone = 'bg-zinc-500/15 text-zinc-500 dark:text-zinc-400 border-zinc-500/25';
 
 /** Tone for a column's tag set: loudest signal (`pii` → red) wins, else neutral zinc. */
 export function toneForTags(tags: string[]): string {
-  if (tags.includes('pii')) return tagTone.pii
+  if (tags.includes('pii')) return tagTone.pii;
   for (const t of tags) {
-    if (tagTone[t]) return tagTone[t]
+    if (tagTone[t]) return tagTone[t];
   }
-  return neutralTone
+  return neutralTone;
 }

@@ -1,104 +1,102 @@
-'use client'
+'use client';
 
-import { Suspense, useEffect, useState, type FormEvent } from 'react'
-import { useRouter, useSearchParams } from 'next/navigation'
-import { useTranslations } from 'next-intl'
-import { Loader2, ShieldHalf } from 'lucide-react'
-import { API_BASE } from '@/lib/api/client'
-import { useAuth } from '@/lib/auth'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { DeviceScopes, extraScopes } from '@/components/device/device-scopes'
+import { Suspense, useEffect, useState, type FormEvent } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { useTranslations } from 'next-intl';
+import { Loader2, ShieldHalf } from 'lucide-react';
+import { API_BASE } from '@/lib/api/client';
+import { useAuth } from '@/lib/auth';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { DeviceScopes, extraScopes } from '@/components/device/device-scopes';
 
 /** Uppercase, strip non-alphanumerics, cap at the 8 significant characters. */
 function normalizeCode(raw: string): string {
   return raw
     .toUpperCase()
     .replace(/[^A-Z0-9]/g, '')
-    .slice(0, 8)
+    .slice(0, 8);
 }
 
 /** Render the 8-char code as the familiar XXXX-XXXX (hyphen appears after 4 chars). */
 function formatCode(clean: string): string {
-  return clean.length > 4 ? `${clean.slice(0, 4)}-${clean.slice(4)}` : clean
+  return clean.length > 4 ? `${clean.slice(0, 4)}-${clean.slice(4)}` : clean;
 }
 
 function DeviceInner() {
-  const t = useTranslations('Device')
-  const router = useRouter()
-  const params = useSearchParams()
-  const { status, unauthReason } = useAuth()
-  const initialCode = normalizeCode(params.get('user_code') ?? '')
-  const prefilled = initialCode.length > 0
-  const deviceTarget = prefilled ? `/device?user_code=${encodeURIComponent(formatCode(initialCode))}` : '/device'
+  const t = useTranslations('Device');
+  const router = useRouter();
+  const params = useSearchParams();
+  const { status, unauthReason } = useAuth();
+  const initialCode = normalizeCode(params.get('user_code') ?? '');
+  const prefilled = initialCode.length > 0;
+  const deviceTarget = prefilled ? `/device?user_code=${encodeURIComponent(formatCode(initialCode))}` : '/device';
 
-  const [code, setCode] = useState(initialCode)
-  const [submitting, setSubmitting] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [code, setCode] = useState(initialCode);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   // Set when a confirmed login asks for more than mcp:read and mcp:query.
-  const [extra, setExtra] = useState<{ userCode: string; scopes: string[]; ttl: number | null } | null>(null)
+  const [extra, setExtra] = useState<{ userCode: string; scopes: string[]; ttl: number | null } | null>(null);
 
-  const complete = code.length === 8
+  const complete = code.length === 8;
 
   useEffect(() => {
     if (status === 'unauthenticated') {
       router.replace(
-        unauthReason === 'displaced'
-          ? '/displaced'
-          : `/login?return_to=${encodeURIComponent(deviceTarget)}`,
-      )
+        unauthReason === 'displaced' ? '/displaced' : `/login?return_to=${encodeURIComponent(deviceTarget)}`,
+      );
     }
-  }, [deviceTarget, router, status, unauthReason])
+  }, [deviceTarget, router, status, unauthReason]);
 
   if (status !== 'authenticated') {
     return (
       <div className="flex h-svh items-center justify-center">
         <Loader2 className="text-muted-foreground size-5 animate-spin" />
       </div>
-    )
+    );
   }
 
   const authorize = (userCode: string) => {
-    window.location.href = `${API_BASE}/auth/device/authorize?user_code=${encodeURIComponent(userCode)}`
-  }
+    window.location.href = `${API_BASE}/auth/device/authorize?user_code=${encodeURIComponent(userCode)}`;
+  };
 
   const handleSubmit = async (e: FormEvent) => {
-    e.preventDefault()
-    if (!complete || submitting) return
-    setError(null)
-    setSubmitting(true)
+    e.preventDefault();
+    if (!complete || submitting) return;
+    setError(null);
+    setSubmitting(true);
     // The CP wants the human-readable code with its hyphen (e.g. WDJB-MJHT).
-    const userCode = formatCode(code)
+    const userCode = formatCode(code);
     try {
       const res = await fetch(`${API_BASE}/auth/device/confirm`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
         body: JSON.stringify({ userCode }),
-      })
+      });
       if (res.status === 401) {
-        router.replace(`/login?return_to=${encodeURIComponent(deviceTarget)}`)
-        return
+        router.replace(`/login?return_to=${encodeURIComponent(deviceTarget)}`);
+        return;
       }
       if (!res.ok) {
-        setError(t('error'))
-        setSubmitting(false)
-        return
+        setError(t('error'));
+        setSubmitting(false);
+        return;
       }
-      const ack = (await res.json()) as { scopes?: string[]; elevatedTtlSeconds?: number | null }
-      const scopes = ack.scopes ?? []
+      const ack = (await res.json()) as { scopes?: string[]; elevatedTtlSeconds?: number | null };
+      const scopes = ack.scopes ?? [];
       if (extraScopes(scopes).length > 0) {
-        setExtra({ userCode, scopes, ttl: ack.elevatedTtlSeconds ?? null })
-        setSubmitting(false)
-        return
+        setExtra({ userCode, scopes, ttl: ack.elevatedTtlSeconds ?? null });
+        setSubmitting(false);
+        return;
       }
-      authorize(userCode)
+      authorize(userCode);
     } catch {
-      setError(t('error'))
-      setSubmitting(false)
+      setError(t('error'));
+      setSubmitting(false);
     }
-  }
+  };
 
   return (
     <div className="flex min-h-svh flex-col items-center justify-center gap-6 px-4">
@@ -121,8 +119,8 @@ function DeviceInner() {
               className="w-full"
               disabled={submitting}
               onClick={() => {
-                setSubmitting(true)
-                authorize(extra.userCode)
+                setSubmitting(true);
+                authorize(extra.userCode);
               }}
             >
               {submitting ? t('scopes.approving') : t('scopes.approve')}
@@ -154,7 +152,7 @@ function DeviceInner() {
         )}
       </div>
     </div>
-  )
+  );
 }
 
 export default function DevicePage() {
@@ -162,5 +160,5 @@ export default function DevicePage() {
     <Suspense>
       <DeviceInner />
     </Suspense>
-  )
+  );
 }

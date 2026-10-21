@@ -1,49 +1,41 @@
-'use client'
+'use client';
 
 // Full-page catalog browser for one datasource (replaces the cramped side-sheet). Master/detail:
 // tables on the left, the selected table's columns on the right with inline classification.
 // Export/Import lets the PII tagging be managed as a JSON text file (classification-as-code).
-import { useMemo, useRef, useState } from 'react'
-import Link from 'next/link'
-import { useTranslations } from 'next-intl'
-import {
-  ArrowLeft,
-  Database,
-  Download,
-  KeyRound,
-  RefreshCw,
-  Table2,
-  Upload,
-} from 'lucide-react'
-import { toast } from 'sonner'
-import { mutate } from 'swr'
-import { refreshDatasource, putClassification } from '@/lib/api/client'
-import { useCatalog, useDatasources, swrKeys } from '@/lib/hooks'
-import { connectionEndpoint, groupCatalogTables, tableKey } from '@/lib/catalog'
-import { cn } from '@/lib/utils'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
-import { LoadingState, ErrorState, EmptyState } from '@/components/page-scaffold'
-import { buildTree } from '@/components/query/catalog-schema'
-import { SchemaTree } from '@/components/query/schema-tree'
-import { ClassifyPopover } from './classify-popover'
+import { useMemo, useRef, useState } from 'react';
+import Link from 'next/link';
+import { useTranslations } from 'next-intl';
+import { ArrowLeft, Database, Download, KeyRound, RefreshCw, Table2, Upload } from 'lucide-react';
+import { toast } from 'sonner';
+import { mutate } from 'swr';
+import { refreshDatasource, putClassification } from '@/lib/api/client';
+import { useCatalog, useDatasources, swrKeys } from '@/lib/hooks';
+import { connectionEndpoint, groupCatalogTables, tableKey } from '@/lib/catalog';
+import { cn } from '@/lib/utils';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { LoadingState, ErrorState, EmptyState } from '@/components/page-scaffold';
+import { buildTree } from '@/components/query/catalog-schema';
+import { SchemaTree } from '@/components/query/schema-tree';
+import { ClassifyPopover } from './classify-popover';
 
 export function DatasourceCatalog({ id }: { id: number }) {
-  const t = useTranslations('Datasources')
-  const { data: datasources } = useDatasources()
-  const { data: catalog, isLoading, error } = useCatalog(id)
-  const ds = datasources?.find((d) => d.id === id)
+  const t = useTranslations('Datasources');
+  const { data: datasources } = useDatasources();
+  const { data: catalog, isLoading, error } = useCatalog(id);
+  const ds = datasources?.find((d) => d.id === id);
 
-  const tables = useMemo(() => groupCatalogTables(catalog ?? []), [catalog])
-  const [selectedKey, setSelectedKey] = useState<string | null>(null)
-  const [importing, setImporting] = useState(false)
-  const fileRef = useRef<HTMLInputElement>(null)
+  const tables = useMemo(() => groupCatalogTables(catalog ?? []), [catalog]);
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [importing, setImporting] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
 
-  const tree = useMemo(() => buildTree(catalog ?? [], ds), [catalog, ds])
-  const firstKey = (tree.find((table) => !table.system) ?? tree[0])?.key
-  const selected = tables.find((t) => t.key === selectedKey) ?? tables.find((t) => t.key === firstKey) ?? null
+  const tree = useMemo(() => buildTree(catalog ?? [], ds), [catalog, ds]);
+  const firstKey = (tree.find((table) => !table.system) ?? tree[0])?.key;
+  const selected = tables.find((t) => t.key === selectedKey) ?? tables.find((t) => t.key === firstKey) ?? null;
 
-  const classifiedCount = (catalog ?? []).filter((c) => c.classification).length
+  const classifiedCount = (catalog ?? []).filter((c) => c.classification).length;
 
   const handleExport = () => {
     const classifications = (catalog ?? [])
@@ -55,32 +47,32 @@ export function DatasourceCatalog({ id }: { id: number }) {
         column: c.column,
         tags: c.classification!.tags,
         maskFnId: c.classification!.maskFnId ?? null,
-      }))
-    const body = JSON.stringify({ datasource: ds?.name ?? `datasource-${id}`, classifications }, null, 2)
-    const url = URL.createObjectURL(new Blob([body], { type: 'application/json' }))
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `${ds?.name ?? `datasource-${id}`}-classifications.json`
-    a.click()
-    URL.revokeObjectURL(url)
-    toast.success(t('catalog.toastExported', { count: classifications.length }))
-  }
+      }));
+    const body = JSON.stringify({ datasource: ds?.name ?? `datasource-${id}`, classifications }, null, 2);
+    const url = URL.createObjectURL(new Blob([body], { type: 'application/json' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${ds?.name ?? `datasource-${id}`}-classifications.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast.success(t('catalog.toastExported', { count: classifications.length }));
+  };
 
   const handleImport = async (file: File) => {
-    setImporting(true)
+    setImporting(true);
     try {
-      const data = JSON.parse(await file.text())
+      const data = JSON.parse(await file.text());
       const list: Array<{
-        catalog?: string
-        schema?: string
-        table: string
-        column: string
-        tags?: string[]
-        maskFnId?: number | null
-      }> = Array.isArray(data) ? data : (data.classifications ?? [])
-      let n = 0
+        catalog?: string;
+        schema?: string;
+        table: string;
+        column: string;
+        tags?: string[];
+        maskFnId?: number | null;
+      }> = Array.isArray(data) ? data : (data.classifications ?? []);
+      let n = 0;
       for (const c of list) {
-        if (!c.catalog || !c.table || !c.column) continue
+        if (!c.catalog || !c.table || !c.column) continue;
         await putClassification(id, {
           catalog: c.catalog,
           schema: c.schema,
@@ -88,41 +80,41 @@ export function DatasourceCatalog({ id }: { id: number }) {
           column: c.column,
           tags: c.tags ?? [],
           maskFnId: c.maskFnId ?? null,
-        })
-        n++
+        });
+        n++;
       }
-      await mutate(swrKeys.catalog(id))
-      toast.success(t('catalog.toastImported', { count: n }))
+      await mutate(swrKeys.catalog(id));
+      toast.success(t('catalog.toastImported', { count: n }));
     } catch (err) {
       toast.error(t('catalog.toastImportFailed'), {
         description: err instanceof Error ? err.message : t('catalog.toastImportInvalid'),
-      })
+      });
     } finally {
-      setImporting(false)
-      if (fileRef.current) fileRef.current.value = ''
+      setImporting(false);
+      if (fileRef.current) fileRef.current.value = '';
     }
-  }
+  };
 
   const handleRefresh = async () => {
     try {
-      const r = await refreshDatasource(id)
-      await mutate(swrKeys.catalog(id))
-      await mutate(swrKeys.datasources)
+      const r = await refreshDatasource(id);
+      await mutate(swrKeys.catalog(id));
+      await mutate(swrKeys.datasources);
       if (r.notified > 0) {
         toast.success(t('catalog.toastRefreshRequested'), {
           description: t('catalog.toastRefreshNotified', { notified: r.notified }),
-        })
+        });
       } else {
         toast.warning(t('catalog.toastRefreshRequested'), {
           description: t('catalog.toastRefreshNoProxy'),
-        })
+        });
       }
     } catch (err) {
       toast.error(t('catalog.toastRefreshFailed'), {
         description: err instanceof Error ? err.message : t('catalog.toastRefreshError'),
-      })
+      });
     }
-  }
+  };
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -132,14 +124,8 @@ export function DatasourceCatalog({ id }: { id: number }) {
           <ArrowLeft className="size-4" />
         </Link>
         <Database className="text-muted-foreground size-4" />
-        <h1 className="font-mono text-base font-semibold">
-          {ds?.name ?? t('catalog.titleFallback', { id })}
-        </h1>
-        {ds && (
-          <span className="text-muted-foreground font-mono text-xs">
-            {connectionEndpoint(ds)}
-          </span>
-        )}
+        <h1 className="font-mono text-base font-semibold">{ds?.name ?? t('catalog.titleFallback', { id })}</h1>
+        {ds && <span className="text-muted-foreground font-mono text-xs">{connectionEndpoint(ds)}</span>}
         {ds && ds.tags.length > 0 && (
           <div className="flex flex-wrap gap-1">
             {ds.tags.map((tag) => (
@@ -162,8 +148,8 @@ export function DatasourceCatalog({ id }: { id: number }) {
           accept="application/json,.json"
           className="hidden"
           onChange={(e) => {
-            const f = e.target.files?.[0]
-            if (f) handleImport(f)
+            const f = e.target.files?.[0];
+            if (f) handleImport(f);
           }}
         />
         <Button size="sm" variant="outline" onClick={() => fileRef.current?.click()} disabled={importing}>
@@ -204,11 +190,7 @@ export function DatasourceCatalog({ id }: { id: number }) {
         <div className="flex min-h-0 flex-1">
           {/* Tables (LHS) */}
           <aside className="flex w-72 shrink-0 flex-col border-r">
-            <SchemaTree
-              datasourceId={id}
-              tables={tree}
-              onOpenTable={(table) => setSelectedKey(table.key)}
-            />
+            <SchemaTree datasourceId={id} tables={tree} onOpenTable={(table) => setSelectedKey(table.key)} />
           </aside>
 
           {/* Columns (RHS) */}
@@ -225,7 +207,7 @@ export function DatasourceCatalog({ id }: { id: number }) {
                 </thead>
                 <tbody>
                   {selected.columns.map((c) => {
-                    const pii = c.classification?.tags?.includes('pii') ?? false
+                    const pii = c.classification?.tags?.includes('pii') ?? false;
                     return (
                       <tr key={JSON.stringify([tableKey(c), c.column])} className="hover:bg-muted/40">
                         <td className="border-b px-4 py-1.5">
@@ -248,7 +230,7 @@ export function DatasourceCatalog({ id }: { id: number }) {
                           <ClassifyPopover datasourceId={id} col={c} />
                         </td>
                       </tr>
-                    )
+                    );
                   })}
                 </tbody>
               </table>
@@ -257,5 +239,5 @@ export function DatasourceCatalog({ id }: { id: number }) {
         </div>
       )}
     </div>
-  )
+  );
 }

@@ -1,15 +1,15 @@
-import type { NextConfig } from "next";
-import createNextIntlPlugin from "next-intl/plugin";
+import type { NextConfig } from 'next';
+import createNextIntlPlugin from 'next-intl/plugin';
 
-import { version } from "./package.json";
+import { version } from './package.json';
 
-const withNextIntl = createNextIntlPlugin("./src/i18n/request.ts");
+const withNextIntl = createNextIntlPlugin('./src/i18n/request.ts');
 
 const nextConfig: NextConfig = {
   // Container images (web/Dockerfile) copy only `.next/standalone` + `.next/static` — the traced,
   // minimal subset of node_modules the built server actually needs — instead of the full
   // node_modules tree. No effect on `next dev`/plain `next start` outside a container.
-  output: "standalone",
+  output: 'standalone',
   // The console shows this on the login page. Read from package.json, which release-please bumps with
   // the server release, so a plain `pnpm build` and a container image report the same version and
   // neither needs a build argument. Inlined at build time, so only the string ships — not package.json.
@@ -20,10 +20,10 @@ const nextConfig: NextConfig = {
   async headers() {
     return [
       {
-        source: "/:path*",
+        source: '/:path*',
         headers: [
-          { key: "Content-Security-Policy", value: "frame-ancestors 'none'" },
-          { key: "X-Frame-Options", value: "DENY" },
+          { key: 'Content-Security-Policy', value: "frame-ancestors 'none'" },
+          { key: 'X-Frame-Options', value: 'DENY' },
         ],
       },
     ];
@@ -36,7 +36,10 @@ const nextConfig: NextConfig = {
   // allowedDevOrigins matcher only lets a single `*` consume one label (see next/dist/server/
   // app-render/csrf-protection.js matchWildcardDomain), so `*.example.com` silently never matches
   // a two-label subdomain.
-  allowedDevOrigins: process.env.PM_WEB_DEV_ORIGINS?.split(",").map((s) => s.trim()).filter(Boolean) ?? [],
+  allowedDevOrigins:
+    process.env.PM_WEB_DEV_ORIGINS?.split(',')
+      .map((s) => s.trim())
+      .filter(Boolean) ?? [],
 };
 
 export default withNextIntl(nextConfig);

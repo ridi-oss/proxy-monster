@@ -1,31 +1,18 @@
-'use client'
+'use client';
 
-import { useState, type FormEvent } from 'react'
-import { useTranslations } from 'next-intl'
-import { mutate } from 'swr'
-import { toast } from 'sonner'
-import { createAccessRequest } from '@/lib/api/client'
-import type { AccessRequest, AccessRequestInput } from '@/lib/api/types'
-import { swrKeys, useRoles } from '@/lib/hooks'
-import { DatasourceSelect } from '@/components/datasource-select'
-import { Button } from '@/components/ui/button'
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card'
-import { Label } from '@/components/ui/label'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
-import { Textarea } from '@/components/ui/textarea'
+import { useState, type FormEvent } from 'react';
+import { useTranslations } from 'next-intl';
+import { mutate } from 'swr';
+import { toast } from 'sonner';
+import { createAccessRequest } from '@/lib/api/client';
+import type { AccessRequest, AccessRequestInput } from '@/lib/api/types';
+import { swrKeys, useRoles } from '@/lib/hooks';
+import { DatasourceSelect } from '@/components/datasource-select';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
+import { Label } from '@/components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Textarea } from '@/components/ui/textarea';
 
 const DURATION_OPTIONS: { value: string; key: string }[] = [
   { value: '1800', key: 'm30' },
@@ -34,73 +21,67 @@ const DURATION_OPTIONS: { value: string; key: string }[] = [
   { value: '14400', key: 'h4' },
   { value: '28800', key: 'h8' },
   { value: '43200', key: 'h12' },
-]
+];
 
 export function RoleRequestComposer({
   onCreated,
   onCancel,
 }: {
-  onCreated: (request: AccessRequest) => void
-  onCancel: () => void
+  onCreated: (request: AccessRequest) => void;
+  onCancel: () => void;
 }) {
-  const t = useTranslations('Workflows')
+  const t = useTranslations('Workflows');
   const durations = DURATION_OPTIONS.map((duration) => ({
     value: duration.value,
     label: t(`durations.${duration.key}`),
-  }))
-  const { data: roles, isLoading: rolesLoading } = useRoles()
-  const [roleId, setRoleId] = useState<string | null>(null)
-  const [datasourceId, setDatasourceId] = useState<number | null>(null)
-  const [reason, setReason] = useState('')
-  const [durationSec, setDurationSec] = useState('3600')
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  }));
+  const { data: roles, isLoading: rolesLoading } = useRoles();
+  const [roleId, setRoleId] = useState<string | null>(null);
+  const [datasourceId, setDatasourceId] = useState<number | null>(null);
+  const [reason, setReason] = useState('');
+  const [durationSec, setDurationSec] = useState('3600');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const selectedRoleId =
     roleId != null && roles?.some((role) => String(role.id) === roleId)
       ? roleId
       : roles && roles.length > 0
         ? String(roles[0].id)
-        : null
-  const valid = selectedRoleId != null && reason.trim().length > 0
-  const roleName =
-    roles?.find((role) => String(role.id) === selectedRoleId)?.name ?? t('roleComposer.selectRole')
-  const durationLabel =
-    durations.find((duration) => duration.value === durationSec)?.label ?? t('durations.h1')
+        : null;
+  const valid = selectedRoleId != null && reason.trim().length > 0;
+  const roleName = roles?.find((role) => String(role.id) === selectedRoleId)?.name ?? t('roleComposer.selectRole');
+  const durationLabel = durations.find((duration) => duration.value === durationSec)?.label ?? t('durations.h1');
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
-    if (!valid || selectedRoleId == null) return
+    event.preventDefault();
+    if (!valid || selectedRoleId == null) return;
 
-    setBusy(true)
-    setError(null)
+    setBusy(true);
+    setError(null);
     const input: AccessRequestInput = {
       roleId: Number(selectedRoleId),
       datasourceId,
       reason: reason.trim(),
       requestedDurationSec: Number(durationSec),
-    }
+    };
 
     try {
-      const created = await createAccessRequest(input)
+      const created = await createAccessRequest(input);
       const upsertCreated = (requests: AccessRequest[] | undefined) => [
         created,
         ...(requests ?? []).filter((request) => request.id !== created.id),
-      ]
-      toast.success(t('roleComposer.submittedToast'))
-      void mutate(swrKeys.accessRequests('PENDING'), upsertCreated, { revalidate: true })
-      void mutate(swrKeys.accessRequests(undefined), upsertCreated, { revalidate: true })
-      onCreated(created)
+      ];
+      toast.success(t('roleComposer.submittedToast'));
+      void mutate(swrKeys.accessRequests('PENDING'), upsertCreated, { revalidate: true });
+      void mutate(swrKeys.accessRequests(undefined), upsertCreated, { revalidate: true });
+      onCreated(created);
     } catch (submissionError) {
-      setError(
-        submissionError instanceof Error
-          ? submissionError.message
-          : t('roleComposer.submitFailed'),
-      )
+      setError(submissionError instanceof Error ? submissionError.message : t('roleComposer.submitFailed'));
     } finally {
-      setBusy(false)
+      setBusy(false);
     }
-  }
+  };
 
   return (
     <form data-workflow-composer-kind="ROLE" onSubmit={handleSubmit}>
@@ -164,10 +145,7 @@ export function RoleRequestComposer({
 
           <div className="space-y-1.5">
             <Label htmlFor="role-request-duration">{t('fields.requestedDuration')}</Label>
-            <Select
-              value={durationSec}
-              onValueChange={(value: string | null) => setDurationSec(value ?? '3600')}
-            >
+            <Select value={durationSec} onValueChange={(value: string | null) => setDurationSec(value ?? '3600')}>
               <SelectTrigger id="role-request-duration" className="w-full">
                 <SelectValue>{durationLabel}</SelectValue>
               </SelectTrigger>
@@ -192,5 +170,5 @@ export function RoleRequestComposer({
         </CardFooter>
       </Card>
     </form>
-  )
+  );
 }

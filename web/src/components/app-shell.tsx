@@ -1,37 +1,35 @@
-'use client'
+'use client';
 
 // The authenticated shell: brand, role-appropriate primary navigation with
 // one combined workflow badge, theme and identity controls, and the persistent
 // DEBUG pill. Admin stays hidden until coarse permissions explicitly allow it.
 
-import Link from 'next/link'
-import { usePathname } from 'next/navigation'
-import { useTranslations } from 'next-intl'
-import { ShieldHalf } from 'lucide-react'
-import { useAuth } from '@/lib/auth'
-import { useMePermissions } from '@/lib/hooks'
-import { cn } from '@/lib/utils'
-import { useWorkflowIncomingRequests } from '@/lib/workflow-requests'
-import { ThemeToggle } from '@/components/theme-toggle'
-import { LocaleToggle } from '@/components/locale-toggle'
-import { IdentityMenu } from '@/components/identity-menu'
+import Link from 'next/link';
+import { usePathname } from 'next/navigation';
+import { useTranslations } from 'next-intl';
+import { ShieldHalf } from 'lucide-react';
+import { useAuth } from '@/lib/auth';
+import { useMePermissions } from '@/lib/hooks';
+import { cn } from '@/lib/utils';
+import { useWorkflowIncomingRequests } from '@/lib/workflow-requests';
+import { ThemeToggle } from '@/components/theme-toggle';
+import { LocaleToggle } from '@/components/locale-toggle';
+import { IdentityMenu } from '@/components/identity-menu';
 
 export function AppShell({ children }: { children: React.ReactNode }) {
-  const t = useTranslations('Nav')
-  const pathname = usePathname()
-  const { debugMode } = useAuth()
-  const { data: permissions, error: permissionsError } = useMePermissions()
-  const { count: workflowPendingCount } = useWorkflowIncomingRequests()
+  const t = useTranslations('Nav');
+  const pathname = usePathname();
+  const { debugMode } = useAuth();
+  const { data: permissions, error: permissionsError } = useMePermissions();
+  const { count: workflowPendingCount } = useWorkflowIncomingRequests();
   const NAV = [
     { label: t('query'), href: '/query' },
     { label: t('workflows'), href: '/workflows' },
     { label: t('access'), href: '/access' },
     { label: t('audit'), href: '/audit' },
-  ] as const
+  ] as const;
   const navItems =
-    permissionsError == null && permissions?.isAdmin === true
-      ? [...NAV, { label: t('admin'), href: '/admin' }]
-      : NAV
+    permissionsError == null && permissions?.isAdmin === true ? [...NAV, { label: t('admin'), href: '/admin' }] : NAV;
 
   return (
     <div className="flex h-svh flex-col">
@@ -43,7 +41,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
         <nav aria-label={t('primaryNavigation')} className="flex h-full items-center gap-1">
           {navItems.map((item) => {
-            const active = pathname === item.href || pathname.startsWith(item.href + '/')
+            const active = pathname === item.href || pathname.startsWith(item.href + '/');
             return (
               <Link
                 key={item.href}
@@ -63,11 +61,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                     {workflowPendingCount}
                   </span>
                 )}
-                {active && (
-                  <span className="bg-foreground absolute inset-x-2.5 -bottom-px h-0.5 rounded-full" />
-                )}
+                {active && <span className="bg-foreground absolute inset-x-2.5 -bottom-px h-0.5 rounded-full" />}
               </Link>
-            )
+            );
           })}
         </nav>
 
@@ -85,5 +81,5 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       <main className="flex min-h-0 flex-1 flex-col">{children}</main>
     </div>
-  )
+  );
 }

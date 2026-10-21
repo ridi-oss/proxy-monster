@@ -4,28 +4,28 @@
 // affordances (cursor, selection, gutter, active line, autocomplete popup) are
 // set. Pick one with `editorTheme(resolvedTheme)`.
 
-import { EditorView } from '@codemirror/view'
-import { HighlightStyle, syntaxHighlighting } from '@codemirror/language'
-import { tags as t } from '@lezer/highlight'
-import type { Extension } from '@codemirror/state'
+import { EditorView } from '@codemirror/view';
+import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
+import { tags as t } from '@lezer/highlight';
+import type { Extension } from '@codemirror/state';
 
 interface Palette {
-  fg: string
-  cursor: string
-  selection: string
-  gutter: string
-  activeLine: string
-  activeStatement: string
-  linked: string
-  popupBg: string
-  popupBorder: string
-  keyword: string
-  string: string
-  number: string
-  comment: string
-  func: string
-  type: string
-  punct: string
+  fg: string;
+  cursor: string;
+  selection: string;
+  gutter: string;
+  activeLine: string;
+  activeStatement: string;
+  linked: string;
+  popupBg: string;
+  popupBorder: string;
+  keyword: string;
+  string: string;
+  number: string;
+  comment: string;
+  func: string;
+  type: string;
+  punct: string;
 }
 
 function build(dark: boolean, c: Palette): Extension {
@@ -72,7 +72,7 @@ function build(dark: boolean, c: Palette): Extension {
       '.cm-completionIcon': { opacity: '0.6', paddingRight: '0.6em' },
     },
     { dark },
-  )
+  );
 
   const highlight = HighlightStyle.define([
     { tag: [t.keyword, t.modifier, t.operatorKeyword, t.controlKeyword], color: c.keyword, fontWeight: '500' },
@@ -83,9 +83,9 @@ function build(dark: boolean, c: Palette): Extension {
     { tag: [t.typeName, t.tagName, t.className], color: c.type },
     { tag: [t.operator, t.punctuation, t.separator, t.bracket], color: c.punct },
     { tag: [t.propertyName, t.attributeName, t.variableName, t.name], color: c.fg },
-  ])
+  ]);
 
-  return [chrome, syntaxHighlighting(highlight)]
+  return [chrome, syntaxHighlighting(highlight)];
 }
 
 const DARK = build(true, {
@@ -105,7 +105,7 @@ const DARK = build(true, {
   func: '#7dd3fc',
   type: '#5eead4',
   punct: '#a1a1aa',
-})
+});
 
 const LIGHT = build(false, {
   fg: '#18181b',
@@ -124,8 +124,8 @@ const LIGHT = build(false, {
   func: '#0369a1',
   type: '#0f766e',
   punct: '#71717a',
-})
+});
 
 export function editorTheme(resolved: string | undefined): Extension {
-  return resolved === 'light' ? LIGHT : DARK
+  return resolved === 'light' ? LIGHT : DARK;
 }

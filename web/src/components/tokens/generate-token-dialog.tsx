@@ -1,17 +1,17 @@
-'use client'
+'use client';
 
 // Generate a managed, expiring wire token. On success the plaintext is shown ONCE with copy
 // buttons and a ready-to-paste connection string (it's a connect password, not a stored secret).
-import { useState } from 'react'
-import { useTranslations } from 'next-intl'
-import { Check, Copy, KeyRound, Loader2, TriangleAlert } from 'lucide-react'
-import { toast } from 'sonner'
-import { mutate } from 'swr'
-import { createToken } from '@/lib/api/client'
-import { useAuth } from '@/lib/auth'
-import { useDatasources, swrKeys } from '@/lib/hooks'
-import type { IssuedToken } from '@/lib/api/types'
-import { Button } from '@/components/ui/button'
+import { useState } from 'react';
+import { useTranslations } from 'next-intl';
+import { Check, Copy, KeyRound, Loader2, TriangleAlert } from 'lucide-react';
+import { toast } from 'sonner';
+import { mutate } from 'swr';
+import { createToken } from '@/lib/api/client';
+import { useAuth } from '@/lib/auth';
+import { useDatasources, swrKeys } from '@/lib/hooks';
+import type { IssuedToken } from '@/lib/api/types';
+import { Button } from '@/components/ui/button';
 import {
   Dialog,
   DialogContent,
@@ -19,16 +19,10 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from '@/components/ui/dialog'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
+} from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 const TTL_OPTIONS: Array<{ value: string; key: string }> = [
   { value: '900', key: 'm15' },
@@ -36,75 +30,75 @@ const TTL_OPTIONS: Array<{ value: string; key: string }> = [
   { value: '21600', key: 'h6' },
   { value: '43200', key: 'h12' },
   { value: '86400', key: 'h24Max' },
-]
+];
 
 function CopyButton({ text, label }: { text: string; label?: string }) {
-  const t = useTranslations('Workflows')
-  const [copied, setCopied] = useState(false)
+  const t = useTranslations('Workflows');
+  const [copied, setCopied] = useState(false);
   return (
     <Button
       type="button"
       variant="outline"
       size="sm"
       onClick={async () => {
-        await navigator.clipboard.writeText(text)
-        setCopied(true)
-        setTimeout(() => setCopied(false), 1500)
+        await navigator.clipboard.writeText(text);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
       }}
     >
       {copied ? <Check className="size-3.5 text-emerald-500" /> : <Copy className="size-3.5" />}
       {label ?? (copied ? t('actions.copied') : t('actions.copy'))}
     </Button>
-  )
+  );
 }
 
 export function GenerateTokenDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
-  const t = useTranslations('Workflows')
-  const { identity } = useAuth()
-  const { data: datasources } = useDatasources()
-  const ttls = TTL_OPTIONS.map((option) => ({ value: option.value, label: t(`ttls.${option.key}`) }))
-  const [name, setName] = useState('')
-  const [ttl, setTtl] = useState('3600')
-  const [dsId, setDsId] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
-  const [issued, setIssued] = useState<IssuedToken | null>(null)
+  const t = useTranslations('Workflows');
+  const { identity } = useAuth();
+  const { data: datasources } = useDatasources();
+  const ttls = TTL_OPTIONS.map((option) => ({ value: option.value, label: t(`ttls.${option.key}`) }));
+  const [name, setName] = useState('');
+  const [ttl, setTtl] = useState('3600');
+  const [dsId, setDsId] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [issued, setIssued] = useState<IssuedToken | null>(null);
 
   const reset = () => {
-    setName('')
-    setTtl('3600')
-    setDsId(null)
-    setIssued(null)
-  }
+    setName('');
+    setTtl('3600');
+    setDsId(null);
+    setIssued(null);
+  };
 
   const handleGenerate = async () => {
-    setBusy(true)
+    setBusy(true);
     try {
-      const tok = await createToken({ name: name.trim() || null, ttlSeconds: Number(ttl) })
-      setIssued(tok)
-      await mutate(swrKeys.tokens)
+      const tok = await createToken({ name: name.trim() || null, ttlSeconds: Number(ttl) });
+      setIssued(tok);
+      await mutate(swrKeys.tokens);
     } catch (err) {
       toast.error(t('tokenDialog.generateFailed'), {
         description: err instanceof Error ? err.message : 'error',
-      })
+      });
     } finally {
-      setBusy(false)
+      setBusy(false);
     }
-  }
+  };
 
   const close = () => {
-    onOpenChange(false)
-    setTimeout(reset, 200)
-  }
+    onOpenChange(false);
+    setTimeout(reset, 200);
+  };
 
   // Connection-string helper (the token is the password). Defaults to a chosen datasource.
-  const ds = datasources?.find((d) => String(d.id) === dsId) ?? datasources?.[0]
-  const user = identity?.principal ?? 'you@example.com'
+  const ds = datasources?.find((d) => String(d.id) === dsId) ?? datasources?.[0];
+  const user = identity?.principal ?? 'you@example.com';
   const connString =
     issued && ds
       ? ds.engine === 'mysql'
         ? `mysql --ssl-mode=VERIFY_IDENTITY --enable-cleartext-plugin -h <proxy-host> -P 6033 -u "${user}" -p"${issued.token}"`
         : `psql "host=<proxy-host> port=6432 dbname=${ds.dbName} user=${user} password=${issued.token} sslmode=verify-full sslrootcert=system"`
-      : null
+      : null;
 
   return (
     <Dialog open={open} onOpenChange={(o) => (o ? onOpenChange(true) : close())}>
@@ -146,7 +140,9 @@ export function GenerateTokenDialog({ open, onOpenChange }: { open: boolean; onO
                   <Select value={dsId ?? (ds ? String(ds.id) : null)} onValueChange={(v: string | null) => setDsId(v)}>
                     <SelectTrigger className="w-full">
                       <SelectValue placeholder={t('tokenDialog.datasourcePlaceholder')}>
-                        {(v: string | null) => datasources?.find((d) => String(d.id) === v)?.name ?? t('tokenDialog.datasourcePlaceholder')}
+                        {(v: string | null) =>
+                          datasources?.find((d) => String(d.id) === v)?.name ?? t('tokenDialog.datasourcePlaceholder')
+                        }
                       </SelectValue>
                     </SelectTrigger>
                     <SelectContent>
@@ -219,5 +215,5 @@ export function GenerateTokenDialog({ open, onOpenChange }: { open: boolean; onO
         )}
       </DialogContent>
     </Dialog>
-  )
+  );
 }

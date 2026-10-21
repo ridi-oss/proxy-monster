@@ -1,15 +1,15 @@
-'use client'
+'use client';
 
 // /device/success — where the control-plane lands the browser once the pmon
 // device login is authorized. Purely informational: pmon's poll picks up the
 // grant and finishes on its own, so this tab just confirms and can be closed.
 // Styled to match /login (same header + card).
 
-import { useTranslations } from 'next-intl'
-import { CircleCheck, ShieldHalf } from 'lucide-react'
+import { useTranslations } from 'next-intl';
+import { CircleCheck, ShieldHalf } from 'lucide-react';
 
 export default function DeviceSuccessPage() {
-  const t = useTranslations('Device')
+  const t = useTranslations('Device');
 
   return (
     <div className="flex min-h-svh flex-col items-center justify-center gap-6 px-4">
@@ -29,5 +29,5 @@ export default function DeviceSuccessPage() {
         </div>
       </div>
     </div>
-  )
+  );
 }

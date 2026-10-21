@@ -1,17 +1,17 @@
-'use client'
+'use client';
 
 // Confirm-gated delete dialog for a datasource. Warns that policies scoped to
 // the datasource will stop resolving — matches the warning copy from the old
 // DatasourcesPage.tsx.
 
-import { useState } from 'react'
-import { useTranslations } from 'next-intl'
-import { Loader2 } from 'lucide-react'
-import { deleteDatasource } from '@/lib/api/client'
-import { mutate } from 'swr'
-import { swrKeys } from '@/lib/hooks'
-import type { Datasource } from '@/lib/api/types'
-import { Button } from '@/components/ui/button'
+import { useState } from 'react';
+import { useTranslations } from 'next-intl';
+import { Loader2 } from 'lucide-react';
+import { deleteDatasource } from '@/lib/api/client';
+import { mutate } from 'swr';
+import { swrKeys } from '@/lib/hooks';
+import type { Datasource } from '@/lib/api/types';
+import { Button } from '@/components/ui/button';
 import {
   Dialog,
   DialogContent,
@@ -19,32 +19,32 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from '@/components/ui/dialog'
+} from '@/components/ui/dialog';
 
 interface Props {
-  datasource: Datasource | null
-  onClose: () => void
+  datasource: Datasource | null;
+  onClose: () => void;
 }
 
 export function DeleteConfirmDialog({ datasource, onClose }: Props) {
-  const t = useTranslations('Datasources')
-  const [deleting, setDeleting] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const t = useTranslations('Datasources');
+  const [deleting, setDeleting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const handleConfirm = async () => {
-    if (!datasource) return
-    setDeleting(true)
-    setError(null)
+    if (!datasource) return;
+    setDeleting(true);
+    setError(null);
     try {
-      await deleteDatasource(datasource.id)
-      await mutate(swrKeys.datasources)
-      onClose()
+      await deleteDatasource(datasource.id);
+      await mutate(swrKeys.datasources);
+      onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('deleteDialog.deleteFailed'))
+      setError(err instanceof Error ? err.message : t('deleteDialog.deleteFailed'));
     } finally {
-      setDeleting(false)
+      setDeleting(false);
     }
-  }
+  };
 
   return (
     <Dialog open={datasource !== null} onOpenChange={(open) => !open && onClose()}>
@@ -76,5 +76,5 @@ export function DeleteConfirmDialog({ datasource, onClose }: Props) {
         </DialogFooter>
       </DialogContent>
     </Dialog>
-  )
+  );
 }

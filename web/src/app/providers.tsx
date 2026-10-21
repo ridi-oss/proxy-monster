@@ -1,10 +1,10 @@
-'use client'
+'use client';
 
-import type { ReactNode } from 'react'
-import { ThemeProvider } from 'next-themes'
-import { AuthProvider } from '@/lib/auth'
-import { TooltipProvider } from '@/components/ui/tooltip'
-import { Toaster } from '@/components/ui/sonner'
+import type { ReactNode } from 'react';
+import { ThemeProvider } from 'next-themes';
+import { AuthProvider } from '@/lib/auth';
+import { TooltipProvider } from '@/components/ui/tooltip';
+import { Toaster } from '@/components/ui/sonner';
 
 /** Client-side provider stack: theme (dark default), tooltips, auth, toasts. */
 export function Providers({ children }: { children: ReactNode }) {
@@ -15,5 +15,5 @@ export function Providers({ children }: { children: ReactNode }) {
         <Toaster position="bottom-right" />
       </TooltipProvider>
     </ThemeProvider>
-  )
+  );
 }

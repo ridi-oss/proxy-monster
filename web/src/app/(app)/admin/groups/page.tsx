@@ -1,80 +1,67 @@
-'use client'
+'use client';
 
 // /admin/groups — local groups, member counts, and mapped roles. Row click
 // opens the detail page for membership and role management.
 
-import { Fragment, useState } from 'react'
-import { useRouter } from 'next/navigation'
-import { useTranslations } from 'next-intl'
-import { Loader2, MoreHorizontal, Pencil, Plus, ShieldCheck, Trash2, Users } from 'lucide-react'
-import { toast } from 'sonner'
-import { mutate } from 'swr'
-import { deleteGroup } from '@/lib/api/client'
-import { swrKeys, useGroups } from '@/lib/hooks'
-import type { AppGroup } from '@/lib/api/types'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
+import { Fragment, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { useTranslations } from 'next-intl';
+import { Loader2, MoreHorizontal, Pencil, Plus, ShieldCheck, Trash2, Users } from 'lucide-react';
+import { toast } from 'sonner';
+import { mutate } from 'swr';
+import { deleteGroup } from '@/lib/api/client';
+import { swrKeys, useGroups } from '@/lib/hooks';
+import type { AppGroup } from '@/lib/api/types';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table'
-import {
-  EmptyState,
-  ErrorState,
-  LoadingState,
-  PageContainer,
-  PageHeader,
-} from '@/components/page-scaffold'
-import { GroupFormDialog } from '@/components/groups/group-form-dialog'
+} from '@/components/ui/dropdown-menu';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { EmptyState, ErrorState, LoadingState, PageContainer, PageHeader } from '@/components/page-scaffold';
+import { GroupFormDialog } from '@/components/groups/group-form-dialog';
 
 export default function GroupsPage() {
-  const t = useTranslations('Groups')
-  const router = useRouter()
-  const { data: groups, isLoading, error } = useGroups()
-  const [formOpen, setFormOpen] = useState(false)
-  const [editing, setEditing] = useState<AppGroup | null>(null)
-  const [deleting, setDeleting] = useState<AppGroup | null>(null)
-  const [deleteBusy, setDeleteBusy] = useState(false)
-  const [deleteError, setDeleteError] = useState<string | null>(null)
+  const t = useTranslations('Groups');
+  const router = useRouter();
+  const { data: groups, isLoading, error } = useGroups();
+  const [formOpen, setFormOpen] = useState(false);
+  const [editing, setEditing] = useState<AppGroup | null>(null);
+  const [deleting, setDeleting] = useState<AppGroup | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const openCreate = () => {
-    setEditing(null)
-    setFormOpen(true)
-  }
+    setEditing(null);
+    setFormOpen(true);
+  };
 
   const openEdit = (group: AppGroup) => {
-    setEditing(group)
-    setFormOpen(true)
-  }
+    setEditing(group);
+    setFormOpen(true);
+  };
 
   const confirmDelete = async (group: AppGroup) => {
-    setDeleteBusy(true)
-    setDeleteError(null)
+    setDeleteBusy(true);
+    setDeleteError(null);
     try {
-      await deleteGroup(group.id)
-      await mutate(swrKeys.groups)
-      await mutate(swrKeys.users)
-      await mutate(swrKeys.groupMembers(group.id))
-      await mutate(swrKeys.groupRoles(group.id))
-      setDeleting(null)
-      toast.success(t('list.toastDeleted', { name: group.name }))
+      await deleteGroup(group.id);
+      await mutate(swrKeys.groups);
+      await mutate(swrKeys.users);
+      await mutate(swrKeys.groupMembers(group.id));
+      await mutate(swrKeys.groupRoles(group.id));
+      setDeleting(null);
+      toast.success(t('list.toastDeleted', { name: group.name }));
     } catch (err) {
-      setDeleteError(err instanceof Error ? err.message : t('list.deleteFailed'))
+      setDeleteError(err instanceof Error ? err.message : t('list.deleteFailed'));
     } finally {
-      setDeleteBusy(false)
+      setDeleteBusy(false);
     }
-  }
+  };
 
   return (
     <>
@@ -126,9 +113,7 @@ export default function GroupsPage() {
                       <TableCell>
                         <span className="font-mono text-sm font-semibold">{group.name}</span>
                       </TableCell>
-                      <TableCell>
-                        {group.description || <span className="text-muted-foreground">—</span>}
-                      </TableCell>
+                      <TableCell>{group.description || <span className="text-muted-foreground">—</span>}</TableCell>
                       <TableCell>
                         <span className="text-muted-foreground text-sm">{group.memberCount}</span>
                       </TableCell>
@@ -160,10 +145,7 @@ export default function GroupsPage() {
                           <DropdownMenuContent align="end" side="bottom">
                             {/* The server rejects both on a SYSTEM group; disabling explains why
                                 instead of failing the call. */}
-                            <DropdownMenuItem
-                              disabled={group.source === 'SYSTEM'}
-                              onClick={() => openEdit(group)}
-                            >
+                            <DropdownMenuItem disabled={group.source === 'SYSTEM'} onClick={() => openEdit(group)}>
                               <Pencil className="size-3.5" />
                               {t('list.edit')}
                             </DropdownMenuItem>
@@ -176,8 +158,8 @@ export default function GroupsPage() {
                               variant="destructive"
                               disabled={group.source === 'SYSTEM'}
                               onClick={() => {
-                                setDeleteError(null)
-                                setDeleting((prev) => (prev?.id === group.id ? null : group))
+                                setDeleteError(null);
+                                setDeleting((prev) => (prev?.id === group.id ? null : group));
                               }}
                             >
                               <Trash2 className="size-3.5" />
@@ -199,17 +181,25 @@ export default function GroupsPage() {
                                 })}
                               </p>
                               {group.source === 'OIDC' && (
-                                <p className="text-muted-foreground mt-1 text-xs">
-                                  {t('detail.deleteOidcWarning')}
-                                </p>
+                                <p className="text-muted-foreground mt-1 text-xs">{t('detail.deleteOidcWarning')}</p>
                               )}
                               {deleteError && <p className="mt-1 text-xs text-red-500">{deleteError}</p>}
                             </div>
                             <div className="flex items-center gap-2">
-                              <Button size="xs" variant="outline" onClick={() => setDeleting(null)} disabled={deleteBusy}>
+                              <Button
+                                size="xs"
+                                variant="outline"
+                                onClick={() => setDeleting(null)}
+                                disabled={deleteBusy}
+                              >
                                 {t('list.cancel')}
                               </Button>
-                              <Button size="xs" variant="destructive" onClick={() => confirmDelete(group)} disabled={deleteBusy}>
+                              <Button
+                                size="xs"
+                                variant="destructive"
+                                onClick={() => confirmDelete(group)}
+                                disabled={deleteBusy}
+                              >
                                 {deleteBusy ? <Loader2 className="size-3 animate-spin" /> : null}
                                 {t('list.delete')}
                               </Button>
@@ -228,5 +218,5 @@ export default function GroupsPage() {
 
       <GroupFormDialog open={formOpen} onOpenChange={setFormOpen} editing={editing} />
     </>
-  )
+  );
 }

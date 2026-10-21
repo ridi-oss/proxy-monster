@@ -1,17 +1,17 @@
-'use client'
+'use client';
 
 // Deny → "Request access" dialog (docs/web-console.md "Workflows").
 // Opened from a DENY decision banner: pick a role, write a reason, choose a
 // capped duration → POST /api/access-requests, pre-scoped to the datasource the
 // query ran against. On success an inline confirmation explains the next step
 // (an approver grants it on /workflows, then re-run just works — grants auto-apply).
-import { useEffect, useState } from 'react'
-import { useTranslations } from 'next-intl'
-import { CheckCircle2 } from 'lucide-react'
-import { createAccessRequest } from '@/lib/api/client'
-import { useRoles } from '@/lib/hooks'
-import type { AccessRequestInput } from '@/lib/api/types'
-import { Button } from '@/components/ui/button'
+import { useEffect, useState } from 'react';
+import { useTranslations } from 'next-intl';
+import { CheckCircle2 } from 'lucide-react';
+import { createAccessRequest } from '@/lib/api/client';
+import { useRoles } from '@/lib/hooks';
+import type { AccessRequestInput } from '@/lib/api/types';
+import { Button } from '@/components/ui/button';
 import {
   Dialog,
   DialogContent,
@@ -19,16 +19,10 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from '@/components/ui/dialog'
-import { Label } from '@/components/ui/label'
-import { Textarea } from '@/components/ui/textarea'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
+} from '@/components/ui/dialog';
+import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 const DURATIONS = [
   { value: '1800', key: 'duration30m' },
@@ -37,16 +31,16 @@ const DURATIONS = [
   { value: '14400', key: 'duration4h' },
   { value: '28800', key: 'duration8h' },
   { value: '43200', key: 'duration12h' },
-] as const
+] as const;
 
 interface Props {
-  open: boolean
-  onOpenChange: (open: boolean) => void
-  datasourceId: number
-  datasourceName?: string
-  denyReason?: string | null
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  datasourceId: number;
+  datasourceName?: string;
+  denyReason?: string | null;
   /** Role to preselect on open when the roles list has it. */
-  roleName?: string
+  roleName?: string;
 }
 
 export function RequestAccessDialog({
@@ -57,55 +51,55 @@ export function RequestAccessDialog({
   denyReason,
   roleName: preselectRoleName,
 }: Props) {
-  const t = useTranslations('Query')
-  const { data: roles, isLoading } = useRoles()
-  const [roleId, setRoleId] = useState<string | null>(null)
-  const [reason, setReason] = useState('')
-  const [durationSec, setDurationSec] = useState('3600')
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [submitted, setSubmitted] = useState(false)
+  const t = useTranslations('Query');
+  const { data: roles, isLoading } = useRoles();
+  const [roleId, setRoleId] = useState<string | null>(null);
+  const [reason, setReason] = useState('');
+  const [durationSec, setDurationSec] = useState('3600');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [submitted, setSubmitted] = useState(false);
 
   // Seed defaults each time the dialog opens.
   useEffect(() => {
-    if (!open) return
-    setSubmitted(false)
-    setError(null)
-    const preselected = preselectRoleName ? roles?.find((r) => r.name === preselectRoleName) : undefined
-    if (preselected) setRoleId(String(preselected.id))
-    else if (roleId == null && roles && roles.length > 0) setRoleId(String(roles[0].id))
-    if (!reason && denyReason) setReason(t('requestAccess.prefilledReason', { reason: denyReason }))
+    if (!open) return;
+    setSubmitted(false);
+    setError(null);
+    const preselected = preselectRoleName ? roles?.find((r) => r.name === preselectRoleName) : undefined;
+    if (preselected) setRoleId(String(preselected.id));
+    else if (roleId == null && roles && roles.length > 0) setRoleId(String(roles[0].id));
+    if (!reason && denyReason) setReason(t('requestAccess.prefilledReason', { reason: denyReason }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, roles, preselectRoleName])
+  }, [open, roles, preselectRoleName]);
 
-  const valid = !!roleId && reason.trim().length > 0
+  const valid = !!roleId && reason.trim().length > 0;
 
   const handleSubmit = async () => {
-    if (!valid || !roleId) return
-    setBusy(true)
-    setError(null)
+    if (!valid || !roleId) return;
+    setBusy(true);
+    setError(null);
     const input: AccessRequestInput = {
       roleId: Number(roleId),
       datasourceId,
       reason: reason.trim(),
       requestedDurationSec: Number(durationSec),
-    }
+    };
     try {
-      await createAccessRequest(input)
-      setSubmitted(true)
+      await createAccessRequest(input);
+      setSubmitted(true);
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('requestAccess.submitError'))
+      setError(err instanceof Error ? err.message : t('requestAccess.submitError'));
     } finally {
-      setBusy(false)
+      setBusy(false);
     }
-  }
+  };
 
   const roleName = (v: string | null) =>
-    v ? (roles?.find((r) => String(r.id) === v)?.name ?? '') : t('requestAccess.rolePlaceholder')
+    v ? (roles?.find((r) => String(r.id) === v)?.name ?? '') : t('requestAccess.rolePlaceholder');
   const durLabel = (v: string | null) => {
-    const d = DURATIONS.find((d) => d.value === v)
-    return d ? t(`requestAccess.${d.key}`) : ''
-  }
+    const d = DURATIONS.find((d) => d.value === v);
+    return d ? t(`requestAccess.${d.key}`) : '';
+  };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -129,12 +123,8 @@ export function RequestAccessDialog({
           <div className="flex items-start gap-2.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-3 text-sm">
             <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-emerald-500" />
             <div>
-              <p className="font-medium text-emerald-600 dark:text-emerald-400">
-                {t('requestAccess.successTitle')}
-              </p>
-              <p className="text-muted-foreground mt-0.5 text-xs">
-                {t('requestAccess.successDescription')}
-              </p>
+              <p className="font-medium text-emerald-600 dark:text-emerald-400">{t('requestAccess.successTitle')}</p>
+              <p className="text-muted-foreground mt-0.5 text-xs">{t('requestAccess.successDescription')}</p>
             </div>
           </div>
         ) : (
@@ -202,5 +192,5 @@ export function RequestAccessDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
-  )
+  );
 }

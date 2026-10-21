@@ -1,16 +1,16 @@
-'use client'
+'use client';
 
 // Add / edit a local app_group row. Source/externalId stay server-owned.
 
-import { useState } from 'react'
-import { useTranslations } from 'next-intl'
-import { Loader2 } from 'lucide-react'
-import { toast } from 'sonner'
-import { mutate } from 'swr'
-import { createGroup, updateGroup } from '@/lib/api/client'
-import { swrKeys } from '@/lib/hooks'
-import type { AppGroup, AppGroupInput } from '@/lib/api/types'
-import { Button } from '@/components/ui/button'
+import { useState } from 'react';
+import { useTranslations } from 'next-intl';
+import { Loader2 } from 'lucide-react';
+import { toast } from 'sonner';
+import { mutate } from 'swr';
+import { createGroup, updateGroup } from '@/lib/api/client';
+import { swrKeys } from '@/lib/hooks';
+import type { AppGroup, AppGroupInput } from '@/lib/api/types';
+import { Button } from '@/components/ui/button';
 import {
   Dialog,
   DialogContent,
@@ -18,14 +18,14 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from '@/components/ui/dialog'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
+} from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 
 interface Props {
-  open: boolean
-  onOpenChange: (open: boolean) => void
-  editing: AppGroup | null
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  editing: AppGroup | null;
 }
 
 export function GroupFormDialog({ open, onOpenChange, editing }: Props) {
@@ -41,58 +41,52 @@ export function GroupFormDialog({ open, onOpenChange, editing }: Props) {
         )}
       </DialogContent>
     </Dialog>
-  )
+  );
 }
 
 function GroupForm({ editing, onClose }: { editing: AppGroup | null; onClose: () => void }) {
-  const t = useTranslations('Groups')
-  const [name, setName] = useState(editing?.name ?? '')
-  const [description, setDescription] = useState(editing?.description ?? '')
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const t = useTranslations('Groups');
+  const [name, setName] = useState(editing?.name ?? '');
+  const [description, setDescription] = useState(editing?.description ?? '');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const valid = name.trim() !== ''
+  const valid = name.trim() !== '';
 
   const handleSubmit = async () => {
-    if (!valid) return
-    setSaving(true)
-    setError(null)
+    if (!valid) return;
+    setSaving(true);
+    setError(null);
     const input: AppGroupInput = {
       name: name.trim(),
       description: description.trim() || null,
-    }
+    };
     try {
       if (editing) {
-        await updateGroup(editing.id, input)
-        toast.success(t('form.toastUpdated', { name: input.name }))
+        await updateGroup(editing.id, input);
+        toast.success(t('form.toastUpdated', { name: input.name }));
       } else {
-        await createGroup(input)
-        toast.success(t('form.toastCreated', { name: input.name }))
+        await createGroup(input);
+        toast.success(t('form.toastCreated', { name: input.name }));
       }
-      await mutate(swrKeys.groups)
-      onClose()
+      await mutate(swrKeys.groups);
+      onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('form.saveFailed'))
+      setError(err instanceof Error ? err.message : t('form.saveFailed'));
     } finally {
-      setSaving(false)
+      setSaving(false);
     }
-  }
+  };
 
   return (
     <>
       <DialogHeader>
-        <DialogTitle>
-          {editing ? t('form.editTitle', { name: editing.name }) : t('form.addTitle')}
-        </DialogTitle>
-        <DialogDescription>
-          {editing ? t('form.editDescription') : t('form.addDescription')}
-        </DialogDescription>
+        <DialogTitle>{editing ? t('form.editTitle', { name: editing.name }) : t('form.addTitle')}</DialogTitle>
+        <DialogDescription>{editing ? t('form.editDescription') : t('form.addDescription')}</DialogDescription>
       </DialogHeader>
 
       {error && (
-        <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-500">
-          {error}
-        </div>
+        <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-500">{error}</div>
       )}
 
       <div className="space-y-3 py-1">
@@ -128,5 +122,5 @@ function GroupForm({ editing, onClose }: { editing: AppGroup | null; onClose: ()
         </Button>
       </DialogFooter>
     </>
-  )
+  );
 }

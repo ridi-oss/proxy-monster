@@ -1,21 +1,21 @@
-import { useTranslations } from 'next-intl'
-import { ShieldAlert } from 'lucide-react'
-import { API_BASE } from '@/lib/api/client'
-import { Button } from '@/components/ui/button'
+import { useTranslations } from 'next-intl';
+import { ShieldAlert } from 'lucide-react';
+import { API_BASE } from '@/lib/api/client';
+import { Button } from '@/components/ui/button';
 
 /** What GET /oauth/pending returns for the signed-in user's pending MCP authorization. */
 export type PendingConsent = {
-  clientName: string
-  clientId: string
-  redirectUri: string
-  loopback: boolean
-  scopes: string[]
-  csrf: string
-}
+  clientName: string;
+  clientId: string;
+  redirectUri: string;
+  loopback: boolean;
+  scopes: string[];
+  csrf: string;
+};
 
 /** A native form post: the control plane answers it with a redirect to the client. */
 export function ConsentForm({ pending }: { pending: PendingConsent }) {
-  const t = useTranslations('Consent')
+  const t = useTranslations('Consent');
   return (
     <form method="post" action={`${API_BASE}/oauth/consent`} className="space-y-4 text-sm">
       <dl className="space-y-2">
@@ -59,5 +59,5 @@ export function ConsentForm({ pending }: { pending: PendingConsent }) {
         </Button>
       </div>
     </form>
-  )
+  );
 }

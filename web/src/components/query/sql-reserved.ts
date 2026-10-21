@@ -1,6 +1,7 @@
 // Words each engine reserves as identifiers. PostgreSQL 17: pg_get_keywords() catcode R or T;
 // MySQL 8.4: information_schema.KEYWORDS where RESERVED = 1.
-export const POSTGRES_RESERVED = new Set(`
+export const POSTGRES_RESERVED = new Set(
+  `
   all analyse analyze and any array as asc asymmetric authorization binary both case cast check collate
   collation column concurrently constraint create cross current_catalog current_date current_role
   current_schema current_time current_timestamp current_user default deferrable desc distinct do else end
@@ -9,9 +10,13 @@ export const POSTGRES_RESERVED = new Set(`
   offset on only or order outer overlaps placing primary references returning right select session_user
   similar some symmetric system_user table tablesample then to trailing true union unique user using
   variadic verbose when where window with
-`.split(/\s+/).filter(Boolean))
+`
+    .split(/\s+/)
+    .filter(Boolean),
+);
 
-export const MYSQL_RESERVED = new Set(`
+export const MYSQL_RESERVED = new Set(
+  `
   accessible add all alter analyze and as asc asensitive before between bigint binary blob both by call
   cascade case change char character check collate column condition constraint continue convert create
   cross cume_dist current_date current_time current_timestamp current_user cursor database databases
@@ -33,4 +38,7 @@ export const MYSQL_RESERVED = new Set(`
   trailing trigger true undo union unique unlock unsigned update usage use using utc_date utc_time
   utc_timestamp values varbinary varchar varcharacter varying virtual when where while window with write
   xor year_month zerofill
-`.split(/\s+/).filter(Boolean))
+`
+    .split(/\s+/)
+    .filter(Boolean),
+);

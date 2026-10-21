@@ -1,4 +1,4 @@
-'use client'
+'use client';
 
 // Cedar policies tab — author/validate/enable/disable the Cedar policy source
 // rows evaluated by the control-plane's authz decision service (authorize()/
@@ -12,61 +12,39 @@
 // highlighting + keyword completion; server-side validation stays on the
 // Validate button, while cedar-wasm drives the client-side linter and
 // schema-aware completion.
-import { Fragment, useMemo, useState } from 'react'
-import { useTranslations } from 'next-intl'
-import { useTheme } from 'next-themes'
-import CodeMirror from '@uiw/react-codemirror'
-import { EditorView, tooltips } from '@codemirror/view'
-import { cedar, cedarCompletion, cedarLinter } from '@ridi/codemirror-lang-cedar'
-import { useCedarWasm } from '@/lib/cedar-wasm'
-import {
-  CheckCircle2,
-  ChevronDown,
-  ChevronRight,
-  Loader2,
-  Pencil,
-  Plus,
-  ShieldCheck,
-  Trash2,
-} from 'lucide-react'
-import { mutate } from 'swr'
+import { Fragment, useMemo, useState } from 'react';
+import { useTranslations } from 'next-intl';
+import { useTheme } from 'next-themes';
+import CodeMirror from '@uiw/react-codemirror';
+import { EditorView, tooltips } from '@codemirror/view';
+import { cedar, cedarCompletion, cedarLinter } from '@ridi/codemirror-lang-cedar';
+import { useCedarWasm } from '@/lib/cedar-wasm';
+import { CheckCircle2, ChevronDown, ChevronRight, Loader2, Pencil, Plus, ShieldCheck, Trash2 } from 'lucide-react';
+import { mutate } from 'swr';
 import {
   createCedarPolicy,
   deleteCedarPolicy,
   setCedarPolicyEnabled,
   updateCedarPolicy,
   validateCedarPolicy,
-} from '@/lib/api/client'
-import { useCedarPolicies, useCedarSchema, swrKeys } from '@/lib/hooks'
-import type { CedarPolicy, CedarPolicyInput } from '@/lib/api/types'
-import { editorTheme } from '@/lib/cm-theme'
-import { cn } from '@/lib/utils'
-import { Button } from '@/components/ui/button'
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog'
-import { Badge } from '@/components/ui/badge'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Switch } from '@/components/ui/switch'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table'
-import { EmptyState, ErrorState, LoadingState } from '@/components/page-scaffold'
-import { toast } from 'sonner'
+} from '@/lib/api/client';
+import { useCedarPolicies, useCedarSchema, swrKeys } from '@/lib/hooks';
+import type { CedarPolicy, CedarPolicyInput } from '@/lib/api/types';
+import { editorTheme } from '@/lib/cm-theme';
+import { cn } from '@/lib/utils';
+import { Button } from '@/components/ui/button';
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Badge } from '@/components/ui/badge';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Switch } from '@/components/ui/switch';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { EmptyState, ErrorState, LoadingState } from '@/components/page-scaffold';
+import { toast } from 'sonner';
 
 const PLACEHOLDER =
-  'permit(\n  principal in Role::"analyst",\n  action in [Action::"datasource.connect", Action::"stmt.cat.read"],\n  resource in Datasource::"acme-mysql"\n);'
+  'permit(\n  principal in Role::"analyst",\n  action in [Action::"datasource.connect", Action::"stmt.cat.read"],\n  resource in Datasource::"acme-mysql"\n);';
 
 /** The full Cedar action set (docs/authz-model.md), grouped by the resource each applies to —
  *  shown inline next to the source editor so an admin isn't guessing action names from memory.
@@ -123,7 +101,7 @@ const ACTION_REFERENCE: { resource: string; actions: { name: string; noteKey: st
       { name: 'stmt.cat.admin', noteKey: 'stmtCatAdmin' },
     ],
   },
-]
+];
 
 /**
  * Read-only Cedar source, highlighted with the same language package the edit dialog uses
@@ -132,16 +110,11 @@ const ACTION_REFERENCE: { resource: string; actions: { name: string; noteKey: st
  * push the table sideways.
  */
 function CedarSource({ src }: { src: string }) {
-  const { resolvedTheme } = useTheme()
+  const { resolvedTheme } = useTheme();
   const extensions = useMemo(
-    () => [
-      editorTheme(resolvedTheme),
-      cedar(),
-      EditorView.lineWrapping,
-      EditorView.editable.of(false),
-    ],
+    () => [editorTheme(resolvedTheme), cedar(), EditorView.lineWrapping, EditorView.editable.of(false)],
     [resolvedTheme],
-  )
+  );
   return (
     <CodeMirror
       value={src}
@@ -160,64 +133,64 @@ function CedarSource({ src }: { src: string }) {
       }}
       className="overflow-hidden rounded-lg border px-2 text-xs"
     />
-  )
+  );
 }
 
 export function CedarPoliciesTab() {
-  const t = useTranslations('Policies')
-  const { data, error, isLoading } = useCedarPolicies()
-  const [editing, setEditing] = useState<CedarPolicy | null>(null)
-  const [creating, setCreating] = useState(false)
+  const t = useTranslations('Policies');
+  const { data, error, isLoading } = useCedarPolicies();
+  const [editing, setEditing] = useState<CedarPolicy | null>(null);
+  const [creating, setCreating] = useState(false);
   // Policy pending deletion — show inline confirm row
-  const [deleting, setDeleting] = useState<CedarPolicy | null>(null)
-  const [deleteError, setDeleteError] = useState<string | null>(null)
-  const [deleteBusy, setDeleteBusy] = useState(false)
-  const [togglingId, setTogglingId] = useState<number | null>(null)
+  const [deleting, setDeleting] = useState<CedarPolicy | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [togglingId, setTogglingId] = useState<number | null>(null);
   // Ids whose source row is expanded. Source is hidden by default: a page of policies is a list to
   // scan, and every source shown at once buries the names.
-  const [expanded, setExpanded] = useState<ReadonlySet<number>>(() => new Set())
+  const [expanded, setExpanded] = useState<ReadonlySet<number>>(() => new Set());
 
-  const allExpanded = !!data && data.length > 0 && data.every((p) => expanded.has(p.id))
+  const allExpanded = !!data && data.length > 0 && data.every((p) => expanded.has(p.id));
   const toggleExpanded = (id: number) =>
     setExpanded((prev) => {
-      const next = new Set(prev)
-      if (!next.delete(id)) next.add(id)
-      return next
-    })
+      const next = new Set(prev);
+      if (!next.delete(id)) next.add(id);
+      return next;
+    });
 
   const handleDelete = async (policy: CedarPolicy) => {
-    setDeleteBusy(true)
-    setDeleteError(null)
+    setDeleteBusy(true);
+    setDeleteError(null);
     try {
-      await deleteCedarPolicy(policy.id)
-      await mutate(swrKeys.cedarPolicies)
-      setDeleting(null)
-      toast.success(t('cedarPolicies.toastDeleted', { name: policy.name }))
+      await deleteCedarPolicy(policy.id);
+      await mutate(swrKeys.cedarPolicies);
+      setDeleting(null);
+      toast.success(t('cedarPolicies.toastDeleted', { name: policy.name }));
     } catch (err) {
-      setDeleteError(err instanceof Error ? err.message : t('cedarPolicies.deleteFailed'))
+      setDeleteError(err instanceof Error ? err.message : t('cedarPolicies.deleteFailed'));
     } finally {
-      setDeleteBusy(false)
+      setDeleteBusy(false);
     }
-  }
+  };
 
   const handleToggle = async (policy: CedarPolicy, enabled: boolean) => {
-    setTogglingId(policy.id)
+    setTogglingId(policy.id);
     try {
-      await setCedarPolicyEnabled(policy.id, enabled)
-      await mutate(swrKeys.cedarPolicies)
+      await setCedarPolicyEnabled(policy.id, enabled);
+      await mutate(swrKeys.cedarPolicies);
       toast.success(
         enabled
           ? t('cedarPolicies.toastEnabled', { name: policy.name })
           : t('cedarPolicies.toastDisabled', { name: policy.name }),
-      )
+      );
     } catch (err) {
       toast.error(t('cedarPolicies.toggleFailed'), {
         description: err instanceof Error ? err.message : 'error',
-      })
+      });
     } finally {
-      setTogglingId(null)
+      setTogglingId(null);
     }
-  }
+  };
 
   return (
     <div className="space-y-4">
@@ -229,15 +202,9 @@ export function CedarPoliciesTab() {
             <Button
               size="sm"
               variant="outline"
-              onClick={() =>
-                setExpanded(allExpanded ? new Set() : new Set(data.map((p) => p.id)))
-              }
+              onClick={() => setExpanded(allExpanded ? new Set() : new Set(data.map((p) => p.id)))}
             >
-              {allExpanded ? (
-                <ChevronRight className="size-3.5" />
-              ) : (
-                <ChevronDown className="size-3.5" />
-              )}
+              {allExpanded ? <ChevronRight className="size-3.5" /> : <ChevronDown className="size-3.5" />}
               {allExpanded ? t('cedarPolicies.hideAllSource') : t('cedarPolicies.showAllSource')}
             </Button>
           )}
@@ -278,163 +245,147 @@ export function CedarPoliciesTab() {
             </TableHeader>
             <TableBody>
               {data.map((policy) => {
-                const isSystem = policy.origin === 'SYSTEM'
+                const isSystem = policy.origin === 'SYSTEM';
                 return (
-                <Fragment key={policy.id}>
-                  <TableRow
-                    className="cursor-pointer"
-                    onClick={() => toggleExpanded(policy.id)}
-                    aria-expanded={expanded.has(policy.id)}
-                    aria-label={
-                      expanded.has(policy.id)
-                        ? t('cedarPolicies.hideSourceAria')
-                        : t('cedarPolicies.showSourceAria')
-                    }
-                  >
-                    <TableCell>
-                      <div className="flex items-center gap-2">
-                        {expanded.has(policy.id) ? (
-                          <ChevronDown className="text-muted-foreground size-3.5 shrink-0" />
-                        ) : (
-                          <ChevronRight className="text-muted-foreground size-3.5 shrink-0" />
-                        )}
-                        <code className="font-mono text-sm font-semibold">{policy.name}</code>
-                        {isSystem && (
-                          <Tooltip>
-                            <TooltipTrigger
-                              render={
-                                <Badge variant="secondary" className="cursor-default gap-1 font-normal" />
-                              }
-                            >
-                              <ShieldCheck className="size-3" />
-                              {t('cedarPolicies.systemBadge')}
-                            </TooltipTrigger>
-                            <TooltipContent>
-                              {t('cedarPolicies.systemManagedHint', { key: policy.systemKey ?? '' })}
-                            </TooltipContent>
-                          </Tooltip>
-                        )}
-                      </div>
-                    </TableCell>
-                    {/* The controls below live inside a row whose click expands the source, so each
+                  <Fragment key={policy.id}>
+                    <TableRow
+                      className="cursor-pointer"
+                      onClick={() => toggleExpanded(policy.id)}
+                      aria-expanded={expanded.has(policy.id)}
+                      aria-label={
+                        expanded.has(policy.id) ? t('cedarPolicies.hideSourceAria') : t('cedarPolicies.showSourceAria')
+                      }
+                    >
+                      <TableCell>
+                        <div className="flex items-center gap-2">
+                          {expanded.has(policy.id) ? (
+                            <ChevronDown className="text-muted-foreground size-3.5 shrink-0" />
+                          ) : (
+                            <ChevronRight className="text-muted-foreground size-3.5 shrink-0" />
+                          )}
+                          <code className="font-mono text-sm font-semibold">{policy.name}</code>
+                          {isSystem && (
+                            <Tooltip>
+                              <TooltipTrigger
+                                render={<Badge variant="secondary" className="cursor-default gap-1 font-normal" />}
+                              >
+                                <ShieldCheck className="size-3" />
+                                {t('cedarPolicies.systemBadge')}
+                              </TooltipTrigger>
+                              <TooltipContent>
+                                {t('cedarPolicies.systemManagedHint', { key: policy.systemKey ?? '' })}
+                              </TooltipContent>
+                            </Tooltip>
+                          )}
+                        </div>
+                      </TableCell>
+                      {/* The controls below live inside a row whose click expands the source, so each
                         stops propagation — toggling a policy or opening its editor must not also
                         expand it. */}
-                    <TableCell onClick={(e) => e.stopPropagation()}>
-                      <Switch
-                        size="sm"
-                        checked={policy.enabled}
-                        onCheckedChange={(checked) => handleToggle(policy, checked)}
-                        disabled={togglingId === policy.id}
-                        aria-label={
-                          policy.enabled
-                            ? t('cedarPolicies.disableAria')
-                            : t('cedarPolicies.enableAria')
-                        }
-                      />
-                    </TableCell>
-                    <TableCell>
-                      <span
-                        className={cn('text-sm', !policy.updatedBy && 'text-muted-foreground italic')}
-                      >
-                        {policy.updatedBy || '—'}
-                      </span>
-                    </TableCell>
-                    <TableCell>
-                      <span className="text-muted-foreground text-xs">
-                        {new Date(policy.updatedAt).toLocaleString()}
-                      </span>
-                    </TableCell>
-                    <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
-                      {isSystem ? (
-                        // SYSTEM policies are migration-owned + immutable through the API except
-                        // enable/disable (the Switch above). No edit/delete — the backend 409s them anyway;
-                        // the console mirrors that so an admin isn't offered an action that can't succeed.
-                        <span className="text-muted-foreground text-xs italic">
-                          {t('cedarPolicies.systemManaged')}
+                      <TableCell onClick={(e) => e.stopPropagation()}>
+                        <Switch
+                          size="sm"
+                          checked={policy.enabled}
+                          onCheckedChange={(checked) => handleToggle(policy, checked)}
+                          disabled={togglingId === policy.id}
+                          aria-label={policy.enabled ? t('cedarPolicies.disableAria') : t('cedarPolicies.enableAria')}
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <span className={cn('text-sm', !policy.updatedBy && 'text-muted-foreground italic')}>
+                          {policy.updatedBy || '—'}
                         </span>
-                      ) : (
-                        <div className="flex items-center justify-end gap-1">
-                          <Button
-                            size="icon-xs"
-                            variant="ghost"
-                            onClick={() => {
-                              setDeleting(null)
-                              setEditing(policy)
-                            }}
-                            aria-label={t('common.edit')}
-                          >
-                            <Pencil className="size-3.5" />
-                          </Button>
-                          <Button
-                            size="icon-xs"
-                            variant="ghost"
-                            className="text-destructive hover:text-destructive"
-                            onClick={() => {
-                              setEditing(null)
-                              setDeleteError(null)
-                              setDeleting((prev) => (prev?.id === policy.id ? null : policy))
-                            }}
-                            aria-label={t('common.delete')}
-                          >
-                            <Trash2 className="size-3.5" />
-                          </Button>
-                        </div>
-                      )}
-                    </TableCell>
-                  </TableRow>
-                  {/* The policy source, on its own full-width row. The Cedar text IS the policy — the
+                      </TableCell>
+                      <TableCell>
+                        <span className="text-muted-foreground text-xs">
+                          {new Date(policy.updatedAt).toLocaleString()}
+                        </span>
+                      </TableCell>
+                      <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
+                        {isSystem ? (
+                          // SYSTEM policies are migration-owned + immutable through the API except
+                          // enable/disable (the Switch above). No edit/delete — the backend 409s them anyway;
+                          // the console mirrors that so an admin isn't offered an action that can't succeed.
+                          <span className="text-muted-foreground text-xs italic">
+                            {t('cedarPolicies.systemManaged')}
+                          </span>
+                        ) : (
+                          <div className="flex items-center justify-end gap-1">
+                            <Button
+                              size="icon-xs"
+                              variant="ghost"
+                              onClick={() => {
+                                setDeleting(null);
+                                setEditing(policy);
+                              }}
+                              aria-label={t('common.edit')}
+                            >
+                              <Pencil className="size-3.5" />
+                            </Button>
+                            <Button
+                              size="icon-xs"
+                              variant="ghost"
+                              className="text-destructive hover:text-destructive"
+                              onClick={() => {
+                                setEditing(null);
+                                setDeleteError(null);
+                                setDeleting((prev) => (prev?.id === policy.id ? null : policy));
+                              }}
+                              aria-label={t('common.delete')}
+                            >
+                              <Trash2 className="size-3.5" />
+                            </Button>
+                          </div>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                    {/* The policy source, on its own full-width row. The Cedar text IS the policy — the
                       columns above are metadata about it — so reading the table without it means opening
                       an edit dialog per row to answer "what does this actually permit". */}
-                  {expanded.has(policy.id) && (
-                    <TableRow className="hover:bg-transparent">
-                      <TableCell colSpan={5} className="pt-2 pb-2">
-                        <CedarSource src={policy.cedarSrc} />
-                      </TableCell>
-                    </TableRow>
-                  )}
-                  {/* Inline delete confirm row */}
-                  {deleting?.id === policy.id && (
-                    <TableRow key={`${policy.id}-confirm`} className="bg-red-500/5">
-                      <TableCell colSpan={5}>
-                        <div className="flex flex-wrap items-center justify-between gap-2 py-0.5">
-                          <div>
-                            <p className="text-sm font-medium text-red-500">
-                              {t('cedarPolicies.deleteConfirm', { name: policy.name })}
-                            </p>
-                            <p className="text-muted-foreground text-xs">
-                              {t('cedarPolicies.deleteConsequence')}
-                            </p>
-                            {deleteError && (
-                              <p className="mt-1 text-xs text-red-500">{deleteError}</p>
-                            )}
+                    {expanded.has(policy.id) && (
+                      <TableRow className="hover:bg-transparent">
+                        <TableCell colSpan={5} className="pt-2 pb-2">
+                          <CedarSource src={policy.cedarSrc} />
+                        </TableCell>
+                      </TableRow>
+                    )}
+                    {/* Inline delete confirm row */}
+                    {deleting?.id === policy.id && (
+                      <TableRow key={`${policy.id}-confirm`} className="bg-red-500/5">
+                        <TableCell colSpan={5}>
+                          <div className="flex flex-wrap items-center justify-between gap-2 py-0.5">
+                            <div>
+                              <p className="text-sm font-medium text-red-500">
+                                {t('cedarPolicies.deleteConfirm', { name: policy.name })}
+                              </p>
+                              <p className="text-muted-foreground text-xs">{t('cedarPolicies.deleteConsequence')}</p>
+                              {deleteError && <p className="mt-1 text-xs text-red-500">{deleteError}</p>}
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <Button
+                                size="xs"
+                                variant="outline"
+                                onClick={() => setDeleting(null)}
+                                disabled={deleteBusy}
+                              >
+                                {t('common.cancel')}
+                              </Button>
+                              <Button
+                                size="xs"
+                                variant="destructive"
+                                onClick={() => handleDelete(policy)}
+                                disabled={deleteBusy}
+                              >
+                                {deleteBusy ? <Loader2 className="size-3 animate-spin" /> : null}
+                                {t('common.delete')}
+                              </Button>
+                            </div>
                           </div>
-                          <div className="flex items-center gap-2">
-                            <Button
-                              size="xs"
-                              variant="outline"
-                              onClick={() => setDeleting(null)}
-                              disabled={deleteBusy}
-                            >
-                              {t('common.cancel')}
-                            </Button>
-                            <Button
-                              size="xs"
-                              variant="destructive"
-                              onClick={() => handleDelete(policy)}
-                              disabled={deleteBusy}
-                            >
-                              {deleteBusy ? (
-                                <Loader2 className="size-3 animate-spin" />
-                              ) : null}
-                              {t('common.delete')}
-                            </Button>
-                          </div>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  )}
-                </Fragment>
-                )
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </Fragment>
+                );
               })}
             </TableBody>
           </Table>
@@ -446,19 +397,19 @@ export function CedarPoliciesTab() {
         <CedarPolicyDialog
           editing={editing}
           onClose={() => {
-            setCreating(false)
-            setEditing(null)
+            setCreating(false);
+            setEditing(null);
           }}
           // The schema carries the context.tag actions the stored policies derive, so a save can change
           // it — refetch, or editors opened afterwards lint against a stale vocabulary.
           onSaved={() => {
-            mutate(swrKeys.cedarPolicies)
-            mutate(swrKeys.cedarSchema)
+            mutate(swrKeys.cedarPolicies);
+            mutate(swrKeys.cedarSchema);
           }}
         />
       )}
     </div>
-  )
+  );
 }
 
 // ---- Cedar policy dialog -----------------------------------------------------
@@ -468,49 +419,47 @@ function CedarPolicyDialog({
   onClose,
   onSaved,
 }: {
-  editing: CedarPolicy | null
-  onClose: () => void
-  onSaved: () => void
+  editing: CedarPolicy | null;
+  onClose: () => void;
+  onSaved: () => void;
 }) {
-  const t = useTranslations('Policies')
-  const { resolvedTheme } = useTheme()
+  const t = useTranslations('Policies');
+  const { resolvedTheme } = useTheme();
   // Lazily load the Cedar WASM (~4MB) now that the editor dialog is open, for live
   // syntax linting. null until ready — the editor works without it until then.
-  const cedarWasm = useCedarWasm(true)
+  const cedarWasm = useCedarWasm(true);
   // The authz schema enables in-editor type validation + schema-aware completion.
-  const storedSchema = useCedarSchema().data?.schema
-  const [name, setName] = useState(editing?.name ?? '')
-  const [cedarSrc, setCedarSrc] = useState(editing?.cedarSrc ?? '')
-  const [enabled, setEnabled] = useState(editing?.enabled ?? true)
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [validating, setValidating] = useState(false)
+  const storedSchema = useCedarSchema().data?.schema;
+  const [name, setName] = useState(editing?.name ?? '');
+  const [cedarSrc, setCedarSrc] = useState(editing?.cedarSrc ?? '');
+  const [enabled, setEnabled] = useState(editing?.enabled ?? true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [validating, setValidating] = useState(false);
   // Non-null once a Validate run has completed; empty array = valid.
-  const [validationErrors, setValidationErrors] = useState<string[] | null>(null)
+  const [validationErrors, setValidationErrors] = useState<string[] | null>(null);
 
-  const valid = name.trim().length > 0 && cedarSrc.trim().length > 0
+  const valid = name.trim().length > 0 && cedarSrc.trim().length > 0;
 
   // The served schema declares the context.tag actions the STORED policies derive, so a tag name being
   // typed here — a new one, or a rename — is not in it yet and lints as an undeclared action even though
   // the server accepts it (it self-augments from the candidate). Declare the draft's own names too, so
   // the editor agrees with what Validate and Save will say. Mirrors CedarSchema.schemaTextFor.
   const cedarSchema = useMemo(() => {
-    if (!storedSchema) return storedSchema
-    const declared = new Set(
-      [...storedSchema.matchAll(/action "context\.tag::([^"]+)"/g)].map((m) => m[1]),
-    )
+    if (!storedSchema) return storedSchema;
+    const declared = new Set([...storedSchema.matchAll(/action "context\.tag::([^"]+)"/g)].map((m) => m[1]));
     const drafted = [...cedarSrc.matchAll(/Action::"context\.tag::([^"]+)"/g)]
       .map((m) => m[1])
-      .filter((n) => !declared.has(n))
-    if (drafted.length === 0) return storedSchema
+      .filter((n) => !declared.has(n));
+    if (drafted.length === 0) return storedSchema;
     return `${storedSchema}\n${[...new Set(drafted)]
       .map(
         (n) =>
           `action "context.tag::${n}" appliesTo { principal: [User, Role], resource: [Datasource], ` +
           `context: { channel?: String, requester_ip?: ipaddr, tailscale_caps?: Set<String> } };`,
       )
-      .join('\n')}`
-  }, [storedSchema, cedarSrc])
+      .join('\n')}`;
+  }, [storedSchema, cedarSrc]);
 
   // Stable across keystrokes — see sql-editor.tsx: a fresh array here would
   // reconfigure the whole editor on every render.
@@ -518,7 +467,7 @@ function CedarPolicyDialog({
   // keyword completion. cedarCompletion is attached via the language's data facet
   // so basicSetup's autocompletion machinery (keymap, auto-trigger) drives it.
   const extensions = useMemo(() => {
-    const lang = cedar()
+    const lang = cedar();
     // Completion is keyword-only until the WASM + authz schema load, then schema-aware
     // (entity types, action ids, attributes). Attached via the language data facet so
     // basicSetup's autocompletion machinery (keymap, auto-trigger) drives it.
@@ -527,9 +476,7 @@ function CedarPolicyDialog({
     // right options but CodeMirror doesn't render the popup for an in-string
     // completion; entity/attribute completion and everything else work.)
     const completion =
-      cedarWasm && cedarSchema
-        ? cedarCompletion({ cedar: cedarWasm, schema: cedarSchema })
-        : cedarCompletion()
+      cedarWasm && cedarSchema ? cedarCompletion({ cedar: cedarWasm, schema: cedarSchema }) : cedarCompletion();
     const exts = [
       editorTheme(resolvedTheme),
       lang,
@@ -541,67 +488,63 @@ function CedarPolicyDialog({
       // policy sets the editor's min-content width, and DialogContent's grid track
       // grows past the dialog card — the header/footer paint outside the modal.
       EditorView.lineWrapping,
-    ]
+    ];
     // Live linting once the WASM has loaded — precise syntax error ranges, plus strict
     // schema type-validation (unknown action, wrong attribute) once the schema loads.
     if (cedarWasm) {
       exts.push(
         cedarLinter(
-          cedarSchema
-            ? { cedar: cedarWasm, schema: cedarSchema, delay: 400 }
-            : { cedar: cedarWasm, delay: 400 },
+          cedarSchema ? { cedar: cedarWasm, schema: cedarSchema, delay: 400 } : { cedar: cedarWasm, delay: 400 },
         ),
-      )
+      );
     }
-    return exts
-  }, [resolvedTheme, cedarWasm, cedarSchema])
+    return exts;
+  }, [resolvedTheme, cedarWasm, cedarSchema]);
 
   const handleValidate = async () => {
-    setValidating(true)
-    setError(null)
+    setValidating(true);
+    setError(null);
     try {
-      const res = await validateCedarPolicy(cedarSrc)
-      setValidationErrors(res.errors)
-      if (res.errors.length === 0) toast.success(t('cedarPolicies.validSource'))
+      const res = await validateCedarPolicy(cedarSrc);
+      setValidationErrors(res.errors);
+      if (res.errors.length === 0) toast.success(t('cedarPolicies.validSource'));
     } catch (err) {
-      setValidationErrors(null)
-      setError(err instanceof Error ? err.message : t('cedarPolicies.validateFailed'))
+      setValidationErrors(null);
+      setError(err instanceof Error ? err.message : t('cedarPolicies.validateFailed'));
     } finally {
-      setValidating(false)
+      setValidating(false);
     }
-  }
+  };
 
   const handleSave = async () => {
-    if (!valid) return
-    setBusy(true)
-    setError(null)
-    const input: CedarPolicyInput = { name: name.trim(), cedarSrc, enabled }
+    if (!valid) return;
+    setBusy(true);
+    setError(null);
+    const input: CedarPolicyInput = { name: name.trim(), cedarSrc, enabled };
     try {
       if (editing) {
-        await updateCedarPolicy(editing.id, input)
-        toast.success(t('cedarPolicies.toastUpdated', { name: input.name }))
+        await updateCedarPolicy(editing.id, input);
+        toast.success(t('cedarPolicies.toastUpdated', { name: input.name }));
       } else {
-        await createCedarPolicy(input)
-        toast.success(t('cedarPolicies.toastCreated', { name: input.name }))
+        await createCedarPolicy(input);
+        toast.success(t('cedarPolicies.toastCreated', { name: input.name }));
       }
-      onSaved()
-      onClose()
+      onSaved();
+      onClose();
     } catch (err) {
       // The control-plane's 400 body carries the Cedar parse/validation message.
-      setError(err instanceof Error ? err.message : t('cedarPolicies.saveFailed'))
+      setError(err instanceof Error ? err.message : t('cedarPolicies.saveFailed'));
     } finally {
-      setBusy(false)
+      setBusy(false);
     }
-  }
+  };
 
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>
-            {editing
-              ? t('cedarPolicies.dialogEditTitle', { name: editing.name })
-              : t('cedarPolicies.dialogAddTitle')}
+            {editing ? t('cedarPolicies.dialogEditTitle', { name: editing.name }) : t('cedarPolicies.dialogAddTitle')}
           </DialogTitle>
         </DialogHeader>
 
@@ -660,11 +603,7 @@ function CedarPolicyDialog({
                 onClick={handleValidate}
                 disabled={validating || cedarSrc.trim().length === 0}
               >
-                {validating ? (
-                  <Loader2 className="size-3 animate-spin" />
-                ) : (
-                  <CheckCircle2 className="size-3" />
-                )}
+                {validating ? <Loader2 className="size-3 animate-spin" /> : <CheckCircle2 className="size-3" />}
                 {t('cedarPolicies.validate')}
               </Button>
             </div>
@@ -672,8 +611,8 @@ function CedarPolicyDialog({
               <CodeMirror
                 value={cedarSrc}
                 onChange={(v) => {
-                  setCedarSrc(v)
-                  setValidationErrors(null)
+                  setCedarSrc(v);
+                  setValidationErrors(null);
                 }}
                 theme="none"
                 extensions={extensions}
@@ -701,9 +640,7 @@ function CedarPolicyDialog({
                     {group.actions.map((a) => (
                       <li key={a.name} className="flex items-baseline gap-2 text-xs">
                         <code className="shrink-0 font-mono text-[11px]">{a.name}</code>
-                        <span className="text-muted-foreground">
-                          — {t(`cedarPolicies.actionNotes.${a.noteKey}`)}
-                        </span>
+                        <span className="text-muted-foreground">— {t(`cedarPolicies.actionNotes.${a.noteKey}`)}</span>
                       </li>
                     ))}
                   </ul>
@@ -724,5 +661,5 @@ function CedarPolicyDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
-  )
+  );
 }

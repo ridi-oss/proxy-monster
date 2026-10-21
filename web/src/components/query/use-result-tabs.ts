@@ -104,6 +104,8 @@ export interface ResultTabsApi {
   cancel: (id: string) => void
   close: (id: string) => void
   clearLogs: () => void
+  sessionOpen: boolean
+  closeSession: () => Promise<void>
   clearFocus: (id: string) => void
   setTableView: (id: string, view: string) => void
   /** Bumps on every openTable, so the strip can leave Logs even when the tab already existed. */
@@ -143,8 +145,17 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
   const sessionIdRef = useRef<string | null>(null)
   const sessionDsRef = useRef<number | null>(null)
   const openingRef = useRef<Promise<string> | null>(null)
+  const [sessionOpen, setSessionOpen] = useState(false)
 
   const [searchPath, setSearchPath] = useState<string[] | null | undefined>(undefined)
+
+  const forgetSession = useCallback(() => {
+    sessionIdRef.current = null
+    sessionDsRef.current = null
+    setSessionOpen(false)
+    setSearchPath(undefined)
+  }, [])
+
   const searchPathSeq = useRef(0)
   const refreshSearchPath = useCallback(() => {
     const sid = sessionIdRef.current
@@ -167,6 +178,7 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
       sessionIdRef.current = sessionId
       sessionDsRef.current = datasourceId
       refreshSearchPath()
+      setSessionOpen(true)
       return sessionId
     })
     openingRef.current = p
@@ -192,11 +204,22 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
       const sid = sessionIdRef.current
       if (sid) {
         void closeEditorSession(sid).catch(() => {})
-        sessionIdRef.current = null
-        sessionDsRef.current = null
+        forgetSession()
       }
     }
-  }, [datasourceId])
+  }, [datasourceId, forgetSession])
+
+  const closeSession = useCallback(async () => {
+    const sid = sessionIdRef.current
+    if (!sid) return
+    forgetSession()
+    try {
+      await closeEditorSession(sid)
+      toast.success(t('session.closed'))
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : translateApiError('common.fallback'))
+    }
+  }, [forgetSession, t])
 
   const patch = useCallback((id: string, res: Partial<ResultState>) => {
     setTabs((ts) => ts.map((t) => (t.id === id ? { ...t, res: { ...t.res, ...res } } : t)))
@@ -295,7 +318,7 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
           } catch (e) {
             // The held session may have been reaped (idle) or expired — reopen once and retry.
             if (e instanceof Error && /session/i.test(e.message)) {
-              sessionIdRef.current = null
+              forgetSession()
               posted = await submitOnce(await ensureSession())
             } else {
               throw e
@@ -486,7 +509,7 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
           }
         })
     },
-    [appendLog, datasourceId, patch, ensureSession, setTabTaskId, openSiblingTabs, releaseTask, refreshSearchPath, t],
+    [appendLog, datasourceId, patch, ensureSession, forgetSession, setTabTaskId, openSiblingTabs, releaseTask, refreshSearchPath, t],
   )
   fetchIntoRef.current = fetchInto
 
@@ -518,7 +541,7 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
           } catch (e) {
             // The held session may have been reaped (idle) or expired — reopen once and retry, as a run does.
             if (!(e instanceof Error && /session/i.test(e.message))) throw e
-            sessionIdRef.current = null
+            forgetSession()
             response = await call()
           }
           const { statement, result } = response
@@ -543,7 +566,7 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
         }
       })()
     },
-    [appendLog, datasourceId, ensureSession, refreshSearchPath, t],
+    [appendLog, datasourceId, ensureSession, forgetSession, refreshSearchPath, t],
   )
 
   const run = useCallback(
@@ -664,6 +687,8 @@ export function useResultTabs(datasourceId: number | null, maxRows: number): Res
     cancel,
     close,
     clearLogs,
+    sessionOpen,
+    closeSession,
     clearFocus,
     setTableView,
     revealSeq,

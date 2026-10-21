@@ -169,5 +169,12 @@
   "rateBoost": {
     "button": "Request a rate boost",
     "denyHelp": "Your relayed-volume rate for this window is spent. Request a rate boost role for a while, or wait for the window to roll off."
+  },
+  "session": {
+    "close": "End session",
+    "closeTitle": "End this editor session?",
+    "closeDescription": "Its database connection closes. The database rolls back any open transaction and drops session variables and temporary tables. A running query is canceled. The next run opens a new session.",
+    "keep": "Keep session",
+    "closed": "Session ended. Any open transaction was rolled back."
   }
 }

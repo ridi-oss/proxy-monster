@@ -8,7 +8,7 @@
 // the JIT request dialog.
 import { useCallback, useMemo, useRef, useState } from 'react'
 import { useTranslations } from 'next-intl'
-import { Loader2, Play } from 'lucide-react'
+import { Loader2, Play, Unplug } from 'lucide-react'
 import { useCatalog, useDatasources } from '@/lib/hooks'
 import { currentCatalog } from '@/lib/catalog'
 import { cn } from '@/lib/utils'
@@ -36,6 +36,7 @@ import { SqlEditor, type SqlEditorHandle } from './sql-editor'
 import { ResultTabs } from './result-tabs'
 import { QueryHistoryMenu } from './query-history-menu'
 import { RequestAccessDialog } from './request-access-dialog'
+import { CloseSessionDialog } from './close-session-dialog'
 
 const ROW_LIMITS = [100, 200, 500, 1000, 5000]
 
@@ -52,6 +53,7 @@ export function Workbench() {
   const [requestOpen, setRequestOpen] = useState(false)
   const [denyReason, setDenyReason] = useState<string | null>(null)
   const [requestRoleName, setRequestRoleName] = useState<string | undefined>(undefined)
+  const [closeSessionOpen, setCloseSessionOpen] = useState(false)
   const editorRef = useRef<SqlEditorHandle>(null)
   const insertAtCursor = useCallback((text: string) => editorRef.current?.insertAtCursor(text), [])
 
@@ -148,6 +150,15 @@ export function Workbench() {
                       {t('workbench.run')}
                     </Button>
                     <QueryHistoryMenu onPick={setSql} />
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setCloseSessionOpen(true)}
+                      disabled={!resultTabs.sessionOpen}
+                    >
+                      <Unplug className="size-3.5" />
+                      {t('session.close')}
+                    </Button>
                   </div>
                   <div className="flex items-center gap-2">
                     <span className="text-muted-foreground hidden text-xs sm:inline">
@@ -204,6 +215,11 @@ export function Workbench() {
         </div>
       </div>
 
+      <CloseSessionDialog
+        open={closeSessionOpen}
+        onOpenChange={setCloseSessionOpen}
+        onConfirm={resultTabs.closeSession}
+      />
       {datasourceId != null && (
         <RequestAccessDialog
           open={requestOpen}

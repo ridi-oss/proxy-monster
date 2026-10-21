@@ -40,6 +40,12 @@ statement touching a masked column still `DENY`s mid-session.
   reuses, and closes one session per datasource (`useResultTabs`).
 - The session-close route is ownership-checked (`closeSessionOwnedBy`), so a
   leaked session id cannot tear down another principal's connection.
+- The editor's **End session** button closes the session on demand. The close
+  does not wait for a running statement: the task on the session ends
+  `CANCELLED` (`query.session_closed`) and its unrun statements `SKIPPED`, and
+  the proxy cancels the in-flight statement before dropping the target-DB
+  connection. The target DB then rolls back any open transaction and discards
+  session variables and temp tables. The next run opens a new session.
 - Idle-bounded. The target-DB connection is held for the session and released on
   disconnect / idle timeout.
 

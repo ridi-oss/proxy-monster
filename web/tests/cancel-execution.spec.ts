@@ -115,6 +115,67 @@ test('a running editor task can be canceled and polling settles on the canceled 
   expect(statusPolls).toBe(settledPollCount)
 })
 
+test('ending the editor session closes it, settles its running task, and the next run opens a new one', async ({ page }) => {
+  await mockAppShell(page)
+  await page.route('**/api/datasources**', (route) => fulfillJson(route, 200, [
+    { id: 1, name: 'demo', engine: 'mysql' },
+  ]))
+  await page.route('**/api/datasources/1/catalog', (route) => fulfillJson(route, 200, []))
+  await page.route('**/api/query-history**', (route) => fulfillJson(route, 200, []))
+
+  let opened = 0
+  await page.route('**/api/editor/sessions', (route) => {
+    opened += 1
+    return fulfillJson(route, 200, { sessionId: `session-${opened}` })
+  })
+  const submittedOn: string[] = []
+  await page.route('**/api/editor/sessions/*/query', (route) => {
+    submittedOn.push(new URL(route.request().url()).pathname.split('/')[4]!)
+    return fulfillJson(route, 202, { taskId: 20 + submittedOn.length, childId: 30 })
+  })
+  const closed: string[] = []
+  await page.route('**/api/editor/sessions/session-*', (route) => {
+    if (route.request().method() !== 'DELETE') return route.fallback()
+    closed.push(new URL(route.request().url()).pathname.split('/')[4]!)
+    return route.fulfill({ status: 204 })
+  })
+  await page.route('**/api/editor/tasks/*', (route) => {
+    if (route.request().method() === 'DELETE') return route.fulfill({ status: 204 })
+    const ended = closed.length > 0
+    return fulfillJson(route, 200, {
+      taskId: 21,
+      status: ended ? 'CANCELLED' : 'EXECUTING',
+      result: {
+        status: ended ? 'CANCELLED' : 'RUNNING',
+        rowCount: null,
+        columns: [],
+        errorCode: ended ? 'query.session_closed' : null,
+      },
+    })
+  })
+
+  await page.goto('/query')
+  const endSession = page.getByRole('button', { name: 'End session' })
+  await expect(endSession).toBeDisabled()
+
+  const editor = page.locator('.cm-content')
+  await editor.click()
+  await page.keyboard.insertText('select sleep(30)')
+  await page.getByRole('button', { name: 'Run' }).click()
+  await expect.poll(() => submittedOn).toEqual(['session-1'])
+
+  await endSession.click()
+  await page.getByRole('dialog').getByRole('button', { name: 'End session' }).click()
+  await expect.poll(() => closed).toEqual(['session-1'])
+  await expect(page.getByText('Query canceled')).toBeVisible()
+  await expect(endSession).toBeDisabled()
+
+  await editor.click()
+  await page.keyboard.insertText(' ')
+  await page.getByRole('button', { name: 'Run' }).click()
+  await expect.poll(() => submittedOn).toEqual(['session-1', 'session-2'])
+})
+
 test('an executing workflow can be canceled and refreshes to CANCELLED', async ({ page }) => {
   await mockAppShell(page)
   let canceled = false

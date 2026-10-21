@@ -106,6 +106,15 @@ export function RequestTimeline({
     }
   };
 
+  const submitComment = () => {
+    if (!body.trim() || busy !== null) return;
+    void run(
+      'comment',
+      () => commentOnApproval(id, body.trim()),
+      () => setBody(''),
+    );
+  };
+
   return (
     <div className="space-y-4 border-t pt-4" data-testid="approval-timeline">
       <div className="space-y-2">
@@ -181,22 +190,18 @@ export function RequestTimeline({
             id="approval-comment"
             value={body}
             onChange={(e) => setBody(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !e.nativeEvent.isComposing) {
+                e.preventDefault();
+                submitComment();
+              }
+            }}
             placeholder={t('timeline.commentPlaceholder')}
             aria-label={t('timeline.commentPlaceholder')}
             rows={3}
           />
           <div className="flex gap-2">
-            <Button
-              size="sm"
-              disabled={!body.trim() || busy !== null}
-              onClick={() =>
-                run(
-                  'comment',
-                  () => commentOnApproval(id, body.trim()),
-                  () => setBody(''),
-                )
-              }
-            >
+            <Button size="sm" disabled={!body.trim() || busy !== null} onClick={submitComment}>
               {t('timeline.comment')}
             </Button>
             {!isRequester && (

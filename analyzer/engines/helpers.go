@@ -107,7 +107,7 @@ func sortStrings(values []string) {
 
 // validateNamespace checks the namespace: catalog and an ordered searchPath are required. Namespace
 // resolution has no engine-specific settings — those live on EngineConfig and are validated by
-// openSession instead. It returns namespace unchanged — folding the search path's identifiers is
+// newSessionSettings instead. It returns namespace unchanged — folding the search path's identifiers is
 // optimizer.Qualify's own job (via the dialect passed to it), not this function's.
 func validateNamespace(namespace NamespaceConfig) (NamespaceConfig, error) {
 	if namespace.Catalog == "" {

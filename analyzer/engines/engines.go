@@ -4,7 +4,7 @@
 //   - Engine: the facts every datasource of the engine shares.
 //   - Datasource: the engine bound to what one datasource's target reported (MySQL lower_case_table_names);
 //     names fold by its dialect.
-//   - session: one statement's analyzer, the datasource plus what the proxy observed on the session (MySQL
+//   - sessionSettings: one analysis call, the Datasource plus what the proxy observed on the session (MySQL
 //     ansi_quotes); statements parse by its dialect.
 package engines
 
@@ -15,6 +15,8 @@ import (
 	"strings"
 
 	"github.com/ridi-oss/sqlglot-go/dialects"
+	exp "github.com/ridi-oss/sqlglot-go/expressions"
+	"github.com/ridi-oss/sqlglot-go/schema"
 
 	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 )
@@ -31,7 +33,7 @@ const (
 	starOrderCommonRightLeft
 )
 
-// Engine is one target engine.
+// Engine is one target engine: what it is and how its target behaves, and its steps in a statement's analysis.
 type Engine struct {
 	// WireName is the persistence, registration, and JSON name.
 	WireName string
@@ -41,6 +43,7 @@ type Engine struct {
 	DefaultProxyPort  int
 	DefaultTargetPort int
 	Traits            EngineTraits
+	hooks             engineHooks
 }
 
 // EngineTraits is what an engine is and how its target behaves.
@@ -71,8 +74,35 @@ type EngineTraits struct {
 	// datasourceDialect is the dialect a datasource's names fold by: MySQL's follows the lower_case_table_names its
 	// target reported. Nil keeps the engine's.
 	datasourceDialect func(targetSettings *pb.TargetSettings) (*dialects.Dialect, error)
-	// newSession builds one statement's analyzer: MySQL reads ansi_quotes, Athena the workgroup.
-	newSession func(ds Datasource, observed *pb.SessionObservation) (session, error)
+	// sessionDialect is the target's dialect with what the session observed (MySQL ansi_quotes), used to
+	// parse, qualify and generate alike; it fails on settings the analysis cannot use.
+	sessionDialect func(datasource Datasource, observation *pb.SessionObservation) (*dialects.Dialect, error)
+	// bareCallIsBuiltin: is a bare call (`unnest(...)`, no schema) guaranteed to be the
+	// pg_catalog builtin? PostgreSQL picks a function across every search_path schema by argument
+	// type, so a user `public.unnest(int[])` beats `pg_catalog.unnest(anyarray)` for an int[] argument
+	// even with pg_catalog first. false = fail closed, the row stays unknown.
+	bareCallIsBuiltin func(settings *sessionSettings, name string) bool
+	// showUtilityCommand names the utility grant a SHOW form requires ("" for none), so an engine can
+	// classify a data-bearing SHOW (e.g. SHOW PARTITIONS) as a result read.
+	showUtilityCommand func(root exp.Expression) string
+	// isSafeTypeReference: a type sqlglot marked user-defined that is trusted anyway (`'1'::xid` when
+	// it must be pg_catalog.xid). False keeps the user-type fail-close.
+	isSafeTypeReference func(settings *sessionSettings, dt, kind exp.Expression, namespace NamespaceConfig) bool
+	// systemSchemaFirst: an unqualified name resolves in the system schema first (PostgreSQL: pg_catalog
+	// precedes every user schema on searchPath, pg_temp aside; MySQL: never).
+	systemSchemaFirst func(searchPath []string) bool
+	// nativeOutputLabel computes the output label THIS engine's target DB natively assigns to an
+	// unaliased projection: PostgreSQL derives it from the resolved expression (parse_target.c
+	// FigureColname, written function names from the parse-time SpanText); MySQL uses the
+	// projection's verbatim source spelling (SpanText). query is the SELECT the projection belongs
+	// to, for resolving references to its derived sources. ok=false means the label is unknowable —
+	// the caller leaves Qualify's synthetic name.
+	nativeOutputLabel func(settings *sessionSettings, projection, query exp.Expression) (string, bool)
+	// diagnosticLeakKeys is the column keys this statement's target-DB error/warning diagnostic could echo
+	// — engine-specific, since what a diagnostic contains is (MySQL echoes the operated value; PostgreSQL
+	// also dumps a failed write's whole row via `DETAIL: Failing row contains (…)`). Start from
+	// referencedColumnKeys (the shared template) and add engine channels on top.
+	diagnosticLeakKeys func(settings *sessionSettings, report ProbeResult, qualifySchema schema.Schema) map[string]bool
 	// normalizeRules are the lexer rules SqlNormalize applies: MySQL refuses `/*! */`, Postgres folds identifiers.
 	normalizeRules func() normalizeRules
 	// showsWithoutSession parses a SHOW by the engine's dialect when no session can be built (MySQL before

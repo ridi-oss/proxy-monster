@@ -214,7 +214,7 @@ func TestAthenaParameterFailures(t *testing.T) {
 }
 
 func TestAthenaExecuteSyntax(t *testing.T) {
-	sess, err := newAthenaSession(datasourceFor(t, Athena, 0), &pb.SessionObservation{Engine: &pb.SessionObservation_Athena{Athena: &pb.AthenaSqlContext{Workgroup: "sample"}}})
+	settings, err := datasourceFor(t, Athena, 0).sessionSettings(&pb.SessionObservation{Engine: &pb.SessionObservation_Athena{Athena: &pb.AthenaSqlContext{Workgroup: "sample"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,11 +229,11 @@ func TestAthenaExecuteSyntax(t *testing.T) {
 		{"EXECUTE lookup_user USING CAST('1' AS BIGINT), (1 + 2)", "lookup_user", 2},
 		{"EXECUTE lookup_user USING 'quoted '' value', 'question ? mark'", "lookup_user", 2},
 	} {
-		root, err := singleStatement(tc.sql, sess)
+		root, err := singleStatement(tc.sql, settings)
 		if err != nil {
 			t.Fatalf("%s: %v", tc.sql, err)
 		}
-		name, parameters, err := athenaExecute(root, sess)
+		name, parameters, err := athenaExecute(root, settings)
 		if err != nil || name != tc.name || len(parameters) != tc.count {
 			t.Fatalf("%s: name=%q parameters=%v error=%v", tc.sql, name, parameters, err)
 		}
@@ -243,11 +243,11 @@ func TestAthenaExecuteSyntax(t *testing.T) {
 		"EXECUTE lookup_user USING 1 FROM users", "EXECUTE lookup_user USING (SELECT email FROM users)",
 		"EXECUTE lookup_user USING ?", "EXECUTE lookup_user USING email",
 	} {
-		root, err := singleStatement(sql, sess)
+		root, err := singleStatement(sql, settings)
 		if err != nil {
 			continue
 		}
-		if _, _, err := athenaExecute(root, sess); err == nil {
+		if _, _, err := athenaExecute(root, settings); err == nil {
 			t.Fatalf("unproven EXECUTE syntax accepted: %s", sql)
 		}
 	}

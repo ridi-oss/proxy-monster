@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.1.39](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.38...server-v0.1.39) (2026-10-21)
+
+
+### Features
+
+* **web:** link URLs in request comments, opening in a new tab ([b14e58c](https://github.com/ridi-oss/proxy-monster/commit/b14e58c5fc8575be522a2a01a9f826776b745ac8))
+* **web:** show the MCP OAuth consent page in the web console ([0b8f693](https://github.com/ridi-oss/proxy-monster/commit/0b8f6931857f670d57cf40b40a31d659142c36cd))
+* **web:** show the role a query request runs as ([974f86f](https://github.com/ridi-oss/proxy-monster/commit/974f86f266b1936a46a28ec796ee61f249344d8b))
+
+
+### Bug Fixes
+
+* **cpgo:** honor PM_BIND_HOST on the public listeners ([84d0bfc](https://github.com/ridi-oss/proxy-monster/commit/84d0bfccc460b31b8636c10d27f626f189a21d8b))
+* **notify:** show Slack replies as plain text, with mentions as usernames ([7f9cf38](https://github.com/ridi-oss/proxy-monster/commit/7f9cf383c4a784073f6f6b197d617bf7b8866aeb))
+
+
+### Refactoring
+
+* **analyzer:** read keywords from sqlglot-go's token flags in SqlNormalize ([cc9021c](https://github.com/ridi-oss/proxy-monster/commit/cc9021ca00b9050e03b0efc2e43602e7785fc41b))
+* **notify:** one Slack mrkdwn escape ([74bb84e](https://github.com/ridi-oss/proxy-monster/commit/74bb84eff724f3cdd8a22bddcb1bd0c8dee2c6fe))
+* **web:** read the control plane's URL at run time as PM_CP_URL ([446fcd0](https://github.com/ridi-oss/proxy-monster/commit/446fcd00801d431ceb45dbe000ad9b7ed8d2e3ea))
+
+
+### Build & Dependencies
+
+* build every Go binary with Go 1.26.10 ([5e4abb9](https://github.com/ridi-oss/proxy-monster/commit/5e4abb986f4a5966cf4833ff651f7c4baf56f507))
+* stop trusting emSign ECC Root CA - G3 in the control plane and web images ([4a11548](https://github.com/ridi-oss/proxy-monster/commit/4a115489a80067256c495ecfd28823df08b96ebd))
+
 ## [0.1.38](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.37...server-v0.1.38) (2026-10-20)
 
 

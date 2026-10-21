@@ -31,6 +31,7 @@ type Check struct {
 	Required   bool    `json:"required"`
 	Status     string  `json:"status"`
 	Conclusion *string `json:"conclusion"`
+	Own        bool    `json:"own"` // posted by this GitHub App
 }
 
 type ChangedFile struct {

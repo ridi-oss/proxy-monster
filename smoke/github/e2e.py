@@ -21,6 +21,8 @@ def need(name):
 REPO = need("PM_GITHUB_E2E_REPO")
 CLONE = need("PM_GITHUB_E2E_CLONE")
 APP_ID = int(need("PM_GITHUB_E2E_APP_ID"))
+# The control plane runs with PM_INSTANCE_NAME=github-e2e.
+CHECK = "github-e2e/query executed"
 CP = os.environ.get("PM_GITHUB_E2E_CP", "http://127.0.0.1:8090")
 APPROVER = os.environ.get("PM_GITHUB_E2E_APPROVER", "approver@example.com")
 DIR = os.environ.get("PM_GITHUB_E2E_DIR", "db/orders")
@@ -139,7 +141,7 @@ def pr_state(pr):
 def approval_check(pr, sha=None):
     sha = sha or head(pr)
     for r in json.loads(gh("api", f"repos/{REPO}/commits/{sha}/check-runs"))["check_runs"]:
-        if r["name"] == "query executed" and r["app"]["id"] == APP_ID:
+        if r["name"] == CHECK and r["app"]["id"] == APP_ID:
             return r["status"], r["conclusion"], (r.get("output") or {}).get("title") or ""
     return None, None, ""
 

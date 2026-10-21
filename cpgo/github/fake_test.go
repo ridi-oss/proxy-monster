@@ -180,7 +180,8 @@ func prResponse(prs ...string) string {
 	return `{"data":{"rateLimit":` + rate + `,"repository":{` + strings.Join(parts, ",") + `}}}`
 }
 
-const defaultChecks = `{"__typename":"CheckRun","name":"build","status":"COMPLETED","conclusion":"SUCCESS","isRequired":true},
+const defaultChecks = `{"__typename":"CheckRun","name":"build","status":"COMPLETED","conclusion":"SUCCESS","isRequired":true,"checkSuite":{"app":{"databaseId":777}}},
+  {"__typename":"CheckRun","name":"pm/query executed","status":"IN_PROGRESS","conclusion":null,"isRequired":true,"checkSuite":{"app":{"databaseId":12345}}},
   {"__typename":"StatusContext","context":"ci/legacy","state":"PENDING","isRequired":false}`
 
 type prOpts struct {

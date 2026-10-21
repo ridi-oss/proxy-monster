@@ -22,7 +22,7 @@ rulesets, protected, opened = [], [], []
 def own(strict=False):
     return {"type": "required_status_checks", "parameters": {
         "strict_required_status_checks_policy": strict,
-        "required_status_checks": [{"context": "query executed", "integration_id": APP_ID}]}}
+        "required_status_checks": [{"context": CHECK, "integration_id": APP_ID}]}}
 
 
 def pull_request(**p):

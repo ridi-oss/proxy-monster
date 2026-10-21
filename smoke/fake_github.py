@@ -15,6 +15,9 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+# The smoke control plane runs with PM_INSTANCE_NAME=smoke.
+CHECK = "smoke/query executed"
+
 
 def b64url(raw):
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
@@ -56,13 +59,13 @@ class FakeGitHub:
                 "head": head, "base": "main", "author": author, "email": email, "autoMerge": None,
                 "reviews": [], "files": files, "checks": list(required),
             }
-            self.required[(repo, "main")] = list(required) + ["query executed"]
+            self.required[(repo, "main")] = list(required) + [CHECK]
 
     def update_pr(self, repo, number, **fields):
         with self.lock:
             self.prs[(repo, number)].update(fields)
 
-    def check(self, repo, sha, name="query executed"):
+    def check(self, repo, sha, name=CHECK):
         with self.lock:
             runs = [r for r in self.check_runs if r["repo"] == repo and r["head_sha"] == sha and r["name"] == name]
             return dict(runs[-1]) if runs else None

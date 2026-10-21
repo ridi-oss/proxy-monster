@@ -63,7 +63,7 @@ data class GitHubRequestsResponse(val requests: List<AccessRequest>)
 /**
  * SQL files from GitHub pull requests (docs/sql-from-github.md): files each pull request's new files as
  * requests, follows its reviews, and runs its approved files when it is ready to merge, reporting through the
- * required `query executed` check. Every evaluation runs under one lock.
+ * required [checkName] check. Every evaluation runs under one lock.
  */
 class GitHubSourceFlow(
     private val adapter: SourceAdapter,
@@ -75,6 +75,7 @@ class GitHubSourceFlow(
     private val notifications: NotificationService?,
     private val catalog: MessageCatalog = MessageCatalog(DOMAIN),
     private val locale: String,
+    private val checkName: String,
     private val clock: Clock = Clock.systemUTC(),
     private val log: Logger = LoggerFactory.getLogger(GitHubSourceFlow::class.java),
     private val webUrl: String = "https://github.com",
@@ -422,7 +423,7 @@ class GitHubSourceFlow(
         val state = PostedState(pr.headSha, status, conclusion, title)
         if (posted[key] == state) return
         safely("post check") {
-            adapter.postCheck(repo, pr.headSha, CHECK_NAME, status, conclusion, title, summary)
+            adapter.postCheck(repo, pr.headSha, checkName, status, conclusion, title, summary)
             posted[key] = state
         }
     }
@@ -435,12 +436,13 @@ class GitHubSourceFlow(
 
     /**
      * Every context [required] or the rollup marks required ran green on the head, and no other check is still
-     * running: a branch that requires no checks would otherwise run the SQL before CI that may still fail.
+     * running: a branch that requires no checks would otherwise run the SQL before CI that may still fail. Every
+     * proxy-monster's check is left out, since each waits for the merge.
      */
     private fun checksGreen(pr: PullRequest, required: Set<String>): Boolean {
-        val checks = pr.checks?.filter { it.name != CHECK_NAME } ?: return false
+        val checks = pr.checks?.filterNot { isQueryCheck(it.name) } ?: return false
         if (checks.any { it.status != CheckStatus.COMPLETED }) return false
-        val needed = (required + checks.filter { it.required }.map { it.name }) - CHECK_NAME
+        val needed = (required + checks.filter { it.required }.map { it.name }).filterNot(::isQueryCheck)
         return needed.all { name ->
             val runs = checks.filter { it.name == name }
             runs.isNotEmpty() && runs.all { it.conclusion in GREEN }
@@ -452,7 +454,7 @@ class GitHubSourceFlow(
      * check is required, GitHub reports every such PR as blocked, so the rules behind that verdict are read here.
      */
     private suspend fun mergeBlocked(repo: Repo, pr: PullRequest, rules: BranchRules): String? {
-        val ownRequired = CHECK_NAME in rules.contexts || pr.checks.orEmpty().any { it.name == CHECK_NAME && it.required }
+        val ownRequired = checkName in rules.contexts || pr.checks.orEmpty().any { it.own && it.required }
         val method = pr.autoMerge?.mergeMethod?.lowercase()
         return when {
             pr.mergeable == "CONFLICTING" -> text("check.conflicts")
@@ -492,7 +494,12 @@ class GitHubSourceFlow(
     private fun unsplittable() = TaskServiceException(HttpStatusCode.Conflict, ApiError("approval.unsplittable_sql"))
 
     companion object {
-        const val CHECK_NAME = "query executed"
+        private const val CHECK_SUFFIX = "query executed"
+
+        /** The check one instance posts: `<instance>/query executed`. */
+        fun checkName(instanceName: String) = "$instanceName/$CHECK_SUFFIX"
+
+        private fun isQueryCheck(name: String) = name == CHECK_SUFFIX || name.endsWith("/$CHECK_SUFFIX")
         const val DOMAIN = "github"
         private const val DELETED = "DELETED"
         private const val ALREADY_RAN = "ALREADY_RAN"

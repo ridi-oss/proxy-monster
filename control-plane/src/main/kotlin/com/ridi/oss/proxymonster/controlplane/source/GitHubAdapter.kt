@@ -250,6 +250,7 @@ class GitHubAdapter(
                         it.required,
                         CheckStatus.valueOf(it.status.name),
                         if (it.conclusion == CheckConclusionPb.CHECK_CONCLUSION_UNSPECIFIED) null else CheckConclusion.valueOf(it.conclusion.name),
+                        it.own,
                     )
                 }
             } else {

@@ -457,6 +457,7 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
         GitHubSourceFlow(
             adapter, approvalService, accessStore, datasourceStore, policyStore, authz, notifications,
             locale = config.notifyLocale,
+            checkName = GitHubSourceFlow.checkName(config.instanceName),
             webUrl = GitHubSourceFlow.webUrlFor(config.github!!.apiUrl),
         ).also { flow -> launch { flow.runPollLoop() } }
     }

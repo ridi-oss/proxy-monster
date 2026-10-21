@@ -25,8 +25,7 @@ var MySQL = &Engine{
 	datasourceDialect: mysqlDialect,
 	newSession:        newMySQLSession,
 	normalizeRules: func() normalizeRules {
-		d := dialects.MySQL()
-		return normalizeRules{dialect: d, wordDialect: d, rejectExecutableComments: true}
+		return normalizeRules{dialect: dialects.MySQL(), rejectExecutableComments: true}
 	},
 	showsWithoutSession:                 true,
 	foldColumn:                          mysqlColumn,

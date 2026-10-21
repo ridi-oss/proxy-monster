@@ -26,8 +26,7 @@ var Postgres = &Engine{
 	dialect:      dialects.Postgres,
 	newSession:   newPostgresSession,
 	normalizeRules: func() normalizeRules {
-		d := dialects.Postgres()
-		return normalizeRules{dialect: d, wordDialect: d, foldIdentifiers: true}
+		return normalizeRules{dialect: dialects.Postgres(), foldIdentifiers: true}
 	},
 	foldColumn: func(name string) string { return name },
 	builtinFunctionRows: map[string][]string{

@@ -108,6 +108,9 @@ var (
 	CodeEngineImmutable       = Code{"datasource.engine_immutable", http.StatusConflict}
 	CodeInUseProxyAttached    = Code{"datasource.in_use_proxy_attached", http.StatusConflict}
 	CodeInUseActiveRequests   = Code{"datasource.in_use_active_requests", http.StatusConflict}
+	CodeInvalidToken          = Code{"common.invalid_token", http.StatusUnauthorized}
+	CodeWorkloadNotConfigured = Code{"workload.not_configured", http.StatusNotFound}
+	CodeIssuerNotTrusted      = Code{"workload.issuer_not_trusted", http.StatusUnauthorized}
 )
 
 // WriteError writes an ApiError; kv is its params as alternating keys and values, kept in that order.

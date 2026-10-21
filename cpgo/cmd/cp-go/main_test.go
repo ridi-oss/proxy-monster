@@ -21,6 +21,7 @@ import (
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 
 	"github.com/ridi-oss/proxy-monster/cpgo/internal/dbtest"
+	"github.com/ridi-oss/proxy-monster/cpgo/routes/workload"
 	"github.com/ridi-oss/proxy-monster/cpgo/session"
 )
 
@@ -201,6 +202,7 @@ var sharedEnv = map[string]string{
 	"PM_OIDC_REDIRECT_URI": "https://pm.example.com/auth/oidc/callback", "PM_OIDC_SCOPES": "openid email",
 	"PM_OIDC_GROUP_MAP": "idp-admins=system:admin", "PM_OIDC_GROUP_PREFIX": "okta-", "PM_OIDC_USER_ATTRIBUTES": "department",
 	"PM_IDP_RECHECK_INTERVAL": "60", "PM_GITHUB_APP_ID": "7", "PM_GITHUB_API_URL": "https://ghe.example.com/api/v3",
+	"PM_CI_OIDC_ISSUERS": "github=https://token.actions.githubusercontent.com", "PM_CI_OIDC_AUDIENCE": "proxy-monster",
 }
 
 func parseConfig(t *testing.T, args ...string) config {
@@ -295,6 +297,9 @@ func TestSettleRefusesBadSettings(t *testing.T) {
 		{[]string{"--web-idle=soon"}, "PM_WEB_SESSION_IDLE"},
 		{[]string{"--idp-recheck-interval=0"}, "PM_IDP_RECHECK_INTERVAL"},
 		{[]string{"--result-key=not-base64"}, "PM_RESULT_KEY"},
+		{[]string{"--ci-oidc-issuers=GitHub=https://ci.example.com"}, "PM_CI_OIDC_ISSUERS entry"},
+		{[]string{"--ci-oidc-issuers=github=http://ci.example.com", "--no-auth-debug"}, "HTTPS issuer URI"},
+		{[]string{"--ci-oidc-issuers=github=http://127.0.0.1:1"}, ""},
 	} {
 		_, err := settle(parseConfig(t, tc.args...))
 		switch {
@@ -303,6 +308,16 @@ func TestSettleRefusesBadSettings(t *testing.T) {
 		case tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)):
 			t.Errorf("%v: got %v, want %q", tc.args, err, tc.want)
 		}
+	}
+}
+
+func TestSettleDefaultsTheCIAudienceToTheOrigin(t *testing.T) {
+	cfg, err := settle(parseConfig(t, "--ci-oidc-issuers=github=https://ci.example.com", "--mcp-resource=https://PM.example.com:8443/mcp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []workload.Issuer{{Name: "github", URL: "https://ci.example.com", Audience: "https://pm.example.com:8443"}}; !slices.Equal(cfg.CI, want) {
+		t.Errorf("issuers %+v, want %+v", cfg.CI, want)
 	}
 }
 

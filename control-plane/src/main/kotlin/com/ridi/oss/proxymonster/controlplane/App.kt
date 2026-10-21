@@ -462,7 +462,6 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
     }
     val auditService = AuditService(authz, store)
     val tokenService = TokenService(tokenStore, userGroupStore, authz, core.authAudit)
-    val workloadTokenService = WorkloadTokenService(config, tokenStore, core.authAudit)
     accessService = AccessService(accessStore, datasourceStore, store, roleResolver, authz, managementAudit, notifications)
     installMcp(
         config, core, datasourceManagement, policyManagement, identityManagement, editorTaskService, approvalService,
@@ -504,7 +503,6 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
         // principal's daemon session windows (renewal secrets), not just its wire tokens + grants.
         scimRoutes(config, userGroupStore, tokenStore, accessStore, principalSessionStore, managementAudit, this@module.environment.log)
 
-        workloadTokenRoutes(config, workloadTokenService)
         if (githubFlow != null) githubSourceRoutes(config, tokenStore, githubFlow)
 
         // Datasource + catalog + classification config API. Admin-gated: admin.datasources.

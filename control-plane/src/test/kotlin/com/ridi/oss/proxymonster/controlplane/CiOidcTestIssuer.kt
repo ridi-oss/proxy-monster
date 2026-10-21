@@ -16,15 +16,8 @@ import io.ktor.server.netty.Netty
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
-import kotlinx.coroutines.runBlocking
-import org.junit.jupiter.api.AfterAll
-import org.junit.jupiter.api.BeforeAll
-import org.junit.jupiter.api.Test
-import org.junit.jupiter.api.TestInstance
 import java.net.ServerSocket
 import java.util.Date
-import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
 
 /** A loopback CI issuer serving a GitHub-shaped discovery document (issuer + jwks_uri only) and its JWKS. */
 internal class CiOidcTestIssuer : AutoCloseable {
@@ -80,70 +73,4 @@ internal class CiOidcTestIssuer : AutoCloseable {
         const val AUDIENCE = "https://pm.example.com"
         private const val KID = "ci-kid"
     }
-}
-
-@TestInstance(TestInstance.Lifecycle.PER_CLASS)
-class CiOidcTokenVerifierTest {
-    private lateinit var issuer: CiOidcTestIssuer
-    private lateinit var verifier: CiOidcTokenVerifier
-
-    @BeforeAll
-    fun setup() {
-        issuer = CiOidcTestIssuer()
-        verifier = CiOidcTokenVerifier(listOf(issuer.config))
-    }
-
-    @AfterAll
-    fun teardown() = issuer.close()
-
-    private fun rejected(jwt: String) = runBlocking {
-        assertFailsWith<CiOidcException.InvalidToken> { verifier.verify(jwt) }
-        Unit
-    }
-
-    @Test
-    fun `a valid token verifies and surfaces its claims`() = runBlocking {
-        val verified = verifier.verify(issuer.sign())
-        assertEquals(issuer.config, verified.issuer)
-        assertEquals("acme/shop", verified.claims.getClaim("repository"))
-        Unit
-    }
-
-    @Test
-    fun `a pull request token carries its base_ref claim`() = runBlocking {
-        val verified = verifier.verify(issuer.sign(issuer.claims(baseRef = "main")))
-        assertEquals("main", verified.claims.getClaim("base_ref"))
-        Unit
-    }
-
-    @Test
-    fun `an unlisted issuer is untrusted`() = runBlocking {
-        val e = assertFailsWith<CiOidcException.UntrustedIssuer> {
-            verifier.verify(issuer.sign(issuer.claims(iss = "https://ci.example.com")))
-        }
-        assertEquals("https://ci.example.com", e.iss)
-        Unit
-    }
-
-    @Test
-    fun `a malformed token is invalid`() = rejected("not-a-jwt")
-
-    @Test
-    fun `a wrong audience is invalid`() = rejected(issuer.sign(issuer.claims(aud = "https://other.example.com")))
-
-    @Test
-    fun `an expired token is invalid`() = rejected(issuer.sign(issuer.claims(expOffsetSeconds = -120, iatOffsetSeconds = -600)))
-
-    @Test
-    fun `a token signed by an unpublished key under the same kid is invalid`() =
-        rejected(issuer.sign(signingKey = issuer.impostorKey()))
-
-    @Test
-    fun `a not-yet-valid token is invalid`() = rejected(issuer.sign(issuer.claims(nbfOffsetSeconds = 300)))
-
-    @Test
-    fun `a future-dated iat is invalid`() = rejected(issuer.sign(issuer.claims(iatOffsetSeconds = 300)))
-
-    @Test
-    fun `a token without sub is invalid`() = rejected(issuer.sign(issuer.claims(sub = null)))
 }

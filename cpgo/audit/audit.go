@@ -79,8 +79,17 @@ func AuthDetail(ctx context.Context, tx pgx.Tx, actor Actor, action, resource, s
 // AuthFailure is AuthAuditRecorder.failureBestEffort: a rejected attempt recorded in its own transaction,
 // whose failure is logged and never changes the caller's answer.
 func AuthFailure(ctx context.Context, pool *pgxpool.Pool, actor Actor, action, resource, summary, detail string) {
+	authFailure(ctx, pool, actor, action, resource, summary, &detail)
+}
+
+// AuthRejected is AuthFailure without a detail.
+func AuthRejected(ctx context.Context, pool *pgxpool.Pool, actor Actor, action, resource, summary string) {
+	authFailure(ctx, pool, actor, action, resource, summary, nil)
+}
+
+func authFailure(ctx context.Context, pool *pgxpool.Pool, actor Actor, action, resource, summary string, detail *string) {
 	err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-		return controlPlane(ctx, tx, "auth", "DENY", "FAILURE", actor, action, resource, summary, &detail)
+		return controlPlane(ctx, tx, "auth", "DENY", "FAILURE", actor, action, resource, summary, detail)
 	})
 	if err != nil {
 		slog.Warn("audit: best-effort auth failure insert failed", "action", action, "err", err)

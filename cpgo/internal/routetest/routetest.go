@@ -17,6 +17,7 @@ import (
 	"github.com/ridi-oss/proxy-monster/cpgo/routes"
 	"github.com/ridi-oss/proxy-monster/cpgo/routes/oauth"
 	"github.com/ridi-oss/proxy-monster/cpgo/routes/oidc"
+	"github.com/ridi-oss/proxy-monster/cpgo/routes/workload"
 	"github.com/ridi-oss/proxy-monster/cpgo/session"
 )
 
@@ -145,6 +146,8 @@ type Config struct {
 	Settings *session.Settings
 	// Clients resolves OAuth client metadata documents; nil fetches them over HTTPS.
 	Clients oauth.Resolver
+	// Workload verifies CI OIDC tokens; nil is the exchange not configured.
+	Workload *workload.Verifier
 }
 
 func SetupConfig(t *testing.T, c Config) *Env {
@@ -180,7 +183,7 @@ func SetupConfig(t *testing.T, c Config) *Env {
 		AuthDebug: settings.AuthDebug,
 		Authz:     decider,
 		Kotlin:    &e.Authz,
-	}, c.Login, clients)
+	}, c.Login, clients, c.Workload)
 	e.Srv = httptest.NewServer(front.Route(mux, forward))
 	t.Cleanup(e.Srv.Close)
 	return e

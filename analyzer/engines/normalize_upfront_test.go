@@ -39,7 +39,7 @@ func TestUpfrontFoldReachesRelationIdentities(t *testing.T) {
 	}
 	facts := EmitFacts(
 		"SELECT id FROM BOM.TB_USER",
-		&pb.EngineConfig{Engine: pb.Engine_MYSQL, Datasource: &pb.EngineDatasource{EngineVersion: "8.0.44", MysqlLowerCaseTableNames: proto.Int32(1)}},
+		&pb.EngineConfig{Engine: pb.Engine_MYSQL, Target: &pb.TargetSettings{EngineVersion: "8.0.44", MysqlLowerCaseTableNames: proto.Int32(1)}},
 		mapping,
 		nil,
 		NamespaceConfig{Catalog: "def", SearchPath: []string{"bom"}},
@@ -77,7 +77,7 @@ func TestUpfrontFoldRespectsEngineEquivalence(t *testing.T) {
 	mysqlFacts := func(t *testing.T, sql string, lctn int32) *pb.StatementFacts {
 		t.Helper()
 		return EmitFacts(sql, &pb.EngineConfig{
-			Engine: pb.Engine_MYSQL, Datasource: &pb.EngineDatasource{EngineVersion: "8.0.44", MysqlLowerCaseTableNames: proto.Int32(lctn)},
+			Engine: pb.Engine_MYSQL, Target: &pb.TargetSettings{EngineVersion: "8.0.44", MysqlLowerCaseTableNames: proto.Int32(lctn)},
 		}, mysqlMapping, nil, mysqlNs)
 	}
 
@@ -122,7 +122,7 @@ func TestUpfrontFoldKeepsPostgresQuotedRelationsDistinct(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build schema: %v", err)
 	}
-	pg := &pb.EngineConfig{Engine: pb.Engine_POSTGRES, Datasource: &pb.EngineDatasource{EngineVersion: "16.0"}}
+	pg := &pb.EngineConfig{Engine: pb.Engine_POSTGRES, Target: &pb.TargetSettings{EngineVersion: "16.0"}}
 	ns := NamespaceConfig{Catalog: "acme", SearchPath: []string{"public"}}
 
 	// Unquoted folds to the lowercase table; quoted resolves to the case-preserved one.

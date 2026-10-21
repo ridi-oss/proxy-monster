@@ -25,7 +25,7 @@ func TestNativeLabelReferencesResolve(t *testing.T) {
 	my := func(sql string) *pb.StatementFacts {
 		return analyzeProto(t, &pb.AnalyzeRequest{
 			Sql:          sql,
-			EngineConfig: &pb.EngineConfig{Engine: pb.Engine_MYSQL, Datasource: &pb.EngineDatasource{EngineVersion: "8.0.42", MysqlLowerCaseTableNames: proto.Int32(0)}},
+			EngineConfig: &pb.EngineConfig{Engine: pb.Engine_MYSQL, Target: &pb.TargetSettings{EngineVersion: "8.0.42", MysqlLowerCaseTableNames: proto.Int32(0)}},
 			Namespace:    &pb.Namespace{Catalog: "def", SearchPath: []string{"acme"}},
 			Catalog:      snapshot([]*pb.Column{pbColumn("acme", "users", "id", "BIGINT")}),
 		})
@@ -54,7 +54,7 @@ func TestNativeLabelReferencesResolve(t *testing.T) {
 func TestMySQLRewriteKeepsVerbatimLabels(t *testing.T) {
 	f := analyzeProto(t, &pb.AnalyzeRequest{
 		Sql:          "SELECT * FROM (SELECT database( ), u.id FROM users u) c",
-		EngineConfig: &pb.EngineConfig{Engine: pb.Engine_MYSQL, Datasource: &pb.EngineDatasource{EngineVersion: "8.0.42", MysqlLowerCaseTableNames: proto.Int32(0)}},
+		EngineConfig: &pb.EngineConfig{Engine: pb.Engine_MYSQL, Target: &pb.TargetSettings{EngineVersion: "8.0.42", MysqlLowerCaseTableNames: proto.Int32(0)}},
 		Namespace:    &pb.Namespace{Catalog: "def", SearchPath: []string{"acme"}},
 		Catalog:      snapshotWith([]*pb.Column{pbColumn("acme", "users", "id", "BIGINT")}, &pb.FunctionCatalog{BuiltinFunctions: []string{"database"}}),
 	})
@@ -120,7 +120,7 @@ func TestMySQLDuplicateDerivedLabelsFailClosed(t *testing.T) {
 	my := func(sql string) *pb.StatementFacts {
 		return analyzeProto(t, &pb.AnalyzeRequest{
 			Sql:          sql,
-			EngineConfig: &pb.EngineConfig{Engine: pb.Engine_MYSQL, Datasource: &pb.EngineDatasource{EngineVersion: "8.0.42", MysqlLowerCaseTableNames: proto.Int32(0)}},
+			EngineConfig: &pb.EngineConfig{Engine: pb.Engine_MYSQL, Target: &pb.TargetSettings{EngineVersion: "8.0.42", MysqlLowerCaseTableNames: proto.Int32(0)}},
 			Namespace:    &pb.Namespace{Catalog: "def", SearchPath: []string{"acme"}},
 			Catalog:      snapshot([]*pb.Column{pbColumn("acme", "users", "id", "BIGINT")}),
 		})

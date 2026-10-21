@@ -92,7 +92,7 @@ func openSession(config *pb.EngineConfig) (session, error) {
 	if !ok {
 		return nil, fmt.Errorf("unsupported engine %s", config.GetEngine())
 	}
-	ds, err := e.Datasource(config.GetDatasource())
+	ds, err := e.Datasource(config.GetTarget())
 	if err != nil {
 		return nil, err
 	}

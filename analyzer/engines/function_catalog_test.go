@@ -13,7 +13,7 @@ func TestAnalyzeRequestAbsentFunctions(t *testing.T) {
 	for _, engine := range []pb.Engine{pb.Engine_MYSQL, pb.Engine_POSTGRES} {
 		t.Run(engine.String(), func(t *testing.T) {
 			catalog, schema := "def", "app"
-			config := &pb.EngineConfig{Engine: engine, Datasource: &pb.EngineDatasource{EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(0)}}
+			config := &pb.EngineConfig{Engine: engine, Target: &pb.TargetSettings{EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(0)}}
 			if engine == pb.Engine_POSTGRES {
 				catalog, schema = "acme", "public"
 				config = &pb.EngineConfig{Engine: engine}
@@ -73,7 +73,7 @@ func TestMySQLFunctionCatalogResolution(t *testing.T) {
 		t.Run(tc.database+"/"+tc.sql, func(t *testing.T) {
 			facts := analyzeProto(t, &pb.AnalyzeRequest{
 				Sql:          tc.sql,
-				EngineConfig: &pb.EngineConfig{Engine: pb.Engine_MYSQL, Datasource: &pb.EngineDatasource{EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(0)}},
+				EngineConfig: &pb.EngineConfig{Engine: pb.Engine_MYSQL, Target: &pb.TargetSettings{EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(0)}},
 				Namespace:    &pb.Namespace{Catalog: "def", SearchPath: []string{tc.database}},
 				Catalog:      snapshotWith(nil, functions),
 			})

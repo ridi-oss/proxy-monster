@@ -161,7 +161,7 @@ func TestAlterTableDropIndexProductionShape(t *testing.T) {
 	f := analyzeProto(t, &pb.AnalyzeRequest{
 		Sql: "ALTER TABLE bom.tb_set_book_sell_history DROP INDEX idx_u_idx",
 		EngineConfig: &pb.EngineConfig{
-			Engine: pb.Engine_MYSQL, Datasource: &pb.EngineDatasource{EngineVersion: "8.0.44", MysqlLowerCaseTableNames: proto.Int32(0)},
+			Engine: pb.Engine_MYSQL, Target: &pb.TargetSettings{EngineVersion: "8.0.44", MysqlLowerCaseTableNames: proto.Int32(0)},
 		},
 		Namespace: &pb.Namespace{Catalog: "def", SearchPath: []string{"bom"}},
 		Catalog: snapshot([]*pb.Column{

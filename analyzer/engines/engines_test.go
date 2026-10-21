@@ -189,7 +189,7 @@ func TestParsedSchema(t *testing.T) {
 // datasourceFor is the engine as a datasource reporting lctn; only MySQL reads it.
 func datasourceFor(t *testing.T, e *Engine, lctn int32) Datasource {
 	t.Helper()
-	ds, err := e.Datasource(&pb.EngineDatasource{MysqlLowerCaseTableNames: &lctn})
+	ds, err := e.Datasource(&pb.TargetSettings{MysqlLowerCaseTableNames: &lctn})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,11 +198,11 @@ func datasourceFor(t *testing.T, e *Engine, lctn int32) Datasource {
 
 func TestDatasource(t *testing.T) {
 	for _, bad := range []int32{-1, 3} {
-		if _, err := MySQL.Datasource(&pb.EngineDatasource{MysqlLowerCaseTableNames: &bad}); err == nil {
+		if _, err := MySQL.Datasource(&pb.TargetSettings{MysqlLowerCaseTableNames: &bad}); err == nil {
 			t.Errorf("lower_case_table_names %d accepted", bad)
 		}
 	}
-	for _, missing := range []*pb.EngineDatasource{nil, {EngineVersion: "8.0.44"}} {
+	for _, missing := range []*pb.TargetSettings{nil, {EngineVersion: "8.0.44"}} {
 		if _, err := MySQL.Datasource(missing); err == nil {
 			t.Errorf("MySQL bound %v without lower_case_table_names", missing)
 		}

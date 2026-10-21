@@ -154,7 +154,7 @@ func columnNamesSafe(reqBytes []byte, names func(Datasource, []*pb.Column) ([]Co
 	if !ok {
 		return columnNamesFailure
 	}
-	target, err := eng.Datasource(req.GetDatasource())
+	target, err := eng.Datasource(req.GetTarget())
 	if err != nil {
 		return datasourceRejected
 	}

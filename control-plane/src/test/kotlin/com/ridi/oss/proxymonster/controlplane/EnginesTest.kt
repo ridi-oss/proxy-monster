@@ -75,20 +75,20 @@ class EnginesTest {
         val postgres = mysql.copy(engine = Engine.POSTGRES, engineVersion = "17.9", mysqlLowerCaseTableNames = null)
         val mysqlConfig = mysql.engine.definition.analyzerEngineConfig(mysql, sessionObservation { this.mysql = mySqlSession { ansiQuotes = true } })
         assertEquals(Engine.MYSQL, mysqlConfig.engine)
-        assertEquals("8.0.44", mysqlConfig.datasource.engineVersion)
-        assertEquals(1, mysqlConfig.datasource.mysqlLowerCaseTableNames)
+        assertEquals("8.0.44", mysqlConfig.target.engineVersion)
+        assertEquals(1, mysqlConfig.target.mysqlLowerCaseTableNames)
         assertTrue(mysqlConfig.session.mysql.ansiQuotes)
-        assertEquals("8.0", mysql.engine.definition.manifestSeries(mysqlConfig.datasource.engineVersion))
+        assertEquals("8.0", mysql.engine.definition.manifestSeries(mysqlConfig.target.engineVersion))
         assertFalse(mysql.splitEngineConfig().session.mysql.ansiQuotes)
         // The analyzer, not the control plane, refuses a MySQL datasource introspection has not reported.
         assertNull(splitStatements("SELECT 1", mysql.copy(engineVersion = null).splitEngineConfig()))
         assertNull(splitStatements("SELECT 1", mysql.copy(mysqlLowerCaseTableNames = null).splitEngineConfig()))
         val postgresConfig = postgres.splitEngineConfig()
         assertEquals(Engine.POSTGRES, postgresConfig.engine)
-        assertEquals("17.9", postgresConfig.datasource.engineVersion)
-        assertFalse(postgresConfig.datasource.hasMysqlLowerCaseTableNames())
-        assertEquals("17", postgres.engine.definition.manifestSeries(postgresConfig.datasource.engineVersion))
-        assertEquals("", postgres.copy(engineVersion = null).splitEngineConfig().datasource.engineVersion)
+        assertEquals("17.9", postgresConfig.target.engineVersion)
+        assertFalse(postgresConfig.target.hasMysqlLowerCaseTableNames())
+        assertEquals("17", postgres.engine.definition.manifestSeries(postgresConfig.target.engineVersion))
+        assertEquals("", postgres.copy(engineVersion = null).splitEngineConfig().target.engineVersion)
     }
 
     @Test fun `unregistered engines have no metadata or version fallback`() {

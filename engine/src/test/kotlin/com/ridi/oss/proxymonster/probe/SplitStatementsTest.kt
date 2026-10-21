@@ -1,6 +1,6 @@
 package com.ridi.oss.proxymonster.probe
 
-import com.ridi.oss.proxymonster.analyzer.pb.engineDatasource
+import com.ridi.oss.proxymonster.analyzer.pb.targetSettings
 import com.ridi.oss.proxymonster.analyzer.pb.EngineConfig as PbEngineConfig
 import com.ridi.oss.proxymonster.analyzer.pb.engineConfig
 import com.ridi.oss.proxymonster.analyzer.pb.sessionObservation
@@ -21,14 +21,14 @@ import kotlin.test.assertTrue
 class SplitStatementsTest {
     private val mysql = engineConfig {
         engine = Engine.MYSQL
-        datasource = engineDatasource {
+        target = targetSettings {
             engineVersion = "8.0.46"
             mysqlLowerCaseTableNames = 1
         }
     }
     private val postgres = engineConfig {
         engine = Engine.POSTGRES
-        datasource = engineDatasource { engineVersion = "16.0" }
+        target = targetSettings { engineVersion = "16.0" }
     }
 
     @Test fun `splits at statement boundaries`() {
@@ -95,9 +95,9 @@ class SplitStatementsTest {
         assertNull(splitStatements("SELECT 1", PbEngineConfig.getDefaultInstance()))
         assertNull(splitStatements("SELECT `a;b` FROM t; SELECT 2", PbEngineConfig.getDefaultInstance()))
         // MySQL analysis requires both; splitting under a partial config would use the wrong dialect.
-        assertNull(splitStatements("SELECT 1", engineConfig { engine = Engine.MYSQL; datasource = engineDatasource { engineVersion = "8.0.46" } }))
+        assertNull(splitStatements("SELECT 1", engineConfig { engine = Engine.MYSQL; target = targetSettings { engineVersion = "8.0.46" } }))
         assertNull(
-            splitStatements("SELECT 1", engineConfig { engine = Engine.MYSQL; datasource = engineDatasource { mysqlLowerCaseTableNames = 1 } }),
+            splitStatements("SELECT 1", engineConfig { engine = Engine.MYSQL; target = targetSettings { mysqlLowerCaseTableNames = 1 } }),
         )
     }
 
@@ -108,7 +108,7 @@ class SplitStatementsTest {
         val sql = """SELECT "a\" FROM t; DROP TABLE users; -- """"
         val ansi = engineConfig {
             engine = Engine.MYSQL
-            datasource = engineDatasource {
+            target = targetSettings {
                 engineVersion = "8.0.46"
                 mysqlLowerCaseTableNames = 1
             }

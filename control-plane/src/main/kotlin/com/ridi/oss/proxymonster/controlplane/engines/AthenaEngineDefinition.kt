@@ -15,7 +15,7 @@ import com.ridi.oss.proxymonster.controlplane.ApiError
 import com.ridi.oss.proxymonster.controlplane.AthenaRequestAuthorizer
 import com.ridi.oss.proxymonster.controlplane.CatalogColumn
 import com.ridi.oss.proxymonster.controlplane.Datasource
-import com.ridi.oss.proxymonster.controlplane.engineDatasource
+import com.ridi.oss.proxymonster.controlplane.targetSettings
 import com.ridi.oss.proxymonster.controlplane.EngineDefinition
 import com.ridi.oss.proxymonster.controlplane.RequestAuthorizer
 import com.ridi.oss.proxymonster.controlplane.management.ManagementException
@@ -45,7 +45,7 @@ internal object AthenaEngineDefinition : EngineDefinition {
     override fun isSystemSchema(schema: String): Boolean = isFixedSystemSchema(schema)
     override fun analyzerEngineConfig(datasource: Datasource, session: SessionObservation): EngineConfig = engineConfig {
         engine = Engine.ATHENA
-        this.datasource = datasource.engineDatasource()
+        this.target = datasource.targetSettings()
         // A decision that carries no request (an editor run, a stored-result view) runs in the datasource's
         // registered workgroup with no parameters.
         this.session = if (session.hasAthena()) session else session.toBuilder()

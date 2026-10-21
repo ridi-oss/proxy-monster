@@ -84,3 +84,15 @@ export function RequestOrigin({ request }: { request: AccessRequest }) {
     </>
   );
 }
+
+export function RunsAs({ request }: { request: AccessRequest }) {
+  const t = useTranslations("Workflows");
+  if (request.kind !== "QUERY") return null;
+  return (
+    <Field label={t("fields.runsAs")}>
+      <code data-testid="request-runs-as" className="font-mono">
+        {request.executeAs.length > 0 ? request.executeAs.join(", ") : "—"}
+      </code>
+    </Field>
+  );
+}

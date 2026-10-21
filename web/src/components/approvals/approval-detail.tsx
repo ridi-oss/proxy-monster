@@ -35,7 +35,7 @@ import { ApprovalResultTabs } from './approval-result-tabs'
 import { ApproveQueryDialog } from './approve-query-dialog'
 import { RequestTimeline } from './request-timeline'
 import { useAuth } from '@/lib/auth'
-import { Field, RequestOrigin } from './request-origin'
+import { Field, RequestOrigin, RunsAs } from './request-origin'
 
 const STATUS_STYLE: Record<string, string> = {
   DRAFT: 'border-border text-muted-foreground',
@@ -334,6 +334,7 @@ export function ApprovalDetail({ id }: { id: number }) {
                   ?? (request.datasourceId != null ? `#${request.datasourceId}` : '—')}
               </code>
             </Field>
+            <RunsAs request={request} />
             <Field label={t('fields.created')}>
               <code className="font-mono">{formatTimestamp(request.createdAt)}</code>
             </Field>

@@ -187,7 +187,7 @@ func pullRequestPB(pr PullRequest) *pb.PullRequest {
 	if pr.Checks != nil {
 		out.Checks = &pb.Checks{}
 		for _, c := range pr.Checks {
-			pc := &pb.Check{Name: c.Name, Required: c.Required, Status: pb.CheckStatus(pb.CheckStatus_value[c.Status])}
+			pc := &pb.Check{Name: c.Name, Required: c.Required, Own: c.Own, Status: pb.CheckStatus(pb.CheckStatus_value[c.Status])}
 			if c.Conclusion != nil {
 				pc.Conclusion = pb.CheckConclusion(pb.CheckConclusion_value[*c.Conclusion])
 			}

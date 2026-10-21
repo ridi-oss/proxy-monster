@@ -171,7 +171,7 @@ class GitHubSourceFlowDbTest {
         )
         flow = GitHubSourceFlow(
             adapter, approvals, core.accessStore, core.datasourceStore, core.policyStore, core.authz, notifications,
-            locale = "en",
+            locale = "en", checkName = checkName,
         )
         server = GrpcServer(0, ControlPlaneGrpcService(core), secretToken = null).also { it.start() }
         rawChannel = NettyChannelBuilder.forAddress("localhost", server.boundPort).usePlaintext().build()
@@ -188,6 +188,8 @@ class GitHubSourceFlowDbTest {
     private fun schema() = "s${seq.incrementAndGet()}"
 
     private fun number() = seq.incrementAndGet()
+
+    private val checkName = GitHubSourceFlow.checkName("pm")
 
     private val green = Check("build", required = true, status = CheckStatus.COMPLETED, conclusion = CheckConclusion.SUCCESS)
 
@@ -778,6 +780,18 @@ class GitHubSourceFlowDbTest {
     }
 
     @Test
+    fun `another instance's check does not hold the run`() {
+        val n = number()
+        open(n)
+        val req = file(n, schema(), listOf("db/c.sql" to "create table c (id int)")).single()
+        readyToMerge(n)
+        val running = Check("x", required = true, status = CheckStatus.IN_PROGRESS, conclusion = null)
+        update(n) { it.copy(checks = listOf(green, running.copy(name = "prod/query executed"))) }
+        pollWithProxy()
+        assertEquals("EXECUTED", status(req.id))
+    }
+
+    @Test
     fun `a pull request closed before its run cancels its requests`() {
         val n = number()
         open(n)
@@ -962,7 +976,7 @@ class GitHubSourceFlowDbTest {
     fun `a required context absent from the rollup, or failed, waits for checks`() {
         val n = number()
         open(n, baseRef = "base$n")
-        adapter.branchRules["base$n"] = BranchRules(setOf("lint", GitHubSourceFlow.CHECK_NAME))
+        adapter.branchRules["base$n"] = BranchRules(setOf("lint", checkName))
         val req = file(n, schema(), listOf("db/c.sql" to "create table c (id int)")).single()
         readyToMerge(n)
         pollWithProxy()
@@ -1042,7 +1056,7 @@ class GitHubSourceFlowDbTest {
         val n = number()
         open(n, baseRef = "base$n")
         val rules = BranchRules(
-            setOf(GitHubSourceFlow.CHECK_NAME), strict = true, threadResolution = true, mergeMethods = setOf("squash", "rebase"), unchecked = listOf("merge_queue"),
+            setOf(checkName), strict = true, threadResolution = true, mergeMethods = setOf("squash", "rebase"), unchecked = listOf("merge_queue"),
         )
         adapter.branchRules["base$n"] = rules
         val req = file(n, schema(), listOf("db/c.sql" to "create table c (id int)")).single()

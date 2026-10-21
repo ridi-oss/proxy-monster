@@ -22,7 +22,7 @@
       "parameters": {
         "strict_required_status_checks_policy": false,
         "required_status_checks": [
-          { "context": "query executed", "integration_id": 0 }
+          { "context": "github-e2e/query executed", "integration_id": 0 }
         ]
       }
     }

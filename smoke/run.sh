@@ -115,7 +115,7 @@ echo "smoke: starting control plane on :$CP_HTTP"
     PM_HTTP_PORT="$CP_HTTP" PM_GRPC_PORT="$CP_GRPC" \
     PM_CP_CHILD_HTTP_PORT="$CP_CHILD_HTTP" PM_CP_CHILD_GRPC_PORT="$CP_CHILD_GRPC" \
     PM_CP_CHILD="$ROOT/control-plane/build/install/control-plane/bin/control-plane" \
-    PM_DEV=true PM_AUTH_DEBUG=true PM_SECRET_TOKEN="$SECRET" PM_RESULT_KEY="$RESULT_KEY" \
+    PM_DEV=true PM_AUTH_DEBUG=true PM_INSTANCE_NAME=smoke PM_SECRET_TOKEN="$SECRET" PM_RESULT_KEY="$RESULT_KEY" \
     PM_GITHUB_APP_ID=1 PM_GITHUB_APP_PRIVATE_KEY_FILE="$GH/app-key.pem" PM_GITHUB_API_URL="https://127.0.0.1:$GITHUB_TLS" \
     PM_GITHUB_IDENTITY=commit-email \
     PM_CI_OIDC_ISSUERS="smoke=https://127.0.0.1:$GITHUB_TLS" PM_CI_OIDC_AUDIENCE=smoke-github \

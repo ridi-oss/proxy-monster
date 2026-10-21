@@ -80,6 +80,11 @@ type contextNode struct {
 		Status     string
 		Conclusion *string
 		IsRequired *bool `graphql:"isRequired(pullRequestNumber: $n)"`
+		CheckSuite struct {
+			App *struct {
+				DatabaseID *int64 `graphql:"databaseId"`
+			}
+		}
 	} `graphql:"... on CheckRun"`
 	StatusContext struct {
 		Context    string
@@ -469,7 +474,7 @@ func (c *Client) readChecks(ctx context.Context, inst *installation, repo Repo, 
 	}
 	checks := make([]Check, 0, len(nodes))
 	for _, n := range nodes {
-		checks = append(checks, check(n))
+		checks = append(checks, check(n, c.appID))
 	}
 	return checks, nil
 }
@@ -481,7 +486,7 @@ func cursor(p pageInfo) string {
 	return *p.EndCursor
 }
 
-func check(n contextNode) Check {
+func check(n contextNode, appID int64) Check {
 	if n.Typename == "StatusContext" {
 		c := Check{Name: n.StatusContext.Context, Required: n.StatusContext.IsRequired != nil && *n.StatusContext.IsRequired, Status: CheckInProgress}
 		switch n.StatusContext.State {
@@ -494,6 +499,7 @@ func check(n contextNode) Check {
 	}
 	r := n.CheckRun
 	c := Check{Name: r.Name, Required: r.IsRequired != nil && *r.IsRequired, Status: CheckQueued}
+	c.Own = r.CheckSuite.App != nil && r.CheckSuite.App.DatabaseID != nil && *r.CheckSuite.App.DatabaseID == appID
 	switch r.Status {
 	case "IN_PROGRESS":
 		c.Status = CheckInProgress

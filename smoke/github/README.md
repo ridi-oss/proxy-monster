@@ -65,7 +65,7 @@ It creates, recording each step so a rerun skips what is done:
 3. the App's installation on that repository only: it opens the install page,
    where you click **Install**;
 4. the ruleset in [ruleset.json](./ruleset.json), requiring the App's
-   `query executed` check;
+   `github-e2e/query executed` check;
 5. a self-hosted runner labeled `pm-github-e2e`, running a pm-ci built from this
    checkout;
 6. a control-plane user whose email is your commit email, so the author and the
@@ -76,9 +76,10 @@ steps wait for your click. If your browser is on another machine, pass
 `--callback-host <name it reaches this one by>` and `--callback-bind 0.0.0.0`.
 
 It ends by printing the control-plane settings to restart it with
-(`PM_GITHUB_APP_ID`, `PM_GITHUB_APP_PRIVATE_KEY_FILE`, `PM_GITHUB_IDENTITY`,
-`PM_CI_OIDC_ISSUERS`, `PM_CI_OIDC_AUDIENCE`) and the env file `run.py` reads.
-Its state lives in `~/.cache/proxy-monster/github-e2e` (`--state-dir`).
+(`PM_INSTANCE_NAME=github-e2e`, `PM_GITHUB_APP_ID`,
+`PM_GITHUB_APP_PRIVATE_KEY_FILE`, `PM_GITHUB_IDENTITY`, `PM_CI_OIDC_ISSUERS`,
+`PM_CI_OIDC_AUDIENCE`) and the env file `run.py` reads. Its state lives in
+`~/.cache/proxy-monster/github-e2e` (`--state-dir`).
 
 ## Running it
 

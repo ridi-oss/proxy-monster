@@ -173,6 +173,7 @@ func TestReadPullRequestsReadsEveryPRInOneQueryAndMapsEachField(t *testing.T) {
 		},
 		Checks: []Check{
 			{Name: "build", Required: true, Status: CheckCompleted, Conclusion: s("SUCCESS")},
+			{Name: "pm/query executed", Required: true, Status: CheckInProgress, Own: true},
 			{Name: "ci/legacy", Status: CheckInProgress},
 		},
 		Files: []ChangedFile{{"sql/old.sql", "DELETED"}, {"sql/new.sql", "ADDED"}},
@@ -707,7 +708,7 @@ func TestARollupIsPagedUntilComplete(t *testing.T) {
 	for _, c := range got[1].Checks {
 		names = append(names, c.Name+"="+*orEmpty(c.Conclusion))
 	}
-	if strings.Join(names, " ") != "build=SUCCESS ci/legacy= e2e=TIMED_OUT" {
+	if strings.Join(names, " ") != "build=SUCCESS pm/query executed= ci/legacy= e2e=TIMED_OUT" {
 		t.Fatalf("checks %v", names)
 	}
 	page := f.to("POST", "/graphql")[1].json(t)

@@ -310,6 +310,7 @@ def main():
     print(f"""
 Start the control plane with:
   PM_AUTH_DEBUG=true
+  PM_INSTANCE_NAME=github-e2e
   PM_GITHUB_APP_ID={app['id']}
   PM_GITHUB_APP_PRIVATE_KEY_FILE={app['key_file']}
   PM_GITHUB_IDENTITY=commit-email

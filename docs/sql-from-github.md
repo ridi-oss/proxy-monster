@@ -143,11 +143,15 @@ where the head commit is the one the Action filed from.
 
 ## Running
 
-`query executed` is a required check posted by the control plane's GitHub App,
-named Proxy Monster. The ruleset requires it with its source pinned to the App,
-so an Actions job cannot post a passing check under that name, and the ruleset's
-bypass list is empty. For a PR that adds no matching file, `query executed`
-completes as `skipped` at once, which GitHub counts as passing.
+`<instance>/query executed` is a required check posted by the control plane's
+GitHub App, where `<instance>` is the control plane's `PM_INSTANCE_NAME`; below
+it is `query executed` for short. Each control plane posts its own, so a dev and
+a prod instance on one repository never share a check, and renaming an instance
+renames its check, which the ruleset must follow. The ruleset requires it with
+its source pinned to the App, so an Actions job cannot post a passing check
+under that name, and the ruleset's bypass list is empty. For a PR that adds no
+matching file, `query executed` completes as `skipped` at once, which GitHub
+counts as passing.
 
 For a PR that adds files, the control plane runs them when all of these hold:
 
@@ -169,7 +173,9 @@ For a PR that adds files, the control plane runs them when all of these hold:
   PR could not merge, and SQL that ran would sit on the target without `main`.
   Any other check still running on the head also waits, so a branch that
   requires no checks does not run the SQL ahead of CI; a finished optional check
-  does not block, whatever its conclusion;
+  does not block, whatever its conclusion. Another instance's
+  `<instance>/query executed` does not hold the run, since it too waits for the
+  merge;
 - GitHub would merge the PR once `query executed` passes. A PR approved by a
   reviewer who is not the required code owner, one with conflicts, or one whose
   branch is behind under a strict rule waits. The control plane reads GitHub's
@@ -195,8 +201,8 @@ For a PR that adds files, the control plane runs them when all of these hold:
 It runs the PR's files in key order, each on its own connection whose statements
 share it, and stops at the first failure. It re-checks a PR on every poll (see
 [Reaching the control plane](#reaching-the-control-plane)). Without auto-merge
-nothing runs and `query executed` stays pending, so a PR cannot merge un-run
-SQL.
+nothing runs and `query executed` stays pending, so while the check is required
+a PR cannot merge un-run SQL.
 
 While auto-merge is off on an approved PR, two places tell the author to enable
 it:

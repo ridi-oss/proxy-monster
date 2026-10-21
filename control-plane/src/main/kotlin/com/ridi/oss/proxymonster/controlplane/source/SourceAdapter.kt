@@ -35,7 +35,8 @@ data class Review(
     val commit: String? = null,
 )
 
-data class Check(val name: String, val required: Boolean, val status: CheckStatus, val conclusion: CheckConclusion?)
+/** [own] when this GitHub App posted it. */
+data class Check(val name: String, val required: Boolean, val status: CheckStatus, val conclusion: CheckConclusion?, val own: Boolean = false)
 
 data class ChangedFile(val path: String, val change: FileChange)
 

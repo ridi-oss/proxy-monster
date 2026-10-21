@@ -104,7 +104,7 @@ test('a running editor task can be canceled and polling settles on the canceled 
   const editor = page.locator('.cm-content')
   await editor.click()
   await page.keyboard.insertText('select sleep(30)')
-  await page.getByRole('button', { name: 'Run' }).click()
+  await page.getByRole('button', { name: 'Run', exact: true }).click()
 
   await page.getByTestId('cancel-editor-task').click()
   await expect.poll(() => cancelPosts).toBe(1)
@@ -161,7 +161,7 @@ test('ending the editor session closes it, settles its running task, and the nex
   const editor = page.locator('.cm-content')
   await editor.click()
   await page.keyboard.insertText('select sleep(30)')
-  await page.getByRole('button', { name: 'Run' }).click()
+  await page.getByRole('button', { name: 'Run', exact: true }).click()
   await expect.poll(() => submittedOn).toEqual(['session-1'])
 
   await endSession.click()
@@ -172,7 +172,7 @@ test('ending the editor session closes it, settles its running task, and the nex
 
   await editor.click()
   await page.keyboard.insertText(' ')
-  await page.getByRole('button', { name: 'Run' }).click()
+  await page.getByRole('button', { name: 'Run', exact: true }).click()
   await expect.poll(() => submittedOn).toEqual(['session-1', 'session-2'])
 })
 

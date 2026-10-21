@@ -1209,6 +1209,9 @@ data class OpenEditorSessionInput(val datasourceId: Long)
 @Serializable
 data class EditorSessionOpened(val sessionId: String)
 
+@Serializable
+data class EditorScriptRequest(val datasourceId: Long, val sql: String, val maxRows: Int = 500, val timeoutSeconds: Long? = null)
+
 /** [searchPath] is the held connection's effective namespace; null until the proxy reports one, or when it could not read it. */
 @Serializable
 data class EditorSessionState(val searchPath: List<String>?)
@@ -1302,6 +1305,19 @@ fun Route.editorSessionRoutes(
         val req = call.receive<QueryRequest>()
         try {
             val sub = service.submitOnSession(principal, call.httpRequesterIp(config), sessionId, req.sql, req.maxRows)
+            call.respond(HttpStatusCode.Accepted, sub.response)
+        } catch (e: TaskServiceException) {
+            call.respondServiceError(e)
+        }
+    }
+
+    post("/api/editor/scripts") {
+        val principal = call.requireApi() ?: return@post
+        val req = call.receive<EditorScriptRequest>()
+        try {
+            val sub = service.submitScript(
+                principal, call.httpRequesterIp(config), req.datasourceId, req.sql, req.maxRows, req.timeoutSeconds,
+            )
             call.respond(HttpStatusCode.Accepted, sub.response)
         } catch (e: TaskServiceException) {
             call.respondServiceError(e)

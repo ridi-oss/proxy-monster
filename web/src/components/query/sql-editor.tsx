@@ -12,7 +12,7 @@ import { sql, type SQLNamespace } from '@codemirror/lang-sql'
 import { sqlDialect } from './catalog-schema'
 import { autocompletion } from '@codemirror/autocomplete'
 import { editorTheme } from '@/lib/cm-theme'
-import { currentStatement, findStatementRange } from './statement'
+import { currentStatement, findStatementRange, runAllTarget, runTarget, type RunAllTarget, type RunTarget } from './statement'
 import { activeStatementHighlight, linkedQueryHighlight, setLinkedRange } from './statement-highlight'
 
 export interface SqlEditorHandle {
@@ -20,6 +20,8 @@ export interface SqlEditorHandle {
   insertAtCursor: (text: string) => void
   /** The query to run: the selection if any, else the `;`-delimited statement under the cursor. */
   currentQuery: () => string
+  runTarget: () => RunTarget
+  runAllTarget: () => RunAllTarget
 }
 
 interface Props {
@@ -29,18 +31,21 @@ interface Props {
   engine?: string
   /** Cmd/Ctrl+Enter handler (run the query). */
   onRun: () => void
+  onRunAll: () => void
   /** SQL of the selected result tab — its matching statement is highlighted + scrolled to. */
   linkedQuery?: string | null
 }
 
 export const SqlEditor = forwardRef<SqlEditorHandle, Props>(function SqlEditor(
-  { value, onChange, schema, engine, onRun, linkedQuery },
+  { value, onChange, schema, engine, onRun, onRunAll, linkedQuery },
   ref,
 ) {
   const { resolvedTheme } = useTheme()
   const cmRef = useRef<ReactCodeMirrorRef>(null)
   const onRunRef = useRef(onRun)
   onRunRef.current = onRun
+  const onRunAllRef = useRef(onRunAll)
+  onRunAllRef.current = onRunAll
 
   // Keep the linked-statement highlight in sync with the active result tab + the doc.
   useEffect(() => {
@@ -75,6 +80,14 @@ export const SqlEditor = forwardRef<SqlEditorHandle, Props>(function SqlEditor(
       if (!view) return value
       return currentStatement(view.state)
     },
+    runTarget(): RunTarget {
+      const view = cmRef.current?.view
+      return view ? runTarget(view.state) : { kind: 'empty' }
+    },
+    runAllTarget(): RunAllTarget {
+      const view = cmRef.current?.view
+      return view ? runAllTarget(view.state) : { kind: 'empty' }
+    },
   }))
 
   // Stable across keystrokes — a fresh array/object identity here makes
@@ -89,6 +102,13 @@ export const SqlEditor = forwardRef<SqlEditorHandle, Props>(function SqlEditor(
             key: 'Mod-Enter',
             run: () => {
               onRunRef.current()
+              return true
+            },
+          },
+          {
+            key: 'Shift-Mod-Enter',
+            run: () => {
+              onRunAllRef.current()
               return true
             },
           },

@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.16](https://github.com/ridi-oss/proxy-monster/compare/pmon-v0.1.15...pmon-v0.1.16) (2026-10-21)
+
+
+### Bug Fixes
+
+* **pmon:** keep socket-path test dirs short under macOS TMPDIR ([a41e226](https://github.com/ridi-oss/proxy-monster/commit/a41e226ba31d1b869a7a2bc2a79b3457ad03f60e))
+* **pmon:** retry the config rename while Windows blocks it ([6c7d26c](https://github.com/ridi-oss/proxy-monster/commit/6c7d26c559628910502db1a332e28996e66ee618))
+
+
+### Build & Dependencies
+
+* build every Go binary with Go 1.26.10 ([5e4abb9](https://github.com/ridi-oss/proxy-monster/commit/5e4abb986f4a5966cf4833ff651f7c4baf56f507))
+
 ## [0.1.15](https://github.com/ridi-oss/proxy-monster/compare/pmon-v0.1.14...pmon-v0.1.15) (2026-10-16)
 
 

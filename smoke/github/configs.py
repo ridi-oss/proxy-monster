@@ -252,6 +252,22 @@ try:
     check("C10 classic branch protection holds the run", bool(c), str(c))
     check("C10 nothing ran", not table_exists(t))
     close(pr)
+
+    # C11: a base that does not require the check lets a PR merge before its SQL runs; it runs once approved.
+    b = branch("unrequired")
+    t = f"c_unrequired_{SFX}"
+    pr = open_pr(f"{b}-pr", {sql_path(f"{next_key()}_{t}.sql"): f"CREATE TABLE {t} (id INT PRIMARY KEY);\n"},
+                 f"db: unrequired {SFX}", base=b)
+    opened.append(pr)
+    wait_title(pr, "Waiting for approval")
+    gh("pr", "merge", str(pr), "-R", REPO, "--squash")
+    check("C11 merges before the SQL runs", bool(wait_merged(pr)) and not table_exists(t))
+    approve_pending(pr)
+    ran = wait(f"{t} created", lambda: table_exists(t), 300)
+    st, conclusion, title = wait(f"#{pr} check green", lambda: (lambda c: c if c[1] == "success" else None)(approval_check(pr)), 300) or (None, None, "")
+    check("C11 the merged PR's SQL runs once approved", bool(ran) and conclusion == "success", title)
+    if ran:
+        tip = b
 finally:
     for pr in opened:
         if pr_state(pr) == "OPEN":

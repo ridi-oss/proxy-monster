@@ -66,6 +66,8 @@ data class PullRequest(
     val draft: Boolean = false,
     val merged: Boolean,
     val mergedAt: Instant?,
+    /** Who merged it; for auto-merge, who enabled it. */
+    val mergedBy: SourceUser? = null,
     /** The merge commit once [merged]. */
     val mergeCommit: String? = null,
     val headSha: String,

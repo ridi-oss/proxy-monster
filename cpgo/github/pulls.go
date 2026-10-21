@@ -114,6 +114,7 @@ type prNode struct {
 	IsDraft     bool
 	Merged      *bool
 	MergedAt    *time.Time
+	MergedBy    *actor
 	MergeCommit *struct {
 		OID string `graphql:"oid"`
 	}
@@ -373,6 +374,7 @@ func (c *Client) readPullRequest(ctx context.Context, inst *installation, repo R
 		Draft:    node.IsDraft,
 		Merged:   node.Merged != nil && *node.Merged,
 		MergedAt: node.MergedAt,
+		MergedBy: sourceUser(node.MergedBy),
 		HeadSHA:  headSHA,
 		BaseRef:  *node.BaseRefName,
 		Author:   sourceUser(node.Author),

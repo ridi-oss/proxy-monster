@@ -193,7 +193,7 @@ func TestReadPullRequestsReadsEveryPRInOneQueryAndMapsEachField(t *testing.T) {
 	}
 	closed := prs[2]
 	if closed.Open || !closed.Merged || !closed.MergedAt.Equal(*ts("2026-10-08T12:00:00Z")) || *closed.MergeCommit != "merge2" ||
-		closed.Author != nil || closed.AutoMerge != nil || closed.Checks != nil {
+		*closed.MergedBy != (User{"104", "dave"}) || closed.Author != nil || closed.AutoMerge != nil || closed.Checks != nil {
 		t.Fatalf("merged PR %+v", closed)
 	}
 	if rl := c.RateLimit(); rl == nil || rl.Remaining != 4999 || !rl.ResetAt.Equal(*ts("2026-10-09T01:00:00Z")) {

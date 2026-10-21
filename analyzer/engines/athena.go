@@ -19,20 +19,23 @@ import (
 
 var Athena = &Engine{
 	WireName: "athena", Proto: pb.Engine_ATHENA,
-	DefaultProxyPort: 6443, DefaultTargetPort: 443, IdentifierQuote: `"`,
-	systemSchemas: schemas("information_schema"),
-	// Athena resolves catalog names case-insensitively.
-	catalogName:  func(registeredDbName string) CatalogName { return CatalogName{athenaName(registeredDbName)} },
-	introspected: athenaIntrospected,
-	dialect:      dialects.Athena,
-	newSession:   newAthenaSession,
-	normalizeRules: func() normalizeRules {
-		return normalizeRules{dialect: dialects.Athena(), foldIdentifiers: true}
+	DefaultProxyPort: 6443, DefaultTargetPort: 443,
+	Traits: EngineTraits{
+		IdentifierQuote: `"`,
+		systemSchemas:   schemas("information_schema"),
+		// Athena resolves catalog names case-insensitively.
+		catalogName:  func(registeredDbName string) CatalogName { return CatalogName{athenaName(registeredDbName)} },
+		introspected: athenaIntrospected,
+		dialect:      dialects.Athena,
+		newSession:   newAthenaSession,
+		normalizeRules: func() normalizeRules {
+			return normalizeRules{dialect: dialects.Athena(), foldIdentifiers: true}
+		},
+		foldColumn:                athenaName,
+		normalizeCatalogOnBuild:   true,
+		allowsCrossCatalog:        true,
+		preservesCatalogQualifier: true,
 	},
-	foldColumn:                athenaName,
-	normalizeCatalogOnBuild:   true,
-	allowsCrossCatalog:        true,
-	preservesCatalogQualifier: true,
 }
 
 var athenaDialect = dialects.Athena()

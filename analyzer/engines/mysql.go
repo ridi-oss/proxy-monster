@@ -15,23 +15,27 @@ import (
 )
 
 var MySQL = &Engine{
-	WireName: "mysql", Proto: pb.Engine_MYSQL, DefaultSchemaSettable: true,
-	DefaultProxyPort: 6033, DefaultTargetPort: 3307, IdentifierQuote: "`",
-	systemSchemas: schemas("information_schema", "mysql", "performance_schema", "sys"),
-	// MySQL has one catalog, def, whatever the database.
-	catalogName:       func(string) CatalogName { return CatalogName{"def"} },
-	introspected:      mysqlIntrospected,
-	dialect:           dialects.MySQL,
-	datasourceDialect: mysqlDialect,
-	newSession:        newMySQLSession,
-	normalizeRules: func() normalizeRules {
-		return normalizeRules{dialect: dialects.MySQL(), rejectExecutableComments: true}
+	WireName: "mysql", Proto: pb.Engine_MYSQL,
+	DefaultProxyPort: 6033, DefaultTargetPort: 3307,
+	Traits: EngineTraits{
+		DefaultSchemaSettable: true,
+		IdentifierQuote:       "`",
+		systemSchemas:         schemas("information_schema", "mysql", "performance_schema", "sys"),
+		// MySQL has one catalog, def, whatever the database.
+		catalogName:       func(string) CatalogName { return CatalogName{"def"} },
+		introspected:      mysqlIntrospected,
+		dialect:           dialects.MySQL,
+		datasourceDialect: mysqlDialect,
+		newSession:        newMySQLSession,
+		normalizeRules: func() normalizeRules {
+			return normalizeRules{dialect: dialects.MySQL(), rejectExecutableComments: true}
+		},
+		showsWithoutSession:                 true,
+		foldColumn:                          mysqlColumn,
+		normalizeCatalogOnBuild:             true,
+		rejectsDuplicateDerivedOutputLabels: true,
+		rightJoinStarOrder:                  starOrderCommonRightLeft,
 	},
-	showsWithoutSession:                 true,
-	foldColumn:                          mysqlColumn,
-	normalizeCatalogOnBuild:             true,
-	rejectsDuplicateDerivedOutputLabels: true,
-	rightJoinStarOrder:                  starOrderCommonRightLeft,
 }
 
 // mysqlDialect folds identifiers as lower_case_table_names does, with MySQL's utf8mb3_general_ci map: under 0

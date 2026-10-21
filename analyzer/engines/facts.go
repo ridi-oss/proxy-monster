@@ -212,7 +212,7 @@ func emitParsedFacts(parsed exp.Expression, sess session, qualifySchema schema.S
 
 func emitConfigFailureUtilityFacts(sql string, engineConfig *pb.EngineConfig) *pb.StatementFacts {
 	e, ok := ByProto(engineConfig.GetEngine())
-	if !ok || !e.showsWithoutSession {
+	if !ok || !e.Traits.showsWithoutSession {
 		return nil
 	}
 	parsed, err := sqlglot.Parse(sql, e.Dialect())
@@ -701,7 +701,7 @@ func emitCommandFacts(root exp.Expression, sess session) *pb.StatementFacts {
 	case "RESET":
 		// The structured Reset node never reaches here; a RESET degraded to Command is an unusual
 		// spelling the engine may still vouch for as pure de-escalation.
-		if slices.Contains(sess.Datasource().passthroughCommands, command) {
+		if slices.Contains(sess.Datasource().Traits.passthroughCommands, command) {
 			return passthroughFacts()
 		}
 		return inadmissibleFacts("VALIDATE", "RESET is not allowed on this engine")
@@ -709,7 +709,7 @@ func emitCommandFacts(root exp.Expression, sess session) *pb.StatementFacts {
 		// The data-bearing SHOWs parse as structured Show/Reset nodes and are handled in
 		// emitShowFacts; a SHOW that still degrades to Command is a form sqlglot-go did not model,
 		// relayable only where the engine vouches it carries no table data.
-		if slices.Contains(sess.Datasource().passthroughCommands, command) {
+		if slices.Contains(sess.Datasource().Traits.passthroughCommands, command) {
 			return passthroughFacts()
 		}
 		return unanalyzableFacts("PARSE", "unsupported SHOW command")

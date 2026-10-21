@@ -67,10 +67,10 @@ func TestFacts(t *testing.T) {
 	if MySQL.CatalogName("app").String() != "def" || Postgres.CatalogName("App").String() != "App" || Athena.CatalogName("AwsDataCatalog").String() != "awsdatacatalog" {
 		t.Fatal("catalog names")
 	}
-	if !MySQL.DefaultSchemaSettable || !Postgres.DefaultSchemaSettable || Athena.DefaultSchemaSettable {
+	if !MySQL.Traits.DefaultSchemaSettable || !Postgres.Traits.DefaultSchemaSettable || Athena.Traits.DefaultSchemaSettable {
 		t.Fatal("default schema settable")
 	}
-	if MySQL.IdentifierQuote != "`" || Postgres.IdentifierQuote != `"` || Athena.IdentifierQuote != `"` {
+	if MySQL.Traits.IdentifierQuote != "`" || Postgres.Traits.IdentifierQuote != `"` || Athena.Traits.IdentifierQuote != `"` {
 		t.Fatal("identifier quotes")
 	}
 	if MySQL.Placeholder(2) != "?" || Postgres.Placeholder(2) != "$2" || Athena.Placeholder(2) != "?" {

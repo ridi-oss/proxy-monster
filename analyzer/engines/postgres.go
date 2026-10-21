@@ -14,28 +14,32 @@ import (
 )
 
 var Postgres = &Engine{
-	WireName: "postgres", Proto: pb.Engine_POSTGRES, DefaultSchemaSettable: true,
-	DefaultProxyPort: 6432, DefaultTargetPort: 5433, IdentifierQuote: `"`, numberedPlaceholders: true,
-	BuiltinSchema:         SchemaName{"pg_catalog"},
-	systemSchemas:         schemas("pg_catalog", "information_schema"),
-	tempSchema:            SchemaName{"pg_temp"},
-	sessionSchemaPrefixes: schemas("pg_temp_", "pg_toast"),
-	// The database name is a connection parameter libpq matches exactly, not SQL text, so it is not folded.
-	catalogName:  func(registeredDbName string) CatalogName { return CatalogName{registeredDbName} },
-	introspected: postgresIntrospected,
-	dialect:      dialects.Postgres,
-	newSession:   newPostgresSession,
-	normalizeRules: func() normalizeRules {
-		return normalizeRules{dialect: dialects.Postgres(), foldIdentifiers: true}
+	WireName: "postgres", Proto: pb.Engine_POSTGRES,
+	DefaultProxyPort: 6432, DefaultTargetPort: 5433,
+	Traits: EngineTraits{
+		DefaultSchemaSettable: true,
+		IdentifierQuote:       `"`, numberedPlaceholders: true,
+		BuiltinSchema:         SchemaName{"pg_catalog"},
+		systemSchemas:         schemas("pg_catalog", "information_schema"),
+		tempSchema:            SchemaName{"pg_temp"},
+		sessionSchemaPrefixes: schemas("pg_temp_", "pg_toast"),
+		// The database name is a connection parameter libpq matches exactly, not SQL text, so it is not folded.
+		catalogName:  func(registeredDbName string) CatalogName { return CatalogName{registeredDbName} },
+		introspected: postgresIntrospected,
+		dialect:      dialects.Postgres,
+		newSession:   newPostgresSession,
+		normalizeRules: func() normalizeRules {
+			return normalizeRules{dialect: dialects.Postgres(), foldIdentifiers: true}
+		},
+		foldColumn: func(name string) string { return name },
+		builtinFunctionRows: map[string][]string{
+			"pg_available_extension_versions": {"name", "version", "superuser", "trusted", "relocatable", "schema", "requires", "comment"},
+			"unnest":                          {"unnest"},
+		},
+		// RESET restores defaults; an unmodeled SHOW reads a GUC, not table data.
+		passthroughCommands: []string{"RESET", "SHOW"},
+		syntaxCalls:         []string{"array"},
 	},
-	foldColumn: func(name string) string { return name },
-	builtinFunctionRows: map[string][]string{
-		"pg_available_extension_versions": {"name", "version", "superuser", "trusted", "relocatable", "schema", "requires", "comment"},
-		"unnest":                          {"unnest"},
-	},
-	// RESET restores defaults; an unmodeled SHOW reads a GUC, not table data.
-	passthroughCommands: []string{"RESET", "SHOW"},
-	syntaxCalls:         []string{"array"},
 }
 
 // postgresIntrospected keeps catalog rows as they are: pg_catalog already holds the exact names.

@@ -137,7 +137,7 @@ func TestAthenaCrossCatalogRewrite(t *testing.T) {
 		t.Fatalf("lost source catalog: %s", facts)
 	}
 	for _, config := range []*pb.EngineConfig{
-		{Engine: pb.Engine_MYSQL, Datasource: &pb.EngineDatasource{EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(0)}},
+		{Engine: pb.Engine_MYSQL, Target: &pb.TargetSettings{EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(0)}},
 		{Engine: pb.Engine_POSTGRES},
 	} {
 		request.EngineConfig = config

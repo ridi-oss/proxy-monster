@@ -106,11 +106,11 @@ SQL corpus.
 
 An engine is known at three levels, and each has its own sqlglot dialect:
 
-| Level      | Go type                       | Built from                                                                             | Its dialect                                                                 |
-| ---------- | ----------------------------- | -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| Engine     | `*engines.Engine`             | nothing                                                                                | parses before any datasource is known (a MySQL `SHOW` before introspection) |
-| Datasource | `engines.Datasource`          | `EngineDatasource`: what the target reported (version, MySQL `lower_case_table_names`) | folds canonical names                                                       |
-| Session    | `session` (one per statement) | the datasource plus `SessionObservation` (MySQL `ansi_quotes`, the Athena workgroup)   | parses the statement                                                        |
+| Level      | Go type                       | Built from                                                                           | Its dialect                                                                 |
+| ---------- | ----------------------------- | ------------------------------------------------------------------------------------ | --------------------------------------------------------------------------- |
+| Engine     | `*engines.Engine`             | nothing                                                                              | parses before any datasource is known (a MySQL `SHOW` before introspection) |
+| Datasource | `engines.Datasource`          | `TargetSettings`: what the target reported (version, MySQL `lower_case_table_names`) | folds canonical names                                                       |
+| Session    | `session` (one per statement) | the datasource plus `SessionObservation` (MySQL `ansi_quotes`, the Athena workgroup) | parses the statement                                                        |
 
 ## API & contract
 
@@ -123,7 +123,7 @@ val facts: StatementFacts = SqlglotProbe.analyze(
     sql,
     namespace,     // catalog + ordered search_path
     catalog,       // CatalogSnapshot: flat Column rows (schema.table.column + type) under the namespace catalog
-    engineConfig,  // engine + EngineDatasource + SessionObservation
+    engineConfig,  // engine + TargetSettings + SessionObservation
 )
 ```
 

@@ -33,7 +33,7 @@ import com.ridi.oss.proxymonster.analyzer.pb.CatalogSnapshot
 import com.ridi.oss.proxymonster.analyzer.pb.Column
 import com.ridi.oss.proxymonster.analyzer.pb.catalogSnapshot
 import com.ridi.oss.proxymonster.analyzer.pb.column
-import com.ridi.oss.proxymonster.analyzer.pb.engineDatasource
+import com.ridi.oss.proxymonster.analyzer.pb.targetSettings
 import com.ridi.oss.proxymonster.grpc.Engine
 import com.ridi.oss.proxymonster.probe.introspectedColumns
 import java.sql.DriverManager
@@ -131,7 +131,7 @@ internal fun canonicalColumns(engine: Engine, engineVersion: String, lowerCaseTa
     checkNotNull(
         introspectedColumns(
             engine,
-            engineDatasource {
+            targetSettings {
                 this.engineVersion = checkNotNull(Regex("[0-9]+(\\.[0-9]+)*").find(engineVersion)).value
                 lowerCaseTableNames?.let { mysqlLowerCaseTableNames = it }
             },

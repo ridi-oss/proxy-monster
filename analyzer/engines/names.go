@@ -54,15 +54,15 @@ type Datasource struct {
 }
 
 // Datasource binds the engine to what one datasource's target reported; MySQL requires lower_case_table_names.
-func (e *Engine) Datasource(reported *pb.EngineDatasource) (Datasource, error) {
+func (e *Engine) Datasource(targetSettings *pb.TargetSettings) (Datasource, error) {
 	d := e.dialect()
 	if e.datasourceDialect != nil {
 		var err error
-		if d, err = e.datasourceDialect(reported); err != nil {
+		if d, err = e.datasourceDialect(targetSettings); err != nil {
 			return Datasource{}, err
 		}
 	}
-	return Datasource{e, d, reported.GetEngineVersion()}, nil
+	return Datasource{e, d, targetSettings.GetEngineVersion()}, nil
 }
 
 // Dialect is the sqlglot dialect the datasource's canonical names fold by.

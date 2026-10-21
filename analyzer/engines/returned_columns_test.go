@@ -17,7 +17,7 @@ func TestReturnedColumns(t *testing.T) {
 		ec             *pb.EngineConfig
 		ns             *pb.Namespace
 	}{
-		{"mysql", "def", "app", &pb.EngineConfig{Engine: pb.Engine_MYSQL, Datasource: &pb.EngineDatasource{EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(1)}}, &pb.Namespace{Catalog: "def", SearchPath: []string{"app"}}},
+		{"mysql", "def", "app", &pb.EngineConfig{Engine: pb.Engine_MYSQL, Target: &pb.TargetSettings{EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(1)}}, &pb.Namespace{Catalog: "def", SearchPath: []string{"app"}}},
 		{"postgres", "acme", "public", &pb.EngineConfig{Engine: pb.Engine_POSTGRES}, &pb.Namespace{Catalog: "acme", SearchPath: []string{"public"}}},
 	}
 	for _, e := range engines {

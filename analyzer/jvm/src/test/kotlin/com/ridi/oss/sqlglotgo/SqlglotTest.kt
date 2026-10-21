@@ -1,6 +1,6 @@
 package com.ridi.oss.sqlglotgo
 
-import com.ridi.oss.proxymonster.analyzer.pb.engineDatasource
+import com.ridi.oss.proxymonster.analyzer.pb.targetSettings
 import com.ridi.oss.proxymonster.analyzer.pb.Column
 import com.ridi.oss.proxymonster.analyzer.pb.catalogSnapshot
 import com.ridi.oss.proxymonster.analyzer.pb.EngineConfig
@@ -59,7 +59,7 @@ class SqlglotTest {
     private fun engineConfigFor(dialect: String): EngineConfig = engineConfig {
         if (dialect == "mysql") {
             engine = Engine.MYSQL
-            datasource = engineDatasource {
+            target = targetSettings {
                 engineVersion = "8.0.46"
                 mysqlLowerCaseTableNames = 2
             }

@@ -692,9 +692,9 @@ func splitBatch(enabled bool, sql, version string, observe func() (spi.SessionOb
 		return nil
 	}
 	batch, ok := engines.SplitBatch(sql, &enginepb.EngineConfig{
-		Engine:     enginepb.Engine_MYSQL,
-		Datasource: &enginepb.EngineDatasource{EngineVersion: version, MysqlLowerCaseTableNames: proto.Int32(0)},
-		Session:    session.SessionObservation,
+		Engine:  enginepb.Engine_MYSQL,
+		Target:  &enginepb.TargetSettings{EngineVersion: version, MysqlLowerCaseTableNames: proto.Int32(0)},
+		Session: session.SessionObservation,
 	})
 	if !ok || len(batch) < 2 {
 		return nil

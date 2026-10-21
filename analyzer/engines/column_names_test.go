@@ -23,20 +23,20 @@ func TestColumnNamesSafe(t *testing.T) {
 	if got := call(IntrospectedColumnsSafe, typed); got.GetError() != pb.ColumnNamesResponse_NONE || got.GetColumns()[0].GetTable() != "Users" || got.GetColumns()[0].GetColumn() != "SSN" {
 		t.Fatalf("introspected: %v", got)
 	}
-	mysql := &pb.ColumnNamesRequest{Engine: pb.Engine_MYSQL, Datasource: &pb.EngineDatasource{MysqlLowerCaseTableNames: proto.Int32(1)}, Columns: []*pb.Column{{Catalog: "def", Schema: "App", Table: "Users", Column: "SSN"}}}
+	mysql := &pb.ColumnNamesRequest{Engine: pb.Engine_MYSQL, Target: &pb.TargetSettings{MysqlLowerCaseTableNames: proto.Int32(1)}, Columns: []*pb.Column{{Catalog: "def", Schema: "App", Table: "Users", Column: "SSN"}}}
 	if got := call(IntrospectedColumnsSafe, mysql); got.GetError() != pb.ColumnNamesResponse_NONE || got.GetColumns()[0].GetSchema() != "app" || got.GetColumns()[0].GetTable() != "users" || got.GetColumns()[0].GetColumn() != "ssn" {
 		t.Fatalf("introspected mysql: %v", got)
 	}
 	for _, bad := range []*pb.ColumnNamesRequest{
 		{Engine: pb.Engine_ENGINE_UNSPECIFIED},
-		{Engine: pb.Engine_MYSQL, Datasource: &pb.EngineDatasource{MysqlLowerCaseTableNames: proto.Int32(3)}},
+		{Engine: pb.Engine_MYSQL, Target: &pb.TargetSettings{MysqlLowerCaseTableNames: proto.Int32(3)}},
 		{Engine: pb.Engine_POSTGRES, Columns: []*pb.Column{{Table: "a b"}}},
 	} {
 		if call(ParseColumnsSafe, bad).GetError() == pb.ColumnNamesResponse_NONE {
 			t.Errorf("parse: %v accepted", bad)
 		}
 	}
-	for _, bad := range []*pb.ColumnNamesRequest{{Engine: pb.Engine_ENGINE_UNSPECIFIED}, {Engine: pb.Engine_MYSQL, Datasource: &pb.EngineDatasource{MysqlLowerCaseTableNames: proto.Int32(3)}}, {Engine: pb.Engine_MYSQL, Columns: []*pb.Column{{Schema: "App"}}}} {
+	for _, bad := range []*pb.ColumnNamesRequest{{Engine: pb.Engine_ENGINE_UNSPECIFIED}, {Engine: pb.Engine_MYSQL, Target: &pb.TargetSettings{MysqlLowerCaseTableNames: proto.Int32(3)}}, {Engine: pb.Engine_MYSQL, Columns: []*pb.Column{{Schema: "App"}}}} {
 		if call(IntrospectedColumnsSafe, bad).GetError() == pb.ColumnNamesResponse_NONE {
 			t.Errorf("introspected: %v accepted", bad)
 		}

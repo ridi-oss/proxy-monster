@@ -34,11 +34,11 @@ func athenaNames(rows ...*pb.Column) nameTarget {
 	return nameTarget{engine: pb.Engine_ATHENA, catalog: "awsdatacatalog", searchPath: []string{"sample"}, rows: rows}
 }
 
-func (n nameTarget) reported() *pb.EngineDatasource {
+func (n nameTarget) reported() *pb.TargetSettings {
 	if n.engine != pb.Engine_MYSQL {
 		return nil
 	}
-	return &pb.EngineDatasource{EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(n.lctn)}
+	return &pb.TargetSettings{EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(n.lctn)}
 }
 
 func (n nameTarget) datasource(t *testing.T) Datasource {
@@ -99,7 +99,7 @@ func (n nameTarget) functions(t *testing.T) *pb.FunctionCatalog {
 
 func (n nameTarget) facts(t *testing.T, sql string) *pb.StatementFacts {
 	t.Helper()
-	cfg := &pb.EngineConfig{Engine: n.engine, Datasource: n.reported()}
+	cfg := &pb.EngineConfig{Engine: n.engine, Target: n.reported()}
 	if n.engine == pb.Engine_ATHENA {
 		cfg.Session = &pb.SessionObservation{Engine: &pb.SessionObservation_Athena{Athena: &pb.AthenaSqlContext{Workgroup: "sample"}}}
 	}

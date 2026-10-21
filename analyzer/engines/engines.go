@@ -65,7 +65,7 @@ type Engine struct {
 	dialect func() *dialects.Dialect
 	// datasourceDialect is the dialect a datasource's names fold by: MySQL's follows the lower_case_table_names its
 	// target reported. Nil keeps the engine's.
-	datasourceDialect func(ds *pb.EngineDatasource) (*dialects.Dialect, error)
+	datasourceDialect func(targetSettings *pb.TargetSettings) (*dialects.Dialect, error)
 	// newSession builds one statement's analyzer: MySQL reads ansi_quotes, Athena the workgroup.
 	newSession func(ds Datasource, observed *pb.SessionObservation) (session, error)
 	// normalizeRules are the lexer rules SqlNormalize applies: MySQL refuses `/*! */`, Postgres folds identifiers.

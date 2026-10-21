@@ -9,7 +9,7 @@ import com.ridi.oss.proxymonster.analyzer.pb.SessionObservation
 import com.ridi.oss.proxymonster.analyzer.pb.engineConfig
 import com.ridi.oss.proxymonster.controlplane.CatalogColumn
 import com.ridi.oss.proxymonster.controlplane.Datasource
-import com.ridi.oss.proxymonster.controlplane.engineDatasource
+import com.ridi.oss.proxymonster.controlplane.targetSettings
 import com.ridi.oss.proxymonster.controlplane.EngineDefinition
 import com.ridi.oss.proxymonster.controlplane.MetadataRequestAuthorizer
 import com.ridi.oss.proxymonster.controlplane.RequestAuthorizer
@@ -38,7 +38,7 @@ internal object MySqlEngineDefinition : EngineDefinition {
 
     override fun analyzerEngineConfig(datasource: Datasource, session: SessionObservation): EngineConfig = engineConfig {
         engine = this@MySqlEngineDefinition.engine
-        this.datasource = datasource.engineDatasource()
+        this.target = datasource.targetSettings()
         this.session = session
     }
 

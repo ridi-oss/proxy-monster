@@ -37,11 +37,11 @@ var MySQL = &Engine{
 // mysqlDialect folds identifiers as lower_case_table_names does, with MySQL's utf8mb3_general_ci map: under 0
 // table and database names keep their case and everything else folds; under 1 and 2 everything folds. Guessing an
 // unreported value would key names the analyzer never matches.
-func mysqlDialect(reported *pb.EngineDatasource) (*dialects.Dialect, error) {
-	if reported == nil || reported.MysqlLowerCaseTableNames == nil {
+func mysqlDialect(targetSettings *pb.TargetSettings) (*dialects.Dialect, error) {
+	if targetSettings == nil || targetSettings.MysqlLowerCaseTableNames == nil {
 		return nil, fmt.Errorf("lower_case_table_names is required for mysql")
 	}
-	n := reported.GetMysqlLowerCaseTableNames()
+	n := targetSettings.GetMysqlLowerCaseTableNames()
 	if n < 0 || n > 2 {
 		return nil, fmt.Errorf("lower_case_table_names must be 0, 1 or 2, not %d", n)
 	}
@@ -59,7 +59,7 @@ func mysqlColumn(name string) string { return mysqlColumnDialect.FoldIdentifierN
 
 var mysqlColumnDialect = func() *dialects.Dialect {
 	one := int32(1)
-	d, _ := mysqlDialect(&pb.EngineDatasource{MysqlLowerCaseTableNames: &one})
+	d, _ := mysqlDialect(&pb.TargetSettings{MysqlLowerCaseTableNames: &one})
 	return d
 }()
 

@@ -236,7 +236,7 @@ func TestAnalyzeStatementResolvesOrdinaryQuery(t *testing.T) {
 func TestAnalyzeStatementMySQLRequiresLowerCaseTableNames(t *testing.T) {
 	out := analyzeProto(t, &pb.AnalyzeRequest{
 		Sql:          "SELECT id FROM users",
-		EngineConfig: &pb.EngineConfig{Engine: pb.Engine_MYSQL, Datasource: &pb.EngineDatasource{EngineVersion: "8.0.46"}}, // no mysql_lower_case_table_names
+		EngineConfig: &pb.EngineConfig{Engine: pb.Engine_MYSQL, Target: &pb.TargetSettings{EngineVersion: "8.0.46"}}, // no mysql_lower_case_table_names
 		Namespace:    &pb.Namespace{Catalog: "acme", SearchPath: []string{"acme"}},
 		Catalog: snapshot([]*pb.Column{
 			pbColumn("acme", "users", "id", "BIGINT"),
@@ -253,7 +253,7 @@ func TestAnalyzeStatementMySQLRequiresLowerCaseTableNames(t *testing.T) {
 func TestAnalyzeStatementMySQLRequiresEngineVersion(t *testing.T) {
 	out := analyzeProto(t, &pb.AnalyzeRequest{
 		Sql:          "SELECT id FROM users",
-		EngineConfig: &pb.EngineConfig{Engine: pb.Engine_MYSQL, Datasource: &pb.EngineDatasource{MysqlLowerCaseTableNames: proto.Int32(0)}},
+		EngineConfig: &pb.EngineConfig{Engine: pb.Engine_MYSQL, Target: &pb.TargetSettings{MysqlLowerCaseTableNames: proto.Int32(0)}},
 		Namespace:    &pb.Namespace{Catalog: "def", SearchPath: []string{"acme"}},
 		Catalog:      snapshot([]*pb.Column{pbColumn("acme", "users", "id", "BIGINT")}),
 	})
@@ -266,7 +266,7 @@ func TestAnalyzeStatementEngineVersionReachesMySQLParser(t *testing.T) {
 	out := analyzeProbe(t, &pb.AnalyzeRequest{
 		Sql: "SELECT 1 /*!50700 , ssn */ FROM users",
 		EngineConfig: &pb.EngineConfig{
-			Engine: pb.Engine_MYSQL, Datasource: &pb.EngineDatasource{EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(0)},
+			Engine: pb.Engine_MYSQL, Target: &pb.TargetSettings{EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(0)},
 		},
 		Namespace: &pb.Namespace{Catalog: "def", SearchPath: []string{"acme"}},
 		Catalog: snapshot([]*pb.Column{
@@ -293,7 +293,7 @@ func TestAnalyzeStatementEngineVersionReachesMySQLParser(t *testing.T) {
 func TestAnalyzeStatementRejectsUnspecifiedEngine(t *testing.T) {
 	out := analyzeProto(t, &pb.AnalyzeRequest{
 		Sql:          "SELECT id FROM users",
-		EngineConfig: &pb.EngineConfig{Datasource: &pb.EngineDatasource{EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(0)}}, // engine left ENGINE_UNSPECIFIED
+		EngineConfig: &pb.EngineConfig{Target: &pb.TargetSettings{EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(0)}}, // engine left ENGINE_UNSPECIFIED
 		Namespace:    &pb.Namespace{Catalog: "def", SearchPath: []string{"acme"}},
 		Catalog:      snapshot([]*pb.Column{pbColumn("acme", "users", "id", "BIGINT")}),
 	})

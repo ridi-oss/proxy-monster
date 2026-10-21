@@ -27,6 +27,7 @@ FROM base AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 
+RUN apk upgrade --no-cache ca-certificates-bundle
 RUN addgroup --system --gid 10001 nodejs && adduser --system --uid 10001 --ingroup nodejs nextjs
 
 # `output: "standalone"` (next.config.ts) traces the minimal node_modules subset the built server
@@ -43,4 +44,5 @@ EXPOSE 41300
 HEALTHCHECK --interval=10s --timeout=3s --start-period=15s --retries=5 \
     CMD wget -qO- --spider "http://127.0.0.1:${PORT}/" || exit 1
 
-CMD ["node", "server.js"]
+# Alpine's upgraded CA store instead of the roots built into Node, which still trust emSign ECC Root CA - G3 (CVE-2026-111943).
+CMD ["node", "--use-openssl-ca", "server.js"]

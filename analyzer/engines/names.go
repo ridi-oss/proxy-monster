@@ -44,7 +44,7 @@ func (n ColumnName) Table() string        { return n.table }
 func (n ColumnName) Column() string       { return n.column }
 
 // Dialect is the engine's sqlglot dialect before any datasource is known; it folds no datasource's names.
-func (e *Engine) Dialect() *dialects.Dialect { return e.dialect() }
+func (e *Engine) Dialect() *dialects.Dialect { return e.Traits.dialect() }
 
 // Datasource is an engine as one datasource spells names: MySQL folds by the lower_case_table_names its target reported.
 type Datasource struct {
@@ -55,10 +55,10 @@ type Datasource struct {
 
 // Datasource binds the engine to what one datasource's target reported; MySQL requires lower_case_table_names.
 func (e *Engine) Datasource(targetSettings *pb.TargetSettings) (Datasource, error) {
-	d := e.dialect()
-	if e.datasourceDialect != nil {
+	d := e.Traits.dialect()
+	if e.Traits.datasourceDialect != nil {
 		var err error
-		if d, err = e.datasourceDialect(targetSettings); err != nil {
+		if d, err = e.Traits.datasourceDialect(targetSettings); err != nil {
 			return Datasource{}, err
 		}
 	}
@@ -72,7 +72,7 @@ func (t Datasource) Dialect() *dialects.Dialect { return t.dialect }
 // column, DATABASE(), a stored default schema. MySQL folds by lower_case_table_names, Postgres keeps them, Athena
 // folds all.
 func (t Datasource) IntrospectedColumns(rows []*pb.Column) []ColumnName {
-	return t.introspected(t.dialect, rows)
+	return t.Traits.introspected(t.dialect, rows)
 }
 
 // IntrospectedSchema is IntrospectedColumns for a row that names only a schema.
@@ -118,8 +118,8 @@ func (t Datasource) isTempSchemaID(id exp.Expression) bool {
 // isBuiltinQualifier reports whether a call or type qualifier is one identifier naming BuiltinSchema: Postgres
 // pg_catalog, not the distinct user schema "PG_CATALOG".
 func (t Datasource) isBuiltinQualifier(qualifier exp.Expression) bool {
-	return t.BuiltinSchema != SchemaName{} && qualifier != nil && qualifier.Kind() == exp.KindIdentifier &&
-		t.ParsedSchema(qualifier) == t.BuiltinSchema
+	return t.Traits.BuiltinSchema != SchemaName{} && qualifier != nil && qualifier.Kind() == exp.KindIdentifier &&
+		t.ParsedSchema(qualifier) == t.Traits.BuiltinSchema
 }
 
 // parseIdentifier reads one identifier; an empty part (a key without a column) stays empty.

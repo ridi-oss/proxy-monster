@@ -96,5 +96,5 @@ func openSession(config *pb.EngineConfig) (session, error) {
 	if err != nil {
 		return nil, err
 	}
-	return e.newSession(ds, config.GetSession())
+	return e.Traits.newSession(ds, config.GetSession())
 }

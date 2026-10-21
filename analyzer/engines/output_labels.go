@@ -61,7 +61,7 @@ func stampNativeOutputLabels(root exp.Expression, sess session) error {
 		for _, projection := range projections {
 			if projection.Kind() == exp.KindAlias || projection.Kind() == exp.KindColumn || projectionIsStar(projection) {
 				if name := projection.AliasOrName(); name != "" {
-					inUse[sess.Datasource().foldColumn(name)] = append(inUse[sess.Datasource().foldColumn(name)], name)
+					inUse[sess.Datasource().Traits.foldColumn(name)] = append(inUse[sess.Datasource().Traits.foldColumn(name)], name)
 				}
 				continue
 			}
@@ -69,7 +69,7 @@ func stampNativeOutputLabels(root exp.Expression, sess session) error {
 			if !ok || label == "" {
 				continue
 			}
-			inUse[sess.Datasource().foldColumn(label)] = append(inUse[sess.Datasource().foldColumn(label)], label)
+			inUse[sess.Datasource().Traits.foldColumn(label)] = append(inUse[sess.Datasource().Traits.foldColumn(label)], label)
 			stamps = append(stamps, stamp{projection, label})
 		}
 
@@ -78,7 +78,7 @@ func stampNativeOutputLabels(root exp.Expression, sess session) error {
 				if len(names) < 2 {
 					continue
 				}
-				if sess.Datasource().rejectsDuplicateDerivedOutputLabels {
+				if sess.Datasource().Traits.rejectsDuplicateDerivedOutputLabels {
 					return fmt.Errorf("duplicate column name '%s' in derived table", names[0])
 				}
 				// Real PostgreSQL rejects only a reference to the duplicated label.
@@ -93,7 +93,7 @@ func stampNativeOutputLabels(root exp.Expression, sess session) error {
 
 		stamped := map[exp.Expression]string{}
 		for _, s := range stamps {
-			if len(inUse[sess.Datasource().foldColumn(s.label)]) > 1 {
+			if len(inUse[sess.Datasource().Traits.foldColumn(s.label)]) > 1 {
 				continue
 			}
 			stamped[s.projection] = s.label
@@ -143,7 +143,7 @@ func referencesLabel(root, body exp.Expression, alias, foldedLabel string, sess 
 		if inBody[column] {
 			continue
 		}
-		if sess.Datasource().foldColumn(column.TableName()) == sess.Datasource().foldColumn(alias) && sess.Datasource().foldColumn(column.Name()) == foldedLabel {
+		if sess.Datasource().Traits.foldColumn(column.TableName()) == sess.Datasource().Traits.foldColumn(alias) && sess.Datasource().Traits.foldColumn(column.Name()) == foldedLabel {
 			return true
 		}
 	}

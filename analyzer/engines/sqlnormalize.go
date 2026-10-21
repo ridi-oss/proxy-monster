@@ -37,7 +37,7 @@ func lex(sql, wireName string) (normalizeRules, []lexeme, bool) {
 	if err != nil {
 		return normalizeRules{}, nil, false
 	}
-	rules := e.normalizeRules()
+	rules := e.Traits.normalizeRules()
 	tokenStream, err := sqlglot.Tokenize(sql, rules.dialect)
 	if err != nil {
 		return rules, nil, false

@@ -37,11 +37,16 @@ type Engine struct {
 	WireName string
 	// Proto is the engine in the proxy and analyzer protos.
 	Proto pb.Engine
-	// DefaultSchemaSettable reports whether the engine has a statement that sets a session's default schema.
-	DefaultSchemaSettable bool
 	// DefaultProxyPort and DefaultTargetPort are the ports the proxy listens on and dials when config gives none.
 	DefaultProxyPort  int
 	DefaultTargetPort int
+	Traits            EngineTraits
+}
+
+// EngineTraits is what an engine is and how its target behaves.
+type EngineTraits struct {
+	// DefaultSchemaSettable reports whether the engine has a statement that sets a session's default schema.
+	DefaultSchemaSettable bool
 	// BuiltinSchema holds the engine's builtin functions and types; the zero SchemaName when it has none.
 	BuiltinSchema SchemaName
 	// IdentifierQuote quotes an identifier in the engine's SQL; a quote inside the name is doubled.
@@ -122,7 +127,7 @@ func ByProto(p pb.Engine) (*Engine, bool) {
 
 // Placeholder is the nth (1-based) bind-parameter placeholder: "?" or "$n".
 func (e *Engine) Placeholder(n int) string {
-	if e.numberedPlaceholders {
+	if e.Traits.numberedPlaceholders {
 		return "$" + strconv.Itoa(n)
 	}
 	return "?"
@@ -131,19 +136,19 @@ func (e *Engine) Placeholder(n int) string {
 // IsSystemSchema reports whether schema is a fixed system schema or a per-session one (Postgres pg_temp_3,
 // pg_toast).
 func (e *Engine) IsSystemSchema(schema SchemaName) bool {
-	if slices.Contains(e.systemSchemas, schema) {
+	if slices.Contains(e.Traits.systemSchemas, schema) {
 		return true
 	}
-	return slices.ContainsFunc(e.sessionSchemaPrefixes, func(p SchemaName) bool { return strings.HasPrefix(schema.name, p.name) })
+	return slices.ContainsFunc(e.Traits.sessionSchemaPrefixes, func(p SchemaName) bool { return strings.HasPrefix(schema.name, p.name) })
 }
 
 // IsTempSchema reports whether schema is the session temp schema (pg_temp, pg_temp_3).
 func (e *Engine) IsTempSchema(schema SchemaName) bool {
-	return e.tempSchema != SchemaName{} && (schema == e.tempSchema || strings.HasPrefix(schema.name, e.tempSchema.name+"_"))
+	return e.Traits.tempSchema != SchemaName{} && (schema == e.Traits.tempSchema || strings.HasPrefix(schema.name, e.Traits.tempSchema.name+"_"))
 }
 
 // CatalogName is the catalog the analyzer keys a datasource's tables under, from the database name the
 // datasource was registered with (not normalized): MySQL "def", Postgres the name as is, Athena folded.
 func (e *Engine) CatalogName(registeredDbName string) CatalogName {
-	return e.catalogName(registeredDbName)
+	return e.Traits.catalogName(registeredDbName)
 }

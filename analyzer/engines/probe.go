@@ -362,7 +362,7 @@ func (p *prober) rejectImplicitShadowingAliases(root exp.Expression) {
 			continue
 		}
 		for _, alias := range aliases {
-			if implicit[p.session.Datasource().foldColumn(alias)] {
+			if implicit[p.session.Datasource().Traits.foldColumn(alias)] {
 				panic(fmt.Errorf("table alias column %q shadows an implicit system column", alias))
 			}
 		}
@@ -395,7 +395,7 @@ func (p *prober) markBuiltinFunctionRow(root exp.Expression) {
 		} else if !p.session.Datasource().isBuiltinQualifier(schema) {
 			continue
 		}
-		columns := p.session.Datasource().builtinFunctionRows[name]
+		columns := p.session.Datasource().Traits.builtinFunctionRows[name]
 		if len(columns) == 0 || (name == "unnest" && len(function.Expressions()) != 1) {
 			continue
 		}
@@ -406,7 +406,7 @@ func (p *prober) markBuiltinFunctionRow(root exp.Expression) {
 	}
 	for _, unnest := range root.FindAll(exp.KindUnnest) {
 		if len(unnest.Expressions()) == 1 {
-			setImplicitRelationColumns(unnest, p.session.Datasource().builtinFunctionRows["unnest"])
+			setImplicitRelationColumns(unnest, p.session.Datasource().Traits.builtinFunctionRows["unnest"])
 		}
 	}
 }
@@ -490,7 +490,7 @@ func (p *prober) expandNaturalJoins(root exp.Expression) {
 			}
 
 			mergeLeft, mergeRight := group, right
-			if side == "RIGHT" && p.session.Datasource().rightJoinStarOrder == starOrderCommonRightLeft {
+			if side == "RIGHT" && p.session.Datasource().Traits.rightJoinStarOrder == starOrderCommonRightLeft {
 				mergeLeft, mergeRight = right, group
 			}
 			using := p.joinUsingColumns(join)
@@ -501,7 +501,7 @@ func (p *prober) expandNaturalJoins(root exp.Expression) {
 					panic(fmt.Errorf("NATURAL JOIN with an ON/USING clause is invalid on the target"))
 				}
 				var err error
-				using, err = naturalCommonColumns(mergeLeft, mergeRight, p.session.Datasource().foldColumn)
+				using, err = naturalCommonColumns(mergeLeft, mergeRight, p.session.Datasource().Traits.foldColumn)
 				if err != nil {
 					panic(err)
 				}
@@ -534,9 +534,9 @@ func (p *prober) expandNaturalJoins(root exp.Expression) {
 					panic(fmt.Errorf("NATURAL/USING join after an outer merging join — the merged key needs COALESCE semantics"))
 				}
 				for _, name := range using {
-					folded := p.session.Datasource().foldColumn(name)
+					folded := p.session.Datasource().Traits.foldColumn(name)
 					for _, column := range prefix {
-						if p.session.Datasource().foldColumn(column.name) == folded {
+						if p.session.Datasource().Traits.foldColumn(column.name) == folded {
 							panic(fmt.Errorf("NATURAL/USING key %q also names a column outside the joined tables", name))
 						}
 					}
@@ -550,7 +550,7 @@ func (p *prober) expandNaturalJoins(root exp.Expression) {
 				group = append(append([]naturalStarColumn{}, mergeLeft...), mergeRight...)
 				continue
 			}
-			merged, err := mergeUsingColumns(mergeLeft, mergeRight, using, p.session.Datasource().foldColumn)
+			merged, err := mergeUsingColumns(mergeLeft, mergeRight, using, p.session.Datasource().Traits.foldColumn)
 			if err != nil {
 				panic(err)
 			}
@@ -860,7 +860,7 @@ func (p *prober) consumeResolutionReport(report map[exp.Expression]optimizer.Res
 			catalog := resolved.Catalog
 			if catalog == "" {
 				catalog = p.namespace.Catalog
-			} else if catalog != p.namespace.Catalog && !p.session.Datasource().allowsCrossCatalog {
+			} else if catalog != p.namespace.Catalog && !p.session.Datasource().Traits.allowsCrossCatalog {
 				return fmt.Errorf("foreign catalog %q", resolved.Catalog)
 			}
 			if resolved.Schema == "" || resolved.Table == "" {
@@ -898,7 +898,7 @@ func (p *prober) resolvedTableID(table exp.Expression) (tableID, bool) {
 // ambiguous the way a table/schema name's is) and checks it against table, which is already fully
 // qualified — HasColumn is called with normalize=false so it doesn't refold what's already canonical.
 func (p *prober) canonicalColumn(table exp.Expression, column string) (string, bool) {
-	column = p.session.Datasource().foldColumn(column)
+	column = p.session.Datasource().Traits.foldColumn(column)
 	ok, err := p.qualifySchema.HasColumn(table, column, p.dialect, boolPtr(false))
 	if err != nil || !ok {
 		return "", false
@@ -1158,7 +1158,7 @@ func firstNonNil(values ...any) any {
 // a lower_case_table_names=1/2 table could regenerate with the wrong identifier casing.
 func generateExecutableSQL(root exp.Expression, sess session) (string, error) {
 	executable := root.Copy()
-	if !sess.Datasource().preservesCatalogQualifier {
+	if !sess.Datasource().Traits.preservesCatalogQualifier {
 		for _, table := range executable.FindAll(exp.KindTable) {
 			table.Set("catalog", nil)
 		}
@@ -2089,7 +2089,7 @@ func skipCallResolution(fn exp.Expression) bool {
 
 // A syntax call over one subquery, Postgres `ARRAY(SELECT ...)`, is not a function call; only that shape is exempt.
 func (p *prober) isGrammarConstructor(fn exp.Expression) bool {
-	if !slices.Contains(p.session.Datasource().syntaxCalls, strings.ToLower(fn.Name())) {
+	if !slices.Contains(p.session.Datasource().Traits.syntaxCalls, strings.ToLower(fn.Name())) {
 		return false
 	}
 	args := fn.Expressions()

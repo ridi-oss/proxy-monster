@@ -596,7 +596,7 @@ class EditorSubmitRouteDbTest {
                 req.send(allowed())
                 req.send(proxyRunMsg { done = runDone { rowsAffected = if ("update" in control.query.sql) 7 else -1 } })
             }
-            assertEquals(3, script.ack.statements?.size)
+            assertEquals(3, script.ack.statements.size)
             assertEquals(3, script.controls.drain().size)
             script.await()
             awaitUntil("script EXECUTED") { core.accessStore.getRequest(script.ack.taskId)?.status == "EXECUTED" }

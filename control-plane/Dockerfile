@@ -79,6 +79,11 @@ FROM eclipse-temurin:24-jre-noble
 RUN apt-get update && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
 
+# CVE-2026-111943: the JDK's own cacerts still trusts emSign ECC Root CA - G3, whose intermediates' keys leaked.
+RUN alias="$(keytool -list -cacerts -storepass changeit | grep -i '^cn_emsign_ecc_root_ca__g3' | sed 's/, [A-Z][a-z][a-z] [0-9].*//')" \
+    && if [ -n "$alias" ]; then keytool -delete -cacerts -storepass changeit -alias "$alias"; fi \
+    && ! keytool -list -cacerts -storepass changeit | grep -qi 'emsign_ecc_root_ca__g3'
+
 RUN groupadd --system --gid 10001 pm && useradd --system --uid 10001 --gid pm --create-home pm
 WORKDIR /app
 COPY --from=build /workspace/control-plane/build/install/control-plane ./

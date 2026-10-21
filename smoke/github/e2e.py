@@ -42,7 +42,7 @@ def sh(*cmd, cwd=None, check=True):
     return r.stdout.strip()
 
 
-TRANSIENT = ("Bad Gateway", "502", "503", "Something went wrong")
+TRANSIENT = ("Bad Gateway", "502", "503", "Something went wrong", "unexpected EOF")
 
 
 # GitHub answers an occasional 502 or GraphQL "Something went wrong"; a run of 40-odd checks meets one.

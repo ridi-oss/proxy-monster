@@ -15,7 +15,7 @@ fun Route.githubSourceRoutes(config: Config, tokenStore: TokenStore, flow: GitHu
         val body = runCatching { call.receive<GitHubRequestsInput>() }.getOrNull()
             ?: return@post call.fieldRequired("repository", "pr", "datasource", "schema", "role", "headSha", "files")
         try {
-            call.respond(GitHubRequestsResponse(flow.file(workload, body)))
+            call.respond(GitHubRequestsResponse(flow.file(workload, body), flow.checkName))
         } catch (e: TaskServiceException) {
             call.respondServiceError(e)
         }

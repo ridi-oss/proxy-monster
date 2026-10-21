@@ -342,7 +342,9 @@ class GitHubSourceFlowDbTest {
             setBody(input(n, schema, listOf("db/$schema/001_init.sql" to "create table t (id int)")))
         }
         assertEquals(HttpStatusCode.OK, response.status)
-        val filed = response.body<GitHubRequestsResponse>().requests.single()
+        val body = response.body<GitHubRequestsResponse>()
+        assertEquals(checkName, body.checkName)
+        val filed = body.requests.single()
         assertEquals("PENDING", filed.status)
         assertEquals("github", filed.source)
         assertEquals(schema, filed.pullRequest!!.defaultSchema)
@@ -988,6 +990,26 @@ class GitHubSourceFlowDbTest {
         open(n)
         assertEquals(emptyList(), file(n, schema(), emptyList()))
         assertEquals(CheckStatus.COMPLETED to CheckConclusion.SKIPPED, lastCheck(n).status to lastCheck(n).conclusion)
+    }
+
+    @Test
+    fun `a commit the Action marked skipped gets no check of its own`() {
+        val n = number()
+        open(n)
+        val skipped = Check(checkName, required = true, status = CheckStatus.COMPLETED, conclusion = CheckConclusion.SKIPPED)
+        update(n) { it.copy(checks = listOf(green, skipped)) }
+        assertEquals(emptyList(), file(n, schema(), emptyList()))
+        assertEquals(null, adapter.checks.lastOrNull { it.headSha == "sha$n" })
+    }
+
+    @Test
+    fun `SQL on a commit another step marked skipped still gets the check`() {
+        val n = number()
+        open(n)
+        val skipped = Check(checkName, required = true, status = CheckStatus.COMPLETED, conclusion = CheckConclusion.SKIPPED)
+        update(n) { it.copy(checks = listOf(green, skipped)) }
+        file(n, schema(), listOf("db/c.sql" to "create table c (id int)"))
+        assertEquals(CheckStatus.IN_PROGRESS to "Waiting for approval of db/c.sql", lastCheck(n).status to lastCheck(n).title)
     }
 
     @Test

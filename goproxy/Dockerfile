@@ -9,7 +9,7 @@
 # committed, so no codegen runs at build time. Build from the repo root:
 #   docker build -f goproxy/Dockerfile -t proxy-monster-proxy .
 
-FROM golang:1.26-bookworm AS build
+FROM golang:1.26.10-bookworm AS build
 WORKDIR /workspace
 # goproxy's go.mod resolves ../mysqlwire and ../analyzer via `replace` directives; copy all three modules.
 COPY mysqlwire ./mysqlwire

@@ -170,6 +170,8 @@ class SlackTransport(
 
     override val supportsReplies = true
 
+    override suspend fun nameOf(principal: String): String = mentionFor(principal)
+
     override suspend fun reply(threadRef: String, text: String): DeliveryResult {
         val channel = threadRef.substringBefore(':', "")
         val ts = threadRef.substringAfter(':', "")

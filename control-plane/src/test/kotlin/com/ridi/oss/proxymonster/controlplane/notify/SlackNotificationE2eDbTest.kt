@@ -337,8 +337,8 @@ class SlackNotificationE2eDbTest {
         val (replies, topLevel) = slack.requestsFor("chat.postMessage").partition { it.json?.get("thread_ts") != null }
         assertEquals(1, topLevel.size, "no second message was posted")
         assertTrue(
-            replies.any { it.json!!["text"]!!.jsonPrimitive.content == "*admin@example.com* approved revision 1." },
-            "the timeline went into the thread as replies",
+            replies.any { it.json!!["text"]!!.jsonPrimitive.content == "*<@U_ADMIN>* approved revision 1." },
+            "the timeline went into the thread as replies, naming the actor by mention",
         )
     }
 

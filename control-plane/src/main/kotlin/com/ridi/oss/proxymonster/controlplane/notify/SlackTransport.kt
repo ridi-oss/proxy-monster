@@ -111,31 +111,61 @@ class SlackTransport(
         )
 
     override suspend fun deliver(to: String, message: NotificationMessage, locale: String): DeliveryResult {
-        val rendered = withMentions(message)
+        val rendered = previewed(withMentions(message))
         val body = buildJsonObject {
             put("channel", to)
             put("text", renderer.fallbackText(rendered, locale))
             put("blocks", blocksFor(rendered, locale))
         }
-        return send("chat.postMessage", body) { resp ->
+        val result = send("chat.postMessage", body) { resp ->
             val channel = resp["channel"]?.jsonPrimitive?.contentOrNullSafe()
             val ts = resp["ts"]?.jsonPrimitive?.contentOrNullSafe()
             if (channel != null && ts != null) "$channel:$ts" else null
         }
+        if (result is DeliveryResult.Sent) replyStatement(result.externalRef, rendered, locale)
+        return result
+    }
+
+    /**
+     * A long statement shows its first lines. Up to [CONSOLE_CHARS] the whole statement goes into the thread;
+     * past that it is reviewed in the console only, so the message offers nothing that vouches for it.
+     */
+    private fun previewed(message: NotificationMessage): NotificationMessage {
+        val statement = message.statement
+        val sql = statement.full ?: statement.text ?: return message
+        val lines = sql.lines()
+        val where = when {
+            sql.length > CONSOLE_CHARS -> StatementPreview.CONSOLE
+            statement.full != null && (lines.size > PREVIEW_LINES || sql.length > PREVIEW_CHARS) -> StatementPreview.THREAD
+            else -> return message
+        }
+        val preview = lines.take(PREVIEW_LINES).joinToString("\n").take(PREVIEW_CHARS).trimEnd() + "…"
+        return message.copy(
+            statement = statement.copy(text = preview, complete = false, preview = where),
+            actions = if (where == StatementPreview.CONSOLE) message.actions - VOUCHING else message.actions,
+        )
+    }
+
+    private suspend fun replyStatement(ref: String, message: NotificationMessage, locale: String) {
+        val full = message.statement.full?.takeIf { message.statement.preview == StatementPreview.THREAD } ?: return
+        val r = runCatching { reply(ref, renderer.threadStatement(full, message.revision, locale)) }.getOrNull()
+        if (r !is DeliveryResult.Sent) log.warn("slack statement reply failed task={}: {}", message.taskId, r)
     }
 
     override suspend fun update(externalRef: String, message: NotificationMessage, locale: String): DeliveryResult {
         val channel = externalRef.substringBefore(':', "")
         val ts = externalRef.substringAfter(':', "")
         if (channel.isEmpty() || ts.isEmpty()) return DeliveryResult.Drop("malformed message ref")
-        val rendered = withMentions(message)
+        val rendered = previewed(withMentions(message))
         val body = buildJsonObject {
             put("channel", channel)
             put("ts", ts)
             put("text", renderer.fallbackText(rendered, locale))
             put("blocks", blocksFor(rendered, locale))
         }
-        return send("chat.update", body) { externalRef }
+        val result = send("chat.update", body) { externalRef }
+        if (result is DeliveryResult.Sent && message.event == NotificationEvent.TASK_EDITED) replyStatement(externalRef, rendered, locale)
+        return result
     }
 
     override val supportsReplies = true
@@ -331,6 +361,15 @@ class SlackTransport(
         )
 
         private val APPROVALS = setOf(NotificationAction.APPROVE_AND_RUN, NotificationAction.APPROVE)
+
+        /** Approving, or endorsing, a statement the reader could not see whole. */
+        private val VOUCHING = APPROVALS + setOf(NotificationAction.LGTM, NotificationAction.REVIEW)
+
+        private const val PREVIEW_LINES = 5
+        private const val PREVIEW_CHARS = 340
+
+        /** Longest statement posted into a thread; it must fit one reply under Slack's 4000-character display. */
+        private const val CONSOLE_CHARS = 2000
 
         /** A Block Kit section's `text` hard-caps here; a longer body is a permanent invalid_blocks reject. */
         private const val SECTION_TEXT_LIMIT = 3000

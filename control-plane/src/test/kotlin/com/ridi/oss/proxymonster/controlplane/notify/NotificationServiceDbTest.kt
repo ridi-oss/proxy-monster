@@ -210,6 +210,31 @@ class NotificationServiceDbTest {
     }
 
     @Test
+    fun `only a cleared statement carries its whole text for a thread`() = runBlocking {
+        for ((hint, full) in listOf(false to "SELECT 1", true to null, null to null)) {
+            val task = newTask().id
+            setHint(task, hint)
+            transport.delivered.clear()
+            enqueue(task, NotificationEvent.TASK_REQUESTED, "bob@x")
+            svc.drainOnce() // svc is FULL, so every pending statement is shown
+            val statement = transport.delivered.single().statement
+            assertNotNull(statement.text, "hint=$hint")
+            assertEquals(full, statement.full, "hint=$hint")
+        }
+    }
+
+    @Test
+    fun `the requester's later messages carry no statement for a thread their receipt never had`() = runBlocking {
+        val task = newTask().id
+        setHint(task, false)
+        enqueue(task, NotificationEvent.TASK_DECIDED, "req@example.com", NotificationKind.REQUESTER)
+        svc.drainOnce()
+        val statement = transport.delivered.single().statement
+        assertNotNull(statement.text)
+        assertNull(statement.full)
+    }
+
+    @Test
     fun `full shows a flagged statement while pending and hides it once the task is handled`() = runBlocking {
         val task = newTask().id
         setHint(task, true) // flagged: auto would withhold this

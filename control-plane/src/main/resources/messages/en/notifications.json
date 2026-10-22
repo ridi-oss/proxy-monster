@@ -43,7 +43,9 @@
     "duration_minutes": "{n} minutes",
     "spent_rate": "Spent rate: {rate}",
     "statement_shown": "the following query",
-    "row_count": " ({n} rows)"
+    "row_count": " ({n} rows)",
+    "statement_in_thread_note": "_The full query is in the thread._",
+    "statement_in_console_note": "_This query is too long to review in Slack. Open the request to review it in the console._"
   },
   "action": {
     "review": "Review",
@@ -93,7 +95,8 @@
     "failed": "The run failed.",
     "cancelled": "The run was canceled.",
     "cc_added": "*{actor}* added {body} as a CC.",
-    "cc_removed": "*{actor}* removed {body} from the CCs."
+    "cc_removed": "*{actor}* removed {body} from the CCs.",
+    "statement": "Full query (revision {revision}):"
   },
   "role": {
     "requested": "*{requester}* asks for the *{roleName}* role on *{datasource}* for {duration}.{reason}",

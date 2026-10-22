@@ -262,7 +262,7 @@ class NotificationService(
             val locale = store.localeOf(thread.recipient) ?: defaultLocale
             for ((event, sourceThread) in store.eventsAfter(thread.taskId, thread.lastEventId)) {
                 if (!removed && event.kind != RequestEventKind.REQUESTED.wire && sourceThread != thread.externalRef && !event.deleted) {
-                    when (val r = transport.reply(thread.externalRef, renderer.threadLine(event, locale))) {
+                    when (val r = transport.reply(thread.externalRef, renderer.threadLine(event, locale, namesIn(event, transport)))) {
                         is DeliveryResult.Sent -> store.addPost(event.id, r.externalRef)
                         is DeliveryResult.Retry -> break
                         is DeliveryResult.Drop -> log.warn("thread reply dropped task={} event={}: {}", thread.taskId, event.id, r.reason)
@@ -277,11 +277,16 @@ class NotificationService(
     suspend fun propagate(event: RequestEvent) {
         val transport = transports.firstOrNull { it.supportsReplies } ?: return
         for (ref in store.postsOf(event.id)) {
-            val text = if (event.deleted) null else renderer.threadLine(event, defaultLocale)
+            val text = if (event.deleted) null else renderer.threadLine(event, defaultLocale, namesIn(event, transport))
             val result = runCatching { transport.editReply(ref, text) }.getOrElse { DeliveryResult.Retry(it.message ?: "") }
             if (result !is DeliveryResult.Sent) log.warn("thread reply edit failed event={} ref={}: {}", event.id, ref, result)
         }
     }
+
+    private suspend fun namesIn(event: RequestEvent, transport: NotificationTransport): Map<String, String> =
+        listOfNotNull(event.actor, event.body?.takeIf { event.kind in NotificationRenderer.NAMES_IN_BODY })
+            .mapNotNull { p -> runCatching { transport.nameOf(p) }.getOrNull()?.let { p to it } }
+            .toMap()
 
     private suspend fun deliver(row: OutboxRow) {
         val transport = transports.firstOrNull { it.name == row.transport }

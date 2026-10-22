@@ -105,10 +105,15 @@ class NotificationRenderer(private val catalog: MessageCatalog = MessageCatalog(
         return parts.takeIf { it.isNotEmpty() }?.joinToString(" · ")
     }
 
-    /** One timeline entry as a reply in a request's thread. */
-    fun threadLine(e: com.ridi.oss.proxymonster.controlplane.RequestEvent, locale: String): String {
-        val actor = e.actor?.let(SlackMarkup::escape).orEmpty()
-        val body = e.body?.take(REASON_MAX_CHARS * 6)?.let(SlackMarkup::escape).orEmpty()
+    /** One timeline entry as a reply in a request's thread; [names] holds each principal's display, such as a mention. */
+    fun threadLine(e: com.ridi.oss.proxymonster.controlplane.RequestEvent, locale: String, names: Map<String, String> = emptyMap()): String {
+        fun name(principal: String) = names[principal] ?: SlackMarkup.escape(principal)
+        val actor = e.actor?.let(::name).orEmpty()
+        val body = if (e.kind in NAMES_IN_BODY) {
+            e.body?.let(::name).orEmpty()
+        } else {
+            e.body?.take(REASON_MAX_CHARS * 6)?.let(SlackMarkup::escape).orEmpty()
+        }
         return when (e.kind) {
             "comment" -> "*$actor*: $body"
             "lgtm" -> "*$actor*: LGTM" + if (body.isNotEmpty()) "\n> " + body.replace("\n", "\n> ") else ""
@@ -184,6 +189,9 @@ class NotificationRenderer(private val catalog: MessageCatalog = MessageCatalog(
 
     companion object {
         const val DOMAIN = "notifications"
+
+        /** Thread entries whose body is a principal, not free text. */
+        val NAMES_IN_BODY = setOf("cc_added", "cc_removed")
 
         /** A reason is free text; cap it so a long one cannot crowd the statement out of a transport's block. */
         private const val REASON_MAX_CHARS = 500

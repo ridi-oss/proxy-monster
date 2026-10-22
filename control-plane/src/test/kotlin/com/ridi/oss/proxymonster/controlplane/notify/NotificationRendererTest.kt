@@ -192,6 +192,16 @@ class NotificationRendererTest {
     }
 
     @Test
+    fun `a thread line names the actor and a cc by their display`() {
+        val event = com.ridi.oss.proxymonster.controlplane.RequestEvent(
+            id = 1, kind = "cc_added", actor = "bob@example.com", body = "carol@example.com", origin = "web", createdAt = "2026-10-22T00:00:00Z",
+        )
+        val names = mapOf("bob@example.com" to "<@UBOB>", "carol@example.com" to "<@UCAROL>")
+        assertEquals("*<@UBOB>* added <@UCAROL> as a CC.", renderer.threadLine(event, "en", names))
+        assertEquals("*bob@example.com* added carol@example.com as a CC.", renderer.threadLine(event, "en"))
+    }
+
+    @Test
     fun `an unknown locale falls back rather than rendering a raw key`() {
         val summary = renderer.summary(message(NotificationEvent.TASK_REQUESTED, RenderedStatement("SELECT 1", true)), "fr")
         assertFalse(summary.contains("task."), summary)

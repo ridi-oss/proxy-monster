@@ -254,6 +254,9 @@ interface NotificationTransport {
     /** True when a delivered message is a thread that later timeline entries are posted into. */
     val supportsReplies: Boolean get() = false
 
+    /** How a reply names [principal], such as a mention; null leaves it as written. */
+    suspend fun nameOf(principal: String): String? = null
+
     /** Post [text] into the thread of [threadRef]; a Sent result carries the reply's own ref. */
     suspend fun reply(threadRef: String, text: String): DeliveryResult = DeliveryResult.Drop("no threads")
 

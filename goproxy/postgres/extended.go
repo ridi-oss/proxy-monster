@@ -35,10 +35,10 @@ type preparedStatement struct {
 // boundPortal snapshots the context PostgreSQL used for its confirmed Bind. Every Execute re-decides the
 // portal SQL against that snapshot, and no decision is ever stored.
 type boundPortal struct {
-	sql     string
-	session spi.SessionObservation
-	temps   []spi.TempColumn
-	binary  bool
+	sql      string
+	snapshot spi.SessionSnapshot
+	temps    []spi.TempColumn
+	binary   bool
 	// Volume already relayed from this portal. A suspended portal resumes on a further Execute, so the cap
 	// is measured against the portal's whole output rather than restarting with each page.
 	relayed spi.RelayStats
@@ -175,7 +175,7 @@ func (s *Server) handleBind(sess *session, message *pgproto3.Bind) error {
 	// target DB between this probe and Bind, so the captured context is exactly the one PostgreSQL binds under.
 	// Probing first also leaves no registry/target DB inconsistency if capture fails. An aborted transaction
 	// fails here before PostgreSQL's equivalent 25P02 Bind, retaining the prior portal snapshot and target DB portal.
-	observed, temps, err := s.probeBindContext(sess)
+	snapshot, temps, err := s.probeBindContext(sess)
 	if err != nil {
 		if errors.Is(err, errClientEncoding) || errors.Is(err, errStdConformingStrings) {
 			return err
@@ -201,10 +201,10 @@ func (s *Server) handleBind(sess *session, message *pgproto3.Bind) error {
 	}
 	if _, complete := terminal.(*pgproto3.BindComplete); complete {
 		sess.portals[message.DestinationPortal] = boundPortal{
-			sql:     statement.sql,
-			session: observed.Clone(),
-			temps:   temps,
-			binary:  binary,
+			sql:      statement.sql,
+			snapshot: snapshot.Clone(),
+			temps:    temps,
+			binary:   binary,
 		}
 	}
 	return sess.client.Flush()
@@ -339,33 +339,33 @@ func (s *Server) runExtendedProbe(sess *session, sql string, expectedColumns int
 
 // probeBindContext captures the namespace, function visibility, and temporary columns PostgreSQL will
 // bind the next portal under.
-func (s *Server) probeBindContext(sess *session) (spi.SessionObservation, []spi.TempColumn, error) {
+func (s *Server) probeBindContext(sess *session) (spi.SessionSnapshot, []spi.TempColumn, error) {
 	if sess.lastTxStatus == 'E' {
 		// Aborted transaction: both injected probes would fail with 25P02 and block an extended-protocol
 		// ROLLBACK's Bind. Reuse the last context snapshot (symmetric with handleQuery / handleParse).
-		return sess.session.Clone(), append([]spi.TempColumn{}, sess.tempOverlay...), nil
+		return sess.authz.Snapshot(), append([]spi.TempColumn{}, sess.tempOverlay...), nil
 	}
 	namespaceRows, err := s.runExtendedProbe(sess, namespaceProbeSQL, 1)
 	if err != nil {
-		return spi.SessionObservation{}, nil, fmt.Errorf("target-DB namespace probe: %w", err)
+		return spi.SessionSnapshot{}, nil, fmt.Errorf("target-DB namespace probe: %w", err)
 	}
-	observed, err := sessionFromRows(namespaceRows)
+	snapshot, err := snapshotFromRows(namespaceRows)
 	if err != nil {
-		return spi.SessionObservation{}, nil, err
+		return spi.SessionSnapshot{}, nil, err
 	}
-	observed.CurrentCatalog = sess.currentCatalog
-	sess.session = observed.Clone()
+	snapshot.CurrentCatalog = sess.currentCatalog
+	sess.authz.SetSnapshot(snapshot)
 
 	tempRows, err := s.runExtendedProbe(sess, tempColumnsProbeSQL, 6)
 	if err != nil {
-		return spi.SessionObservation{}, nil, fmt.Errorf("target DB temp-column probe: %w", err)
+		return spi.SessionSnapshot{}, nil, fmt.Errorf("target DB temp-column probe: %w", err)
 	}
 	temps, err := tempColumnsFromRows(tempRows)
 	if err != nil {
-		return spi.SessionObservation{}, nil, err
+		return spi.SessionSnapshot{}, nil, err
 	}
 	sess.tempOverlay = append([]spi.TempColumn{}, temps...)
-	return observed, temps, nil
+	return snapshot, temps, nil
 }
 
 func (s *Server) handleExecute(sess *session, message *pgproto3.Execute) error {
@@ -380,7 +380,7 @@ func (s *Server) handleExecute(sess *session, message *pgproto3.Execute) error {
 	verdict := sess.authz.Authorize(spi.AuthzInput{
 		SQL:          portal.sql,
 		Commands:     sess.extendedCommandRunner,
-		ProbeSession: func() (spi.SessionObservation, error) { return portal.session.Clone(), nil },
+		ProbeSession: func() (spi.SessionSnapshot, error) { return portal.snapshot.Clone(), nil },
 		ProbeTempColumns: func() ([]spi.TempColumn, error) {
 			return portal.temps, nil
 		},

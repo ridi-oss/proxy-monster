@@ -154,7 +154,7 @@ func (r *ProxyCommandRunner) measureHash(sql string, expectedColumns int, sqlErr
 // RunAll executes a command list on the held connection. The SQL engines answer only the Refetch arm; any
 // other command is unknown here and fails closed. session is unused: nothing a refetch fetches changes the
 // per-statement session facts.
-func (r *ProxyCommandRunner) RunAll(cmds []*pb.ProxyCommand, _ *spi.SessionObservation) error {
+func (r *ProxyCommandRunner) RunAll(cmds []*pb.ProxyCommand, _ *spi.SessionSnapshot) error {
 	for i, cmd := range cmds {
 		refetch := cmd.GetRefetch()
 		if refetch == nil {

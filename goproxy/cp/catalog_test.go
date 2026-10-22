@@ -10,7 +10,7 @@ import (
 func TestDecideCarriesCatalogs(t *testing.T) {
 	fake := &fakeControlPlane{}
 	client := startFakeControlPlane(t, fake)
-	result := client.Decide(spi.DecideRequest{Session: spi.SessionObservation{CurrentCatalog: "catalog"}, TempColumns: []spi.TempColumn{{Catalog: "catalog", Schema: "temp", Table: "t", Column: "c"}}})
+	result := client.Decide(spi.DecideRequest{Snapshot: spi.SessionSnapshot{CurrentCatalog: "catalog"}, TempColumns: []spi.TempColumn{{Catalog: "catalog", Schema: "temp", Table: "t", Column: "c"}}})
 	if result.IsErr() {
 		t.Fatal(result.Err)
 	}

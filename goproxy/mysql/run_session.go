@@ -66,7 +66,7 @@ func (s *RunSession) OnOpen(ctx context.Context, cmds []*pb.ProxyCommand) error 
 func (s *RunSession) ServeStatement(sql string, maxRows int) (result spi.StatementResult, err error) {
 	result.Decision, result.Denied, err = relay.ServeStatement(s.authz, spi.AuthzInput{
 		SQL:          sql,
-		ProbeSession: func() (spi.SessionObservation, error) { return probeSession(s.conn, true) },
+		ProbeSession: func() (spi.SessionSnapshot, error) { return probeSession(s.conn, true) },
 		Commands:     s.commandRunner,
 	}, s.commandRunner, s.guard, func(toSend string, masks []*pb.ColumnMask, dec *spi.Decision) (clean bool, runErr error) {
 		payload := mysqlwire.ComQueryPayload(toSend)
@@ -136,8 +136,8 @@ func (s *RunSession) ServeStatement(sql string, maxRows int) (result spi.Stateme
 }
 
 func (s *RunSession) Namespace() (string, []string, error) {
-	session, err := probeSession(s.conn, true)
-	return session.CurrentCatalog, session.Namespace, err
+	snapshot, err := probeSession(s.conn, true)
+	return snapshot.CurrentCatalog, snapshot.Namespace, err
 }
 
 func (s *RunSession) Cancel() error {

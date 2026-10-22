@@ -534,18 +534,18 @@ func probeNamespace(targetDb net.Conn, deprecateEOF bool) (namespace []string, a
 	return interpretSessionProbeRow(rows[0])
 }
 
-// probeSession runs the pre-statement session probe and packages its result as the engine's
-// SessionObservation, so every wire/editor call site shares one probe→engine conversion.
-func probeSession(targetDb net.Conn, deprecateEOF bool) (spi.SessionObservation, error) {
+// probeSession runs the pre-statement session probe and packages its result as a SessionSnapshot, so every
+// wire/editor call site shares one probe→engine conversion.
+func probeSession(targetDb net.Conn, deprecateEOF bool) (spi.SessionSnapshot, error) {
 	namespace, ansiQuotes, err := probeNamespace(targetDb, deprecateEOF)
 	if err != nil {
-		return spi.SessionObservation{}, err
+		return spi.SessionSnapshot{}, err
 	}
-	return mysqlSession(namespace, ansiQuotes), nil
+	return mysqlSnapshot(namespace, ansiQuotes), nil
 }
 
-func mysqlSession(namespace []string, ansiQuotes bool) spi.SessionObservation {
-	return spi.SessionObservation{
+func mysqlSnapshot(namespace []string, ansiQuotes bool) spi.SessionSnapshot {
+	return spi.SessionSnapshot{
 		CurrentCatalog:     "def",
 		Namespace:          namespace,
 		SessionObservation: &enginepb.SessionObservation{Engine: &enginepb.SessionObservation_Mysql{Mysql: &enginepb.MySqlSession{AnsiQuotes: ansiQuotes}}},

@@ -45,7 +45,6 @@ type sessionCore struct {
 	generation     uint64
 	lastTxStatus   byte
 	pendingDirty   bool
-	session        spi.SessionObservation
 	tempOverlay    []spi.TempColumn
 	forward        func(pgproto3.BackendMessage)
 	flushForward   func() error

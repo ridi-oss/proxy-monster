@@ -43,7 +43,7 @@ const maxPreparedDefinitions = 8
 // RunAll executes a command list: a Refetch re-measures a database from Glue; a FetchAthenaPreparedDefinition
 // reads the named prepared statement from the workgroup and appends it to session's Athena scope, so the
 // re-sent decision carries it. Any other arm fails closed.
-func (r *proxyCommandRunner) RunAll(commands []*pb.ProxyCommand, session *spi.SessionObservation) error {
+func (r *proxyCommandRunner) RunAll(commands []*pb.ProxyCommand, snapshot *spi.SessionSnapshot) error {
 	for i, command := range commands {
 		switch {
 		case command.GetRefetch() != nil:
@@ -51,7 +51,7 @@ func (r *proxyCommandRunner) RunAll(commands []*pb.ProxyCommand, session *spi.Se
 				return fmt.Errorf("refetch command %d: %w", i, err)
 			}
 		case command.GetFetchAthenaPreparedDefinition() != nil:
-			if err := r.target.fetchPreparedDefinitionInto(command.GetFetchAthenaPreparedDefinition(), session); err != nil {
+			if err := r.target.fetchPreparedDefinitionInto(command.GetFetchAthenaPreparedDefinition(), snapshot); err != nil {
 				return fmt.Errorf("prepared definition command %d: %w", i, err)
 			}
 		default:
@@ -129,12 +129,12 @@ func fragmentHash(columns []*enginepb.Column) ([]byte, error) {
 // prepared statements and appends the result to session's Athena scope; the analyzer never trusts a
 // definition the client supplied. The fetch must name the request's workgroup, must not repeat one already
 // held, and the scope holds at most maxPreparedDefinitions per decision.
-func (t *target) fetchPreparedDefinitionInto(fetch *enginepb.FetchAthenaPreparedDefinition, session *spi.SessionObservation) error {
+func (t *target) fetchPreparedDefinitionInto(fetch *enginepb.FetchAthenaPreparedDefinition, snapshot *spi.SessionSnapshot) error {
 	if fetch.GetWorkgroup() == "" || fetch.GetName() == "" {
 		return errors.New("blank prepared definition selector")
 	}
-	scope := session.GetAthena()
-	if session == nil || scope == nil {
+	scope := snapshot.GetAthena()
+	if snapshot == nil || scope == nil {
 		return errors.New("the request carries no Athena scope")
 	}
 	if fetch.GetWorkgroup() != scope.GetWorkgroup() {

@@ -323,12 +323,12 @@ func (c *Client) Decide(req spi.DecideRequest) spi.DecisionOutcome {
 		Token:          req.Token,
 		DatasourceName: c.datasourceName,
 		Sql:            req.SQL,
-		SearchPath:     append([]string(nil), req.Session.Namespace...),
+		SearchPath:     append([]string(nil), req.Snapshot.Namespace...),
 		ClientAddr:     req.ClientAddr,
 		TempColumns:    temps,
 		ConnectionId:   append([]byte(nil), req.ConnectionID...),
-		Session:        req.Session.Clone().SessionObservation,
-		CurrentCatalog: req.Session.CurrentCatalog,
+		Session:        req.Snapshot.Clone().SessionObservation,
+		CurrentCatalog: req.Snapshot.CurrentCatalog,
 	}
 
 	var targetErr *spi.TargetError
@@ -392,10 +392,10 @@ func runBeforeDecide(commands []*pb.ProxyCommand, req *spi.DecideRequest, wireRe
 	if req.Commands == nil {
 		return errors.New("control plane demanded pre-decision commands but no runner is configured")
 	}
-	if err := req.Commands.RunAll(run, &req.Session); err != nil {
+	if err := req.Commands.RunAll(run, &req.Snapshot); err != nil {
 		return err
 	}
-	wireReq.Session = req.Session.Clone().SessionObservation
+	wireReq.Session = req.Snapshot.Clone().SessionObservation
 	return nil
 }
 

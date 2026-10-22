@@ -37,7 +37,7 @@ class NotificationRenderer(private val catalog: MessageCatalog = MessageCatalog(
         // plus their own sub-template, or empty — the same shape as `role`, so the template owns the whole
         // layout (line breaks and field order) rather than code assembling it piece by piece.
         val reason = m.reason
-            ?.takeIf { it.isNotBlank() && (m.event in ASKS_FOR_APPROVAL || m.event == NotificationEvent.TASK_CC_ADDED) }
+            ?.takeIf { it.isNotBlank() && (m.requestKind == "QUERY" || m.event in ASKS_FOR_APPROVAL || m.event == NotificationEvent.TASK_CC_ADDED) }
             // `field.reason` renders as a Slack blockquote (`> …`); carry the quote onto every wrapped line so a
             // multi-line reason stays inside it. A blockquote is per line, so — unlike italic — it never glues a
             // formatting mark onto a bare URL and corrupts the link.
@@ -81,6 +81,7 @@ class NotificationRenderer(private val catalog: MessageCatalog = MessageCatalog(
                 "role" to (m.roleName?.let { catalog.text("field.role", locale, mapOf("role" to SlackMarkup.escape(it))) } ?: ""),
                 "roleName" to SlackMarkup.escape(m.roleName ?: "—"),
                 "reason" to reason,
+                "title" to (m.title?.takeIf { it.isNotBlank() }?.let { catalog.text("field.title", locale, mapOf("title" to SlackMarkup.escape(it.take(REASON_MAX_CHARS)))) } ?: ""),
                 "notified" to notified,
                 "statementNote" to statementNote,
                 "failure" to failure,

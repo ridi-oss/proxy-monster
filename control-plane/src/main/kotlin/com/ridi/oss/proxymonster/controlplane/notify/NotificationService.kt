@@ -400,6 +400,7 @@ class NotificationService(
             spentRate = req.denyReason.takeIf { req.kind == "RATE_RESET" },
             roleName = req.roleName,
             reason = req.reason,
+            title = req.title,
             statement = statement,
             decidedBy = req.decidedBy,
             approved = when (req.status) {

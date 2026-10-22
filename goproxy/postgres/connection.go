@@ -16,14 +16,24 @@ import (
 	"github.com/ridi-oss/proxy-monster/goproxy/wire"
 )
 
+// connection is goproxy's connection to the target, for a wire client or a control-plane run.
 type connection struct {
-	sessionCore
-	conn          net.Conn
-	keyData       pgproto3.BackendKeyData
-	target        *target
-	commandRunner *sqldb.ProxyCommandRunner
-	guard         spi.ExecGuard
-	poisoned      bool
+	target         *target
+	targetDbConn   net.Conn
+	targetDb       *pgproto3.Frontend
+	keyData        pgproto3.BackendKeyData
+	generation     uint64
+	currentCatalog string
+	authz          *spi.Authorizer
+	commandRunner  *sqldb.ProxyCommandRunner
+	guard          spi.ExecGuard
+	lastTxStatus   byte
+	pendingDirty   bool
+	poisoned       bool
+	tempOverlay    []spi.TempColumn
+	// forward and flushForward relay what the target reports to a wire client; a run has none.
+	forward      func(pgproto3.BackendMessage)
+	flushForward func() error
 }
 
 func (t *target) OpenConnection(ctx context.Context, authz *spi.Authorizer, guard spi.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.Connection, error) {
@@ -42,17 +52,15 @@ func (t *target) OpenConnection(ctx context.Context, authz *spi.Authorizer, guar
 		return nil, errors.New("run backend generation out of range")
 	}
 	c := &connection{
-		sessionCore: sessionCore{
-			currentCatalog: catalog,
-			targetDb:       pgproto3.NewFrontend(conn, conn),
-			authz:          authz,
-			generation:     generation,
-			lastTxStatus:   txStatus,
-		},
-		conn:    conn,
-		keyData: keyData,
-		target:  t,
-		guard:   guard,
+		target:         t,
+		targetDbConn:   conn,
+		targetDb:       pgproto3.NewFrontend(conn, conn),
+		keyData:        keyData,
+		generation:     generation,
+		currentCatalog: catalog,
+		authz:          authz,
+		guard:          guard,
+		lastTxStatus:   txStatus,
 	}
 	c.commandRunner = c.newCommandRunner(c.runProbe)
 	return c, nil
@@ -62,7 +70,7 @@ func (t *target) OpenConnection(ctx context.Context, authz *spi.Authorizer, guar
 // run, or the proxy is draining, during the target-DB open) closes the conn, which unwinds an in-flight fetch read
 // at once instead of holding the target DB until readTimeout.
 func (c *connection) OnOpen(ctx context.Context, cmds []*pb.ProxyCommand) error {
-	defer context.AfterFunc(ctx, func() { _ = c.conn.Close() })()
+	defer context.AfterFunc(ctx, func() { _ = c.targetDbConn.Close() })()
 	return c.commandRunner.RunAll(cmds, nil)
 }
 
@@ -126,13 +134,19 @@ func (c *connection) Namespace() (string, []string, error) {
 
 func (c *connection) Cancel() error {
 	if c.keyData.ProcessID == 0 {
-		_ = c.conn.Close()
+		_ = c.targetDbConn.Close()
 		return errors.New("cannot cancel: target DB did not provide a cancellation key")
 	}
 	if err := sendCancelRequest(c.target.config, c.keyData.ProcessID, c.keyData.SecretKey); err != nil {
-		_ = c.conn.Close()
+		_ = c.targetDbConn.Close()
 		return err
 	}
 	return nil
 }
-func (c *connection) Close() error { return c.conn.Close() }
+func (c *connection) Close() error { return c.targetDbConn.Close() }
+
+func (c *connection) newCommandRunner(probe func(sql string, expectedColumns int) ([][]*string, error)) *sqldb.ProxyCommandRunner {
+	commandRunner := sqldb.NewProxyCommandRunner(Queries, c.authz.ConnectionID(), c.generation, probe, c.authz.Client().PushSchemaFragment)
+	commandRunner.Catalog = c.currentCatalog
+	return commandRunner
+}

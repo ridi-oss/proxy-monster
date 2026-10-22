@@ -17,13 +17,46 @@ import (
 	"github.com/ridi-oss/proxy-monster/mysqlwire"
 )
 
+// connection is goproxy's connection to the target, for a wire client or a control-plane run.
 type connection struct {
-	conn          net.Conn
-	connID        uint32
-	config        spi.TargetConfig
-	authz         *spi.Authorizer
-	commandRunner *sqldb.ProxyCommandRunner
-	guard         spi.ExecGuard
+	targetDbConn net.Conn
+	// targetConnectionID is the target's id for this connection, which KILL QUERY names.
+	targetConnectionID uint32
+	config             spi.TargetConfig
+	authz              *spi.Authorizer
+	commandRunner      *sqldb.ProxyCommandRunner
+	guard              spi.ExecGuard
+	// deprecateEOF is the result framing the connection negotiated: the wire client's choice, always on for a run.
+	deprecateEOF bool
+}
+
+// newConnection is the connection on targetDbConn, which greeting opened.
+func newConnection(targetDbConn net.Conn, greeting mysqlwire.Greeting, config spi.TargetConfig, authz *spi.Authorizer, guard spi.ExecGuard, deprecateEOF bool) (*connection, error) {
+	generation, ok := wire.NextBackendGeneration()
+	if !ok {
+		return nil, errors.New("backend generation out of range")
+	}
+	c := &connection{
+		targetDbConn:       targetDbConn,
+		targetConnectionID: greeting.ConnectionID,
+		config:             config,
+		authz:              authz,
+		guard:              guard,
+		deprecateEOF:       deprecateEOF,
+	}
+	c.commandRunner = sqldb.NewProxyCommandRunner(Queries, authz.ConnectionID(), generation, func(sql string, expectedColumns int) ([][]*string, error) {
+		return runInternalQuery(c.targetDbConn, c.deprecateEOF, sql, expectedColumns)
+	}, authz.Client().PushSchemaFragment)
+	c.commandRunner.Catalog = "def"
+	return c, nil
+}
+
+func (c *connection) probeSession() (spi.SessionSnapshot, error) {
+	return probeSession(c.targetDbConn, c.deprecateEOF)
+}
+
+func (c *connection) checkTargetError(sql string) (*spi.TargetError, error) {
+	return checkTargetError(c.targetDbConn, c.deprecateEOF, sql)
 }
 
 func (t *target) OpenConnection(ctx context.Context, authz *spi.Authorizer, guard spi.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.Connection, error) {
@@ -36,22 +69,11 @@ func (t *target) OpenConnection(ctx context.Context, authz *spi.Authorizer, guar
 		return nil, err
 	}
 	conn = wire.WithTargetDbReadTimeout(conn, readTimeout)
-	generation, ok := wire.NextBackendGeneration()
-	if !ok {
+	c, err := newConnection(conn, greeting, config, authz, guard, true)
+	if err != nil {
 		_ = conn.Close()
-		return nil, errors.New("run backend generation out of range")
+		return nil, err
 	}
-	c := &connection{
-		conn:   conn,
-		connID: greeting.ConnectionID,
-		config: config,
-		authz:  authz,
-		guard:  guard,
-	}
-	c.commandRunner = sqldb.NewProxyCommandRunner(Queries, authz.ConnectionID(), generation, func(sql string, expectedColumns int) ([][]*string, error) {
-		return runInternalQuery(c.conn, true, sql, expectedColumns)
-	}, authz.Client().PushSchemaFragment)
-	c.commandRunner.Catalog = "def"
 	return c, nil
 }
 
@@ -59,14 +81,14 @@ func (t *target) OpenConnection(ctx context.Context, authz *spi.Authorizer, guar
 // run, or the proxy is draining, during the target-DB open) closes the conn, which unwinds an in-flight fetch read
 // at once instead of holding the target DB until readTimeout.
 func (c *connection) OnOpen(ctx context.Context, cmds []*pb.ProxyCommand) error {
-	defer context.AfterFunc(ctx, func() { _ = c.conn.Close() })()
+	defer context.AfterFunc(ctx, func() { _ = c.targetDbConn.Close() })()
 	return c.commandRunner.RunAll(cmds, nil)
 }
 
 func (c *connection) ServeStatement(sql string, maxRows int) (result spi.StatementResult, err error) {
 	result.Decision, result.Denied, err = relay.ServeStatement(c.authz, spi.AuthzInput{
 		SQL:          sql,
-		ProbeSession: func() (spi.SessionSnapshot, error) { return probeSession(c.conn, true) },
+		ProbeSession: c.probeSession,
 		Commands:     c.commandRunner,
 	}, c.commandRunner, c.guard, func(toSend string, masks []*pb.ColumnMask, dec *spi.Decision) (clean bool, runErr error) {
 		payload := mysqlwire.ComQueryPayload(toSend)
@@ -79,7 +101,7 @@ func (c *connection) ServeStatement(sql string, maxRows int) (result spi.Stateme
 			if pageRows == math.MaxInt {
 				return false, errors.New("max rows exceeds MySQL SQL_SELECT_LIMIT range")
 			}
-			if err := execTargetDbSet(c.conn, "SET SQL_SELECT_LIMIT = "+strconv.Itoa(pageRows+1)); err != nil {
+			if err := execTargetDbSet(c.targetDbConn, "SET SQL_SELECT_LIMIT = "+strconv.Itoa(pageRows+1)); err != nil {
 				return false, err
 			}
 		}
@@ -87,10 +109,10 @@ func (c *connection) ServeStatement(sql string, maxRows int) (result spi.Stateme
 			if !limited {
 				return nil
 			}
-			return execTargetDbSet(c.conn, "SET SQL_SELECT_LIMIT = DEFAULT")
+			return execTargetDbSet(c.targetDbConn, "SET SQL_SELECT_LIMIT = DEFAULT")
 		}
 
-		if err := mysqlwire.WritePacket(c.conn, 0, payload); err != nil {
+		if err := mysqlwire.WritePacket(c.targetDbConn, 0, payload); err != nil {
 			_ = reset()
 			return false, err
 		}
@@ -109,7 +131,7 @@ func (c *connection) ServeStatement(sql string, maxRows int) (result spi.Stateme
 			rawErrPacket = append([]byte(nil), raw...)
 			return sanitizeErrPacket(raw)
 		}
-		clean, _, relayErr := relayResultSet(c.conn, true, h)
+		clean, _, relayErr := relayResultSet(c.targetDbConn, c.deprecateEOF, h)
 		c.authz.MarkNamespaceDirty()
 		resetErr := reset()
 		if relayErr != nil {
@@ -136,23 +158,16 @@ func (c *connection) ServeStatement(sql string, maxRows int) (result spi.Stateme
 }
 
 func (c *connection) Namespace() (string, []string, error) {
-	snapshot, err := probeSession(c.conn, true)
+	snapshot, err := c.probeSession()
 	return snapshot.CurrentCatalog, snapshot.Namespace, err
 }
 
 func (c *connection) Cancel() error {
-	conn, _, err := dialTargetDbAuthID(context.Background(), c.config, true)
-	if err != nil {
-		_ = c.conn.Close()
-		return err
-	}
-	conn = wire.WithIODeadlines(conn, 5*time.Second, 5*time.Second)
-	defer conn.Close()
-	if err := execTargetDbSet(conn, "KILL QUERY "+strconv.FormatUint(uint64(c.connID), 10)); err != nil {
-		_ = c.conn.Close()
+	if err := cancelTargetDbQuery(c.config, c.targetConnectionID); err != nil {
+		_ = c.targetDbConn.Close()
 		return err
 	}
 	return nil
 }
 
-func (c *connection) Close() error { return c.conn.Close() }
+func (c *connection) Close() error { return c.targetDbConn.Close() }

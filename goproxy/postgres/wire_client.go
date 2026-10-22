@@ -38,32 +38,19 @@ func postgresProtocolNegotiation(startup *pgproto3.StartupMessage) *pgproto3.Neg
 	}
 }
 
-type sessionCore struct {
-	currentCatalog string
-	targetDb       *pgproto3.Frontend
-	authz          *spi.Authorizer
-	generation     uint64
-	lastTxStatus   byte
-	pendingDirty   bool
-	tempOverlay    []spi.TempColumn
-	forward        func(pgproto3.BackendMessage)
-	flushForward   func() error
-}
-
-type session struct {
-	sessionCore
-	client       *pgproto3.Backend
-	clientConn   net.Conn
-	targetDbConn net.Conn
-	keyData      pgproto3.BackendKeyData
-	statements   map[string]preparedStatement
-	portals      map[string]boundPortal
-	skipToSync   bool
-	// commandRunner probes by simple query, forwarding what the target reports; extendedCommandRunner probes
-	// inside an extended-protocol sequence.
-	commandRunner, extendedCommandRunner *sqldb.ProxyCommandRunner
+// clientWireState is a wire client's protocol state on its connection: its socket, prepared statements and
+// portals, and where it stands in an extended-protocol sequence.
+type clientWireState struct {
+	*connection
+	client     *pgproto3.Backend
+	clientConn net.Conn
+	statements map[string]preparedStatement
+	portals    map[string]boundPortal
+	skipToSync bool
 	// A refusal in this extended sequence fails the target's open transaction once Sync completes.
 	abortAtSync bool
+	// extendedCommandRunner probes inside an extended-protocol sequence.
+	extendedCommandRunner *sqldb.ProxyCommandRunner
 }
 
 func (s *Server) handleConn(rawClientConn net.Conn) {
@@ -206,32 +193,33 @@ startupComplete:
 		_ = sendError(client, "FATAL", "08004", "proxy-monster: backend generation unavailable", false, 0)
 		return
 	}
-	sess := &session{
-		sessionCore: sessionCore{
-			currentCatalog: catalog,
+	wireState := &clientWireState{
+		connection: &connection{
+			target:         s.target,
+			targetDbConn:   targetDbConn,
 			targetDb:       targetDb,
-			authz:          authz,
+			keyData:        keyData,
 			generation:     generation,
+			currentCatalog: catalog,
+			authz:          authz,
 			lastTxStatus:   txStatus,
 		},
-		client:       client,
-		clientConn:   clientIO,
-		targetDbConn: targetDbConn,
-		keyData:      keyData,
-		statements:   make(map[string]preparedStatement),
-		portals:      make(map[string]boundPortal),
+		client:     client,
+		clientConn: clientIO,
+		statements: make(map[string]preparedStatement),
+		portals:    make(map[string]boundPortal),
 	}
-	sess.commandRunner = sess.newCommandRunner(sess.runProbe)
-	sess.extendedCommandRunner = sess.newCommandRunner(func(sql string, expectedColumns int) ([][]*string, error) {
-		return s.runExtendedProbe(sess, sql, expectedColumns)
+	wireState.commandRunner = wireState.newCommandRunner(wireState.runProbe)
+	wireState.extendedCommandRunner = wireState.newCommandRunner(func(sql string, expectedColumns int) ([][]*string, error) {
+		return s.runExtendedProbe(wireState, sql, expectedColumns)
 	})
-	if err := sess.commandRunner.RunAll(identity.OnOpen, nil); err != nil {
+	if err := wireState.commandRunner.RunAll(identity.OnOpen, nil); err != nil {
 		slog.Warn("postgres on-open catalog fetch failed", "error", err)
 		_ = sendError(client, "FATAL", "08004", "proxy-monster: connection catalog unavailable", false, 0)
 		return
 	}
 	// Nothing the target reports reaches the client before AuthenticationOk.
-	sess.forward, sess.flushForward = client.Send, client.Flush
+	wireState.forward, wireState.flushForward = client.Send, client.Flush
 
 	client.Send(&pgproto3.AuthenticationOk{})
 	for i := range parameters {
@@ -259,10 +247,10 @@ startupComplete:
 			}
 			return
 		}
-		if sess.skipToSync {
+		if wireState.skipToSync {
 			switch message.(type) {
 			case *pgproto3.Sync:
-				if err := s.handleSync(sess); err != nil {
+				if err := s.handleSync(wireState); err != nil {
 					return
 				}
 			case *pgproto3.Terminate:
@@ -273,43 +261,43 @@ startupComplete:
 
 		switch message := message.(type) {
 		case *pgproto3.Query:
-			if err := s.handleQuery(sess, message.String); err != nil {
+			if err := s.handleQuery(wireState, message.String); err != nil {
 				return
 			}
 		case *pgproto3.Parse:
-			if err := s.handleParse(sess, message); err != nil {
+			if err := s.handleParse(wireState, message); err != nil {
 				return
 			}
 		case *pgproto3.Bind:
-			if err := s.handleBind(sess, message); err != nil {
+			if err := s.handleBind(wireState, message); err != nil {
 				return
 			}
 		case *pgproto3.Describe:
-			if err := s.handleDescribe(sess, message); err != nil {
+			if err := s.handleDescribe(wireState, message); err != nil {
 				return
 			}
 		case *pgproto3.Execute:
-			if err := s.handleExecute(sess, message); err != nil {
+			if err := s.handleExecute(wireState, message); err != nil {
 				return
 			}
 		case *pgproto3.Close:
-			if err := s.handleClose(sess, message); err != nil {
+			if err := s.handleClose(wireState, message); err != nil {
 				return
 			}
 		case *pgproto3.Flush:
-			if err := s.handleFlush(sess); err != nil {
+			if err := s.handleFlush(wireState); err != nil {
 				return
 			}
 		case *pgproto3.Sync:
-			if err := s.handleSync(sess); err != nil {
+			if err := s.handleSync(wireState); err != nil {
 				return
 			}
 		case *pgproto3.FunctionCall:
-			if err := abortTransaction(sess); err != nil {
-				_ = closeRelay(sess, err)
+			if err := abortTransaction(wireState); err != nil {
+				_ = closeRelay(wireState, err)
 				return
 			}
-			if err := sendError(client, "ERROR", "0A000", "proxy-monster: function call protocol is not supported", true, sess.lastTxStatus); err != nil {
+			if err := sendError(client, "ERROR", "0A000", "proxy-monster: function call protocol is not supported", true, wireState.lastTxStatus); err != nil {
 				return
 			}
 		case *pgproto3.Terminate:

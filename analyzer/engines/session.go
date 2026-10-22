@@ -7,44 +7,10 @@ import (
 	"github.com/ridi-oss/sqlglot-go/dialects"
 	exp "github.com/ridi-oss/sqlglot-go/expressions"
 	"github.com/ridi-oss/sqlglot-go/tokens"
+	"google.golang.org/protobuf/proto"
 
 	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 )
-
-// CatalogName is a catalog name in its engine's canonical spelling.
-type CatalogName struct{ name string }
-
-func (n CatalogName) String() string { return n.name }
-
-// SchemaName is a schema name in its engine's canonical spelling.
-type SchemaName struct{ name string }
-
-func (n SchemaName) String() string { return n.name }
-
-// schemas is canonical schema names written as literals in this package.
-func schemas(names ...string) []SchemaName {
-	out := make([]SchemaName, len(names))
-	for i, n := range names {
-		out[i] = SchemaName{n}
-	}
-	return out
-}
-
-// ColumnName is a column's catalog, schema, table and column name in its engine's canonical spelling.
-type ColumnName struct {
-	catalog CatalogName
-	schema  SchemaName
-	table   string
-	column  string
-}
-
-func (n ColumnName) Catalog() CatalogName { return n.catalog }
-func (n ColumnName) Schema() SchemaName   { return n.schema }
-func (n ColumnName) Table() string        { return n.table }
-func (n ColumnName) Column() string       { return n.column }
-
-// Dialect is the engine's sqlglot dialect before any datasource is known; it folds no datasource's names.
-func (e *Engine) Dialect() *dialects.Dialect { return e.Traits.dialect() }
 
 // Datasource is an engine as one datasource spells names: MySQL folds by the lower_case_table_names its target reported.
 type Datasource struct {
@@ -63,6 +29,45 @@ func (e *Engine) Datasource(targetSettings *pb.TargetSettings) (Datasource, erro
 		}
 	}
 	return Datasource{e, d, targetSettings.GetEngineVersion()}, nil
+}
+
+// sessionSettings is what one analysis call reads: the engine, how the target spells names, the dialect the
+// session's statements parse by, and what the session observed (MySQL ansi_quotes, Postgres shadowed
+// functions, the Athena workgroup).
+type sessionSettings struct {
+	engine      *Engine
+	datasource  Datasource
+	dialect     *dialects.Dialect
+	observation *pb.SessionObservation
+}
+
+// sessionSettings is t with what one session observed.
+func (t Datasource) sessionSettings(observation *pb.SessionObservation) (*sessionSettings, error) {
+	d, err := t.Traits.sessionDialect(t, observation)
+	if err != nil {
+		return nil, err
+	}
+	if observation != nil {
+		observation = proto.Clone(observation).(*pb.SessionObservation)
+	}
+	return &sessionSettings{engine: t.Engine, datasource: t, dialect: d, observation: observation}, nil
+}
+
+// newSessionSettings reads config, failing closed on a target or session the engine
+// cannot analyze (MySQL without its version or lower_case_table_names).
+func newSessionSettings(config *pb.EngineConfig) (*sessionSettings, error) {
+	if config == nil {
+		return nil, fmt.Errorf("engine config is required")
+	}
+	e, ok := ByProto(config.GetEngine())
+	if !ok {
+		return nil, fmt.Errorf("unsupported engine %s", config.GetEngine())
+	}
+	datasource, err := e.Datasource(config.GetTarget())
+	if err != nil {
+		return nil, err
+	}
+	return datasource.sessionSettings(config.GetSession())
 }
 
 // Dialect is the sqlglot dialect the datasource's canonical names fold by.

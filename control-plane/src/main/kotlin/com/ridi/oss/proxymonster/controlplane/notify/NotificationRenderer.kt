@@ -57,7 +57,14 @@ class NotificationRenderer(private val catalog: MessageCatalog = MessageCatalog(
             ?.let { "\n" + catalog.text("field.failure", locale, mapOf("error" to SlackMarkup.escape(it.take(REASON_MAX_CHARS)))) }
             ?: ""
         val statementNote = if (m.requestKind == "QUERY" && m.event != NotificationEvent.TASK_SUBMITTED && (m.statement.text == null || !m.statement.complete)) {
-            "\n" + catalog.text("field.statement_hidden_note", locale)
+            "\n" + catalog.text(
+                when (m.statement.preview) {
+                    StatementPreview.THREAD -> "field.statement_in_thread_note"
+                    StatementPreview.CONSOLE -> "field.statement_in_console_note"
+                    null -> "field.statement_hidden_note"
+                },
+                locale,
+            )
         } else {
             ""
         }
@@ -111,6 +118,11 @@ class NotificationRenderer(private val catalog: MessageCatalog = MessageCatalog(
             )
         }
     }
+
+    /** A thread reply carrying [sql] as revision [revision]. */
+    fun threadStatement(sql: String, revision: Int, locale: String): String =
+        catalog.text("thread.statement", locale, mapOf("revision" to revision.toString())) +
+            "\n" + fenced(sql)
 
     // A requester's SQL must not close the ``` block and inject forged prose ("…``` *reviewed — approve*").
     private fun fenced(sql: String) = "```\n" + sql.replace("```", "``\u200b`") + "\n```"

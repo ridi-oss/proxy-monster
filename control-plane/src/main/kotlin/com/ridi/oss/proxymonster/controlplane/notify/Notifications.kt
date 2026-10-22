@@ -105,9 +105,13 @@ enum class StatementDisclosure {
  *
  * [complete] is the gate on approve-and-run: an approver may only decide from a message carrying the WHOLE
  * statement. The test is what the recipient can read, never which mode the operator configured — a statement
- * shown under FULL is still elided by a transport's own length ceiling. See [renderStatement].
+ * shown under FULL is still elided by a transport's own length ceiling. See [renderStatement]. [full] is the
+ * whole statement when it may be posted in a thread, and [preview] marks [text] as a preview of it.
  */
-data class RenderedStatement(val text: String?, val complete: Boolean)
+data class RenderedStatement(val text: String?, val complete: Boolean, val full: String? = null, val preview: StatementPreview? = null)
+
+/** Where a previewed statement can be read whole: its thread, or only the console. */
+enum class StatementPreview { THREAD, CONSOLE }
 
 /**
  * The statement text to place in a message. [show] is the disclosure decision the caller has already made

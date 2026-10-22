@@ -364,6 +364,8 @@ class NotificationService(
         val show = row.event != NotificationEvent.TASK_SUBMITTED &&
             discloseStatement(disclosure, pending = pending, cleared = cleared)
         val statement = renderStatement(req.sql, show, transport.statementHardLimit)
+            // The requester's receipt started without the statement, so its thread never got one to point at.
+            .let { if (show && cleared && row.kind != NotificationKind.REQUESTER) it.copy(full = req.sql) else it }
         // The requester's receipt names who was actually asked — the durable task.requested recipients, not a
         // fresh eligibility recompute that role churn between enqueue and delivery could drift from (and that
         // would re-run Cedar per candidate). Plain identities, resolved to display by the transport without an

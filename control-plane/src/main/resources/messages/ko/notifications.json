@@ -43,7 +43,9 @@
     "duration_minutes": "{n}분",
     "spent_rate": "사용한 한도: {rate}",
     "statement_shown": "다음 쿼리",
-    "row_count": " ({n}행)"
+    "row_count": " ({n}행)",
+    "statement_in_thread_note": "_전체 쿼리는 스레드에 있습니다._",
+    "statement_in_console_note": "_쿼리가 너무 길어 Slack에서 검토할 수 없습니다. 요청을 열어 콘솔에서 검토하세요._"
   },
   "action": {
     "review": "검토",
@@ -93,7 +95,8 @@
     "failed": "실행이 실패했습니다.",
     "cancelled": "실행이 취소되었습니다.",
     "cc_added": "*{actor}* 님이 {body} 님을 참조로 추가했습니다.",
-    "cc_removed": "*{actor}* 님이 {body} 님을 참조에서 뺐습니다."
+    "cc_removed": "*{actor}* 님이 {body} 님을 참조에서 뺐습니다.",
+    "statement": "전체 쿼리 (리비전 {revision}):"
   },
   "role": {
     "requested": "*{requester}* 님이 *{datasource}*에서 *{roleName}* 역할을 {duration} 동안 요청했습니다.{reason}",

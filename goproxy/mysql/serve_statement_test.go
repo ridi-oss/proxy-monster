@@ -31,7 +31,7 @@ func scriptedConnection(t *testing.T, decider spi.ControlPlane, maxRows int, res
 	_ = server.SetDeadline(time.Now().Add(5 * time.Second))
 	authz := spi.NewAuthorizer(decider, "", nil)
 	authz.SetSnapshot(spi.SessionSnapshot{Namespace: []string{"test"}})
-	c := &connection{conn: client, authz: authz, commandRunner: &sqldb.ProxyCommandRunner{Catalog: "def"}}
+	c := &connection{targetDbConn: client, deprecateEOF: true, authz: authz, commandRunner: &sqldb.ProxyCommandRunner{Catalog: "def"}}
 	writes := make(chan string, 3)
 	go func() {
 		defer close(writes)

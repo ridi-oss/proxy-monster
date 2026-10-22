@@ -68,7 +68,7 @@ func scriptedConnection(t *testing.T, responses ...[]byte) (*connection, <-chan 
 	_ = client.SetDeadline(time.Now().Add(10 * time.Second))
 	_ = server.SetDeadline(time.Now().Add(10 * time.Second))
 
-	c := &connection{conn: client, sessionCore: sessionCore{targetDb: pgproto3.NewFrontend(client, client)}}
+	c := &connection{targetDbConn: client, targetDb: pgproto3.NewFrontend(client, client)}
 	requests := make(chan []pgproto3.FrontendMessage, len(responses))
 	go func() {
 		defer close(requests)
@@ -129,7 +129,7 @@ func assertRows(t *testing.T, got, want [][]*string) {
 	}
 }
 
-func scriptedStreamCore(t *testing.T, responses ...[]byte) (*sessionCore, func()) {
+func scriptedStreamConnection(t *testing.T, responses ...[]byte) (*connection, func()) {
 	t.Helper()
 	client, server := net.Pipe()
 	_ = client.SetDeadline(time.Now().Add(10 * time.Second))
@@ -141,24 +141,24 @@ func scriptedStreamCore(t *testing.T, responses ...[]byte) (*sessionCore, func()
 			}
 		}
 	}()
-	return &sessionCore{targetDb: pgproto3.NewFrontend(client, client)}, func() { _ = client.Close(); _ = server.Close() }
+	return &connection{targetDb: pgproto3.NewFrontend(client, client)}, func() { _ = client.Close(); _ = server.Close() }
 }
 
 func TestStreamResultSimpleRejectsExtendedAck(t *testing.T) {
-	core, closeCore := scriptedStreamCore(t, encodePG(t, &pgproto3.ParseComplete{}))
-	defer closeCore()
-	_, err := core.streamResult(nil, streamOpts{}, nil)
+	c, closeConnection := scriptedStreamConnection(t, encodePG(t, &pgproto3.ParseComplete{}))
+	defer closeConnection()
+	_, err := c.streamResult(nil, streamOpts{}, nil)
 	if !errors.Is(err, errUnexpectedFrame) {
 		t.Fatalf("err = %v, want unexpected-frame rejection", err)
 	}
 }
 
 func TestStreamResultMaskUnboundEmitsNoDataRow(t *testing.T) {
-	core, closeCore := scriptedStreamCore(t, encodePG(t, rowDesc("secret"), dataRow([]byte("cleartext"))))
-	defer closeCore()
+	c, closeConnection := scriptedStreamConnection(t, encodePG(t, rowDesc("secret"), dataRow([]byte("cleartext"))))
+	defer closeConnection()
 	ordinal := int32(99)
 	dataRows := 0
-	_, err := core.streamResult([]*pb.ColumnMask{{Ordinal: &ordinal}}, streamOpts{}, func(message pgproto3.BackendMessage, _ int64) error {
+	_, err := c.streamResult([]*pb.ColumnMask{{Ordinal: &ordinal}}, streamOpts{}, func(message pgproto3.BackendMessage, _ int64) error {
 		if _, ok := message.(*pgproto3.DataRow); ok {
 			dataRows++
 		}
@@ -175,7 +175,7 @@ func TestSoftProbeWidthMismatchDrainsForNextStatement(t *testing.T) {
 	defer server.Close()
 	_ = client.SetDeadline(time.Now().Add(10 * time.Second))
 	_ = server.SetDeadline(time.Now().Add(10 * time.Second))
-	core := &sessionCore{targetDb: pgproto3.NewFrontend(client, client)}
+	c := &connection{targetDb: pgproto3.NewFrontend(client, client)}
 	go func() {
 		targetDb := pgproto3.NewBackend(server, server)
 		for _, response := range [][]byte{
@@ -190,10 +190,10 @@ func TestSoftProbeWidthMismatchDrainsForNextStatement(t *testing.T) {
 			}
 		}
 	}()
-	if _, err := core.runProbe("first", 2); err == nil || !strings.Contains(err.Error(), "want 2") {
+	if _, err := c.runProbe("first", 2); err == nil || !strings.Contains(err.Error(), "want 2") {
 		t.Fatalf("first err = %v, want width mismatch", err)
 	}
-	rows, err := core.runProbe("second", 1)
+	rows, err := c.runProbe("second", 1)
 	if err != nil {
 		t.Fatalf("second probe: %v", err)
 	}
@@ -308,12 +308,12 @@ func TestConnectionExecutePGTargetDbError(t *testing.T) {
 }
 
 func TestStreamResultTargetDbErrStaysProxyInternalWithBothForms(t *testing.T) {
-	core, closeCore := scriptedStreamCore(t, encodePG(t,
+	c, closeConnection := scriptedStreamConnection(t, encodePG(t,
 		&pgproto3.ErrorResponse{Severity: "ERROR", Code: "22P02", Message: "invalid input syntax for type integer: \"010-1234-5678\""},
 		&pgproto3.ReadyForQuery{TxStatus: 'I'},
 	))
-	defer closeCore()
-	targetDbErr, _ := core.streamResult(nil, streamOpts{soft: true}, func(pgproto3.BackendMessage, int64) error { return nil })
+	defer closeConnection()
+	targetDbErr, _ := c.streamResult(nil, streamOpts{soft: true}, func(pgproto3.BackendMessage, int64) error { return nil })
 	if targetDbErr == nil {
 		t.Fatal("expected a target-DB error from the ErrorResponse")
 	}

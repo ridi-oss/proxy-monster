@@ -48,12 +48,12 @@ func sanitizeError(msg *pgproto3.ErrorResponse) *pgproto3.ErrorResponse {
 
 // forwardError sends a target DB ErrorResponse to the client, sanitized when the current decision has
 // diagnostic redaction set, otherwise verbatim.
-func forwardError(sess *session, msg *pgproto3.ErrorResponse) {
-	if sess.authz.SanitizeDiagnostics() {
-		sess.client.Send(sanitizeError(msg))
+func forwardError(wireState *clientWireState, msg *pgproto3.ErrorResponse) {
+	if wireState.authz.SanitizeDiagnostics() {
+		wireState.client.Send(sanitizeError(msg))
 		return
 	}
-	sess.client.Send(msg)
+	wireState.client.Send(msg)
 }
 
 // forwardNotice sends a target DB NoticeResponse to the client — forwarded even on a redacted connection. A
@@ -63,9 +63,9 @@ func forwardError(sess *session, msg *pgproto3.ErrorResponse) {
 // trigger / vouched function that RAISEs a NOTICE is the accepted residual — the same one the kept
 // ErrorResponse structural fields carry (see sanitizeError / docs/diagnostic-redaction.md). The copy
 // defends against pgproto3 reusing the target DB receive buffer until the next client flush.
-func forwardNotice(sess *session, msg *pgproto3.NoticeResponse) {
+func forwardNotice(wireState *clientWireState, msg *pgproto3.NoticeResponse) {
 	copyMessage := *msg
-	sess.client.Send(&copyMessage)
+	wireState.client.Send(&copyMessage)
 }
 
 func isSchemaOnlyMessage(sqlState, message string) bool {

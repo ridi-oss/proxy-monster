@@ -15,8 +15,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
-
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 
 	"github.com/jackc/pgx/v5/pgproto3"
@@ -173,8 +171,8 @@ func dialTargetDbAuthParams(ctx context.Context, config spi.TargetConfig, extra 
 			if err := validateStartupParameters(parameters); err != nil {
 				return nil, nil, pgproto3.BackendKeyData{}, 0, "", err
 			}
-			core := sessionCore{targetDb: frontend, lastTxStatus: message.TxStatus}
-			catalog, err := core.probeCurrentCatalog()
+			c := connection{targetDb: frontend, lastTxStatus: message.TxStatus}
+			catalog, err := c.probeCurrentCatalog()
 			if err != nil {
 				return nil, nil, pgproto3.BackendKeyData{}, 0, "", err
 			}
@@ -182,7 +180,7 @@ func dialTargetDbAuthParams(ctx context.Context, config spi.TargetConfig, extra 
 				return nil, nil, pgproto3.BackendKeyData{}, 0, "", fmt.Errorf("clear target-DB auth deadline: %w", err)
 			}
 			keep = true
-			return conn, parameters, keyData, core.lastTxStatus, catalog, nil
+			return conn, parameters, keyData, c.lastTxStatus, catalog, nil
 		case *pgproto3.ErrorResponse:
 			return nil, nil, pgproto3.BackendKeyData{}, 0, "", fmt.Errorf("target-DB startup failed: %s", message.Message)
 		case *pgproto3.NoticeResponse:
@@ -237,7 +235,7 @@ func containsString(values []string, want string) bool {
 }
 
 // probeCurrentCatalog runs once at connect; a Postgres session cannot change its database afterwards.
-func (c *sessionCore) probeCurrentCatalog() (string, error) {
+func (c *connection) probeCurrentCatalog() (string, error) {
 	rows, err := c.runProbe("SELECT pg_catalog.current_database()", 1)
 	if err != nil {
 		return "", fmt.Errorf("target-DB catalog probe: %w", err)
@@ -248,7 +246,7 @@ func (c *sessionCore) probeCurrentCatalog() (string, error) {
 	return *rows[0][0], nil
 }
 
-func (c *sessionCore) probeSession() (spi.SessionSnapshot, error) {
+func (c *connection) probeSession() (spi.SessionSnapshot, error) {
 	rows, err := c.runProbe(namespaceProbeSQL, 1)
 	if err != nil {
 		return spi.SessionSnapshot{}, fmt.Errorf("target-DB namespace probe: %w", err)
@@ -294,7 +292,7 @@ func snapshotFromRows(rows [][]*string) (spi.SessionSnapshot, error) {
 	}, nil
 }
 
-func (c *sessionCore) probeTempColumns() ([]spi.TempColumn, error) {
+func (c *connection) probeTempColumns() ([]spi.TempColumn, error) {
 	rows, err := c.runProbe(tempColumnsProbeSQL, 6)
 	if err != nil {
 		return nil, fmt.Errorf("target DB temp-column probe: %w", err)
@@ -324,12 +322,12 @@ func tempColumnsFromRows(rows [][]*string) ([]spi.TempColumn, error) {
 	return columns, nil
 }
 
-func (c *sessionCore) runProbe(sql string, expectedColumns int) ([][]*string, error) {
+func (c *connection) runProbe(sql string, expectedColumns int) ([][]*string, error) {
 	c.targetDb.Send(&pgproto3.Query{String: sql})
 	return c.collectProbe(expectedColumns)
 }
 
-func (c *sessionCore) collectProbe(expectedColumns int) ([][]*string, error) {
+func (c *connection) collectProbe(expectedColumns int) ([][]*string, error) {
 	if err := c.targetDb.Flush(); err != nil {
 		return nil, err
 	}
@@ -356,7 +354,7 @@ func (c *sessionCore) collectProbe(expectedColumns int) ([][]*string, error) {
 	return result.Rows, nil
 }
 
-func (c *sessionCore) authzInput(sql string, commandRunner spi.ProxyCommandRunner) spi.AuthzInput {
+func (c *connection) authzInput(sql string, commandRunner spi.ProxyCommandRunner) spi.AuthzInput {
 	// In an aborted transaction the probe below returns the session's last snapshot instead of querying.
 	if c.pendingDirty {
 		c.authz.MarkNamespaceDirty()
@@ -384,12 +382,6 @@ func (c *sessionCore) authzInput(sql string, commandRunner spi.ProxyCommandRunne
 			return temps, err
 		},
 	}
-}
-
-func (c *sessionCore) newCommandRunner(probe func(sql string, expectedColumns int) ([][]*string, error)) *sqldb.ProxyCommandRunner {
-	commandRunner := sqldb.NewProxyCommandRunner(Queries, c.authz.ConnectionID(), c.generation, probe, c.authz.Client().PushSchemaFragment)
-	commandRunner.Catalog = c.currentCatalog
-	return commandRunner
 }
 
 func (s *Server) forwardCancelRequest(message *pgproto3.CancelRequest) {

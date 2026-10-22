@@ -66,9 +66,9 @@ type EngineTraits struct {
 	// catalogName is the catalog a datasource's tables are keyed under: MySQL def, Postgres the database as
 	// registered, Athena AwsDataCatalog -> awsdatacatalog.
 	catalogName func(registeredDbName string) CatalogName
-	// introspected puts rows the target's own catalog returned in canonical spelling: MySQL App.Users.ID ->
+	// catalogColumnNames spells the rows the target's own catalog returned canonically: MySQL App.Users.ID ->
 	// app.users.id under lower_case_table_names=1, Postgres unchanged.
-	introspected func(d *dialects.Dialect, rows []*pb.Column) []ColumnName
+	catalogColumnNames func(d *dialects.Dialect, rows []*pb.Column) []ColumnName
 	// dialect is the engine's dialect before any datasource is known.
 	dialect func() *dialects.Dialect
 	// datasourceDialect is the dialect a datasource's names fold by: MySQL's follows the lower_case_table_names its

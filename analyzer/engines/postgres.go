@@ -25,7 +25,7 @@ var Postgres = &Engine{
 		sessionSchemaPrefixes: schemas("pg_temp_", "pg_toast"),
 		// The database name is a connection parameter libpq matches exactly, not SQL text, so it is not folded.
 		catalogName:         func(registeredDbName string) CatalogName { return CatalogName{registeredDbName} },
-		introspected:        postgresIntrospected,
+		catalogColumnNames:  postgresCatalogColumnNames,
 		dialect:             dialects.Postgres,
 		sessionDialect:      postgresSessionDialect,
 		bareCallIsBuiltin:   postgresBareCallIsBuiltin,
@@ -51,8 +51,8 @@ var Postgres = &Engine{
 	hooks: sharedHooks{},
 }
 
-// postgresIntrospected keeps catalog rows as they are: pg_catalog already holds the exact names.
-func postgresIntrospected(_ *dialects.Dialect, rows []*pb.Column) []ColumnName {
+// postgresCatalogColumnNames keeps catalog rows as they are: pg_catalog already holds the exact names.
+func postgresCatalogColumnNames(_ *dialects.Dialect, rows []*pb.Column) []ColumnName {
 	out := make([]ColumnName, len(rows))
 	for i, row := range rows {
 		out[i] = ColumnName{CatalogName{row.GetCatalog()}, SchemaName{row.GetSchema()}, row.GetTable(), row.GetColumn()}

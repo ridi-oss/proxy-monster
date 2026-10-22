@@ -77,7 +77,7 @@ func (t Datasource) Dialect() *dialects.Dialect { return t.dialect }
 // column, DATABASE(), a stored default schema. MySQL folds by lower_case_table_names, Postgres keeps them, Athena
 // folds all.
 func (t Datasource) IntrospectedColumns(rows []*pb.Column) []ColumnName {
-	return t.Traits.introspected(t.dialect, rows)
+	return t.Traits.catalogColumnNames(t.dialect, rows)
 }
 
 // IntrospectedSchema is IntrospectedColumns for a row that names only a schema.

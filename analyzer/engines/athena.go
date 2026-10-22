@@ -23,10 +23,10 @@ var Athena = &Engine{
 		IdentifierQuote: `"`,
 		systemSchemas:   schemas("information_schema"),
 		// Athena resolves catalog names case-insensitively.
-		catalogName:    func(registeredDbName string) CatalogName { return CatalogName{athenaName(registeredDbName)} },
-		introspected:   athenaIntrospected,
-		dialect:        dialects.Athena,
-		sessionDialect: athenaSessionDialect,
+		catalogName:        func(registeredDbName string) CatalogName { return CatalogName{athenaName(registeredDbName)} },
+		catalogColumnNames: athenaCatalogColumnNames,
+		dialect:            dialects.Athena,
+		sessionDialect:     athenaSessionDialect,
 		// Athena has no search path, so a bare call never resolves in a system schema.
 		bareCallIsBuiltin:   noBuiltinBareCall,
 		showUtilityCommand:  athenaShowUtilityCommand,
@@ -50,9 +50,9 @@ var athenaDialect = dialects.Athena()
 // athenaName folds a name as Athena resolves it, case-insensitively: AwsDataCatalog -> awsdatacatalog.
 func athenaName(name string) string { return athenaDialect.FoldIdentifierName(name, false) }
 
-// athenaIntrospected folds every part of a catalog row: AwsDataCatalog.HR.Salaries.SSN ->
+// athenaCatalogColumnNames folds every part of a catalog row: AwsDataCatalog.HR.Salaries.SSN ->
 // awsdatacatalog.hr.salaries.ssn.
-func athenaIntrospected(_ *dialects.Dialect, rows []*pb.Column) []ColumnName {
+func athenaCatalogColumnNames(_ *dialects.Dialect, rows []*pb.Column) []ColumnName {
 	out := make([]ColumnName, len(rows))
 	for i, row := range rows {
 		out[i] = ColumnName{CatalogName{athenaName(row.GetCatalog())}, SchemaName{athenaName(row.GetSchema())}, athenaName(row.GetTable()), athenaName(row.GetColumn())}

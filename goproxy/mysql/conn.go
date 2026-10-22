@@ -263,7 +263,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 				stop = true
 				decision, denied, serveErr := relay.ServeStatement(authz, spi.AuthzInput{
 					SQL:          sql,
-					ProbeSession: func() (spi.SessionObservation, error) { return probeSession(targetDbConn, deprecateEOF) },
+					ProbeSession: func() (spi.SessionSnapshot, error) { return probeSession(targetDbConn, deprecateEOF) },
 					Commands:     commandRunner,
 					CheckTargetError: func(sql string) (*spi.TargetError, error) {
 						return checkTargetError(targetDbConn, deprecateEOF, sql)
@@ -320,7 +320,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 				}
 				return lastSeq, stop, false
 			}
-			batch := splitBatch(multiStatements, sql, targetGreeting.ServerVersion, func() (spi.SessionObservation, error) {
+			batch := splitBatch(multiStatements, sql, targetGreeting.ServerVersion, func() (spi.SessionSnapshot, error) {
 				return probeSession(targetDbConn, deprecateEOF)
 			})
 			if batch == nil {
@@ -378,13 +378,13 @@ func (s *Server) handleConn(clientConn net.Conn) {
 			sql := string(payload[1:])
 			var frozen []string
 			var frozenAnsiQuotes bool
-			proceed, allowed, err := s.authorize(authz, clientConn, targetDbConn, deprecateEOF, seq, sql, commandRunner, func() (spi.SessionObservation, error) {
-				obs, err := probeSession(targetDbConn, deprecateEOF)
+			proceed, allowed, err := s.authorize(authz, clientConn, targetDbConn, deprecateEOF, seq, sql, commandRunner, func() (spi.SessionSnapshot, error) {
+				snapshot, err := probeSession(targetDbConn, deprecateEOF)
 				if err == nil {
-					frozen = append([]string{}, obs.Namespace...)
-					frozenAnsiQuotes = obs.GetMysql().GetAnsiQuotes()
+					frozen = append([]string{}, snapshot.Namespace...)
+					frozenAnsiQuotes = snapshot.GetMysql().GetAnsiQuotes()
 				}
-				return obs, err
+				return snapshot, err
 			})
 			if err != nil {
 				return
@@ -468,8 +468,8 @@ func (s *Server) handleConn(clientConn net.Conn) {
 			// namespace rather than live session state, then dirty the engine cache immediately so it cannot
 			// leak into the next statement's decision.
 			authz.MarkNamespaceDirty()
-			proceed, allowed, err := s.authorize(authz, clientConn, targetDbConn, deprecateEOF, seq, ps.sql, commandRunner, func() (spi.SessionObservation, error) {
-				return mysqlSession(ps.namespace, ps.ansiQuotes), nil
+			proceed, allowed, err := s.authorize(authz, clientConn, targetDbConn, deprecateEOF, seq, ps.sql, commandRunner, func() (spi.SessionSnapshot, error) {
+				return mysqlSnapshot(ps.namespace, ps.ansiQuotes), nil
 			})
 			authz.MarkNamespaceDirty()
 			if err != nil {
@@ -580,7 +580,7 @@ func (s *Server) authorize(
 	seq byte,
 	sql string,
 	commandRunner spi.ProxyCommandRunner,
-	probeSession func() (spi.SessionObservation, error),
+	probeSession func() (spi.SessionSnapshot, error),
 ) (spi.Proceed, bool, error) {
 	verdict := authz.Authorize(spi.AuthzInput{
 		SQL:          sql,
@@ -683,18 +683,18 @@ func mysqlNamespace(schema string) []string {
 
 // splitBatch cuts a multi-statement query into its statements when the client enabled them, or returns nil
 // to serve sql as one, which the analyzer denies if it holds several.
-func splitBatch(enabled bool, sql, version string, observe func() (spi.SessionObservation, error)) []string {
+func splitBatch(enabled bool, sql, version string, observe func() (spi.SessionSnapshot, error)) []string {
 	if !enabled || !strings.Contains(strings.TrimRight(sql, "; \t\r\n"), ";") {
 		return nil
 	}
-	session, err := observe()
+	snapshot, err := observe()
 	if err != nil {
 		return nil
 	}
 	batch, ok := engines.SplitBatch(sql, &enginepb.EngineConfig{
 		Engine:  enginepb.Engine_MYSQL,
 		Target:  &enginepb.TargetSettings{EngineVersion: version, MysqlLowerCaseTableNames: proto.Int32(0)},
-		Session: session.SessionObservation,
+		Session: snapshot.SessionObservation,
 	})
 	if !ok || len(batch) < 2 {
 		return nil

@@ -117,10 +117,11 @@ func (s *RunSession) Namespace() (string, []string, error) {
 	}
 	// An aborted transaction runs no queries; authorization uses the same last snapshot there.
 	if s.lastTxStatus == 'E' {
-		return s.session.CurrentCatalog, append([]string(nil), s.session.Namespace...), nil
+		snapshot := s.authz.Snapshot()
+		return snapshot.CurrentCatalog, snapshot.Namespace, nil
 	}
-	session, err := s.probeSession()
-	return session.CurrentCatalog, session.Namespace, err
+	snapshot, err := s.probeSession()
+	return snapshot.CurrentCatalog, snapshot.Namespace, err
 }
 
 func (s *RunSession) Cancel() error {

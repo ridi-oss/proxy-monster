@@ -115,12 +115,12 @@ func (c *flowClient) ValidateToken(token, _ string) (spi.Identity, error) {
 }
 
 func (c *flowClient) Decide(request spi.DecideRequest) spi.DecisionOutcome {
-	wire := &pb.DecisionRequest{Sql: request.SQL, SearchPath: request.Session.Namespace, CurrentCatalog: request.Session.CurrentCatalog, Session: request.Session.SessionObservation}
+	wire := &pb.DecisionRequest{Sql: request.SQL, SearchPath: request.Snapshot.Namespace, CurrentCatalog: request.Snapshot.CurrentCatalog, Session: request.Snapshot.SessionObservation}
 	c.mu.Lock()
 	c.decisions = append(c.decisions, wire)
 	verdict := c.verdict
 	c.mu.Unlock()
-	if request.Session.GetAthena().GetWorkgroup() == "" {
+	if request.Snapshot.GetAthena().GetWorkgroup() == "" {
 		return spi.DecisionOutcome{Err: "missing athena context"}
 	}
 	_, decision := decisionFromWireForTest(verdict)

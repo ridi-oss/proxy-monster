@@ -91,7 +91,7 @@ func TestSessionFromRows(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := sessionFromRows([][]*string{{str(tc.json)}})
+			got, err := snapshotFromRows([][]*string{{str(tc.json)}})
 			if err != nil {
 				t.Fatalf("sessionFromRows: %v", err)
 			}
@@ -121,7 +121,7 @@ func TestSessionFromRows(t *testing.T) {
 		{name: "duplicate function", rows: [][]*string{{str(`{"search_path":[],"shadowed_functions":["unnest","unnest"]}`)}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := sessionFromRows(tc.rows); err == nil {
+			if _, err := snapshotFromRows(tc.rows); err == nil {
 				t.Fatal("sessionFromRows succeeded, want strict error")
 			}
 		})

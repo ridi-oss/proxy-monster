@@ -47,6 +47,28 @@ func TestRunSessionSubmitsPollsReadsAndMasks(t *testing.T) {
 	}
 }
 
+func TestRunSessionSendsEachStatementsRowCap(t *testing.T) {
+	aws := newFakeAthena()
+	target := testTarget(t, aws.handle)
+	client := &flowClient{principal: "alice", verdict: maskVerdict(), completed: make(chan struct{}, 8)}
+	session, err := target.NewRunSession(context.Background(), spi.NewAuthorizer(client, "login-alice", []byte("0123456789abcdef")), nil, 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	if err := session.OnOpen(context.Background(), []*pb.ProxyCommand{{Command: &pb.ProxyCommand_Refetch{Refetch: &pb.Refetch{Schema: "example", Catalog: "awsdatacatalog"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, maxRows := range []int{100, 7} {
+		if _, err := session.ServeStatement("SELECT * FROM users WHERE n > 0", maxRows); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(client.decisions) != 2 || client.decisions[1].GetSession().GetAthena().GetMaxRows() != 7 {
+		t.Fatalf("second decision must carry its own row cap: %+v", client.decisions)
+	}
+}
+
 func TestRunSessionAppliesTheVerdictRowCap(t *testing.T) {
 	aws := newFakeAthena()
 	target := testTarget(t, aws.handle)

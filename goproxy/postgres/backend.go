@@ -248,14 +248,14 @@ func (c *sessionCore) probeCurrentCatalog() (string, error) {
 	return *rows[0][0], nil
 }
 
-func (c *sessionCore) probeSession() (spi.SessionObservation, error) {
+func (c *sessionCore) probeSession() (spi.SessionSnapshot, error) {
 	rows, err := c.runProbe(namespaceProbeSQL, 1)
 	if err != nil {
-		return spi.SessionObservation{}, fmt.Errorf("target-DB namespace probe: %w", err)
+		return spi.SessionSnapshot{}, fmt.Errorf("target-DB namespace probe: %w", err)
 	}
-	observed, err := sessionFromRows(rows)
-	observed.CurrentCatalog = c.currentCatalog
-	return observed, err
+	snapshot, err := snapshotFromRows(rows)
+	snapshot.CurrentCatalog = c.currentCatalog
+	return snapshot, err
 }
 
 type postgresNamespaceObservation struct {
@@ -264,27 +264,27 @@ type postgresNamespaceObservation struct {
 	PgCatalogXIDVisible *bool    `json:"pg_catalog_xid_visible"`
 }
 
-func sessionFromRows(rows [][]*string) (spi.SessionObservation, error) {
+func snapshotFromRows(rows [][]*string) (spi.SessionSnapshot, error) {
 	if len(rows) != 1 || len(rows[0]) != 1 || rows[0][0] == nil {
-		return spi.SessionObservation{}, errors.New("namespace probe returned a malformed result")
+		return spi.SessionSnapshot{}, errors.New("namespace probe returned a malformed result")
 	}
 	var observed postgresNamespaceObservation
 	decoder := json.NewDecoder(strings.NewReader(*rows[0][0]))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&observed); err != nil {
-		return spi.SessionObservation{}, fmt.Errorf("namespace probe returned invalid JSON: %w", err)
+		return spi.SessionSnapshot{}, fmt.Errorf("namespace probe returned invalid JSON: %w", err)
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return spi.SessionObservation{}, errors.New("namespace probe returned trailing JSON")
+		return spi.SessionSnapshot{}, errors.New("namespace probe returned trailing JSON")
 	}
 	seen := make(map[string]bool, len(observed.ShadowedFunctions))
 	for _, name := range observed.ShadowedFunctions {
 		if name == "" || name != strings.ToLower(name) || seen[name] {
-			return spi.SessionObservation{}, fmt.Errorf("namespace probe returned invalid shadowed function %q", name)
+			return spi.SessionSnapshot{}, fmt.Errorf("namespace probe returned invalid shadowed function %q", name)
 		}
 		seen[name] = true
 	}
-	return spi.SessionObservation{
+	return spi.SessionSnapshot{
 		Namespace: observed.SearchPath,
 		SessionObservation: &enginepb.SessionObservation{Engine: &enginepb.SessionObservation_Postgres{Postgres: &enginepb.PostgresSession{
 			ShadowedFunctions:         observed.ShadowedFunctions,
@@ -365,17 +365,13 @@ func (c *sessionCore) authzInput(sql string, commandRunner spi.ProxyCommandRunne
 	return spi.AuthzInput{
 		SQL:      sql,
 		Commands: commandRunner,
-		ProbeSession: func() (spi.SessionObservation, error) {
+		ProbeSession: func() (spi.SessionSnapshot, error) {
 			// Postgres never reports MysqlAnsiQuotes: it has no ANSI_QUOTES mode, and its string-lexing
 			// divergence (standard_conforming_strings) fails the connection closed at the relay instead.
 			if c.lastTxStatus == 'E' {
-				return c.session.Clone(), nil
+				return c.authz.Snapshot(), nil
 			}
-			session, err := c.probeSession()
-			if err == nil {
-				c.session = session.Clone()
-			}
-			return session, err
+			return c.probeSession()
 		},
 		ProbeTempColumns: func() ([]spi.TempColumn, error) {
 			if c.lastTxStatus == 'E' {

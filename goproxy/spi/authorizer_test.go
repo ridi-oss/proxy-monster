@@ -32,10 +32,10 @@ func okOutcome(action string, masks []*pb.ColumnMask) DecisionOutcome {
 }
 
 // staticNamespace returns a probe callback that yields ns (no ANSI_QUOTES) and counts its calls.
-func staticNamespace(ns []string, calls *int) func() (SessionObservation, error) {
-	return func() (SessionObservation, error) {
+func staticNamespace(ns []string, calls *int) func() (SessionSnapshot, error) {
+	return func() (SessionSnapshot, error) {
 		*calls++
-		return SessionObservation{Namespace: ns}, nil
+		return SessionSnapshot{Namespace: ns}, nil
 	}
 }
 
@@ -130,7 +130,7 @@ func TestAuthorizePassesConnectionCatalogCallbacks(t *testing.T) {
 func TestAuthorizeNamespaceProbeFailureFailsClosed(t *testing.T) {
 	dec := &fakeDecider{outcome: okOutcome("ALLOW", nil)}
 	authz := NewAuthorizer(dec, "", nil)
-	got := authz.Authorize(AuthzInput{SQL: "SELECT 1", ProbeSession: func() (SessionObservation, error) { return SessionObservation{}, errors.New("boom") }})
+	got := authz.Authorize(AuthzInput{SQL: "SELECT 1", ProbeSession: func() (SessionSnapshot, error) { return SessionSnapshot{}, errors.New("boom") }})
 	if _, ok := got.(Fail); !ok {
 		t.Fatalf("want Fail on namespace probe error, got %T", got)
 	}
@@ -155,28 +155,28 @@ func TestNamespaceCachedUntilDirty(t *testing.T) {
 	if probes != 2 {
 		t.Fatalf("dirty namespace should re-probe; probes=%d", probes)
 	}
-	if !reflect.DeepEqual(dec.lastReq.Session.Namespace, []string{"app"}) {
-		t.Fatalf("Decide got namespace %v", dec.lastReq.Session.Namespace)
+	if !reflect.DeepEqual(dec.lastReq.Snapshot.Namespace, []string{"app"}) {
+		t.Fatalf("Decide got namespace %v", dec.lastReq.Snapshot.Namespace)
 	}
 
 	observed := []string{"other"}
-	authz.SetNamespace(observed)
+	authz.SetSnapshot(SessionSnapshot{Namespace: observed})
 	observed[0] = "mutated"
 	authz.Authorize(in)
 	if probes != 2 {
 		t.Fatalf("observed namespace should avoid a probe; probes=%d", probes)
 	}
-	if !reflect.DeepEqual(dec.lastReq.Session.Namespace, []string{"other"}) {
-		t.Fatalf("Decide got observed namespace %v", dec.lastReq.Session.Namespace)
+	if !reflect.DeepEqual(dec.lastReq.Snapshot.Namespace, []string{"other"}) {
+		t.Fatalf("Decide got observed namespace %v", dec.lastReq.Snapshot.Namespace)
 	}
 
-	authz.SetNamespace([]string{})
+	authz.SetSnapshot(SessionSnapshot{Namespace: []string{}})
 	authz.Authorize(in)
 	if probes != 2 {
 		t.Fatalf("observed empty namespace should avoid a probe; probes=%d", probes)
 	}
-	if dec.lastReq.Session.Namespace == nil || len(dec.lastReq.Session.Namespace) != 0 {
-		t.Fatalf("Decide got empty namespace %#v, want a non-nil empty slice", dec.lastReq.Session.Namespace)
+	if dec.lastReq.Snapshot.Namespace == nil || len(dec.lastReq.Snapshot.Namespace) != 0 {
+		t.Fatalf("Decide got empty namespace %#v, want a non-nil empty slice", dec.lastReq.Snapshot.Namespace)
 	}
 }
 
@@ -184,13 +184,13 @@ func TestMysqlAnsiQuotesForwardedAndCached(t *testing.T) {
 	dec := &fakeDecider{outcome: okOutcome("ALLOW", nil)}
 	authz := NewAuthorizer(dec, "", nil)
 	probes := 0
-	in := AuthzInput{SQL: `SELECT "card_number" FROM cards`, ProbeSession: func() (SessionObservation, error) {
+	in := AuthzInput{SQL: `SELECT "card_number" FROM cards`, ProbeSession: func() (SessionSnapshot, error) {
 		probes++
-		return SessionObservation{Namespace: []string{"app"}, SessionObservation: &analyzerpb.SessionObservation{Engine: &analyzerpb.SessionObservation_Mysql{Mysql: &analyzerpb.MySqlSession{AnsiQuotes: true}}}}, nil
+		return SessionSnapshot{Namespace: []string{"app"}, SessionObservation: &analyzerpb.SessionObservation{Engine: &analyzerpb.SessionObservation_Mysql{Mysql: &analyzerpb.MySqlSession{AnsiQuotes: true}}}}, nil
 	}}
 
 	authz.Authorize(in)
-	if !dec.lastReq.Session.GetMysql().GetAnsiQuotes() {
+	if !dec.lastReq.Snapshot.GetMysql().GetAnsiQuotes() {
 		t.Fatal("an observed ANSI_QUOTES session must be forwarded to Decide")
 	}
 	// The observation rides the namespace cache: a second authorize without a re-probe reuses it.
@@ -198,18 +198,18 @@ func TestMysqlAnsiQuotesForwardedAndCached(t *testing.T) {
 	if probes != 1 {
 		t.Fatalf("ANSI_QUOTES observation should ride the namespace cache; probes=%d", probes)
 	}
-	if !dec.lastReq.Session.GetMysql().GetAnsiQuotes() {
+	if !dec.lastReq.Snapshot.GetMysql().GetAnsiQuotes() {
 		t.Fatal("the cached ANSI_QUOTES observation must still be forwarded")
 	}
 
 	// Per-probe, not latched: a later probe that no longer observes ANSI_QUOTES clears the forwarded flag,
 	// so a mid-session flip back to the default mode is decided under the default lexer.
 	authz.MarkNamespaceDirty()
-	in.ProbeSession = func() (SessionObservation, error) {
-		return SessionObservation{Namespace: []string{"app"}, SessionObservation: &analyzerpb.SessionObservation{Engine: &analyzerpb.SessionObservation_Mysql{Mysql: &analyzerpb.MySqlSession{AnsiQuotes: false}}}}, nil
+	in.ProbeSession = func() (SessionSnapshot, error) {
+		return SessionSnapshot{Namespace: []string{"app"}, SessionObservation: &analyzerpb.SessionObservation{Engine: &analyzerpb.SessionObservation_Mysql{Mysql: &analyzerpb.MySqlSession{AnsiQuotes: false}}}}, nil
 	}
 	authz.Authorize(in)
-	if dec.lastReq.Session.GetMysql().GetAnsiQuotes() {
+	if dec.lastReq.Snapshot.GetMysql().GetAnsiQuotes() {
 		t.Fatal("a probe that no longer observes ANSI_QUOTES must clear the forwarded flag")
 	}
 }
@@ -218,7 +218,7 @@ func TestPostgresLookupStateForwardedAndCached(t *testing.T) {
 	dec := &fakeDecider{outcome: okOutcome("ALLOW", nil)}
 	authz := NewAuthorizer(dec, "", nil)
 	probes := 0
-	observations := []SessionObservation{
+	observations := []SessionSnapshot{
 		{
 			Namespace: []string{"pg_catalog", "app"},
 			SessionObservation: &analyzerpb.SessionObservation{Engine: &analyzerpb.SessionObservation_Postgres{Postgres: &analyzerpb.PostgresSession{
@@ -234,7 +234,7 @@ func TestPostgresLookupStateForwardedAndCached(t *testing.T) {
 	}
 	in := AuthzInput{
 		SQL: "SELECT 1",
-		ProbeSession: func() (SessionObservation, error) {
+		ProbeSession: func() (SessionSnapshot, error) {
 			probe := observations[probes]
 			probes++
 			return probe, nil
@@ -242,18 +242,18 @@ func TestPostgresLookupStateForwardedAndCached(t *testing.T) {
 	}
 
 	authz.Authorize(in)
-	if !proto.Equal(dec.lastReq.Session.SessionObservation, observations[0].SessionObservation) {
-		t.Fatalf("first Decide session = %+v, want observed [unnest] and visible xid", dec.lastReq.Session)
+	if !proto.Equal(dec.lastReq.Snapshot.SessionObservation, observations[0].SessionObservation) {
+		t.Fatalf("first Decide session = %+v, want observed [unnest] and visible xid", dec.lastReq.Snapshot)
 	}
 	authz.Authorize(in)
-	if probes != 1 || !proto.Equal(dec.lastReq.Session.SessionObservation, observations[0].SessionObservation) {
-		t.Fatalf("cached session probes/request = %d/%+v", probes, dec.lastReq.Session)
+	if probes != 1 || !proto.Equal(dec.lastReq.Snapshot.SessionObservation, observations[0].SessionObservation) {
+		t.Fatalf("cached session probes/request = %d/%+v", probes, dec.lastReq.Snapshot)
 	}
 
 	authz.MarkNamespaceDirty()
 	authz.Authorize(in)
-	if probes != 2 || !proto.Equal(dec.lastReq.Session.SessionObservation, observations[1].SessionObservation) {
-		t.Fatalf("re-probed session probes/request = %d/%+v", probes, dec.lastReq.Session)
+	if probes != 2 || !proto.Equal(dec.lastReq.Snapshot.SessionObservation, observations[1].SessionObservation) {
+		t.Fatalf("re-probed session probes/request = %d/%+v", probes, dec.lastReq.Snapshot)
 	}
 }
 
@@ -299,4 +299,4 @@ func TestTempProbeIsBestEffort(t *testing.T) {
 
 type fakeCommandRunner struct{}
 
-func (*fakeCommandRunner) RunAll([]*pb.ProxyCommand, *SessionObservation) error { return nil }
+func (*fakeCommandRunner) RunAll([]*pb.ProxyCommand, *SessionSnapshot) error { return nil }

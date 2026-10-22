@@ -30,7 +30,7 @@ func scriptedMySQLRun(t *testing.T, decider spi.ControlPlane, maxRows int, respo
 	_ = client.SetDeadline(time.Now().Add(5 * time.Second))
 	_ = server.SetDeadline(time.Now().Add(5 * time.Second))
 	authz := spi.NewAuthorizer(decider, "", nil)
-	authz.SetNamespace([]string{"test"})
+	authz.SetSnapshot(spi.SessionSnapshot{Namespace: []string{"test"}})
 	s := &RunSession{conn: client, authz: authz, commandRunner: &sqldb.ProxyCommandRunner{Catalog: "def"}}
 	writes := make(chan string, 3)
 	go func() {

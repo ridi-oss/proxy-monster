@@ -16,7 +16,7 @@ import (
 	"github.com/ridi-oss/proxy-monster/goproxy/wire"
 )
 
-type RunSession struct {
+type connection struct {
 	sessionCore
 	conn          net.Conn
 	keyData       pgproto3.BackendKeyData
@@ -26,7 +26,7 @@ type RunSession struct {
 	poisoned      bool
 }
 
-func (t *target) NewRunSession(ctx context.Context, authz *spi.Authorizer, guard spi.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.Session, error) {
+func (t *target) OpenConnection(ctx context.Context, authz *spi.Authorizer, guard spi.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.Connection, error) {
 	var extra map[string]string
 	if defaultSchema != "" {
 		extra = map[string]string{"search_path": `"` + strings.ReplaceAll(defaultSchema, `"`, `""`) + `"`}
@@ -41,7 +41,7 @@ func (t *target) NewRunSession(ctx context.Context, authz *spi.Authorizer, guard
 		_ = conn.Close()
 		return nil, errors.New("run backend generation out of range")
 	}
-	s := &RunSession{
+	c := &connection{
 		sessionCore: sessionCore{
 			currentCatalog: catalog,
 			targetDb:       pgproto3.NewFrontend(conn, conn),
@@ -54,24 +54,24 @@ func (t *target) NewRunSession(ctx context.Context, authz *spi.Authorizer, guard
 		target:  t,
 		guard:   guard,
 	}
-	s.commandRunner = s.newCommandRunner(s.runProbe)
-	return s, nil
+	c.commandRunner = c.newCommandRunner(c.runProbe)
+	return c, nil
 }
 
 // OnOpen runs the on-open catalog fetch over the target DB conn. A cancel of ctx (the control-plane closed the
 // run, or the proxy is draining, during the target-DB open) closes the conn, which unwinds an in-flight fetch read
 // at once instead of holding the target DB until readTimeout.
-func (s *RunSession) OnOpen(ctx context.Context, cmds []*pb.ProxyCommand) error {
-	defer context.AfterFunc(ctx, func() { _ = s.conn.Close() })()
-	return s.commandRunner.RunAll(cmds, nil)
+func (c *connection) OnOpen(ctx context.Context, cmds []*pb.ProxyCommand) error {
+	defer context.AfterFunc(ctx, func() { _ = c.conn.Close() })()
+	return c.commandRunner.RunAll(cmds, nil)
 }
 
-func (s *RunSession) ServeStatement(sql string, maxRows int) (result spi.StatementResult, err error) {
-	if s.poisoned {
-		return result, errors.New("run session is unusable after a prior protocol error")
+func (c *connection) ServeStatement(sql string, maxRows int) (result spi.StatementResult, err error) {
+	if c.poisoned {
+		return result, errors.New("connection is unusable after a prior protocol error")
 	}
-	result.Decision, result.Denied, err = relay.ServeStatement(s.authz,
-		s.authzInput(sql, s.commandRunner), s.commandRunner, s.guard,
+	result.Decision, result.Denied, err = relay.ServeStatement(c.authz,
+		c.authzInput(sql, c.commandRunner), c.commandRunner, c.guard,
 		func(toSend string, masks []*pb.ColumnMask, dec *spi.Decision) (bool, error) {
 			pageRows := dec.PageRows(maxRows)
 			max, runErr := executeMaxRows(pageRows)
@@ -82,19 +82,19 @@ func (s *RunSession) ServeStatement(sql string, maxRows int) (result spi.Stateme
 				&pgproto3.Parse{Name: "", Query: toSend}, &pgproto3.Bind{}, &pgproto3.Describe{ObjectType: 'P'},
 				&pgproto3.Execute{MaxRows: max}, &pgproto3.Close{ObjectType: 'P'}, &pgproto3.Sync{},
 			} {
-				s.targetDb.Send(message)
+				c.targetDb.Send(message)
 			}
-			if runErr = s.targetDb.Flush(); runErr != nil {
+			if runErr = c.targetDb.Flush(); runErr != nil {
 				return false, runErr
 			}
 			collector := rowsCollector{
 				budget: relay.RowBudget{MaxRows: pageRows, MaxBytes: dec.MaxBytes},
 				result: &result,
 			}
-			targetDbErr, runErr := s.streamResult(masks, streamOpts{extended: true}, collector.emit)
+			targetDbErr, runErr := c.streamResult(masks, streamOpts{extended: true}, collector.emit)
 			runErr = firstErr(runErr, collector.failed)
-			s.poisoned = runErr != nil
-			s.pendingDirty = true
+			c.poisoned = runErr != nil
+			c.pendingDirty = true
 			if targetDbErr != nil {
 				// Promote the statement's OWN target-DB ERR to relay.TargetDbError (raw + redacted forms), the
 				// only provenance the control-plane may surface — and re-gate per viewer. A probe/refetch ERR
@@ -111,28 +111,28 @@ func (s *RunSession) ServeStatement(sql string, maxRows int) (result spi.Stateme
 	return result, err
 }
 
-func (s *RunSession) Namespace() (string, []string, error) {
-	if s.poisoned {
-		return "", nil, errors.New("run session is unusable after a prior protocol error")
+func (c *connection) Namespace() (string, []string, error) {
+	if c.poisoned {
+		return "", nil, errors.New("connection is unusable after a prior protocol error")
 	}
 	// An aborted transaction runs no queries; authorization uses the same last snapshot there.
-	if s.lastTxStatus == 'E' {
-		snapshot := s.authz.Snapshot()
+	if c.lastTxStatus == 'E' {
+		snapshot := c.authz.Snapshot()
 		return snapshot.CurrentCatalog, snapshot.Namespace, nil
 	}
-	snapshot, err := s.probeSession()
+	snapshot, err := c.probeSession()
 	return snapshot.CurrentCatalog, snapshot.Namespace, err
 }
 
-func (s *RunSession) Cancel() error {
-	if s.keyData.ProcessID == 0 {
-		_ = s.conn.Close()
+func (c *connection) Cancel() error {
+	if c.keyData.ProcessID == 0 {
+		_ = c.conn.Close()
 		return errors.New("cannot cancel: target DB did not provide a cancellation key")
 	}
-	if err := sendCancelRequest(s.target.config, s.keyData.ProcessID, s.keyData.SecretKey); err != nil {
-		_ = s.conn.Close()
+	if err := sendCancelRequest(c.target.config, c.keyData.ProcessID, c.keyData.SecretKey); err != nil {
+		_ = c.conn.Close()
 		return err
 	}
 	return nil
 }
-func (s *RunSession) Close() error { return s.conn.Close() }
+func (c *connection) Close() error { return c.conn.Close() }

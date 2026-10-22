@@ -31,13 +31,13 @@ Modules:
 
 - `goproxy/` — Go data-plane wire proxy: token auth, the per-statement `Decide`
   call, inline result masking, and the target-DB broker. Three levels: the
-  engine, the target it connects to, and a session on that target. One package
-  per engine (`mysql/`, `postgres/`, `athena/`) holds its provider, SQL, table
-  detail, and wire broker; `sqldb/` is what MySQL and PostgreSQL share through
-  database/sql (introspection, the schema refetcher, table detail, pools);
-  `relay/` is the engine-agnostic Decide, masking and serving; `spi/` defines
-  the contracts between them. `cmd/goproxy` builds the provider registry;
-  generic packages never import an engine package.
+  engine, the target it connects to, and a connection to that target. One
+  package per engine (`mysql/`, `postgres/`, `athena/`) holds its provider, SQL,
+  table detail, and wire broker; `sqldb/` is what MySQL and PostgreSQL share
+  through database/sql (introspection, the schema refetcher, table detail,
+  pools); `relay/` is the engine-agnostic Decide, masking and serving; `spi/`
+  defines the contracts between them. `cmd/goproxy` builds the provider
+  registry; generic packages never import an engine package.
 - `cpgo/` — Go front door of the control plane: owns its public HTTP and gRPC
   ports, runs the Kotlin control plane as a child on loopback, and forwards to
   it what Go does not serve yet

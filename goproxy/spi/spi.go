@@ -97,8 +97,8 @@ type Listen struct {
 	TrustedProxies    []netip.Prefix
 }
 
-// Session is one dedicated run session on the target DB.
-type Session interface {
+// Connection is goproxy's connection to the target DB for a control-plane run.
+type Connection interface {
 	ServeStatement(sql string, maxRows int) (StatementResult, error)
 	// OnOpen runs the on-open catalog fetch. ctx is the target-DB open context: if the control-plane closes the
 	// run (or the proxy drains) while the fetch is in flight, ctx is cancelled and the in-flight target-DB read
@@ -201,7 +201,7 @@ type Provider interface {
 }
 
 // Target is one open target database. It owns its connection pool and answers everything the proxy core asks of
-// a target: the catalog scan, a table's detail, the wire server, and a dedicated run session. Boot and the
+// a target: the catalog scan, a table's detail, the wire server, and a connection for a run. Boot and the
 // Runner hold a Target and never see a connection string or a *sql.DB.
 type Target interface {
 	Config() TargetConfig
@@ -211,10 +211,10 @@ type Target interface {
 	Introspect(ctx context.Context) (*pb.CatalogRequest, error)
 	ReadTableDetail(ctx context.Context, table *enginepb.ObjectRef) (*TableDetail, error)
 	NewWireServer(listen Listen, client ControlPlane, tlsProvider func() (*tls.Config, error)) WireServer
-	// NewRunSession dials and authenticates the target DB. ctx is the target-DB open context: cancelling it aborts
+	// OpenConnection dials and authenticates the target DB. ctx is the target-DB open context: cancelling it aborts
 	// an in-flight dial/auth so a run the control-plane already closed does not finish a target-DB handshake.
 	// A non-empty defaultSchema opens the session in that schema; empty keeps the target's default.
-	NewRunSession(ctx context.Context, authz *Authorizer, guard ExecGuard, readTimeout time.Duration, defaultSchema string) (Session, error)
+	OpenConnection(ctx context.Context, authz *Authorizer, guard ExecGuard, readTimeout time.Duration, defaultSchema string) (Connection, error)
 	Close() error
 }
 

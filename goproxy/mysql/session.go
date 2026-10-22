@@ -17,7 +17,7 @@ const (
 )
 
 // sysVarChange is one system variable reported through SESSION_TRACK_SYSTEM_VARIABLES after a statement
-// changed it. Both the run session and the wire relay watch these to fail closed when an enforcement
+// changed it. Both a run connection and the wire relay watch these to fail closed when an enforcement
 // invariant (schema tracking, the tracking list, the connection charset) leaves its safe value.
 type sysVarChange struct {
 	name  string
@@ -59,7 +59,7 @@ func trackedSysVarList() string { return strings.Join(requiredTrackedSysVars, ",
 // invariant to an unsafe value: schema tracking turned off, the tracking list dropped a required member, a
 // session charset left UTF-8, or sql_mode enabled a lexer-changing flag the analyzer cannot model
 // (NO_BACKSLASH_ESCAPES / PIPES_AS_CONCAT / …, which desync the analyzer's lexing from the target DB's). It is
-// shared by the run session and the wire relay so a client cannot silently defeat the proxy's observation
+// shared by a run connection and the wire relay so a client cannot silently defeat the proxy's observation
 // on either path. A change that enables ONLY ANSI_QUOTES is NOT a violation here: the analyzer models it and
 // the pre-statement probe forwards it, so the following statement is decided under the right mode rather than
 // failing the session closed.

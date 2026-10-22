@@ -90,13 +90,13 @@ func (r *Runner) Run(open spi.RunOpen, draining <-chan struct{}) {
 		return
 	}
 
-	var sess spi.Session
+	var connection spi.Connection
 	guard := func(exec func() error) error {
 		cancelDone := make(chan struct{})
 		var timedOut atomic.Bool
 		timer := time.AfterFunc(r.queryTimeout, func() {
 			timedOut.Store(true)
-			if err := sess.Cancel(); err != nil {
+			if err := connection.Cancel(); err != nil {
 				slog.Warn("run query cancellation failed", "error", err)
 			}
 			close(cancelDone)
@@ -118,14 +118,14 @@ func (r *Runner) Run(open spi.RunOpen, draining <-chan struct{}) {
 	// a run nobody is waiting for.
 	messages = receiveRunMessages(ctx, stream)
 	var namespace *enginepb.Namespace
-	sess, namespace = r.openTargetDb(ctx, stream, messages, draining, open, guard)
-	if sess == nil {
+	connection, namespace = r.openTargetDb(ctx, stream, messages, draining, open, guard)
+	if connection == nil {
 		// The open failed (RunError already sent) or was aborted by an early RunClose / drain. openTargetDb owns
 		// the cleanup: a failure releases the connection before returning, while an abort reaps the cancelled
 		// open and releases the connection in the background (see abort) so the drain/close returns at once.
 		return
 	}
-	defer sess.Close()
+	defer connection.Close()
 	defer r.closeConnection(open.SessionID, open.ConnectionID)
 	if stream.Send(&pb.ProxyRunMsg{Kind: &pb.ProxyRunMsg_Serving{Serving: &pb.RunServing{Namespace: namespace}}}) != nil {
 		return
@@ -167,7 +167,7 @@ func (r *Runner) Run(open spi.RunOpen, draining <-chan struct{}) {
 		}
 
 		queryDone := make(chan bool, 1)
-		go func() { queryDone <- r.handleQuery(sess, stream, query, guard) }()
+		go func() { queryDone <- r.handleQuery(connection, stream, query, guard) }()
 	queryInFlight:
 		for {
 			select {
@@ -178,13 +178,13 @@ func (r *Runner) Run(open spi.RunOpen, draining <-chan struct{}) {
 				break queryInFlight
 			case message, ok := <-messages:
 				if !ok || message.GetClose() != nil {
-					r.cancelSession(sess)
+					r.cancelConnection(connection)
 					<-queryDone
 					return
 				}
 				switch {
 				case message.GetCancel() != nil:
-					r.cancelSession(sess)
+					r.cancelConnection(connection)
 				case message.GetQuery() != nil:
 					if pending != nil {
 						slog.Warn("run query received while another query is already queued; ignoring")
@@ -210,41 +210,41 @@ func (r *Runner) Run(open spi.RunOpen, draining <-chan struct{}) {
 // the open is reaped in the background (see abort). A close or drain that lands just as the open completes
 // still fails the open (the post-completion re-check) so a live session is never installed on an abandoned
 // run or a departing proxy — the editor re-homes to the replacement rather than onto a stream about to die.
-func (r *Runner) openTargetDb(ctx context.Context, stream runStream, messages <-chan *pb.ControlRunMsg, draining <-chan struct{}, open spi.RunOpen, guard spi.ExecGuard) (spi.Session, *enginepb.Namespace) {
+func (r *Runner) openTargetDb(ctx context.Context, stream runStream, messages <-chan *pb.ControlRunMsg, draining <-chan struct{}, open spi.RunOpen, guard spi.ExecGuard) (spi.Connection, *enginepb.Namespace) {
 	openCtx, cancelOpen := context.WithCancel(ctx)
 	defer cancelOpen()
 
 	type openResult struct {
-		sess      spi.Session
-		namespace *enginepb.Namespace
-		err       error
-		errWhat   string
+		connection spi.Connection
+		namespace  *enginepb.Namespace
+		err        error
+		errWhat    string
 	}
 	done := make(chan openResult, 1)
 	go func() {
-		sess, err := r.target.NewRunSession(openCtx, spi.NewAuthorizer(r.client, open.Token, open.ConnectionID), guard, r.readTimeout, open.DefaultSchema)
+		connection, err := r.target.OpenConnection(openCtx, spi.NewAuthorizer(r.client, open.Token, open.ConnectionID), guard, r.readTimeout, open.DefaultSchema)
 		if err != nil {
 			done <- openResult{err: err, errWhat: "target-DB connection failed: "}
 			return
 		}
-		if err := sess.OnOpen(openCtx, open.OnOpen); err != nil {
-			done <- openResult{sess: sess, err: err, errWhat: "run catalog initialization failed: "}
+		if err := connection.OnOpen(openCtx, open.OnOpen); err != nil {
+			done <- openResult{connection: connection, err: err, errWhat: "run catalog initialization failed: "}
 			return
 		}
 		// Read inside the open so the heartbeat and an early close still cover it.
-		done <- openResult{sess: sess, namespace: sessionNamespace(sess, nil)}
+		done <- openResult{connection: connection, namespace: connectionNamespace(connection, nil)}
 	}()
 
 	// abort cancels the in-flight open and, in the background, reaps it and releases the reserved connection.
 	// The cancel unwinds the target DB dial/auth/catalog reads at once; a catalog push RPC to the control-plane
 	// is not cancellable here and runs to its own deadline, so the reap runs off the hot path rather than
 	// making the drain/close wait out that deadline (and the follow-on connection-release RPC).
-	abort := func() (spi.Session, *enginepb.Namespace) {
+	abort := func() (spi.Connection, *enginepb.Namespace) {
 		cancelOpen()
 		go func() {
 			res := <-done
-			if res.sess != nil {
-				_ = res.sess.Close()
+			if res.connection != nil {
+				_ = res.connection.Close()
 			}
 			r.closeConnection(open.SessionID, open.ConnectionID)
 		}()
@@ -258,8 +258,8 @@ func (r *Runner) openTargetDb(ctx context.Context, stream runStream, messages <-
 		case res := <-done:
 			if res.err != nil {
 				_ = sendError(stream, res.errWhat+res.err.Error())
-				if res.sess != nil {
-					_ = res.sess.Close()
+				if res.connection != nil {
+					_ = res.connection.Close()
 				}
 				r.closeConnection(open.SessionID, open.ConnectionID)
 				return nil, nil
@@ -268,11 +268,11 @@ func (r *Runner) openTargetDb(ctx context.Context, stream runStream, messages <-
 			// abandoned run or a departing proxy: re-check both before serving. The open is complete here (no
 			// push in flight), so this cleanup is synchronous.
 			if abandonedDuringOpen(messages, draining) {
-				_ = res.sess.Close()
+				_ = res.connection.Close()
 				r.closeConnection(open.SessionID, open.ConnectionID)
 				return nil, nil
 			}
-			return res.sess, res.namespace
+			return res.connection, res.namespace
 		case <-ticker.C:
 			// The heartbeat carries no payload — it attests the PROXY is alive, not that the open advances,
 			// so the control-plane bounds a stalled-but-heartbeating open with an absolute ceiling. A Send
@@ -336,8 +336,8 @@ func receiveRunMessages(ctx context.Context, stream runStream) <-chan *pb.Contro
 	return messages
 }
 
-func (r *Runner) cancelSession(sess spi.Session) {
-	if err := sess.Cancel(); err != nil {
+func (r *Runner) cancelConnection(connection spi.Connection) {
+	if err := connection.Cancel(); err != nil {
 		slog.Warn("run query cancellation failed", "error", err)
 	}
 }
@@ -348,13 +348,13 @@ func (r *Runner) closeConnection(sessionID string, connectionID []byte) {
 	}
 }
 
-func (r *Runner) handleQuery(sess spi.Session, stream runStream, query *pb.RunQuery, guard spi.ExecGuard) bool {
+func (r *Runner) handleQuery(connection spi.Connection, stream runStream, query *pb.RunQuery, guard spi.ExecGuard) bool {
 	maxRows := int(query.GetMaxRows())
 	if maxRows == 0 {
 		maxRows = defaultMaxRows
 	}
 	maxRows = min(max(maxRows, 1), maxMaxRows)
-	result, err := sess.ServeStatement(query.GetSql(), maxRows)
+	result, err := connection.ServeStatement(query.GetSql(), maxRows)
 	if err != nil {
 		var fail relay.FailError
 		if errors.As(err, &fail) {
@@ -385,16 +385,16 @@ func (r *Runner) handleQuery(sess spi.Session, stream runStream, query *pb.RunQu
 	if !sendDecision(stream, result.Decision) || !sendRows(stream, result.Columns, result.Rows) {
 		return false
 	}
-	done := &pb.RunDone{RowsAffected: int32(result.RowsAffected), TruncatedByCap: result.TruncatedByCap, Namespace: sessionNamespace(sess, guard)}
+	done := &pb.RunDone{RowsAffected: int32(result.RowsAffected), TruncatedByCap: result.TruncatedByCap, Namespace: connectionNamespace(connection, guard)}
 	return stream.Send(&pb.ProxyRunMsg{Kind: &pb.ProxyRunMsg_Done{Done: done}}) == nil
 }
 
 // sessionNamespace returns nil when the read fails or outlasts guard. Authorization never uses it.
-func sessionNamespace(sess spi.Session, guard spi.ExecGuard) *enginepb.Namespace {
+func connectionNamespace(connection spi.Connection, guard spi.ExecGuard) *enginepb.Namespace {
 	var catalog string
 	var searchPath []string
 	read := func() (err error) {
-		catalog, searchPath, err = sess.Namespace()
+		catalog, searchPath, err = connection.Namespace()
 		return err
 	}
 	var err error
@@ -404,7 +404,7 @@ func sessionNamespace(sess spi.Session, guard spi.ExecGuard) *enginepb.Namespace
 		err = read()
 	}
 	if err != nil {
-		slog.Warn("run session namespace probe failed", "error", err)
+		slog.Warn("run connection namespace probe failed", "error", err)
 		return nil
 	}
 	return &enginepb.Namespace{Catalog: catalog, SearchPath: searchPath}

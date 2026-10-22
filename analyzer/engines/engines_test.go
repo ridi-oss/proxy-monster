@@ -42,7 +42,7 @@ func TestFacts(t *testing.T) {
 		{Postgres, 0, "pg_temp", false},
 		{Athena, 0, "information_schema", true}, {Athena, 0, "Information_Schema", true}, {Athena, 0, "sales", false},
 	} {
-		if got := c.e.IsSystemSchema(datasourceFor(t, c.e, c.lctn).IntrospectedSchema(&pb.Column{Schema: c.schema})); got != c.want {
+		if got := c.e.IsSystemSchema(sessionFor(t, c.e, c.lctn).CatalogSchemaName(&pb.Column{Schema: c.schema})); got != c.want {
 			t.Errorf("%s lctn=%d IsSystemSchema(%s): %v", c.e.WireName, c.lctn, c.schema, got)
 		}
 	}
@@ -98,7 +98,7 @@ func TestIntrospectedColumns(t *testing.T) {
 		{Postgres, 0, [4]string{"App", "Public", "Users", "SSN"}, [4]string{"App", "Public", "Users", "SSN"}},
 		{Athena, 0, [4]string{"AwsDataCatalog", "HR", "Salaries", "SSN"}, [4]string{"awsdatacatalog", "hr", "salaries", "ssn"}},
 	} {
-		got := datasourceFor(t, c.e, c.lctn).IntrospectedColumns([]*pb.Column{{Catalog: c.in[0], Schema: c.in[1], Table: c.in[2], Column: c.in[3]}})[0]
+		got := sessionFor(t, c.e, c.lctn).CatalogColumnNames([]*pb.Column{{Catalog: c.in[0], Schema: c.in[1], Table: c.in[2], Column: c.in[3]}})[0]
 		if [4]string{got.Catalog().String(), got.Schema().String(), got.Table(), got.Column()} != c.want {
 			t.Errorf("%s lctn=%d %v: %+v", c.e.WireName, c.lctn, c.in, got)
 		}
@@ -117,17 +117,17 @@ func TestIntrospectedColumnsBatchEqualsPerRow(t *testing.T) {
 	}
 	for _, e := range All {
 		for _, lctn := range []int32{0, 1, 2} {
-			batch := datasourceFor(t, e, lctn).IntrospectedColumns(rows)
+			batch := sessionFor(t, e, lctn).CatalogColumnNames(rows)
 			if len(batch) != len(rows) {
 				t.Fatalf("%s lctn=%d: %d rows for %d", e.WireName, lctn, len(batch), len(rows))
 			}
 			for i, row := range rows {
-				if one := datasourceFor(t, e, lctn).IntrospectedColumns([]*pb.Column{row})[0]; batch[i] != one {
+				if one := sessionFor(t, e, lctn).CatalogColumnNames([]*pb.Column{row})[0]; batch[i] != one {
 					t.Errorf("%s lctn=%d row %d: batch %+v, alone %+v", e.WireName, lctn, i, batch[i], one)
 				}
 			}
 		}
-		if got := datasourceFor(t, e, 0).IntrospectedColumns(nil); len(got) != 0 {
+		if got := sessionFor(t, e, 0).CatalogColumnNames(nil); len(got) != 0 {
 			t.Errorf("%s: empty input gave %v", e.WireName, got)
 		}
 	}
@@ -150,13 +150,13 @@ func TestParseColumn(t *testing.T) {
 		{Athena, 0, [4]string{"AwsDataCatalog", "HR", `"Salaries"`, "SSN"}, [4]string{"awsdatacatalog", "hr", "salaries", "ssn"}},
 		{Postgres, 0, [4]string{"shop", "public", "t", ""}, [4]string{"shop", "public", "t", ""}},
 	} {
-		got, err := datasourceFor(t, c.e, c.lctn).ParseColumn(c.in[0], c.in[1], c.in[2], c.in[3])
+		got, err := sessionFor(t, c.e, c.lctn).ParseColumn(c.in[0], c.in[1], c.in[2], c.in[3])
 		if err != nil || [4]string{got.Catalog().String(), got.Schema().String(), got.Table(), got.Column()} != c.want {
 			t.Errorf("%s lctn=%d %v: %+v %v", c.e.WireName, c.lctn, c.in, got, err)
 		}
 	}
 	for _, bad := range []string{"a b", "a.b", "1x", `"unclosed`, "'SSN'"} {
-		if got, err := datasourceFor(t, Postgres, 0).ParseColumn("shop", "public", bad, "c"); err == nil {
+		if got, err := sessionFor(t, Postgres, 0).ParseColumn("shop", "public", bad, "c"); err == nil {
 			t.Errorf("%q parsed as %+v", bad, got)
 		}
 	}
@@ -177,37 +177,38 @@ func TestParsedSchema(t *testing.T) {
 		{Athena, 0, true, "HR", "hr"},
 	} {
 		id := exp.Identifier(exp.Args{"this": c.in, "quoted": c.quoted})
-		if got := datasourceFor(t, c.e, c.lctn).ParsedSchema(id); got.String() != c.want || id.Name() != c.in {
+		if got := sessionFor(t, c.e, c.lctn).ParsedSchema(id); got.String() != c.want || id.Name() != c.in {
 			t.Errorf("%s lctn=%d %q quoted=%v: %q, input now %q", c.e.WireName, c.lctn, c.in, c.quoted, got, id.Name())
 		}
 	}
-	if !Postgres.IsTempSchema(datasourceFor(t, Postgres, 0).ParsedSchema(exp.Identifier(exp.Args{"this": "pg_temp_3"}))) || Postgres.IsTempSchema(datasourceFor(t, Postgres, 0).ParsedSchema(exp.Identifier(exp.Args{"this": "PG_TEMP", "quoted": true}))) {
+	if !Postgres.IsTempSchema(sessionFor(t, Postgres, 0).ParsedSchema(exp.Identifier(exp.Args{"this": "pg_temp_3"}))) || Postgres.IsTempSchema(sessionFor(t, Postgres, 0).ParsedSchema(exp.Identifier(exp.Args{"this": "PG_TEMP", "quoted": true}))) {
 		t.Error("temp schema")
 	}
 }
 
-// datasourceFor is the engine as a datasource reporting lctn; only MySQL reads it.
-func datasourceFor(t *testing.T, e *Engine, lctn int32) Datasource {
+// sessionFor is the engine on a target reporting lctn; only MySQL reads it.
+func sessionFor(t *testing.T, e *Engine, lctn int32) *Session {
 	t.Helper()
-	ds, err := e.Datasource(&pb.TargetSettings{MysqlLowerCaseTableNames: &lctn})
+	session, err := e.NewSession(&pb.TargetSettings{EngineVersion: "8.0.44", MysqlLowerCaseTableNames: &lctn})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return ds
+	return session
 }
 
-func TestDatasource(t *testing.T) {
+func TestSession(t *testing.T) {
 	for _, bad := range []int32{-1, 3} {
-		if _, err := MySQL.Datasource(&pb.TargetSettings{MysqlLowerCaseTableNames: &bad}); err == nil {
+		if _, err := MySQL.NewSession(&pb.TargetSettings{MysqlLowerCaseTableNames: &bad}); err == nil {
 			t.Errorf("lower_case_table_names %d accepted", bad)
 		}
 	}
-	for _, missing := range []*pb.TargetSettings{nil, {EngineVersion: "8.0.44"}} {
-		if _, err := MySQL.Datasource(missing); err == nil {
-			t.Errorf("MySQL bound %v without lower_case_table_names", missing)
+	one := int32(1)
+	for _, missing := range []*pb.TargetSettings{nil, {EngineVersion: "8.0.44"}, {MysqlLowerCaseTableNames: &one}} {
+		if _, err := MySQL.NewSession(missing); err == nil {
+			t.Errorf("MySQL bound %v without its version or lower_case_table_names", missing)
 		}
 	}
-	if _, err := Postgres.Datasource(nil); err != nil {
+	if _, err := Postgres.NewSession(nil); err != nil {
 		t.Error(err)
 	}
 }

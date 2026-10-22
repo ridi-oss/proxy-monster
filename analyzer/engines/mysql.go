@@ -22,9 +22,7 @@ var MySQL = &Engine{
 		// MySQL has one catalog, def, whatever the database.
 		catalogName:         func(string) CatalogName { return CatalogName{"def"} },
 		catalogColumnNames:  mysqlCatalogColumnNames,
-		dialect:             dialects.MySQL,
-		datasourceDialect:   mysqlDialect,
-		sessionDialect:      mysqlSessionDialect,
+		targetDialect:       mysqlDialect,
 		bareCallIsBuiltin:   noBuiltinBareCall,
 		showUtilityCommand:  showUtilityCommand,
 		isSafeTypeReference: noSafeTypeReference,
@@ -37,7 +35,6 @@ var MySQL = &Engine{
 		normalizeRules: func() normalizeRules {
 			return normalizeRules{dialect: dialects.MySQL(), rejectExecutableComments: true}
 		},
-		showsWithoutSession:                 true,
 		foldColumn:                          mysqlColumn,
 		normalizeCatalogOnBuild:             true,
 		rejectsDuplicateDerivedOutputLabels: true,
@@ -48,32 +45,55 @@ var MySQL = &Engine{
 
 // mysqlDialect folds identifiers as lower_case_table_names does, with MySQL's utf8mb3_general_ci map: under 0
 // table and database names keep their case and everything else folds; under 1 and 2 everything folds. Guessing an
-// unreported value would key names the analyzer never matches.
-func mysqlDialect(targetSettings *pb.TargetSettings) (*dialects.Dialect, error) {
+// unreported value would key names the analyzer never matches. The version gates executable comments.
+func mysqlDialect(targetSettings *pb.TargetSettings) (*dialects.Dialect, sessionDialect, error) {
 	if targetSettings == nil || targetSettings.MysqlLowerCaseTableNames == nil {
-		return nil, fmt.Errorf("lower_case_table_names is required for mysql")
+		return nil, nil, fmt.Errorf("lower_case_table_names is required for mysql")
 	}
 	n := targetSettings.GetMysqlLowerCaseTableNames()
 	if n < 0 || n > 2 {
-		return nil, fmt.Errorf("lower_case_table_names must be 0, 1 or 2, not %d", n)
+		return nil, nil, fmt.Errorf("lower_case_table_names must be 0, 1 or 2, not %d", n)
 	}
+	versionID := mysqlVersionID(targetSettings.GetEngineVersion())
+	if versionID <= 0 {
+		return nil, nil, fmt.Errorf("engine version is required for mysql")
+	}
+	settings := mysqlNameDialect(n).SettingsString() + fmt.Sprintf(", mysql_version=%d, opaque_functions=true", versionID)
+	d, err := dialects.GetOrRaise(settings)
+	if err != nil {
+		return nil, nil, fmt.Errorf("build mysql dialect: %w", err)
+	}
+	// ANSI_QUOTES goes through settings resolution, not a field-set: it rewrites the tokenizer config
+	// (applyMySQLAnsiQuotes — `"` becomes a quoted-identifier delimiter, not a string), which only runs at
+	// resolution time. When the target DB's live sql_mode carries ANSI_QUOTES, the analyzer then reads a masked
+	// column quoted with `"` as the real column and still masks it (instead of the proxy having to fail the
+	// connection closed).
+	ansiQuotes, err := dialects.GetOrRaise(settings + ", mysql_ansi_quotes=true")
+	if err != nil {
+		return nil, nil, fmt.Errorf("build mysql dialect: %w", err)
+	}
+	return d, func(observation *pb.SessionObservation) (*dialects.Dialect, error) {
+		if observation.GetMysql().GetAnsiQuotes() {
+			return ansiQuotes, nil
+		}
+		return d, nil
+	}, nil
+}
+
+func mysqlNameDialect(lowerCaseTableNames int32) *dialects.Dialect {
 	d := dialects.MySQL()
-	if n == 0 {
+	if lowerCaseTableNames == 0 {
 		d.NormalizationStrategy = dialects.MySQLCaseSensitiveTableNames
 	} else {
 		d.NormalizationStrategy = dialects.MySQLCaseInsensitive
 	}
-	return d, nil
+	return d
 }
 
 // mysqlColumn folds a column name: MySQL compares columns case-insensitively whatever lower_case_table_names is.
 func mysqlColumn(name string) string { return mysqlColumnDialect.FoldIdentifierName(name, false) }
 
-var mysqlColumnDialect = func() *dialects.Dialect {
-	one := int32(1)
-	d, _ := mysqlDialect(&pb.TargetSettings{MysqlLowerCaseTableNames: &one})
-	return d
-}()
+var mysqlColumnDialect = mysqlNameDialect(1)
 
 // mysqlCatalogColumnNames folds catalog rows by lower_case_table_names: under 0, App.Users.ID -> App.Users.id; under
 // 1 or 2, app.users.id. Each distinct (schema, table) is folded once.
@@ -99,37 +119,10 @@ func mysqlCatalogColumnNames(d *dialects.Dialect, rows []*pb.Column) []ColumnNam
 	return out
 }
 
-// mysqlSessionDialect requires the target's version, which gates executable comments.
-func mysqlSessionDialect(datasource Datasource, observation *pb.SessionObservation) (*dialects.Dialect, error) {
-	versionID := mysqlVersionID(datasource.version)
-	if versionID <= 0 {
-		return nil, fmt.Errorf("engine version is required for mysql")
-	}
-	// Build one Dialect that serves parse, qualify, and generate alike. The normalization strategy (from
-	// lower_case_table_names) and MySQLVersion (gates executable-comment support) compose with a
-	// conditional mysql_ansi_quotes into a single settings string resolved by GetOrRaise. ansi_quotes MUST
-	// go through settings resolution rather than a direct field-set: it rewrites the tokenizer config
-	// (applyMySQLAnsiQuotes — `"` becomes a quoted-identifier delimiter, not a string), which only runs at
-	// resolution time. When the target DB's live sql_mode carries ANSI_QUOTES, the analyzer then reads a
-	// masked column quoted with `"` as the real column and still masks it (instead of the proxy having to
-	// fail the connection closed). datasource.Dialect only ever sets the strategy, so its
-	// SettingsString round-trips losslessly as the base.
-	settings := datasource.Dialect().SettingsString() +
-		fmt.Sprintf(", mysql_version=%d, opaque_functions=true", versionID)
-	if observation.GetMysql().GetAnsiQuotes() {
-		settings += ", mysql_ansi_quotes=true"
-	}
-	dialect, err := dialects.GetOrRaise(settings)
-	if err != nil {
-		return nil, fmt.Errorf("build mysql dialect: %w", err)
-	}
-	return dialect, nil
-}
-
 // MySQL labels an unaliased computed projection with its verbatim source text (`1 +    1` keeps
 // its exact spacing; verified against MySQL 8.0), truncated to 255 runes as the server does for
 // implicit labels. Fails closed on an unstamped node (only parse-time projections carry text).
-func mysqlNativeOutputLabel(_ *sessionSettings, projection, _ exp.Expression) (string, bool) {
+func mysqlNativeOutputLabel(_ *Session, projection, _ exp.Expression) (string, bool) {
 	text, ok := projection.SpanText()
 	if !ok {
 		return "", false

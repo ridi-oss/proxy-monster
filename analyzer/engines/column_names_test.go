@@ -23,7 +23,7 @@ func TestColumnNamesSafe(t *testing.T) {
 	if got := call(IntrospectedColumnsSafe, typed); got.GetError() != pb.ColumnNamesResponse_NONE || got.GetColumns()[0].GetTable() != "Users" || got.GetColumns()[0].GetColumn() != "SSN" {
 		t.Fatalf("introspected: %v", got)
 	}
-	mysql := &pb.ColumnNamesRequest{Engine: pb.Engine_MYSQL, Target: &pb.TargetSettings{MysqlLowerCaseTableNames: proto.Int32(1)}, Columns: []*pb.Column{{Catalog: "def", Schema: "App", Table: "Users", Column: "SSN"}}}
+	mysql := &pb.ColumnNamesRequest{Engine: pb.Engine_MYSQL, Target: &pb.TargetSettings{EngineVersion: "8.0.44", MysqlLowerCaseTableNames: proto.Int32(1)}, Columns: []*pb.Column{{Catalog: "def", Schema: "App", Table: "Users", Column: "SSN"}}}
 	if got := call(IntrospectedColumnsSafe, mysql); got.GetError() != pb.ColumnNamesResponse_NONE || got.GetColumns()[0].GetSchema() != "app" || got.GetColumns()[0].GetTable() != "users" || got.GetColumns()[0].GetColumn() != "ssn" {
 		t.Fatalf("introspected mysql: %v", got)
 	}

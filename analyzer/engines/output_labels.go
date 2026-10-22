@@ -39,7 +39,7 @@ func hasSyntheticAlias(root exp.Expression) bool {
 // references it through the source alias. A SELECT whose list contains a star is never stamped —
 // the star hides labels this pass cannot count. A label the engine cannot compute is left to
 // Qualify (its synthetic name may then surface; restoreRelayOutputLabels repairs display labels).
-func stampNativeOutputLabels(root exp.Expression, settings *sessionSettings) error {
+func stampNativeOutputLabels(root exp.Expression, session *Session) error {
 	derived := derivedBodySelects(root)
 	for _, sel := range root.FindAll(exp.KindSelect) {
 		projections := sel.Selects()
@@ -61,15 +61,15 @@ func stampNativeOutputLabels(root exp.Expression, settings *sessionSettings) err
 		for _, projection := range projections {
 			if projection.Kind() == exp.KindAlias || projection.Kind() == exp.KindColumn || projectionIsStar(projection) {
 				if name := projection.AliasOrName(); name != "" {
-					inUse[settings.engine.Traits.foldColumn(name)] = append(inUse[settings.engine.Traits.foldColumn(name)], name)
+					inUse[session.engine.Traits.foldColumn(name)] = append(inUse[session.engine.Traits.foldColumn(name)], name)
 				}
 				continue
 			}
-			label, ok := settings.engine.Traits.nativeOutputLabel(settings, projection, sel)
+			label, ok := session.nativeOutputLabel(projection, sel)
 			if !ok || label == "" {
 				continue
 			}
-			inUse[settings.engine.Traits.foldColumn(label)] = append(inUse[settings.engine.Traits.foldColumn(label)], label)
+			inUse[session.engine.Traits.foldColumn(label)] = append(inUse[session.engine.Traits.foldColumn(label)], label)
 			stamps = append(stamps, stamp{projection, label})
 		}
 
@@ -78,11 +78,11 @@ func stampNativeOutputLabels(root exp.Expression, settings *sessionSettings) err
 				if len(names) < 2 {
 					continue
 				}
-				if settings.engine.Traits.rejectsDuplicateDerivedOutputLabels {
+				if session.engine.Traits.rejectsDuplicateDerivedOutputLabels {
 					return fmt.Errorf("duplicate column name '%s' in derived table", names[0])
 				}
 				// Real PostgreSQL rejects only a reference to the duplicated label.
-				if alias != "" && referencesLabel(root, sel, alias, folded, &settings.engine.Traits) {
+				if alias != "" && referencesLabel(root, sel, alias, folded, &session.engine.Traits) {
 					return fmt.Errorf("column reference %q is ambiguous", names[0])
 				}
 			}
@@ -93,7 +93,7 @@ func stampNativeOutputLabels(root exp.Expression, settings *sessionSettings) err
 
 		stamped := map[exp.Expression]string{}
 		for _, s := range stamps {
-			if len(inUse[settings.engine.Traits.foldColumn(s.label)]) > 1 {
+			if len(inUse[session.engine.Traits.foldColumn(s.label)]) > 1 {
 				continue
 			}
 			stamped[s.projection] = s.label
@@ -155,7 +155,7 @@ func referencesLabel(root, body exp.Expression, alias, foldedLabel string, trait
 // stampNativeOutputLabels had to skip (a PG duplicate is legal as OUTPUT: two `?column?`s). A
 // set-operation root restores its leftmost branch, the label-bearing one. Only the top-level
 // alias is touched; a label something still references is left alone.
-func restoreRelayOutputLabels(root exp.Expression, settings *sessionSettings) bool {
+func restoreRelayOutputLabels(root exp.Expression, session *Session) bool {
 	sel := leftmostSelect(root)
 	if sel == nil {
 		return false
@@ -175,7 +175,7 @@ func restoreRelayOutputLabels(root exp.Expression, settings *sessionSettings) bo
 		if projection.Kind() == exp.KindAlias {
 			expression = projection.This()
 		}
-		native, ok := settings.engine.Traits.nativeOutputLabel(settings, expression, sel)
+		native, ok := session.nativeOutputLabel(expression, sel)
 		if !ok || native == "" {
 			continue
 		}
@@ -192,10 +192,10 @@ func projectionIsStar(projection exp.Expression) bool {
 
 // normalizedFunctionName is a call's name folded through the dialect's quote-aware
 // NormalizeIdentifier — an unquoted spelling lowercases, a quoted one keeps its case.
-func normalizedFunctionName(function exp.Expression, settings *sessionSettings) string {
+func normalizedFunctionName(function exp.Expression, session *Session) string {
 	if identifier, ok := function.Arg("this").(exp.Expression); ok && identifier.Kind() == exp.KindIdentifier {
 		identifier = identifier.Copy()
-		settings.dialect.NormalizeIdentifier(identifier)
+		session.dialect.NormalizeIdentifier(identifier)
 		return identifier.Name()
 	}
 	return strings.ToLower(function.Name())

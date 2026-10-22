@@ -46,7 +46,7 @@ QUOTED_INPUT = "pending-name-fix: quoted classification input keeps its quotes a
 UNQUOTED_INPUT = "pending-name-fix: unquoted classification input is not folded and attaches to the quoted table"
 DETAIL_COLUMN = "pending-name-fix: table detail reports MySQL column names as declared, not lowercase"
 ATHENA_INPUT = "pending-name-fix: Athena classification input is not folded; a non-lowercase spelling never attaches"
-GLUE_CASE = "pending-name-fix: a mixed-case Glue name is not folded in the control-plane catalog; reads fail closed"
+GLUE_CASE = "pending-name-fix: a mixed-case Glue table is allowed, but its read fails on the target"
 NAMES = {
     "mysql": {
         "classify": [("Customers", "Email"), ("Customers", "phone"), ("Customers", "SSN")],

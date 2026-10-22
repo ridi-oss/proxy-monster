@@ -59,6 +59,7 @@ func ReadTableDetail(ctx context.Context, pool *sql.DB, queries Queries, catalog
 	}
 	detail, err := read(conn, schema, table.Table)
 	if detail != nil {
+		canonicalDetailNames(session, detail)
 		detail.Catalog = catalog
 		for i := range detail.ForeignKeys {
 			detail.ForeignKeys[i].SourceCatalog, detail.ForeignKeys[i].TargetCatalog = catalog, catalog

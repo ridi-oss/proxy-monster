@@ -1,6 +1,6 @@
 package engines
 
-// Coverage for the protobuf FFM entry point (wire.go, docs/statement-facts-contract.md) —
+// Coverage for the protobuf FFM entry point (ffm.go, docs/statement-facts-contract.md) —
 // the analyzer<->JVM contract every test in this package exercises directly (no JSON anywhere in
 // this module). pbColumn, snapshot, snapshotWith,
 // and analyzeProto below are the shared fixture-building/call helpers every other test file in this

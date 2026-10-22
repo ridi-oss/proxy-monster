@@ -177,6 +177,12 @@ class NotificationRendererTest {
     }
 
     @Test
+    fun `every query message opens with the title and keeps the reason`() {
+        val m = message(NotificationEvent.TASK_EXECUTED, RenderedStatement("UPDATE t SET a = 1", true)).copy(title = "Refund 8812", reason = "ticket 8812")
+        assertEquals("*Refund 8812*\n*alice@example.com* 님이 *acme-mysql*에서 *pii-reader* 역할로 요청한 다음 쿼리가 실행되었습니다 (3행).\n> ticket 8812\n```\nUPDATE t SET a = 1\n```", renderer.summary(m, "ko"))
+    }
+
+    @Test
     fun `a finished run without a row count names no count`() {
         for (locale in MessageCatalog.LOCALES) {
             val m = message(NotificationEvent.TASK_EXECUTED, RenderedStatement("UPDATE t SET a = 1", true))

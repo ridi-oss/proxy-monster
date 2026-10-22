@@ -156,6 +156,7 @@ data class NotificationMessage(
     val roleName: String?,
     val reason: String?,
     val statement: RenderedStatement,
+    val title: String? = null,
     val decidedBy: String? = null,
     /** DECIDED only: approved rather than rejected. The two read completely differently to a recipient,
      *  and the outbox row records only that a decision happened. */

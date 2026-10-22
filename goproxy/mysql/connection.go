@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
 
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
@@ -20,6 +21,7 @@ import (
 // connection is goproxy's connection to the target, for a wire client or a control-plane run.
 type connection struct {
 	targetDbConn net.Conn
+	session      *engines.Session
 	// targetConnectionID is the target's id for this connection, which KILL QUERY names.
 	targetConnectionID uint32
 	config             spi.TargetConfig
@@ -44,15 +46,20 @@ func newConnection(targetDbConn net.Conn, greeting mysqlwire.Greeting, config sp
 		guard:              guard,
 		deprecateEOF:       deprecateEOF,
 	}
-	c.commandRunner = sqldb.NewProxyCommandRunner(Queries, authz.ConnectionID(), generation, func(sql string, expectedColumns int) ([][]*string, error) {
+	probe := func(sql string, expectedColumns int) ([][]*string, error) {
 		return runInternalQuery(c.targetDbConn, c.deprecateEOF, sql, expectedColumns)
-	}, authz.Client().PushSchemaFragment)
-	c.commandRunner.Catalog = "def"
+	}
+	var err error
+	if c.session, err = sqldb.NewSession(Queries, probe); err != nil {
+		return nil, err
+	}
+	c.commandRunner = sqldb.NewProxyCommandRunner(Queries, c.session, authz.ConnectionID(), generation, probe, authz.Client().PushSchemaFragment)
+	c.commandRunner.Catalog = engines.MySQL.CatalogName("").String()
 	return c, nil
 }
 
 func (c *connection) probeSession() (spi.SessionSnapshot, error) {
-	return probeSession(c.targetDbConn, c.deprecateEOF)
+	return probeSession(c.targetDbConn, c.deprecateEOF, c.session)
 }
 
 func (c *connection) checkTargetError(sql string) (*spi.TargetError, error) {

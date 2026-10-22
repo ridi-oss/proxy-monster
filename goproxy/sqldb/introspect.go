@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 )
@@ -37,15 +38,14 @@ const columnsSQL = `SELECT table_catalog, table_schema, table_name, column_name,
 FROM information_schema.columns
 ORDER BY table_schema, table_name, ordinal_position`
 
-// NamespaceProbe reads the connection's effective namespace into a CatalogRequest: default_schemas, plus
-// MySQL's lower_case_table_names.
-type NamespaceProbe func(ctx context.Context, conn *sql.Conn, targetDb string) (*pb.CatalogRequest, error)
+// NamespaceProbe reads the connection's namespace into a CatalogRequest, with the session settings it carries.
+type NamespaceProbe func(ctx context.Context, conn *sql.Conn, targetDb string, session *engines.Session) (*pb.CatalogRequest, error)
 
 // Introspect introspects the target's information_schema over a live connection and returns the catalog to
 // push to the control plane. DatasourceName is left blank — the caller (cp.PushCatalog) stamps it.
 func Introspect(ctx context.Context, db *sql.DB, queries Queries, probe NamespaceProbe, targetDb string) (*pb.CatalogRequest, error) {
 	// Pin ONE physical connection for the whole introspection and verify it up front. The *sql.DB handle
-	// is a lazy pool: without pinning, each of probeVersion's two queries and the namespace/columns probes
+	// is a lazy pool: without pinning, each of the version and namespace/columns probes
 	// would independently dial the target, so a dead or misauthenticated target would incur several failed
 	// logins per refresh (and, across the boot retries, several times that) — risking service-account
 	// lockout and tripling dead-target boot latency. db.Conn(ctx) establishes exactly one connection here
@@ -61,11 +61,15 @@ func Introspect(ctx context.Context, db *sql.DB, queries Queries, probe Namespac
 	connectMs := time.Since(started).Milliseconds()
 
 	phase := time.Now()
-	engineVersion := probeVersion(conn)
+	session, err := NewConnSession(ctx, conn, queries)
+	if err != nil {
+		return nil, err
+	}
+	engineVersion := withAuroraVersion(conn, session.EngineVersion())
 	versionMs := time.Since(phase).Milliseconds()
 
 	phase = time.Now()
-	catalog, err := probe(ctx, conn, targetDb)
+	catalog, err := probe(ctx, conn, targetDb, session)
 	if err != nil {
 		return nil, err
 	}
@@ -80,24 +84,19 @@ func Introspect(ctx context.Context, db *sql.DB, queries Queries, probe Namespac
 
 	// Normalize to the SAME canonical spelling the analyzer treats as authoritative (analyzer/engines,
 	// Go-to-Go — no FFM/marshaling) — an identity function for Postgres, MySQL's role-aware fold
-	// (gated by lctnMode) for MySQL — before this ever reaches the control plane. Nothing downstream
+	// (by the connection's session) for MySQL — before this ever reaches the control plane. Nothing downstream
 	// (catalog storage, browse_catalog, Cedar Table::/Column:: EUIDs, column_classification, the
 	// per-connection schema-fragment pool normalized the same way by the relay) ever sees raw
 	// introspected spelling; no caller decides whether/how to fold.
-	// The dialect's own Queries owns the fold, so this call site names no dialect. Only the MySQL
-	// namespace probe sets mysqlLowerCaseTableNames (the Postgres probe returns nil), and it carries the
-	// fold mode MySQL's NormalizeColumns is gated by; Postgres ignores the argument.
-	lctnMode := 0
-	if catalog.MysqlLowerCaseTableNames != nil {
-		lctnMode = int(catalog.GetMysqlLowerCaseTableNames())
-	}
 	phase = time.Now()
-	columns = queries.NormalizeColumns(lctnMode, columns)
-	catalog.DefaultSchemas = normalizeSchemas(queries, lctnMode, catalog.DefaultSchemas)
+	columns = session.CanonicalColumns(columns)
+	for i, schema := range session.CanonicalSchemas(catalog.DefaultSchemas) {
+		catalog.DefaultSchemas[i] = schema.String()
+	}
 	normalizeMs := time.Since(phase).Milliseconds()
 
 	phase = time.Now()
-	routines, err := introspectRoutines(conn, queries, lctnMode)
+	routines, err := introspectRoutines(conn, queries, session)
 	if err != nil {
 		return nil, err
 	}
@@ -131,7 +130,7 @@ func Introspect(ctx context.Context, db *sql.DB, queries Queries, probe Namespac
 
 type schemaNamePair struct{ schema, name string }
 
-func introspectRoutines(conn *sql.Conn, queries Queries, lctnMode int) ([]*analyzerpb.SchemaFunctions, error) {
+func introspectRoutines(conn *sql.Conn, queries Queries, session *engines.Session) ([]*analyzerpb.SchemaFunctions, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), QueryTimeout)
 	defer cancel()
 	rows, err := conn.QueryContext(ctx, queries.Routines)
@@ -152,23 +151,21 @@ func introspectRoutines(conn *sql.Conn, queries Queries, lctnMode int) ([]*analy
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("introspect: routines query: %w", err)
 	}
-	return foldFunctionSchemas(queries, lctnMode, pairs), nil
+	return foldFunctionSchemas(session, pairs), nil
 }
 
-// foldFunctionSchemas groups (schema, function) pairs by their canonical schema, folding the schema
-// through the dialect's NormalizeColumns and the function name through its FoldFunctionName.
-func foldFunctionSchemas(queries Queries, lctnMode int, pairs []schemaNamePair) []*analyzerpb.SchemaFunctions {
+// foldFunctionSchemas groups (schema, function) pairs by their canonical schema and function name.
+func foldFunctionSchemas(session *engines.Session, pairs []schemaNamePair) []*analyzerpb.SchemaFunctions {
 	if len(pairs) == 0 {
 		return nil
 	}
-	placeholders := make([]*analyzerpb.Column, len(pairs))
+	schemas := make([]string, len(pairs))
 	for i, p := range pairs {
-		placeholders[i] = &analyzerpb.Column{Schema: p.schema, Table: "_", Column: "_"}
+		schemas[i] = p.schema
 	}
-	folded := queries.NormalizeColumns(lctnMode, placeholders)
 	grouped := make([]schemaNamePair, len(pairs))
-	for i, p := range pairs {
-		grouped[i] = schemaNamePair{schema: folded[i].GetSchema(), name: queries.FoldFunctionName(p.name)}
+	for i, schema := range session.CanonicalSchemas(schemas) {
+		grouped[i] = schemaNamePair{schema: schema.String(), name: session.FunctionName(pairs[i].name).String()}
 	}
 	return groupBySchema(grouped)
 }
@@ -192,23 +189,6 @@ func groupBySchema(pairs []schemaNamePair) []*analyzerpb.SchemaFunctions {
 	out := make([]*analyzerpb.SchemaFunctions, 0, len(order))
 	for _, schema := range order {
 		out = append(out, &analyzerpb.SchemaFunctions{Schema: schema, Names: names[schema]})
-	}
-	return out
-}
-
-// normalizeSchemas folds each bare schema name (default_schemas / search_path entries have no
-// associated table) through the dialect's own NormalizeColumns with placeholder table/column values,
-// discarding those parts — the fold decision is schema-name-only (verified empirically: stable
-// regardless of the table argument). One call folds the whole list, so a dialect that memoizes
-// per-(schema, table) work does it once here too.
-func normalizeSchemas(queries Queries, lctnMode int, schemas []string) []string {
-	placeholders := make([]*analyzerpb.Column, len(schemas))
-	for i, s := range schemas {
-		placeholders[i] = &analyzerpb.Column{Schema: s, Table: "_", Column: "_"}
-	}
-	out := make([]string, len(schemas))
-	for i, c := range queries.NormalizeColumns(lctnMode, placeholders) {
-		out[i] = c.GetSchema()
 	}
 	return out
 }
@@ -247,41 +227,36 @@ func introspectColumns(conn *sql.Conn) ([]*analyzerpb.Column, error) {
 	return columns, nil
 }
 
-// probeVersion returns the target's live server version, for system-classification's manifest
-// resolution. `version()` works on both PostgreSQL and MySQL and always carries the major. Aurora
-// additionally exposes `aurora_version()` (vanilla PG/MySQL don't — a failure there simply means "not
-// Aurora"); when it resolves the suffix "(aurora <v>)" is appended. Best-effort: an empty string on probe
-// failure. Runs on the pinned connection so it adds no extra dials.
-func probeVersion(conn *sql.Conn) string {
-	base := ""
-	func() {
-		ctx, cancel := context.WithTimeout(context.Background(), QueryTimeout)
+// NewConnSession builds conn's engine session from its target settings probe, once; conn keeps it for its lifetime.
+func NewConnSession(ctx context.Context, conn *sql.Conn, queries Queries) (*engines.Session, error) {
+	return NewSession(queries, func(statement string, columns int) ([][]*string, error) {
+		ctx, cancel := context.WithTimeout(ctx, QueryTimeout)
 		defer cancel()
-		row := conn.QueryRowContext(ctx, "SELECT version()")
-		var v sql.NullString
-		if err := row.Scan(&v); err != nil {
-			slog.Warn("engine version probe failed", "error", err)
-			return
+		values := make([]sql.NullString, columns)
+		dest := make([]any, columns)
+		for i := range values {
+			dest[i] = &values[i]
 		}
-		base = v.String
-	}()
-
-	var aurora string
-	func() {
-		ctx, cancel := context.WithTimeout(context.Background(), QueryTimeout)
-		defer cancel()
-		row := conn.QueryRowContext(ctx, "SELECT aurora_version()")
-		var v sql.NullString
-		// Best-effort: any error (missing function on a non-Aurora target) simply means "not Aurora";
-		// ignore it.
-		if err := row.Scan(&v); err != nil {
-			return
+		if err := conn.QueryRowContext(ctx, statement).Scan(dest...); err != nil {
+			return nil, err
 		}
-		aurora = v.String
-	}()
+		row := make([]*string, columns)
+		for i, v := range values {
+			if v.Valid {
+				row[i] = &v.String
+			}
+		}
+		return [][]*string{row}, nil
+	})
+}
 
-	if strings.TrimSpace(aurora) != "" {
-		return base + " (aurora " + aurora + ")"
+// withAuroraVersion appends "(aurora <v>)" on Aurora; elsewhere aurora_version() fails and base is returned.
+func withAuroraVersion(conn *sql.Conn, base string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), QueryTimeout)
+	defer cancel()
+	var aurora sql.NullString
+	if err := conn.QueryRowContext(ctx, "SELECT aurora_version()").Scan(&aurora); err != nil || strings.TrimSpace(aurora.String) == "" {
+		return base
 	}
-	return base
+	return base + " (aurora " + aurora.String + ")"
 }

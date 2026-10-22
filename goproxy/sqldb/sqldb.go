@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
@@ -29,8 +28,8 @@ func OpenPool(open func(spi.TargetConfig) (*sql.DB, error), config spi.TargetCon
 	return pool, &pb.ConnectionInfo{Endpoint: strings.TrimSpace(advertise)}, nil
 }
 
-// ReadTableDetail reads one table's detail on its own pooled connection, by the engine's catalogOf and read.
-func ReadTableDetail(ctx context.Context, pool *sql.DB, e *engines.Engine, catalogOf func(context.Context, *sql.Conn) (string, error),
+// ReadTableDetail reads one table's detail, names in canonical spelling, on its own pooled connection.
+func ReadTableDetail(ctx context.Context, pool *sql.DB, queries Queries, catalogOf func(context.Context, *sql.Conn) (string, error),
 	read func(*sql.Conn, string, string) (*spi.TableDetail, error), table *enginepb.ObjectRef) (*spi.TableDetail, error) {
 	if table == nil || table.Schema == "" || table.Table == "" {
 		return nil, fmt.Errorf("table selector is incomplete")
@@ -49,8 +48,12 @@ func ReadTableDetail(ctx context.Context, pool *sql.DB, e *engines.Engine, catal
 	if table.Catalog != catalog {
 		return nil, fmt.Errorf("table catalog %q does not match target catalog %q", table.Catalog, catalog)
 	}
+	session, err := NewConnSession(ctx, conn, queries)
+	if err != nil {
+		return nil, err
+	}
 	schema := table.Schema
-	exists, err := tableDetailTableExists(conn, e, schema, table.Table)
+	exists, err := tableDetailTableExists(conn, session, schema, table.Table)
 	if err != nil || !exists {
 		return nil, err
 	}

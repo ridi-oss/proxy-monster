@@ -8,21 +8,31 @@ import (
 
 	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
 
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
-	"github.com/ridi-oss/sqlglot-go/dialects"
 )
 
 // Queries is the SQL the shared database/sql code runs on a PostgreSQL target.
 var Queries = sqldb.Queries{
-	HashSetupProbe:     hashSetupProbeSQL,
-	HashSetupColumns:   1,
-	Routines:           routinesSQL,
-	SchemaRoutines:     schemaRoutinesSQL,
-	SchemaColumns:      schemaColumnsSQL,
-	SchemaHash:         schemaHashSQL,
-	SchemaHashFromRows: schemaHashFromRows,
-	NormalizeColumns:   normalizeColumns,
-	FoldFunctionName:   foldFunctionName,
+	HashSetupProbe:        hashSetupProbeSQL,
+	HashSetupColumns:      1,
+	Routines:              routinesSQL,
+	SchemaRoutines:        schemaRoutinesSQL,
+	SchemaColumns:         schemaColumnsSQL,
+	SchemaHash:            schemaHashSQL,
+	SchemaHashFromRows:    schemaHashFromRows,
+	Engine:                engines.Postgres,
+	TargetSettingsProbe:   "SELECT pg_catalog.version()",
+	TargetSettingsColumns: 1,
+	TargetSettings:        targetSettings,
+}
+
+func targetSettings(row []*string) (*analyzerpb.TargetSettings, error) {
+	out := &analyzerpb.TargetSettings{}
+	if len(row) == 1 && row[0] != nil {
+		out.EngineVersion = *row[0]
+	}
+	return out, nil
 }
 
 // namespaceProbeSQL yields one JSON observation containing the connection's effective search_path,
@@ -44,10 +54,6 @@ const namespaceProbeSQL = `SELECT pg_catalog.json_build_object(
   )
 )::pg_catalog.text`
 
-func foldFunctionName(name string) string {
-	return dialects.Postgres().FoldIdentifierName(name, false)
-}
-
 // tempColumnsProbeSQL is the session-temp overlay probe.
 const tempColumnsProbeSQL = `SELECT n.nspname, c.relname, a.attname, pg_catalog.format_type(a.atttypid, a.atttypmod), a.attnum, pg_catalog.current_database()
 FROM pg_catalog.pg_attribute a
@@ -61,13 +67,6 @@ const hashSetupProbeSQL = `SELECT n.nspname
 FROM pg_catalog.pg_extension e
 JOIN pg_catalog.pg_namespace n ON n.oid = e.extnamespace
 WHERE e.extname = 'pgcrypto'`
-
-// normalizeColumns is an identity function: Postgres never folds — a quoted-vs-unquoted identifier
-// pair is genuinely two distinct columns, and introspection already reports each one's real, resolved
-// spelling (analyzer/engines.NormalizeRelation's contract for any non-MySQL dialect).
-func normalizeColumns(_ int, columns []*analyzerpb.Column) []*analyzerpb.Column {
-	return columns
-}
 
 const routinesSQL = `SELECT n.nspname, p.proname FROM pg_catalog.pg_proc p
 JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace`

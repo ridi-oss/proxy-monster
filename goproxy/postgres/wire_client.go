@@ -209,6 +209,11 @@ startupComplete:
 		statements: make(map[string]preparedStatement),
 		portals:    make(map[string]boundPortal),
 	}
+	if wireState.session, err = wireState.newSession(); err != nil {
+		slog.Warn("postgres target DB settings unavailable", "error", err)
+		_ = sendError(client, "FATAL", "08004", "proxy-monster: connection catalog unavailable", false, 0)
+		return
+	}
 	wireState.commandRunner = wireState.newCommandRunner(wireState.runProbe)
 	wireState.extendedCommandRunner = wireState.newCommandRunner(func(sql string, expectedColumns int) ([][]*string, error) {
 		return s.runExtendedProbe(wireState, sql, expectedColumns)

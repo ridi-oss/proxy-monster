@@ -8,10 +8,10 @@ import (
 
 	// The named import both registers the "mysql" driver and gives mysqldriver.Config for DSN-free construction.
 	mysqldriver "github.com/go-sql-driver/mysql"
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
-	"google.golang.org/protobuf/proto"
 )
 
 // OpenPool opens a database/sql handle to a MySQL target (5s connect / 30s socket).
@@ -43,27 +43,22 @@ func OpenPool(config spi.TargetConfig) (*sql.DB, error) {
 	return sql.OpenDB(connector), nil
 }
 
-// ProbeNamespace captures the current database plus the load-bearing
-// @@lower_case_table_names and verifies the connection's database matches the bound one.
-func ProbeNamespace(ctx context.Context, conn *sql.Conn, targetDb string) (*pb.CatalogRequest, error) {
+// ProbeNamespace reads the current database, checks it is the bound one, and reports lower_case_table_names.
+func ProbeNamespace(ctx context.Context, conn *sql.Conn, targetDb string, session *engines.Session) (*pb.CatalogRequest, error) {
 	ctx, cancel := context.WithTimeout(ctx, sqldb.QueryTimeout)
 	defer cancel()
 
-	row := conn.QueryRowContext(ctx, "SELECT DATABASE(), @@lower_case_table_names, DATABASE() = ?", targetDb)
+	row := conn.QueryRowContext(ctx, "SELECT DATABASE(), DATABASE() = ?", targetDb)
 	var currentDb sql.NullString
-	var lctn int
 	var matches sql.NullBool
-	if err := row.Scan(&currentDb, &lctn, &matches); err != nil {
+	if err := row.Scan(&currentDb, &matches); err != nil {
 		return nil, fmt.Errorf("introspect: MySQL namespace probe: %w", err)
 	}
 	if !currentDb.Valid {
 		return nil, errors.New("introspect: MySQL connection has no current database")
 	}
-	if lctn < 0 || lctn > 2 {
-		return nil, fmt.Errorf("introspect: MySQL returned invalid lower_case_table_names: %d", lctn)
-	}
 	if !matches.Valid || !matches.Bool {
 		return nil, fmt.Errorf("introspect: MySQL current database %q does not match bound database %q", currentDb.String, targetDb)
 	}
-	return &pb.CatalogRequest{DefaultSchemas: []string{currentDb.String}, MysqlLowerCaseTableNames: proto.Int32(int32(lctn)), CurrentCatalog: "def"}, nil
+	return &pb.CatalogRequest{DefaultSchemas: []string{currentDb.String}, MysqlLowerCaseTableNames: session.TargetSettings().MysqlLowerCaseTableNames, CurrentCatalog: engines.MySQL.CatalogName("").String()}, nil
 }

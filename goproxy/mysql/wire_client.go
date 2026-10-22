@@ -11,12 +11,10 @@ import (
 	"time"
 
 	"github.com/ridi-oss/proxy-monster/analyzer/engines"
-	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 	"github.com/ridi-oss/proxy-monster/mysqlwire"
-	"google.golang.org/protobuf/proto"
 )
 
 const (
@@ -198,6 +196,12 @@ func (s *Server) handleConn(clientConn net.Conn) {
 
 	c, err := newConnection(targetDbConn, targetGreeting, s.target.config, authz, nil, deprecateEOF)
 	if err != nil {
+		slog.Warn("mysql target DB settings unavailable", "error", err)
+		_ = mysqlwire.WritePacket(clientConn, tokenSeq+1, mysqlwire.ErrPacketState(
+			1105,
+			"HY000",
+			"proxy-monster: catalog initialization failed",
+		))
 		return
 	}
 	if err := c.commandRunner.RunAll(identity.OnOpen, nil); err != nil {
@@ -311,8 +315,15 @@ func (s *Server) handleConn(clientConn net.Conn) {
 				}
 				return lastSeq, stop, false
 			}
-			batch := splitBatch(multiStatements, sql, targetGreeting.ServerVersion, func() (spi.SessionSnapshot, error) {
-				return c.probeSession()
+			batch := splitBatch(multiStatements, sql, func() ([]engines.BatchStatement, bool) {
+				snapshot, err := c.probeSession()
+				if err != nil {
+					return nil, false
+				}
+				if err := c.session.Update(snapshot.SessionObservation); err != nil {
+					return nil, false
+				}
+				return c.session.SplitBatch(sql)
 			})
 			if batch == nil {
 				if _, _, closed := serve(sql, seq, false); closed {
@@ -670,19 +681,11 @@ func mysqlNamespace(schema string) []string {
 
 // splitBatch cuts a multi-statement query into its statements when the client enabled them, or returns nil
 // to serve sql as one, which the analyzer denies if it holds several.
-func splitBatch(enabled bool, sql, version string, observe func() (spi.SessionSnapshot, error)) []string {
+func splitBatch(enabled bool, sql string, split func() ([]engines.BatchStatement, bool)) []string {
 	if !enabled || !strings.Contains(strings.TrimRight(sql, "; \t\r\n"), ";") {
 		return nil
 	}
-	snapshot, err := observe()
-	if err != nil {
-		return nil
-	}
-	batch, ok := engines.SplitBatch(sql, &enginepb.EngineConfig{
-		Engine:  enginepb.Engine_MYSQL,
-		Target:  &enginepb.TargetSettings{EngineVersion: version, MysqlLowerCaseTableNames: proto.Int32(0)},
-		Session: snapshot.SessionObservation,
-	})
+	batch, ok := split()
 	if !ok || len(batch) < 2 {
 		return nil
 	}

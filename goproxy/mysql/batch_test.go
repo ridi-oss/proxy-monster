@@ -298,3 +298,24 @@ func TestMySQLSetOptionEnablesBatches(t *testing.T) {
 		})
 	}
 }
+
+// Under ANSI_QUOTES `"\"` is the identifier \, not the start of a string, so the batch is three statements.
+func TestMySQLBatchSplitsUnderTheSqlModeItObservesNow(t *testing.T) {
+	h, conn := startMySQLBatchBroker(t)
+	h.fake.decideFn = allowAllDecide
+	if _, err := conn.ExecContext(context.Background(), "SET sql_mode = 'ANSI_QUOTES'"); err != nil {
+		t.Fatalf("set sql_mode: %v", err)
+	}
+	statements := []string{`SELECT 1 AS "\"`, `SELECT 2 AS "x\"`, "SELECT 3"}
+	rows, err := conn.QueryContext(context.Background(), strings.Join(statements, "; "))
+	if err != nil {
+		t.Fatalf("batch: %v", err)
+	}
+	defer rows.Close()
+	if sets := readResultSets(t, rows); !reflect.DeepEqual(sets, [][]string{{"1"}, {"2"}, {"3"}}) {
+		t.Fatalf("result sets = %v, want [1] [2] [3]", sets)
+	}
+	if got := mysqlDecidedSQL(h)[1:]; !reflect.DeepEqual(got, statements) {
+		t.Fatalf("decided = %q, want each statement once, in order", got)
+	}
+}

@@ -118,7 +118,7 @@ func verifyPostgresHashAndFragment(t *testing.T, database *sql.DB, wantCrypto bo
 	if err != nil {
 		t.Fatalf("Postgres fragment query: %v", err)
 	}
-	fragment, err := sqldb.FragmentColumnsFromRows(queries, 0, schema, rows)
+	fragment, err := sqldb.FragmentColumnsFromRows(pgFolder(t), schema, rows)
 	if err != nil {
 		t.Fatalf("Postgres fragment mapping: %v", err)
 	}

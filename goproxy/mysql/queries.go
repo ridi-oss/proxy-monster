@@ -2,6 +2,7 @@ package mysql
 
 import (
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strconv"
 
@@ -9,50 +10,36 @@ import (
 
 	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
-	"github.com/ridi-oss/sqlglot-go/dialects"
 	"google.golang.org/protobuf/proto"
 )
 
 // Queries is the SQL the shared database/sql code runs on a MySQL target.
 var Queries = sqldb.Queries{
-	Routines:                 routinesSQL,
-	SchemaRoutines:           schemaRoutinesSQL,
-	SchemaColumns:            schemaColumnsSQL,
-	SchemaHash:               schemaHashSQL,
-	SchemaHashFromRows:       schemaHashFromRows,
-	LowerCaseTableNamesProbe: "SELECT @@lower_case_table_names",
-	NormalizeColumns:         normalizeColumns,
-	// MySQL routine and native names are case-insensitive regardless of lower_case_table_names.
-	FoldFunctionName: dialects.MySQLLower,
+	Routines:              routinesSQL,
+	SchemaRoutines:        schemaRoutinesSQL,
+	SchemaColumns:         schemaColumnsSQL,
+	SchemaHash:            schemaHashSQL,
+	SchemaHashFromRows:    schemaHashFromRows,
+	Engine:                engines.MySQL,
+	TargetSettingsProbe:   "SELECT VERSION(), @@lower_case_table_names",
+	TargetSettingsColumns: 2,
+	TargetSettings:        targetSettings,
 }
 
-// normalizeColumns folds each column to analyzer/engines's canonical MySQL spelling — the SAME
-// normalization introspect's bulk catalog push uses, so the schema-fragment pool this feeds
-// (goproxy/sqldb.ProxyCommandRunner) and the persisted catalog never disagree on spelling.
-//
-// Folds through engines.NormalizeMySQLColumns, which memoizes the per-(schema, table) identifier parse.
-// A schema fragment repeats one schema and each table name once per column, so the per-row path
-// re-parsed the same two identifiers thousands of times: ~13s of CPU on a 4,390-column schema, enough
-// to push a catalog refetch past the control plane's run-open deadline and fail every query on the
-// datasource. The batched fold is O(distinct tables) parses instead of O(columns).
-func normalizeColumns(lowerCaseTableNames int, columns []*analyzerpb.Column) []*analyzerpb.Column {
-	schemas := make([]string, len(columns))
-	tables := make([]string, len(columns))
-	names := make([]string, len(columns))
-	for i, c := range columns {
-		schemas[i], tables[i], names[i] = c.GetSchema(), c.GetTable(), c.GetColumn()
+// targetSettings fails without a valid lower_case_table_names, since guessing 0 leaves a mode-2 `Goods` unfolded.
+func targetSettings(row []*string) (*analyzerpb.TargetSettings, error) {
+	if len(row) != 2 || row[0] == nil || row[1] == nil {
+		return nil, errors.New("reading version and lower_case_table_names: no value")
 	}
-	outSchemas, outTables, outColumns := engines.NormalizeMySQLColumns(lowerCaseTableNames, schemas, tables, names)
-	out := make([]*analyzerpb.Column, len(columns))
-	for i, c := range columns {
-		out[i] = proto.Clone(c).(*analyzerpb.Column)
-		out[i].Schema, out[i].Table, out[i].Column = outSchemas[i], outTables[i], outColumns[i]
+	n, err := strconv.ParseInt(*row[1], 10, 32)
+	if err != nil {
+		return nil, fmt.Errorf("reading lower_case_table_names: invalid value %q", *row[1])
 	}
-	return out
+	return &analyzerpb.TargetSettings{EngineVersion: *row[0], MysqlLowerCaseTableNames: proto.Int32(int32(n))}, nil
 }
 
 // mysqlSchemaFilter renders the WHERE-clause comparison for schema (a possibly-canonical spelling —
-// see analyzer/engines.NormalizeRelation) against the live TABLE_SCHEMA. Mode 0 never folds schema names
+// see engines.Session.CatalogColumnNames) against the live TABLE_SCHEMA. Mode 0 never folds schema names
 // (canonical == raw) and mode 1 folds AT THE STORAGE LAYER itself (information_schema already reports
 // lowercase), so both compare byte-exact. Mode 2 is the one case canonical (folded) can diverge from
 // the live stored spelling (case preserved in storage, looked up case-insensitively) — MySQL guarantees

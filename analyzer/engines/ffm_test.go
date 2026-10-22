@@ -337,20 +337,3 @@ func TestAnalyzeStatementSafeNeverPanicsOnMalformedBytes(t *testing.T) {
 		t.Fatalf("expected fail-closed on malformed request bytes, got resolved=true")
 	}
 }
-
-// TestNormalizeRelation covers the dialect dispatch itself — canonical_relation_test.go covers the
-// underlying MySQL fold logic in depth. Every direct Go-to-Go caller (goproxy's introspect.go and
-// goproxy/db) shares this one function; no caller decides whether/how to normalize.
-func TestNormalizeRelation(t *testing.T) {
-	schemaName, table, column := NormalizeRelation("mysql", 1, "AppDB", "UserRows", "CustomerID")
-	if schemaName != "appdb" || table != "userrows" || column != "customerid" {
-		t.Fatalf("unexpected canonical relation: %s.%s.%s", schemaName, table, column)
-	}
-
-	// Postgres: an identity function — the catalog's stored spelling already IS canonical, verbatim,
-	// regardless of case. Proves Go (not the caller) decides that no folding applies to this dialect.
-	pgSchema, pgTable, pgColumn := NormalizeRelation("postgres", 0, "Sales", "OrderItems", "CustomerID")
-	if pgSchema != "Sales" || pgTable != "OrderItems" || pgColumn != "CustomerID" {
-		t.Fatalf("Postgres identity must pass through unchanged, got %s.%s.%s", pgSchema, pgTable, pgColumn)
-	}
-}

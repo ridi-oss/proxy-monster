@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
@@ -16,14 +17,15 @@ import (
 type ProxyCommandRunner struct {
 	Catalog           string
 	Queries           Queries
+	Session           *engines.Session
 	ConnectionID      []byte
 	BackendGeneration uint64
 	Probe             func(sql string, expectedColumns int) ([][]*string, error)
 	Push              func(*pb.SchemaFragmentPush) (uint64, error)
 }
 
-func NewProxyCommandRunner(queries Queries, connectionID []byte, generation uint64, probe func(string, int) ([][]*string, error), push func(*pb.SchemaFragmentPush) (uint64, error)) *ProxyCommandRunner {
-	return &ProxyCommandRunner{Queries: queries, ConnectionID: connectionID, BackendGeneration: generation, Probe: probe, Push: push}
+func NewProxyCommandRunner(queries Queries, session *engines.Session, connectionID []byte, generation uint64, probe func(string, int) ([][]*string, error), push func(*pb.SchemaFragmentPush) (uint64, error)) *ProxyCommandRunner {
+	return &ProxyCommandRunner{Queries: queries, Session: session, ConnectionID: connectionID, BackendGeneration: generation, Probe: probe, Push: push}
 }
 
 // Refetch executes one refetch. A failed hash probe degrades to a full fetch; a failed read, a failed push,
@@ -75,7 +77,7 @@ func (r *ProxyCommandRunner) Refetch(cmd *pb.Refetch) error {
 	if err != nil {
 		return fmt.Errorf("introspecting schema %q: %w", cmd.GetSchema(), err)
 	}
-	columns, err := FragmentColumnsFromRows(r.Queries, r.lowerCaseTableNames(), cmd.GetSchema(), rows)
+	columns, err := FragmentColumnsFromRows(r.Session, cmd.GetSchema(), rows)
 	if err != nil {
 		return fmt.Errorf("mapping schema %q fragment: %w", cmd.GetSchema(), err)
 	}
@@ -103,36 +105,20 @@ func (r *ProxyCommandRunner) Refetch(cmd *pb.Refetch) error {
 		contentHash = append(contentHash[:0], h2...)
 	}
 
+	var routineNames []string
+	for _, functionName := range r.Session.FunctionNames(routines) {
+		routineNames = append(routineNames, functionName.String())
+	}
 	_, err = r.Push(&pb.SchemaFragmentPush{
 		ConnectionId:      append([]byte(nil), r.ConnectionID...),
 		Schema:            cmd.GetSchema(),
 		Catalog:           r.Catalog,
 		ContentHash:       contentHash,
 		Columns:           columns,
-		Routines:          FoldFunctionNames(r.Queries, routines),
+		Routines:          routineNames,
 		BackendGeneration: r.BackendGeneration,
 	})
 	return err
-}
-
-// lowerCaseTableNames probes the connection's live mode fresh (no cached state on ProxyCommandRunner/Queries —
-// mirrors mysqlSchemaFilter's own live @@lower_case_table_names check in goproxy/db). "" from
-// LowerCaseTableNamesProbeSQL (non-MySQL, or a probe failure) returns 0, which NormalizeColumns
-// ignores for any dialect that doesn't fold at all.
-func (r *ProxyCommandRunner) lowerCaseTableNames() int {
-	probeSQL := r.Queries.LowerCaseTableNamesProbe
-	if probeSQL == "" {
-		return 0
-	}
-	rows, err := r.Probe(probeSQL, 1)
-	if err != nil || len(rows) != 1 || len(rows[0]) != 1 || rows[0][0] == nil {
-		return 0
-	}
-	mode, err := strconv.Atoi(*rows[0][0])
-	if err != nil {
-		return 0
-	}
-	return mode
 }
 
 func (r *ProxyCommandRunner) measureHash(sql string, expectedColumns int, sqlErr error) ([]byte, bool) {
@@ -167,17 +153,8 @@ func (r *ProxyCommandRunner) RunAll(cmds []*pb.ProxyCommand, _ *spi.SessionSnaps
 	return nil
 }
 
-// FragmentColumnsFromRows strictly maps seven-column information_schema rows into a canonical schema
-// fragment. Rows are folded via queries.NormalizeColumns(lowerCaseTableNames, ...) — the SAME rule
-// introspect's bulk catalog push uses — and every row's canonical schema must then equal the requested
-// schema's own canonical form. This is a self-consistency check (every row came back for the schema
-// that was actually asked for), not an authorization boundary, but its strictness now follows the
-// connection's actual dialect/mode instead of a blanket case-fold: MySQL lower_case_table_names=2 is
-// the only configuration where canonical spelling can legitimately diverge in case from live storage
-// (case-insensitive lookup, case-preserving storage), so it's the only one where this tolerates a case
-// difference — Postgres and MySQL modes 0/1 require an exact match, same as before this normalized the
-// comparison at all. The column is the proto Column (enginepb.Column) used AS the data class.
-func FragmentColumnsFromRows(queries Queries, lowerCaseTableNames int, schema string, rows [][]*string) ([]*enginepb.Column, error) {
+// FragmentColumnsFromRows strictly maps information_schema rows into a fragment of the requested canonical schema.
+func FragmentColumnsFromRows(session *engines.Session, schema string, rows [][]*string) ([]*enginepb.Column, error) {
 	raw := make([]*enginepb.Column, 0, len(rows))
 	for i, row := range rows {
 		if len(row) != 7 {
@@ -212,8 +189,8 @@ func FragmentColumnsFromRows(queries Queries, lowerCaseTableNames int, schema st
 		})
 	}
 
-	canonicalSchema := queries.NormalizeColumns(lowerCaseTableNames, []*enginepb.Column{{Schema: schema, Table: "_", Column: "_"}})[0].GetSchema()
-	columns := queries.NormalizeColumns(lowerCaseTableNames, raw)
+	canonicalSchema := session.CanonicalSchemas([]string{schema})[0].String()
+	columns := session.CanonicalColumns(raw)
 	for i, column := range columns {
 		if column.GetSchema() != canonicalSchema {
 			return nil, fmt.Errorf("fragment row %d schema %q does not match requested schema %q (canonical %q vs %q)",
@@ -221,4 +198,20 @@ func FragmentColumnsFromRows(queries Queries, lowerCaseTableNames int, schema st
 		}
 	}
 	return columns, nil
+}
+
+// NewSession builds the engine session of the connection being opened from one target settings probe.
+func NewSession(queries Queries, probe func(sql string, columns int) ([][]*string, error)) (*engines.Session, error) {
+	rows, err := probe(queries.TargetSettingsProbe, queries.TargetSettingsColumns)
+	if err != nil {
+		return nil, fmt.Errorf("reading target settings: %w", err)
+	}
+	if len(rows) != 1 {
+		return nil, fmt.Errorf("reading target settings: %d rows, want 1", len(rows))
+	}
+	targetSettings, err := queries.TargetSettings(rows[0])
+	if err != nil {
+		return nil, err
+	}
+	return queries.Engine.NewSession(targetSettings)
 }

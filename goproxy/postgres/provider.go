@@ -41,7 +41,7 @@ func (t *target) Introspect(ctx context.Context) (*pb.CatalogRequest, error) {
 }
 
 func (t *target) ReadTableDetail(ctx context.Context, table *enginepb.ObjectRef) (*spi.TableDetail, error) {
-	return sqldb.ReadTableDetail(ctx, t.pool, engines.Postgres, ReadCatalog, readPostgresTableDetail, table)
+	return sqldb.ReadTableDetail(ctx, t.pool, Queries, ReadCatalog, readPostgresTableDetail, table)
 }
 
 func (t *target) NewWireServer(listen spi.Listen, client spi.ControlPlane, tlsProvider func() (*tls.Config, error)) spi.WireServer {

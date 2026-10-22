@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
@@ -65,7 +66,7 @@ func ReadCatalog(ctx context.Context, conn *sql.Conn) (string, error) {
 }
 
 // ProbeNamespace captures the effective search_path.
-func ProbeNamespace(ctx context.Context, conn *sql.Conn, _ string) (*pb.CatalogRequest, error) {
+func ProbeNamespace(ctx context.Context, conn *sql.Conn, _ string, _ *engines.Session) (*pb.CatalogRequest, error) {
 	ctx, cancel := context.WithTimeout(ctx, sqldb.QueryTimeout)
 	defer cancel()
 

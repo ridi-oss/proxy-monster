@@ -68,6 +68,8 @@ type EngineTraits struct {
 	// catalogColumnNames spells the rows the target's own catalog returned canonically: MySQL App.Users.ID ->
 	// app.users.id under lower_case_table_names=1, Postgres unchanged.
 	catalogColumnNames func(d *dialects.Dialect, rows []*pb.Column) []ColumnName
+	// functionName spells an introspected routine name canonically: MySQL AddTax -> addtax; nil keeps it.
+	functionName func(name string) FunctionName
 	// targetDialect builds one target's dialects: the one its names fold by (MySQL's follows the version and
 	// lower_case_table_names it reported), and how a session's observation picks the one it parses by.
 	targetDialect func(targetSettings *pb.TargetSettings) (*dialects.Dialect, sessionDialect, error)

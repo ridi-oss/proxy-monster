@@ -132,7 +132,7 @@ func asMode2(sqlText string) string {
 // lowerCase2Queries evaluates MySQL's SQL as mode 2 on a case-preserving mode-0 server; Linux cannot run mode 2.
 func lowerCase2Queries() sqldb.Queries {
 	queries := Queries
-	queries.LowerCaseTableNamesProbe = "SELECT 2"
+	queries.TargetSettingsProbe = "SELECT VERSION(), 2"
 	queries.SchemaColumns = func(schema string) string { return asMode2(Queries.SchemaColumns(schema)) }
 	queries.SchemaRoutines = func(schema string) string { return asMode2(Queries.SchemaRoutines(schema)) }
 	queries.SchemaHash = func(schema string, setup [][]*string) (string, int, error) {
@@ -140,16 +140,6 @@ func lowerCase2Queries() sqldb.Queries {
 		return asMode2(sqlText), columns, err
 	}
 	return queries
-}
-
-func probeAsMode2(ctx context.Context, conn *sql.Conn, targetDb string) (*pb.CatalogRequest, error) {
-	catalog, err := ProbeNamespace(ctx, conn, targetDb)
-	if err != nil {
-		return nil, err
-	}
-	two := int32(2)
-	catalog.MysqlLowerCaseTableNames = &two
-	return catalog, nil
 }
 
 func TestMySQLLowerCase2FoldsStoredCase(t *testing.T) {
@@ -163,7 +153,7 @@ func TestMySQLLowerCase2FoldsStoredCase(t *testing.T) {
 	t.Cleanup(func() { _, _ = admin.Exec("DROP DATABASE IF EXISTS " + quoteMySQL(mixed)) })
 	targettest.ExecRefetchSQL(t, conn, "CREATE TABLE "+quoteMySQL(mixed)+".`Users` (Id INT NOT NULL, EMail VARCHAR(64) NULL)")
 
-	bulk := targettest.IntrospectTarget(t, OpenPool, Queries, probeAsMode2, targetConfig, mixed)
+	bulk := targettest.IntrospectTarget(t, OpenPool, lowerCase2Queries(), ProbeNamespace, targetConfig, mixed)
 	if got := bulk.GetDefaultSchemas(); !slices.Equal(got, []string{canonical}) {
 		t.Fatalf("DefaultSchemas = %v, want [%s]", got, canonical)
 	}
@@ -190,7 +180,7 @@ func TestMySQLFragmentRowsUnderEachMode(t *testing.T) {
 	}
 	for _, tc := range []struct {
 		name                 string
-		mode                 int
+		mode                 int32
 		requested            string
 		schema, table, colmn string
 		want                 *targettest.RelationKey
@@ -202,7 +192,7 @@ func TestMySQLFragmentRowsUnderEachMode(t *testing.T) {
 		{"mode 2 refuses another schema", 2, "app", "Other", "Users", "EMail", nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := sqldb.FragmentColumnsFromRows(Queries, tc.mode, tc.requested, row(tc.schema, tc.table, tc.colmn))
+			got, err := sqldb.FragmentColumnsFromRows(lctnSession(t, tc.mode), tc.requested, row(tc.schema, tc.table, tc.colmn))
 			if tc.want == nil {
 				if err == nil {
 					t.Fatalf("FragmentColumnsFromRows = %+v, want refused", got)
@@ -221,7 +211,7 @@ func TestMySQLFragmentRowsUnderEachMode(t *testing.T) {
 
 func TestMySQLNormalizeSystemSchemasByMode(t *testing.T) {
 	for _, tc := range []struct {
-		mode   int
+		mode   int32
 		schema string
 		want   string
 	}{
@@ -239,14 +229,15 @@ func TestMySQLNormalizeSystemSchemasByMode(t *testing.T) {
 		{2, "MySQL", "mysql"},
 		{2, "PERFORMANCE_SCHEMA", "performance_schema"},
 	} {
-		got := Queries.NormalizeColumns(tc.mode, []*analyzerpb.Column{{Schema: tc.schema, Table: "T", Column: "C"}})[0]
+		got := lctnSession(t, tc.mode).CanonicalColumns([]*analyzerpb.Column{{Schema: tc.schema, Table: "T", Column: "C"}})[0]
 		if got.GetSchema() != tc.want || got.GetColumn() != "c" {
-			t.Errorf("mode %d NormalizeColumns(%s.T.C) = %s.%s.%s, want schema %s, column c", tc.mode, tc.schema, got.GetSchema(), got.GetTable(), got.GetColumn(), tc.want)
+			t.Errorf("mode %d CanonicalColumns(%s.T.C) = %s.%s.%s, want schema %s, column c", tc.mode, tc.schema, got.GetSchema(), got.GetTable(), got.GetColumn(), tc.want)
 		}
 	}
 }
 
 func TestMySQLRefetchRefusesUnknownLowerCaseTableNames(t *testing.T) {
+	version := targettest.Ptr("8.0.40")
 	for _, tc := range []struct {
 		name  string
 		rows  [][]*string
@@ -254,33 +245,33 @@ func TestMySQLRefetchRefusesUnknownLowerCaseTableNames(t *testing.T) {
 	}{
 		{"probe error", nil, sql.ErrConnDone},
 		{"no row", [][]*string{}, nil},
-		{"NULL", [][]*string{{nil}}, nil},
-		{"out of range", [][]*string{{targettest.Ptr("3")}}, nil},
-		{"negative", [][]*string{{targettest.Ptr("-1")}}, nil},
-		{"not a number", [][]*string{{targettest.Ptr("on")}}, nil},
+		{"NULL", [][]*string{{version, nil}}, nil},
+		{"out of range", [][]*string{{version, targettest.Ptr("3")}}, nil},
+		{"negative", [][]*string{{version, targettest.Ptr("-1")}}, nil},
+		{"not a number", [][]*string{{version, targettest.Ptr("on")}}, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Skip("pending-name-fix: refetch treats an unreported lower_case_table_names as 0")
+			probe := func(statement string, _ int) ([][]*string, error) {
+				switch statement {
+				case Queries.TargetSettingsProbe:
+					return tc.rows, tc.probe
+				case Queries.SchemaColumns("App"):
+					return [][]*string{{targettest.Ptr("App"), targettest.Ptr("Users"), targettest.Ptr("Id"), targettest.Ptr("int"), targettest.Ptr("1"), targettest.Ptr("NO"), targettest.Ptr("def")}}, nil
+				}
+				return nil, nil
+			}
 			pushed := false
-			commandRunner := sqldb.ProxyCommandRunner{
-				Catalog: "def",
-				Queries: Queries,
-				Probe: func(statement string, _ int) ([][]*string, error) {
-					switch statement {
-					case Queries.LowerCaseTableNamesProbe:
-						return tc.rows, tc.probe
-					case Queries.SchemaColumns("App"):
-						return [][]*string{{targettest.Ptr("App"), targettest.Ptr("Users"), targettest.Ptr("Id"), targettest.Ptr("int"), targettest.Ptr("1"), targettest.Ptr("NO"), targettest.Ptr("def")}}, nil
-					}
-					return nil, nil
-				},
-				Push: func(*pb.SchemaFragmentPush) (uint64, error) {
+			session, err := sqldb.NewSession(Queries, probe)
+			if err == nil {
+				commandRunner := sqldb.NewProxyCommandRunner(Queries, session, nil, 0, probe, func(*pb.SchemaFragmentPush) (uint64, error) {
 					pushed = true
 					return 1, nil
-				},
+				})
+				commandRunner.Catalog = "def"
+				err = commandRunner.Refetch(&pb.Refetch{Catalog: "def", Schema: "App"})
 			}
-			if err := commandRunner.Refetch(&pb.Refetch{Catalog: "def", Schema: "App"}); err == nil || pushed {
-				t.Fatalf("Run err = %v, pushed = %v; want refused without a push", err, pushed)
+			if err == nil || pushed {
+				t.Fatalf("open + refetch err = %v, pushed = %v; want refused without a push", err, pushed)
 			}
 		})
 	}

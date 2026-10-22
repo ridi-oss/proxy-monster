@@ -17,10 +17,10 @@ type DetailIndexes struct {
 	IndexedColumns map[string]struct{}
 }
 
-func tableDetailTableExists(conn *sql.Conn, e *engines.Engine, schema, table string) (bool, error) {
+func tableDetailTableExists(conn *sql.Conn, session *engines.Session, schema, table string) (bool, error) {
 	query := fmt.Sprintf(
 		"SELECT table_schema, table_name FROM information_schema.tables WHERE table_schema = %s AND table_name = %s",
-		e.Placeholder(1), e.Placeholder(2),
+		session.Engine().Placeholder(1), session.Engine().Placeholder(2),
 	)
 	found := false
 	err := DetailQuery(conn, query, []any{schema, table}, func(rows *sql.Rows) error {

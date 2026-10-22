@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"reflect"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -24,11 +23,9 @@ func TestMySqlSchemaHashIntegration(t *testing.T) {
 	defer conn.Close()
 
 	queries := Queries
-	lowerCaseTableNames := 0
-	if rows, err := targettest.QueryStrings(conn, queries.LowerCaseTableNamesProbe, 1); err == nil && len(rows) == 1 && len(rows[0]) == 1 && rows[0][0] != nil {
-		if mode, err := strconv.Atoi(*rows[0][0]); err == nil {
-			lowerCaseTableNames = mode
-		}
+	session, err := sqldb.NewConnSession(context.Background(), conn, queries)
+	if err != nil {
+		t.Fatal(err)
 	}
 	quote := func(identifier string) string { return "`" + strings.ReplaceAll(identifier, "`", "``") + "`" }
 	exec := func(statement string) {
@@ -70,7 +67,7 @@ func TestMySqlSchemaHashIntegration(t *testing.T) {
 		if err != nil {
 			t.Fatalf("fragment query for %q: %v", schema, err)
 		}
-		columns, err := sqldb.FragmentColumnsFromRows(queries, lowerCaseTableNames, schema, rows)
+		columns, err := sqldb.FragmentColumnsFromRows(session, schema, rows)
 		if err != nil {
 			t.Fatalf("FragmentColumnsFromRows(%q): %v", schema, err)
 		}

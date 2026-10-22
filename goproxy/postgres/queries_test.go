@@ -6,16 +6,18 @@ import (
 	"testing"
 
 	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
+	"google.golang.org/protobuf/proto"
 
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/targettest"
 )
 
-func TestPgNormalizeColumnsIsIdentity(t *testing.T) {
+func TestPgCanonicalColumnsIsIdentity(t *testing.T) {
 	in := []*analyzerpb.Column{{Schema: "Sales", Table: "OrderItems", Column: "CustomerID"}}
-	out := Queries.NormalizeColumns(0, in)
-	if len(out) != 1 || out[0] != in[0] {
-		t.Errorf("NormalizeColumns must be an identity passthrough, got %+v", out)
+	out := pgFolder(t).CanonicalColumns(in)
+	if len(out) != 1 || !proto.Equal(out[0], in[0]) {
+		t.Errorf("Postgres CanonicalColumns must keep every name, got %+v", out)
 	}
 }
 
@@ -115,17 +117,17 @@ var _ sqldb.Queries = Queries
 
 func TestFragmentColumnsFromRowsRefusesACaseDifferingSchema(t *testing.T) {
 	row := targettest.Rows("sales", "t", "c", "int", "1", "NO", "def")
-	if _, err := sqldb.FragmentColumnsFromRows(Queries, 0, "Sales", row); err == nil {
+	if _, err := sqldb.FragmentColumnsFromRows(pgFolder(t), "Sales", row); err == nil {
 		t.Fatal("FragmentColumnsFromRows succeeded, want a strict mismatch on Postgres")
 	}
 }
 
 func TestFoldFunctionNameMatchesTheResolverFold(t *testing.T) {
 	// PostgreSQL folds ASCII only, so a non-ASCII upper-case letter keeps its spelling.
-	if got := Queries.FoldFunctionName("PG_Read_File"); got != "pg_read_file" {
+	if got := pgFolder(t).FunctionName("PG_Read_File").String(); got != "pg_read_file" {
 		t.Fatalf("postgres fold = %q, want pg_read_file", got)
 	}
-	if got := Queries.FoldFunctionName("ÄBC"); got != "Äbc" {
+	if got := pgFolder(t).FunctionName("ÄBC").String(); got != "Äbc" {
 		t.Fatalf("postgres must not fold non-ASCII: got %q, want Äbc", got)
 	}
 }
@@ -134,4 +136,13 @@ func TestRoutinesSQLReadsPgProc(t *testing.T) {
 	if !strings.Contains(Queries.Routines, "pg_catalog.pg_proc") {
 		t.Fatalf("RoutinesSQL = %q, want pg_proc", Queries.Routines)
 	}
+}
+
+func pgFolder(t *testing.T) *engines.Session {
+	t.Helper()
+	session, err := engines.Postgres.NewSession(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return session
 }

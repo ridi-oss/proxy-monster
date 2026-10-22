@@ -1,6 +1,7 @@
 package sqldb
 
 import (
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 )
 
@@ -19,10 +20,11 @@ type Queries struct {
 	SchemaRoutines func(schema string) string
 	// Routines lists every routine as (schema, name).
 	Routines string
-	// LowerCaseTableNamesProbe yields MySQL's live lower_case_table_names; "" where the engine has none.
-	LowerCaseTableNamesProbe string
-	// NormalizeColumns folds columns to the analyzer's canonical spelling, by lower_case_table_names for MySQL.
-	NormalizeColumns func(lowerCaseTableNames int, columns []*enginepb.Column) []*enginepb.Column
-	// FoldFunctionName folds an introspected function name the way the analyzer resolves an unquoted call.
-	FoldFunctionName func(name string) string
+	// Engine is the engine these queries are for.
+	Engine *engines.Engine
+	// TargetSettingsProbe reads, in one row of TargetSettingsColumns values, what TargetSettings is built from.
+	TargetSettingsProbe   string
+	TargetSettingsColumns int
+	// TargetSettings is what the target reported, from its TargetSettingsProbe row.
+	TargetSettings func(row []*string) (*enginepb.TargetSettings, error)
 }

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
 
 	"github.com/jackc/pgx/v5/pgproto3"
@@ -19,6 +20,7 @@ import (
 // connection is goproxy's connection to the target, for a wire client or a control-plane run.
 type connection struct {
 	target         *target
+	session        *engines.Session
 	targetDbConn   net.Conn
 	targetDb       *pgproto3.Frontend
 	keyData        pgproto3.BackendKeyData
@@ -61,6 +63,10 @@ func (t *target) OpenConnection(ctx context.Context, authz *spi.Authorizer, guar
 		authz:          authz,
 		guard:          guard,
 		lastTxStatus:   txStatus,
+	}
+	if c.session, err = c.newSession(); err != nil {
+		_ = conn.Close()
+		return nil, err
 	}
 	c.commandRunner = c.newCommandRunner(c.runProbe)
 	return c, nil
@@ -145,8 +151,13 @@ func (c *connection) Cancel() error {
 }
 func (c *connection) Close() error { return c.targetDbConn.Close() }
 
+// newSession runs once at connect; the connection keeps its engine session for its lifetime.
+func (c *connection) newSession() (*engines.Session, error) {
+	return sqldb.NewSession(Queries, c.runProbe)
+}
+
 func (c *connection) newCommandRunner(probe func(sql string, expectedColumns int) ([][]*string, error)) *sqldb.ProxyCommandRunner {
-	commandRunner := sqldb.NewProxyCommandRunner(Queries, c.authz.ConnectionID(), c.generation, probe, c.authz.Client().PushSchemaFragment)
+	commandRunner := sqldb.NewProxyCommandRunner(Queries, c.session, c.authz.ConnectionID(), c.generation, probe, c.authz.Client().PushSchemaFragment)
 	commandRunner.Catalog = c.currentCatalog
 	return commandRunner
 }

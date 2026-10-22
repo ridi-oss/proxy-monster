@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/relay"
@@ -341,8 +342,9 @@ const mysqlSessionProbeSQL = "SELECT DATABASE(), @@session.character_set_client,
 // if any left UTF-8) and classifies its sql_mode column (failing closed on any lexer-changing flag the
 // analyzer cannot model — see classifyMySQLSqlMode). It returns the namespace — the current database, or
 // empty when none is selected — and whether the session runs under ANSI_QUOTES (forwarded so the analyzer
-// masks a `"`-quoted column).
-func interpretSessionProbeRow(values []*string) (namespace []string, ansiQuotes bool, err error) {
+// masks a `"`-quoted column). The database is in the engine session's canonical spelling: under lower_case_table_names=2,
+// DATABASE() reports `Goods` as the client wrote it while the catalog keys it `goods`.
+func interpretSessionProbeRow(values []*string, session *engines.Session) (namespace []string, ansiQuotes bool, err error) {
 	if len(values) != 5 {
 		return nil, false, fmt.Errorf("session probe returned %d columns, want 5", len(values))
 	}
@@ -361,7 +363,7 @@ func interpretSessionProbeRow(values []*string) (namespace []string, ansiQuotes 
 	if values[0] == nil {
 		return []string{}, ansiQuotes, nil
 	}
-	return mysqlNamespace(*values[0]), ansiQuotes, nil
+	return mysqlNamespace(session.CatalogSchemaName(&enginepb.Column{Schema: *values[0]}).String()), ansiQuotes, nil
 }
 
 // textResultCollector decodes one COM_QUERY text result for probes and run execution.
@@ -523,7 +525,7 @@ func runInternalQuery(targetDb net.Conn, deprecateEOF bool, sql string, expected
 // probeNamespace runs the pre-statement session probe and returns the connection's namespace plus whether
 // its live sql_mode has ANSI_QUOTES active, failing closed on an unsafe charset or a non-modeled
 // lexer-changing sql_mode flag.
-func probeNamespace(targetDb net.Conn, deprecateEOF bool) (namespace []string, ansiQuotes bool, err error) {
+func probeNamespace(targetDb net.Conn, deprecateEOF bool, session *engines.Session) (namespace []string, ansiQuotes bool, err error) {
 	rows, err := runInternalQuery(targetDb, deprecateEOF, mysqlSessionProbeSQL, 5)
 	if err != nil {
 		return nil, false, err
@@ -531,13 +533,13 @@ func probeNamespace(targetDb net.Conn, deprecateEOF bool) (namespace []string, a
 	if len(rows) != 1 {
 		return nil, false, fmt.Errorf("session probe returned %d rows, want 1", len(rows))
 	}
-	return interpretSessionProbeRow(rows[0])
+	return interpretSessionProbeRow(rows[0], session)
 }
 
 // probeSession runs the pre-statement session probe and packages its result as a SessionSnapshot, so every
 // wire/editor call site shares one probe→engine conversion.
-func probeSession(targetDb net.Conn, deprecateEOF bool) (spi.SessionSnapshot, error) {
-	namespace, ansiQuotes, err := probeNamespace(targetDb, deprecateEOF)
+func probeSession(targetDb net.Conn, deprecateEOF bool, session *engines.Session) (spi.SessionSnapshot, error) {
+	namespace, ansiQuotes, err := probeNamespace(targetDb, deprecateEOF, session)
 	if err != nil {
 		return spi.SessionSnapshot{}, err
 	}
@@ -546,7 +548,7 @@ func probeSession(targetDb net.Conn, deprecateEOF bool) (spi.SessionSnapshot, er
 
 func mysqlSnapshot(namespace []string, ansiQuotes bool) spi.SessionSnapshot {
 	return spi.SessionSnapshot{
-		CurrentCatalog:     "def",
+		CurrentCatalog:     engines.MySQL.CatalogName("").String(),
 		Namespace:          namespace,
 		SessionObservation: &enginepb.SessionObservation{Engine: &enginepb.SessionObservation_Mysql{Mysql: &enginepb.MySqlSession{AnsiQuotes: ansiQuotes}}},
 	}

@@ -5,15 +5,14 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
+	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"net"
 	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/ridi-oss/proxy-monster/analyzer/engines"
-	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"

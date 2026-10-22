@@ -10,6 +10,11 @@ type SchemaName struct{ name string }
 
 func (n SchemaName) String() string { return n.name }
 
+// FunctionName is a routine name in its engine's canonical spelling.
+type FunctionName struct{ name string }
+
+func (n FunctionName) String() string { return n.name }
+
 // schemas is canonical schema names written as literals in this package.
 func schemas(names ...string) []SchemaName {
 	out := make([]SchemaName, len(names))

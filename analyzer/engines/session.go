@@ -76,14 +76,71 @@ func newSession(config *pb.EngineConfig) (*Session, error) {
 	return session, nil
 }
 
+// Engine is the session's engine.
+func (s *Session) Engine() *Engine { return s.engine }
+
 // EngineVersion is the server version the target reported.
 func (s *Session) EngineVersion() string { return s.targetSettings.GetEngineVersion() }
+
+// TargetSettings is what the target reported, lower_case_table_names included.
+func (s *Session) TargetSettings() *pb.TargetSettings {
+	return proto.Clone(s.targetSettings).(*pb.TargetSettings)
+}
 
 // CatalogColumnNames puts names the target DB's own catalog returned in canonical spelling: an introspected
 // column, DATABASE(), a stored default schema. MySQL folds by lower_case_table_names, Postgres keeps them, Athena
 // folds all.
 func (s *Session) CatalogColumnNames(rows []*pb.Column) []ColumnName {
 	return s.engine.Traits.catalogColumnNames(s.targetDialect, rows)
+}
+
+// CanonicalColumns is rows cloned with their names in canonical spelling, for the proxy's catalog push.
+func (s *Session) CanonicalColumns(rows []*pb.Column) []*pb.Column {
+	names := s.CatalogColumnNames(rows)
+	out := make([]*pb.Column, len(rows))
+	for i, row := range rows {
+		out[i] = proto.Clone(row).(*pb.Column)
+		out[i].Schema, out[i].Table, out[i].Column = names[i].Schema().String(), names[i].Table(), names[i].Column()
+	}
+	return out
+}
+
+// CanonicalSchemas is schema names in canonical spelling: MySQL under lower_case_table_names=1, App -> app.
+func (s *Session) CanonicalSchemas(schemas []string) []SchemaName {
+	rows := make([]*pb.Column, len(schemas))
+	for i, schema := range schemas {
+		rows[i] = &pb.Column{Schema: schema}
+	}
+	out := make([]SchemaName, len(schemas))
+	for i, name := range s.CatalogColumnNames(rows) {
+		out[i] = name.Schema()
+	}
+	return out
+}
+
+// FunctionName is a routine name as the analyzer keys it: MySQL AddTax -> addtax; Postgres keeps the proname.
+func (s *Session) FunctionName(name string) FunctionName {
+	if s.engine.Traits.functionName == nil {
+		return FunctionName{name}
+	}
+	return s.engine.Traits.functionName(name)
+}
+
+// FunctionNames is FunctionName over names, without duplicates, in first-seen order.
+func (s *Session) FunctionNames(names []string) []FunctionName {
+	if len(names) == 0 {
+		return nil
+	}
+	seen := make(map[FunctionName]struct{}, len(names))
+	out := make([]FunctionName, 0, len(names))
+	for _, name := range names {
+		functionName := s.FunctionName(name)
+		if _, dup := seen[functionName]; !dup {
+			seen[functionName] = struct{}{}
+			out = append(out, functionName)
+		}
+	}
+	return out
 }
 
 // CatalogSchemaName is CatalogColumnNames for a row that names only a schema.

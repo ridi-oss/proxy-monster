@@ -57,6 +57,8 @@ func truthy(value any) bool {
 
 func boolPtr(value bool) *bool { return &value }
 
+func strPtr(s string) *string { return &s }
+
 func stringSet(values ...string) map[string]bool {
 	out := map[string]bool{}
 	for _, value := range values {

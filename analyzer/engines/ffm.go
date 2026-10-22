@@ -198,8 +198,6 @@ func must(b []byte, err error) []byte {
 	return b
 }
 
-func strPtr(s string) *string { return &s }
-
 // schemaMappingFromProto builds a depth-3 schema.Mapping (catalog -> schema -> table -> column ->
 // SQL type) from the flat Column list — the Go-side half of the flat-catalog contract: no tree-walking
 // encoder or decoder on either side. A column with no catalog of its own belongs to the namespace

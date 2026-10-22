@@ -133,6 +133,10 @@ type EngineTraits struct {
 	syntaxCalls []string
 }
 
+// The trait answers most engines share.
+
+func noSystemSchemaFirst([]string) bool { return false }
+
 var (
 	// All is every engine, MySQL first.
 	All = []*Engine{MySQL, Postgres, Athena}
@@ -182,3 +186,6 @@ func (e *Engine) IsTempSchema(schema SchemaName) bool {
 func (e *Engine) CatalogName(registeredDbName string) CatalogName {
 	return e.Traits.catalogName(registeredDbName)
 }
+
+// Dialect is the engine's sqlglot dialect before any datasource is known; it folds no datasource's names.
+func (e *Engine) Dialect() *dialects.Dialect { return e.Traits.dialect() }

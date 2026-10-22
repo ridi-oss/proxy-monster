@@ -1,27 +1,12 @@
 package engines
 
 import (
-	"fmt"
-
-	"google.golang.org/protobuf/proto"
-
-	"github.com/ridi-oss/sqlglot-go/dialects"
 	exp "github.com/ridi-oss/sqlglot-go/expressions"
 	"github.com/ridi-oss/sqlglot-go/optimizer"
 	"github.com/ridi-oss/sqlglot-go/schema"
 
 	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 )
-
-// sessionSettings is what one analysis call reads: the engine, how the target spells names, the dialect the
-// session's statements parse by, and what the session observed (MySQL ansi_quotes, Postgres shadowed
-// functions, the Athena workgroup).
-type sessionSettings struct {
-	engine      *Engine
-	datasource  Datasource
-	dialect     *dialects.Dialect
-	observation *pb.SessionObservation
-}
 
 // engineHooks are the engine's steps in a statement's analysis; sharedHooks holds what most engines share.
 type engineHooks interface {
@@ -69,54 +54,6 @@ func noSafeTypeReference(*sessionSettings, exp.Expression, exp.Expression, Names
 	return false
 }
 
-func noSystemSchemaFirst([]string) bool { return false }
-
 func referencedColumnLeakKeys(_ *sessionSettings, report ProbeResult, _ schema.Schema) map[string]bool {
 	return referencedColumnKeys(report)
-}
-
-// referencedColumnKeys is the shared diagnostic-leak template: every column the statement references —
-// what any engine's diagnostic message can echo (`Truncated incorrect INTEGER value: '010-1234-5678'`).
-func referencedColumnKeys(report ProbeResult) map[string]bool {
-	keys := map[string]bool{}
-	for _, origin := range report.Origins {
-		for _, key := range origin.Origins {
-			keys[key] = true
-		}
-	}
-	for _, refs := range report.References {
-		for _, key := range refs {
-			keys[key] = true
-		}
-	}
-	return keys
-}
-
-// newSessionSettings reads config, failing closed on a target or session the engine
-// cannot analyze (MySQL without its version or lower_case_table_names).
-func newSessionSettings(config *pb.EngineConfig) (*sessionSettings, error) {
-	if config == nil {
-		return nil, fmt.Errorf("engine config is required")
-	}
-	e, ok := ByProto(config.GetEngine())
-	if !ok {
-		return nil, fmt.Errorf("unsupported engine %s", config.GetEngine())
-	}
-	datasource, err := e.Datasource(config.GetTarget())
-	if err != nil {
-		return nil, err
-	}
-	return datasource.sessionSettings(config.GetSession())
-}
-
-// sessionSettings is t with what one session observed.
-func (t Datasource) sessionSettings(observation *pb.SessionObservation) (*sessionSettings, error) {
-	d, err := t.Traits.sessionDialect(t, observation)
-	if err != nil {
-		return nil, err
-	}
-	if observation != nil {
-		observation = proto.Clone(observation).(*pb.SessionObservation)
-	}
-	return &sessionSettings{engine: t.Engine, datasource: t, dialect: d, observation: observation}, nil
 }

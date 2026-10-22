@@ -350,6 +350,23 @@ func emitLineageFacts(root exp.Expression, settings *sessionSettings, qualifySch
 	return facts
 }
 
+// referencedColumnKeys is the shared diagnostic-leak template: every column the statement references —
+// what any engine's diagnostic message can echo (`Truncated incorrect INTEGER value: '010-1234-5678'`).
+func referencedColumnKeys(report ProbeResult) map[string]bool {
+	keys := map[string]bool{}
+	for _, origin := range report.Origins {
+		for _, key := range origin.Origins {
+			keys[key] = true
+		}
+	}
+	for _, refs := range report.References {
+		for _, key := range refs {
+			keys[key] = true
+		}
+	}
+	return keys
+}
+
 // diagnosticLeakColumns converts the engine's leak-key set to sorted column refs, so the
 // control-plane's frozen-facts comparison never churns on order.
 func diagnosticLeakColumns(report ProbeResult, settings *sessionSettings, qualifySchema schema.Schema) []*pb.ObjectRef {

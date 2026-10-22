@@ -26,9 +26,6 @@ var Postgres = &Engine{
 		// The database name is a connection parameter libpq matches exactly, not SQL text, so it is not folded.
 		catalogName:        func(registeredDbName string) CatalogName { return CatalogName{registeredDbName} },
 		catalogColumnNames: postgresCatalogColumnNames,
-		functionName: func(name string) FunctionName {
-			return FunctionName{dialects.Postgres().FoldIdentifierName(name, false)}
-		},
 		targetDialect: func(*pb.TargetSettings) (*dialects.Dialect, sessionDialect, error) {
 			d, err := dialects.GetOrRaise("postgres, opaque_functions=true")
 			return d, func(observation *pb.SessionObservation) (*dialects.Dialect, error) {

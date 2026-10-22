@@ -123,12 +123,11 @@ func TestFragmentColumnsFromRowsRefusesACaseDifferingSchema(t *testing.T) {
 }
 
 func TestFoldFunctionNameMatchesTheResolverFold(t *testing.T) {
-	// PostgreSQL folds ASCII only, so a non-ASCII upper-case letter keeps its spelling.
-	if got := pgFolder(t).FunctionName("PG_Read_File").String(); got != "pg_read_file" {
-		t.Fatalf("postgres fold = %q, want pg_read_file", got)
-	}
-	if got := pgFolder(t).FunctionName("ÄBC").String(); got != "Äbc" {
-		t.Fatalf("postgres must not fold non-ASCII: got %q, want Äbc", got)
+	// A Postgres proname is already exact.
+	for _, name := range []string{"pg_read_file", "GetSSN", "UPPER", "ÄBC"} {
+		if got := pgFolder(t).FunctionName(name).String(); got != name {
+			t.Fatalf("postgres fold = %q, want %q", got, name)
+		}
 	}
 }
 

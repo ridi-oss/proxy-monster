@@ -59,10 +59,10 @@ whole freshness decision into the control plane, dissolves all of it.
 The implementation lives in `proto/src/main/proto/controlplane.proto`, the
 control-plane per-connection catalog + Decide (`ConnectionCatalog.kt` /
 `ConnectionDecide.kt`, wired via `ControlPlaneGrpcService.decide`), the Go proxy
-held-connection refetch (`goproxy/sqldb/refetch.go`, `goproxy/cp/client.go`),
-the DB-side hash (`goproxy/mysql/queries.go`, `goproxy/postgres/queries.go`),
-and the config-channel split (a second `grpc.ClientConn` in
-`goproxy/boot/boot.go`).
+held-connection refetch (`goproxy/sqldb/proxy_command_runner.go`,
+`goproxy/cp/client.go`), the DB-side hash (`goproxy/mysql/queries.go`,
+`goproxy/postgres/queries.go`), and the config-channel split (a second
+`grpc.ClientConn` in `goproxy/boot/boot.go`).
 
 ## Two catalogs — why separate
 

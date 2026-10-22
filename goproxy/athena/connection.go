@@ -38,7 +38,7 @@ type connection struct {
 
 func (t *target) OpenConnection(_ context.Context, authz *spi.Authorizer, guard spi.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.Connection, error) {
 	// Every Athena query names the configured database, so a run cannot open anywhere else.
-	if defaultSchema != "" && defaultSchema != t.config.database {
+	if defaultSchema != "" && defaultSchema != t.databaseIdentity() {
 		return nil, fmt.Errorf("athena run cannot open in database %q: the target is configured for %q", defaultSchema, t.config.database)
 	}
 	commandRunner, err := t.newProxyCommandRunner(authz)
@@ -55,10 +55,9 @@ func (c *connection) OnOpen(ctx context.Context, commands []*pb.ProxyCommand) er
 	return c.commandRunner.RunAll(commands, nil)
 }
 
-// Namespace is the configured catalog and database: every query execution names them, and nothing on the
-// session changes them.
+// Namespace is the configured catalog and database in canonical spelling; nothing on the session changes them.
 func (c *connection) Namespace() (string, []string, error) {
-	return c.target.config.catalog, []string{c.target.config.database}, nil
+	return c.target.catalogIdentity(), []string{c.target.databaseIdentity()}, nil
 }
 
 func (c *connection) ServeStatement(sql string, maxRows int) (result spi.StatementResult, err error) {

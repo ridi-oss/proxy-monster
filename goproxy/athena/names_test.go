@@ -35,7 +35,6 @@ func mixedCaseGlue(t *testing.T) *target {
 }
 
 func TestAthenaCatalogPushIsCanonical(t *testing.T) {
-	t.Skip("pending-name-fix: Athena pushes Glue database, table, column and the default schema as listed, folding only the catalog")
 	catalog, err := mixedCaseGlue(t).Introspect(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -59,12 +58,18 @@ func TestAthenaCatalogPushIsCanonical(t *testing.T) {
 
 func TestAthenaTableDetailIsCanonical(t *testing.T) {
 	target := mixedCaseGlue(t)
-	for _, ref := range []*enginepb.ObjectRef{
-		{Catalog: "awsdatacatalog", Schema: "hr", Table: "salaries"},
-		{Catalog: "AwsDataCatalog", Schema: "HR", Table: "Salaries"},
+	for _, tc := range []struct {
+		ref     *enginepb.ObjectRef
+		pending string
+	}{
+		{&enginepb.ObjectRef{Catalog: "awsdatacatalog", Schema: "hr", Table: "salaries"}, ""},
+		{&enginepb.ObjectRef{Catalog: "AwsDataCatalog", Schema: "HR", Table: "Salaries"}, "Athena table detail compares the metadata table name byte-exact against a mixed-case request"},
 	} {
+		ref := tc.ref
 		t.Run(ref.Schema+"."+ref.Table, func(t *testing.T) {
-			t.Skip("pending-name-fix: Athena table detail compares the table name byte-exact and returns names as listed")
+			if tc.pending != "" {
+				t.Skip("pending-name-fix: " + tc.pending)
+			}
 			detail, err := target.ReadTableDetail(context.Background(), ref)
 			if err != nil {
 				t.Fatalf("ReadTableDetail: %v", err)

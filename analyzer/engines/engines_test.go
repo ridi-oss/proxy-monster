@@ -105,7 +105,7 @@ func TestIntrospectedColumns(t *testing.T) {
 	}
 }
 
-// mysqlIntrospected parses each distinct (schema, table) once; the batch must equal a row-by-row call.
+// mysqlCatalogColumnNames parses each distinct (schema, table) once; the batch must equal a row-by-row call.
 func TestIntrospectedColumnsBatchEqualsPerRow(t *testing.T) {
 	rows := []*pb.Column{
 		{Catalog: "def", Schema: "App", Table: "Users", Column: "ID"},

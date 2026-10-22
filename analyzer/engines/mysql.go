@@ -21,7 +21,7 @@ var MySQL = &Engine{
 		systemSchemas:         schemas("information_schema", "mysql", "performance_schema", "sys"),
 		// MySQL has one catalog, def, whatever the database.
 		catalogName:         func(string) CatalogName { return CatalogName{"def"} },
-		introspected:        mysqlIntrospected,
+		catalogColumnNames:  mysqlCatalogColumnNames,
 		dialect:             dialects.MySQL,
 		datasourceDialect:   mysqlDialect,
 		sessionDialect:      mysqlSessionDialect,
@@ -75,9 +75,9 @@ var mysqlColumnDialect = func() *dialects.Dialect {
 	return d
 }()
 
-// mysqlIntrospected folds catalog rows by lower_case_table_names: under 0, App.Users.ID -> App.Users.id; under
+// mysqlCatalogColumnNames folds catalog rows by lower_case_table_names: under 0, App.Users.ID -> App.Users.id; under
 // 1 or 2, app.users.id. Each distinct (schema, table) is folded once.
-func mysqlIntrospected(d *dialects.Dialect, rows []*pb.Column) []ColumnName {
+func mysqlCatalogColumnNames(d *dialects.Dialect, rows []*pb.Column) []ColumnName {
 	type relation struct{ schema, table string }
 	relations := make(map[relation]relation)
 	out := make([]ColumnName, len(rows))

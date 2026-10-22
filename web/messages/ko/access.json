@@ -57,16 +57,16 @@
     "expired": "만료됨"
   },
   "reject": {
-    "title": "요청 거절",
-    "descriptionQuery": "{principal}의 쿼리 요청을 거절합니다.",
-    "descriptionAccess": "{principal}의 \"{role}\" 역할에 대한 접근 요청을 거절합니다.",
-    "descriptionFallback": "접근 요청을 거절합니다.",
-    "failed": "거절에 실패했습니다.",
+    "title": "요청 반려",
+    "descriptionQuery": "{principal}의 쿼리 요청을 반려합니다.",
+    "descriptionAccess": "{principal}의 \"{role}\" 역할에 대한 접근 요청을 반려합니다.",
+    "descriptionFallback": "접근 요청을 반려합니다.",
+    "failed": "반려에 실패했습니다.",
     "reasonLabel": "사유 (필수)",
     "reasonPlaceholder": "범위가 너무 넓습니다 — orders/customers로 좁혀서 다시 요청해 주세요.",
     "cancel": "취소",
-    "submit": "거절",
-    "submitting": "거절 중…"
+    "submit": "반려",
+    "submitting": "반려 중…"
   },
   "directConnect": {
     "title": "SQL 클라이언트로 직접 연결",

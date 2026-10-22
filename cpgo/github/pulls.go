@@ -142,6 +142,7 @@ type prNode struct {
 					Email *string
 					User  *struct {
 						DatabaseID *int64 `graphql:"databaseId"`
+						Login      string
 					}
 				}
 			}
@@ -436,6 +437,7 @@ func (c *Client) readPullRequest(ctx context.Context, inst *installation, repo R
 			a.Email = au.Email
 			if au.User != nil && au.User.DatabaseID != nil {
 				a.UserID = new(strconv.FormatInt(*au.User.DatabaseID, 10))
+				a.Login = new(au.User.Login)
 			}
 		}
 		a.Merge = n.Commit.Parents.TotalCount > 1

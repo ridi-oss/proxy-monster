@@ -138,6 +138,7 @@ message CommitAuthor {
   optional string user_id = 1;
   optional string email = 2;
   bool merge = 3;
+  optional string login = 4;
 }
 
 message AutoMerge {

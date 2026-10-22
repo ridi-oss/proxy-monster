@@ -40,7 +40,7 @@ data class Check(val name: String, val required: Boolean, val status: CheckStatu
 
 data class ChangedFile(val path: String, val change: FileChange)
 
-data class CommitAuthor(val userId: String?, val email: String?, val merge: Boolean)
+data class CommitAuthor(val userId: String?, val email: String?, val merge: Boolean, val login: String? = null)
 
 /** [mergeMethod] is GitHub's MERGE, SQUASH or REBASE. */
 data class AutoMerge(val enabledBy: SourceUser?, val enabledAt: Instant?, val mergeMethod: String? = null)

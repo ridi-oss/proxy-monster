@@ -259,7 +259,10 @@ class GitHubAdapter(
             },
             files = filesList.map { ChangedFile(it.path, FileChange.valueOf(it.change.name)) },
             commits = commitsList.map {
-                CommitAuthor(if (it.hasUserId()) it.userId else null, if (it.hasEmail()) it.email else null, it.merge)
+                CommitAuthor(
+                    if (it.hasUserId()) it.userId else null, if (it.hasEmail()) it.email else null, it.merge,
+                    if (it.hasLogin()) it.login else null,
+                )
             },
         )
     }

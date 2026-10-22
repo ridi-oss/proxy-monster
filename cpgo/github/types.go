@@ -41,6 +41,7 @@ type ChangedFile struct {
 
 type CommitAuthor struct {
 	UserID *string `json:"userId"`
+	Login  *string `json:"login"`
 	Email  *string `json:"email"`
 	Merge  bool    `json:"merge"`
 }

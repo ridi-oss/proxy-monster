@@ -199,7 +199,7 @@ func pullRequestPB(pr PullRequest) *pb.PullRequest {
 		out.Files = append(out.Files, &pb.ChangedFile{Path: f.Path, Change: pb.FileChange(pb.FileChange_value[f.Change])})
 	}
 	for _, c := range pr.Commits {
-		out.Commits = append(out.Commits, &pb.CommitAuthor{UserId: c.UserID, Email: c.Email, Merge: c.Merge})
+		out.Commits = append(out.Commits, &pb.CommitAuthor{UserId: c.UserID, Login: c.Login, Email: c.Email, Merge: c.Merge})
 	}
 	return out
 }

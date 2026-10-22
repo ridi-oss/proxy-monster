@@ -49,9 +49,14 @@ func targetSettings(row []*string) (*analyzerpb.TargetSettings, error) {
 func mysqlSchemaFilter(column, schema string) string {
 	literal := hex.EncodeToString([]byte(schema))
 	return fmt.Sprintf(
-		`(CASE WHEN @@lower_case_table_names = 2 THEN LOWER(CAST(%s AS BINARY)) ELSE CAST(%s AS BINARY) END) = X'%s'`,
-		column, column, literal,
+		`(CASE WHEN @@lower_case_table_names = 2 THEN %s ELSE CAST(%s AS BINARY) END) = X'%s'`,
+		mysqlFoldedName(column), column, literal,
 	)
+}
+
+// mysqlFoldedName folds column by utf8mb3_general_ci, as dialects.MySQLLower does; LOWER of a binary string is a no-op.
+func mysqlFoldedName(column string) string {
+	return fmt.Sprintf("CAST(LOWER(CONVERT(%s USING utf8mb3) COLLATE utf8mb3_general_ci) AS BINARY)", column)
 }
 
 // schemaColumnsSQL returns one schema fragment without excluding system schemas.

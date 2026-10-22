@@ -36,7 +36,7 @@ func TestMySqlSchemaHashSQL(t *testing.T) {
 		// The WHERE filter must be mode-aware (CASE WHEN @@lower_case_table_names = 2 THEN LOWER(...)):
 		// a canonical (possibly-folded) schema parameter must still match a live mode-2 server whose
 		// information_schema preserves the original stored case.
-		"CASE WHEN @@lower_case_table_names = 2 THEN LOWER(CAST(TABLE_SCHEMA AS BINARY)) ELSE CAST(TABLE_SCHEMA AS BINARY) END",
+		"CASE WHEN @@lower_case_table_names = 2 THEN CAST(LOWER(CONVERT(TABLE_SCHEMA USING utf8mb3) COLLATE utf8mb3_general_ci) AS BINARY) ELSE CAST(TABLE_SCHEMA AS BINARY) END",
 	} {
 		if !strings.Contains(sql, fragment) {
 			t.Errorf("SchemaHashSQL missing %q:\n%s", fragment, sql)
@@ -59,7 +59,7 @@ func TestMySqlSchemaHashSQL(t *testing.T) {
 		"CAST(TABLE_SCHEMA AS BINARY)",
 		"ORDER BY CAST(TABLE_NAME AS BINARY), ORDINAL_POSITION, CAST(COLUMN_NAME AS BINARY)",
 		"X'" + fmt.Sprintf("%x", []byte(schema)) + "'",
-		"CASE WHEN @@lower_case_table_names = 2 THEN LOWER(CAST(TABLE_SCHEMA AS BINARY)) ELSE CAST(TABLE_SCHEMA AS BINARY) END",
+		"CASE WHEN @@lower_case_table_names = 2 THEN CAST(LOWER(CONVERT(TABLE_SCHEMA USING utf8mb3) COLLATE utf8mb3_general_ci) AS BINARY) ELSE CAST(TABLE_SCHEMA AS BINARY) END",
 	} {
 		if !strings.Contains(columnsSQL, fragment) {
 			t.Errorf("SchemaColumnsSQL missing %q: %s", fragment, columnsSQL)

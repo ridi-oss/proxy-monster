@@ -120,10 +120,10 @@ var splitFailure = must(proto.Marshal(&pb.SplitResponse{Ok: false}))
 // ParseColumnsSafe is ParseColumn over a marshaled ColumnNamesRequest, total like
 // SplitStatementsSafe: any failure is ok=false.
 func ParseColumnsSafe(reqBytes []byte) []byte {
-	return columnNamesSafe(reqBytes, func(t Datasource, cols []*pb.Column) ([]ColumnName, error) {
+	return columnNamesSafe(reqBytes, func(session *Session, cols []*pb.Column) ([]ColumnName, error) {
 		out := make([]ColumnName, len(cols))
 		for i, c := range cols {
-			n, err := t.ParseColumn(c.GetCatalog(), c.GetSchema(), c.GetTable(), c.GetColumn())
+			n, err := session.ParseColumn(c.GetCatalog(), c.GetSchema(), c.GetTable(), c.GetColumn())
 			if err != nil {
 				return nil, err
 			}
@@ -135,12 +135,12 @@ func ParseColumnsSafe(reqBytes []byte) []byte {
 
 // IntrospectedColumnsSafe is IntrospectedColumns over a marshaled ColumnNamesRequest.
 func IntrospectedColumnsSafe(reqBytes []byte) []byte {
-	return columnNamesSafe(reqBytes, func(t Datasource, cols []*pb.Column) ([]ColumnName, error) {
-		return t.IntrospectedColumns(cols), nil
+	return columnNamesSafe(reqBytes, func(session *Session, cols []*pb.Column) ([]ColumnName, error) {
+		return session.CatalogColumnNames(cols), nil
 	})
 }
 
-func columnNamesSafe(reqBytes []byte, names func(Datasource, []*pb.Column) ([]ColumnName, error)) (out []byte) {
+func columnNamesSafe(reqBytes []byte, fold func(*Session, []*pb.Column) ([]ColumnName, error)) (out []byte) {
 	defer func() {
 		if recover() != nil {
 			out = columnNamesFailure
@@ -154,11 +154,11 @@ func columnNamesSafe(reqBytes []byte, names func(Datasource, []*pb.Column) ([]Co
 	if !ok {
 		return columnNamesFailure
 	}
-	target, err := eng.Datasource(req.GetTarget())
+	session, err := eng.NewSession(req.GetTarget())
 	if err != nil {
 		return datasourceRejected
 	}
-	canonical, err := names(target, req.GetColumns())
+	canonical, err := fold(session, req.GetColumns())
 	if err != nil {
 		return columnNamesFailure
 	}

@@ -102,15 +102,12 @@ The real end-to-end verdict coverage is the Kotlin `GateSqlglotRegressionTest`
 in `:control-plane`, which drives this probe through the FFM binding on a large
 SQL corpus.
 
-## Engine, datasource, session
+## Engine and session
 
-An engine is known at three levels, and each has its own sqlglot dialect:
-
-| Level      | Go type                       | Built from                                                                           | Its dialect                                                                 |
-| ---------- | ----------------------------- | ------------------------------------------------------------------------------------ | --------------------------------------------------------------------------- |
-| Engine     | `*engines.Engine`             | nothing                                                                              | parses before any datasource is known (a MySQL `SHOW` before introspection) |
-| Datasource | `engines.Datasource`          | `TargetSettings`: what the target reported (version, MySQL `lower_case_table_names`) | folds canonical names                                                       |
-| Session    | `session` (one per statement) | the datasource plus `SessionObservation` (MySQL `ansi_quotes`, the Athena workgroup) | parses the statement                                                        |
+| Go type            | Built from                                                                                 | Its dialects                                                                                                         |
+| ------------------ | ------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
+| `*engines.Engine`  | nothing                                                                                    | none                                                                                                                 |
+| `*engines.Session` | `TargetSettings` (version, MySQL `lower_case_table_names`), then each `SessionObservation` | built once from what the target reported; the session's observation (MySQL `ansi_quotes`) picks the one it parses by |
 
 ## API & contract
 

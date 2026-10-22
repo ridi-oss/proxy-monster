@@ -91,7 +91,7 @@ class UtilityGateDbTest {
         // broad / no-masking posture) WOULD permit it — re-opening the SHOW leak the hardcode blocked. The fix
         // hard-denies an unclassified recognized utility in Query.kt, ahead of Cedar, so the grant can't reach
         // it. This test gives the principal exactly that broad grant, on a no-manifest datasource.
-        setEngineVersion(null)
+        setEngineVersion("9.9.0")
         setTags("""["system:production"]""")
         val broad = "broad-util@example.com"
         val role = fx.policyStore.createRole(RoleInput("broad-util-reader"))

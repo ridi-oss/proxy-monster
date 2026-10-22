@@ -48,11 +48,11 @@ func SplitBatch(sql string, config *pb.EngineConfig) (statements []BatchStatemen
 
 	// The dialect decides where a statement ends: under ANSI_QUOTES `SELECT "a;b"` is two statements,
 	// and one otherwise — so split with exactly the config the target and the analyzer use.
-	settings, err := newSessionSettings(config)
+	session, err := newSession(config)
 	if err != nil {
 		return nil, false
 	}
-	d := settings.dialect
+	d := session.dialect
 	// Parsed, not scanned for `;` — a `;` inside `'a;b'` or a BEGIN…END body ends nothing.
 	parsed, err := sqlglot.Parse(sql, d)
 	if err != nil {

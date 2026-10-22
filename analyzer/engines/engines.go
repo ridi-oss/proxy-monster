@@ -1,11 +1,10 @@
 // Package engines is the one list of target engines: the facts every Go module shares and each engine's SQL analyzer.
 //
-// An engine is known at three levels, each with its own Dialect:
-//   - Engine: the facts every datasource of the engine shares.
-//   - Datasource: the engine bound to what one datasource's target reported (MySQL lower_case_table_names);
-//     names fold by its dialect.
-//   - sessionSettings: one analysis call, the Datasource plus what the proxy observed on the session (MySQL
-//     ansi_quotes); statements parse by its dialect.
+// An engine is known at two levels:
+//   - Engine: the facts every target of the engine shares.
+//   - Session: one connection to a target. Names fold by the dialect of what the target reported when the
+//     connection opened (MySQL version and lower_case_table_names); statements parse by the dialect of what
+//     the session last observed (MySQL ansi_quotes).
 package engines
 
 import (
@@ -69,25 +68,20 @@ type EngineTraits struct {
 	// catalogColumnNames spells the rows the target's own catalog returned canonically: MySQL App.Users.ID ->
 	// app.users.id under lower_case_table_names=1, Postgres unchanged.
 	catalogColumnNames func(d *dialects.Dialect, rows []*pb.Column) []ColumnName
-	// dialect is the engine's dialect before any datasource is known.
-	dialect func() *dialects.Dialect
-	// datasourceDialect is the dialect a datasource's names fold by: MySQL's follows the lower_case_table_names its
-	// target reported. Nil keeps the engine's.
-	datasourceDialect func(targetSettings *pb.TargetSettings) (*dialects.Dialect, error)
-	// sessionDialect is the target's dialect with what the session observed (MySQL ansi_quotes), used to
-	// parse, qualify and generate alike; it fails on settings the analysis cannot use.
-	sessionDialect func(datasource Datasource, observation *pb.SessionObservation) (*dialects.Dialect, error)
+	// targetDialect builds one target's dialects: the one its names fold by (MySQL's follows the version and
+	// lower_case_table_names it reported), and how a session's observation picks the one it parses by.
+	targetDialect func(targetSettings *pb.TargetSettings) (*dialects.Dialect, sessionDialect, error)
 	// bareCallIsBuiltin: is a bare call (`unnest(...)`, no schema) guaranteed to be the
 	// pg_catalog builtin? PostgreSQL picks a function across every search_path schema by argument
 	// type, so a user `public.unnest(int[])` beats `pg_catalog.unnest(anyarray)` for an int[] argument
 	// even with pg_catalog first. false = fail closed, the row stays unknown.
-	bareCallIsBuiltin func(settings *sessionSettings, name string) bool
+	bareCallIsBuiltin func(session *Session, name string) bool
 	// showUtilityCommand names the utility grant a SHOW form requires ("" for none), so an engine can
 	// classify a data-bearing SHOW (e.g. SHOW PARTITIONS) as a result read.
 	showUtilityCommand func(root exp.Expression) string
 	// isSafeTypeReference: a type sqlglot marked user-defined that is trusted anyway (`'1'::xid` when
 	// it must be pg_catalog.xid). False keeps the user-type fail-close.
-	isSafeTypeReference func(settings *sessionSettings, dt, kind exp.Expression, namespace NamespaceConfig) bool
+	isSafeTypeReference func(session *Session, dt, kind exp.Expression, namespace NamespaceConfig) bool
 	// systemSchemaFirst: an unqualified name resolves in the system schema first (PostgreSQL: pg_catalog
 	// precedes every user schema on searchPath, pg_temp aside; MySQL: never).
 	systemSchemaFirst func(searchPath []string) bool
@@ -97,17 +91,14 @@ type EngineTraits struct {
 	// projection's verbatim source spelling (SpanText). query is the SELECT the projection belongs
 	// to, for resolving references to its derived sources. ok=false means the label is unknowable —
 	// the caller leaves Qualify's synthetic name.
-	nativeOutputLabel func(settings *sessionSettings, projection, query exp.Expression) (string, bool)
+	nativeOutputLabel func(session *Session, projection, query exp.Expression) (string, bool)
 	// diagnosticLeakKeys is the column keys this statement's target-DB error/warning diagnostic could echo
 	// — engine-specific, since what a diagnostic contains is (MySQL echoes the operated value; PostgreSQL
 	// also dumps a failed write's whole row via `DETAIL: Failing row contains (…)`). Start from
 	// referencedColumnKeys (the shared template) and add engine channels on top.
-	diagnosticLeakKeys func(settings *sessionSettings, report ProbeResult, qualifySchema schema.Schema) map[string]bool
+	diagnosticLeakKeys func(session *Session, report ProbeResult, qualifySchema schema.Schema) map[string]bool
 	// normalizeRules are the lexer rules SqlNormalize applies: MySQL refuses `/*! */`, Postgres folds identifiers.
 	normalizeRules func() normalizeRules
-	// showsWithoutSession parses a SHOW by the engine's dialect when no session can be built (MySQL before
-	// lower_case_table_names is reported); elsewhere that fails closed.
-	showsWithoutSession bool
 	// foldColumn is a column name as the engine compares it: MySQL and Athena fold, Postgres keeps it exact.
 	foldColumn func(name string) string
 	// normalizeCatalogOnBuild folds the introspected catalog when the analyzer builds its schema; Postgres keeps
@@ -186,6 +177,3 @@ func (e *Engine) IsTempSchema(schema SchemaName) bool {
 func (e *Engine) CatalogName(registeredDbName string) CatalogName {
 	return e.Traits.catalogName(registeredDbName)
 }
-
-// Dialect is the engine's sqlglot dialect before any datasource is known; it folds no datasource's names.
-func (e *Engine) Dialect() *dialects.Dialect { return e.Traits.dialect() }

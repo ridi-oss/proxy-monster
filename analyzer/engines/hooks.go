@@ -14,11 +14,11 @@ type engineHooks interface {
 	// request parameters into the tree, or resolves a server-side prepared statement into its body, does it
 	// here. It returns the statement to analyze, whether the proxy must submit regenerated text, and either
 	// an error (fail closed) or facts that end the analysis (a request for more input).
-	prepareStatement(settings *sessionSettings, root exp.Expression) (exp.Expression, bool, *pb.StatementFacts, error)
+	prepareStatement(session *Session, root exp.Expression) (exp.Expression, bool, *pb.StatementFacts, error)
 	// finishSubmission runs after a resolved analysis on the tree the proxy will submit (the lineage rewrite
 	// re-parsed, or the prepared original) and may edit it (a row cap); true means the text must be
 	// regenerated.
-	finishSubmission(settings *sessionSettings, submission exp.Expression) bool
+	finishSubmission(session *Session, submission exp.Expression) bool
 	// stampSubmission records on facts what the proxy needs beside the regenerated text (Athena: the
 	// execution-parameter list that goes with it). Called only when the text was regenerated.
 	stampSubmission(facts *pb.StatementFacts)
@@ -32,11 +32,11 @@ type engineHooks interface {
 
 type sharedHooks struct{}
 
-func (sharedHooks) prepareStatement(_ *sessionSettings, root exp.Expression) (exp.Expression, bool, *pb.StatementFacts, error) {
+func (sharedHooks) prepareStatement(_ *Session, root exp.Expression) (exp.Expression, bool, *pb.StatementFacts, error) {
 	return root, false, nil, nil
 }
 
-func (sharedHooks) finishSubmission(*sessionSettings, exp.Expression) bool { return false }
+func (sharedHooks) finishSubmission(*Session, exp.Expression) bool { return false }
 
 func (sharedHooks) stampSubmission(*pb.StatementFacts) {}
 
@@ -48,12 +48,12 @@ func (sharedHooks) rewriteStatement(exp.Expression) string { return "" }
 
 // The trait answers most engines share.
 
-func noBuiltinBareCall(*sessionSettings, string) bool { return false }
+func noBuiltinBareCall(*Session, string) bool { return false }
 
-func noSafeTypeReference(*sessionSettings, exp.Expression, exp.Expression, NamespaceConfig) bool {
+func noSafeTypeReference(*Session, exp.Expression, exp.Expression, NamespaceConfig) bool {
 	return false
 }
 
-func referencedColumnLeakKeys(_ *sessionSettings, report ProbeResult, _ schema.Schema) map[string]bool {
+func referencedColumnLeakKeys(_ *Session, report ProbeResult, _ schema.Schema) map[string]bool {
 	return referencedColumnKeys(report)
 }

@@ -25,8 +25,12 @@ var Athena = &Engine{
 		// Athena resolves catalog names case-insensitively.
 		catalogName:        func(registeredDbName string) CatalogName { return CatalogName{athenaName(registeredDbName)} },
 		catalogColumnNames: athenaCatalogColumnNames,
-		dialect:            dialects.Athena,
-		sessionDialect:     athenaSessionDialect,
+		targetDialect: func(*pb.TargetSettings) (*dialects.Dialect, sessionDialect, error) {
+			d := dialects.Athena()
+			return d, func(observation *pb.SessionObservation) (*dialects.Dialect, error) {
+				return d, checkAthenaObservation(observation)
+			}, nil
+		},
 		// Athena has no search path, so a bare call never resolves in a system schema.
 		bareCallIsBuiltin:   noBuiltinBareCall,
 		showUtilityCommand:  athenaShowUtilityCommand,
@@ -64,11 +68,11 @@ func athenaCatalogColumnNames(_ *dialects.Dialect, rows []*pb.Column) []ColumnNa
 // from one session, so cross-catalog references resolve and the catalog stays in the executable SQL. A
 // query is one StartQueryExecution call: the request's positional parameters are bound into the tree before
 // analysis, EXECUTE resolves to the workgroup-stored definition, and the editor row cap becomes a LIMIT.
-func athenaSessionDialect(datasource Datasource, observation *pb.SessionObservation) (*dialects.Dialect, error) {
+func checkAthenaObservation(observation *pb.SessionObservation) error {
 	if strings.TrimSpace(observation.GetAthena().GetWorkgroup()) == "" {
-		return nil, fmt.Errorf("Athena workgroup scope is required")
+		return fmt.Errorf("Athena workgroup scope is required")
 	}
-	return datasource.Dialect(), nil
+	return nil
 }
 
 type athenaHooks struct{ sharedHooks }
@@ -76,8 +80,8 @@ type athenaHooks struct{ sharedHooks }
 // prepareStatement binds ExecutionParameters into the statement's `?` placeholders in SQL order so lineage
 // runs on the bound text, and resolves EXECUTE against a supplied prepared definition or asks for the one
 // it needs. An empty statement carries no parameters.
-func (athenaHooks) prepareStatement(settings *sessionSettings, root exp.Expression) (exp.Expression, bool, *pb.StatementFacts, error) {
-	sqlContext := settings.observation.GetAthena()
+func (athenaHooks) prepareStatement(session *Session, root exp.Expression) (exp.Expression, bool, *pb.StatementFacts, error) {
+	sqlContext := session.observation.GetAthena()
 	parameters := append([]string(nil), sqlContext.GetExecutionParameters()...)
 	if root.Kind() == exp.KindSemicolon {
 		if len(parameters) != 0 {
@@ -87,7 +91,7 @@ func (athenaHooks) prepareStatement(settings *sessionSettings, root exp.Expressi
 	}
 	regenerate := len(parameters) > 0
 	if root.Kind() == exp.KindCommand && root.Keyword() == "EXECUTE" {
-		name, using, err := athenaExecute(root, settings)
+		name, using, err := athenaExecute(root, session)
 		if err != nil {
 			return nil, false, nil, err
 		}
@@ -108,7 +112,7 @@ func (athenaHooks) prepareStatement(settings *sessionSettings, root exp.Expressi
 			facts.AthenaPreparedDefinitionNeed = &pb.AthenaPreparedDefinitionNeed{Workgroup: sqlContext.GetWorkgroup(), Name: name}
 			return nil, false, facts, nil
 		}
-		if root, err = singleStatement(definition.GetQueryString(), settings); err != nil {
+		if root, err = singleStatement(definition.GetQueryString(), session); err != nil {
 			return nil, false, nil, err
 		}
 		if root.Kind() == exp.KindCommand {
@@ -117,7 +121,7 @@ func (athenaHooks) prepareStatement(settings *sessionSettings, root exp.Expressi
 		parameters = using
 		regenerate = true
 	}
-	if err := bindAthenaParameters(root, parameters, settings); err != nil {
+	if err := bindAthenaParameters(root, parameters, session); err != nil {
 		return nil, false, nil, err
 	}
 	return root, regenerate, nil, nil
@@ -125,8 +129,8 @@ func (athenaHooks) prepareStatement(settings *sessionSettings, root exp.Expressi
 
 // finishSubmission caps the submitted query at the editor's max_rows: Athena has no session row cap, so an
 // uncapped SELECT would scan and store the whole result before the proxy truncates it.
-func (athenaHooks) finishSubmission(settings *sessionSettings, submission exp.Expression) bool {
-	maxRows := settings.observation.GetAthena().GetMaxRows()
+func (athenaHooks) finishSubmission(session *Session, submission exp.Expression) bool {
+	maxRows := session.observation.GetAthena().GetMaxRows()
 	return maxRows > 0 && capAthenaRows(submission, maxRows)
 }
 
@@ -150,7 +154,7 @@ func athenaShowUtilityCommand(root exp.Expression) string {
 	return ""
 }
 
-func athenaNativeOutputLabel(_ *sessionSettings, projection, query exp.Expression) (string, bool) {
+func athenaNativeOutputLabel(_ *Session, projection, query exp.Expression) (string, bool) {
 	// Result labels do not make unnamed derived-table fields addressable.
 	if _, derived := derivedBodySelects(query.Root())[query]; derived {
 		return "", false
@@ -163,8 +167,8 @@ func athenaNativeOutputLabel(_ *sessionSettings, projection, query exp.Expressio
 	return "", false
 }
 
-func athenaParameterExpressions(sql string, settings *sessionSettings) ([]exp.Expression, error) {
-	root, err := singleStatement("SELECT "+sql, settings)
+func athenaParameterExpressions(sql string, session *Session) ([]exp.Expression, error) {
+	root, err := singleStatement("SELECT "+sql, session)
 	if err != nil {
 		return nil, err
 	}
@@ -182,7 +186,7 @@ func athenaParameterExpressions(sql string, settings *sessionSettings) ([]exp.Ex
 	return root.Selects(), nil
 }
 
-func bindAthenaParameters(root exp.Expression, parameters []string, settings *sessionSettings) error {
+func bindAthenaParameters(root exp.Expression, parameters []string, session *Session) error {
 	if root.Find(exp.KindParameter) != nil || root.Find(exp.KindSessionParameter) != nil {
 		return fmt.Errorf("Athena requires positional question-mark parameters")
 	}
@@ -214,7 +218,7 @@ func bindAthenaParameters(root exp.Expression, parameters []string, settings *se
 	}
 	sort.Slice(placeholders, func(i, j int) bool { return positions[placeholders[i]] < positions[placeholders[j]] })
 	for i, placeholder := range placeholders {
-		expressions, err := athenaParameterExpressions(parameters[i], settings)
+		expressions, err := athenaParameterExpressions(parameters[i], session)
 		if err != nil {
 			return err
 		}
@@ -226,12 +230,12 @@ func bindAthenaParameters(root exp.Expression, parameters []string, settings *se
 	return nil
 }
 
-func athenaExecute(root exp.Expression, settings *sessionSettings) (string, []string, error) {
+func athenaExecute(root exp.Expression, session *Session) (string, []string, error) {
 	if root.Expr() == nil {
 		return "", nil, fmt.Errorf("prepared statement name is required")
 	}
 	tail := root.Expr().Name()
-	parsed, err := settings.dialect.NewTokenizer().Tokenize(tail)
+	parsed, err := session.dialect.NewTokenizer().Tokenize(tail)
 	if err != nil || len(parsed) == 0 || (parsed[0].TokenType != tokens.VAR && parsed[0].TokenType != tokens.IDENTIFIER) {
 		return "", nil, fmt.Errorf("invalid prepared statement name")
 	}
@@ -243,13 +247,13 @@ func athenaExecute(root exp.Expression, settings *sessionSettings) (string, []st
 		return "", nil, fmt.Errorf("expected EXECUTE name USING expressions")
 	}
 	runes := []rune(tail)
-	expressions, err := athenaParameterExpressions(string(runes[parsed[2].Start:]), settings)
+	expressions, err := athenaParameterExpressions(string(runes[parsed[2].Start:]), session)
 	if err != nil {
 		return "", nil, err
 	}
 	parameters := make([]string, len(expressions))
 	for i, expression := range expressions {
-		parameters[i], err = sqlglot.Generate(expression, settings.dialect, generator.Options{})
+		parameters[i], err = sqlglot.Generate(expression, session.dialect, generator.Options{})
 		if err != nil {
 			return "", nil, err
 		}

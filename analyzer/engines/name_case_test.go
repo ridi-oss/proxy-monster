@@ -34,32 +34,32 @@ func athenaNames(rows ...*pb.Column) nameTarget {
 	return nameTarget{engine: pb.Engine_ATHENA, catalog: "awsdatacatalog", searchPath: []string{"sample"}, rows: rows}
 }
 
-func (n nameTarget) reported() *pb.TargetSettings {
+func (n nameTarget) targetSettings() *pb.TargetSettings {
 	if n.engine != pb.Engine_MYSQL {
 		return nil
 	}
 	return &pb.TargetSettings{EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(n.lctn)}
 }
 
-func (n nameTarget) datasource(t *testing.T) Datasource {
+func (n nameTarget) datasource(t *testing.T) *Session {
 	t.Helper()
 	eng, _ := ByProto(n.engine)
-	ds, err := eng.Datasource(n.reported())
+	session, err := eng.NewSession(n.targetSettings())
 	if err != nil {
 		t.Fatalf("datasource: %v", err)
 	}
-	return ds
+	return session
 }
 
 func (n nameTarget) schema(t *testing.T, raw string) string {
 	t.Helper()
-	return n.datasource(t).IntrospectedSchema(&pb.Column{Schema: raw, Table: "_", Column: "_"}).String()
+	return n.datasource(t).CatalogSchemaName(&pb.Column{Schema: raw, Table: "_", Column: "_"}).String()
 }
 
 func (n nameTarget) canonicalRows(t *testing.T) []*pb.Column {
 	t.Helper()
 	out := make([]*pb.Column, len(n.rows))
-	for i, c := range n.datasource(t).IntrospectedColumns(n.rows) {
+	for i, c := range n.datasource(t).CatalogColumnNames(n.rows) {
 		catalog := c.Catalog().String()
 		if catalog == "" {
 			catalog = n.catalog
@@ -99,7 +99,7 @@ func (n nameTarget) functions(t *testing.T) *pb.FunctionCatalog {
 
 func (n nameTarget) facts(t *testing.T, sql string) *pb.StatementFacts {
 	t.Helper()
-	cfg := &pb.EngineConfig{Engine: n.engine, Target: n.reported()}
+	cfg := &pb.EngineConfig{Engine: n.engine, Target: n.targetSettings()}
 	if n.engine == pb.Engine_ATHENA {
 		cfg.Session = &pb.SessionObservation{Engine: &pb.SessionObservation_Athena{Athena: &pb.AthenaSqlContext{Workgroup: "sample"}}}
 	}
@@ -460,10 +460,10 @@ func TestNameNonASCIIFolds(t *testing.T) {
 			n := tc.n
 			n.rows = []*pb.Column{tc.row}
 			key := n.key(t, tc.row)
-			ds := n.datasource(t)
+			session := n.datasource(t)
 			for _, s := range tc.same {
 				requireReads(t, n, "SELECT "+s.column+" FROM "+s.table, key)
-				parsed, err := ds.ParseColumn(n.catalog, n.searchPath[0], s.table, s.column)
+				parsed, err := session.ParseColumn(n.catalog, n.searchPath[0], s.table, s.column)
 				if err != nil {
 					t.Errorf("ParseColumn(%s, %s): %v", s.table, s.column, err)
 					continue

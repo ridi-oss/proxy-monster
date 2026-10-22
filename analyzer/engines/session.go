@@ -6,56 +6,59 @@ import (
 	sqlglot "github.com/ridi-oss/sqlglot-go"
 	"github.com/ridi-oss/sqlglot-go/dialects"
 	exp "github.com/ridi-oss/sqlglot-go/expressions"
+	"github.com/ridi-oss/sqlglot-go/schema"
 	"github.com/ridi-oss/sqlglot-go/tokens"
 	"google.golang.org/protobuf/proto"
 
 	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 )
 
-// Datasource is an engine as one datasource spells names: MySQL folds by the lower_case_table_names its target reported.
-type Datasource struct {
-	*Engine
-	dialect *dialects.Dialect
-	version string
-}
+// sessionDialect is the dialect a session parses, qualifies and generates by, for what it observed (MySQL
+// ansi_quotes); it fails on an observation the analysis cannot use.
+type sessionDialect func(observation *pb.SessionObservation) (*dialects.Dialect, error)
 
-// Datasource binds the engine to what one datasource's target reported; MySQL requires lower_case_table_names.
-func (e *Engine) Datasource(targetSettings *pb.TargetSettings) (Datasource, error) {
-	d := e.Traits.dialect()
-	if e.Traits.datasourceDialect != nil {
-		var err error
-		if d, err = e.Traits.datasourceDialect(targetSettings); err != nil {
-			return Datasource{}, err
-		}
-	}
-	return Datasource{e, d, targetSettings.GetEngineVersion()}, nil
-}
-
-// sessionSettings is what one analysis call reads: the engine, how the target spells names, the dialect the
-// session's statements parse by, and what the session observed (MySQL ansi_quotes, Postgres shadowed
-// functions, the Athena workgroup).
-type sessionSettings struct {
-	engine      *Engine
-	datasource  Datasource
+// Session is the engine on one connection to a target. It folds names to the form the target stores them in,
+// by what the target reported: MySQL by lower_case_table_names, Postgres unquoted only, Athena all.
+type Session struct {
+	engine         *Engine
+	targetSettings *pb.TargetSettings
+	targetDialect  *dialects.Dialect
+	sessionDialect sessionDialect
+	// dialect and observation are what the session last observed; statements parse by dialect.
 	dialect     *dialects.Dialect
 	observation *pb.SessionObservation
 }
 
-// sessionSettings is t with what one session observed.
-func (t Datasource) sessionSettings(observation *pb.SessionObservation) (*sessionSettings, error) {
-	d, err := t.Traits.sessionDialect(t, observation)
+// NewSession is the engine on a connection to a target that reported targetSettings; MySQL requires
+// lower_case_table_names. It analyzes statements once Update records the session.
+func (e *Engine) NewSession(targetSettings *pb.TargetSettings) (*Session, error) {
+	if targetSettings == nil {
+		targetSettings = &pb.TargetSettings{}
+	}
+	d, sessionDialect, err := e.Traits.targetDialect(targetSettings)
 	if err != nil {
 		return nil, err
+	}
+	return &Session{engine: e, targetSettings: proto.Clone(targetSettings).(*pb.TargetSettings), targetDialect: d, sessionDialect: sessionDialect}, nil
+}
+
+// Update records what the session observed (MySQL ansi_quotes, Postgres shadowed functions, the Athena
+// workgroup); its statements parse by the dialect that picks. It fails on an observation the analysis cannot use.
+func (s *Session) Update(observation *pb.SessionObservation) error {
+	d, err := s.sessionDialect(observation)
+	if err != nil {
+		return err
 	}
 	if observation != nil {
 		observation = proto.Clone(observation).(*pb.SessionObservation)
 	}
-	return &sessionSettings{engine: t.Engine, datasource: t, dialect: d, observation: observation}, nil
+	s.dialect, s.observation = d, observation
+	return nil
 }
 
-// newSessionSettings reads config, failing closed on a target or session the engine
+// newSession reads config, failing closed on a target or session the engine
 // cannot analyze (MySQL without its version or lower_case_table_names).
-func newSessionSettings(config *pb.EngineConfig) (*sessionSettings, error) {
+func newSession(config *pb.EngineConfig) (*Session, error) {
 	if config == nil {
 		return nil, fmt.Errorf("engine config is required")
 	}
@@ -63,33 +66,36 @@ func newSessionSettings(config *pb.EngineConfig) (*sessionSettings, error) {
 	if !ok {
 		return nil, fmt.Errorf("unsupported engine %s", config.GetEngine())
 	}
-	datasource, err := e.Datasource(config.GetTarget())
+	session, err := e.NewSession(config.GetTarget())
 	if err != nil {
 		return nil, err
 	}
-	return datasource.sessionSettings(config.GetSession())
+	if err := session.Update(config.GetSession()); err != nil {
+		return nil, err
+	}
+	return session, nil
 }
 
-// Dialect is the sqlglot dialect the datasource's canonical names fold by.
-func (t Datasource) Dialect() *dialects.Dialect { return t.dialect }
+// EngineVersion is the server version the target reported.
+func (s *Session) EngineVersion() string { return s.targetSettings.GetEngineVersion() }
 
-// IntrospectedColumns puts names the target DB's own catalog returned in canonical spelling: an introspected
+// CatalogColumnNames puts names the target DB's own catalog returned in canonical spelling: an introspected
 // column, DATABASE(), a stored default schema. MySQL folds by lower_case_table_names, Postgres keeps them, Athena
 // folds all.
-func (t Datasource) IntrospectedColumns(rows []*pb.Column) []ColumnName {
-	return t.Traits.catalogColumnNames(t.dialect, rows)
+func (s *Session) CatalogColumnNames(rows []*pb.Column) []ColumnName {
+	return s.engine.Traits.catalogColumnNames(s.targetDialect, rows)
 }
 
-// IntrospectedSchema is IntrospectedColumns for a row that names only a schema.
-func (t Datasource) IntrospectedSchema(row *pb.Column) SchemaName {
-	return t.IntrospectedColumns([]*pb.Column{row})[0].Schema()
+// CatalogSchemaName is CatalogColumnNames for a row that names only a schema.
+func (s *Session) CatalogSchemaName(row *pb.Column) SchemaName {
+	return s.CatalogColumnNames([]*pb.Column{row})[0].Schema()
 }
 
 // ParseColumn reads names a person typed as SQL identifiers in the engine's dialect: unquoted folds, quoted stays
 // exact (MySQL folds by lower_case_table_names either way). Postgres: Users.SSN -> users.ssn, "App"."T" -> App.T.
 // A part that is not one identifier, such as a.b, is an error.
-func (t Datasource) ParseColumn(catalog, schema, table, column string) (ColumnName, error) {
-	d := t.dialect
+func (s *Session) ParseColumn(catalog, schema, table, column string) (ColumnName, error) {
+	d := s.targetDialect
 	parts := make([]exp.Expression, 4)
 	for i, text := range []string{catalog, schema, table, column} {
 		id, err := parseIdentifier(d, text)
@@ -107,24 +113,24 @@ func (t Datasource) ParseColumn(catalog, schema, table, column string) (ColumnNa
 
 // ParsedSchema is a schema identifier from a parsed statement, folded by the engine's dialect: unquoted folds,
 // quoted stays exact. The statement is not changed.
-func (t Datasource) ParsedSchema(id exp.Expression) SchemaName {
+func (s *Session) ParsedSchema(id exp.Expression) SchemaName {
 	id = id.Copy()
 	// NormalizeIdentifier reads the parent to tell a schema name from a column name.
 	exp.Table(exp.Args{"this": exp.Identifier(exp.Args{"this": ""}), "schema": id})
-	t.dialect.NormalizeIdentifier(id)
+	s.targetDialect.NormalizeIdentifier(id)
 	return SchemaName{id.Name()}
 }
 
 // isTempSchemaID reports whether a parsed schema identifier is the session temp schema; nil is not.
-func (t Datasource) isTempSchemaID(id exp.Expression) bool {
-	return id != nil && t.IsTempSchema(t.ParsedSchema(id))
+func (s *Session) isTempSchemaID(id exp.Expression) bool {
+	return id != nil && s.engine.IsTempSchema(s.ParsedSchema(id))
 }
 
 // isBuiltinQualifier reports whether a call or type qualifier is one identifier naming BuiltinSchema: Postgres
 // pg_catalog, not the distinct user schema "PG_CATALOG".
-func (t Datasource) isBuiltinQualifier(qualifier exp.Expression) bool {
-	return t.Traits.BuiltinSchema != SchemaName{} && qualifier != nil && qualifier.Kind() == exp.KindIdentifier &&
-		t.ParsedSchema(qualifier) == t.Traits.BuiltinSchema
+func (s *Session) isBuiltinQualifier(qualifier exp.Expression) bool {
+	return s.engine.Traits.BuiltinSchema != SchemaName{} && qualifier != nil && qualifier.Kind() == exp.KindIdentifier &&
+		s.ParsedSchema(qualifier) == s.engine.Traits.BuiltinSchema
 }
 
 // parseIdentifier reads one identifier; an empty part (a key without a column) stays empty.
@@ -142,4 +148,20 @@ func parseIdentifier(d *dialects.Dialect, text string) (exp.Expression, error) {
 		return nil, fmt.Errorf("%q is not an identifier", text)
 	}
 	return id, nil
+}
+
+func (s *Session) bareCallIsBuiltin(name string) bool {
+	return s.engine.Traits.bareCallIsBuiltin(s, name)
+}
+
+func (s *Session) isSafeTypeReference(dt, kind exp.Expression, namespace NamespaceConfig) bool {
+	return s.engine.Traits.isSafeTypeReference(s, dt, kind, namespace)
+}
+
+func (s *Session) nativeOutputLabel(projection, query exp.Expression) (string, bool) {
+	return s.engine.Traits.nativeOutputLabel(s, projection, query)
+}
+
+func (s *Session) diagnosticLeakKeys(report ProbeResult, qualifySchema schema.Schema) map[string]bool {
+	return s.engine.Traits.diagnosticLeakKeys(s, report, qualifySchema)
 }

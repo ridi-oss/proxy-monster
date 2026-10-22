@@ -87,7 +87,7 @@ Input: the curated catalog as flat `Column` rows
 an empty catalog means the namespace catalog (which system relations are
 included is the access-model curation's call —
 [access-model.md](./access-model.md)). Go nests them into a depth-3
-`schema.Mapping` (`analyzer/engines/wire.go`):
+`schema.Mapping` (`analyzer/engines/ffm.go`):
 
 ```
 mapping := schema.NewMapping()                     // sqlglot-go schema pkg — depth-3

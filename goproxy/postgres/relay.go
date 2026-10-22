@@ -31,7 +31,7 @@ type streamOpts struct{ extended, soft bool }
 // pgTargetDbErr carries both forms of a PostgreSQL ErrorResponse — the raw message and the diagnostic-redacted
 // message — from streamResult to its caller. It is NOT relay.TargetDbError: streamResult also serves
 // internal catalog probes and refetches (collectProbe), whose errors must stay proxy-internal and never be
-// surfaced as a query's error detail. Only the statement site (RunSession.ServeStatement) promotes this to
+// surfaced as a query's error detail. Only the statement site (connection.ServeStatement) promotes this to
 // relay.TargetDbError, so provenance is decided there, not for every ErrorResponse streamResult sees.
 type pgTargetDbErr struct {
 	message  string

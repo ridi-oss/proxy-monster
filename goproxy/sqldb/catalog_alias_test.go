@@ -180,16 +180,16 @@ func TestPostgresCatalogThroughDatabaseAlias(t *testing.T) {
 		}
 	})
 
-	t.Run("run session", func(t *testing.T) {
-		session, err := target.NewRunSession(ctx, spi.NewAuthorizer(client, "test-token", []byte("alias-run-000001")), nil, 10*time.Second, "")
+	t.Run("run connection", func(t *testing.T) {
+		connection, err := target.OpenConnection(ctx, spi.NewAuthorizer(client, "test-token", []byte("alias-run-000001")), nil, 10*time.Second, "")
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer session.Close()
-		if err := session.OnOpen(ctx, []*pb.ProxyCommand{{Command: &pb.ProxyCommand_Refetch{Refetch: control.refetch()}}}); err != nil {
+		defer connection.Close()
+		if err := connection.OnOpen(ctx, []*pb.ProxyCommand{{Command: &pb.ProxyCommand_Refetch{Refetch: control.refetch()}}}); err != nil {
 			t.Fatal(err)
 		}
-		result, err := session.ServeStatement("SELECT current_database()", 20)
+		result, err := connection.ServeStatement("SELECT current_database()", 20)
 		if err != nil {
 			t.Fatal(err)
 		}

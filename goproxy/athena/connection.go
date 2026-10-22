@@ -21,10 +21,10 @@ const (
 	resultPageSize = 1000
 )
 
-// runSession serves the console editor: the proxy is the Athena client, so it submits, polls, reads, masks,
+// connection serves the console editor: the proxy is the Athena client, so it submits, polls, reads, masks,
 // and cancels through the SDK with its own credentials. No enforcement context is cached: the control plane
 // stores the rows it receives.
-type runSession struct {
+type connection struct {
 	target        *target
 	authz         *spi.Authorizer
 	commandRunner *proxyCommandRunner
@@ -36,7 +36,7 @@ type runSession struct {
 	cancel        context.CancelFunc
 }
 
-func (t *target) NewRunSession(_ context.Context, authz *spi.Authorizer, guard spi.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.Session, error) {
+func (t *target) OpenConnection(_ context.Context, authz *spi.Authorizer, guard spi.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.Connection, error) {
 	// Every Athena query names the configured database, so a run cannot open anywhere else.
 	if defaultSchema != "" && defaultSchema != t.config.database {
 		return nil, fmt.Errorf("athena run cannot open in database %q: the target is configured for %q", defaultSchema, t.config.database)
@@ -45,24 +45,24 @@ func (t *target) NewRunSession(_ context.Context, authz *spi.Authorizer, guard s
 	if err != nil {
 		return nil, err
 	}
-	return &runSession{target: t, authz: authz, commandRunner: commandRunner, guard: guard, timeout: readTimeout}, nil
+	return &connection{target: t, authz: authz, commandRunner: commandRunner, guard: guard, timeout: readTimeout}, nil
 }
 
-func (s *runSession) OnOpen(ctx context.Context, commands []*pb.ProxyCommand) error {
+func (c *connection) OnOpen(ctx context.Context, commands []*pb.ProxyCommand) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return s.commandRunner.RunAll(commands, nil)
+	return c.commandRunner.RunAll(commands, nil)
 }
 
 // Namespace is the configured catalog and database: every query execution names them, and nothing on the
 // session changes them.
-func (s *runSession) Namespace() (string, []string, error) {
-	return s.target.config.catalog, []string{s.target.config.database}, nil
+func (c *connection) Namespace() (string, []string, error) {
+	return c.target.config.catalog, []string{c.target.config.database}, nil
 }
 
-func (s *runSession) ServeStatement(sql string, maxRows int) (result spi.StatementResult, err error) {
-	verdict := s.target.authorize(s.authz, s.commandRunner, sql, nil, maxRows)
+func (c *connection) ServeStatement(sql string, maxRows int) (result spi.StatementResult, err error) {
+	verdict := c.target.authorize(c.authz, c.commandRunner, sql, nil, maxRows)
 	var proceed spi.Proceed
 	switch v := verdict.(type) {
 	case spi.Fail:
@@ -79,7 +79,7 @@ func (s *runSession) ServeStatement(sql string, maxRows int) (result spi.Stateme
 	query, parameters := submittedQuery(sql, nil, proceed.Decision)
 	budget := &relay.RowBudget{MaxRows: proceed.Decision.PageRows(maxRows), MaxBytes: proceed.Decision.MaxBytes}
 	exec := func() error {
-		columns, rows, affected, execErr := s.execute(query, parameters, budget, proceed.Masks, proceed.Decision.AfterStatement)
+		columns, rows, affected, execErr := c.execute(query, parameters, budget, proceed.Masks, proceed.Decision.AfterStatement)
 		if execErr != nil {
 			return execErr
 		}
@@ -87,39 +87,39 @@ func (s *runSession) ServeStatement(sql string, maxRows int) (result spi.Stateme
 		result.TruncatedByCap = budget.CapTruncated(proceed.Decision, maxRows)
 		return nil
 	}
-	if s.guard != nil {
-		err = s.guard(exec)
+	if c.guard != nil {
+		err = c.guard(exec)
 	} else {
 		err = exec()
 	}
 	return result, err
 }
 
-func (s *runSession) execute(query string, parameters []string, budget *relay.RowBudget, masks []*pb.ColumnMask, afterStatement []*pb.ProxyCommand) ([]string, [][]*string, int, error) {
+func (c *connection) execute(query string, parameters []string, budget *relay.RowBudget, masks []*pb.ColumnMask, afterStatement []*pb.ProxyCommand) ([]string, [][]*string, int, error) {
 	ctx, cancel := withDeadline(context.Background(), 0)
-	s.mu.Lock()
-	if s.closed {
-		s.mu.Unlock()
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
 		cancel()
-		return nil, nil, 0, errors.New("athena: run session is closed")
+		return nil, nil, 0, errors.New("athena: connection is closed")
 	}
-	s.cancel = cancel
-	s.mu.Unlock()
+	c.cancel = cancel
+	c.mu.Unlock()
 	defer func() {
-		s.mu.Lock()
-		s.cancel = nil
-		s.current = ""
-		s.mu.Unlock()
+		c.mu.Lock()
+		c.cancel = nil
+		c.current = ""
+		c.mu.Unlock()
 		cancel()
 	}()
 	input := &awsa.StartQueryExecutionInput{
-		QueryString: aws.String(query), WorkGroup: aws.String(s.target.config.workgroup),
-		QueryExecutionContext: &types.QueryExecutionContext{Catalog: aws.String(s.target.config.catalog), Database: aws.String(s.target.config.database)},
+		QueryString: aws.String(query), WorkGroup: aws.String(c.target.config.workgroup),
+		QueryExecutionContext: &types.QueryExecutionContext{Catalog: aws.String(c.target.config.catalog), Database: aws.String(c.target.config.database)},
 	}
 	if len(parameters) > 0 {
 		input.ExecutionParameters = parameters
 	}
-	started, err := s.target.api.StartQueryExecution(ctx, input)
+	started, err := c.target.api.StartQueryExecution(ctx, input)
 	if err != nil {
 		return nil, nil, 0, describeFailure(err.Error())
 	}
@@ -127,18 +127,18 @@ func (s *runSession) execute(query string, parameters []string, budget *relay.Ro
 	if id == "" {
 		return nil, nil, 0, errors.New("athena: StartQueryExecution returned no execution id")
 	}
-	s.mu.Lock()
-	s.current = id
-	s.mu.Unlock()
-	execution, err := s.target.awaitExecution(ctx, id)
+	c.mu.Lock()
+	c.current = id
+	c.mu.Unlock()
+	execution, err := c.target.awaitExecution(ctx, id)
 	if err != nil {
 		return nil, nil, 0, err
 	}
-	if err := s.commandRunner.RunAll(afterStatement, nil); err != nil {
+	if err := c.commandRunner.RunAll(afterStatement, nil); err != nil {
 		return nil, nil, 0, err
 	}
 	// Athena prefixes DML (SELECT) results with a header row of column names; DDL and utility results have none.
-	return s.read(ctx, id, budget, masks, execution.StatementType == types.StatementTypeDml)
+	return c.read(ctx, id, budget, masks, execution.StatementType == types.StatementTypeDml)
 }
 
 // awaitExecution polls Athena until the execution is terminal; the SDK client returns the state, Athena owns it.
@@ -177,7 +177,7 @@ func (t *target) awaitExecution(ctx context.Context, id string) (*types.QueryExe
 
 // read pages the managed result set within budget, drops Athena's header row on a DML first page, and masks
 // inline.
-func (s *runSession) read(ctx context.Context, id string, budget *relay.RowBudget, masks []*pb.ColumnMask, headerRow bool) ([]string, [][]*string, int, error) {
+func (c *connection) read(ctx context.Context, id string, budget *relay.RowBudget, masks []*pb.ColumnMask, headerRow bool) ([]string, [][]*string, int, error) {
 	var columns []string
 	var masker *relay.RowMasker
 	rows := [][]*string{}
@@ -185,7 +185,7 @@ func (s *runSession) read(ctx context.Context, id string, budget *relay.RowBudge
 	var next *string
 	first := true
 	for !budget.Overflowed {
-		page, err := s.target.api.GetQueryResults(ctx, &awsa.GetQueryResultsInput{QueryExecutionId: aws.String(id), NextToken: next, MaxResults: aws.Int32(resultPageSize)})
+		page, err := c.target.api.GetQueryResults(ctx, &awsa.GetQueryResultsInput{QueryExecutionId: aws.String(id), NextToken: next, MaxResults: aws.Int32(resultPageSize)})
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil, nil, 0, errRunCanceled
@@ -246,10 +246,10 @@ func (s *runSession) read(ctx context.Context, id string, budget *relay.RowBudge
 	return columns, rows, affected, nil
 }
 
-func (s *runSession) Cancel() error {
-	s.mu.Lock()
-	id, cancel := s.current, s.cancel
-	s.mu.Unlock()
+func (c *connection) Cancel() error {
+	c.mu.Lock()
+	id, cancel := c.current, c.cancel
+	c.mu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
@@ -258,19 +258,19 @@ func (s *runSession) Cancel() error {
 	}
 	ctx, stop := context.WithTimeout(context.Background(), 10*time.Second)
 	defer stop()
-	_, err := s.target.api.StopQueryExecution(ctx, &awsa.StopQueryExecutionInput{QueryExecutionId: aws.String(id)})
+	_, err := c.target.api.StopQueryExecution(ctx, &awsa.StopQueryExecutionInput{QueryExecutionId: aws.String(id)})
 	return err
 }
 
-func (s *runSession) Close() error {
-	s.mu.Lock()
-	s.closed = true
-	cancel := s.cancel
-	s.mu.Unlock()
+func (c *connection) Close() error {
+	c.mu.Lock()
+	c.closed = true
+	cancel := c.cancel
+	c.mu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
 	return nil
 }
 
-var _ spi.Session = (*runSession)(nil)
+var _ spi.Connection = (*connection)(nil)

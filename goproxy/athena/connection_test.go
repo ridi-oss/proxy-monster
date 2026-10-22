@@ -8,19 +8,19 @@ import (
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
-func TestRunSessionSubmitsPollsReadsAndMasks(t *testing.T) {
+func TestConnectionSubmitsPollsReadsAndMasks(t *testing.T) {
 	aws := newFakeAthena()
 	target := testTarget(t, aws.handle)
 	client := &flowClient{principal: "alice", verdict: maskVerdict(), completed: make(chan struct{}, 8)}
-	session, err := target.NewRunSession(context.Background(), spi.NewAuthorizer(client, "login-alice", []byte("0123456789abcdef")), nil, 0, "")
+	connection, err := target.OpenConnection(context.Background(), spi.NewAuthorizer(client, "login-alice", []byte("0123456789abcdef")), nil, 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer session.Close()
-	if err := session.OnOpen(context.Background(), []*pb.ProxyCommand{{Command: &pb.ProxyCommand_Refetch{Refetch: &pb.Refetch{Schema: "example", Catalog: "awsdatacatalog"}}}}); err != nil {
+	defer connection.Close()
+	if err := connection.OnOpen(context.Background(), []*pb.ProxyCommand{{Command: &pb.ProxyCommand_Refetch{Refetch: &pb.Refetch{Schema: "example", Catalog: "awsdatacatalog"}}}}); err != nil {
 		t.Fatal(err)
 	}
-	result, err := session.ServeStatement("SELECT * FROM users WHERE n > 0", 100)
+	result, err := connection.ServeStatement("SELECT * FROM users WHERE n > 0", 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,20 +47,20 @@ func TestRunSessionSubmitsPollsReadsAndMasks(t *testing.T) {
 	}
 }
 
-func TestRunSessionSendsEachStatementsRowCap(t *testing.T) {
+func TestConnectionSendsEachStatementsRowCap(t *testing.T) {
 	aws := newFakeAthena()
 	target := testTarget(t, aws.handle)
 	client := &flowClient{principal: "alice", verdict: maskVerdict(), completed: make(chan struct{}, 8)}
-	session, err := target.NewRunSession(context.Background(), spi.NewAuthorizer(client, "login-alice", []byte("0123456789abcdef")), nil, 0, "")
+	connection, err := target.OpenConnection(context.Background(), spi.NewAuthorizer(client, "login-alice", []byte("0123456789abcdef")), nil, 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer session.Close()
-	if err := session.OnOpen(context.Background(), []*pb.ProxyCommand{{Command: &pb.ProxyCommand_Refetch{Refetch: &pb.Refetch{Schema: "example", Catalog: "awsdatacatalog"}}}}); err != nil {
+	defer connection.Close()
+	if err := connection.OnOpen(context.Background(), []*pb.ProxyCommand{{Command: &pb.ProxyCommand_Refetch{Refetch: &pb.Refetch{Schema: "example", Catalog: "awsdatacatalog"}}}}); err != nil {
 		t.Fatal(err)
 	}
 	for _, maxRows := range []int{100, 7} {
-		if _, err := session.ServeStatement("SELECT * FROM users WHERE n > 0", maxRows); err != nil {
+		if _, err := connection.ServeStatement("SELECT * FROM users WHERE n > 0", maxRows); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -69,22 +69,22 @@ func TestRunSessionSendsEachStatementsRowCap(t *testing.T) {
 	}
 }
 
-func TestRunSessionAppliesTheVerdictRowCap(t *testing.T) {
+func TestConnectionAppliesTheVerdictRowCap(t *testing.T) {
 	aws := newFakeAthena()
 	target := testTarget(t, aws.handle)
 	verdict := maskVerdict()
 	verdict.MaxRows = 1
 	aws.resultPage = `{"ResultSet":{"ResultSetMetadata":{"ColumnInfo":[{"Name":"email","Type":"varchar"},{"Name":"n","Type":"bigint"}]},"Rows":[{"Data":[{"VarCharValue":"email"},{"VarCharValue":"n"}]},{"Data":[{"VarCharValue":"a@example.test"},{"VarCharValue":"1"}]},{"Data":[{"VarCharValue":"b@example.test"},{"VarCharValue":"2"}]}]},"UpdateCount":0}`
 	client := &flowClient{principal: "alice", verdict: verdict, completed: make(chan struct{}, 8)}
-	session, err := target.NewRunSession(context.Background(), spi.NewAuthorizer(client, "login-alice", []byte("0123456789abcdef")), nil, 0, "")
+	connection, err := target.OpenConnection(context.Background(), spi.NewAuthorizer(client, "login-alice", []byte("0123456789abcdef")), nil, 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer session.Close()
-	if err := session.OnOpen(context.Background(), []*pb.ProxyCommand{{Command: &pb.ProxyCommand_Refetch{Refetch: &pb.Refetch{Schema: "example", Catalog: "awsdatacatalog"}}}}); err != nil {
+	defer connection.Close()
+	if err := connection.OnOpen(context.Background(), []*pb.ProxyCommand{{Command: &pb.ProxyCommand_Refetch{Refetch: &pb.Refetch{Schema: "example", Catalog: "awsdatacatalog"}}}}); err != nil {
 		t.Fatal(err)
 	}
-	result, err := session.ServeStatement("SELECT * FROM users WHERE n > 0", 100)
+	result, err := connection.ServeStatement("SELECT * FROM users WHERE n > 0", 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,15 +93,15 @@ func TestRunSessionAppliesTheVerdictRowCap(t *testing.T) {
 	}
 }
 
-func TestRunSessionRejectsAForeignDefaultSchema(t *testing.T) {
+func TestConnectionRejectsAForeignDefaultSchema(t *testing.T) {
 	target := testTarget(t, newFakeAthena().handle)
 	client := &flowClient{principal: "alice", verdict: maskVerdict(), completed: make(chan struct{}, 8)}
-	if _, err := target.NewRunSession(context.Background(), spi.NewAuthorizer(client, "login-alice", []byte("0123456789abcdef")), nil, 0, "other"); err == nil {
-		t.Fatal("NewRunSession opened in a database other than the configured one")
+	if _, err := target.OpenConnection(context.Background(), spi.NewAuthorizer(client, "login-alice", []byte("0123456789abcdef")), nil, 0, "other"); err == nil {
+		t.Fatal("OpenConnection opened in a database other than the configured one")
 	}
-	session, err := target.NewRunSession(context.Background(), spi.NewAuthorizer(client, "login-alice", []byte("0123456789abcdef")), nil, 0, "example")
+	connection, err := target.OpenConnection(context.Background(), spi.NewAuthorizer(client, "login-alice", []byte("0123456789abcdef")), nil, 0, "example")
 	if err != nil {
-		t.Fatalf("NewRunSession in the configured database: %v", err)
+		t.Fatalf("OpenConnection in the configured database: %v", err)
 	}
-	_ = session.Close()
+	_ = connection.Close()
 }

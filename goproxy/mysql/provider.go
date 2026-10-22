@@ -56,6 +56,6 @@ func (t *target) Close() error { return t.pool.Close() }
 var (
 	_ spi.Provider   = Provider{}
 	_ spi.Target     = (*target)(nil)
-	_ spi.Session    = (*RunSession)(nil)
+	_ spi.Connection = (*connection)(nil)
 	_ spi.WireServer = (*Server)(nil)
 )

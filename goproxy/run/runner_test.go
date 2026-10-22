@@ -234,9 +234,9 @@ type runCapturingDb struct {
 	readTimeout chan time.Duration
 }
 
-func (p *runCapturingDb) NewRunSession(ctx context.Context, authz *spi.Authorizer, guard spi.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.Session, error) {
+func (p *runCapturingDb) OpenConnection(ctx context.Context, authz *spi.Authorizer, guard spi.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.Connection, error) {
 	p.readTimeout <- readTimeout
-	return p.Target.NewRunSession(ctx, authz, guard, readTimeout, defaultSchema)
+	return p.Target.OpenConnection(ctx, authz, guard, readTimeout, defaultSchema)
 }
 
 // runSlowOpenProvider blocks the target DB dial until release is closed, modeling a slow open against a large
@@ -255,7 +255,7 @@ type runSlowOpenDb struct {
 	beforeDelegate func()
 }
 
-func (p *runSlowOpenDb) NewRunSession(ctx context.Context, authz *spi.Authorizer, guard spi.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.Session, error) {
+func (p *runSlowOpenDb) OpenConnection(ctx context.Context, authz *spi.Authorizer, guard spi.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.Connection, error) {
 	if p.entered != nil {
 		p.enterOnce.Do(func() { close(p.entered) })
 	}
@@ -264,7 +264,7 @@ func (p *runSlowOpenDb) NewRunSession(ctx context.Context, authz *spi.Authorizer
 		if p.beforeDelegate != nil {
 			p.beforeDelegate()
 		}
-		return p.Target.NewRunSession(ctx, authz, guard, readTimeout, defaultSchema)
+		return p.Target.OpenConnection(ctx, authz, guard, readTimeout, defaultSchema)
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
@@ -1571,7 +1571,7 @@ func TestRunnerDrainAsTargetDbOpenCompletesInstallsNoSession(t *testing.T) {
 // TestRunnerCloseDuringRealDialAbortsIt drives the abort end to end through the REAL MySQL dial: a RunClose
 // sent while the dial is mid-handshake against a target that accepts TCP but never sends its greeting must
 // abort the dial and release the connection fast — exercising the real runner, the real gRPC control stream,
-// and the real provider.NewRunSession -> dialTargetDbAuthID (DialContext + AfterFunc), not a fake provider.
+// and the real provider.OpenConnection -> dialTargetDbAuthID (DialContext + AfterFunc), not a fake provider.
 // The release is asserted well under the dial's handshake timeout: a dial that ignored the cancel would leak
 // the connection until that timeout instead.
 func TestRunnerCloseDuringRealDialAbortsIt(t *testing.T) {
@@ -1641,7 +1641,7 @@ func TestRunnerCloseInFlightCancelsTargetDb(t *testing.T) {
 	runExpectMySQLSleepStopped(t, fixture)
 }
 
-func TestRunnerPassesQueryTimeoutPlusGraceToRunSession(t *testing.T) {
+func TestRunnerPassesQueryTimeoutPlusGraceToConnection(t *testing.T) {
 	fixture := runSeedMySQL(t)
 	capturing := &runCapturingDb{Target: fixture.runTarget, readTimeout: make(chan time.Duration, 1)}
 	fixture.runTarget = capturing
@@ -1651,10 +1651,10 @@ func TestRunnerPassesQueryTimeoutPlusGraceToRunSession(t *testing.T) {
 	select {
 	case got := <-capturing.readTimeout:
 		if got != 47*time.Second {
-			t.Fatalf("NewRunSession readTimeout = %s, want 47s", got)
+			t.Fatalf("OpenConnection readTimeout = %s, want 47s", got)
 		}
 	case <-time.After(10 * time.Second):
-		t.Fatal("timed out waiting for NewRunSession readTimeout")
+		t.Fatal("timed out waiting for OpenConnection readTimeout")
 	}
 	runSendClose(fake)
 	waitDone()

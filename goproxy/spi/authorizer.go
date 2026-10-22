@@ -106,7 +106,7 @@ type AuthzInput struct {
 	SQL              string
 	ProbeSession     func() (SessionObservation, error)
 	ProbeTempColumns func() ([]TempColumn, error)
-	RunCommands      func([]*pb.ProxyCommand, *SessionObservation) error
+	Commands         ProxyCommandRunner
 	CheckTargetError func(sql string) (*TargetError, error)
 }
 
@@ -146,7 +146,7 @@ func (a *Authorizer) Authorize(in AuthzInput) Verdict {
 		ClientAddr:       a.clientAddr,
 		TempColumns:      temps,
 		ConnectionID:     a.connectionID,
-		RunCommands:      in.RunCommands,
+		Commands:         in.Commands,
 		CheckTargetError: in.CheckTargetError,
 	})
 	if out.IsErr() {

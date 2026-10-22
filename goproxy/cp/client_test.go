@@ -449,17 +449,17 @@ func TestDecideMapsRequestAndRetriesBeforeDecide(t *testing.T) {
 		ClientAddr:   "10.0.0.9:5555",
 		TempColumns:  []spi.TempColumn{{Schema: "pg_temp_3", Table: "t", Column: "c", SqlType: "text", Ordinal: 5}},
 		ConnectionID: []byte("0123456789abcdef"),
-		RunCommands: func(commands []*pb.ProxyCommand, _ *spi.SessionObservation) error {
+		Commands: commandRunnerFunc(func(commands []*pb.ProxyCommand, _ *spi.SessionObservation) error {
 			run = append(run, commands)
 			return nil
-		},
+		}),
 	}
 	out := c.Decide(request)
 	if out.IsErr() || out.Decision.Action != "MASK" || out.Decision.Generation != 4 {
 		t.Fatalf("Decide = %+v", out)
 	}
 	if len(run) != 1 || len(run[0]) != 1 || !proto.Equal(run[0][0], refetch("app", []byte("old"))) {
-		t.Fatalf("RunCommands calls = %+v", run)
+		t.Fatalf("RunAll calls = %+v", run)
 	}
 
 	fake.mu.Lock()
@@ -564,7 +564,7 @@ func TestDecideBeforeDecideFailures(t *testing.T) {
 	})
 	t.Run("runner error", func(t *testing.T) {
 		c := startFakeControlPlane(t, &fakeControlPlane{decideResp: wireBefore(refetch("app", nil))})
-		out := c.Decide(spi.DecideRequest{RunCommands: func([]*pb.ProxyCommand, *spi.SessionObservation) error { return errors.New("probe failed") }})
+		out := c.Decide(spi.DecideRequest{Commands: commandRunnerFunc(func([]*pb.ProxyCommand, *spi.SessionObservation) error { return errors.New("probe failed") })})
 		if !out.IsErr() || !strings.Contains(out.Err, "probe failed") {
 			t.Fatalf("Decide = %+v", out)
 		}
@@ -573,7 +573,7 @@ func TestDecideBeforeDecideFailures(t *testing.T) {
 		fake := &fakeControlPlane{decideResp: wireBefore(refetch("app", nil))}
 		c := startFakeControlPlane(t, fake)
 		runs := 0
-		out := c.Decide(spi.DecideRequest{RunCommands: func([]*pb.ProxyCommand, *spi.SessionObservation) error { runs++; return nil }})
+		out := c.Decide(spi.DecideRequest{Commands: commandRunnerFunc(func([]*pb.ProxyCommand, *spi.SessionObservation) error { runs++; return nil })})
 		if !out.IsErr() || !strings.Contains(out.Err, "4 times") {
 			t.Fatalf("Decide = %+v", out)
 		}
@@ -1312,4 +1312,10 @@ func TestDecisionFromWireCarriesCapsAndDeniesNegative(t *testing.T) {
 			t.Fatalf("negative cap %+v = %s, want DENY", bad, got.Action)
 		}
 	}
+}
+
+type commandRunnerFunc func([]*pb.ProxyCommand, *spi.SessionObservation) error
+
+func (f commandRunnerFunc) RunAll(commands []*pb.ProxyCommand, session *spi.SessionObservation) error {
+	return f(commands, session)
 }

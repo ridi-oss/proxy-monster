@@ -33,7 +33,7 @@ const (
 )
 
 // backendGeneration is a monotonic counter shared across every wire connection of both engines; each run's
-// refetcher keys on its value to invalidate a stale schema fetch.
+// command runner keys on its value to invalidate a stale schema fetch.
 var backendGeneration atomic.Uint64
 
 // NextBackendGeneration returns the next backend generation and whether it is within range. Out of range is

@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
+	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
 	"github.com/ridi-oss/proxy-monster/goproxy/wire"
 )
 
@@ -41,6 +42,7 @@ type sessionCore struct {
 	currentCatalog string
 	targetDb       *pgproto3.Frontend
 	authz          *spi.Authorizer
+	generation     uint64
 	lastTxStatus   byte
 	pendingDirty   bool
 	session        spi.SessionObservation
@@ -55,10 +57,12 @@ type session struct {
 	clientConn   net.Conn
 	targetDbConn net.Conn
 	keyData      pgproto3.BackendKeyData
-	backendGen   uint64
 	statements   map[string]preparedStatement
 	portals      map[string]boundPortal
 	skipToSync   bool
+	// commandRunner probes by simple query, forwarding what the target reports; extendedCommandRunner probes
+	// inside an extended-protocol sequence.
+	commandRunner, extendedCommandRunner *sqldb.ProxyCommandRunner
 	// A refusal in this extended sequence fails the target's open transaction once Sync completes.
 	abortAtSync bool
 }
@@ -198,7 +202,7 @@ startupComplete:
 	targetDbConn = s.WrapTargetDbConn(targetDbConn)
 	targetDb := pgproto3.NewFrontend(targetDbConn, targetDbConn)
 
-	backendGen, ok := wire.NextBackendGeneration()
+	generation, ok := wire.NextBackendGeneration()
 	if !ok {
 		_ = sendError(client, "FATAL", "08004", "proxy-monster: backend generation unavailable", false, 0)
 		return
@@ -208,23 +212,27 @@ startupComplete:
 			currentCatalog: catalog,
 			targetDb:       targetDb,
 			authz:          authz,
+			generation:     generation,
 			lastTxStatus:   txStatus,
-			forward:        client.Send,
-			flushForward:   client.Flush,
 		},
 		client:       client,
 		clientConn:   clientIO,
 		targetDbConn: targetDbConn,
 		keyData:      keyData,
-		backendGen:   backendGen,
 		statements:   make(map[string]preparedStatement),
 		portals:      make(map[string]boundPortal),
 	}
-	if err := s.quietRefetcher(sess).RunAll(identity.OnOpen, nil); err != nil {
+	sess.commandRunner = sess.newCommandRunner(sess.runProbe)
+	sess.extendedCommandRunner = sess.newCommandRunner(func(sql string, expectedColumns int) ([][]*string, error) {
+		return s.runExtendedProbe(sess, sql, expectedColumns)
+	})
+	if err := sess.commandRunner.RunAll(identity.OnOpen, nil); err != nil {
 		slog.Warn("postgres on-open catalog fetch failed", "error", err)
 		_ = sendError(client, "FATAL", "08004", "proxy-monster: connection catalog unavailable", false, 0)
 		return
 	}
+	// Nothing the target reports reaches the client before AuthenticationOk.
+	sess.forward, sess.flushForward = client.Send, client.Flush
 
 	client.Send(&pgproto3.AuthenticationOk{})
 	for i := range parameters {

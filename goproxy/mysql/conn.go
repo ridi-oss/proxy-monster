@@ -204,11 +204,11 @@ func (s *Server) handleConn(clientConn net.Conn) {
 	if !ok {
 		return
 	}
-	refetcher := sqldb.NewRefetcher(Queries, identity.ConnectionID, generation, func(sql string, expectedColumns int) ([][]*string, error) {
+	commandRunner := sqldb.NewProxyCommandRunner(Queries, identity.ConnectionID, generation, func(sql string, expectedColumns int) ([][]*string, error) {
 		return runInternalQuery(targetDbConn, deprecateEOF, sql, expectedColumns)
 	}, s.client.PushSchemaFragment)
-	refetcher.Catalog = "def"
-	if err := refetcher.RunAll(identity.OnOpen, nil); err != nil {
+	commandRunner.Catalog = "def"
+	if err := commandRunner.RunAll(identity.OnOpen, nil); err != nil {
 		slog.Warn("mysql catalog initialization failed", "error", err)
 		_ = mysqlwire.WritePacket(clientConn, tokenSeq+1, mysqlwire.ErrPacketState(
 			1105,
@@ -264,11 +264,11 @@ func (s *Server) handleConn(clientConn net.Conn) {
 				decision, denied, serveErr := relay.ServeStatement(authz, spi.AuthzInput{
 					SQL:          sql,
 					ProbeSession: func() (spi.SessionObservation, error) { return probeSession(targetDbConn, deprecateEOF) },
-					RunCommands:  refetcher.RunAll,
+					Commands:     commandRunner,
 					CheckTargetError: func(sql string) (*spi.TargetError, error) {
 						return checkTargetError(targetDbConn, deprecateEOF, sql)
 					},
-				}, refetcher, nil, func(toSend string, masks []*pb.ColumnMask, dec *spi.Decision) (bool, error) {
+				}, commandRunner, nil, func(toSend string, masks []*pb.ColumnMask, dec *spi.Decision) (bool, error) {
 					queryPayload := mysqlwire.ComQueryPayload(toSend)
 					if len(queryPayload) >= maxPacketPayload {
 						if err := mysqlwire.WritePacket(clientConn, seqBase+1, mysqlwire.ErrPacketState(
@@ -378,7 +378,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 			sql := string(payload[1:])
 			var frozen []string
 			var frozenAnsiQuotes bool
-			proceed, allowed, err := s.authorize(authz, clientConn, targetDbConn, deprecateEOF, seq, sql, refetcher.RunAll, func() (spi.SessionObservation, error) {
+			proceed, allowed, err := s.authorize(authz, clientConn, targetDbConn, deprecateEOF, seq, sql, commandRunner, func() (spi.SessionObservation, error) {
 				obs, err := probeSession(targetDbConn, deprecateEOF)
 				if err == nil {
 					frozen = append([]string{}, obs.Namespace...)
@@ -468,7 +468,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 			// namespace rather than live session state, then dirty the engine cache immediately so it cannot
 			// leak into the next statement's decision.
 			authz.MarkNamespaceDirty()
-			proceed, allowed, err := s.authorize(authz, clientConn, targetDbConn, deprecateEOF, seq, ps.sql, refetcher.RunAll, func() (spi.SessionObservation, error) {
+			proceed, allowed, err := s.authorize(authz, clientConn, targetDbConn, deprecateEOF, seq, ps.sql, commandRunner, func() (spi.SessionObservation, error) {
 				return mysqlSession(ps.namespace, ps.ansiQuotes), nil
 			})
 			authz.MarkNamespaceDirty()
@@ -513,7 +513,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 				return
 			}
 			if ok && proceed.Decision != nil && len(proceed.Decision.AfterStatement) > 0 {
-				if err := refetcher.RunAll(proceed.Decision.AfterStatement, nil); err != nil {
+				if err := commandRunner.RunAll(proceed.Decision.AfterStatement, nil); err != nil {
 					return
 				}
 			}
@@ -579,13 +579,13 @@ func (s *Server) authorize(
 	deprecateEOF bool,
 	seq byte,
 	sql string,
-	runCommands func([]*pb.ProxyCommand, *spi.SessionObservation) error,
+	commandRunner spi.ProxyCommandRunner,
 	probeSession func() (spi.SessionObservation, error),
 ) (spi.Proceed, bool, error) {
 	verdict := authz.Authorize(spi.AuthzInput{
 		SQL:          sql,
 		ProbeSession: probeSession,
-		RunCommands:  runCommands,
+		Commands:     commandRunner,
 		CheckTargetError: func(sql string) (*spi.TargetError, error) {
 			return checkTargetError(targetDbConn, deprecateEOF, sql)
 		},

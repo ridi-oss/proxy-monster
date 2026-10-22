@@ -12,8 +12,8 @@ import (
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
-// Refetcher executes connection-local catalog commands through callback-injected held-target DB I/O.
-type Refetcher struct {
+// ProxyCommandRunner executes connection-local catalog commands through callback-injected held-target DB I/O.
+type ProxyCommandRunner struct {
 	Catalog           string
 	Queries           Queries
 	ConnectionID      []byte
@@ -22,28 +22,28 @@ type Refetcher struct {
 	Push              func(*pb.SchemaFragmentPush) (uint64, error)
 }
 
-func NewRefetcher(queries Queries, connectionID []byte, generation uint64, probe func(string, int) ([][]*string, error), push func(*pb.SchemaFragmentPush) (uint64, error)) *Refetcher {
-	return &Refetcher{Queries: queries, ConnectionID: connectionID, BackendGeneration: generation, Probe: probe, Push: push}
+func NewProxyCommandRunner(queries Queries, connectionID []byte, generation uint64, probe func(string, int) ([][]*string, error), push func(*pb.SchemaFragmentPush) (uint64, error)) *ProxyCommandRunner {
+	return &ProxyCommandRunner{Queries: queries, ConnectionID: connectionID, BackendGeneration: generation, Probe: probe, Push: push}
 }
 
-// Run executes one refetch. A failed hash probe degrades to a full fetch; a failed read, a failed push,
+// Refetch executes one refetch. A failed hash probe degrades to a full fetch; a failed read, a failed push,
 // or a schema that changed under the read is an error, and the schema stays pending until it is re-asked.
-func (r *Refetcher) Run(cmd *pb.Refetch) error {
+func (r *ProxyCommandRunner) Refetch(cmd *pb.Refetch) error {
 	if cmd.GetSchema() == "" {
 		return errors.New("refetch command has blank schema")
 	}
 	if r.Queries.SchemaColumns == nil {
-		return errors.New("refetcher has no queries")
+		return errors.New("command runner has no queries")
 	}
 	if r.Probe == nil {
-		return errors.New("refetcher has no probe callback")
+		return errors.New("command runner has no probe callback")
 	}
 	if r.Push == nil {
-		return errors.New("refetcher has no push callback")
+		return errors.New("command runner has no push callback")
 	}
 
 	if r.Catalog == "" {
-		return errors.New("refetcher has no catalog")
+		return errors.New("command runner has no catalog")
 	}
 	if cmd.GetCatalog() != r.Catalog {
 		return fmt.Errorf("refetch catalog %q does not match target catalog %q", cmd.GetCatalog(), r.Catalog)
@@ -115,11 +115,11 @@ func (r *Refetcher) Run(cmd *pb.Refetch) error {
 	return err
 }
 
-// lowerCaseTableNames probes the connection's live mode fresh (no cached state on Refetcher/Queries —
+// lowerCaseTableNames probes the connection's live mode fresh (no cached state on ProxyCommandRunner/Queries —
 // mirrors mysqlSchemaFilter's own live @@lower_case_table_names check in goproxy/db). "" from
 // LowerCaseTableNamesProbeSQL (non-MySQL, or a probe failure) returns 0, which NormalizeColumns
 // ignores for any dialect that doesn't fold at all.
-func (r *Refetcher) lowerCaseTableNames() int {
+func (r *ProxyCommandRunner) lowerCaseTableNames() int {
 	probeSQL := r.Queries.LowerCaseTableNamesProbe
 	if probeSQL == "" {
 		return 0
@@ -135,7 +135,7 @@ func (r *Refetcher) lowerCaseTableNames() int {
 	return mode
 }
 
-func (r *Refetcher) measureHash(sql string, expectedColumns int, sqlErr error) ([]byte, bool) {
+func (r *ProxyCommandRunner) measureHash(sql string, expectedColumns int, sqlErr error) ([]byte, bool) {
 	if sqlErr != nil {
 		return nil, false
 	}
@@ -154,13 +154,13 @@ func (r *Refetcher) measureHash(sql string, expectedColumns int, sqlErr error) (
 // RunAll executes a command list on the held connection. The SQL engines answer only the Refetch arm; any
 // other command is unknown here and fails closed. session is unused: nothing a refetch fetches changes the
 // per-statement session facts.
-func (r *Refetcher) RunAll(cmds []*pb.ProxyCommand, _ *spi.SessionObservation) error {
+func (r *ProxyCommandRunner) RunAll(cmds []*pb.ProxyCommand, _ *spi.SessionObservation) error {
 	for i, cmd := range cmds {
 		refetch := cmd.GetRefetch()
 		if refetch == nil {
 			return fmt.Errorf("command %d is not a refetch", i)
 		}
-		if err := r.Run(refetch); err != nil {
+		if err := r.Refetch(refetch); err != nil {
 			return fmt.Errorf("refetch command %d: %w", i, err)
 		}
 	}

@@ -18,12 +18,12 @@ import (
 )
 
 type RunSession struct {
-	conn   net.Conn
-	connID uint32
-	config spi.TargetConfig
-	authz  *spi.Authorizer
-	ref    *sqldb.Refetcher
-	guard  spi.ExecGuard
+	conn          net.Conn
+	connID        uint32
+	config        spi.TargetConfig
+	authz         *spi.Authorizer
+	commandRunner *sqldb.ProxyCommandRunner
+	guard         spi.ExecGuard
 }
 
 func (t *target) NewRunSession(ctx context.Context, authz *spi.Authorizer, guard spi.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.Session, error) {
@@ -48,10 +48,10 @@ func (t *target) NewRunSession(ctx context.Context, authz *spi.Authorizer, guard
 		authz:  authz,
 		guard:  guard,
 	}
-	s.ref = sqldb.NewRefetcher(Queries, authz.ConnectionID(), generation, func(sql string, expectedColumns int) ([][]*string, error) {
+	s.commandRunner = sqldb.NewProxyCommandRunner(Queries, authz.ConnectionID(), generation, func(sql string, expectedColumns int) ([][]*string, error) {
 		return runInternalQuery(s.conn, true, sql, expectedColumns)
 	}, authz.Client().PushSchemaFragment)
-	s.ref.Catalog = "def"
+	s.commandRunner.Catalog = "def"
 	return s, nil
 }
 
@@ -60,15 +60,15 @@ func (t *target) NewRunSession(ctx context.Context, authz *spi.Authorizer, guard
 // at once instead of holding the target DB until readTimeout.
 func (s *RunSession) OnOpen(ctx context.Context, cmds []*pb.ProxyCommand) error {
 	defer context.AfterFunc(ctx, func() { _ = s.conn.Close() })()
-	return s.ref.RunAll(cmds, nil)
+	return s.commandRunner.RunAll(cmds, nil)
 }
 
 func (s *RunSession) ServeStatement(sql string, maxRows int) (result spi.StatementResult, err error) {
 	result.Decision, result.Denied, err = relay.ServeStatement(s.authz, spi.AuthzInput{
 		SQL:          sql,
 		ProbeSession: func() (spi.SessionObservation, error) { return probeSession(s.conn, true) },
-		RunCommands:  s.ref.RunAll,
-	}, s.ref, s.guard, func(toSend string, masks []*pb.ColumnMask, dec *spi.Decision) (clean bool, runErr error) {
+		Commands:     s.commandRunner,
+	}, s.commandRunner, s.guard, func(toSend string, masks []*pb.ColumnMask, dec *spi.Decision) (clean bool, runErr error) {
 		payload := mysqlwire.ComQueryPayload(toSend)
 		if len(payload) >= mysqlwire.MaxPacketPayload {
 			return false, errors.New("query exceeds the maximum MySQL packet payload")

@@ -21,7 +21,6 @@ import (
 
 	"github.com/jackc/pgx/v5/pgproto3"
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
-	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/wire"
 )
 
@@ -239,7 +238,7 @@ func containsString(values []string, want string) bool {
 
 // probeCurrentCatalog runs once at connect; a Postgres session cannot change its database afterwards.
 func (c *sessionCore) probeCurrentCatalog() (string, error) {
-	rows, err := c.runProbe("SELECT pg_catalog.current_database()", 1, true)
+	rows, err := c.runProbe("SELECT pg_catalog.current_database()", 1)
 	if err != nil {
 		return "", fmt.Errorf("target-DB catalog probe: %w", err)
 	}
@@ -250,7 +249,7 @@ func (c *sessionCore) probeCurrentCatalog() (string, error) {
 }
 
 func (c *sessionCore) probeSession() (spi.SessionObservation, error) {
-	rows, err := c.runProbe(namespaceProbeSQL, 1, false)
+	rows, err := c.runProbe(namespaceProbeSQL, 1)
 	if err != nil {
 		return spi.SessionObservation{}, fmt.Errorf("target-DB namespace probe: %w", err)
 	}
@@ -296,7 +295,7 @@ func sessionFromRows(rows [][]*string) (spi.SessionObservation, error) {
 }
 
 func (c *sessionCore) probeTempColumns() ([]spi.TempColumn, error) {
-	rows, err := c.runProbe(tempColumnsProbeSQL, 6, false)
+	rows, err := c.runProbe(tempColumnsProbeSQL, 6)
 	if err != nil {
 		return nil, fmt.Errorf("target DB temp-column probe: %w", err)
 	}
@@ -325,19 +324,19 @@ func tempColumnsFromRows(rows [][]*string) ([]spi.TempColumn, error) {
 	return columns, nil
 }
 
-func (c *sessionCore) runProbe(sql string, expectedColumns int, quiet bool) ([][]*string, error) {
+func (c *sessionCore) runProbe(sql string, expectedColumns int) ([][]*string, error) {
 	c.targetDb.Send(&pgproto3.Query{String: sql})
-	return c.collectProbe(expectedColumns, quiet)
+	return c.collectProbe(expectedColumns)
 }
 
-func (c *sessionCore) collectProbe(expectedColumns int, quiet bool) ([][]*string, error) {
+func (c *sessionCore) collectProbe(expectedColumns int) ([][]*string, error) {
 	if err := c.targetDb.Flush(); err != nil {
 		return nil, err
 	}
 	result := spi.StatementResult{Rows: make([][]*string, 0)}
 	collector := rowsCollector{expected: expectedColumns, result: &result}
 	emit := collector.emit
-	if !quiet && c.forward != nil {
+	if c.forward != nil {
 		emit = func(message pgproto3.BackendMessage, rowBytes int64) error {
 			switch message.(type) {
 			case *pgproto3.ParameterStatus, *pgproto3.NoticeResponse, *pgproto3.NotificationResponse:
@@ -357,15 +356,15 @@ func (c *sessionCore) collectProbe(expectedColumns int, quiet bool) ([][]*string
 	return result.Rows, nil
 }
 
-func (c *sessionCore) authzInput(sql string, runCommands func([]*pb.ProxyCommand, *spi.SessionObservation) error) spi.AuthzInput {
+func (c *sessionCore) authzInput(sql string, commandRunner spi.ProxyCommandRunner) spi.AuthzInput {
 	// In an aborted transaction the probe below returns the session's last snapshot instead of querying.
 	if c.pendingDirty {
 		c.authz.MarkNamespaceDirty()
 		c.pendingDirty = false
 	}
 	return spi.AuthzInput{
-		SQL:         sql,
-		RunCommands: runCommands,
+		SQL:      sql,
+		Commands: commandRunner,
 		ProbeSession: func() (spi.SessionObservation, error) {
 			// Postgres never reports MysqlAnsiQuotes: it has no ANSI_QUOTES mode, and its string-lexing
 			// divergence (standard_conforming_strings) fails the connection closed at the relay instead.
@@ -391,26 +390,10 @@ func (c *sessionCore) authzInput(sql string, runCommands func([]*pb.ProxyCommand
 	}
 }
 
-func (s *Server) refetcher(sess *session, extended bool) *sqldb.Refetcher {
-	probe := func(sql string, expectedColumns int) ([][]*string, error) {
-		return sess.sessionCore.runProbe(sql, expectedColumns, false)
-	}
-	if extended {
-		probe = func(sql string, expectedColumns int) ([][]*string, error) {
-			return s.runExtendedProbe(sess, sql, expectedColumns)
-		}
-	}
-	refetcher := sqldb.NewRefetcher(Queries, sess.authz.ConnectionID(), sess.backendGen, probe, s.client.PushSchemaFragment)
-	refetcher.Catalog = sess.currentCatalog
-	return refetcher
-}
-
-func (s *Server) quietRefetcher(sess *session) *sqldb.Refetcher {
-	refetcher := sqldb.NewRefetcher(Queries, sess.authz.ConnectionID(), sess.backendGen, func(sql string, expectedColumns int) ([][]*string, error) {
-		return sess.sessionCore.runProbe(sql, expectedColumns, true)
-	}, s.client.PushSchemaFragment)
-	refetcher.Catalog = sess.currentCatalog
-	return refetcher
+func (c *sessionCore) newCommandRunner(probe func(sql string, expectedColumns int) ([][]*string, error)) *sqldb.ProxyCommandRunner {
+	commandRunner := sqldb.NewProxyCommandRunner(Queries, c.authz.ConnectionID(), c.generation, probe, c.authz.Client().PushSchemaFragment)
+	commandRunner.Catalog = c.currentCatalog
+	return commandRunner
 }
 
 func (s *Server) forwardCancelRequest(message *pgproto3.CancelRequest) {

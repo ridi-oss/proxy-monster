@@ -190,10 +190,10 @@ func TestSoftProbeWidthMismatchDrainsForNextStatement(t *testing.T) {
 			}
 		}
 	}()
-	if _, err := core.runProbe("first", 2, true); err == nil || !strings.Contains(err.Error(), "want 2") {
+	if _, err := core.runProbe("first", 2); err == nil || !strings.Contains(err.Error(), "want 2") {
 		t.Fatalf("first err = %v, want width mismatch", err)
 	}
-	rows, err := core.runProbe("second", 1, true)
+	rows, err := core.runProbe("second", 1)
 	if err != nil {
 		t.Fatalf("second probe: %v", err)
 	}

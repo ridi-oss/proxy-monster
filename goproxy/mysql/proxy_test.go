@@ -700,7 +700,7 @@ func TestUnknownCommandFailsClosed(t *testing.T) {
 		t.Fatalf("response = %x (%q), want malformed-command denial", response, mysqlwire.ErrString(response))
 	}
 	if len(h.fake.fragmentRequests()) != 0 {
-		t.Fatal("unknown command reached refetcher")
+		t.Fatal("unknown command reached the command runner")
 	}
 }
 

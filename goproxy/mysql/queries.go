@@ -28,7 +28,7 @@ var Queries = sqldb.Queries{
 
 // normalizeColumns folds each column to analyzer/engines's canonical MySQL spelling — the SAME
 // normalization introspect's bulk catalog push uses, so the schema-fragment pool this feeds
-// (goproxy/sqldb.Refetcher) and the persisted catalog never disagree on spelling.
+// (goproxy/sqldb.ProxyCommandRunner) and the persisted catalog never disagree on spelling.
 //
 // Folds through engines.NormalizeMySQLColumns, which memoizes the per-(schema, table) identifier parse.
 // A schema fragment repeats one schema and each table name once per column, so the per-row path

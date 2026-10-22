@@ -262,7 +262,7 @@ func TestMySQLRefetchRefusesUnknownLowerCaseTableNames(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Skip("pending-name-fix: refetch treats an unreported lower_case_table_names as 0")
 			pushed := false
-			refetcher := sqldb.Refetcher{
+			commandRunner := sqldb.ProxyCommandRunner{
 				Catalog: "def",
 				Queries: Queries,
 				Probe: func(statement string, _ int) ([][]*string, error) {
@@ -279,7 +279,7 @@ func TestMySQLRefetchRefusesUnknownLowerCaseTableNames(t *testing.T) {
 					return 1, nil
 				},
 			}
-			if err := refetcher.Run(&pb.Refetch{Catalog: "def", Schema: "App"}); err == nil || pushed {
+			if err := commandRunner.Refetch(&pb.Refetch{Catalog: "def", Schema: "App"}); err == nil || pushed {
 				t.Fatalf("Run err = %v, pushed = %v; want refused without a push", err, pushed)
 			}
 		})

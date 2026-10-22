@@ -165,7 +165,6 @@ func TestMySQLLowerCase2FoldsStoredCase(t *testing.T) {
 	}
 
 	t.Run("refetch and hash find the stored case by its canonical name", func(t *testing.T) {
-		t.Skip("pending-name-fix: the mode-2 schema filter applies LOWER to a BINARY cast, which does not fold, so it matches no rows")
 		queries := lowerCase2Queries()
 		targettest.AssertFragmentMatchesBulk(t, queries, conn, "def", bulk, canonical)
 		if !bytes.Equal(targettest.TrustedRefetchHash(t, queries, conn, canonical), targettest.TrustedRefetchHash(t, Queries, conn, mixed)) {

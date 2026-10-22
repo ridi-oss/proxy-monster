@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
+	"github.com/ridi-oss/sqlglot-go/dialects"
 
 	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
@@ -190,4 +191,33 @@ func TestMySqlSchemaHashIntegration(t *testing.T) {
 			t.Fatal("information_schema fragment is empty; system schemas must not be excluded")
 		}
 	})
+}
+
+func TestMySQLFoldedNameMatchesTheAnalyzerFold(t *testing.T) {
+	conn, err := dbtest.OpenMySQL(t, "").Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	var bmp []rune
+	for r := rune(1); r <= 0xFFFF; r++ {
+		if r < 0xD800 || r > 0xDFFF {
+			bmp = append(bmp, r)
+		}
+	}
+	for _, name := range []string{"App", "\u212Aelvin", "\u0130stanbul", string(bmp)} {
+		literal := fmt.Sprintf("CONVERT(X'%x' USING utf8mb3)", name)
+		rows, err := targettest.QueryStrings(conn, "SELECT "+mysqlFoldedName(literal), 1)
+		if err != nil || len(rows) != 1 || rows[0][0] == nil {
+			t.Fatalf("%q: %v %v", name, rows, err)
+		}
+		if got, want := *rows[0][0], dialects.MySQLLower(name); got != want {
+			for i, r := range []rune(want) {
+				if g := []rune(got); i >= len(g) || g[i] != r {
+					t.Fatalf("MySQL and the analyzer first disagree at %U", []rune(name)[i])
+				}
+			}
+			t.Errorf("MySQL folds to %d runes, the analyzer to %d", len([]rune(got)), len([]rune(want)))
+		}
+	}
 }

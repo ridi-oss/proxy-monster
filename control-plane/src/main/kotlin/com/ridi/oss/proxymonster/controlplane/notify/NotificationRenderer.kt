@@ -31,11 +31,8 @@ class NotificationRenderer(private val catalog: MessageCatalog = MessageCatalog(
      */
     fun summary(m: NotificationMessage, locale: String): String {
         val statement = m.statement.text
-            // Neutralize a fence break: a requester's SQL must not close the ``` code block and inject forged
-            // prose into the body every approver reads (e.g. "…``` *already reviewed — safe to approve*").
-            ?.replace("```", "``​`")
-            ?.let { "```$it```" }
-            ?: "_${catalog.text("field.statement_hidden", locale)}_"
+            ?.let { "\n" + fenced(it) }
+            .orEmpty()
         // Each message is one template. The optional trailers are pre-rendered fragments — a leading newline
         // plus their own sub-template, or empty — the same shape as `role`, so the template owns the whole
         // layout (line breaks and field order) rather than code assembling it piece by piece.
@@ -75,11 +72,12 @@ class NotificationRenderer(private val catalog: MessageCatalog = MessageCatalog(
                 "requester" to m.requester,
                 "datasource" to SlackMarkup.escape(m.datasource.ifEmpty { catalog.text("field.any_datasource", locale) }),
                 "statement" to statement,
+                "query" to catalog.text(if (m.statement.text == null) "field.statement_hidden" else "field.statement_shown", locale),
                 "duration" to duration(m.durationSec, locale),
                 "spentRate" to (m.spentRate?.let { "\n" + catalog.text("field.spent_rate", locale, mapOf("rate" to SlackMarkup.escape(it))) } ?: ""),
                 "decidedBy" to (m.decidedBy ?: "—"),
                 "forcedBy" to (m.forcedBy ?: "—"),
-                "rowCount" to (m.rowCount?.toString() ?: "—"),
+                "rowCount" to (m.rowCount?.let { catalog.text("field.row_count", locale, mapOf("n" to it.toString())) } ?: ""),
                 "role" to (m.roleName?.let { catalog.text("field.role", locale, mapOf("role" to SlackMarkup.escape(it))) } ?: ""),
                 "roleName" to SlackMarkup.escape(m.roleName ?: "—"),
                 "reason" to reason,
@@ -112,6 +110,9 @@ class NotificationRenderer(private val catalog: MessageCatalog = MessageCatalog(
             )
         }
     }
+
+    // A requester's SQL must not close the ``` block and inject forged prose ("…``` *reviewed — approve*").
+    private fun fenced(sql: String) = "```\n" + sql.replace("```", "``\u200b`") + "\n```"
 
     /** The plain-text line for a client that renders no blocks. Never carries the statement. */
     fun fallbackText(m: NotificationMessage, locale: String): String = catalog.text(

@@ -2,6 +2,7 @@ package com.ridi.oss.proxymonster.controlplane.notify
 
 import com.ridi.oss.proxymonster.controlplane.i18n.MessageCatalog
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -167,6 +168,21 @@ class NotificationRendererTest {
         val m = message(NotificationEvent.TASK_REQUESTED, RenderedStatement(evil, true))
         val summary = renderer.summary(m, "en")
         assertFalse(summary.contains("``` *Security"), "the fence closer is neutralized, so the prose stays inside the block: $summary")
+    }
+
+    @Test
+    fun `the statement follows the sentence as its own code block`() {
+        val ko = renderer.summary(message(NotificationEvent.TASK_REQUESTED, RenderedStatement("UPDATE t SET a = 1", true)).copy(reason = null), "ko")
+        assertEquals("*alice@example.com* 님이 *acme-mysql*에서 *pii-reader* 역할로 다음 쿼리를 실행하고자 합니다.\n```\nUPDATE t SET a = 1\n```", ko)
+    }
+
+    @Test
+    fun `a finished run without a row count names no count`() {
+        for (locale in MessageCatalog.LOCALES) {
+            val m = message(NotificationEvent.TASK_EXECUTED, RenderedStatement("UPDATE t SET a = 1", true))
+            assertFalse(renderer.summary(m.copy(rowCount = null), locale).contains("—"), locale)
+            assertTrue(renderer.summary(m, locale).contains("3"), locale)
+        }
     }
 
     @Test

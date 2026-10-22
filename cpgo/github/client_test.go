@@ -178,11 +178,11 @@ func TestReadPullRequestsReadsEveryPRInOneQueryAndMapsEachField(t *testing.T) {
 		},
 		Files: []ChangedFile{{"sql/old.sql", "DELETED"}, {"sql/new.sql", "ADDED"}},
 		Commits: []CommitAuthor{
-			{UserID: s("101"), Email: s("alice@acme.com")},
-			{UserID: s("101"), Email: s(" alice@acme.com")},
+			{UserID: s("101"), Login: s("alice"), Email: s("alice@acme.com")},
+			{UserID: s("101"), Login: s("alice"), Email: s(" alice@acme.com")},
 			{},
-			{UserID: s("102"), Email: s("bob@acme.com")},
-			{UserID: s("101"), Email: s("merge@acme.com"), Merge: true},
+			{UserID: s("102"), Login: s("bob"), Email: s("bob@acme.com")},
+			{UserID: s("101"), Login: s("alice"), Email: s("merge@acme.com"), Merge: true},
 			{Email: s("nouser@acme.com")},
 		},
 	}

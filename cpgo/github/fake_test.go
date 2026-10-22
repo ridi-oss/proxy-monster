@@ -224,11 +224,11 @@ func pr(number int, o prOpts) string {
     {"path":"sql/old.sql","changeType":"DELETED"},{"path":"sql/new.sql","changeType":"ADDED"}]},
   "commits":{"nodes":[{"commit":{"oid":%q,"statusCheckRollup":%s}}]},
   "authors":{"nodes":[
-    {"commit":{"parents":{"totalCount":1},"author":{"email":"alice@acme.com","user":{"databaseId":101}}}},
-    {"commit":{"parents":{"totalCount":1},"author":{"email":" alice@acme.com","user":{"databaseId":101}}}},
+    {"commit":{"parents":{"totalCount":1},"author":{"email":"alice@acme.com","user":{"databaseId":101,"login":"alice"}}}},
+    {"commit":{"parents":{"totalCount":1},"author":{"email":" alice@acme.com","user":{"databaseId":101,"login":"alice"}}}},
     {"commit":{"parents":{"totalCount":1},"author":null}},
-    {"commit":{"parents":{"totalCount":1},"author":{"email":"bob@acme.com","user":{"databaseId":102}}}},
-    {"commit":{"parents":{"totalCount":2},"author":{"email":"merge@acme.com","user":{"databaseId":101}}}},
+    {"commit":{"parents":{"totalCount":1},"author":{"email":"bob@acme.com","user":{"databaseId":102,"login":"bob"}}}},
+    {"commit":{"parents":{"totalCount":2},"author":{"email":"merge@acme.com","user":{"databaseId":101,"login":"alice"}}}},
     {"commit":{"parents":{"totalCount":1},"author":{"email":"nouser@acme.com","user":null}}}]}}`,
 		o.threadsNext != "", nextCursor(o.threadsNext), o.filesNext != "", nextCursor(o.filesNext), o.rollupOID, rollup)
 }

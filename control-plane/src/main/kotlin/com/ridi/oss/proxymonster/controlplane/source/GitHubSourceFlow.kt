@@ -157,6 +157,7 @@ class GitHubSourceFlow(
             }
 
             val actor = AuditActor("workload:${workload.name}", clientAddr = null, channel = Channel.GITHUB.contextValue)
+            val editor = if (existing.any { it.status in OPEN }) pushedBy(repo, pr) ?: actor else actor
             val prUrl = "$webUrl/$repository/pull/$number"
             val taken = HashSet<Long>()
             val filed = keyed.map { k ->
@@ -173,7 +174,7 @@ class GitHubSourceFlow(
                 val unrun = existing.firstOrNull { free(it) && it.status in OPEN && it.pullRequest?.path == k.file.path }
                     ?: existing.firstOrNull { free(it) && it.status in OPEN && it.changeKey == k.key }
                 (
-                    unrun?.let { approvals.editFromPullRequest(it, k.file.content, k.statements, origin, actor, alreadyRan()) }
+                    unrun?.let { approvals.editFromPullRequest(it, k.file.content, k.statements, origin, editor, alreadyRan()) }
                         ?: existing.firstOrNull { free(it) && it.changeKey == k.key && it.status !in DEAD }
                         ?: approvals.requestFromPullRequest(requester, actor, ds, role.name, k.statements, origin, SOURCE_GITHUB, alreadyRan())
                     ).also { taken += it.id }
@@ -185,6 +186,16 @@ class GitHubSourceFlow(
             evaluateLocked(repo, number, dismissIfChanged(repo, pr, existing, keyed))
             filed.mapNotNull { accessStore.getRequest(it.id) }
         }
+    }
+
+    /** The principal of whoever wrote [pr]'s newest commit, or null when they map to none. */
+    private suspend fun pushedBy(repo: Repo, pr: PullRequest): AuditActor? {
+        val commit = pr.commits.lastOrNull { !it.merge } ?: return null
+        val user = SourceUser(commit.userId ?: return null, commit.login ?: return null)
+        val principal = safely("resolve commit author") {
+            adapter.resolveUser(repo.owner, user, MappingRole.REQUESTER, pr.commitEmailsBy(user))
+        } ?: return null
+        return AuditActor(principal, clientAddr = null, channel = Channel.GITHUB.contextValue)
     }
 
     /**

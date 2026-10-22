@@ -414,6 +414,23 @@ class GitHubSourceFlowDbTest {
     }
 
     @Test
+    fun `an edit is credited to the author of the newest commit`() {
+        val n = number()
+        val schema = schema()
+        open(n)
+        val first = file(n, schema, listOf("db/e.sql" to "create table e (id int)")).single()
+        update(n) {
+            it.copy(
+                headSha = "sha$n-2",
+                commits = listOf(CommitAuthor(aliceUser.id, null, merge = false, login = aliceUser.login), CommitAuthor(carolUser.id, null, merge = false, login = carolUser.login)),
+            )
+        }
+        file(n, schema, listOf("db/e.sql" to "create table e (id bigint)"))
+        val edited = RequestEvents.list(dataSource, first.id).single { it.kind == "edited" }
+        assertEquals(carol, edited.actor)
+    }
+
+    @Test
     fun `a scope waits for another pull request's unmerged run, then for a branch update`() {
         val schema = schema()
         runToMerge(schema, listOf("db/00041.sql" to "create table base (id int)"))

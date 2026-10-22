@@ -107,12 +107,12 @@ type nativeRequest struct {
 	principal   string
 	requestBody []byte
 	// SQL submission state, set only for StartQueryExecution.
-	authz     *spi.Authorizer
-	refetcher *refetcher
-	decision  *spi.Decision
-	submitted []byte
-	tokened   bool
-	started   time.Time
+	authz         *spi.Authorizer
+	commandRunner *proxyCommandRunner
+	decision      *spi.Decision
+	submitted     []byte
+	tokened       bool
+	started       time.Time
 	// Cached contexts the request phase found for the referenced executions.
 	contexts  map[string]*enginepb.AthenaCachedContext
 	firstPage bool
@@ -295,17 +295,17 @@ func (c *nativeRequest) admitSubmission(envelope *Envelope) (*Envelope, error) {
 		_ = authz.Close()
 		return nil, ErrUnauthorized
 	}
-	refetcher, err := c.server.target.newRefetcher(authz)
+	commandRunner, err := c.server.target.newProxyCommandRunner(authz)
 	if err != nil {
 		_ = authz.Close()
 		return nil, err
 	}
-	c.authz, c.refetcher = authz, refetcher
-	if err := refetcher.RunAll(identity.OnOpen, nil); err != nil {
+	c.authz, c.commandRunner = authz, commandRunner
+	if err := commandRunner.RunAll(identity.OnOpen, nil); err != nil {
 		return nil, err
 	}
 	c.started = time.Now()
-	verdict := c.server.target.authorize(authz, refetcher, scope.query, scope.parameters, 0)
+	verdict := c.server.target.authorize(authz, commandRunner, scope.query, scope.parameters, 0)
 	switch v := verdict.(type) {
 	case spi.Fail:
 		return nil, relay.FailError{Message: v.Message}
@@ -483,12 +483,12 @@ func (c *nativeRequest) associate(status int, body []byte) ([]byte, error) {
 // until the execution finishes so its after-statement refetches run; Athena executes asynchronously and a
 // client need not poll.
 func (c *nativeRequest) settle(id string) {
-	decision, authz, refetcher := c.decision, c.authz, c.refetcher
+	decision, authz, commandRunner := c.decision, c.authz, c.commandRunner
 	c.complete("ok")
 	if len(decision.AfterStatement) == 0 {
 		return
 	}
-	c.authz, c.refetcher = nil, nil
+	c.authz, c.commandRunner = nil, nil
 	go func() {
 		defer func() { _ = authz.Close() }()
 		ctx, cancel := context.WithTimeout(context.Background(), afterStatementTimeout)
@@ -496,7 +496,7 @@ func (c *nativeRequest) settle(id string) {
 		if _, err := c.server.target.awaitExecution(ctx, id); err != nil {
 			return
 		}
-		if err := refetcher.RunAll(decision.AfterStatement, nil); err != nil {
+		if err := commandRunner.RunAll(decision.AfterStatement, nil); err != nil {
 			slog.Warn("athena: catalog refresh after statement failed", "execution_id", id, "error", err)
 		}
 	}()
@@ -675,7 +675,7 @@ func (c *nativeRequest) complete(status string) {
 func (c *nativeRequest) release() {
 	if c.authz != nil {
 		_ = c.authz.Close()
-		c.authz, c.refetcher = nil, nil
+		c.authz, c.commandRunner = nil, nil
 	}
 }
 

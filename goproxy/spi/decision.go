@@ -153,11 +153,17 @@ type DecideRequest struct {
 	ClientAddr   string
 	TempColumns  []TempColumn
 	ConnectionID []byte
-	// RunCommands executes one before-decide round on the held target connection; the dialect's command
-	// runner interprets each ProxyCommand arm and may extend Session with what it fetched.
-	RunCommands func([]*pb.ProxyCommand, *SessionObservation) error
+	// Commands runs one before-decide round on the held target connection and may extend Session with what
+	// it fetched.
+	Commands ProxyCommandRunner
 	// CheckTargetError prepares sql on the target without executing it; nil means the statement prepared.
 	CheckTargetError func(sql string) (*TargetError, error)
+}
+
+// ProxyCommandRunner runs the ProxyCommands the control plane attaches to a decision or a connection open on the
+// held target connection: Refetch, and Athena's FetchAthenaPreparedDefinition, which adds to session.
+type ProxyCommandRunner interface {
+	RunAll(commands []*pb.ProxyCommand, session *SessionObservation) error
 }
 
 // SessionObservation is what the pre-statement probe returned: the connection's current catalog and

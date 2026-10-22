@@ -25,15 +25,15 @@ const (
 // and cancels through the SDK with its own credentials. No enforcement context is cached: the control plane
 // stores the rows it receives.
 type runSession struct {
-	target    *target
-	authz     *spi.Authorizer
-	refetcher *refetcher
-	guard     spi.ExecGuard
-	timeout   time.Duration
-	mu        sync.Mutex
-	current   string
-	closed    bool
-	cancel    context.CancelFunc
+	target        *target
+	authz         *spi.Authorizer
+	commandRunner *proxyCommandRunner
+	guard         spi.ExecGuard
+	timeout       time.Duration
+	mu            sync.Mutex
+	current       string
+	closed        bool
+	cancel        context.CancelFunc
 }
 
 func (t *target) NewRunSession(_ context.Context, authz *spi.Authorizer, guard spi.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.Session, error) {
@@ -41,18 +41,18 @@ func (t *target) NewRunSession(_ context.Context, authz *spi.Authorizer, guard s
 	if defaultSchema != "" && defaultSchema != t.config.database {
 		return nil, fmt.Errorf("athena run cannot open in database %q: the target is configured for %q", defaultSchema, t.config.database)
 	}
-	refetcher, err := t.newRefetcher(authz)
+	commandRunner, err := t.newProxyCommandRunner(authz)
 	if err != nil {
 		return nil, err
 	}
-	return &runSession{target: t, authz: authz, refetcher: refetcher, guard: guard, timeout: readTimeout}, nil
+	return &runSession{target: t, authz: authz, commandRunner: commandRunner, guard: guard, timeout: readTimeout}, nil
 }
 
 func (s *runSession) OnOpen(ctx context.Context, commands []*pb.ProxyCommand) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return s.refetcher.RunAll(commands, nil)
+	return s.commandRunner.RunAll(commands, nil)
 }
 
 // Namespace is the configured catalog and database: every query execution names them, and nothing on the
@@ -62,7 +62,7 @@ func (s *runSession) Namespace() (string, []string, error) {
 }
 
 func (s *runSession) ServeStatement(sql string, maxRows int) (result spi.StatementResult, err error) {
-	verdict := s.target.authorize(s.authz, s.refetcher, sql, nil, maxRows)
+	verdict := s.target.authorize(s.authz, s.commandRunner, sql, nil, maxRows)
 	var proceed spi.Proceed
 	switch v := verdict.(type) {
 	case spi.Fail:
@@ -134,7 +134,7 @@ func (s *runSession) execute(query string, parameters []string, budget *relay.Ro
 	if err != nil {
 		return nil, nil, 0, err
 	}
-	if err := s.refetcher.RunAll(afterStatement, nil); err != nil {
+	if err := s.commandRunner.RunAll(afterStatement, nil); err != nil {
 		return nil, nil, 0, err
 	}
 	// Athena prefixes DML (SELECT) results with a header row of column names; DDL and utility results have none.

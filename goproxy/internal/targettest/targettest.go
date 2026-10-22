@@ -194,7 +194,7 @@ func RunRefetchIntegration(t *testing.T, queries sqldb.Queries, conn *sql.Conn, 
 	connectionID := []byte("refetch-test-connection")
 	const generation = uint64(41)
 	var pushes []*pb.SchemaFragmentPush
-	refetcher := sqldb.Refetcher{
+	commandRunner := sqldb.ProxyCommandRunner{
 		Catalog:           catalog,
 		Queries:           queries,
 		ConnectionID:      connectionID,
@@ -207,8 +207,8 @@ func RunRefetchIntegration(t *testing.T, queries sqldb.Queries, conn *sql.Conn, 
 			return uint64(len(pushes)), nil
 		},
 	}
-	if err := refetcher.Run(&pb.Refetch{Catalog: catalog, Schema: schema, IfHashDiffers: ifHashDiffers}); err != nil {
-		t.Fatalf("Refetcher.Run(%q): %v", schema, err)
+	if err := commandRunner.Refetch(&pb.Refetch{Catalog: catalog, Schema: schema, IfHashDiffers: ifHashDiffers}); err != nil {
+		t.Fatalf("ProxyCommandRunner.Refetch(%q): %v", schema, err)
 	}
 	if len(pushes) != 1 {
 		t.Fatalf("push count = %d, want exactly 1", len(pushes))

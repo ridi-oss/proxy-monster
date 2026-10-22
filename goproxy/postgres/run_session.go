@@ -18,12 +18,12 @@ import (
 
 type RunSession struct {
 	sessionCore
-	conn     net.Conn
-	keyData  pgproto3.BackendKeyData
-	target   *target
-	ref      *sqldb.Refetcher
-	guard    spi.ExecGuard
-	poisoned bool
+	conn          net.Conn
+	keyData       pgproto3.BackendKeyData
+	target        *target
+	commandRunner *sqldb.ProxyCommandRunner
+	guard         spi.ExecGuard
+	poisoned      bool
 }
 
 func (t *target) NewRunSession(ctx context.Context, authz *spi.Authorizer, guard spi.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.Session, error) {
@@ -46,6 +46,7 @@ func (t *target) NewRunSession(ctx context.Context, authz *spi.Authorizer, guard
 			currentCatalog: catalog,
 			targetDb:       pgproto3.NewFrontend(conn, conn),
 			authz:          authz,
+			generation:     generation,
 			lastTxStatus:   txStatus,
 		},
 		conn:    conn,
@@ -53,10 +54,7 @@ func (t *target) NewRunSession(ctx context.Context, authz *spi.Authorizer, guard
 		target:  t,
 		guard:   guard,
 	}
-	s.ref = sqldb.NewRefetcher(Queries, authz.ConnectionID(), generation, func(sql string, expectedColumns int) ([][]*string, error) {
-		return s.runProbe(sql, expectedColumns, true)
-	}, authz.Client().PushSchemaFragment)
-	s.ref.Catalog = catalog
+	s.commandRunner = s.newCommandRunner(s.runProbe)
 	return s, nil
 }
 
@@ -65,7 +63,7 @@ func (t *target) NewRunSession(ctx context.Context, authz *spi.Authorizer, guard
 // at once instead of holding the target DB until readTimeout.
 func (s *RunSession) OnOpen(ctx context.Context, cmds []*pb.ProxyCommand) error {
 	defer context.AfterFunc(ctx, func() { _ = s.conn.Close() })()
-	return s.ref.RunAll(cmds, nil)
+	return s.commandRunner.RunAll(cmds, nil)
 }
 
 func (s *RunSession) ServeStatement(sql string, maxRows int) (result spi.StatementResult, err error) {
@@ -73,7 +71,7 @@ func (s *RunSession) ServeStatement(sql string, maxRows int) (result spi.Stateme
 		return result, errors.New("run session is unusable after a prior protocol error")
 	}
 	result.Decision, result.Denied, err = relay.ServeStatement(s.authz,
-		s.authzInput(sql, s.ref.RunAll), s.ref, s.guard,
+		s.authzInput(sql, s.commandRunner), s.commandRunner, s.guard,
 		func(toSend string, masks []*pb.ColumnMask, dec *spi.Decision) (bool, error) {
 			pageRows := dec.PageRows(maxRows)
 			max, runErr := executeMaxRows(pageRows)

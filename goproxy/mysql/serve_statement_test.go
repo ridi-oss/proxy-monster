@@ -31,7 +31,7 @@ func scriptedMySQLRun(t *testing.T, decider spi.ControlPlane, maxRows int, respo
 	_ = server.SetDeadline(time.Now().Add(5 * time.Second))
 	authz := spi.NewAuthorizer(decider, "", nil)
 	authz.SetNamespace([]string{"test"})
-	s := &RunSession{conn: client, authz: authz, ref: &sqldb.Refetcher{Catalog: "def"}}
+	s := &RunSession{conn: client, authz: authz, commandRunner: &sqldb.ProxyCommandRunner{Catalog: "def"}}
 	writes := make(chan string, 3)
 	go func() {
 		defer close(writes)

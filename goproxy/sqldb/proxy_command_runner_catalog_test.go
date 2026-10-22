@@ -6,7 +6,7 @@ import (
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 )
 
-func TestRefetcherCatalogIdentity(t *testing.T) {
+func TestRefetchCatalogIdentity(t *testing.T) {
 	for _, test := range []struct {
 		name                string
 		catalog             string
@@ -20,7 +20,7 @@ func TestRefetcherCatalogIdentity(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			probes := 0
 			var pushed *pb.SchemaFragmentPush
-			refetcher := Refetcher{Catalog: "def", Queries: refetchQueries, BackendGeneration: 7,
+			commandRunner := ProxyCommandRunner{Catalog: "def", Queries: refetchQueries, BackendGeneration: 7,
 				Probe: func(sql string, _ int) ([][]*string, error) {
 					probes++
 					if sql == "columns:schema" {
@@ -34,7 +34,7 @@ func TestRefetcherCatalogIdentity(t *testing.T) {
 			if test.unchanged {
 				command.IfHashDiffers = []byte("hash")
 			}
-			err := refetcher.Run(command)
+			err := commandRunner.Refetch(command)
 			if test.rejected {
 				if err == nil || probes != 0 || pushed != nil {
 					t.Fatalf("invalid catalog touched target: err=%v, probes=%d, push=%v", err, probes, pushed)

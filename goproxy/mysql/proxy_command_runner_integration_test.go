@@ -14,7 +14,7 @@ import (
 	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
 )
 
-func TestMySqlRefetcherIntegration(t *testing.T) {
+func TestMySqlRefetchIntegration(t *testing.T) {
 	database := dbtest.OpenMySQL(t, "")
 	conn, err := database.Conn(context.Background())
 	if err != nil {
@@ -148,7 +148,7 @@ func TestMySqlRefetcherIntegration(t *testing.T) {
 	}
 }
 
-func TestMySqlRefetcherTruncationFallsBackToFullFetch(t *testing.T) {
+func TestMySqlRefetchTruncationFallsBackToFullFetch(t *testing.T) {
 	database := dbtest.OpenMySQL(t, "")
 	conn, err := database.Conn(context.Background())
 	if err != nil {
@@ -217,7 +217,7 @@ func TestMySqlRefetcherTruncationFallsBackToFullFetch(t *testing.T) {
 }
 
 // narrowHashQueries narrows only the production query's SET_VAR numeric bound. The serialization,
-// result decoder, and Refetcher behavior remain the production implementations under test.
+// result decoder, and ProxyCommandRunner behavior remain the production implementations under test.
 func narrowHashQueries() sqldb.Queries {
 	queries := Queries
 	queries.SchemaHash = func(schema string, setupRows [][]*string) (string, int, error) {

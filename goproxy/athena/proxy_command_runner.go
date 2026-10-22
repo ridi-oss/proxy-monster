@@ -20,21 +20,21 @@ import (
 
 const metadataTimeout = 60 * time.Second
 
-// refetcher answers the control plane's per-connection catalog commands from Glue table metadata. The
+// proxyCommandRunner answers the control plane's per-connection catalog commands from Glue table metadata. The
 // listing is the measurement, so its hash is always trusted.
-type refetcher struct {
+type proxyCommandRunner struct {
 	target       *target
 	connectionID []byte
 	generation   uint64
 	push         func(*pb.SchemaFragmentPush) (uint64, error)
 }
 
-func (t *target) newRefetcher(authz *spi.Authorizer) (*refetcher, error) {
+func (t *target) newProxyCommandRunner(authz *spi.Authorizer) (*proxyCommandRunner, error) {
 	generation, ok := wire.NextBackendGeneration()
 	if !ok {
 		return nil, errors.New("athena: backend generation out of range")
 	}
-	return &refetcher{target: t, connectionID: authz.ConnectionID(), generation: generation, push: authz.Client().PushSchemaFragment}, nil
+	return &proxyCommandRunner{target: t, connectionID: authz.ConnectionID(), generation: generation, push: authz.Client().PushSchemaFragment}, nil
 }
 
 // maxPreparedDefinitions bounds the definitions one decision may accumulate across its before-decide rounds.
@@ -43,7 +43,7 @@ const maxPreparedDefinitions = 8
 // RunAll executes a command list: a Refetch re-measures a database from Glue; a FetchAthenaPreparedDefinition
 // reads the named prepared statement from the workgroup and appends it to session's Athena scope, so the
 // re-sent decision carries it. Any other arm fails closed.
-func (r *refetcher) RunAll(commands []*pb.ProxyCommand, session *spi.SessionObservation) error {
+func (r *proxyCommandRunner) RunAll(commands []*pb.ProxyCommand, session *spi.SessionObservation) error {
 	for i, command := range commands {
 		switch {
 		case command.GetRefetch() != nil:
@@ -61,7 +61,7 @@ func (r *refetcher) RunAll(commands []*pb.ProxyCommand, session *spi.SessionObse
 	return nil
 }
 
-func (r *refetcher) run(command *pb.Refetch) error {
+func (r *proxyCommandRunner) run(command *pb.Refetch) error {
 	if command.GetSchema() == "" {
 		return errors.New("refetch command has blank schema")
 	}

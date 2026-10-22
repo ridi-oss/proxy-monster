@@ -12,7 +12,7 @@ import (
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/targettest"
 )
 
-func TestPostgresRefetcherIntegration(t *testing.T) {
+func TestPostgresRefetchIntegration(t *testing.T) {
 	targetConfig := dbtest.Postgres(t)
 	admin := dbtest.OpenPostgres(t, "")
 

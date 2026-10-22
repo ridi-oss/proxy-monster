@@ -40,10 +40,10 @@ func fragmentRows(schema string) [][]*string {
 	return [][]*string{{ptr(schema), ptr("t"), ptr("c"), ptr("text"), ptr("1"), ptr("NO"), ptr("def")}}
 }
 
-func TestRefetcherUnchangedOnHashMatch(t *testing.T) {
+func TestRefetchUnchangedOnHashMatch(t *testing.T) {
 	var probes []string
 	var pushed *pb.SchemaFragmentPush
-	r := Refetcher{
+	r := ProxyCommandRunner{
 		Catalog:           "def",
 		Queries:           refetchQueries,
 		ConnectionID:      []byte("0123456789abcdef"),
@@ -57,7 +57,7 @@ func TestRefetcherUnchangedOnHashMatch(t *testing.T) {
 		},
 		Push: func(push *pb.SchemaFragmentPush) (uint64, error) { pushed = push; return 9, nil },
 	}
-	if err := r.Run(&pb.Refetch{Schema: "app", Catalog: "def", IfHashDiffers: []byte("same")}); err != nil {
+	if err := r.Refetch(&pb.Refetch{Schema: "app", Catalog: "def", IfHashDiffers: []byte("same")}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if !reflect.DeepEqual(probes, []string{"setup", "hash:app"}) {
@@ -71,10 +71,10 @@ func TestRefetcherUnchangedOnHashMatch(t *testing.T) {
 	}
 }
 
-func TestRefetcherUnconditionalFetch(t *testing.T) {
+func TestRefetchUnconditionalFetch(t *testing.T) {
 	var hashCalls int
 	var pushed *pb.SchemaFragmentPush
-	r := Refetcher{
+	r := ProxyCommandRunner{
 		Catalog: "def",
 		Queries: refetchQueries,
 		Probe: func(sql string, columns int) ([][]*string, error) {
@@ -92,7 +92,7 @@ func TestRefetcherUnconditionalFetch(t *testing.T) {
 		},
 		Push: func(push *pb.SchemaFragmentPush) (uint64, error) { pushed = push; return 1, nil },
 	}
-	if err := r.Run(&pb.Refetch{Schema: "app", Catalog: "def"}); err != nil {
+	if err := r.Refetch(&pb.Refetch{Schema: "app", Catalog: "def"}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if hashCalls != 2 {
@@ -123,10 +123,10 @@ func normalizingQueries(gotMode **int) Queries {
 	return queries
 }
 
-func TestRefetcherProbesModeAndNormalizesBeforePush(t *testing.T) {
+func TestRefetchProbesModeAndNormalizesBeforePush(t *testing.T) {
 	var gotMode *int
 	var pushed *pb.SchemaFragmentPush
-	r := Refetcher{
+	r := ProxyCommandRunner{
 		Catalog: "def",
 		Queries: normalizingQueries(&gotMode),
 		Probe: func(sql string, columns int) ([][]*string, error) {
@@ -143,7 +143,7 @@ func TestRefetcherProbesModeAndNormalizesBeforePush(t *testing.T) {
 		},
 		Push: func(push *pb.SchemaFragmentPush) (uint64, error) { pushed = push; return 1, nil },
 	}
-	if err := r.Run(&pb.Refetch{Schema: "app", Catalog: "def"}); err != nil {
+	if err := r.Refetch(&pb.Refetch{Schema: "app", Catalog: "def"}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if gotMode == nil || *gotMode != 2 {
@@ -154,9 +154,9 @@ func TestRefetcherProbesModeAndNormalizesBeforePush(t *testing.T) {
 	}
 }
 
-func TestRefetcherIncoherentHashesAreTerminal(t *testing.T) {
+func TestRefetchIncoherentHashesAreTerminal(t *testing.T) {
 	var hashCalls int
-	r := Refetcher{
+	r := ProxyCommandRunner{
 		Catalog: "def",
 		Queries: refetchQueries,
 		Probe: func(sql string, columns int) ([][]*string, error) {
@@ -171,12 +171,12 @@ func TestRefetcherIncoherentHashesAreTerminal(t *testing.T) {
 			return 0, nil
 		},
 	}
-	if err := r.Run(&pb.Refetch{Schema: "app", Catalog: "def", IfHashDiffers: []byte("never")}); err == nil || !strings.Contains(err.Error(), "changed during introspection") {
+	if err := r.Refetch(&pb.Refetch{Schema: "app", Catalog: "def", IfHashDiffers: []byte("never")}); err == nil || !strings.Contains(err.Error(), "changed during introspection") {
 		t.Fatalf("Run error = %v, want changed-during-introspection", err)
 	}
 }
 
-func TestRefetcherUntrustedHashesUseNonce(t *testing.T) {
+func TestRefetchUntrustedHashesUseNonce(t *testing.T) {
 	cases := []struct {
 		name   string
 		hashes []string
@@ -189,7 +189,7 @@ func TestRefetcherUntrustedHashesUseNonce(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var hashCalls int
 			var pushed *pb.SchemaFragmentPush
-			r := Refetcher{
+			r := ProxyCommandRunner{
 				Catalog: "def",
 				Queries: refetchQueries,
 				Probe: func(sql string, columns int) ([][]*string, error) {
@@ -207,7 +207,7 @@ func TestRefetcherUntrustedHashesUseNonce(t *testing.T) {
 				},
 				Push: func(push *pb.SchemaFragmentPush) (uint64, error) { pushed = push; return 1, nil },
 			}
-			if err := r.Run(&pb.Refetch{Schema: "app", Catalog: "def", IfHashDiffers: []byte("never")}); err != nil {
+			if err := r.Refetch(&pb.Refetch{Schema: "app", Catalog: "def", IfHashDiffers: []byte("never")}); err != nil {
 				t.Fatalf("Run: %v", err)
 			}
 			if len(pushed.ContentHash) != 32 {
@@ -222,40 +222,40 @@ func TestRefetcherUntrustedHashesUseNonce(t *testing.T) {
 	}
 }
 
-func TestRefetcherTerminalErrors(t *testing.T) {
+func TestRefetchTerminalErrors(t *testing.T) {
 	t.Run("blank schema", func(t *testing.T) {
-		r := Refetcher{Catalog: "def", Queries: refetchQueries, Probe: func(string, int) ([][]*string, error) { return nil, nil }, Push: func(*pb.SchemaFragmentPush) (uint64, error) { return 0, nil }}
-		if err := r.Run(&pb.Refetch{Catalog: "def"}); err == nil {
+		r := ProxyCommandRunner{Catalog: "def", Queries: refetchQueries, Probe: func(string, int) ([][]*string, error) { return nil, nil }, Push: func(*pb.SchemaFragmentPush) (uint64, error) { return 0, nil }}
+		if err := r.Refetch(&pb.Refetch{Catalog: "def"}); err == nil {
 			t.Fatal("Run succeeded, want blank-schema error")
 		}
 	})
 	t.Run("introspection", func(t *testing.T) {
-		r := Refetcher{Catalog: "def", Queries: refetchQueries, Probe: func(sql string, _ int) ([][]*string, error) {
+		r := ProxyCommandRunner{Catalog: "def", Queries: refetchQueries, Probe: func(sql string, _ int) ([][]*string, error) {
 			if strings.HasPrefix(sql, "columns:") {
 				return nil, errors.New("introspection failed")
 			}
 			return [][]*string{{ptr("hash")}}, nil
 		}, Push: func(*pb.SchemaFragmentPush) (uint64, error) { return 0, nil }}
-		if err := r.Run(&pb.Refetch{Schema: "app", Catalog: "def"}); err == nil {
+		if err := r.Refetch(&pb.Refetch{Schema: "app", Catalog: "def"}); err == nil {
 			t.Fatal("Run succeeded, want introspection error")
 		}
 	})
 	t.Run("push", func(t *testing.T) {
-		r := Refetcher{Catalog: "def", Queries: refetchQueries, Probe: func(sql string, _ int) ([][]*string, error) {
+		r := ProxyCommandRunner{Catalog: "def", Queries: refetchQueries, Probe: func(sql string, _ int) ([][]*string, error) {
 			if strings.HasPrefix(sql, "columns:") {
 				return fragmentRows("app"), nil
 			}
 			return [][]*string{{ptr("hash")}}, nil
 		}, Push: func(*pb.SchemaFragmentPush) (uint64, error) { return 0, errors.New("push failed") }}
-		if err := r.Run(&pb.Refetch{Schema: "app", Catalog: "def"}); err == nil || !strings.Contains(err.Error(), "push failed") {
+		if err := r.Refetch(&pb.Refetch{Schema: "app", Catalog: "def"}); err == nil || !strings.Contains(err.Error(), "push failed") {
 			t.Fatalf("Run error = %v, want push failure", err)
 		}
 	})
 }
 
-func TestRefetcherRunAllOrdersAndStops(t *testing.T) {
+func TestRefetchRunAllOrdersAndStops(t *testing.T) {
 	var pushed []string
-	r := Refetcher{
+	r := ProxyCommandRunner{
 		Catalog: "def",
 		Queries: refetchQueries,
 		Probe: func(sql string, _ int) ([][]*string, error) {

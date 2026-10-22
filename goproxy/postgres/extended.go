@@ -118,7 +118,7 @@ func (s *Server) handleParse(sess *session, message *pgproto3.Parse) error {
 	// the probe fails and produces a fail-safe 58000 refusal before PostgreSQL's equivalent 25P02 Parse.
 	sess.authz.MarkNamespaceDirty()
 	sess.pendingDirty = false
-	in := sess.authzInput(message.Query, s.refetcher(sess, true).RunAll)
+	in := sess.authzInput(message.Query, sess.extendedCommandRunner)
 	in.CheckTargetError = func(sql string) (*spi.TargetError, error) {
 		return s.checkTargetError(sess, sql, message.ParameterOIDs)
 	}
@@ -379,7 +379,7 @@ func (s *Server) handleExecute(sess *session, message *pgproto3.Execute) error {
 	sess.authz.MarkNamespaceDirty()
 	verdict := sess.authz.Authorize(spi.AuthzInput{
 		SQL:          portal.sql,
-		RunCommands:  s.refetcher(sess, true).RunAll,
+		Commands:     sess.extendedCommandRunner,
 		ProbeSession: func() (spi.SessionObservation, error) { return portal.session.Clone(), nil },
 		ProbeTempColumns: func() ([]spi.TempColumn, error) {
 			return portal.temps, nil
@@ -426,7 +426,7 @@ func (s *Server) handleExecute(sess *session, message *pgproto3.Execute) error {
 		return err
 	}
 	if _, complete := terminal.(*pgproto3.CommandComplete); complete && len(proceed.Decision.AfterStatement) > 0 {
-		if err := s.refetcher(sess, true).RunAll(proceed.Decision.AfterStatement, nil); err != nil {
+		if err := sess.extendedCommandRunner.RunAll(proceed.Decision.AfterStatement, nil); err != nil {
 			return closeRelay(sess, err)
 		}
 	}

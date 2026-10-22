@@ -376,14 +376,13 @@ type queryResult struct {
 
 // serveQuery serves one statement.
 func (s *Server) serveQuery(sess *session, sql string, mode relayMode) (queryResult, error) {
-	ref := s.refetcher(sess, false)
 	start := time.Now()
 	var relayStats spi.RelayStats
 	relayStatus := relay.StatusError
 	var result queryResult
-	in := sess.authzInput(sql, ref.RunAll)
+	in := sess.authzInput(sql, sess.commandRunner)
 	in.CheckTargetError = func(sql string) (*spi.TargetError, error) { return s.checkTargetErrorAndSync(sess, sql) }
-	decision, denied, err := relay.ServeStatement(sess.authz, in, ref, nil,
+	decision, denied, err := relay.ServeStatement(sess.authz, in, sess.commandRunner, nil,
 		func(toSend string, masks []*pb.ColumnMask, dec *spi.Decision) (bool, error) {
 			sess.targetDb.Send(&pgproto3.Query{String: toSend})
 			if err := sess.targetDb.Flush(); err != nil {

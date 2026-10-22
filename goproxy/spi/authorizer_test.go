@@ -101,7 +101,7 @@ func TestAuthorizeSanitizeDiagnosticsStaysClearWhenNeverRequested(t *testing.T) 
 func TestAuthorizePassesConnectionCatalogCallbacks(t *testing.T) {
 	dec := &fakeDecider{outcome: okOutcome("ALLOW", nil)}
 	connectionID := []byte("0123456789abcdef")
-	runCommands := func([]*pb.ProxyCommand, *SessionObservation) error { return nil }
+	commandRunner := &fakeCommandRunner{}
 	dec.identity = Identity{ConnectionID: connectionID}
 	authz, _, err := Authenticate(dec, "token", "127.0.0.1:1234")
 	if err != nil {
@@ -111,7 +111,7 @@ func TestAuthorizePassesConnectionCatalogCallbacks(t *testing.T) {
 		SQL:              "SELECT 1",
 		ProbeSession:     staticNamespace([]string{"app"}, new(int)),
 		ProbeTempColumns: nil,
-		RunCommands:      runCommands,
+		Commands:         commandRunner,
 	})
 	if _, ok := got.(Proceed); !ok {
 		t.Fatalf("Authorize verdict = %T, want Proceed", got)
@@ -122,11 +122,8 @@ func TestAuthorizePassesConnectionCatalogCallbacks(t *testing.T) {
 	if !reflect.DeepEqual(dec.lastReq.ConnectionID, connectionID) {
 		t.Fatalf("ConnectionID = %x, want %x", dec.lastReq.ConnectionID, connectionID)
 	}
-	if dec.lastReq.RunCommands == nil {
-		t.Fatal("RunCommands was not passed through")
-	}
-	if reflect.ValueOf(dec.lastReq.RunCommands).Pointer() != reflect.ValueOf(runCommands).Pointer() {
-		t.Fatal("Authorize replaced the RunCommands callback")
+	if dec.lastReq.Commands != commandRunner {
+		t.Fatal("Authorize did not pass the command runner through")
 	}
 }
 
@@ -299,3 +296,7 @@ func TestTempProbeIsBestEffort(t *testing.T) {
 		t.Fatalf("Decide should run once with no temps; calls=%d temps=%+v", dec.calls, dec.lastReq.TempColumns)
 	}
 }
+
+type fakeCommandRunner struct{}
+
+func (*fakeCommandRunner) RunAll([]*pb.ProxyCommand, *SessionObservation) error { return nil }

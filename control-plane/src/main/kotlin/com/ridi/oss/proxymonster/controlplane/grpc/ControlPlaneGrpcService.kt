@@ -27,16 +27,10 @@ import com.ridi.oss.proxymonster.controlplane.namespace
 import com.ridi.oss.proxymonster.controlplane.definition
 import com.ridi.oss.proxymonster.controlplane.EnforcementOutcome
 import com.ridi.oss.proxymonster.controlplane.DatasourceStore
-import com.ridi.oss.proxymonster.controlplane.TokenKind
 import com.ridi.oss.proxymonster.controlplane.decideConnection
 import com.ridi.oss.proxymonster.controlplane.inTx
 import com.ridi.oss.proxymonster.controlplane.systemSchemas
 import com.ridi.oss.proxymonster.controlplane.resolveRequestIdentity
-import com.ridi.oss.proxymonster.controlplane.RequestAdmission
-import com.ridi.oss.proxymonster.controlplane.authorizeRequest
-import com.ridi.oss.proxymonster.controlplane.deniedAdmission
-import com.ridi.oss.proxymonster.grpc.RequestAuthorization
-import com.ridi.oss.proxymonster.grpc.RequestAuthorizationResult
 import com.google.protobuf.Empty
 import com.ridi.oss.proxymonster.grpc.CatalogRequest
 import com.ridi.oss.proxymonster.grpc.CatalogResponse
@@ -185,30 +179,6 @@ class ControlPlaneGrpcService(
             connectionId = opened.connectionId
             onOpen.addAll(opened.onOpen.map { proxyCommand { refetch = it } })
         }
-    }
-
-    override suspend fun authorizeRequest(request: RequestAuthorization): RequestAuthorizationResult {
-        val resolved = core.resolveRequestIdentity(request.token, request.clientAddr.ifBlank { null })
-        if (resolved.kind != TokenKind.SESSION && resolved.kind != TokenKind.USER) {
-            throw StatusException(Status.UNAUTHENTICATED.withDescription("request authorization requires a wire credential"))
-        }
-        val ds = core.datasourceStore.getByName(request.datasourceName)
-            ?: throw StatusException(Status.NOT_FOUND.withDescription("unknown datasource"))
-        val parents = resolved.effectiveParents
-        val admission = try {
-            core.authz.authorizeRequest(request, ds, resolved.identity.principal, parents, resolved.context)
-        } catch (_: ManagementException) {
-            request.deniedAdmission()
-        }
-        val result = RequestAuthorizationResult.newBuilder().setAllowed(admission is RequestAdmission.Allowed).addAllEffectiveRoles(parents.roles)
-        when (admission) {
-            is RequestAdmission.Allowed -> {
-                result.principal = resolved.identity.principal
-                admission.instructions?.applyTo(result)
-            }
-            is RequestAdmission.Denied -> result.denyReason = admission.denyCode
-        }
-        return result.build()
     }
 
     override suspend fun decide(request: DecisionRequest): WireDecision {

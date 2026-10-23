@@ -285,13 +285,14 @@ func run(ctx context.Context, cfg config) int {
 		login.Provider = idp.NewProvider(*cfg.OIDC)
 		go oidc.Liveness{Pool: pool, Sessions: resolver, Kotlin: kotlin, Provider: login.Provider, Crypto: cfg.Crypto, Schema: cfg.Schema}.Run(ctx)
 	}
+	decider := authz.NewDecider(pool, cfg.Schema)
 	serve := func(edges front.TrustedEdges) http.Handler {
 		mux := http.NewServeMux()
 		routes.Register(mux, pool, api.Gate{
 			Sessions:  resolver,
 			Edges:     edges,
 			AuthDebug: cfg.Session.AuthDebug,
-			Authz:     authz.NewDecider(pool, cfg.Schema),
+			Authz:     decider,
 			Kotlin:    kotlin,
 		}, login, oauth.HTTPResolver{AllowSpecialUse: cfg.Session.AuthDebug})
 		h := front.Route(mux, front.NewHTTP(httpUpstream, edges))
@@ -306,7 +307,7 @@ func run(ctx context.Context, cfg config) int {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	grpcSrv := front.NewGRPC(conn, grpc.UnaryInterceptor(grpcsvc.SecretToken(cfg.SecretToken)))
-	grpcsvc.Register(grpcSrv, pool)
+	grpcsvc.Register(grpcSrv, pool, decider)
 
 	httpLn, err := net.Listen("tcp", httpSrv.Addr)
 	if err != nil {

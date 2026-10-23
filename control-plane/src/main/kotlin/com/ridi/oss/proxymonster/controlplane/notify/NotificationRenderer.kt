@@ -96,7 +96,7 @@ class NotificationRenderer(private val catalog: MessageCatalog = MessageCatalog(
         )
     }
 
-    /** The line naming who may approve and the CCs, for a message a whole channel reads; null when there are none. */
+    /** The line naming who may approve (on a channel message) and the CCs; null when there are none. */
     fun audience(m: NotificationMessage, locale: String): String? {
         val parts = listOfNotNull(
             m.approvers.takeIf { it.isNotEmpty() }?.let { catalog.text("field.approvers", locale, mapOf("names" to it.joinToString(" "))) },
@@ -178,7 +178,7 @@ class NotificationRenderer(private val catalog: MessageCatalog = MessageCatalog(
         }
         NotificationEvent.TASK_EDITED -> "task.edited"
         NotificationEvent.TASK_REOPENED -> "task.reopened"
-        NotificationEvent.TASK_CC_ADDED -> "task.cc_added"
+        NotificationEvent.TASK_CC_ADDED, NotificationEvent.TASK_CC_CHANGED -> "task.cc_added"
         NotificationEvent.TASK_EXECUTED -> "task.executed"
         NotificationEvent.TASK_FAILED -> "task.failed"
         NotificationEvent.TASK_CANCELLED -> "task.cancelled"

@@ -254,8 +254,8 @@ func TestRequestCCs(t *testing.T) {
 	if got := e.kinds(role); !slices.Equal(got, want) {
 		t.Fatalf("timeline %v", got)
 	}
-	if len(e.Authz.Notified) != 1 {
-		t.Fatalf("a removal or a repeat add signaled: %v", e.Authz.Notified)
+	if want := []string{fmt.Sprintf("%d:cc-added:cc@example.com", role), fmt.Sprintf("%d:cc-removed", role)}; !slices.Equal(e.Authz.Notified, want) {
+		t.Fatalf("a repeat add or remove signaled, or a removal did not: %v", e.Authz.Notified)
 	}
 	if n := e.Count(t, `SELECT count(*) FROM request_participant WHERE request_id = $1`, role); n != 0 {
 		t.Fatalf("%d participants left", n)

@@ -220,7 +220,7 @@ func (a access) setCC(w http.ResponseWriter, r *http.Request, id int64, who stri
 			if err != nil || removed == 0 {
 				return id, notice{}, err
 			}
-			kind, n = timeline.CCRemoved, notice{}
+			kind, n = timeline.CCRemoved, notice{event: "cc-removed"}
 		}
 		_, err := timeline.Record(ctx, tx, id, kind, &actor.Principal, actor.Channel, &cc)
 		return id, n, err

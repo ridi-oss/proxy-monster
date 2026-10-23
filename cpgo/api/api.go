@@ -161,8 +161,8 @@ type Authorizer interface {
 type Kotlin interface {
 	// PoliciesChanged: a committed policy write; Kotlin's query path rebuilds its cached policy set.
 	PoliciesChanged(ctx context.Context) error
-	// RequestNotified: a committed write opened, decided, commented on, closed or CC'd the request; send its
-	// notification. principal is the added CC for "cc-added", else empty.
+	// RequestNotified: a committed write opened, decided, commented on, closed or changed the CCs of the
+	// request; send its notification. principal is the added CC for "cc-added", else empty.
 	RequestNotified(ctx context.Context, id int64, event, principal string) error
 	// SessionsEnded: a committed change ended the principal's web sessions; close the editor runs held for them.
 	SessionsEnded(ctx context.Context, principal string) error

@@ -56,8 +56,9 @@ class SlackThreadHandler(
     private fun ccMentions(m: SlackThreadMessage, taskId: Long) {
         val principal = m.principal ?: return
         val threads = approvals().threads
-        val ccs = threads.request(taskId).ccs
-        for (mentioned in m.mentions.filter { it !in ccs }) {
+        val req = threads.request(taskId)
+        val onRequest = req.ccs.toSet() + req.principal + store.approversOf(taskId)
+        for (mentioned in m.mentions.filter { it !in onRequest }) {
             runCatching {
                 threads.setCc(principal, null, AuditActor(principal, channel = ORIGIN), taskId, mentioned, add = true, Channel.SLACK)
             }.onFailure { log.info("slack mention not added as cc task={} by={} cc={}: {}", taskId, principal, mentioned, it.message) }

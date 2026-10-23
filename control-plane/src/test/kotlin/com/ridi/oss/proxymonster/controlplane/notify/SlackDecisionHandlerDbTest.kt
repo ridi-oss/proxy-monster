@@ -7,7 +7,9 @@ import com.ridi.oss.proxymonster.controlplane.ControlPlaneCore
 import com.ridi.oss.proxymonster.controlplane.RunExecService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import com.ridi.oss.proxymonster.controlplane.ParticipantKind
 import com.ridi.oss.proxymonster.controlplane.RequestEdit
+import com.ridi.oss.proxymonster.controlplane.RequestParticipants
 import com.ridi.oss.proxymonster.controlplane.RoleAssignmentInput
 import com.ridi.oss.proxymonster.controlplane.management.AuditActor
 import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
@@ -271,8 +273,11 @@ class SlackDecisionHandlerDbTest {
         assertEquals(emptyList(), fx.accessStore.getRequest(id)!!.ccs, "a reply from no active user adds nobody")
         threads.onMessage(reply.copy(ts = "2.5", principal = "outsider@example.com"))
         assertEquals(emptyList(), fx.accessStore.getRequest(id)!!.ccs, "a user denied task.cc adds nobody")
-        threads.onMessage(reply.copy(ts = "3.0", principal = requester, mentions = listOf(approver, requester)))
-        assertEquals(listOf(approver), fx.accessStore.getRequest(id)!!.ccs, "the requester's mention adds the CC; mentioning themselves does nothing")
+        val bystander = "bystander-${System.nanoTime()}@example.com"
+        fx.policyStore.createAssignment(RoleAssignmentInput(bystander, fx.policyStore.listRoles().first { it.name == "system:admin" }.id))
+        fx.dataSource.connection.use { c -> RequestParticipants.add(c, id, listOf(approver), ParticipantKind.APPROVER) }
+        threads.onMessage(reply.copy(ts = "3.0", principal = requester, mentions = listOf(bystander, approver, requester)))
+        assertEquals(listOf(bystander), fx.accessStore.getRequest(id)!!.ccs, "an approver or the requester is not made a CC")
     }
 
     @Test

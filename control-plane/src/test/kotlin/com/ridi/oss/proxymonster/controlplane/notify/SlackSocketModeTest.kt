@@ -14,6 +14,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.Timeout
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -27,6 +28,8 @@ import kotlin.test.assertTrue
  * socket pump processes frames in order, so a valid dispatch proves the earlier one was fully handled — no
  * sleeps, no races.
  */
+// A socket that never connects, or a pump that ignores cancel, would otherwise park runBlocking forever.
+@Timeout(30)
 class SlackSocketModeTest {
     private lateinit var slack: MockSlack
     private lateinit var http: HttpClient

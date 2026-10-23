@@ -92,7 +92,9 @@ task exists but no rows.
 Every workflow request — a query approval or a role request — has a thread,
 served by `RequestThreads` under kind-neutral routes.
 `GET /api/requests/{id}/thread` returns the timeline (`request_event`: state
-changes plus comments, LGTMs, and CC changes) and what the caller may do.
+changes plus comments, LGTMs, and CC changes), each principal's name and email,
+and what the caller may do. A user's name is the IdP's `name` claim, stored at
+login. A Slack reply's @-mentions read as the mentioned users' Slack names.
 `POST /api/requests/{id}/comments` adds a comment or, with `lgtm`, an LGTM,
 gated by `task.comment`; an LGTM is shown but never approves. A CC is added with
 `POST /api/requests/{id}/ccs` and removed with

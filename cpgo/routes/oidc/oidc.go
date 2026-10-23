@@ -187,7 +187,7 @@ func (o oidcLogin) callback(w http.ResponseWriter, r *http.Request) error {
 		return nil
 	}
 	principal := claims.Principal()
-	if err := idp.Provision(ctx, o.Pool, principal, claims.Email, claims.Groups, o.provider.Config().Groups,
+	if err := idp.Provision(ctx, o.Pool, principal, claims.Email, claims.Name, claims.Groups, o.provider.Config().Groups,
 		o.schema.ClaimAttributes(claims.Raw)); err != nil {
 		slog.Error("oidc: provisioning failed", "err", err)
 		failed("provisioning_failed", principal, "server_error", "oidc")

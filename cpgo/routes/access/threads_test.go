@@ -109,9 +109,10 @@ func TestRequestThread(t *testing.T) {
 		}
 	}
 	allow("task.read", "task.comment", "task.cc", "task.cancel", "task.approve")
+	e.Exec(t, `UPDATE app_user SET display_name = 'Alice Kim' WHERE principal = $1`, requester)
 	e.Authz.Asked = nil
 	body := e.do(http.MethodGet, fmt.Sprintf("/api/requests/%d/thread", role), "", alice, http.StatusOK)
-	if want := fmt.Sprintf(`{"requestId":%d,"ccs":[],"participants":[],"timeline":[],"canComment":true,"canCc":true,"canClose":true,"canDecide":true}`, role); body != want {
+	if want := fmt.Sprintf(`{"requestId":%d,"ccs":[],"participants":[],"timeline":[],"canComment":true,"canCc":true,"canClose":true,"canDecide":true,"people":{"alice@example.com":{"name":"Alice Kim","email":"alice@example.com"}}}`, role); body != want {
 		t.Fatalf("thread:\n%s\nwant\n%s", body, want)
 	}
 	var asked []string
@@ -125,7 +126,7 @@ func TestRequestThread(t *testing.T) {
 	allow("task.read")
 	e.Authz.Asked, e.Authz.Scopes = nil, nil
 	body = e.do(http.MethodGet, fmt.Sprintf("/api/requests/%d/thread", query), "", alice, http.StatusOK)
-	if want := fmt.Sprintf(`{"requestId":%d,"ccs":[],"participants":[],"timeline":[],"canComment":false,"canCc":false,"canClose":false,"canDecide":false}`, query); body != want {
+	if want := fmt.Sprintf(`{"requestId":%d,"ccs":[],"participants":[],"timeline":[],"canComment":false,"canCc":false,"canClose":false,"canDecide":false,"people":{"alice@example.com":{"name":"Alice Kim","email":"alice@example.com"}}}`, query); body != want {
 		t.Fatalf("approved query thread: %s", body)
 	}
 	if len(e.Authz.Asked) != 4 {

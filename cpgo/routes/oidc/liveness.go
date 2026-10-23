@@ -99,7 +99,7 @@ func (l Liveness) recheck(ctx context.Context, c candidate) error {
 		slog.Warn("liveness: identity mismatch", "principal", c.principal, "session", c.id, "got", claims.Principal())
 		return nil
 	}
-	if err := idp.Provision(ctx, l.Pool, c.principal, claims.Email, claims.Groups, l.Provider.Config().Groups,
+	if err := idp.Provision(ctx, l.Pool, c.principal, claims.Email, claims.Name, claims.Groups, l.Provider.Config().Groups,
 		l.Schema.ClaimAttributes(claims.Raw)); err != nil {
 		return err
 	}

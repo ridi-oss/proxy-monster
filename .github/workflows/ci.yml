@@ -225,12 +225,31 @@ jobs:
       - name: Install the console
         run: pnpm -C web install --frozen-lockfile
 
-      # In the background: the browser is first needed a minute or more into the
-      # smoke, which waits on SMOKE_WAIT_FOR.
+      - name: Read the Playwright version
+        id: playwright
+        run: |
+          echo "version=$(pnpm -C web exec playwright --version | awk '{print $2}')" >>"$GITHUB_OUTPUT"
+
+      - name: Restore the browser
+        id: browser-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key:
+            playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
+
+      # In the background; the smoke waits on SMOKE_WAIT_FOR. No --with-deps: the
+      # runner already has the headless shell's libraries, so apt only adds fonts.
       - name: Start the browser install
         run: |
-          (pnpm -C web exec playwright install --with-deps chromium \
-            >"$RUNNER_TEMP/playwright.log" 2>&1; echo $? >"$RUNNER_TEMP/playwright.status") &
+          mkdir -p "$RUNNER_TEMP/pm-smoke/logs"
+          (
+            set +e
+            date -u +%T
+            pnpm -C web exec playwright install --only-shell chromium
+            echo $? >"$RUNNER_TEMP/playwright.status"
+            date -u +%T
+          ) >"$RUNNER_TEMP/pm-smoke/logs/playwright.log" 2>&1 &
 
       - name: Smoke
         run: mise run smoke
@@ -251,6 +270,14 @@ jobs:
         with:
           path: ${{ steps.setup.outputs.go-paths }}
           key: go-${{ runner.os }}-smoke-${{ github.sha }}
+
+      - if:
+          github.ref == 'refs/heads/main' &&
+          steps.browser-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ steps.browser-cache.outputs.cache-primary-key }}
 
   # pmon's tests on Windows, where the state locks, private directories and daemon spawn differ.
   pmon-windows:

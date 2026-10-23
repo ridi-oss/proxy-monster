@@ -25,6 +25,8 @@ func Register(mux *http.ServeMux, pool *pgxpool.Pool, gate api.Gate) {
 	mux.HandleFunc("POST /api/datasources", admin(ds.create))
 	mux.HandleFunc("PUT /api/datasources/{id}", admin(api.WithID(ds.update)))
 	mux.HandleFunc("DELETE /api/datasources/{id}", admin(api.WithID(ds.delete)))
+	mux.HandleFunc("PUT /api/datasources/{id}/classification", admin(api.WithID(ds.setClassification)))
+	mux.HandleFunc("DELETE /api/datasources/{id}/classification", admin(api.WithID(ds.clearClassification)))
 	mux.HandleFunc("GET /api/datasources/{id}/wire-cert", gate.RequireAPIOrBearer(api.Serve(api.WithID(ds.wireCert))))
 }
 

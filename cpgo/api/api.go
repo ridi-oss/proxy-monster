@@ -104,6 +104,10 @@ var (
 	CodeScopesExpired         = Code{"auth.scopes_expired", http.StatusForbidden}
 	CodeOIDCNotConfigured     = Code{"common.oidc_not_configured", http.StatusNotImplemented}
 	CodeInvalidRequesterIP    = Code{"auth.invalid_requester_ip", http.StatusBadRequest}
+	CodeCaseModeUnknown       = Code{"datasource.case_mode_unknown", http.StatusBadRequest}
+	CodeInvalidCatalog        = Code{"datasource.invalid_catalog", http.StatusBadRequest}
+	CodeSchemaRequired        = Code{"datasource.schema_required", http.StatusBadRequest}
+	CodeReservedTag           = Code{"datasource.reserved_tag", http.StatusBadRequest}
 	CodeInvalidEngine         = Code{"datasource.invalid_engine", http.StatusBadRequest}
 	CodeEngineImmutable       = Code{"datasource.engine_immutable", http.StatusConflict}
 	CodeInUseProxyAttached    = Code{"datasource.in_use_proxy_attached", http.StatusConflict}

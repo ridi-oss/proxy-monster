@@ -9,10 +9,8 @@ import com.ridi.oss.proxymonster.controlplane.support.NameCaseTarget
 import com.ridi.oss.proxymonster.controlplane.support.SharedMySqlLowerCaseTableNames1
 import com.ridi.oss.proxymonster.controlplane.support.decideAndAudit
 import com.ridi.oss.proxymonster.controlplane.support.errorCode
-import com.ridi.oss.proxymonster.controlplane.support.installControlPlane
 import com.ridi.oss.proxymonster.controlplane.support.login
 import com.ridi.oss.proxymonster.controlplane.support.mcpCall
-import com.ridi.oss.proxymonster.controlplane.support.mcpTestConfig
 import com.ridi.oss.proxymonster.controlplane.support.ok
 import com.ridi.oss.proxymonster.controlplane.support.okResult
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
@@ -41,6 +39,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Disabled
 import org.junit.jupiter.api.Test
@@ -66,6 +65,11 @@ class IdentifierCaseMySqlLctn1DbTest {
         stack = NameCaseStack.create()
     }
 
+    @AfterAll
+    fun teardown() {
+        if (::stack.isInitialized) stack.close()
+    }
+
     private fun target(): NameCaseTarget = stack.mysql(SharedMySqlLowerCaseTableNames1) { st ->
         st.execute("CREATE TABLE `Users` (id BIGINT PRIMARY KEY, `Email` VARCHAR(64), `SSN` VARCHAR(32))")
         st.execute("INSERT INTO `Users` VALUES (1, '$NAME_SENTINEL', '900-00-0001')")
@@ -78,7 +82,7 @@ class IdentifierCaseMySqlLctn1DbTest {
     }
 
     private fun classifyOverHttp(table: String, column: String) = testApplication {
-        val client = installControlPlane(mcpTestConfig(), stack.core)
+        val client = stack.client()
         val t = target()
         client.login(NAME_ADMIN)
         assertEquals(HttpStatusCode.OK, t.httpClassify(client, t.schema, table, column).status)
@@ -87,7 +91,7 @@ class IdentifierCaseMySqlLctn1DbTest {
     }
 
     private fun classifyOverMcp(table: String, column: String) = testApplication {
-        val client = installControlPlane(mcpTestConfig(), stack.core)
+        val client = stack.client()
         val t = target()
         val token = stack.adminToken()
         t.mcpClassify(client, token, t.schema, table, column).ok()
@@ -125,7 +129,7 @@ class IdentifierCaseMySqlLctn1DbTest {
 
     @Test
     fun `a batch naming one column in two spellings is refused as a duplicate`() = testApplication {
-        val client = installControlPlane(mcpTestConfig(), stack.core)
+        val client = stack.client()
         val t = target()
         val result = client.mcpCall(
             stack.adminToken(),
@@ -169,7 +173,7 @@ class IdentifierCaseMySqlLctn1DbTest {
     @Test
     @Disabled("pending-name-fix: table detail compares the requested Users to the proxy's users and refuses")
     fun `table detail by a differently cased name returns the canonical table with its tags`() = testApplication {
-        val client = installControlPlane(mcpTestConfig(), stack.core)
+        val client = stack.client()
         val t = target()
         stack.core.datasourceStore.upsertClassification(
             t.datasource.id, ClassificationInput(t.schema, "users", "email", listOf("pii"), stack.maskFn.id, t.catalog),

@@ -11,11 +11,11 @@ requires access granted by the maintainers.
 Status: phases 0–2 done; phases 3–5 in progress (Go decides Cedar for the routes
 it serves; roles, mask functions, policies and their schema, JIT access
 requests, users, groups, datasource read, wire cert, create, edit and delete,
-wire tokens, and request threads run on Go); phase 6 in progress (web sessions,
-OIDC login, the IdP recheck, pmon's device login and its daemon session run on
-Go); phase 7 in progress (the `ReportCompletion` RPC runs on Go, every other RPC
-is forwarded); phase 8 in progress (the MCP OAuth authorization server runs on
-Go).
+column classification writes, wire tokens, and request threads run on Go); phase
+6 in progress (web sessions, OIDC login, the IdP recheck, pmon's device login
+and its daemon session run on Go); phase 7 in progress (the `ReportCompletion`
+RPC runs on Go, every other RPC is forwarded); phase 8 in progress (the MCP
+OAuth authorization server runs on Go).
 
 ## Shape
 

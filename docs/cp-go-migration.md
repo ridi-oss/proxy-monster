@@ -14,9 +14,9 @@ requests, users, groups, datasource read, wire cert, create, edit and delete,
 wire tokens, request threads, and the approval inbox, detail, approve, reject
 and unapprove run on Go); phase 6 in progress (web sessions, OIDC login, the IdP
 recheck, pmon's device login and its daemon session, and the CI token exchange
-run on Go); phase 7 in progress (the `ReportCompletion` RPC runs on Go, every
-other RPC is forwarded); phase 8 in progress (the MCP OAuth authorization server
-runs on Go).
+run on Go); phase 7 in progress (the `ReportCompletion` and `AuthorizeRequest`
+RPCs run on Go, every other RPC is forwarded); phase 8 in progress (the MCP
+OAuth authorization server runs on Go).
 
 ## Shape
 

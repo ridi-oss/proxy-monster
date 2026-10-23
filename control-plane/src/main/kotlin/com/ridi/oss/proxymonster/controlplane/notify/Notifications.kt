@@ -20,6 +20,8 @@ enum class NotificationEvent(val wire: String) {
     TASK_REOPENED("task.reopened"),
     /** Someone was added as a CC: their own thread, like a receipt. */
     TASK_CC_ADDED("task.cc_added"),
+    /** The CC list changed: every message is redrawn as it stands, to show the new list. */
+    TASK_CC_CHANGED("task.cc_changed"),
     TASK_EXECUTED("task.executed"),
     TASK_FAILED("task.failed"),
     TASK_CANCELLED("task.cancelled"),
@@ -192,9 +194,11 @@ data class NotificationMessage(
     val durationSec: Long = 0,
     /** A rate reset's spent rate, as the requester's denial named it. */
     val spentRate: String? = null,
-    /** Mentioned on a message everyone in a channel reads: who may approve, and the CCs. */
+    /** Mentioned on a message everyone in a channel reads: who may approve. */
     val approvers: List<String> = emptyList(),
     val ccs: List<String> = emptyList(),
+    /** Redrawn for a CC change, so nothing new goes into its thread. */
+    val redraw: Boolean = false,
 )
 
 /** [ordinal] is 0-based, as stored on the `query_result` child. */

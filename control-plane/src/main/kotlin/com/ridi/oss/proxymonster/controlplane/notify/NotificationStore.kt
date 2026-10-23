@@ -188,6 +188,22 @@ class NotificationStore(private val dataSource: DataSource) {
         }
     }
 
+    /** The last of [events] delivered to [row]'s thread, the one its message now shows. */
+    fun lastDrawn(row: OutboxRow, events: List<NotificationEvent>): NotificationEvent? = dataSource.connection.use { c ->
+        c.prepareStatement(
+            """SELECT event FROM notification_outbox
+               WHERE task_id = ? AND transport = ? AND recipient = ? AND kind = ? AND status = 'SENT' AND event = ANY (?)
+               ORDER BY updated_at DESC, id DESC LIMIT 1""",
+        ).use { ps ->
+            ps.setLong(1, row.taskId)
+            ps.setString(2, row.transport)
+            ps.setString(3, row.recipient)
+            ps.setString(4, row.kind.wire)
+            ps.setArray(5, c.createArrayOf("text", events.map { it.wire }.toTypedArray()))
+            ps.executeQuery().use { rs -> if (rs.next()) NotificationEvent.fromWire(rs.getString(1)) else null }
+        }
+    }
+
     /** The handle a delivered message left behind for this thread, or null when nothing has been delivered. */
     fun externalRef(taskId: Long, transport: String, recipient: String, kind: NotificationKind): String? =
         dataSource.connection.use { c ->

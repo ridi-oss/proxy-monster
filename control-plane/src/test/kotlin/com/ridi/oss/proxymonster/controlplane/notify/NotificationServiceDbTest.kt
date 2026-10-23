@@ -371,6 +371,69 @@ class NotificationServiceDbTest {
     }
 
     @Test
+    fun `a CC change redraws every delivered message with the new list, and only a mention goes unannounced`() = runBlocking {
+        val threads = FakeTransport(name = "threads", supportsReplies = true)
+        val svc = NotificationService(
+            store = store,
+            recipients = RecipientResolver(fx.authz, fx.roleResolver) { emptyList() },
+            transports = listOf(threads),
+            accessStore = fx.accessStore,
+            queryResultStore = null,
+            webBaseUrl = "https://console.example",
+            disclosure = StatementDisclosure.AUTO,
+            defaultLocale = "en",
+        )
+        val task = newTask().id
+        fx.dataSource.connection.use { c ->
+            store.enqueue(c, task, NotificationEvent.TASK_REQUESTED, "threads", "sam@x", NotificationKind.APPROVER)
+            store.enqueue(c, task, NotificationEvent.TASK_SUBMITTED, "threads", "req@example.com", NotificationKind.REQUESTER)
+        }
+        svc.drainOnce()
+        val samThread = "thread:addr:sam@x:task.requested"
+        val reqThread = "thread:addr:req@example.com:task.submitted"
+        // A decider who was never asked holds a message of their own, and sam's now shows the decision.
+        fx.dataSource.connection.use { c ->
+            c.prepareStatement("UPDATE access_request SET status = 'APPROVED', decided_by = 'dee@x' WHERE id = ?").use { it.setLong(1, task); it.executeUpdate() }
+            svc.emit(c, NotificationEvent.TASK_DECIDED, fx.accessStore.getRequest(task, c)!!)
+        }
+        svc.drainOnce()
+        val deeThread = "thread:addr:dee@x:task.decided"
+        threads.updated.clear()
+
+        fx.dataSource.connection.use { c ->
+            RequestParticipants.add(c, task, listOf("cc@x"), ParticipantKind.CC)
+            RequestEvents.record(c, task, RequestEventKind.CC_ADDED, "sam@x", "slack", "cc@x")
+            val req = fx.accessStore.getRequest(task, c)!!
+            svc.emitCcAdded(c, req, "cc@x")
+            svc.emitCcChanged(c, req)
+        }
+        svc.drainOnce()
+        assertEquals(
+            setOf(
+                samThread to NotificationEvent.TASK_DECIDED,
+                reqThread to NotificationEvent.TASK_DECIDED,
+                deeThread to NotificationEvent.TASK_DECIDED,
+                "thread:addr:cc@x:task.cc_added" to NotificationEvent.TASK_CC_ADDED,
+            ),
+            threads.updated.map { it.ref to it.event }.toSet(),
+            "each message is redrawn as its last event drew it",
+        )
+        assertTrue(threads.updated.all { it.redraw && it.ccs == listOf("cc@x") }, "got: ${threads.updated}")
+        assertTrue(threads.replies.isEmpty(), "the mention already says who was added: ${threads.replies}")
+
+        threads.updated.clear()
+        fx.dataSource.connection.use { c ->
+            RequestParticipants.remove(c, task, "cc@x", ParticipantKind.CC)
+            RequestEvents.record(c, task, RequestEventKind.CC_REMOVED, "sam@x", "console", "cc@x")
+        }
+        assertTrue(requestNotifier(fx.accessStore, svc)(task, "cc-removed", null))
+        svc.drainOnce()
+        assertEquals(setOf(samThread, reqThread, deeThread), threads.updated.map { it.ref }.toSet())
+        assertTrue(threads.updated.all { it.ccs.isEmpty() })
+        assertEquals(setOf(samThread, reqThread, deeThread), threads.replies.map { it.first }.toSet(), "a console change is announced")
+    }
+
+    @Test
     fun `cp-go's request-notified signal enqueues a close and a new CC's thread`() {
         val task = newTask()
         val notify = requestNotifier(fx.accessStore, svc)
@@ -379,6 +442,7 @@ class NotificationServiceDbTest {
         assertTrue(notify(task.id, "cc-added", "cc@x"))
         assertEquals(1, countRows(task.id, NotificationEvent.TASK_CC_ADDED, "cc@x"))
         assertFalse(notify(task.id, "cc-added", null), "a CC signal names the CC")
+        assertTrue(notify(task.id, "cc-removed", null))
         assertTrue(notify(task.id, "commented", null))
         assertFalse(notify(task.id, "bogus", null))
     }

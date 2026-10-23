@@ -260,6 +260,16 @@ class SlackTransportTest {
     // ---- update: edit by handle ---------------------------------------------------------------
 
     @Test
+    fun `an edit posts its statement into the thread, a redraw of it does not`() = runBlocking {
+        val sql = (1..30).joinToString("\n") { "UPDATE t SET a = $it WHERE id = $it;" }
+        val edited = message(event = NotificationEvent.TASK_EDITED, statement = RenderedStatement(sql, true, full = sql))
+        transport.update("C1:1.0", edited, "en")
+        assertEquals(1, slack.requestsFor("chat.postMessage").size)
+        transport.update("C1:1.0", edited.copy(redraw = true), "en")
+        assertEquals(1, slack.requestsFor("chat.postMessage").size)
+    }
+
+    @Test
     fun `update edits by channel-ts and returns the same ref`() = runBlocking {
         val result = transport.update("C_MOCK:1700000000001.000100", message(event = NotificationEvent.TASK_DECIDED), "en")
 

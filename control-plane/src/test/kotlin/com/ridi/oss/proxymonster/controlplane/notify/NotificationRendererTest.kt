@@ -38,7 +38,8 @@ class NotificationRendererTest {
     @Test
     fun `every key resolves in both locales`() {
         for (locale in MessageCatalog.LOCALES) {
-            for (event in NotificationEvent.entries) {
+            // A CC change redraws each message as its last event drew it, so it is never rendered itself.
+            for (event in NotificationEvent.entries - NotificationEvent.TASK_CC_CHANGED) {
                 for (approved in listOf(true, false)) {
                     val m = message(event, RenderedStatement("SELECT 1", complete = true), approved)
                     val summary = renderer.summary(m, locale)

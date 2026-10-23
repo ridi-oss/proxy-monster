@@ -130,10 +130,13 @@ class RequestThreads(
             }
             if (changed) {
                 RequestEvents.record(c, id, if (add) RequestEventKind.CC_ADDED else RequestEventKind.CC_REMOVED, principal, actor.channel, cc)
-                if (add) accessStore.getRequest(id, c)?.let { notifications?.emitCcAdded(c, it, cc) }
+                accessStore.getRequest(id, c)?.let {
+                    if (add) notifications?.emitCcAdded(c, it, cc)
+                    notifications?.emitCcChanged(c, it)
+                }
             }
         }
-        if (add) notifications?.wake()
+        notifications?.wake()
         return request(id)
     }
 

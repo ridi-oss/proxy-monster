@@ -164,7 +164,7 @@ class SlackTransport(
             put("blocks", blocksFor(rendered, locale))
         }
         val result = send("chat.update", body) { externalRef }
-        if (result is DeliveryResult.Sent && message.event == NotificationEvent.TASK_EDITED) replyStatement(externalRef, rendered, locale)
+        if (result is DeliveryResult.Sent && message.event == NotificationEvent.TASK_EDITED && !message.redraw) replyStatement(externalRef, rendered, locale)
         return result
     }
 

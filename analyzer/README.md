@@ -35,10 +35,10 @@ analyzer/
     testdata/golden.json     frozen regression snapshot (internal probe)
     testdata/oracle/         the Python parity oracle (driver.py + probe.py) — test-only
   probe/pb/                  generated Go bindings for analyzer.proto, engine.proto, athena.proto
-  cmd/libsqlglot/main.go     C-shared entry: exports AnalyzeStatement / SplitStatements / SqlNormalize / ParseColumns / IntrospectedColumns / FreeCString (cgo confined here)
+  cmd/libanalyzer/main.go     C-shared entry: exports AnalyzeStatement / SplitStatements / SqlNormalize / ParseColumns / IntrospectedColumns / FreeCString (cgo confined here)
   jvm/                       Gradle subproject :analyzer:jvm
-    build.gradle.kts         builds cmd/libsqlglot (go build -buildmode=c-shared) + bundles the lib
-    src/main/kotlin/…/Sqlglot.kt   the FFM binding: Sqlglot.analyzeStatement(requestBytes) / sqlNormalize(sql, dialect)
+    build.gradle.kts         builds cmd/libanalyzer (go build -buildmode=c-shared) + bundles the lib
+    src/main/kotlin/…/GoBinding.kt   the FFM binding: GoBinding.analyzeStatement(requestBytes) / sqlNormalize(sql, dialect)
 ```
 
 `:engine` depends on `project(":analyzer:jvm")`; that project's
@@ -116,7 +116,7 @@ The boundary is one protobuf call in, one out (see
 the engine calls:
 
 ```kotlin
-val facts: StatementFacts = SqlglotProbe.analyze(
+val facts: StatementFacts = GoAnalyzer.analyze(
     sql,
     namespace,     // catalog + ordered search_path
     catalog,       // CatalogSnapshot: flat Column rows (schema.table.column + type) under the namespace catalog

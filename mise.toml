@@ -9,7 +9,7 @@ gradle = "8.14.5"
 # to compile; the analyzer also calls sqlglot-go's probe via the Foreign Function & Memory API
 # (java.lang.foreign), which JDK 24 provides.
 java = "temurin-24.0.2"
-# Go builds the analyzer's c-shared native lib (analyzer/cmd/libsqlglot, via cgo) as part of the
+# Go builds the analyzer's c-shared native lib (analyzer/cmd/libanalyzer, via cgo) as part of the
 # Gradle build; matches analyzer/go.mod. (Zig — the Linux cross C compiler for the all-targets fat-jar
 # build, -Psqlglot.native.all=true — is only needed for that; add it when CI is wired.)
 go = "1.26.10"

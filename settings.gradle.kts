@@ -18,7 +18,7 @@ include(":control-plane")
 include(":proto")
 
 // :analyzer:jvm — the Layer-1 analyzer's parse/lineage engine. proxy-monster owns the Go probe
-// (analyzer/engines, analyzer/cmd/libsqlglot) and this JVM binding (FFM → a Go c-shared lib); the
+// (analyzer/engines, analyzer/cmd/libanalyzer) and this JVM binding (FFM → a Go c-shared lib); the
 // `buildNativeLib` task compiles the native lib for the host on first build. analyzer/ is a Go module
 // depending on sqlglot-go purely as a parser/optimizer library (see analyzer/go.mod). (:analyzer is an
 // implicit container for the Go module dir — it has no build script and builds nothing.)

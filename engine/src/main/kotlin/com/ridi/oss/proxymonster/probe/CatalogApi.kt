@@ -41,7 +41,7 @@ class Analyzer internal constructor(
     // literal on its own, and fail-closes a genuine multi-statement (>1 parsed statement) — so no
     // pre-cleaning is needed here.
     fun analyze(sql: String): StatementFacts =
-        SqlglotProbe.analyze(sql, namespaceProto, catalogProto, engineConfigProto)
+        GoAnalyzer.analyze(sql, namespaceProto, catalogProto, engineConfigProto)
 }
 
 /** Build an [Analyzer] from an insertion-ordered flat catalog and engine config snapshot. */

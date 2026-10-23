@@ -25,7 +25,7 @@ require (
 	google.golang.org/protobuf v1.36.12
 )
 
-// analyzer/engines (Go-to-Go, no cgo — cmd/libsqlglot is a separate package this never imports) is the
+// analyzer/engines (Go-to-Go, no cgo — cmd/libanalyzer is a separate package this never imports) is the
 // single source of truth for identifier normalization; introspect.go calls it directly instead of
 // duplicating the fold rules.
 replace github.com/ridi-oss/proxy-monster/analyzer => ../analyzer

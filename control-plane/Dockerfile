@@ -12,7 +12,7 @@
 # bypass) — the app itself refuses to boot with it on in a production-looking context unless PM_DEV
 # is also set, but set PM_AUTH_DEBUG=false explicitly for any real deployment regardless.
 
-# Go toolchain for the analyzer's native lib (cmd/libsqlglot, cgo c-shared build). Pulled from the
+# Go toolchain for the analyzer's native lib (cmd/libanalyzer, cgo c-shared build). Pulled from the
 # official Go image rather than apt/curl so the version matches mise.toml's `go = "1.26"` exactly
 # and multi-arch (amd64/arm64) resolution is automatic.
 FROM golang:1.26.10-bookworm AS go

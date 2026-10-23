@@ -1,4 +1,4 @@
-package com.ridi.oss.sqlglotgo
+package com.ridi.oss.proxymonster.analyzer
 
 import com.ridi.oss.proxymonster.analyzer.pb.targetSettings
 import com.ridi.oss.proxymonster.analyzer.pb.Column
@@ -24,7 +24,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-class SqlglotTest {
+class GoBindingTest {
     private fun column(schema: String, table: String, column: String, dataType: String): Column =
         column {
             this.schema = schema
@@ -75,7 +75,7 @@ class SqlglotTest {
             catalog = catalogSnapshot { columns.addAll(catalog(dialect)) }
             engineConfig = engineConfigFor(dialect)
         }
-        return StatementFacts.parseFrom(Sqlglot.analyzeStatement(request.toByteArray()))
+        return StatementFacts.parseFrom(GoBinding.analyzeStatement(request.toByteArray()))
     }
 
     @Test
@@ -105,7 +105,7 @@ class SqlglotTest {
                     session = sessionObservation { postgres = postgresSession { systemXidVisible = true } }
                 }
             }
-            return StatementFacts.parseFrom(Sqlglot.analyzeStatement(request.toByteArray()))
+            return StatementFacts.parseFrom(GoBinding.analyzeStatement(request.toByteArray()))
         }
 
         val safe = xidFacts(listOf("pg_catalog", "public"))
@@ -117,30 +117,30 @@ class SqlglotTest {
 
     @Test
     fun sqlNormalizeReturnsCanonicalSqlAndFailsClosed() {
-        assertEquals("select id from users", Sqlglot.sqlNormalize("SELECT id FROM users", "postgres"))
-        assertNull(Sqlglot.sqlNormalize("SELECT 'unterminated", "postgres"))
-        assertNull(Sqlglot.sqlNormalize("SELECT 1", "sqlite"))
-        assertNull(Sqlglot.sqlNormalize("SELECT id /*!50000 , secret */ FROM users", "mysql"))
-        assertNull(Sqlglot.sqlNormalize("SELECT /*+ MAX_EXECUTION_TIME(1000) */ id FROM users", "mysql"))
+        assertEquals("select id from users", GoBinding.sqlNormalize("SELECT id FROM users", "postgres"))
+        assertNull(GoBinding.sqlNormalize("SELECT 'unterminated", "postgres"))
+        assertNull(GoBinding.sqlNormalize("SELECT 1", "sqlite"))
+        assertNull(GoBinding.sqlNormalize("SELECT id /*!50000 , secret */ FROM users", "mysql"))
+        assertNull(GoBinding.sqlNormalize("SELECT /*+ MAX_EXECUTION_TIME(1000) */ id FROM users", "mysql"))
     }
 
     @Test
     fun sqlNormalizePreservesTheByteExactNativeBoundary() {
-        assertEquals("select '한글'", Sqlglot.sqlNormalize("SELECT '한글'", "postgres"))
-        val prefix = assertNotNull(Sqlglot.sqlNormalize("SELECT 1", "postgres"))
-        val embeddedNul = Sqlglot.sqlNormalize("SELECT 1\u0000 UNION SELECT 2", "postgres")
+        assertEquals("select '한글'", GoBinding.sqlNormalize("SELECT '한글'", "postgres"))
+        val prefix = assertNotNull(GoBinding.sqlNormalize("SELECT 1", "postgres"))
+        val embeddedNul = GoBinding.sqlNormalize("SELECT 1\u0000 UNION SELECT 2", "postgres")
         assertNull(embeddedNul)
         assertNotEquals<String?>(prefix, embeddedNul)
         assertNotEquals(
-            assertNotNull(Sqlglot.sqlNormalize("SELECT id FROM \"Users\"", "postgres")),
-            assertNotNull(Sqlglot.sqlNormalize("SELECT id FROM \"users\"", "postgres")),
+            assertNotNull(GoBinding.sqlNormalize("SELECT id FROM \"Users\"", "postgres")),
+            assertNotNull(GoBinding.sqlNormalize("SELECT id FROM \"users\"", "postgres")),
         )
     }
 
     @Test
     fun sqlNormalizeRejectsUnpairedUtf16Surrogates() {
-        assertNull(Sqlglot.sqlNormalize(String(charArrayOf(0xD800.toChar())), "postgres"))
-        assertNull(Sqlglot.sqlNormalize(String(charArrayOf(0xDC00.toChar())), "mysql"))
+        assertNull(GoBinding.sqlNormalize(String(charArrayOf(0xD800.toChar())), "postgres"))
+        assertNull(GoBinding.sqlNormalize(String(charArrayOf(0xDC00.toChar())), "mysql"))
     }
 
     @Test
@@ -156,7 +156,7 @@ class SqlglotTest {
     fun failuresRemainValidAndFailClosed() {
         assertTrue(!facts("SELECT id FROM other.public.users", "postgres").resolved)
         assertTrue(!facts("SELECT id FROM users", "postgres", Namespace.getDefaultInstance()).resolved)
-        val malformed = StatementFacts.parseFrom(Sqlglot.analyzeStatement(byteArrayOf(0xff.toByte(), 0x00, 0x01)))
+        val malformed = StatementFacts.parseFrom(GoBinding.analyzeStatement(byteArrayOf(0xff.toByte(), 0x00, 0x01)))
         assertTrue(!malformed.resolved)
         for (sql in listOf("this is not sql", "SELECT * FROM nonexistent_table", "SELECT ;; nonsense")) {
             assertTrue(!facts(sql, "postgres").resolved)

@@ -1,9 +1,9 @@
-// Command libsqlglot is the C-shared entry point for the JVM binding (jvm/): it exports the probe
+// Command libanalyzer is the C-shared entry point for the JVM binding (jvm/): it exports the probe
 // as a C ABI function so a JVM process can call it in-process via the Foreign Function & Memory API
 // (java.lang.foreign). It is a separate `main` package, so cgo is confined here — pure-Go consumers
 // of the library never pull in cgo.
 //
-// Build:  go build -buildmode=c-shared -o libsqlglot.<dylib|so> ./cmd/libsqlglot
+// Build:  go build -buildmode=c-shared -o libanalyzer.<dylib|so> ./cmd/libanalyzer
 package main
 
 /*

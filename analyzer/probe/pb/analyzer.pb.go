@@ -1586,7 +1586,7 @@ func (x *SplitResponse) GetStatements() []string {
 
 // Column names to put in the engine's canonical spelling, the one the analyzer keys its catalog on. Only
 // catalog, schema, table and column are read. ParseColumns reads them as SQL identifiers a person typed;
-// IntrospectedColumns as names the engine's own catalog reported.
+// CatalogColumnNames as names the engine's own catalog reported.
 type ColumnNamesRequest struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache

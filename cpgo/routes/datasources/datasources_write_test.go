@@ -29,10 +29,13 @@ func TestDatasourceWrites(t *testing.T) {
 	if body := do(http.MethodPost, "/api/datasources", `{"name":"x","engine":"oracle"}`, admin, http.StatusBadRequest); body != `{"code":"datasource.invalid_engine","params":{"engine":"oracle"}}` {
 		t.Fatalf("invalid engine: %s", body)
 	}
+	if body := do(http.MethodPost, "/api/datasources", `{"name":"x","engine":"MySQL"}`, admin, http.StatusBadRequest); body != `{"code":"datasource.invalid_engine","params":{"engine":"MySQL"}}` {
+		t.Fatalf("engine is case-sensitive: %s", body)
+	}
 	if body := do(http.MethodPost, "/api/datasources", `{"name":" "}`, admin, http.StatusBadRequest); body != `{"code":"common.field_required","params":{"fields":"name"}}` {
 		t.Fatalf("blank name: %s", body)
 	}
-	created := do(http.MethodPost, "/api/datasources", `{"name":"orders","engine":"MySQL","host":"db","port":3306,"dbName":"app"}`, admin, http.StatusCreated)
+	created := do(http.MethodPost, "/api/datasources", `{"name":"orders","engine":"mysql","host":"db","port":3306,"dbName":"app"}`, admin, http.StatusCreated)
 	var id int64
 	if _, err := fmt.Sscanf(created, `{"id":%d`, &id); err != nil || created != fmt.Sprintf(`{"id":%d,"name":"orders","engine":"mysql","host":"db","port":3306,"dbName":"app","tags":[],"defaultSchemas":[],"advertiseWireTls":false,"description":"","defaultSchemaSettable":true,"identifierQuote":"`+"`"+`"}`, id) {
 		t.Fatalf("created %s", created)

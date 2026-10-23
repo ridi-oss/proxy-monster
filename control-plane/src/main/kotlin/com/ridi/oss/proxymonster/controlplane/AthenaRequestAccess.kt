@@ -20,7 +20,7 @@ import com.ridi.oss.proxymonster.athena.pb.athenaNativeInstructions
 import com.ridi.oss.proxymonster.analyzer.pb.TargetSettings
 import com.ridi.oss.proxymonster.analyzer.pb.column
 import com.ridi.oss.proxymonster.grpc.Engine
-import com.ridi.oss.proxymonster.probe.introspectedColumns
+import com.ridi.oss.proxymonster.probe.catalogColumnNames
 import com.ridi.oss.proxymonster.grpc.EnfAction
 import com.ridi.oss.proxymonster.grpc.RequestAuthorization
 import com.ridi.oss.proxymonster.grpc.Verdict
@@ -37,7 +37,7 @@ internal const val NATIVE_CONTEXT_UNAVAILABLE = "native.context_unavailable"
 
 /** [rawName], a literal Athena name (an API field, not SQL text), folded as the analyzer does; null when it cannot be normalized. */
 private fun athenaCanonicalName(rawName: String): String? =
-    introspectedColumns(Engine.ATHENA, TargetSettings.getDefaultInstance(), listOf(column { catalog = rawName }))?.single()?.catalog
+    catalogColumnNames(Engine.ATHENA, TargetSettings.getDefaultInstance(), listOf(column { catalog = rawName }))?.single()?.catalog
 
 private class Deny(val code: String) : RuntimeException(code, null, false, false)
 

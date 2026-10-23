@@ -109,7 +109,7 @@ class McpAdminParityToolsDbTest {
         client.login(admin)
 
         val created = client.mcpCall(token, "create_datasource", buildJsonObject {
-            put("name", name); put("engine", "MySQL"); put("host", "db.internal"); put("port", 3306); put("dbName", "app")
+            put("name", name); put("engine", "mysql"); put("host", "db.internal"); put("port", 3306); put("dbName", "app")
         }).okResult().jsonObject
         assertEquals("mysql", created.str("engine"))
         val id = created.getValue("id").jsonPrimitive.long

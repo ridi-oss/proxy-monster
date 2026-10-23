@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.42](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.41...server-v0.1.42) (2026-10-23)
+
+
+### Features
+
+* **cpgo:** serve the approval inbox, detail, approve, reject and unapprove in Go ([653a29f](https://github.com/ridi-oss/proxy-monster/commit/653a29f74e5a2c2b8d77ab3f6513b423a9eb5d25))
+* **cpgo:** serve the workload token exchange in Go ([e7ef269](https://github.com/ridi-oss/proxy-monster/commit/e7ef2692c6413387b85cb1803d60b5d62d0270c8))
+
 ## [0.1.41](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.40...server-v0.1.41) (2026-10-23)
 
 

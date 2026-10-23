@@ -158,6 +158,7 @@ data class NotificationMessage(
     val taskId: Long,
     val revision: Int,
     val requester: String,
+    val title: String? = null,
     val datasource: String,
     val roleName: String?,
     val reason: String?,

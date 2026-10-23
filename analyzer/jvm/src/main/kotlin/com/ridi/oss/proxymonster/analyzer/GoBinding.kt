@@ -1,4 +1,4 @@
-package com.ridi.oss.sqlglotgo
+package com.ridi.oss.proxymonster.analyzer
 
 import java.lang.foreign.Arena
 import java.lang.foreign.FunctionDescriptor
@@ -12,8 +12,8 @@ import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 
 /**
- * In-process JVM binding to sqlglot-go's SQL column-lineage probe, via the Foreign Function &
- * Memory API (java.lang.foreign). The native library (built from `cmd/libsqlglot` by the
+ * In-process JVM binding to the Go analyzer (analyzer/engines), via the Foreign Function &
+ * Memory API (java.lang.foreign). The native library (built from `cmd/libanalyzer` by the
  * `buildNativeLib` Gradle task and bundled on the classpath) is loaded once for the JVM's lifetime.
  *
  * Thread-safe: the Go `AnalyzeStatement` is a pure function of its inputs, and each call here uses
@@ -24,7 +24,7 @@ import java.nio.file.StandardCopyOption
  * Requires JDK 24+ (the module's bytecode target; FFM is java.lang.foreign). Run with
  * `--enable-native-access=ALL-UNNAMED` to silence the restricted-method warning.
  */
-object Sqlglot {
+object GoBinding {
     private val linker = Linker.nativeLinker()
     private val analyzeStatementHandle: MethodHandle
     private val splitStatementsHandle: MethodHandle
@@ -88,7 +88,7 @@ object Sqlglot {
      * (proto/src/main/proto/analyzer.proto); the return is a marshaled `analyzerv1.StatementFacts`.
      * Raw bytes in, raw bytes out — this binding has no knowledge of the wire schema (mirrors
      * [sqlNormalize]'s byte-exact argument convention, applied to both directions here); the caller
-     * (engine's `SqlglotProbe`) owns building/parsing the actual proto messages. Total: the native
+     * (engine's `GoAnalyzer`) owns building/parsing the actual proto messages. Total: the native
      * side (`engines.AnalyzeStatementSafe`) never panics and always returns a validly-encoded
      * StatementFacts, so a malformed request yields a `resolved=false` message rather than an error.
      */
@@ -109,7 +109,7 @@ object Sqlglot {
     /**
      * The byte-buffer FFM calling convention [analyzeStatement] follows: one byte buffer in (a
      * marshaled proto request message), one byte buffer out (a marshaled proto response message).
-     * This binding has no knowledge of the wire schema; the caller (engine's `SqlglotProbe`) owns
+     * This binding has no knowledge of the wire schema; the caller (engine's `GoAnalyzer`) owns
      * building/parsing the actual proto messages.
      */
     private fun callByteBufferHandle(handle: MethodHandle, requestBytes: ByteArray): ByteArray {
@@ -177,13 +177,13 @@ object Sqlglot {
 
     private fun extractNativeLib(): Path {
         val (os, arch, ext) = platform()
-        val resource = "/native/$os-$arch/libsqlglot.$ext"
-        val stream = Sqlglot::class.java.getResourceAsStream(resource)
+        val resource = "/native/$os-$arch/libanalyzer.$ext"
+        val stream = GoBinding::class.java.getResourceAsStream(resource)
             ?: throw IllegalStateException(
                 "native library not bundled: $resource — build it with the buildNativeLib Gradle task " +
                     "(needs the Go toolchain + a C compiler)",
             )
-        val tmp = Files.createTempFile("libsqlglot", ".$ext")
+        val tmp = Files.createTempFile("libanalyzer", ".$ext")
         tmp.toFile().deleteOnExit()
         stream.use { Files.copy(it, tmp, StandardCopyOption.REPLACE_EXISTING) }
         return tmp
@@ -196,12 +196,12 @@ object Sqlglot {
         val os = when {
             osName.contains("mac") || osName.contains("darwin") -> "darwin"
             osName.contains("linux") -> "linux"
-            else -> throw IllegalStateException("unsupported OS for the sqlglot-go native binding: $osName")
+            else -> throw IllegalStateException("unsupported OS for the analyzer native binding: $osName")
         }
         val arch = when (val a = System.getProperty("os.arch").lowercase()) {
             "aarch64", "arm64" -> "arm64"
             "x86_64", "amd64" -> "amd64"
-            else -> throw IllegalStateException("unsupported CPU arch for the sqlglot-go native binding: $a")
+            else -> throw IllegalStateException("unsupported CPU arch for the analyzer native binding: $a")
         }
         return Platform(os, arch, if (os == "darwin") "dylib" else "so")
     }

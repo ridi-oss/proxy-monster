@@ -2,8 +2,8 @@ import org.gradle.api.tasks.Exec
 import org.gradle.language.jvm.tasks.ProcessResources
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
-// :analyzer:jvm — the in-process JVM binding to the sqlglot-go lineage probe (FFM → a Go c-shared lib
-// built from ../cmd/libsqlglot). A regular subproject of proxy-monster: the Kotlin plugin version, the
+// :analyzer:jvm — the in-process JVM binding to the Go analyzer (FFM → a Go c-shared lib
+// built from ../cmd/libanalyzer). A regular subproject of proxy-monster: the Kotlin plugin version, the
 // JDK (mise-provided, no toolchain pin), repositories, and the native-access jvmArgs on Test tasks all
 // come from the root build. Bytecode targets JVM 24, so building and running it needs JDK 24+, which
 // also provides the FFM API (java.lang.foreign) this binding is built on.
@@ -15,7 +15,7 @@ plugins {
 kotlin { compilerOptions { jvmTarget.set(JvmTarget.JVM_24) } }
 
 dependencies {
-    // Production code stays proto-agnostic (raw ByteArray in/out — see Sqlglot.kt's doc comment); the
+    // Production code stays proto-agnostic (raw ByteArray in/out — see GoBinding.kt's doc comment); the
     // test suite needs the actual analyzer.proto message types to exercise the binding meaningfully.
     testImplementation(project(":proto"))
     testImplementation(kotlin("test"))
@@ -23,7 +23,7 @@ dependencies {
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
-// ---- Native libraries: build cmd/libsqlglot (Go, c-shared) per target and bundle as resources ----
+// ---- Native libraries: build cmd/libanalyzer (Go, c-shared) per target and bundle as resources ----
 // The Go module root (analyzer/) is the parent of this Gradle project (analyzer/jvm/).
 //
 // One build produces libs for all supported targets so a single (fat) jar runs on any of them:
@@ -32,7 +32,7 @@ dependencies {
 // A Linux target is therefore native (no Zig) when the build itself runs on matching Linux — e.g. the
 // control-plane/Dockerfile container build or Linux CI — and cross-compiled only when building from
 // macOS. (The Go data-plane proxy, goproxy/Dockerfile, does not use the analyzer and builds no native
-// lib.) The FFM wrapper selects `native/<os>-<arch>/libsqlglot.<ext>` at runtime.
+// lib.) The FFM wrapper selects `native/<os>-<arch>/libanalyzer.<ext>` at runtime.
 //
 //   ./gradlew --no-daemon :analyzer:jvm:build                            -> host lib only (fast; dev)
 //   ./gradlew --no-daemon :analyzer:jvm:build -Psqlglot.native.all=true  -> all targets (needs `zig` on PATH); the distributable jar
@@ -72,8 +72,8 @@ val (hostOs, hostArch) = hostOsArch()
 val nativeTasks = nativeTargets.associateWith { t ->
     tasks.register<Exec>("buildNativeLib_${t.os}_${t.arch}") {
         group = "build"
-        description = "Builds cmd/libsqlglot (c-shared) for ${t.os}/${t.arch}."
-        val outFile = nativeResourcesDir.get().dir("native/${t.os}-${t.arch}").file("libsqlglot.${t.ext}").asFile
+        description = "Builds cmd/libanalyzer (c-shared) for ${t.os}/${t.arch}."
+        val outFile = nativeResourcesDir.get().dir("native/${t.os}-${t.arch}").file("libanalyzer.${t.ext}").asFile
         workingDir = goModuleDir
         environment("CGO_ENABLED", "1")
         environment("GOOS", t.os)
@@ -87,7 +87,7 @@ val nativeTasks = nativeTargets.associateWith { t ->
             environment("CC", "$zigExe cc -target ${t.zigTarget}")
             environment("CXX", "$zigExe c++ -target ${t.zigTarget}")
         }
-        commandLine("go", "build", "-buildmode=c-shared", "-o", outFile.absolutePath, "./cmd/libsqlglot")
+        commandLine("go", "build", "-buildmode=c-shared", "-o", outFile.absolutePath, "./cmd/libanalyzer")
         doFirst { outFile.parentFile.mkdirs() }
         inputs.files(
             fileTree(goModuleDir) {

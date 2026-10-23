@@ -1,7 +1,7 @@
 syntax = "proto3";
 
 // The analyzer <-> JVM wire protocol (docs/statement-facts-contract.md). Single source of
-// truth for both sides' generated bindings at the sqlglot-go FFM boundary (analyzer/cmd/libsqlglot
+// truth for both sides' generated bindings at the sqlglot-go FFM boundary (analyzer/cmd/libanalyzer
 // <-> analyzer/jvm's java.lang.foreign binding). Distinct wire boundary from controlplane.proto (that
 // one is proxy<->control-plane gRPC); own file/package so a `buf generate` scoped to this boundary
 // never touches that file's messages/services — the one thing both boundaries share, the engine

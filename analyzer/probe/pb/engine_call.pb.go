@@ -5,7 +5,7 @@
 // source: engine_call.proto
 
 // The control plane's calls into a target engine's Go definition (analyzer/engines), over the same FFM
-// boundary as analyzer.proto: analyzer/cmd/libsqlglot exports EngineCall, which takes one
+// boundary as analyzer.proto: analyzer/cmd/libanalyzer exports EngineCall, which takes one
 // EngineCallRequest and returns one EngineCallResponse.
 
 package pb

@@ -1,6 +1,6 @@
 package com.ridi.oss.proxymonster.probe
 
-import com.ridi.oss.sqlglotgo.Sqlglot
+import com.ridi.oss.proxymonster.analyzer.GoBinding
 import java.security.MessageDigest
 
 /**
@@ -17,7 +17,7 @@ import java.security.MessageDigest
 
 /** Normalize [sql] under [dialect] to its canonical token string, or null on any failure. */
 fun normalizeSql(sql: String, dialect: Dialect): String? = try {
-    Sqlglot.sqlNormalize(sql, dialect.wireName)
+    GoBinding.sqlNormalize(sql, dialect.wireName)
 } catch (_: Throwable) {
     null
 }

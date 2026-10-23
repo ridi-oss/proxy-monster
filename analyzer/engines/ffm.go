@@ -1,7 +1,7 @@
 package engines
 
 // The analyzer<->JVM FFM wire boundary (docs/statement-facts-contract.md): protobuf in,
-// protobuf out on both directions of the call. AnalyzeStatementSafe is the entry point cmd/libsqlglot's
+// protobuf out on both directions of the call. AnalyzeStatementSafe is the entry point cmd/libanalyzer's
 // AnalyzeStatement export calls; it is total (never panics, always returns a valid marshaled
 // StatementFacts), the fail-closed contract the FFI boundary requires.
 

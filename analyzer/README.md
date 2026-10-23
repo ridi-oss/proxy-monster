@@ -35,7 +35,7 @@ analyzer/
     testdata/golden.json     frozen regression snapshot (internal probe)
     testdata/oracle/         the Python parity oracle (driver.py + probe.py) — test-only
   probe/pb/                  generated Go bindings for analyzer.proto, engine.proto, athena.proto
-  cmd/libanalyzer/main.go     C-shared entry: exports AnalyzeStatement / SplitStatements / SqlNormalize / ParseColumns / IntrospectedColumns / FreeCString (cgo confined here)
+  cmd/libanalyzer/main.go     C-shared entry: exports AnalyzeStatement / SplitStatements / SqlNormalize / ParseColumns / CatalogColumnNames / FreeCString (cgo confined here)
   jvm/                       Gradle subproject :analyzer:jvm
     build.gradle.kts         builds cmd/libanalyzer (go build -buildmode=c-shared) + bundles the lib
     src/main/kotlin/…/GoBinding.kt   the FFM binding: GoBinding.analyzeStatement(requestBytes) / sqlNormalize(sql, dialect)

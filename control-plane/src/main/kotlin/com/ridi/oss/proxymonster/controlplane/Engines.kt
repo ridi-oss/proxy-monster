@@ -120,9 +120,6 @@ val Engine.systemSchemas: Set<String> get() = definition.systemSchemas
 val Engine.catalogIsConnectionIndependent: Boolean get() = definition.catalogIsConnectionIndependent
 val Engine.checksTargetErrors: Boolean get() = definition.checksTargetErrors
 
-val Engine.isMySql: Boolean get() = this == Engine.MYSQL
-val Engine.isPostgres: Boolean get() = this == Engine.POSTGRES
-
 fun Engine.catalogName(registeredDbName: String): String = definition.catalogName(registeredDbName)
 fun Engine.defaultSchema(registeredDbName: String): String = definition.defaultSchema(registeredDbName)
 fun Engine.isFixedSystemSchema(canonicalSchema: String): Boolean = definition.isFixedSystemSchema(canonicalSchema)
@@ -148,7 +145,7 @@ fun engineFromWire(raw: String): Engine =
     engineFromWireOrNull(raw) ?: throw IllegalArgumentException("unknown datasource engine '$raw'")
 
 fun engineFromWireOrNull(raw: String): Engine? =
-    engineDefinitions.values.firstOrNull { it.wireName == raw.lowercase() }?.engine
+    engineDefinitions.values.firstOrNull { it.wireName == raw }?.engine
 
 object EngineWireSerializer : KSerializer<Engine> {
     override val descriptor: SerialDescriptor = PrimitiveSerialDescriptor("Engine", PrimitiveKind.STRING)

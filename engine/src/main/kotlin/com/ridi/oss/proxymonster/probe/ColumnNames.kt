@@ -33,8 +33,8 @@ fun parseColumn(engine: Engine, targetSettings: TargetSettings, catalog: String,
 }
 
 /** Names the engine's own catalog reported, in canonical spelling; null when they cannot be normalized. */
-fun introspectedColumns(engine: Engine, targetSettings: TargetSettings, rows: List<Column>): List<Column>? =
-    columnNames(engine, targetSettings, rows, GoBinding::introspectedColumns)
+fun catalogColumnNames(engine: Engine, targetSettings: TargetSettings, rows: List<Column>): List<Column>? =
+    columnNames(engine, targetSettings, rows, GoBinding::catalogColumnNames)
 
 private fun columnNames(engine: Engine, targetSettings: TargetSettings, columns: List<Column>, call: (ByteArray) -> ByteArray): List<Column>? = try {
     if (columns.any { c -> listOf(c.catalog, c.schema, c.table, c.column).any { !GoBinding.hasWellFormedUtf16(it) } }) return null

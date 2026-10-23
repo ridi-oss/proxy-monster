@@ -20,11 +20,11 @@ import kotlin.test.assertTrue
  * facts and the [Engine.systemSchemas] set / [Engine.isFixedSystemSchema] / [Engine.isSystemSchema] split.
  */
 class EnginesTest {
-    @Test fun `engineFromWire accepts the canonical spellings, case-insensitively`() {
+    @Test fun `engineFromWire accepts exactly the wire names`() {
         assertEquals(Engine.MYSQL, engineFromWire("mysql"))
-        assertEquals(Engine.MYSQL, engineFromWire("MySQL"))
         assertEquals(Engine.POSTGRES, engineFromWire("postgres"))
-        assertEquals(Engine.POSTGRES, engineFromWire("POSTGRES"))
+        assertNull(engineFromWireOrNull("MySQL"))
+        assertNull(engineFromWireOrNull("POSTGRES"))
     }
 
     @Test fun `engineFromWire is fail-closed on unknown engines and the postgresql alias`() {

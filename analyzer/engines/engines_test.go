@@ -78,7 +78,7 @@ func TestFacts(t *testing.T) {
 	}
 }
 
-func TestIntrospectedColumns(t *testing.T) {
+func TestCatalogColumnNames(t *testing.T) {
 	for _, c := range []struct {
 		e    *Engine
 		lctn int32
@@ -106,7 +106,7 @@ func TestIntrospectedColumns(t *testing.T) {
 }
 
 // mysqlCatalogColumnNames parses each distinct (schema, table) once; the batch must equal a row-by-row call.
-func TestIntrospectedColumnsBatchEqualsPerRow(t *testing.T) {
+func TestCatalogColumnNamesBatchEqualsPerRow(t *testing.T) {
 	rows := []*pb.Column{
 		{Catalog: "def", Schema: "App", Table: "Users", Column: "ID"},
 		{Catalog: "def", Schema: "App", Table: "Users", Column: "Name"},

@@ -5,10 +5,10 @@ import (
 	"errors"
 	"net/http"
 	"slices"
-	"strings"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	"github.com/ridi-oss/proxy-monster/cpgo/api"
 	"github.com/ridi-oss/proxy-monster/cpgo/audit"
 	"github.com/ridi-oss/proxy-monster/cpgo/store/db"
@@ -16,11 +16,11 @@ import (
 
 // wireEngine is raw as the engine name a proxy registers, if it names one.
 func wireEngine(raw string) (string, bool) {
-	switch e := strings.ToLower(raw); e {
-	case "mysql", "postgres", "athena":
-		return e, true
+	engine, err := engines.Parse(raw)
+	if err != nil {
+		return "", false
 	}
-	return "", false
+	return engine.WireName, true
 }
 
 type datasourceInput struct {
@@ -31,7 +31,7 @@ type datasourceInput struct {
 	DBName string  `json:"dbName"`
 }
 
-// decodeDatasource reads the body and canonicalizes its engine, so a stored engine is always a wire name.
+// decodeDatasource reads the body; its engine must be a wire name, which is what is stored.
 func decodeDatasource(r *http.Request) (datasourceInput, error) {
 	var in datasourceInput
 	if err := api.DecodeBody(r, &in); err != nil || in.Name == nil {

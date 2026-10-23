@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.grpc.Engine
 import com.ridi.oss.proxymonster.controlplane.grpc.ControlPlaneGrpcService
 import com.ridi.oss.proxymonster.controlplane.grpc.GrpcServer
 import com.ridi.oss.proxymonster.grpc.ControlPlaneGrpcKt
@@ -15,7 +16,6 @@ import com.ridi.oss.proxymonster.controlplane.support.pushTestCatalog
 import com.ridi.oss.proxymonster.controlplane.support.requireDocker
 import com.ridi.oss.proxymonster.controlplane.support.SharedMySql
 import com.ridi.oss.proxymonster.controlplane.systemSchemas
-import com.ridi.oss.proxymonster.controlplane.isPostgres
 import com.ridi.oss.proxymonster.grpc.targetCheck
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.BeforeAll
@@ -37,7 +37,7 @@ abstract class PerConnectionCatalogDbContract {
 
     @Test
     fun `decision uses held structure after the global catalog is cleared`() = runBlocking {
-        if (fixture.datasource.engine.isPostgres) return@runBlocking
+        if (fixture.datasource.engine == Engine.POSTGRES) return@runBlocking
         val schema = fixture.datasource.defaultSchemas.first()
         val opened = fixture.openAndPush(schemas = listOf(schema))
         enforcement.dataSource.connection.use { c ->
@@ -67,7 +67,7 @@ abstract class PerConnectionCatalogDbContract {
         // as the masked pii column, not a string literal — MASK, not a cleartext leak. With the flag false
         // (default mode) `"ssn"` is the constant string 'ssn' (no pii column touched) → ALLOW. Proven through
         // the real per-connection catalog path the wire Decide RPC actually runs.
-        if (fixture.datasource.engine.isPostgres) return@runBlocking
+        if (fixture.datasource.engine == Engine.POSTGRES) return@runBlocking
         val schema = fixture.datasource.defaultSchemas.first()
         // Introspect the fragment straight from the target (not fixture.openAndPush, which reads the global
         // catalog a sibling test deletes) — this also mirrors the proxy's real push flow exactly.
@@ -96,7 +96,7 @@ abstract class PerConnectionCatalogDbContract {
 
     @Test
     fun `PostgreSQL safe function rewrite survives target shadowing`() = runBlocking {
-        if (!fixture.datasource.engine.isPostgres) return@runBlocking
+        if (fixture.datasource.engine != Engine.POSTGRES) return@runBlocking
         val schema = fixture.datasource.defaultSchemas.first { it !in fixture.datasource.engine.systemSchemas }
         val shadowSchema = "pm_abs_shadow"
         val sql = "select abs(1)"
@@ -168,7 +168,7 @@ abstract class PerConnectionCatalogDbContract {
 
     @Test
     fun `PostgreSQL function visibility threads through decideConnection`() = runBlocking {
-        if (!fixture.datasource.engine.isPostgres) return@runBlocking
+        if (fixture.datasource.engine != Engine.POSTGRES) return@runBlocking
         val schema = fixture.datasource.defaultSchemas.first()
         val opened = fixture.openAndPush(schemas = listOf(schema))
         val sql = "select unnest from unnest(array[1])"
@@ -216,7 +216,7 @@ abstract class PerConnectionCatalogDbContract {
     fun `the gRPC Decide handler forwards the session observation`() = runBlocking {
         // The one proxy-to-analyzer handoff: DecisionRequest.session must reach EngineConfig unchanged. A handler
         // that dropped it would read `"ssn"` as a string literal and relay the pii column in the clear.
-        if (fixture.datasource.engine.isPostgres) return@runBlocking
+        if (fixture.datasource.engine == Engine.POSTGRES) return@runBlocking
         val schema = fixture.datasource.defaultSchemas.first()
         val token = fixture.core.tokenStore.issue(TokenKind.USER, "analyst@example.com", emptyList(), null, 3600).token
         val opened = fixture.core.connectionCatalog.open(
@@ -255,7 +255,7 @@ abstract class PerConnectionCatalogDbContract {
         val opened = fixture.core.connectionCatalog.open(Binding(fixture.datasource.name, principal, "USER", fixture.datasource.effectiveCatalog, fixture.datasource.engine), fixture.datasource.namespaces(listOf(schema)))
         val connection = fixture.core.connectionCatalog.find(opened.connectionId)!!
         val name = "pccat_identity_${System.nanoTime()}"
-        val (create, drop) = if (fixture.datasource.engine.isPostgres) {
+        val (create, drop) = if (fixture.datasource.engine == Engine.POSTGRES) {
             "create function $schema.$name(v integer) returns integer language sql immutable as 'select v'" to
                 "drop function $schema.$name(integer)"
         } else {
@@ -275,18 +275,18 @@ abstract class PerConnectionCatalogDbContract {
             assertEquals(listOf(schema), verdict.afterStatement.map { it.schema }, "routine DDL refetches the schema it lives in")
             // MySQL's binlog refuses CREATE FUNCTION from a non-SUPER account, so the DDL runs as root there.
             try {
-                if (fixture.datasource.engine.isPostgres) target.createStatement().use { it.execute(create) } else SharedMySql.executeAdmin(create)
+                if (fixture.datasource.engine == Engine.POSTGRES) target.createStatement().use { it.execute(create) } else SharedMySql.executeAdmin(create)
                 fixture.pushFromTarget(target, opened.connectionId, schema)
                 assertEquals(listOf(name.lowercase()), held(), "the refreshed fragment holds the routine")
             } finally {
-                if (fixture.datasource.engine.isPostgres) target.createStatement().use { it.execute(drop) } else SharedMySql.executeAdmin(drop)
+                if (fixture.datasource.engine == Engine.POSTGRES) target.createStatement().use { it.execute(drop) } else SharedMySql.executeAdmin(drop)
             }
         }
     }
 
     @Test
     fun `PostgreSQL xid visibility threads through decideConnection`() = runBlocking {
-        if (!fixture.datasource.engine.isPostgres) return@runBlocking
+        if (fixture.datasource.engine != Engine.POSTGRES) return@runBlocking
         val schema = fixture.datasource.defaultSchemas.first { it !in fixture.datasource.engine.systemSchemas }
         val opened = fixture.openAndPush(schemas = listOf("pg_catalog", schema))
         val path = listOf("pg_temp_3", "pg_catalog", schema)

@@ -29,7 +29,7 @@ object GoBinding {
     private val analyzeStatementHandle: MethodHandle
     private val splitStatementsHandle: MethodHandle
     private val parseColumnsHandle: MethodHandle
-    private val introspectedColumnsHandle: MethodHandle
+    private val catalogColumnNamesHandle: MethodHandle
     private val engineCallHandle: MethodHandle
     private val sqlNormalizeHandle: MethodHandle
     private val freeHandle: MethodHandle
@@ -64,8 +64,8 @@ object GoBinding {
             lookup.find("ParseColumns").orElseThrow { IllegalStateException("ParseColumns not exported by native lib") },
             FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS),
         )
-        introspectedColumnsHandle = linker.downcallHandle(
-            lookup.find("IntrospectedColumns").orElseThrow { IllegalStateException("IntrospectedColumns not exported by native lib") },
+        catalogColumnNamesHandle = linker.downcallHandle(
+            lookup.find("CatalogColumnNames").orElseThrow { IllegalStateException("CatalogColumnNames not exported by native lib") },
             FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS),
         )
         engineCallHandle = linker.downcallHandle(
@@ -109,7 +109,7 @@ object GoBinding {
     fun parseColumns(requestBytes: ByteArray): ByteArray = callByteBufferHandle(parseColumnsHandle, requestBytes)
 
     /** Same messages as [parseColumns], for names the engine's own catalog reported. */
-    fun introspectedColumns(requestBytes: ByteArray): ByteArray = callByteBufferHandle(introspectedColumnsHandle, requestBytes)
+    fun catalogColumnNames(requestBytes: ByteArray): ByteArray = callByteBufferHandle(catalogColumnNamesHandle, requestBytes)
 
     /** A marshaled `analyzerv1.EngineCallRequest` in, a marshaled `EngineCallResponse` out. */
     fun engineCall(requestBytes: ByteArray): ByteArray = callByteBufferHandle(engineCallHandle, requestBytes)

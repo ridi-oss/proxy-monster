@@ -133,8 +133,8 @@ func ParseColumnsSafe(reqBytes []byte) []byte {
 	})
 }
 
-// IntrospectedColumnsSafe is IntrospectedColumns over a marshaled ColumnNamesRequest.
-func IntrospectedColumnsSafe(reqBytes []byte) []byte {
+// CatalogColumnNamesSafe is CatalogColumnNames over a marshaled ColumnNamesRequest.
+func CatalogColumnNamesSafe(reqBytes []byte) []byte {
 	return columnNamesSafe(reqBytes, func(session *Session, cols []*pb.Column) ([]ColumnName, error) {
 		return session.CatalogColumnNames(cols), nil
 	})

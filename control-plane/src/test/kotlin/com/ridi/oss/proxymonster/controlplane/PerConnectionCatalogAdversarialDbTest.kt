@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.grpc.Engine
 import com.ridi.oss.proxymonster.grpc.EnfAction
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
 import com.ridi.oss.proxymonster.controlplane.support.pushedColumn
@@ -68,13 +69,13 @@ abstract class PerConnectionCatalogAdversarialDbContract {
     ) ?: fail("connection disappeared during decision")
 
     protected fun qualified(schema: String, table: String): String =
-        if (fixture.datasource.engine.isMySql) "`$schema`.`$table`" else "\"$schema\".\"$table\""
+        if (fixture.datasource.engine == Engine.MYSQL) "`$schema`.`$table`" else "\"$schema\".\"$table\""
 
     /** A second schema on the target, holding its own `accounts` table; null when the engine fixture has
      *  only one (the test that needs it then skips rather than asserting on a shape that does not exist). */
     protected open fun secondSchema(): String? = null
 
-    protected fun userSchema(): String = if (fixture.datasource.engine.isMySql) {
+    protected fun userSchema(): String = if (fixture.datasource.engine == Engine.MYSQL) {
         fixture.datasource.dbName
     } else {
         fixture.datasource.defaultSchemas.first { it !in fixture.datasource.engine.systemSchemas }

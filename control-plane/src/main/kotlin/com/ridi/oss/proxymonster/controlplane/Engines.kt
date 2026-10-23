@@ -8,7 +8,6 @@ import com.ridi.oss.proxymonster.analyzer.pb.SessionObservation
 import com.ridi.oss.proxymonster.controlplane.management.ManagementException
 import com.ridi.oss.proxymonster.grpc.ConnectionInfo
 import com.ridi.oss.proxymonster.grpc.Engine
-import com.ridi.oss.proxymonster.grpc.RequestAuthorization
 import com.ridi.oss.proxymonster.probe.Dialect
 import com.ridi.oss.proxymonster.probe.GoEngine
 import kotlinx.serialization.KSerializer
@@ -17,17 +16,12 @@ import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
 import kotlinx.serialization.descriptors.SerialDescriptor
 import kotlinx.serialization.encoding.Decoder
 import kotlinx.serialization.encoding.Encoder
-import java.time.Instant
 
 /**
  * Everything the control plane knows about one engine, read from its Go definition ([GoEngine]). The proto
  * [Engine] stays the domain type; no call site branches on the engine itself.
  */
-class EngineDefinition internal constructor(
-    val engine: Engine,
-    /** What [request], a call without SQL, touches on a datasource for a principal at a time: GetWorkGroup -> workgroup `primary`. */
-    val requestAccess: (request: RequestAuthorization, datasource: Datasource, principal: String, now: Instant) -> RequestAccess,
-) {
+class EngineDefinition internal constructor(val engine: Engine) {
     private val go = GoEngine.of(engine)
     private val facts = go.facts
 
@@ -105,11 +99,7 @@ class EngineDefinition internal constructor(
     fun quoteIdentifier(name: String): String = "$identifierQuote${name.replace(identifierQuote, identifierQuote + identifierQuote)}$identifierQuote"
 }
 
-private val engineDefinitions = listOf(
-    EngineDefinition(Engine.MYSQL) { request, datasource, _, _ -> metadataRequestAccess(request, datasource) },
-    EngineDefinition(Engine.POSTGRES) { request, datasource, _, _ -> metadataRequestAccess(request, datasource) },
-    EngineDefinition(Engine.ATHENA) { request, datasource, principal, now -> athenaRequestAccess(request, datasource.name, principal, now) },
-).associateBy { it.engine }
+private val engineDefinitions = listOf(Engine.MYSQL, Engine.POSTGRES, Engine.ATHENA).map(::EngineDefinition).associateBy { it.engine }
 
 val Engine.definition: EngineDefinition
     get() = checkNotNull(engineDefinitions[this]) { "unregistered engine: $this" }

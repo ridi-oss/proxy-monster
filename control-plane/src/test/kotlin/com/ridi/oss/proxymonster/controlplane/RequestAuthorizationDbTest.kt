@@ -3,12 +3,15 @@ package com.ridi.oss.proxymonster.controlplane
 import com.google.protobuf.ByteString
 import com.google.protobuf.UnknownFieldSet
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
-import com.ridi.oss.proxymonster.controlplane.grpc.ControlPlaneGrpcService
-import com.ridi.oss.proxymonster.controlplane.grpc.GrpcServer
+import com.ridi.oss.proxymonster.controlplane.support.CpGoStack
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.grpc.ControlPlaneGrpcKt
 import com.ridi.oss.proxymonster.athena.pb.AthenaNativeDescriptor
+import com.ridi.oss.proxymonster.athena.pb.AthenaNativeInstruction
+import com.ridi.oss.proxymonster.athena.pb.NativeAuthorizationPhase
+import com.ridi.oss.proxymonster.athena.pb.athenaNativeDescriptor
+import com.ridi.oss.proxymonster.athena.pb.athenaTarget
 import com.ridi.oss.proxymonster.grpc.RequestAuthorization
 import com.ridi.oss.proxymonster.grpc.objectRef
 import com.ridi.oss.proxymonster.grpc.readCatalog
@@ -16,7 +19,6 @@ import com.ridi.oss.proxymonster.grpc.readTableMetadata
 import io.grpc.ManagedChannel
 import io.grpc.Status
 import io.grpc.StatusException
-import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
@@ -35,24 +37,30 @@ import kotlin.test.assertTrue
 class RequestAuthorizationDbTest {
     private lateinit var database: DataSource
     private lateinit var core: ControlPlaneCore
-    private lateinit var server: GrpcServer
+    private lateinit var stack: CpGoStack
     private lateinit var channel: ManagedChannel
     private lateinit var stub: ControlPlaneGrpcKt.ControlPlaneCoroutineStub
 
     @BeforeAll
     fun setup() {
         requireDockerOrSkip()
-        database = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_request_authorization"))
+        val name = SharedPostgres.migratedDatabase("pm_request_authorization")
+        database = SharedPostgres.hikari(name)
         core = ControlPlaneCore(database)
-        server = GrpcServer(0, ControlPlaneGrpcService(core), secretToken = null).also { it.start() }
-        channel = NettyChannelBuilder.forAddress("localhost", server.boundPort).usePlaintext().build()
+        val config = Config(
+            httpPort = 0, dbUrl = "", dbUser = "", dbPassword = "", authDebug = false, secretToken = null,
+            sessionSecret = "request-authorization-test-secret", oidc = null, resultKey = null, scimToken = null,
+            sessionWindowSeconds = 3600, idpRecheckIntervalSeconds = 600, devMarker = true,
+        )
+        stack = CpGoStack(config, core, name, withGrpc = true)
+        channel = stack.channel()
         stub = ControlPlaneGrpcKt.ControlPlaneCoroutineStub(channel)
     }
 
     @AfterAll
     fun cleanup() {
         if (::channel.isInitialized) channel.shutdownNow().awaitTermination(5, TimeUnit.SECONDS)
-        if (::server.isInitialized) server.shutdown()
+        if (::stack.isInitialized) stack.close()
         if (::database.isInitialized) (database as? AutoCloseable)?.close()
     }
 
@@ -248,6 +256,51 @@ class RequestAuthorizationDbTest {
         val failure = assertFailsWith<StatusException> { runBlocking { stub.authorizeRequest(request.build()) } }
         assertEquals(Status.Code.UNAUTHENTICATED, failure.status.code)
         assertEquals(0, core.connectionCatalog.connectionCount())
+    }
+
+    @Test
+    fun `an Athena call is read before the connect gate and its names compare canonically`() {
+        val principal = principal()
+        val role = role()
+        core.policyStore.createAssignment(RoleAssignmentInput(principal, role.id))
+        val ds = core.datasourceStore.create(DatasourceInput("lake-${UUID.randomUUID()}", "athena", dbName = "awsdatacatalog"))
+        val token = issue(TokenKind.USER, principal).token
+        fun call(operation: String, body: String) = runBlocking {
+            stub.authorizeRequest(
+                RequestAuthorization.newBuilder().setToken(token).setDatasourceName(ds.name).setAthena(
+                    athenaNativeDescriptor {
+                        service = "athena"
+                        this.operation = operation
+                        method = "POST"
+                        path = "/"
+                        this.body = ByteString.copyFromUtf8(body)
+                        phase = NativeAuthorizationPhase.NATIVE_AUTHORIZATION_PHASE_REQUEST
+                        target = athenaTarget {
+                            region = "ap-northeast-2"
+                            defaultWorkgroup = "primary"
+                            defaultCatalog = "awsdatacatalog"
+                            defaultDatabase = "analytics"
+                            targetBinding = ByteString.copyFrom(ByteArray(32) { 7 })
+                        }
+                    },
+                ).build(),
+            )
+        }
+        assertEquals("native.scope_violation", call("StartQueryExecution", """{"QueryString":"select 1","WorkGroup":"other"}""").denyReason)
+        assertEquals("native.not_authorized", call("StartQueryExecution", """{"QueryString":"select 1"}""").denyReason)
+        for (cedarSrc in listOf(
+            """permit(principal in Role::"${role.name}", action in [Action::"datasource.connect", Action::"native.invoke"], resource in Datasource::"${ds.name}");""",
+            """forbid(principal, action == Action::"native.invoke", resource) when { resource.kind == "table" && resource.id == "awsdatacatalog/analytics/users" };""",
+        )) {
+            core.cedarPolicyStore.create(CedarPolicyInput(name = "lake-${UUID.randomUUID()}", cedarSrc = cedarSrc), updatedBy = null)
+        }
+        assertEquals("native.scope_violation", call("StartQueryExecution", """{"QueryString":"select 1","WorkGroup":"PRIMARY"}""").denyReason)
+        val submitted = call("StartQueryExecution", """{"QueryString":"select 1","QueryExecutionContext":{"Catalog":"AwsDataCatalog","Database":"Analytics"}}""")
+        assertTrue(submitted.allowed)
+        assertEquals(AthenaNativeInstruction.ATHENA_NATIVE_INSTRUCTION_REQUIRE_SQL_ADMISSION, submitted.athena.action)
+        assertTrue(call("GetTableMetadata", """{"CatalogName":"awsdatacatalog","DatabaseName":"analytics","TableName":"orders"}""").allowed)
+        val forbidden = call("GetTableMetadata", """{"CatalogName":"AwsDataCatalog","DatabaseName":"Analytics","TableName":"USERS"}""")
+        assertEquals("native.not_authorized", forbidden.denyReason)
     }
 
     private fun assertUnauthenticated(token: String) {

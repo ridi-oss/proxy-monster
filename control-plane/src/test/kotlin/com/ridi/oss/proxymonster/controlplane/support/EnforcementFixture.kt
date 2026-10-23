@@ -14,7 +14,6 @@ import com.ridi.oss.proxymonster.controlplane.DatasourceStore
 import com.ridi.oss.proxymonster.controlplane.MaskFnInput
 import com.ridi.oss.proxymonster.controlplane.catalogName
 import com.ridi.oss.proxymonster.controlplane.defaultSchema
-import com.ridi.oss.proxymonster.controlplane.isMySql
 import com.ridi.oss.proxymonster.controlplane.PolicyStore
 import com.ridi.oss.proxymonster.controlplane.QueryResponse
 import com.ridi.oss.proxymonster.controlplane.RoleAssignmentInput
@@ -35,7 +34,7 @@ import com.ridi.oss.proxymonster.analyzer.pb.catalogSnapshot
 import com.ridi.oss.proxymonster.analyzer.pb.column
 import com.ridi.oss.proxymonster.analyzer.pb.targetSettings
 import com.ridi.oss.proxymonster.grpc.Engine
-import com.ridi.oss.proxymonster.probe.introspectedColumns
+import com.ridi.oss.proxymonster.probe.catalogColumnNames
 import java.sql.DriverManager
 import javax.sql.DataSource
 
@@ -58,7 +57,7 @@ internal fun DatasourceStore.pushTestCatalog(
     )
 
     val columns = ArrayList<Column>()
-    val isMysql = datasource.engine.isMySql
+    val isMysql = datasource.engine == Engine.MYSQL
     val columnSql =
         """SELECT table_schema, table_name, column_name, data_type, ordinal_position, is_nullable
            FROM information_schema.columns
@@ -129,7 +128,7 @@ internal fun DatasourceStore.pushTestCatalog(
 /** Introspected rows in the analyzer's canonical spelling, as goproxy folds them before a push. */
 internal fun canonicalColumns(engine: Engine, engineVersion: String, lowerCaseTableNames: Int?, rows: List<Column>): List<Column> =
     checkNotNull(
-        introspectedColumns(
+        catalogColumnNames(
             engine,
             targetSettings {
                 this.engineVersion = checkNotNull(Regex("[0-9]+(\\.[0-9]+)*").find(engineVersion)).value

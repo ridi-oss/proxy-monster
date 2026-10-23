@@ -60,11 +60,11 @@ func ParseColumns(reqBytes *C.char, reqLen C.size_t, outLen *C.size_t) unsafe.Po
 	return bufferResult(engines.ParseColumnsSafe(analyzeRequestBytesFromC(reqBytes, reqLen)), outLen)
 }
 
-// IntrospectedColumns puts names the engine's own catalog reported in canonical spelling. Same convention.
+// CatalogColumnNames puts names the engine's own catalog reported in canonical spelling. Same convention.
 //
-//export IntrospectedColumns
-func IntrospectedColumns(reqBytes *C.char, reqLen C.size_t, outLen *C.size_t) unsafe.Pointer {
-	return bufferResult(engines.IntrospectedColumnsSafe(analyzeRequestBytesFromC(reqBytes, reqLen)), outLen)
+//export CatalogColumnNames
+func CatalogColumnNames(reqBytes *C.char, reqLen C.size_t, outLen *C.size_t) unsafe.Pointer {
+	return bufferResult(engines.CatalogColumnNamesSafe(analyzeRequestBytesFromC(reqBytes, reqLen)), outLen)
 }
 
 // EngineCall runs one control-plane call into an engine's definition. Same byte-buffer convention and

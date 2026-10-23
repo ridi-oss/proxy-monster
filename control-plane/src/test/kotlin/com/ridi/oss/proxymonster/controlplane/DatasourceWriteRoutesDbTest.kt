@@ -125,13 +125,14 @@ class DatasourceWriteRoutesDbTest {
     fun `create, edit and delete`() = testApplication {
         val t = Transcript(client(admin))
         val before = rows("SELECT coalesce(max(id), 0) FROM audit_event").toLong()
-        t.send("POST", "/api/datasources", """{"name":"dw-a","engine":"MySQL","host":"db","port":3306,"dbName":"app"}""")
+        t.send("POST", "/api/datasources", """{"name":"dw-a","engine":"mysql","host":"db","port":3306,"dbName":"app"}""")
         val a = idOf("dw-a")
         t.send("POST", "/api/datasources", """{"name":"dw-b"}""")
         val b = idOf("dw-b")
         t.send("POST", "/api/datasources", """{"name":"dw-a","engine":"mysql"}""")
         t.send("POST", "/api/datasources", """{"name":" "}""")
         t.send("POST", "/api/datasources", """{"name":"dw-x","engine":"oracle"}""")
+        t.send("POST", "/api/datasources", """{"name":"dw-x","engine":"MySQL"}""")
         t.send("POST", "/api/datasources", """{"engine":"mysql"}""")
         t.send("POST", "/api/datasources", """not json""")
 
@@ -194,6 +195,7 @@ POST /api/datasources -> 201 {"id":{b},"name":"dw-b","engine":"postgres","host":
 POST /api/datasources -> 500 {"code":"common.fallback","params":{}}
 POST /api/datasources -> 400 {"code":"common.field_required","params":{"fields":"name"}}
 POST /api/datasources -> 400 {"code":"datasource.invalid_engine","params":{"engine":"oracle"}}
+POST /api/datasources -> 400 {"code":"datasource.invalid_engine","params":{"engine":"MySQL"}}
 POST /api/datasources -> 500 {"code":"common.fallback","params":{}}
 POST /api/datasources -> 500 {"code":"common.fallback","params":{}}
 PUT /api/datasources/{a} -> 200 {"id":{a},"name":"dw-a2","engine":"mysql","host":"db2","port":3307,"dbName":"app","tags":[],"defaultSchemas":[],"advertiseWireTls":false,"description":"","defaultSchemaSettable":true,"identifierQuote":"`"}

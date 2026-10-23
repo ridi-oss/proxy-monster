@@ -20,11 +20,11 @@ func TestColumnNamesSafe(t *testing.T) {
 	if got := call(ParseColumnsSafe, typed); got.GetError() != pb.ColumnNamesResponse_NONE || got.GetColumns()[0].GetTable() != "users" || got.GetColumns()[0].GetColumn() != "ssn" {
 		t.Fatalf("parse: %v", got)
 	}
-	if got := call(IntrospectedColumnsSafe, typed); got.GetError() != pb.ColumnNamesResponse_NONE || got.GetColumns()[0].GetTable() != "Users" || got.GetColumns()[0].GetColumn() != "SSN" {
+	if got := call(CatalogColumnNamesSafe, typed); got.GetError() != pb.ColumnNamesResponse_NONE || got.GetColumns()[0].GetTable() != "Users" || got.GetColumns()[0].GetColumn() != "SSN" {
 		t.Fatalf("introspected: %v", got)
 	}
 	mysql := &pb.ColumnNamesRequest{Engine: pb.Engine_MYSQL, Target: &pb.TargetSettings{EngineVersion: "8.0.44", MysqlLowerCaseTableNames: proto.Int32(1)}, Columns: []*pb.Column{{Catalog: "def", Schema: "App", Table: "Users", Column: "SSN"}}}
-	if got := call(IntrospectedColumnsSafe, mysql); got.GetError() != pb.ColumnNamesResponse_NONE || got.GetColumns()[0].GetSchema() != "app" || got.GetColumns()[0].GetTable() != "users" || got.GetColumns()[0].GetColumn() != "ssn" {
+	if got := call(CatalogColumnNamesSafe, mysql); got.GetError() != pb.ColumnNamesResponse_NONE || got.GetColumns()[0].GetSchema() != "app" || got.GetColumns()[0].GetTable() != "users" || got.GetColumns()[0].GetColumn() != "ssn" {
 		t.Fatalf("introspected mysql: %v", got)
 	}
 	for _, bad := range []*pb.ColumnNamesRequest{
@@ -37,11 +37,11 @@ func TestColumnNamesSafe(t *testing.T) {
 		}
 	}
 	for _, bad := range []*pb.ColumnNamesRequest{{Engine: pb.Engine_ENGINE_UNSPECIFIED}, {Engine: pb.Engine_MYSQL, Target: &pb.TargetSettings{MysqlLowerCaseTableNames: proto.Int32(3)}}, {Engine: pb.Engine_MYSQL, Columns: []*pb.Column{{Schema: "App"}}}} {
-		if call(IntrospectedColumnsSafe, bad).GetError() == pb.ColumnNamesResponse_NONE {
+		if call(CatalogColumnNamesSafe, bad).GetError() == pb.ColumnNamesResponse_NONE {
 			t.Errorf("introspected: %v accepted", bad)
 		}
 	}
-	for _, safe := range []func([]byte) []byte{ParseColumnsSafe, IntrospectedColumnsSafe} {
+	for _, safe := range []func([]byte) []byte{ParseColumnsSafe, CatalogColumnNamesSafe} {
 		if got := call(safe, &pb.ColumnNamesRequest{Engine: pb.Engine_MYSQL, Columns: mysql.Columns}); got.GetError() != pb.ColumnNamesResponse_DATASOURCE_REJECTED {
 			t.Errorf("unreported mysql datasource: %v", got)
 		}

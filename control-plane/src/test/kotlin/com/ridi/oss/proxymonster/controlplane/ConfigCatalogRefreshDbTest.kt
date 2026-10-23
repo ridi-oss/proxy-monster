@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.grpc.Engine
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
 import com.ridi.oss.proxymonster.controlplane.grpc.CONTROL_PROTOCOL_VERSION
 import com.ridi.oss.proxymonster.controlplane.grpc.ControlPlaneGrpcService
@@ -66,13 +67,13 @@ abstract class ConfigCatalogRefreshDbContract {
     private val ds get() = fixture.datasource
     private val writer = "writer@example.com"
 
-    private fun schema(): String = if (ds.engine.isMySql) ds.dbName else ds.defaultSchemas.first { it !in ds.engine.systemSchemas }
+    private fun schema(): String = if (ds.engine == Engine.MYSQL) ds.dbName else ds.defaultSchemas.first { it !in ds.engine.systemSchemas }
 
     private fun target(): Connection = DriverManager.getConnection(
         fixture.enforcement.targetJdbcUrl, fixture.enforcement.targetUser, fixture.enforcement.targetPassword,
     )
 
-    private fun table(name: String) = if (ds.engine.isMySql) "`${schema()}`.`$name`" else "\"${schema()}\".\"$name\""
+    private fun table(name: String) = if (ds.engine == Engine.MYSQL) "`${schema()}`.`$name`" else "\"${schema()}\".\"$name\""
 
     /**
      * RefreshCatalog events a proxy attached on the Events stream receives while [body] runs and one window

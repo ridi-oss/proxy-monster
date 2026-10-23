@@ -4,7 +4,7 @@ import com.ridi.oss.proxymonster.controlplane.management.ManagementException
 import com.ridi.oss.proxymonster.analyzer.pb.column
 import com.ridi.oss.proxymonster.probe.ColumnKey
 import com.ridi.oss.proxymonster.probe.DatasourceRejectedException
-import com.ridi.oss.proxymonster.probe.introspectedColumns
+import com.ridi.oss.proxymonster.probe.catalogColumnNames
 import com.ridi.oss.proxymonster.probe.parseColumn
 import com.ridi.oss.proxymonster.grpc.ObjectRef
 import com.ridi.oss.proxymonster.grpc.objectRef
@@ -24,7 +24,7 @@ private inline fun <T> foldOrRefuse(fold: () -> T): T = try {
 internal fun Datasource.firstUserDefaultSchema(): String? {
     val reported = targetSettings()
     return defaultSchemas.firstOrNull { storedSchema ->
-        val canonicalSchema = foldOrRefuse { introspectedColumns(engine, reported, listOf(column { schema = storedSchema })) }?.single()?.schema
+        val canonicalSchema = foldOrRefuse { catalogColumnNames(engine, reported, listOf(column { schema = storedSchema })) }?.single()?.schema
         canonicalSchema != null && !engine.isSystemSchema(canonicalSchema)
     }
 }

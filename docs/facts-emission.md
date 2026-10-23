@@ -292,11 +292,12 @@ On a `MASK` verdict the control-plane sets `Verdict.unmaskable_permitted` when
 the datasource grants `exception.unmaskable`
 (`authorizeDatasourceAction(EXCEPTION_UNMASKABLE)`). The proxy relays the
 binary/prepared result unmasked only when that flag is set — checked in
-`goproxy/mysql/conn.go` and `goproxy/postgres/extended.go` — and otherwise
-refuses fail-closed. MySQL binary/prepared-statement results and PostgreSQL
-binary-format results have a relay path; COPY and fast-path do not and stay
-denied even where policy permits `exception.unmaskable`. That is an honest
-fail-closed capability gap, not a policy exception the proxy silently ignores.
+`goproxy/mysql/wire_client.go` and `goproxy/postgres/extended.go` — and
+otherwise refuses fail-closed. MySQL binary/prepared-statement results and
+PostgreSQL binary-format results have a relay path; COPY and fast-path do not
+and stay denied even where policy permits `exception.unmaskable`. That is an
+honest fail-closed capability gap, not a policy exception the proxy silently
+ignores.
 
 A plan-only `EXPLAIN` returns the query plan, not rows, so the analyzer emits
 its projected columns as read-required with no output ordinal (and empty

@@ -1,5 +1,5 @@
-import { WorkflowsMasterDetail } from '@/components/workflows/workflows-master-detail';
+import { WorkflowDetailPanel } from '@/components/workflows/workflows-master-detail';
 
 export default function WorkflowsPage() {
-  return <WorkflowsMasterDetail />;
+  return <WorkflowDetailPanel />;
 }

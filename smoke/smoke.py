@@ -16,8 +16,9 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+import uuid
 
-LEGS = ["editor", "browser", "wire", "pmon", "workflow", "rate", "audit", "github", "names"]
+LEGS = ["editor", "browser", "wire", "pmon", "workflow", "rate", "audit", "github", "names", "native"]
 MASK = "####"
 TRUSTED_IP = "100.100.1.8"
 PRODUCTION_PRESETS = [-200, -201, -202, *range(-238, -229), -250, -251, -252, -253, -255, *range(-262, -255), -280, -300, -305, -306, -307]
@@ -399,10 +400,10 @@ class Stack:
         a = self.args
         return dict(os.environ, PMON_CONFIG_DIR=a.pmon_dir, PMON_PORT_BASE=str(a.pmon_port_base), PMON_NO_BROWSER="1")
 
-    def pmon_login(self, ds, env, log):
-        """Log pmon in as smoke-pmon through the device flow; returns `pmon show <ds> --cli`."""
+    def pmon_login(self, ds, env, log, principal="smoke-pmon", roles=("system:production-viewer",)):
+        """Log pmon in through the device flow; returns `pmon show <ds> --cli`."""
         a = self.args
-        user = self.session("pmon").login("smoke-pmon", ["system:production-viewer"])
+        user = self.session("pmon").login(principal, list(roles))
         proc = subprocess.Popen([a.pmon, "login", "--url", a.cp, "--ttl", "600"], env=env, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, text=True)
         try:
@@ -422,7 +423,7 @@ class Stack:
             expect("/device/success" in headers.get("Location", ""), f"device authorize redirected to {headers.get('Location')}")
             out, _ = proc.communicate(timeout=60)
             log.write(out)
-            expect(proc.returncode == 0 and "logged in as smoke-pmon" in out, f"pmon login did not finish: {out.strip()}")
+            expect(proc.returncode == 0 and f"logged in as {principal}" in out, f"pmon login did not finish: {out.strip()}")
             deadline = time.time() + 30
             while time.time() < deadline:
                 rc, cli, err = run([a.pmon, "show", ds["name"], "--cli"], env=env)
@@ -451,15 +452,20 @@ class Stack:
         log.write(f"$ {argv[0]} ... {sql} -> {rc}\n{out}{err}")
         return rc == 0, [l.split("\t") for l in out.splitlines() if l], err
 
-    def athena_via_pmon(self, cli, log, sql):
-        """Run a masked read as the AWS CLI would: SigV4 with the local credentials from `pmon show --cli`, at pmon's
-        local Athena endpoint. The printed command is `VAR=… aws athena start-query-execution …`; its env is reused."""
+    def pmon_aws_env(self, cli):
+        """The env of the `VAR=… aws athena start-query-execution …` command `pmon show --cli` prints."""
         words = shlex.split(cli)
         env = dict(os.environ)
         while words and "=" in words[0] and not words[0].startswith("aws"):
             key, value = words.pop(0).split("=", 1)
             env[key] = value
         expect(words[:2] == ["aws", "athena"], f"pmon show --cli did not print an aws athena command: {cli}")
+        return env
+
+    def athena_via_pmon(self, cli, log, sql):
+        """Run a masked read as the AWS CLI would: SigV4 with the local credentials from `pmon show --cli`, at pmon's
+        local Athena endpoint."""
+        env = self.pmon_aws_env(cli)
         endpoint = env["AWS_ENDPOINT_URL_ATHENA"]
         context = json.dumps({"Catalog": "AwsDataCatalog", "Database": "acme"})
 
@@ -605,6 +611,169 @@ class Stack:
         ok, rows, err = self.wire_sql(ds, principal, token, "SELECT id FROM users")
         expect(not ok and "rate 2/1h spent" in err, f"wire query past the rate: expected a deny naming the rate, got ok={ok} rows={rows} err={err.strip()}")
         self.produced.setdefault(ds["engine"], set()).add("rate")
+
+    def leg_native(self, ds):
+        """Every Athena API call the proxy reads, sent by the AWS CLI through pmon: what smoke-native's scoped
+        native.invoke policy names reaches the target, the rest is refused at the proxy, a principal holding no
+        native.invoke is refused everything but SQL, and executions stay with the principal who started them."""
+        if ds["engine"] != "athena":
+            raise Skip()
+        wg, cat, db, table, other = os.environ.get("SMOKE_ATHENA_TARGET", "primary,AwsDataCatalog,acme,users,accounts").split(",")
+        self.native_policy(wg, cat, db, table)
+        log = open(os.path.join(self.logs, "native.log"), "a")
+        env = self.pmon_env()
+        native = self.session("native").login("smoke-native", ["system:production-viewer", "smoke-native"])
+        viewer = self.session("native").login("smoke-viewer", ["system:production-viewer"])
+        ntoken, vtoken = self.wire_token(native), self.wire_token(viewer)
+        try:
+            aws_env = self.pmon_aws_env(self.pmon_login(ds, env, log, "smoke-native", ["system:production-viewer", "smoke-native"]))
+            self.native_calls(ds, log, aws_env, ntoken, vtoken, wg, cat, db, table, other)
+        finally:
+            run([self.args.pmon, "logout"], env=env)
+        self.produced.setdefault(ds["engine"], set()).add("native")
+
+    def native_policy(self, wg, cat, db, table):
+        a = self.admin
+        _, roles, _ = a.call("GET", "/api/roles")
+        if "smoke-native" not in {r["name"] for r in roles}:
+            a.call("POST", "/api/roles", {"name": "smoke-native"})
+        read = 'context.native_operation like "athena:Get*" || context.native_operation like "athena:List*" || context.native_operation like "athena:BatchGet*"'
+        cat, db, table = cat.lower(), db.lower(), table.lower()
+        src = f'''permit(principal in Role::"smoke-native", action == Action::"native.invoke", resource)
+when {{ context has native_operation && (
+  ({read}) && (resource.kind == "datasource" || resource.kind == "tagged-resource" || resource.kind == "named-query"
+    || resource.kind == "prepared-statement" || resource.kind == "workgroup" && resource.id == "{wg}"
+    || resource.kind == "data-catalog" && resource.id == "{cat}" || resource.kind == "database" && resource.id == "{cat}/{db}"
+    || resource.kind == "table" && resource.id == "{cat}/{db}/{table}")
+  || resource.kind == "prepared-statement" && resource.id like "{wg}/smoke_*"
+  || resource.kind == "named-query"
+  || resource.kind == "workgroup" && resource.id == "{wg}" && context.native_operation == "athena:CreateNamedQuery") }};'''
+        _, policies, _ = a.call("GET", "/api/policies")
+        if "smoke:native" not in {p["name"] for p in policies}:
+            a.call("POST", "/api/policies", {"name": "smoke:native", "cedarSrc": src})
+
+    def native_calls(self, ds, log, aws_env, ntoken, vtoken, wg, cat, db, table, other):
+        def outcome(status, body):
+            if status == 200:
+                return "ok"
+            if body.get("__type") == "AccessDeniedException" and str(body.get("Message", "")).startswith("athena."):
+                return "refused"
+            return "target"
+
+        def direct(token, op, body):
+            status, r = self.athena_call(ds, token, op, body)
+            log.write(f"direct {op} {json.dumps(body)} -> {status} {json.dumps(r)[:300]}\n")
+            return outcome(status, r), r
+
+        def cli(op, body):
+            """One call as smoke-native, by the AWS CLI at pmon's local endpoint; ops the CLI lacks go direct."""
+            name = re.sub(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])", "-", op).lower()
+            if op in ("GetQueryResultsStream",):
+                return direct(ntoken, op, body)
+            rc, out, err = run(["aws", "athena", name, "--cli-input-json", json.dumps(body), "--endpoint-url",
+                                aws_env["AWS_ENDPOINT_URL_ATHENA"], "--output", "json"], env=aws_env, timeout=120)
+            log.write(f"cli {op} {json.dumps(body)} -> {rc} {out[:300]}{err[:300]}\n")
+            if rc == 0:
+                return "ok", json.loads(out) if out.strip() else {}
+            if "AccessDeniedException" in err and re.search(r": athena\.[a-z_]+", err):
+                return "refused", {}
+            return "target", {"error": err.strip()}
+
+        def check(who, op, body, want, call):
+            got, r = call(op, body)
+            if want == "fwd":
+                expect(got != "refused", f"{who} {op}: refused at the proxy, expected it to reach the target")
+            else:
+                expect(got == want, f"{who} {op}: {got}, expected {want} {r.get('error', '')}")
+            return r
+
+        arn = f"arn:aws:athena:us-east-1:000000000000:workgroup/{wg}"
+        spark = {"WorkGroup": wg, "SessionId": "smoke-session"}
+        calls = [
+            ("ListWorkGroups", {}, "ok"), ("GetWorkGroup", {"WorkGroup": wg}, "ok"),
+            ("GetWorkGroup", {"WorkGroup": "smoke-other"}, "refused"),
+            ("ListDataCatalogs", {}, "ok"), ("GetDataCatalog", {"Name": cat}, "fwd"), ("GetDataCatalog", {"Name": "smoke-other"}, "refused"),
+            ("ListDatabases", {"CatalogName": cat}, "ok"), ("GetDatabase", {"CatalogName": cat, "DatabaseName": db}, "ok"),
+            ("GetDatabase", {"CatalogName": cat, "DatabaseName": "smoke_other"}, "refused"),
+            ("ListTableMetadata", {"CatalogName": cat, "DatabaseName": db}, "ok"),
+            ("GetTableMetadata", {"CatalogName": cat, "DatabaseName": db, "TableName": table}, "ok"),
+            ("GetTableMetadata", {"CatalogName": cat.upper(), "DatabaseName": db.upper(), "TableName": table.upper()}, "ok"),
+            ("GetTableMetadata", {"CatalogName": cat, "DatabaseName": db, "TableName": other}, "refused"),
+            ("ListPreparedStatements", {"WorkGroup": wg}, "ok"), ("ListNamedQueries", {"WorkGroup": wg}, "ok"),
+            ("ListEngineVersions", {}, "fwd"), ("ListApplicationDPUSizes", {}, "fwd"), ("ListCapacityReservations", {}, "fwd"),
+            ("GetCapacityReservation", {"Name": "smoke-cr"}, "refused"),
+            ("GetCapacityAssignmentConfiguration", {"CapacityReservationName": "smoke-cr"}, "refused"),
+            ("ListTagsForResource", {"ResourceARN": arn}, "fwd"), ("GetResourceDashboard", {"ResourceARN": arn}, "fwd"),
+            ("CreateWorkGroup", {"Name": "smoke-other"}, "refused"), ("UpdateWorkGroup", {"WorkGroup": "smoke-other", "Description": "smoke"}, "refused"),
+            ("DeleteWorkGroup", {"WorkGroup": "smoke-other"}, "refused"),
+            ("CreateDataCatalog", {"Name": "smoke-other", "Type": "HIVE"}, "refused"),
+            ("UpdateDataCatalog", {"Name": "smoke-other", "Type": "GLUE"}, "refused"), ("DeleteDataCatalog", {"Name": "smoke-other"}, "refused"),
+            ("CreateCapacityReservation", {"Name": "smoke-cr", "TargetDpus": 24}, "refused"),
+            ("UpdateCapacityReservation", {"Name": "smoke-cr", "TargetDpus": 24}, "refused"),
+            ("CancelCapacityReservation", {"Name": "smoke-cr"}, "refused"), ("DeleteCapacityReservation", {"Name": "smoke-cr"}, "refused"),
+            ("PutCapacityAssignmentConfiguration", {"CapacityReservationName": "smoke-cr", "CapacityAssignments": []}, "refused"),
+            ("TagResource", {"ResourceARN": arn, "Tags": [{"Key": "smoke", "Value": "1"}]}, "refused"),
+            ("UntagResource", {"ResourceARN": arn, "TagKeys": ["smoke"]}, "refused"),
+            ("CreatePreparedStatement", {"WorkGroup": wg, "StatementName": "other_ps", "QueryStatement": "SELECT 1"}, "refused"),
+            ("StartSession", {"WorkGroup": wg, "EngineConfiguration": {"MaxConcurrentDpus": 2}}, "refused"),
+            ("StartCalculationExecution", {"SessionId": "smoke-session", "CodeBlock": "1"}, "refused"),
+            ("CreateNotebook", {"WorkGroup": wg, "Name": "smoke"}, "refused"),
+            ("GetSessionEndpoint", {"SessionId": "smoke-session"}, "refused"), ("ListSessions", {"WorkGroup": wg}, "refused"),
+        ]
+        for op, body, want in calls:
+            check("smoke-native", op, body, want, cli)
+        # Bodies the CLI would refuse to send still reach the proxy from other clients.
+        check("smoke-native", "NotAnOperation", {}, "refused", lambda op, body: direct(ntoken, op, body))
+        check("smoke-native", "StartCalculationExecution", spark, "refused", lambda op, body: direct(ntoken, op, body))
+        for op, body, _ in calls:
+            check("smoke-viewer", op, body, "refused", lambda op, body: direct(vtoken, op, body))
+
+        ps = {"WorkGroup": wg, "StatementName": "smoke_ps"}
+        check("smoke-native", "CreatePreparedStatement", {**ps, "QueryStatement": "SELECT 1"}, "ok", cli)
+        try:
+            check("smoke-native", "GetPreparedStatement", ps, "ok", cli)
+            check("smoke-native", "BatchGetPreparedStatement", {"WorkGroup": wg, "PreparedStatementNames": ["smoke_ps"]}, "fwd", cli)
+            check("smoke-native", "UpdatePreparedStatement", {**ps, "QueryStatement": "SELECT 2"}, "fwd", cli)
+            check("smoke-viewer", "GetPreparedStatement", ps, "refused", lambda op, body: direct(vtoken, op, body))
+        finally:
+            check("smoke-native", "DeletePreparedStatement", ps, "ok", cli)
+        nq = check("smoke-native", "CreateNamedQuery", {"Name": "smoke", "Database": db, "QueryString": "SELECT 1", "WorkGroup": wg}, "ok", cli)
+        nid = nq["NamedQueryId"]
+        try:
+            check("smoke-native", "GetNamedQuery", {"NamedQueryId": nid}, "ok", cli)
+            check("smoke-native", "BatchGetNamedQuery", {"NamedQueryIds": [nid]}, "ok", cli)
+            check("smoke-native", "UpdateNamedQuery", {"NamedQueryId": nid, "Name": "smoke", "QueryString": "SELECT 2"}, "fwd", cli)
+            check("smoke-viewer", "GetNamedQuery", {"NamedQueryId": nid}, "refused", lambda op, body: direct(vtoken, op, body))
+        finally:
+            check("smoke-native", "DeleteNamedQuery", {"NamedQueryId": nid}, "ok", cli)
+
+        def start(call):
+            r = check("smoke", "StartQueryExecution", {"QueryString": "SELECT 1", "WorkGroup": wg, "ClientRequestToken": str(uuid.uuid4()),
+                                                       "QueryExecutionContext": {"Catalog": cat, "Database": db}}, "ok", call)
+            qid, deadline = r["QueryExecutionId"], time.time() + 120
+            while time.time() < deadline:
+                state = call("GetQueryExecution", {"QueryExecutionId": qid})[1]["QueryExecution"]["Status"]["State"]
+                if state in ("SUCCEEDED", "FAILED", "CANCELLED"):
+                    break
+                time.sleep(1)
+            expect(state == "SUCCEEDED", f"SELECT 1 ended {state}")
+            return qid
+        mine, theirs = start(cli), start(lambda op, body: direct(vtoken, op, body))
+        for op, body, want in [
+            ("GetQueryExecution", {"QueryExecutionId": mine}, "ok"), ("GetQueryResults", {"QueryExecutionId": mine}, "ok"),
+            ("GetQueryRuntimeStatistics", {"QueryExecutionId": mine}, "fwd"), ("GetQueryResultsStream", {"QueryExecutionId": mine}, "refused"),
+            ("BatchGetQueryExecution", {"QueryExecutionIds": [mine]}, "ok"),
+            ("BatchGetQueryExecution", {"QueryExecutionIds": [mine, theirs]}, "refused"),
+            ("GetQueryExecution", {"QueryExecutionId": theirs}, "refused"), ("GetQueryResults", {"QueryExecutionId": theirs}, "refused"),
+            ("GetQueryRuntimeStatistics", {"QueryExecutionId": theirs}, "refused"),
+            ("StopQueryExecution", {"QueryExecutionId": theirs}, "refused"),
+        ]:
+            check("smoke-native", op, body, want, cli)
+        for who, call, own, other_id in (("smoke-native", cli, mine, theirs),
+                                         ("smoke-viewer", lambda op, body: direct(vtoken, op, body), theirs, mine)):
+            ids = check(who, "ListQueryExecutions", {"WorkGroup": wg}, "ok", call).get("QueryExecutionIds", [])
+            expect(own in ids and other_id not in ids, f"{who} ListQueryExecutions: own {own in ids}, other's {other_id in ids}, {len(ids)} ids")
+        log.write(f"native: {len(calls)} calls for each principal, plus prepared statements, named queries and executions\n")
 
     def leg_audit(self, ds):
         _, events, _ = self.admin.call("GET", "/api/audit?limit=500")

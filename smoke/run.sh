@@ -5,7 +5,7 @@
 #   smoke/run.sh                 full run, tears everything down at the end
 #   smoke/run.sh --keep          leave the stack up for debugging (prints how to stop it)
 #   smoke/run.sh --no-build      reuse the binaries from the last run
-#   smoke/run.sh --only wire     run one leg (editor|browser|wire|pmon|workflow|audit|rate|github|names)
+#   smoke/run.sh --only wire     run one leg (editor|browser|wire|pmon|workflow|audit|rate|github|names|native)
 #   smoke/run.sh --engine mysql  run one matrix row (mysql|mysql-lctn1|postgres|athena)
 set -euo pipefail
 

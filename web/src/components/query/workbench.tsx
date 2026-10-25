@@ -1,4 +1,4 @@
-'use client'
+'use client';
 
 // The SQL editor workbench (GCP BigQuery-console layout, Vercel polish).
 // Left rail: datasource picker + searchable schema/table/column explorer.
@@ -6,131 +6,114 @@
 // (Run, row limit, shortcut hint) on top, the enforcing results panel below.
 // Every query is policy-enforced server-side: ALLOW / MASK / DENY; a DENY opens
 // the JIT request dialog.
-import { useCallback, useMemo, useRef, useState } from 'react'
-import { useTranslations } from 'next-intl'
-import { Loader2, Play, Unplug } from 'lucide-react'
-import { useCatalog, useDatasources } from '@/lib/hooks'
-import { currentCatalog } from '@/lib/catalog'
-import { cn } from '@/lib/utils'
-import { Button } from '@/components/ui/button'
-import {
-  ResizableHandle,
-  ResizablePanel,
-  ResizablePanelGroup,
-} from '@/components/ui/resizable'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
-import { LoadingState } from '@/components/page-scaffold'
-import { DatasourceSelect } from '@/components/datasource-select'
-import { buildSchemaMap, buildTree } from './catalog-schema'
-import { usePersistedDatasource } from './use-persisted-datasource'
-import { usePersistedSql } from './use-persisted-sql'
-import { useResultTabs } from './use-result-tabs'
-import { SchemaTree } from './schema-tree'
-import { SqlEditor, type SqlEditorHandle } from './sql-editor'
-import { ResultTabs } from './result-tabs'
-import { QueryHistoryMenu } from './query-history-menu'
-import { RequestAccessDialog } from './request-access-dialog'
-import { CloseSessionDialog } from './close-session-dialog'
+import { useCallback, useMemo, useRef, useState } from 'react';
+import { useTranslations } from 'next-intl';
+import { Loader2, Play, Unplug } from 'lucide-react';
+import { useCatalog, useDatasources } from '@/lib/hooks';
+import { currentCatalog } from '@/lib/catalog';
+import { cn } from '@/lib/utils';
+import { Button } from '@/components/ui/button';
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { LoadingState } from '@/components/page-scaffold';
+import { DatasourceSelect } from '@/components/datasource-select';
+import { buildSchemaMap, buildTree } from './catalog-schema';
+import { usePersistedDatasource } from './use-persisted-datasource';
+import { usePersistedSql } from './use-persisted-sql';
+import { useResultTabs } from './use-result-tabs';
+import { SchemaTree } from './schema-tree';
+import { SqlEditor, type SqlEditorHandle } from './sql-editor';
+import { ResultTabs } from './result-tabs';
+import { QueryHistoryMenu } from './query-history-menu';
+import { RequestAccessDialog } from './request-access-dialog';
+import { CloseSessionDialog } from './close-session-dialog';
 
-const ROW_LIMITS = [100, 200, 500, 1000, 5000]
+const ROW_LIMITS = [100, 200, 500, 1000, 5000];
 
 // The proxy's shipped default row cap (docs/result-caps.md): a page size above it can only produce a capped run.
-const DEFAULT_CAP_ROWS = 5000
+const DEFAULT_CAP_ROWS = 5000;
 
-const RATE_BOOST_ROLE = 'system:rate-boost-2x'
+const RATE_BOOST_ROLE = 'system:rate-boost-2x';
 
 export function Workbench() {
-  const t = useTranslations('Query')
-  const [datasourceId, setDatasourceId, datasourceLoaded] = usePersistedDatasource()
-  const [sql, setSql] = usePersistedSql()
-  const [maxRows, setMaxRows] = useState('200')
-  const [requestOpen, setRequestOpen] = useState(false)
-  const [denyReason, setDenyReason] = useState<string | null>(null)
-  const [requestRoleName, setRequestRoleName] = useState<string | undefined>(undefined)
-  const [closeSessionOpen, setCloseSessionOpen] = useState(false)
-  const editorRef = useRef<SqlEditorHandle>(null)
-  const insertAtCursor = useCallback((text: string) => editorRef.current?.insertAtCursor(text), [])
+  const t = useTranslations('Query');
+  const [datasourceId, setDatasourceId, datasourceLoaded] = usePersistedDatasource();
+  const [sql, setSql] = usePersistedSql();
+  const [maxRows, setMaxRows] = useState('200');
+  const [requestOpen, setRequestOpen] = useState(false);
+  const [denyReason, setDenyReason] = useState<string | null>(null);
+  const [requestRoleName, setRequestRoleName] = useState<string | undefined>(undefined);
+  const [closeSessionOpen, setCloseSessionOpen] = useState(false);
+  const editorRef = useRef<SqlEditorHandle>(null);
+  const insertAtCursor = useCallback((text: string) => editorRef.current?.insertAtCursor(text), []);
 
-  const { data: catalog, isLoading: catalogLoading, error: catalogError } = useCatalog(datasourceId)
-  const { data: datasources, isLoading: datasourcesLoading, error: datasourcesError } = useDatasources(true)
-  const datasource = datasources?.find((item) => item.id === datasourceId)
-  const tree = useMemo(() => buildTree(catalog ?? [], datasource), [catalog, datasource])
-  const schemaMap = useMemo(() => buildSchemaMap(tree, datasource?.engine), [tree, datasource?.engine])
+  const { data: catalog, isLoading: catalogLoading, error: catalogError } = useCatalog(datasourceId);
+  const { data: datasources, isLoading: datasourcesLoading, error: datasourcesError } = useDatasources(true);
+  const datasource = datasources?.find((item) => item.id === datasourceId);
+  const tree = useMemo(() => buildTree(catalog ?? [], datasource), [catalog, datasource]);
+  const schemaMap = useMemo(() => buildSchemaMap(tree, datasource?.engine), [tree, datasource?.engine]);
 
-  const rowLimits = useMemo(() => ROW_LIMITS.filter((n) => n <= DEFAULT_CAP_ROWS).map(String), [])
-  const effectiveMaxRows = rowLimits.includes(maxRows) ? maxRows : rowLimits[rowLimits.length - 1]
+  const rowLimits = useMemo(() => ROW_LIMITS.filter((n) => n <= DEFAULT_CAP_ROWS).map(String), []);
+  const effectiveMaxRows = rowLimits.includes(maxRows) ? maxRows : rowLimits[rowLimits.length - 1];
 
-  const resultTabs = useResultTabs(datasourceId, Number(effectiveMaxRows))
-  const running = resultTabs.active?.res.loading ?? false
-  const canRun = datasourceId != null && sql.trim().length > 0
+  const resultTabs = useResultTabs(datasourceId, Number(effectiveMaxRows));
+  const running = resultTabs.active?.res.loading ?? false;
+  const canRun = datasourceId != null && sql.trim().length > 0;
 
   const handleRun = () => {
-    if (datasourceId == null) return
-    const query = editorRef.current?.currentQuery()?.trim()
-    if (query) resultTabs.run(query)
-  }
+    if (datasourceId == null) return;
+    const query = editorRef.current?.currentQuery()?.trim();
+    if (query) resultTabs.run(query);
+  };
 
   const openRequest = (reason: string | null | undefined, roleName?: string) => {
-    setDenyReason(reason ?? null)
-    setRequestRoleName(roleName)
-    setRequestOpen(true)
-  }
-  const handleRequestAccess = (reason?: string | null) => openRequest(reason)
-  const handleRequestRateBoost = (reason?: string | null) => openRequest(reason, RATE_BOOST_ROLE)
+    setDenyReason(reason ?? null);
+    setRequestRoleName(roleName);
+    setRequestOpen(true);
+  };
+  const handleRequestAccess = (reason?: string | null) => openRequest(reason);
+  const handleRequestRateBoost = (reason?: string | null) => openRequest(reason, RATE_BOOST_ROLE);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex min-h-0 flex-1">
         {/* Explorer rail (fixed-width sidebar) */}
         <aside className="flex w-72 shrink-0 flex-col border-r">
-            <div className="space-y-2 border-b p-2">
-              <p className="text-muted-foreground px-1 text-[11px] font-medium tracking-wider uppercase">
-                {t('workbench.explorer')}
-              </p>
-              {/* The picker auto-selects the first datasource, so it mounts only once the saved one is read. Its wrapper keeps Select's hidden input out of space-y. */}
-              <div className="h-7">
-                {datasourceLoaded && (
-                  <DatasourceSelect
-                    value={datasourceId}
-                    onChange={setDatasourceId}
-                    className="w-full"
-                    connectableOnly
-                  />
-                )}
-              </div>
+          <div className="space-y-2 border-b p-2">
+            <p className="text-muted-foreground px-1 text-[11px] font-medium tracking-wider uppercase">
+              {t('workbench.explorer')}
+            </p>
+            {/* The picker auto-selects the first datasource, so it mounts only once the saved one is read. Its wrapper keeps Select's hidden input out of space-y. */}
+            <div className="h-7">
+              {datasourceLoaded && (
+                <DatasourceSelect value={datasourceId} onChange={setDatasourceId} className="w-full" connectableOnly />
+              )}
             </div>
-            {datasourceId == null ? (
-              <p className="text-muted-foreground p-3 text-xs">{t('workbench.selectDatasource')}</p>
-            ) : (catalogLoading && !catalog) || datasourcesLoading ? (
-              <div className="p-2">
-                <LoadingState label={t('workbench.loadingSchema')} />
-              </div>
-            ) : catalogError || datasourcesError ? (
-              <p className="p-3 text-xs text-red-500">{t('workbench.catalogError')}</p>
-            ) : tree.length === 0 ? (
-              <p className="text-muted-foreground p-3 text-xs">
-                {t('workbench.noCatalog')}
-              </p>
-            ) : (
-              <SchemaTree
-                key={datasourceId}
-                datasourceId={datasourceId}
-                tables={tree}
-                onInsert={insertAtCursor}
-                onOpenTable={resultTabs.openTable}
-                onSelectColumn={resultTabs.openTable}
-                defaultSchemas={datasource?.defaultSchemas}
-                searchPath={resultTabs.searchPath}
-                onUseSchema={datasource?.defaultSchemaSettable ? resultTabs.setDefaultSchema : undefined}
-                currentCatalog={currentCatalog(datasource)}
-              />
-            )}
+          </div>
+          {datasourceId == null ? (
+            <p className="text-muted-foreground p-3 text-xs">{t('workbench.selectDatasource')}</p>
+          ) : (catalogLoading && !catalog) || datasourcesLoading ? (
+            <div className="p-2">
+              <LoadingState label={t('workbench.loadingSchema')} />
+            </div>
+          ) : catalogError || datasourcesError ? (
+            <p className="p-3 text-xs text-red-500">{t('workbench.catalogError')}</p>
+          ) : tree.length === 0 ? (
+            <p className="text-muted-foreground p-3 text-xs">{t('workbench.noCatalog')}</p>
+          ) : (
+            <SchemaTree
+              key={datasourceId}
+              datasourceId={datasourceId}
+              tables={tree}
+              onInsert={insertAtCursor}
+              onOpenTable={resultTabs.openTable}
+              onSelectColumn={resultTabs.openTable}
+              defaultSchemas={datasource?.defaultSchemas}
+              searchPath={resultTabs.searchPath}
+              onUseSchema={datasource?.defaultSchemaSettable ? resultTabs.setDefaultSchema : undefined}
+              currentCatalog={currentCatalog(datasource)}
+            />
+          )}
         </aside>
 
         {/* Editor + results */}
@@ -142,11 +125,7 @@ export function Workbench() {
                 <div className="flex items-center justify-between gap-2 border-b px-3 py-2">
                   <div className="flex items-center gap-1.5">
                     <Button size="sm" onClick={handleRun} disabled={!canRun}>
-                      {running ? (
-                        <Loader2 className="size-3.5 animate-spin" />
-                      ) : (
-                        <Play className="size-3.5" />
-                      )}
+                      {running ? <Loader2 className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}
                       {t('workbench.run')}
                     </Button>
                     <QueryHistoryMenu onPick={setSql} />
@@ -162,21 +141,12 @@ export function Workbench() {
                   </div>
                   <div className="flex items-center gap-2">
                     <span className="text-muted-foreground hidden text-xs sm:inline">
-                      <kbd className="bg-muted rounded border px-1 py-0.5 font-mono text-[10px]">
-                        ⌘
-                      </kbd>
-                      /
-                      <kbd className="bg-muted rounded border px-1 py-0.5 font-mono text-[10px]">
-                        Ctrl
-                      </kbd>{' '}
-                      + Enter
+                      <kbd className="bg-muted rounded border px-1 py-0.5 font-mono text-[10px]">⌘</kbd>/
+                      <kbd className="bg-muted rounded border px-1 py-0.5 font-mono text-[10px]">Ctrl</kbd> + Enter
                     </span>
                     <div className="flex items-center gap-1.5">
                       <span className="text-muted-foreground text-xs">{t('workbench.limit')}</span>
-                      <Select
-                        value={effectiveMaxRows}
-                        onValueChange={(v: string | null) => setMaxRows(v ?? '200')}
-                      >
+                      <Select value={effectiveMaxRows} onValueChange={(v: string | null) => setMaxRows(v ?? '200')}>
                         <SelectTrigger size="sm" className="w-20">
                           <SelectValue />
                         </SelectTrigger>
@@ -209,7 +179,11 @@ export function Workbench() {
             <ResizableHandle />
 
             <ResizablePanel defaultSize={48} minSize={15}>
-              <ResultTabs api={resultTabs} onRequestAccess={handleRequestAccess} onRequestRateBoost={handleRequestRateBoost} />
+              <ResultTabs
+                api={resultTabs}
+                onRequestAccess={handleRequestAccess}
+                onRequestRateBoost={handleRequestRateBoost}
+              />
             </ResizablePanel>
           </ResizablePanelGroup>
         </div>
@@ -230,5 +204,5 @@ export function Workbench() {
         />
       )}
     </div>
-  )
+  );
 }

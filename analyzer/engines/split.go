@@ -6,6 +6,7 @@ import (
 
 	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/sqlglot-go"
+	"github.com/ridi-oss/sqlglot-go/dialects"
 	exp "github.com/ridi-oss/sqlglot-go/expressions"
 )
 
@@ -33,8 +34,26 @@ type BatchStatement struct {
 	AfterEmpty bool
 }
 
+// SplitBatch is SplitBatch by the dialect of what s last observed; an unobserved session splits nothing.
+func (s *Session) SplitBatch(sql string) ([]BatchStatement, bool) {
+	if s.dialect == nil {
+		return nil, false
+	}
+	return splitBatch(sql, s.dialect)
+}
+
 // SplitBatch is SplitStatements that also marks each statement that may control the transaction.
-func SplitBatch(sql string, config *pb.EngineConfig) (statements []BatchStatement, ok bool) {
+func SplitBatch(sql string, config *pb.EngineConfig) ([]BatchStatement, bool) {
+	// The dialect decides where a statement ends: under ANSI_QUOTES `SELECT "a;b"` is two statements,
+	// and one otherwise — so split with exactly the config the target and the analyzer use.
+	session, err := newSession(config)
+	if err != nil {
+		return nil, false
+	}
+	return session.SplitBatch(sql)
+}
+
+func splitBatch(sql string, d *dialects.Dialect) (statements []BatchStatement, ok bool) {
 	defer func() {
 		if recover() != nil {
 			statements = nil
@@ -46,13 +65,6 @@ func SplitBatch(sql string, config *pb.EngineConfig) (statements []BatchStatemen
 		return nil, false
 	}
 
-	// The dialect decides where a statement ends: under ANSI_QUOTES `SELECT "a;b"` is two statements,
-	// and one otherwise — so split with exactly the config the target and the analyzer use.
-	sess, err := openSession(config)
-	if err != nil {
-		return nil, false
-	}
-	d := sess.Dialect()
 	// Parsed, not scanned for `;` — a `;` inside `'a;b'` or a BEGIN…END body ends nothing.
 	parsed, err := sqlglot.Parse(sql, d)
 	if err != nil {
@@ -73,7 +85,7 @@ func SplitBatch(sql string, config *pb.EngineConfig) (statements []BatchStatemen
 			return nil, false
 		}
 		if trimmed := strings.TrimSpace(text); trimmed != "" {
-			out = append(out, BatchStatement{SQL: trimmed, Kind: statementKind(statement, sess), MayControlTransaction: mayControlTransaction(statement, sess), AfterEmpty: afterEmpty})
+			out = append(out, BatchStatement{SQL: trimmed, Kind: statementKind(statement), MayControlTransaction: mayControlTransaction(statement), AfterEmpty: afterEmpty})
 			afterEmpty = false
 		}
 	}
@@ -85,8 +97,8 @@ func SplitBatch(sql string, config *pb.EngineConfig) (statements []BatchStatemen
 	return out, true
 }
 
-func mayControlTransaction(root exp.Expression, sess session) bool {
-	kind := statementKind(root, sess)
+func mayControlTransaction(root exp.Expression) bool {
+	kind := statementKind(root)
 	if kind != pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN {
 		return transactionControlKinds[kind]
 	}

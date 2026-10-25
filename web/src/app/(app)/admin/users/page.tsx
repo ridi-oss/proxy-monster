@@ -1,79 +1,66 @@
-'use client'
+'use client';
 
 // /admin/users — local users plus their group memberships. Group-derived roles
 // are resolved at query time by the control-plane.
 
-import { Fragment, useState } from 'react'
-import { useTranslations } from 'next-intl'
-import { Loader2, MoreHorizontal, Pencil, Plus, Trash2, UserRoundCog, Users } from 'lucide-react'
-import { toast } from 'sonner'
-import { mutate } from 'swr'
-import { deleteUser } from '@/lib/api/client'
-import { swrKeys, useUsers } from '@/lib/hooks'
-import type { AppUser } from '@/lib/api/types'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
+import { Fragment, useState } from 'react';
+import { useTranslations } from 'next-intl';
+import { Loader2, MoreHorizontal, Pencil, Plus, Trash2, UserRoundCog, Users } from 'lucide-react';
+import { toast } from 'sonner';
+import { mutate } from 'swr';
+import { deleteUser } from '@/lib/api/client';
+import { swrKeys, useUsers } from '@/lib/hooks';
+import type { AppUser } from '@/lib/api/types';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table'
-import {
-  EmptyState,
-  ErrorState,
-  LoadingState,
-  PageContainer,
-  PageHeader,
-} from '@/components/page-scaffold'
-import { UserFormDialog } from '@/components/users/user-form-dialog'
-import { UserGroupsDialog } from '@/components/users/user-groups-dialog'
+} from '@/components/ui/dropdown-menu';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { EmptyState, ErrorState, LoadingState, PageContainer, PageHeader } from '@/components/page-scaffold';
+import { UserFormDialog } from '@/components/users/user-form-dialog';
+import { UserGroupsDialog } from '@/components/users/user-groups-dialog';
 
 export default function UsersPage() {
-  const t = useTranslations('Users')
-  const { data: users, isLoading, error } = useUsers()
-  const [formOpen, setFormOpen] = useState(false)
-  const [editing, setEditing] = useState<AppUser | null>(null)
-  const [managingGroups, setManagingGroups] = useState<AppUser | null>(null)
-  const [deleting, setDeleting] = useState<AppUser | null>(null)
-  const [deleteBusy, setDeleteBusy] = useState(false)
-  const [deleteError, setDeleteError] = useState<string | null>(null)
+  const t = useTranslations('Users');
+  const { data: users, isLoading, error } = useUsers();
+  const [formOpen, setFormOpen] = useState(false);
+  const [editing, setEditing] = useState<AppUser | null>(null);
+  const [managingGroups, setManagingGroups] = useState<AppUser | null>(null);
+  const [deleting, setDeleting] = useState<AppUser | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const openCreate = () => {
-    setEditing(null)
-    setFormOpen(true)
-  }
+    setEditing(null);
+    setFormOpen(true);
+  };
 
   const openEdit = (user: AppUser) => {
-    setEditing(user)
-    setFormOpen(true)
-  }
+    setEditing(user);
+    setFormOpen(true);
+  };
 
   const confirmDelete = async (user: AppUser) => {
-    setDeleteBusy(true)
-    setDeleteError(null)
+    setDeleteBusy(true);
+    setDeleteError(null);
     try {
-      await deleteUser(user.id)
-      await mutate(swrKeys.users)
-      await mutate(swrKeys.groups)
-      for (const g of user.groups) await mutate(swrKeys.groupMembers(g.id))
-      setDeleting(null)
-      toast.success(t('list.toastDeleted', { principal: user.principal }))
+      await deleteUser(user.id);
+      await mutate(swrKeys.users);
+      await mutate(swrKeys.groups);
+      for (const g of user.groups) await mutate(swrKeys.groupMembers(g.id));
+      setDeleting(null);
+      toast.success(t('list.toastDeleted', { principal: user.principal }));
     } catch (err) {
-      setDeleteError(err instanceof Error ? err.message : t('list.deleteFailed'))
+      setDeleteError(err instanceof Error ? err.message : t('list.deleteFailed'));
     } finally {
-      setDeleteBusy(false)
+      setDeleteBusy(false);
     }
-  }
+  };
 
   return (
     <>
@@ -179,8 +166,8 @@ export default function UsersPage() {
                             <DropdownMenuItem
                               variant="destructive"
                               onClick={() => {
-                                setDeleteError(null)
-                                setDeleting((prev) => (prev?.id === user.id ? null : user))
+                                setDeleteError(null);
+                                setDeleting((prev) => (prev?.id === user.id ? null : user));
                               }}
                             >
                               <Trash2 className="size-3.5" />
@@ -204,10 +191,20 @@ export default function UsersPage() {
                               {deleteError && <p className="mt-1 text-xs text-red-500">{deleteError}</p>}
                             </div>
                             <div className="flex items-center gap-2">
-                              <Button size="xs" variant="outline" onClick={() => setDeleting(null)} disabled={deleteBusy}>
+                              <Button
+                                size="xs"
+                                variant="outline"
+                                onClick={() => setDeleting(null)}
+                                disabled={deleteBusy}
+                              >
                                 {t('list.cancel')}
                               </Button>
-                              <Button size="xs" variant="destructive" onClick={() => confirmDelete(user)} disabled={deleteBusy}>
+                              <Button
+                                size="xs"
+                                variant="destructive"
+                                onClick={() => confirmDelete(user)}
+                                disabled={deleteBusy}
+                              >
                                 {deleteBusy ? <Loader2 className="size-3 animate-spin" /> : null}
                                 {t('list.delete')}
                               </Button>
@@ -227,5 +224,5 @@ export default function UsersPage() {
       <UserFormDialog open={formOpen} onOpenChange={setFormOpen} editing={editing} />
       <UserGroupsDialog user={managingGroups} onClose={() => setManagingGroups(null)} />
     </>
-  )
+  );
 }

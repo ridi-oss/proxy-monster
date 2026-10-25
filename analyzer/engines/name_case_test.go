@@ -34,32 +34,32 @@ func athenaNames(rows ...*pb.Column) nameTarget {
 	return nameTarget{engine: pb.Engine_ATHENA, catalog: "awsdatacatalog", searchPath: []string{"sample"}, rows: rows}
 }
 
-func (n nameTarget) reported() *pb.EngineDatasource {
+func (n nameTarget) targetSettings() *pb.TargetSettings {
 	if n.engine != pb.Engine_MYSQL {
 		return nil
 	}
-	return &pb.EngineDatasource{EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(n.lctn)}
+	return &pb.TargetSettings{EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(n.lctn)}
 }
 
-func (n nameTarget) datasource(t *testing.T) Datasource {
+func (n nameTarget) datasource(t *testing.T) *Session {
 	t.Helper()
 	eng, _ := ByProto(n.engine)
-	ds, err := eng.Datasource(n.reported())
+	session, err := eng.NewSession(n.targetSettings())
 	if err != nil {
 		t.Fatalf("datasource: %v", err)
 	}
-	return ds
+	return session
 }
 
 func (n nameTarget) schema(t *testing.T, raw string) string {
 	t.Helper()
-	return n.datasource(t).IntrospectedSchema(&pb.Column{Schema: raw, Table: "_", Column: "_"}).String()
+	return n.datasource(t).CatalogSchemaName(&pb.Column{Schema: raw, Table: "_", Column: "_"}).String()
 }
 
 func (n nameTarget) canonicalRows(t *testing.T) []*pb.Column {
 	t.Helper()
 	out := make([]*pb.Column, len(n.rows))
-	for i, c := range n.datasource(t).IntrospectedColumns(n.rows) {
+	for i, c := range n.datasource(t).CatalogColumnNames(n.rows) {
 		catalog := c.Catalog().String()
 		if catalog == "" {
 			catalog = n.catalog
@@ -99,7 +99,7 @@ func (n nameTarget) functions(t *testing.T) *pb.FunctionCatalog {
 
 func (n nameTarget) facts(t *testing.T, sql string) *pb.StatementFacts {
 	t.Helper()
-	cfg := &pb.EngineConfig{Engine: n.engine, Datasource: n.reported()}
+	cfg := &pb.EngineConfig{Engine: n.engine, Target: n.targetSettings()}
 	if n.engine == pb.Engine_ATHENA {
 		cfg.Session = &pb.SessionObservation{Engine: &pb.SessionObservation_Athena{Athena: &pb.AthenaSqlContext{Workgroup: "sample"}}}
 	}
@@ -316,27 +316,22 @@ func TestNameMySQLSystemSchemasBySQL(t *testing.T) {
 func TestNamePostgresSearchPathCase(t *testing.T) {
 	quoted, folded := pbColumn("App", "t", "ssn", "VARCHAR"), pbColumn("app", "t", "ssn", "VARCHAR")
 	cases := []struct {
-		name    string
-		path    []string
-		want    *pb.Column
-		pending string
+		name string
+		path []string
+		want *pb.Column
 	}{
-		{"lowercase entry", []string{"app"}, folded, ""},
-		{"mixed-case entry as current_schemas reports it", []string{"App"}, quoted, "search_path entries are folded as unquoted identifiers"},
-		{"mixed-case entry ahead of lowercase", []string{"App", "app"}, quoted, "search_path entries are folded as unquoted identifiers"},
-		{"lowercase entry ahead of mixed-case", []string{"app", "App"}, folded, ""},
+		{"lowercase entry", []string{"app"}, folded},
+		{"mixed-case entry as current_schemas reports it", []string{"App"}, quoted},
+		{"mixed-case entry ahead of lowercase", []string{"App", "app"}, quoted},
+		{"lowercase entry ahead of mixed-case", []string{"app", "App"}, folded},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if tc.pending != "" {
-				t.Skip("pending-name-fix: " + tc.pending)
-			}
 			n := postgresNames(tc.path, quoted, folded)
 			requireReads(t, n, `SELECT ssn FROM t`, n.key(t, tc.want))
 		})
 	}
 	t.Run("entry naming no schema", func(t *testing.T) {
-		t.Skip("pending-name-fix: search_path entry APP folds onto schema app")
 		requireClosed(t, postgresNames([]string{"APP"}, quoted, folded), `SELECT ssn FROM t`)
 	})
 }
@@ -351,7 +346,6 @@ func TestNamePostgresExcludedCase(t *testing.T) {
 		requireReads(t, n, `INSERT INTO users ("SSN") SELECT ssn FROM "Users" ON CONFLICT ("SSN") DO UPDATE SET "SSN" = `+alias+`."SSN"`, n.key(t, upper), n.key(t, source))
 	}
 	t.Run("quoted EXCLUDED names no relation", func(t *testing.T) {
-		t.Skip(`pending-name-fix: "EXCLUDED" resolves as the excluded pseudo-relation`)
 		requireClosed(t, n, `INSERT INTO users (ssn) SELECT ssn FROM "Users" ON CONFLICT (ssn) DO UPDATE SET ssn = "EXCLUDED".ssn`)
 	})
 	t.Run("excluded column naming no target column", func(t *testing.T) {
@@ -448,6 +442,10 @@ func TestNameNonASCIIFolds(t *testing.T) {
 			[]spelling{{"İnfo", "ß"}, {"`İnfo`", "`ß`"}}, []spelling{{"İNFO", "ß"}, {"i̇nfo", "ß"}, {"İnfo", "ss"}}},
 		{"mysql lctn 1", mysqlNames(1, "App"), pbColumn("App", "İnfo", "ß", "VARCHAR"),
 			[]spelling{{"İnfo", "ß"}, {"İNFO", "ß"}, {"`İNFO`", "`ß`"}}, []spelling{{"i̇nfo", "ß"}, {"İnfo", "ss"}}},
+		{"mysql kelvin sign folds to k", mysqlNames(1, "App"), pbColumn("App", "Info", "\u212a", "VARCHAR"),
+			[]spelling{{"Info", "k"}, {"Info", "K"}, {"Info", "`\u212a`"}}, []spelling{{"Info", "kk"}}},
+		{"mysql accent kept", mysqlNames(1, "App"), pbColumn("App", "Info", "CAFÉ", "VARCHAR"),
+			[]spelling{{"Info", "café"}, {"Info", "CAFÉ"}, {"Info", "`café`"}}, []spelling{{"Info", "cafe"}, {"Info", "CAFE"}}},
 		{"postgres", postgresNames([]string{"public"}), pbColumn("public", "İnfo", "ß", "VARCHAR"),
 			[]spelling{{"İnfo", "ß"}, {"İNFO", "ß"}, {`"İnfo"`, `"ß"`}}, []spelling{{`"İNFO"`, "ß"}, {"i̇nfo", "ß"}, {"İnfo", "ss"}}},
 		{"postgres non-ASCII stays", postgresNames([]string{"public"}), pbColumn("public", "cafÉ", "x", "VARCHAR"),
@@ -460,10 +458,10 @@ func TestNameNonASCIIFolds(t *testing.T) {
 			n := tc.n
 			n.rows = []*pb.Column{tc.row}
 			key := n.key(t, tc.row)
-			ds := n.datasource(t)
+			session := n.datasource(t)
 			for _, s := range tc.same {
 				requireReads(t, n, "SELECT "+s.column+" FROM "+s.table, key)
-				parsed, err := ds.ParseColumn(n.catalog, n.searchPath[0], s.table, s.column)
+				parsed, err := session.ParseColumn(n.catalog, n.searchPath[0], s.table, s.column)
 				if err != nil {
 					t.Errorf("ParseColumn(%s, %s): %v", s.table, s.column, err)
 					continue

@@ -1,13 +1,13 @@
 // The Layer-1 analyzer: proxy-monster owns the column-lineage probe (probe/) and its C-shared entry
-// point (cmd/libsqlglot/), depending on sqlglot-go purely as a parser/optimizer/scope library
+// point (cmd/libanalyzer/), depending on sqlglot-go purely as a parser/optimizer/scope library
 // (expressions, generator, optimizer, schema). Owning the probe here keeps the security-critical
 // enforcement analysis versioned and evolved in this repo, while sqlglot-go stays a general-purpose
 // SQL library and a version-pinned Go module dependency — a fresh clone builds with `go build`. See
 // analyzer/README.md for how the pin is bumped.
 module github.com/ridi-oss/proxy-monster/analyzer
 
-go 1.26.0
+go 1.26.10
 
-require github.com/ridi-oss/sqlglot-go v0.37.4
+require github.com/ridi-oss/sqlglot-go v0.38.0
 
 require google.golang.org/protobuf v1.36.12

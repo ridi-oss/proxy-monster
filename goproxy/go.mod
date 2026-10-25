@@ -1,6 +1,6 @@
 module github.com/ridi-oss/proxy-monster/goproxy
 
-go 1.26.0
+go 1.26.10
 
 require (
 	github.com/alecthomas/kong v1.16.1
@@ -17,7 +17,7 @@ require (
 	github.com/pires/go-proxyproto v0.15.0
 	github.com/ridi-oss/proxy-monster/analyzer v0.0.0-00010101000000-000000000000
 	github.com/ridi-oss/proxy-monster/mysqlwire v0.1.4
-	github.com/ridi-oss/sqlglot-go v0.37.4
+	github.com/ridi-oss/sqlglot-go v0.38.0
 	github.com/testcontainers/testcontainers-go v0.44.0
 	github.com/tidwall/buntdb v1.3.2
 	golang.org/x/crypto v0.55.0
@@ -25,7 +25,7 @@ require (
 	google.golang.org/protobuf v1.36.12
 )
 
-// analyzer/engines (Go-to-Go, no cgo — cmd/libsqlglot is a separate package this never imports) is the
+// analyzer/engines (Go-to-Go, no cgo — cmd/libanalyzer is a separate package this never imports) is the
 // single source of truth for identifier normalization; introspect.go calls it directly instead of
 // duplicating the fold rules.
 replace github.com/ridi-oss/proxy-monster/analyzer => ../analyzer

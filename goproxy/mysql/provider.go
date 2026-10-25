@@ -41,11 +41,13 @@ func (t *target) Introspect(ctx context.Context) (*pb.CatalogRequest, error) {
 }
 
 func (t *target) ReadTableDetail(ctx context.Context, table *enginepb.ObjectRef) (*spi.TableDetail, error) {
-	return sqldb.ReadTableDetail(ctx, t.pool, engines.MySQL, readCatalog, readMySQLTableDetail, table)
+	return sqldb.ReadTableDetail(ctx, t.pool, Queries, readCatalog, readMySQLTableDetail, table)
 }
 
 // readCatalog is MySQL's one catalog, whatever the database.
-func readCatalog(context.Context, *sql.Conn) (string, error) { return "def", nil }
+func readCatalog(context.Context, *sql.Conn) (string, error) {
+	return engines.MySQL.CatalogName("").String(), nil
+}
 
 func (t *target) NewWireServer(listen spi.Listen, client spi.ControlPlane, tlsProvider func() (*tls.Config, error)) spi.WireServer {
 	return newServer(listen, t, client, tlsProvider)
@@ -56,6 +58,6 @@ func (t *target) Close() error { return t.pool.Close() }
 var (
 	_ spi.Provider   = Provider{}
 	_ spi.Target     = (*target)(nil)
-	_ spi.Session    = (*RunSession)(nil)
+	_ spi.Connection = (*connection)(nil)
 	_ spi.WireServer = (*Server)(nil)
 )

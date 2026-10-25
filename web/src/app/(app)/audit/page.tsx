@@ -1,103 +1,80 @@
-'use client'
+'use client';
 
 // /audit — live audit log merging Feed + Audit history (docs/web-console.md).
 // Polls GET /api/audit every 5 s by default; the pause toggle flips the interval
 // to 0 so SWR stops re-fetching. Filters are all client-side against the
 // 200-event window returned by the API.
-import Link from 'next/link'
-import { useMemo, useState } from 'react'
-import { useTranslations } from 'next-intl'
-import type { AuditEvent, Decision } from '@/lib/api/types'
-import { useAuditEvents, useMePermissions } from '@/lib/hooks'
-import { decisionTone } from '@/lib/decision'
-import { cn } from '@/lib/utils'
-import { PageHeader } from '@/components/page-scaffold'
-import { EmptyState, ErrorState } from '@/components/page-scaffold'
-import { Input } from '@/components/ui/input'
-import { Switch } from '@/components/ui/switch'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
-import {
-  Sheet,
-  SheetContent,
-  SheetHeader,
-  SheetTitle,
-  SheetDescription,
-} from '@/components/ui/sheet'
-import { DecisionRow, DecisionRowSkeleton } from '@/components/audit/decision-row'
-import { DecisionDetail } from '@/components/audit/decision-detail'
+import Link from 'next/link';
+import { useMemo, useState } from 'react';
+import { useTranslations } from 'next-intl';
+import type { AuditEvent, Decision } from '@/lib/api/types';
+import { useAuditEvents, useMePermissions } from '@/lib/hooks';
+import { decisionTone } from '@/lib/decision';
+import { cn } from '@/lib/utils';
+import { PageHeader } from '@/components/page-scaffold';
+import { EmptyState, ErrorState } from '@/components/page-scaffold';
+import { Input } from '@/components/ui/input';
+import { Switch } from '@/components/ui/switch';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet';
+import { DecisionRow, DecisionRowSkeleton } from '@/components/audit/decision-row';
+import { DecisionDetail } from '@/components/audit/decision-detail';
 
 // Decisions we can filter to (ALL means no filter applied).
-type FilterDecision = Decision | 'ALL'
+type FilterDecision = Decision | 'ALL';
 
 /** Stable row key: server id when present, else ts + principal + statement length + index. */
 function rowKey(r: AuditEvent, i: number): string {
-  return r.id != null ? String(r.id) : `${r.ts ?? 'na'}|${r.principal}|${r.statement.length}|${i}`
+  return r.id != null ? String(r.id) : `${r.ts ?? 'na'}|${r.principal}|${r.statement.length}|${i}`;
 }
 
 export default function AuditPage() {
-  const t = useTranslations('Audit')
-  const [live, setLive] = useState(true)
-  const [decisionFilter, setDecisionFilter] = useState<FilterDecision>('ALL')
-  const [search, setSearch] = useState('')
-  const [selectedKey, setSelectedKey] = useState<string | null>(null)
+  const t = useTranslations('Audit');
+  const [live, setLive] = useState(true);
+  const [decisionFilter, setDecisionFilter] = useState<FilterDecision>('ALL');
+  const [search, setSearch] = useState('');
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
 
   // refreshInterval=0 stops SWR polling; 5000 gives a 5-second live feed.
   const { data, error, isLoading } = useAuditEvents(200, {
     refreshInterval: live ? 5000 : 0,
-  })
-  const { data: permissions } = useMePermissions()
+  });
+  const { data: permissions } = useMePermissions();
 
-  const records = useMemo(() => data ?? [], [data])
+  const records = useMemo(() => data ?? [], [data]);
 
   // Client-side filter: decision type + text search (principal OR statement).
   const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase()
+    const q = search.trim().toLowerCase();
     return records.filter((d) => {
-      if (decisionFilter !== 'ALL' && d.decision !== decisionFilter) return false
-      if (q && !d.principal.toLowerCase().includes(q) && !d.statement.toLowerCase().includes(q))
-        return false
-      return true
-    })
-  }, [records, decisionFilter, search])
+      if (decisionFilter !== 'ALL' && d.decision !== decisionFilter) return false;
+      if (q && !d.principal.toLowerCase().includes(q) && !d.statement.toLowerCase().includes(q)) return false;
+      return true;
+    });
+  }, [records, decisionFilter, search]);
 
   // Per-decision count summary over the current filtered set.
   const counts = useMemo(() => {
-    const c: Record<Decision, number> = { ALLOW: 0, MASK: 0, DENY: 0, ERROR: 0 }
-    for (const d of filtered) c[d.decision] += 1
-    return c
-  }, [filtered])
+    const c: Record<Decision, number> = { ALLOW: 0, MASK: 0, DENY: 0, ERROR: 0 };
+    for (const d of filtered) c[d.decision] += 1;
+    return c;
+  }, [filtered]);
 
-  const rows = useMemo(
-    () => filtered.map((r, i) => ({ key: rowKey(r, i), record: r })),
-    [filtered],
-  )
+  const rows = useMemo(() => filtered.map((r, i) => ({ key: rowKey(r, i), record: r })), [filtered]);
 
-  const selectedRecord = rows.find((r) => r.key === selectedKey)?.record ?? null
+  const selectedRecord = rows.find((r) => r.key === selectedKey)?.record ?? null;
 
   return (
     // Full-height flex column so the list scrolls inside the shell's overflow area.
     <div className="flex h-full min-h-0 flex-col">
       <PageHeader
         title={t('log.title')}
-        subtitle={
-          permissions?.canReadAllAudit === false
-            ? t('log.subtitleMine')
-            : t('log.subtitleAll')
-        }
+        subtitle={permissions?.canReadAllAudit === false ? t('log.subtitleMine') : t('log.subtitleAll')}
         actions={
           // Live indicator: pulsing green dot + pause toggle.
           <div className="flex items-center gap-2.5">
             <span
-              className={cn(
-                'relative flex size-2 shrink-0',
-                live ? 'text-emerald-500' : 'text-zinc-500',
-              )}
+              className={cn('relative flex size-2 shrink-0', live ? 'text-emerald-500' : 'text-zinc-500')}
               aria-label={live ? t('live.live') : t('live.paused')}
             >
               {/* Ping animation when live */}
@@ -105,19 +82,11 @@ export default function AuditPage() {
                 <span className="absolute inline-flex size-full animate-ping rounded-full bg-emerald-400 opacity-75" />
               )}
               <span
-                className={cn(
-                  'relative inline-flex size-2 rounded-full',
-                  live ? 'bg-emerald-500' : 'bg-zinc-500',
-                )}
+                className={cn('relative inline-flex size-2 rounded-full', live ? 'bg-emerald-500' : 'bg-zinc-500')}
               />
             </span>
             <span className="text-muted-foreground text-xs">{live ? t('live.live') : t('live.paused')}</span>
-            <Switch
-              size="sm"
-              checked={live}
-              onCheckedChange={setLive}
-              aria-label={t('live.toggle')}
-            />
+            <Switch size="sm" checked={live} onCheckedChange={setLive} aria-label={t('live.toggle')} />
           </div>
         }
       />
@@ -128,9 +97,7 @@ export default function AuditPage() {
           {/* Decision filter */}
           <Select
             value={decisionFilter}
-            onValueChange={(v: string | null) =>
-              setDecisionFilter((v ?? 'ALL') as FilterDecision)
-            }
+            onValueChange={(v: string | null) => setDecisionFilter((v ?? 'ALL') as FilterDecision)}
           >
             <SelectTrigger size="sm" className="w-[120px]">
               <SelectValue placeholder={t('filter.allDecisions')}>
@@ -170,10 +137,7 @@ export default function AuditPage() {
           ).map(([d, n]) => (
             <span
               key={d}
-              className={cn(
-                'rounded border px-1.5 py-0.5 font-mono text-[10px] font-semibold',
-                decisionTone[d].badge,
-              )}
+              className={cn('rounded border px-1.5 py-0.5 font-mono text-[10px] font-semibold', decisionTone[d].badge)}
             >
               {n} {d}
             </span>
@@ -215,7 +179,7 @@ export default function AuditPage() {
       <Sheet
         open={selectedRecord !== null}
         onOpenChange={(open) => {
-          if (!open) setSelectedKey(null)
+          if (!open) setSelectedKey(null);
         }}
       >
         <SheetContent
@@ -232,10 +196,7 @@ export default function AuditPage() {
             <div className="flex h-full min-h-0 flex-col">
               {selectedRecord.id != null && (
                 <div className="flex flex-wrap items-center gap-3 border-b px-5 py-2 text-xs">
-                  <Link
-                    href={`/audit/${selectedRecord.id}`}
-                    className="text-primary underline underline-offset-4"
-                  >
+                  <Link href={`/audit/${selectedRecord.id}`} className="text-primary underline underline-offset-4">
                     {t('sheet.permalink')}
                   </Link>
                   {selectedRecord.decision === 'DENY' && (
@@ -254,5 +215,5 @@ export default function AuditPage() {
         </SheetContent>
       </Sheet>
     </div>
-  )
+  );
 }

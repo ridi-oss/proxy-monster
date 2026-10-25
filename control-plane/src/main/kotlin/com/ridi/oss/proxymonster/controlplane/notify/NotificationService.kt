@@ -93,14 +93,7 @@ class NotificationService(
                 // the approver side is those who got it (recomputing eligibility would skip an approver whose
                 // role was revoked since, stranding their live buttons), the requester side is the requester's
                 // own receipt. A self-approving requester holds both threads and both are updated.
-                else -> buildList {
-                    for (r in store.recipientsOfRequest(c, req.id)) add(r to NotificationKind.APPROVER)
-                    for (r in listOfNotNull(req.decidedBy, req.executedBy).filter { it.isNotBlank() }) {
-                        add(r to NotificationKind.APPROVER)
-                    }
-                    add(req.principal to NotificationKind.REQUESTER)
-                    for (cc in req.ccs) add(cc to NotificationKind.CC)
-                }
+                else -> threadTargets(c, req)
             }
             for (transport in transports.filter { it.serves(req) }) {
                 for ((recipient, kind) in targetsOn(transport, req, targets)) {
@@ -108,6 +101,15 @@ class NotificationService(
                 }
             }
         }.onFailure { log.warn("notification emit failed task={} event={}", req.id, event.wire, it) }
+    }
+
+    private fun threadTargets(c: Connection, req: AccessRequest): List<Pair<String, NotificationKind>> = buildList {
+        for (r in store.recipientsOfRequest(c, req.id)) add(r to NotificationKind.APPROVER)
+        for (r in listOfNotNull(req.decidedBy, req.executedBy).filter { it.isNotBlank() }) {
+            add(r to NotificationKind.APPROVER)
+        }
+        add(req.principal to NotificationKind.REQUESTER)
+        for (cc in req.ccs) add(cc to NotificationKind.CC)
     }
 
     /** A task-addressed transport gets one row at the task's address, or none; a person-addressed one gets [targets]. */
@@ -128,6 +130,35 @@ class NotificationService(
                 store.enqueue(c, req.id, NotificationEvent.TASK_CC_ADDED, transport.name, cc, NotificationKind.CC)
             }
         }.onFailure { log.warn("notification emit failed task={} event=task.cc_added", req.id, it) }
+    }
+
+    /** Redraw every message of [req] that shows its CC list. */
+    fun emitCcChanged(c: Connection, req: AccessRequest) {
+        if (!enabled) return
+        runCatching {
+            val targets = threadTargets(c, req)
+            for (transport in transports.filter { it.supportsReplies && it.serves(req) }) {
+                for ((recipient, kind) in targetsOn(transport, req, targets)) {
+                    store.enqueue(c, req.id, NotificationEvent.TASK_CC_CHANGED, transport.name, recipient, kind)
+                }
+            }
+        }.onFailure { log.warn("notification emit failed task={} event=task.cc_changed", req.id, it) }
+    }
+
+    /** [emitCcAdded] and [emitCcChanged] on their own transaction, then wake the drainer. */
+    fun emitCcAddedEvent(req: AccessRequest, cc: String) {
+        if (!enabled) return
+        runCatching { store.inTransaction { c -> emitCcAdded(c, req, cc); emitCcChanged(c, req) } }
+            .onFailure { log.warn("notification emit failed task={} event=task.cc_added", req.id, it) }
+        wake()
+    }
+
+    /** [emitCcChanged] on its own transaction, then wake the drainer. */
+    fun emitCcChangedEvent(req: AccessRequest) {
+        if (!enabled) return
+        runCatching { store.inTransaction { c -> emitCcChanged(c, req) } }
+            .onFailure { log.warn("notification emit failed task={} event=task.cc_changed", req.id, it) }
+        wake()
     }
 
     /** [emit] on its own transaction, then wake the drainer; for an event with no task change to join. */
@@ -253,8 +284,10 @@ class NotificationService(
                 accessStore.getRequest(thread.taskId)?.ccs?.contains(thread.recipient) != true
             val locale = store.localeOf(thread.recipient) ?: defaultLocale
             for ((event, sourceThread) in store.eventsAfter(thread.taskId, thread.lastEventId)) {
-                if (!removed && event.kind != RequestEventKind.REQUESTED.wire && sourceThread != thread.externalRef && !event.deleted) {
-                    when (val r = transport.reply(thread.externalRef, renderer.threadLine(event, locale))) {
+                if (!removed && event.kind != RequestEventKind.REQUESTED.wire && sourceThread != thread.externalRef && !event.deleted &&
+                    !event.byMention
+                ) {
+                    when (val r = transport.reply(thread.externalRef, renderer.threadLine(event, locale, namesIn(event, transport)))) {
                         is DeliveryResult.Sent -> store.addPost(event.id, r.externalRef)
                         is DeliveryResult.Retry -> break
                         is DeliveryResult.Drop -> log.warn("thread reply dropped task={} event={}: {}", thread.taskId, event.id, r.reason)
@@ -269,11 +302,20 @@ class NotificationService(
     suspend fun propagate(event: RequestEvent) {
         val transport = transports.firstOrNull { it.supportsReplies } ?: return
         for (ref in store.postsOf(event.id)) {
-            val text = if (event.deleted) null else renderer.threadLine(event, defaultLocale)
+            val text = if (event.deleted) null else renderer.threadLine(event, defaultLocale, namesIn(event, transport))
             val result = runCatching { transport.editReply(ref, text) }.getOrElse { DeliveryResult.Retry(it.message ?: "") }
             if (result !is DeliveryResult.Sent) log.warn("thread reply edit failed event={} ref={}: {}", event.id, ref, result)
         }
     }
+
+    // A CC added by an @-mention in a thread: the mention, posted into every thread, already says so.
+    private val RequestEvent.byMention: Boolean get() =
+        kind == RequestEventKind.CC_ADDED.wire && origin == com.ridi.oss.proxymonster.controlplane.Channel.SLACK.contextValue
+
+    private suspend fun namesIn(event: RequestEvent, transport: NotificationTransport): Map<String, String> =
+        listOfNotNull(event.actor, event.body?.takeIf { event.kind in NotificationRenderer.NAMES_IN_BODY })
+            .mapNotNull { p -> runCatching { transport.nameOf(p) }.getOrNull()?.let { p to it } }
+            .toMap()
 
     private suspend fun deliver(row: OutboxRow) {
         val transport = transports.firstOrNull { it.name == row.transport }
@@ -288,8 +330,9 @@ class NotificationService(
             ?: return store.markDead(row.id, "task no longer exists")
 
         val locale = store.localeOf(row.recipient) ?: defaultLocale
-        val message = buildMessage(row, req, transport)
         val existingRef = store.externalRef(row.taskId, transport.name, row.recipient, row.kind)
+        if (row.event == NotificationEvent.TASK_CC_CHANGED) return redraw(row, req, transport, existingRef, locale)
+        val message = buildMessage(row, req, transport)
 
         // A non-update row that already left a ref was delivered by a prior attempt whose markSent did not
         // commit (the post succeeded, then the bookkeeping failed). Re-posting would double-send and strand
@@ -327,6 +370,17 @@ class NotificationService(
         }
     }
 
+    /** Edit the message [row] names as its last event drew it; a thread not yet delivered gets the new list when it is. */
+    private suspend fun redraw(row: OutboxRow, req: AccessRequest, transport: NotificationTransport, ref: String?, locale: String) {
+        val shown = ref?.let { store.lastDrawn(row, REDRAWABLE) } ?: return store.markSent(row.id)
+        val message = buildMessage(row.copy(event = shown), req, transport).copy(redraw = true)
+        when (val result = transport.update(ref, message, locale)) {
+            is DeliveryResult.Sent -> store.markSent(row.id)
+            is DeliveryResult.Drop -> store.markDead(row.id, result.reason)
+            is DeliveryResult.Retry -> retryOrGiveUp(row, result.reason)
+        }
+    }
+
     /** Retry [row] with backoff, or dead-letter it once [MAX_ATTEMPTS] is reached. */
     private fun retryOrGiveUp(row: OutboxRow, reason: String?) {
         if (row.attempts + 1 >= MAX_ATTEMPTS) {
@@ -356,6 +410,8 @@ class NotificationService(
         val show = row.event != NotificationEvent.TASK_SUBMITTED &&
             discloseStatement(disclosure, pending = pending, cleared = cleared)
         val statement = renderStatement(req.sql, show, transport.statementHardLimit)
+            // The requester's receipt started without the statement, so its thread never got one to point at.
+            .let { if (show && cleared && row.kind != NotificationKind.REQUESTER) it.copy(full = req.sql) else it }
         // The requester's receipt names who was actually asked — the durable task.requested recipients, not a
         // fresh eligibility recompute that role churn between enqueue and delivery could drift from (and that
         // would re-run Cedar per candidate). Plain identities, resolved to display by the transport without an
@@ -392,6 +448,7 @@ class NotificationService(
             spentRate = req.denyReason.takeIf { req.kind == "RATE_RESET" },
             roleName = req.roleName,
             reason = req.reason,
+            title = req.title,
             statement = statement,
             decidedBy = req.decidedBy,
             approved = when (req.status) {
@@ -415,7 +472,7 @@ class NotificationService(
                 ?.let { FailedStatement(it.meta.ordinal, it.sql!!) },
             forcedBy = req.forceRunBy,
             approvers = if (transport.sharedAudience) store.approversOf(req.id) else emptyList(),
-            ccs = if (transport.sharedAudience) req.ccs else emptyList(),
+            ccs = req.ccs,
         )
     }
 
@@ -483,6 +540,9 @@ class NotificationService(
     companion object {
         const val DRAIN_BATCH = 32
         const val MAX_ATTEMPTS = 6
+        private val REDRAWABLE = NotificationEvent.entries.filter {
+            (it.isCreation || it.isUpdate) && it != NotificationEvent.TASK_CC_CHANGED
+        }
         private const val BACKOFF_BASE_SEC = 15L
         private const val BACKOFF_CAP_SEC = 900L
     }

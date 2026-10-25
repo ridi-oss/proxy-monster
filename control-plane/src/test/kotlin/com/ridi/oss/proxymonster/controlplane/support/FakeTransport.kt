@@ -72,6 +72,8 @@ class FakeTransport(
         val statement: RenderedStatement = RenderedStatement(null, false),
         val actions: Set<NotificationAction> = emptySet(),
         val revision: Int = 1,
+        val ccs: List<String> = emptyList(),
+        val redraw: Boolean = false,
     )
 
     val delivered: MutableList<Delivered> = Collections.synchronizedList(mutableListOf())
@@ -97,7 +99,8 @@ class FakeTransport(
     }
 
     override suspend fun update(externalRef: String, message: NotificationMessage, locale: String): DeliveryResult {
-        updated += Updated(externalRef, message.event, message.statement, message.actions, message.revision)
+        updated += Updated(externalRef, message.event, message.statement, message.actions, message.revision, message.ccs, message.redraw)
+        if (supportsReplies) return DeliveryResult.Sent(externalRef)
         return updateResult
     }
 

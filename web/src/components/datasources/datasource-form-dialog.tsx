@@ -1,4 +1,4 @@
-'use client'
+'use client';
 
 // Add / edit a datasource (docs/datasource-registration.md). This is OPTIONAL pre-provisioning: only the name is
 // required. The connection fields (host/port/database) are advisory — the proxy is authoritative and
@@ -6,14 +6,14 @@
 // a target, so it stores no secret. The form key forces a full remount on each open so state initialises
 // cleanly without an explicit reset effect.
 
-import { useEffect, useState } from 'react'
-import { useTranslations } from 'next-intl'
-import { Loader2 } from 'lucide-react'
-import { createDatasource, updateDatasource } from '@/lib/api/client'
-import { mutate } from 'swr'
-import { swrKeys } from '@/lib/hooks'
-import type { Datasource, DatasourceInput, Engine } from '@/lib/api/types'
-import { Button } from '@/components/ui/button'
+import { useEffect, useState } from 'react';
+import { useTranslations } from 'next-intl';
+import { Loader2 } from 'lucide-react';
+import { createDatasource, updateDatasource } from '@/lib/api/client';
+import { mutate } from 'swr';
+import { swrKeys } from '@/lib/hooks';
+import type { Datasource, DatasourceInput, Engine } from '@/lib/api/types';
+import { Button } from '@/components/ui/button';
 import {
   Dialog,
   DialogContent,
@@ -21,24 +21,18 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from '@/components/ui/dialog'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
+} from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
-const DEFAULT_PORT: Record<Engine, number> = { postgres: 5432, mysql: 3306 }
+const DEFAULT_PORT: Record<Engine, number> = { postgres: 5432, mysql: 3306 };
 
 interface Props {
-  open: boolean
-  onOpenChange: (open: boolean) => void
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
   /** null = create mode; a Datasource = edit mode. */
-  editing: Datasource | null
+  editing: Datasource | null;
 }
 
 export function DatasourceFormDialog({ open, onOpenChange, editing }: Props) {
@@ -55,76 +49,64 @@ export function DatasourceFormDialog({ open, onOpenChange, editing }: Props) {
         )}
       </DialogContent>
     </Dialog>
-  )
+  );
 }
 
-function DatasourceForm({
-  editing,
-  onClose,
-}: {
-  editing: Datasource | null
-  onClose: () => void
-}) {
-  const t = useTranslations('Datasources')
-  const [name, setName] = useState(editing?.name ?? '')
-  const [engine, setEngine] = useState<Engine>((editing?.engine as Engine) ?? 'postgres')
-  const [host, setHost] = useState(editing?.host ?? '')
-  const [port, setPort] = useState<string>(String(editing?.port ?? DEFAULT_PORT.postgres))
-  const [dbName, setDbName] = useState(editing?.dbName ?? '')
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+function DatasourceForm({ editing, onClose }: { editing: Datasource | null; onClose: () => void }) {
+  const t = useTranslations('Datasources');
+  const [name, setName] = useState(editing?.name ?? '');
+  const [engine, setEngine] = useState<Engine>((editing?.engine as Engine) ?? 'postgres');
+  const [host, setHost] = useState(editing?.host ?? '');
+  const [port, setPort] = useState<string>(String(editing?.port ?? DEFAULT_PORT.postgres));
+  const [dbName, setDbName] = useState(editing?.dbName ?? '');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   // Auto-fill port default when engine changes in create mode.
   useEffect(() => {
-    if (!editing) setPort(String(DEFAULT_PORT[engine]))
-  }, [engine, editing])
+    if (!editing) setPort(String(DEFAULT_PORT[engine]));
+  }, [engine, editing]);
 
-  const portNum = Number(port)
+  const portNum = Number(port);
   // Only the name is required — connection details are advisory pre-provisioning (the proxy fills them
   // in authoritatively on registration). The port still has to be a sensible number when present.
-  const valid = name.trim() !== '' && portNum > 0 && portNum <= 65535
+  const valid = name.trim() !== '' && portNum > 0 && portNum <= 65535;
 
   const handleSubmit = async () => {
-    if (!valid) return
-    setSaving(true)
-    setError(null)
+    if (!valid) return;
+    setSaving(true);
+    setError(null);
     const input: DatasourceInput = {
       name: name.trim(),
       engine,
       host: host.trim(),
       port: portNum,
       dbName: dbName.trim(),
-    }
+    };
     try {
       if (editing) {
-        await updateDatasource(editing.id, input)
+        await updateDatasource(editing.id, input);
       } else {
-        await createDatasource(input)
+        await createDatasource(input);
       }
-      await mutate(swrKeys.datasources)
-      onClose()
+      await mutate(swrKeys.datasources);
+      onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('form.saveFailed'))
+      setError(err instanceof Error ? err.message : t('form.saveFailed'));
     } finally {
-      setSaving(false)
+      setSaving(false);
     }
-  }
+  };
 
   return (
     <>
       <DialogHeader>
-        <DialogTitle>
-          {editing ? t('form.editTitle', { name: editing.name }) : t('form.addTitle')}
-        </DialogTitle>
-        <DialogDescription>
-          {editing ? t('form.editDescription') : t('form.addDescription')}
-        </DialogDescription>
+        <DialogTitle>{editing ? t('form.editTitle', { name: editing.name }) : t('form.addTitle')}</DialogTitle>
+        <DialogDescription>{editing ? t('form.editDescription') : t('form.addDescription')}</DialogDescription>
       </DialogHeader>
 
       {error && (
-        <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-500">
-          {error}
-        </div>
+        <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-500">{error}</div>
       )}
 
       <div className="space-y-3 py-1">
@@ -153,18 +135,14 @@ function DatasourceForm({
               disabled={editing !== null}
             >
               <SelectTrigger size="sm" className="w-full">
-                <SelectValue>
-                  {(v: string | null) => (v === 'mysql' ? 'MySQL' : 'PostgreSQL')}
-                </SelectValue>
+                <SelectValue>{(v: string | null) => (v === 'mysql' ? 'MySQL' : 'PostgreSQL')}</SelectValue>
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="postgres">PostgreSQL</SelectItem>
                 <SelectItem value="mysql">MySQL</SelectItem>
               </SelectContent>
             </Select>
-            {editing && (
-              <p className="text-muted-foreground text-xs">{t('form.engineImmutableHint')}</p>
-            )}
+            {editing && <p className="text-muted-foreground text-xs">{t('form.engineImmutableHint')}</p>}
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="ds-port">{t('form.labelPort')}</Label>
@@ -183,23 +161,13 @@ function DatasourceForm({
         {/* Host */}
         <div className="space-y-1.5">
           <Label htmlFor="ds-host">{t('form.labelHost')}</Label>
-          <Input
-            id="ds-host"
-            value={host}
-            onChange={(e) => setHost(e.target.value)}
-            placeholder="db.internal"
-          />
+          <Input id="ds-host" value={host} onChange={(e) => setHost(e.target.value)} placeholder="db.internal" />
         </div>
 
         {/* Database */}
         <div className="space-y-1.5">
           <Label htmlFor="ds-db">{t('form.labelDatabase')}</Label>
-          <Input
-            id="ds-db"
-            value={dbName}
-            onChange={(e) => setDbName(e.target.value)}
-            placeholder="acme"
-          />
+          <Input id="ds-db" value={dbName} onChange={(e) => setDbName(e.target.value)} placeholder="acme" />
         </div>
 
         <p className="text-muted-foreground text-xs">{t('form.advisoryHint')}</p>
@@ -215,5 +183,5 @@ function DatasourceForm({
         </Button>
       </DialogFooter>
     </>
-  )
+  );
 }

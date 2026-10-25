@@ -12,10 +12,10 @@
 # bypass) — the app itself refuses to boot with it on in a production-looking context unless PM_DEV
 # is also set, but set PM_AUTH_DEBUG=false explicitly for any real deployment regardless.
 
-# Go toolchain for the analyzer's native lib (cmd/libsqlglot, cgo c-shared build). Pulled from the
+# Go toolchain for the analyzer's native lib (cmd/libanalyzer, cgo c-shared build). Pulled from the
 # official Go image rather than apt/curl so the version matches mise.toml's `go = "1.26"` exactly
 # and multi-arch (amd64/arm64) resolution is automatic.
-FROM golang:1.26-bookworm AS go
+FROM golang:1.26.10-bookworm AS go
 
 # eclipse-temurin's Debian ("noble") variant, not alpine: the analyzer's native lib is built for
 # glibc (analyzer/jvm/build.gradle.kts's zig targets are explicitly *-linux-gnu), and cedar-java's
@@ -78,6 +78,11 @@ FROM eclipse-temurin:24-jre-noble
 # instead and don't need this at all).
 RUN apt-get update && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
+
+# CVE-2026-111943: the JDK's own cacerts still trusts emSign ECC Root CA - G3, whose intermediates' keys leaked.
+RUN alias="$(keytool -list -cacerts -storepass changeit | grep -i '^cn_emsign_ecc_root_ca__g3' | sed 's/, [A-Z][a-z][a-z] [0-9].*//')" \
+    && if [ -n "$alias" ]; then keytool -delete -cacerts -storepass changeit -alias "$alias"; fi \
+    && ! keytool -list -cacerts -storepass changeit | grep -qi 'emsign_ecc_root_ca__g3'
 
 RUN groupadd --system --gid 10001 pm && useradd --system --uid 10001 --gid pm --create-home pm
 WORKDIR /app

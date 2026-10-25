@@ -432,7 +432,7 @@ class ConfigGuardTest {
         assertFailsWith<IllegalArgumentException> { Config.fromEnv(envOf("PM_INSTANCE_DESCRIPTION" to "x".repeat(501))) }
     }
 
-    @Test fun `PM_CI_OIDC_ISSUERS parses name=issuer entries sharing one audience and rejects malformed ones`() {
+    @Test fun `PM_CI_OIDC_ISSUERS parses name=issuer entries sharing one audience and rejects malformed ones, and http outside PM_AUTH_DEBUG`() {
         assertEquals(emptyList(), Config.fromEnv(envOf()).ciOidcIssuers)
         val list = "github=https://token.actions.githubusercontent.com, gitlab=https://gitlab.com"
         assertEquals(
@@ -446,8 +446,15 @@ class ConfigGuardTest {
             listOf("proxy-monster", "proxy-monster"),
             Config.fromEnv(envOf("PM_CI_OIDC_ISSUERS" to list, "PM_CI_OIDC_AUDIENCE" to "proxy-monster")).ciOidcIssuers.map { it.audience },
         )
+        assertEquals(
+            listOf("http://127.0.0.1:8200"),
+            Config.fromEnv(envOf("PM_CI_OIDC_ISSUERS" to "local=http://127.0.0.1:8200")).ciOidcIssuers.map { it.issuer },
+        )
+        assertFailsWith<IllegalArgumentException> {
+            Config.fromEnv(productionEnv("PM_CI_OIDC_ISSUERS" to "github=http://token.actions.githubusercontent.com"))
+        }
+        assertEquals(1, Config.fromEnv(productionEnv("PM_CI_OIDC_ISSUERS" to "github=https://token.actions.githubusercontent.com")).ciOidcIssuers.size)
         listOf(
-            "github=http://token.actions.githubusercontent.com",
             "github=",
             "GitHub=https://token.actions.githubusercontent.com",
             "https://token.actions.githubusercontent.com",

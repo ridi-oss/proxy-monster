@@ -220,6 +220,7 @@ class GitHubAdapter(
             canBeRebased = canBeRebased,
             merged = merged,
             mergedAt = if (hasMergedAt()) mergedAt.instant() else null,
+            mergedBy = if (hasMergedBy()) mergedBy.model() else null,
             mergeCommit = if (hasMergeCommit()) mergeCommit else null,
             headSha = headSha,
             baseRef = baseRef,
@@ -250,6 +251,7 @@ class GitHubAdapter(
                         it.required,
                         CheckStatus.valueOf(it.status.name),
                         if (it.conclusion == CheckConclusionPb.CHECK_CONCLUSION_UNSPECIFIED) null else CheckConclusion.valueOf(it.conclusion.name),
+                        it.own,
                     )
                 }
             } else {
@@ -257,7 +259,10 @@ class GitHubAdapter(
             },
             files = filesList.map { ChangedFile(it.path, FileChange.valueOf(it.change.name)) },
             commits = commitsList.map {
-                CommitAuthor(if (it.hasUserId()) it.userId else null, if (it.hasEmail()) it.email else null, it.merge)
+                CommitAuthor(
+                    if (it.hasUserId()) it.userId else null, if (it.hasEmail()) it.email else null, it.merge,
+                    if (it.hasLogin()) it.login else null,
+                )
             },
         )
     }

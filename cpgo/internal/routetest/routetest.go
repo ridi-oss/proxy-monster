@@ -15,7 +15,9 @@ import (
 	"github.com/ridi-oss/proxy-monster/cpgo/front"
 	"github.com/ridi-oss/proxy-monster/cpgo/internal/dbtest"
 	"github.com/ridi-oss/proxy-monster/cpgo/routes"
+	"github.com/ridi-oss/proxy-monster/cpgo/routes/oauth"
 	"github.com/ridi-oss/proxy-monster/cpgo/routes/oidc"
+	"github.com/ridi-oss/proxy-monster/cpgo/routes/workload"
 	"github.com/ridi-oss/proxy-monster/cpgo/session"
 )
 
@@ -33,7 +35,7 @@ type fakeAuthz struct {
 	Resources []bridge.Resource
 	Scopes    []bridge.Scope
 	Changed   int
-	// Notified is each request-notified signal, as "id:event".
+	// Notified is each request-notified signal, as "id:event", or "id:event:principal" when it names one.
 	Notified []string
 	// Ended is each principal Kotlin was told had its web sessions ended.
 	Ended []string
@@ -52,6 +54,15 @@ func (f *fakeAuthz) Validate(_ context.Context, src string) ([]string, error) {
 	return nil, nil
 }
 
+// SchemaText is the real schema's, since it decides nothing.
+func (f *fakeAuthz) SchemaText(srcs []string) string {
+	s, err := authz.NewSchema(nil)
+	if err != nil {
+		panic(err)
+	}
+	return s.TextFor(srcs)
+}
+
 func (f *fakeAuthz) ProxiesAttached(context.Context) ([]string, error) { return f.Attached, nil }
 
 func (f *fakeAuthz) DatasourceDeleted(_ context.Context, name string) error {
@@ -64,8 +75,12 @@ func (f *fakeAuthz) SessionsEnded(_ context.Context, p string) error {
 	return nil
 }
 
-func (f *fakeAuthz) RequestNotified(_ context.Context, id int64, event string) error {
-	f.Notified = append(f.Notified, fmt.Sprintf("%d:%s", id, event))
+func (f *fakeAuthz) RequestNotified(_ context.Context, id int64, event, principal string) error {
+	n := fmt.Sprintf("%d:%s", id, event)
+	if principal != "" {
+		n += ":" + principal
+	}
+	f.Notified = append(f.Notified, n)
 	return nil
 }
 
@@ -129,6 +144,10 @@ type Config struct {
 	Login oidc.Login
 	// Settings replaces dbtest.Settings.
 	Settings *session.Settings
+	// Clients resolves OAuth client metadata documents; nil fetches them over HTTPS.
+	Clients oauth.Resolver
+	// Workload verifies CI OIDC tokens; nil is the exchange not configured.
+	Workload *workload.Verifier
 }
 
 func SetupConfig(t *testing.T, c Config) *Env {
@@ -153,6 +172,10 @@ func SetupConfig(t *testing.T, c Config) *Env {
 	if c.AuthDebugOff {
 		settings.AuthDebug = false
 	}
+	clients := c.Clients
+	if clients == nil {
+		clients = oauth.HTTPResolver{AllowSpecialUse: settings.AuthDebug}
+	}
 	mux := http.NewServeMux()
 	routes.Register(mux, e.St.Pool, api.Gate{
 		Sessions:  session.NewResolver(e.St.Pool, settings),
@@ -160,7 +183,7 @@ func SetupConfig(t *testing.T, c Config) *Env {
 		AuthDebug: settings.AuthDebug,
 		Authz:     decider,
 		Kotlin:    &e.Authz,
-	}, c.Login)
+	}, c.Login, clients, c.Workload)
 	e.Srv = httptest.NewServer(front.Route(mux, forward))
 	t.Cleanup(e.Srv.Close)
 	return e

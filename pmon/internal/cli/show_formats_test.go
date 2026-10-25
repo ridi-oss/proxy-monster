@@ -101,9 +101,12 @@ func TestShowAthenaFormatsAndFormattedAWSCLI(t *testing.T) {
 		if _, err := exec.LookPath("aws"); err != nil {
 			t.Skip("AWS CLI is not installed")
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		// The first aws run on a fresh Windows runner spends 6-55s starting before it sends anything.
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 		command := exec.CommandContext(ctx, "sh", "-c", bare+" --output json --no-cli-pager")
+		// Killing sh on Windows leaves aws holding the output pipes.
+		command.WaitDelay = 10 * time.Second
 		for _, entry := range os.Environ() {
 			if !strings.HasPrefix(entry, "AWS_") && !strings.HasPrefix(entry, "BOTO_") {
 				command.Env = append(command.Env, entry)

@@ -35,10 +35,10 @@ analyzer/
     testdata/golden.json     frozen regression snapshot (internal probe)
     testdata/oracle/         the Python parity oracle (driver.py + probe.py) — test-only
   probe/pb/                  generated Go bindings for analyzer.proto, engine.proto, athena.proto
-  cmd/libsqlglot/main.go     C-shared entry: exports AnalyzeStatement / SplitStatements / SqlNormalize / ParseColumns / IntrospectedColumns / FreeCString (cgo confined here)
+  cmd/libanalyzer/main.go     C-shared entry: exports AnalyzeStatement / SplitStatements / SqlNormalize / ParseColumns / CatalogColumnNames / FreeCString (cgo confined here)
   jvm/                       Gradle subproject :analyzer:jvm
-    build.gradle.kts         builds cmd/libsqlglot (go build -buildmode=c-shared) + bundles the lib
-    src/main/kotlin/…/Sqlglot.kt   the FFM binding: Sqlglot.analyzeStatement(requestBytes) / sqlNormalize(sql, dialect)
+    build.gradle.kts         builds cmd/libanalyzer (go build -buildmode=c-shared) + bundles the lib
+    src/main/kotlin/…/GoBinding.kt   the FFM binding: GoBinding.analyzeStatement(requestBytes) / sqlNormalize(sql, dialect)
 ```
 
 `:engine` depends on `project(":analyzer:jvm")`; that project's
@@ -102,15 +102,12 @@ The real end-to-end verdict coverage is the Kotlin `GateSqlglotRegressionTest`
 in `:control-plane`, which drives this probe through the FFM binding on a large
 SQL corpus.
 
-## Engine, datasource, session
+## Engine and session
 
-An engine is known at three levels, and each has its own sqlglot dialect:
-
-| Level      | Go type                       | Built from                                                                             | Its dialect                                                                 |
-| ---------- | ----------------------------- | -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| Engine     | `*engines.Engine`             | nothing                                                                                | parses before any datasource is known (a MySQL `SHOW` before introspection) |
-| Datasource | `engines.Datasource`          | `EngineDatasource`: what the target reported (version, MySQL `lower_case_table_names`) | folds canonical names                                                       |
-| Session    | `session` (one per statement) | the datasource plus `SessionObservation` (MySQL `ansi_quotes`, the Athena workgroup)   | parses the statement                                                        |
+| Go type            | Built from                                                                                 | Its dialects                                                                                                         |
+| ------------------ | ------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
+| `*engines.Engine`  | nothing                                                                                    | none                                                                                                                 |
+| `*engines.Session` | `TargetSettings` (version, MySQL `lower_case_table_names`), then each `SessionObservation` | built once from what the target reported; the session's observation (MySQL `ansi_quotes`) picks the one it parses by |
 
 ## API & contract
 
@@ -119,11 +116,11 @@ The boundary is one protobuf call in, one out (see
 the engine calls:
 
 ```kotlin
-val facts: StatementFacts = SqlglotProbe.analyze(
+val facts: StatementFacts = GoAnalyzer.analyze(
     sql,
     namespace,     // catalog + ordered search_path
     catalog,       // CatalogSnapshot: flat Column rows (schema.table.column + type) under the namespace catalog
-    engineConfig,  // engine + EngineDatasource + SessionObservation
+    engineConfig,  // engine + TargetSettings + SessionObservation
 )
 ```
 

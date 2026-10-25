@@ -7,12 +7,10 @@ import com.ridi.oss.proxymonster.controlplane.authz.AuthzDecision
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzResource
 import com.ridi.oss.proxymonster.controlplane.authz.CedarSchema
 import com.ridi.oss.proxymonster.controlplane.authz.authorizeWithContext
-import com.ridi.oss.proxymonster.controlplane.authz.cedarPolicyRoutes
 import com.ridi.oss.proxymonster.controlplane.authz.contextTagLint
 import com.ridi.oss.proxymonster.controlplane.management.DatasourceManagementService
 import com.ridi.oss.proxymonster.controlplane.management.IdentityManagementService
 import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
-import com.ridi.oss.proxymonster.controlplane.notify.NotificationEvent
 import com.ridi.oss.proxymonster.controlplane.notify.installNotifications
 import com.ridi.oss.proxymonster.controlplane.source.GitHubAdapter
 import com.ridi.oss.proxymonster.controlplane.source.GitHubSourceFlow
@@ -21,11 +19,6 @@ import com.ridi.oss.proxymonster.controlplane.management.PolicyManagementService
 import com.ridi.oss.proxymonster.controlplane.mcp.installMcp
 import com.ridi.oss.proxymonster.controlplane.mcp.instanceInfoRoute
 import com.ridi.oss.proxymonster.controlplane.mcp.mcpConnectRoute
-import com.ridi.oss.proxymonster.controlplane.oauth.MCP_OAUTH_PENDING_COOKIE
-import com.ridi.oss.proxymonster.controlplane.oauth.McpPendingAuthorization
-import com.ridi.oss.proxymonster.controlplane.oauth.OAuthError
-import com.ridi.oss.proxymonster.controlplane.oauth.installMcpOAuthProtocolGuard
-import com.ridi.oss.proxymonster.controlplane.oauth.mcpOAuthRoutes
 import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.Application
@@ -415,13 +408,7 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
     install(StatusPages) {
         exception<Throwable> { call, cause ->
             call.application.environment.log.error("Unhandled exception", cause)
-            if (call.request.path().startsWith("/oauth/") ||
-                call.request.path() == "/.well-known/oauth-authorization-server"
-            ) {
-                call.respond(HttpStatusCode.InternalServerError, OAuthError("server_error"))
-            } else {
-                call.respondError(HttpStatusCode.InternalServerError, "common.fallback")
-            }
+            call.respondError(HttpStatusCode.InternalServerError, "common.fallback")
         }
     }
     install(SSE)
@@ -439,18 +426,7 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
                 ),
             )
         }
-        cookie<McpPendingAuthorization>(MCP_OAUTH_PENDING_COOKIE) {
-            cookie.path = "/"
-            cookie.httpOnly = true
-            cookie.secure = config.mcpIssuer.startsWith("https://")
-            cookie.maxAgeInSeconds = 600
-            cookie.extensions["SameSite"] = "Lax"
-            serializer = jsonSessionSerializer()
-            transform(SessionTransportTransformerMessageAuthentication(config.sessionSecret.toByteArray()))
-        }
     }
-
-    installMcpOAuthProtocolGuard()
 
     // MCPA transport adapters share these service instances with the REST surface and the one live core.
     val managementAudit = ManagementAuditRecorder(core.auditStore)
@@ -480,12 +456,12 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
         GitHubSourceFlow(
             adapter, approvalService, accessStore, datasourceStore, policyStore, authz, notifications,
             locale = config.notifyLocale,
+            checkName = GitHubSourceFlow.checkName(config.instanceName),
             webUrl = GitHubSourceFlow.webUrlFor(config.github!!.apiUrl),
         ).also { flow -> launch { flow.runPollLoop() } }
     }
     val auditService = AuditService(authz, store)
     val tokenService = TokenService(tokenStore, userGroupStore, authz, core.authAudit)
-    val workloadTokenService = WorkloadTokenService(config, tokenStore, core.authAudit)
     accessService = AccessService(accessStore, datasourceStore, store, roleResolver, authz, managementAudit, notifications)
     installMcp(
         config, core, datasourceManagement, policyManagement, identityManagement, editorTaskService, approvalService,
@@ -522,16 +498,11 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
             )
         }
 
-        // OAuth 2.1/CIMD authorization-server routes share this process, origin, DB pool, OIDC login,
-        // and signed user session with the control plane. There is no service-to-service auth hop.
-        mcpOAuthRoutes(config, dataSource, principalSessionStore, core.authAudit)
-
         // SCIM 2.0 provisioning (docs/auth-model.md "SCIM 2.0 provisioning") — bearer+TLS gated,
         // not a user session. principalSessionStore is passed so a SCIM deprovision durably closes the
         // principal's daemon session windows (renewal secrets), not just its wire tokens + grants.
         scimRoutes(config, userGroupStore, tokenStore, accessStore, principalSessionStore, managementAudit, this@module.environment.log)
 
-        workloadTokenRoutes(config, workloadTokenService)
         if (githubFlow != null) githubSourceRoutes(config, tokenStore, githubFlow)
 
         // Datasource + catalog + classification config API. Admin-gated: admin.datasources.
@@ -549,8 +520,6 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
             roleResolver, authz, runExecService, this@module, core.systemClassification, taskCompletionHub,
             notifications, service = approvalService,
         )
-        // What every request shares, whatever it asks for: comments, CCs, the timeline, close.
-        requestRoutes(config, approvalService.threads)
 
         // Self-service: the caller's own display language, which notification delivery reads. Not an admin
         // surface and not an authorization input — it only changes which locale a message renders in.
@@ -569,9 +538,6 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
 
         // Per-principal editor query history (auto-saved on each run; recalled in the editor).
 
-        // Cedar policy admin: put/enable/disable + validate-on-write. Admin-gated: admin.policies.
-        cedarPolicyRoutes(config, authz, cedarPolicyStore, policyManagement)
-
         // Decision ingest from the proxy/data plane. Optionally token-gated.
         post("/api/ingest/decision") {
             val expected = config.secretToken
@@ -589,14 +555,7 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
         // Live decision feed for the UI. Requires a session; each record is then filtered by audit.read.
         internalSignalRoutes(
             config.internalToken, cedarPolicyStore::markCommittedMutation,
-            { id, event ->
-                val req = core.accessStore.getRequest(id)
-                when (event) {
-                    "requested" -> true.also { req?.let { notifications?.emitRequestedEvent(it) } }
-                    "decided" -> true.also { req?.let { notifications?.emitEvent(NotificationEvent.TASK_DECIDED, it) } }
-                    else -> false
-                }
-            },
+            requestNotifier(core.accessStore, notifications),
             runExecService::closeSessionsForPrincipal,
             core.proxyEventsHub::attached,
             { name -> core.connectionCatalog.invalidateDatasource(name) },

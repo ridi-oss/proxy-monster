@@ -31,7 +31,7 @@ func TestPredicateLiteralFacts(t *testing.T) {
 	}{
 		{
 			name: "mysql",
-			ec:   &pb.EngineConfig{Engine: pb.Engine_MYSQL, Datasource: &pb.EngineDatasource{EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(1)}},
+			ec:   &pb.EngineConfig{Engine: pb.Engine_MYSQL, Target: &pb.TargetSettings{EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(1)}},
 			ns:   &pb.Namespace{Catalog: "def", SearchPath: []string{"app"}},
 			cols: []*pb.Column{
 				pbColumn("app", "users", "id", "BIGINT"),
@@ -168,7 +168,7 @@ func TestPredicateLiteralFacts(t *testing.T) {
 // TestPredicateLiteralClause records which clause a comparison sat in. The clause is for audit legibility
 // only — the decision to withhold text keys on the COLUMN, never on where it appeared.
 func TestPredicateLiteralClause(t *testing.T) {
-	ec := &pb.EngineConfig{Engine: pb.Engine_MYSQL, Datasource: &pb.EngineDatasource{EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(1)}}
+	ec := &pb.EngineConfig{Engine: pb.Engine_MYSQL, Target: &pb.TargetSettings{EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(1)}}
 	ns := &pb.Namespace{Catalog: "def", SearchPath: []string{"app"}}
 	cols := []*pb.Column{
 		pbColumn("app", "users", "id", "BIGINT"),

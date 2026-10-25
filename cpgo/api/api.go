@@ -85,6 +85,16 @@ var (
 	CodeNotApprover           = Code{"approval.not_approver", http.StatusForbidden}
 	CodeRequestNotPermitted   = Code{"approval.request_not_permitted", http.StatusForbidden}
 	CodeUseQueryApproval      = Code{"approval.use_query_approval_endpoint", http.StatusBadRequest}
+	CodeCommentTooLong        = Code{"approval.comment_too_long", http.StatusBadRequest}
+	CodeCommentForbidden      = Code{"approval.comment_forbidden", http.StatusForbidden}
+	CodeCCForbidden           = Code{"approval.cc_forbidden", http.StatusForbidden}
+	CodeUnknownUser           = Code{"approval.unknown_user", http.StatusBadRequest}
+	CodeCCRequester           = Code{"approval.cc_requester", http.StatusBadRequest}
+	CodeCancelForbidden       = Code{"approval.cancel_forbidden", http.StatusForbidden}
+	CodeNotCancelable         = Code{"approval.not_cancelable", http.StatusConflict}
+	CodeAlreadyDecided        = Code{"approval.already_decided", http.StatusConflict}
+	CodeRequestChanged        = Code{"approval.request_changed", http.StatusConflict}
+	CodeNotApproved           = Code{"approval.not_approved", http.StatusConflict}
 	CodeNotConnectable        = Code{"datasource.not_connectable", http.StatusForbidden}
 	CodeNoWireCert            = Code{"datasource.no_wire_cert", http.StatusNotFound}
 	CodeDeprovisioned         = Code{"auth.principal_deprovisioned", http.StatusForbidden}
@@ -101,6 +111,9 @@ var (
 	CodeEngineImmutable       = Code{"datasource.engine_immutable", http.StatusConflict}
 	CodeInUseProxyAttached    = Code{"datasource.in_use_proxy_attached", http.StatusConflict}
 	CodeInUseActiveRequests   = Code{"datasource.in_use_active_requests", http.StatusConflict}
+	CodeInvalidToken          = Code{"common.invalid_token", http.StatusUnauthorized}
+	CodeWorkloadNotConfigured = Code{"workload.not_configured", http.StatusNotFound}
+	CodeIssuerNotTrusted      = Code{"workload.issuer_not_trusted", http.StatusUnauthorized}
 )
 
 // WriteError writes an ApiError; kv is its params as alternating keys and values, kept in that order.
@@ -146,14 +159,17 @@ type Authorizer interface {
 	MayRequest(ctx context.Context, principal string, datasourceID int64, requesterIP string) (bool, error)
 	MayConnect(ctx context.Context, principal string, datasourceIDs []int64, requesterIP string) ([]bool, error)
 	Validate(ctx context.Context, cedarSrc string) ([]string, error)
+	// SchemaText is the authorization schema with the context tag actions the policy sources derive.
+	SchemaText(policySources []string) string
 }
 
 // Kotlin is what Go routes tell or ask the Kotlin control plane about the state it holds in memory.
 type Kotlin interface {
 	// PoliciesChanged: a committed policy write; Kotlin's query path rebuilds its cached policy set.
 	PoliciesChanged(ctx context.Context) error
-	// RequestNotified: a committed write opened or decided the request; send its notification.
-	RequestNotified(ctx context.Context, id int64, event string) error
+	// RequestNotified: a committed write opened, decided, reopened, commented on, closed or changed the CCs of
+	// the request; send its notification. principal is the added CC for "cc-added", else empty.
+	RequestNotified(ctx context.Context, id int64, event, principal string) error
 	// SessionsEnded: a committed change ended the principal's web sessions; close the editor runs held for them.
 	SessionsEnded(ctx context.Context, principal string) error
 	// ProxiesAttached names the datasources with a proxy on an open Events stream.

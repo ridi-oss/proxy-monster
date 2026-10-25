@@ -31,7 +31,7 @@ func TestRecord(t *testing.T) {
 		{workflow, Approved, str("bob")},
 		{editor, Approved, str("bob")},
 	} {
-		if err := Record(ctx, st.Pool, ev.id, ev.kind, ev.actor, "console", nil); err != nil {
+		if _, err := Record(ctx, st.Pool, ev.id, ev.kind, ev.actor, "console", nil); err != nil {
 			t.Fatal(err)
 		}
 	}

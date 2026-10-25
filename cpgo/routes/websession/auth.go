@@ -134,6 +134,16 @@ func (a Auth) unauthorized(ctx context.Context, w http.ResponseWriter, ref *sess
 	return nil
 }
 
+// Live is the request's web session, ending it when the device cookie does not match.
+func (a Auth) Live(r *http.Request) (*session.Web, error) {
+	s, err := a.Sessions.Resolve(r.Context(), r)
+	if errors.Is(err, session.ErrDeviceMismatch) {
+		a.EndSession(r.Context(), s.ID, session.EndedDeviceMismatch)
+		return nil, nil
+	}
+	return s, err
+}
+
 // EndSession ends one web session outside any other write and tells Kotlin to close the editor runs.
 func (a Auth) EndSession(ctx context.Context, id int64, reason string) {
 	principal, err := a.Sessions.EndNow(ctx, id, reason)

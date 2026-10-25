@@ -31,6 +31,7 @@ type Check struct {
 	Required   bool    `json:"required"`
 	Status     string  `json:"status"`
 	Conclusion *string `json:"conclusion"`
+	Own        bool    `json:"own"` // posted by this GitHub App
 }
 
 type ChangedFile struct {
@@ -40,6 +41,7 @@ type ChangedFile struct {
 
 type CommitAuthor struct {
 	UserID *string `json:"userId"`
+	Login  *string `json:"login"`
 	Email  *string `json:"email"`
 	Merge  bool    `json:"merge"`
 }
@@ -65,6 +67,7 @@ type PullRequest struct {
 	Draft             bool           `json:"draft"`
 	Merged            bool           `json:"merged"`
 	MergedAt          *time.Time     `json:"mergedAt"`
+	MergedBy          *User          `json:"mergedBy"`
 	MergeCommit       *string        `json:"mergeCommit"`
 	HeadSHA           string         `json:"headSha"`
 	BaseRef           string         `json:"baseRef"`

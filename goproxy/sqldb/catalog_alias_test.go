@@ -8,8 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/ridi-oss/proxy-monster/analyzer/engines"
+
+	"github.com/jackc/pgx/v5"
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/cp"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
@@ -75,9 +76,6 @@ func (*aliasControlPlane) ReportCompletion(context.Context, *pb.CompletionReport
 }
 
 func TestPostgresCatalogThroughDatabaseAlias(t *testing.T) {
-	// The catalog read includes the function inventory, which takes tens of seconds on a CI runner.
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-	defer cancel()
 	database := dbtest.Postgres(t)
 	seed := dbtest.OpenPostgres(t, "")
 	schema := fmt.Sprintf("alias_catalog_%d", time.Now().UnixNano())
@@ -99,6 +97,10 @@ func TestPostgresCatalogThroughDatabaseAlias(t *testing.T) {
 	}
 	gateway, rewritten := dbtest.PostgresAlias(t, database, "advisory")
 	target := openTarget(t, engines.Postgres, spi.TargetConfig{Host: gateway.Host, Port: gateway.Port, Db: gateway.DB, User: gateway.User, Password: gateway.Password})
+	// After setup, which can include starting the shared container: the catalog read includes the function
+	// inventory, which takes tens of seconds on a CI runner.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
 	catalog, err := target.Introspect(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -179,16 +181,16 @@ func TestPostgresCatalogThroughDatabaseAlias(t *testing.T) {
 		}
 	})
 
-	t.Run("run session", func(t *testing.T) {
-		session, err := target.NewRunSession(ctx, spi.NewAuthorizer(client, "test-token", []byte("alias-run-000001")), nil, 10*time.Second, "")
+	t.Run("run connection", func(t *testing.T) {
+		connection, err := target.OpenConnection(ctx, spi.NewAuthorizer(client, "test-token", []byte("alias-run-000001")), nil, 10*time.Second, "")
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer session.Close()
-		if err := session.OnOpen(ctx, []*pb.ProxyCommand{{Command: &pb.ProxyCommand_Refetch{Refetch: control.refetch()}}}); err != nil {
+		defer connection.Close()
+		if err := connection.OnOpen(ctx, []*pb.ProxyCommand{{Command: &pb.ProxyCommand_Refetch{Refetch: control.refetch()}}}); err != nil {
 			t.Fatal(err)
 		}
-		result, err := session.ServeStatement("SELECT current_database()", 20)
+		result, err := connection.ServeStatement("SELECT current_database()", 20)
 		if err != nil {
 			t.Fatal(err)
 		}

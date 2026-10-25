@@ -1,6 +1,6 @@
 module github.com/ridi-oss/proxy-monster/pmon/tray
 
-go 1.26.0
+go 1.26.10
 
 require (
 	fyne.io/systray v1.12.2

@@ -11,6 +11,7 @@ import com.ridi.oss.proxymonster.controlplane.RequestEventKind
 import com.ridi.oss.proxymonster.controlplane.RequestEvents
 import com.ridi.oss.proxymonster.controlplane.RequestParticipants
 import com.ridi.oss.proxymonster.controlplane.ResultCrypto
+import com.ridi.oss.proxymonster.controlplane.requestNotifier
 import com.ridi.oss.proxymonster.controlplane.management.AuditActor
 import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
 import com.ridi.oss.proxymonster.controlplane.support.EnforcementFixture
@@ -26,6 +27,7 @@ import org.junit.jupiter.api.TestInstance
 import java.time.Duration
 import com.ridi.oss.proxymonster.controlplane.RoleAssignmentInput
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -208,6 +210,31 @@ class NotificationServiceDbTest {
     }
 
     @Test
+    fun `only a cleared statement carries its whole text for a thread`() = runBlocking {
+        for ((hint, full) in listOf(false to "SELECT 1", true to null, null to null)) {
+            val task = newTask().id
+            setHint(task, hint)
+            transport.delivered.clear()
+            enqueue(task, NotificationEvent.TASK_REQUESTED, "bob@x")
+            svc.drainOnce() // svc is FULL, so every pending statement is shown
+            val statement = transport.delivered.single().statement
+            assertNotNull(statement.text, "hint=$hint")
+            assertEquals(full, statement.full, "hint=$hint")
+        }
+    }
+
+    @Test
+    fun `the requester's later messages carry no statement for a thread their receipt never had`() = runBlocking {
+        val task = newTask().id
+        setHint(task, false)
+        enqueue(task, NotificationEvent.TASK_DECIDED, "req@example.com", NotificationKind.REQUESTER)
+        svc.drainOnce()
+        val statement = transport.delivered.single().statement
+        assertNotNull(statement.text)
+        assertNull(statement.full)
+    }
+
+    @Test
     fun `full shows a flagged statement while pending and hides it once the task is handled`() = runBlocking {
         val task = newTask().id
         setHint(task, true) // flagged: auto would withhold this
@@ -341,6 +368,83 @@ class NotificationServiceDbTest {
         svc.drainOnce()
         assertTrue(threads.replies.none { (ref, text) -> "cc@x" in ref && "after removal" in text }, "got: ${threads.replies}")
         assertTrue(threads.replies.any { (ref, text) -> ref == samThread && "after removal" in text })
+    }
+
+    @Test
+    fun `a CC change redraws every delivered message with the new list, and only a mention goes unannounced`() = runBlocking {
+        val threads = FakeTransport(name = "threads", supportsReplies = true)
+        val svc = NotificationService(
+            store = store,
+            recipients = RecipientResolver(fx.authz, fx.roleResolver) { emptyList() },
+            transports = listOf(threads),
+            accessStore = fx.accessStore,
+            queryResultStore = null,
+            webBaseUrl = "https://console.example",
+            disclosure = StatementDisclosure.AUTO,
+            defaultLocale = "en",
+        )
+        val task = newTask().id
+        fx.dataSource.connection.use { c ->
+            store.enqueue(c, task, NotificationEvent.TASK_REQUESTED, "threads", "sam@x", NotificationKind.APPROVER)
+            store.enqueue(c, task, NotificationEvent.TASK_SUBMITTED, "threads", "req@example.com", NotificationKind.REQUESTER)
+        }
+        svc.drainOnce()
+        val samThread = "thread:addr:sam@x:task.requested"
+        val reqThread = "thread:addr:req@example.com:task.submitted"
+        // A decider who was never asked holds a message of their own, and sam's now shows the decision.
+        fx.dataSource.connection.use { c ->
+            c.prepareStatement("UPDATE access_request SET status = 'APPROVED', decided_by = 'dee@x' WHERE id = ?").use { it.setLong(1, task); it.executeUpdate() }
+            svc.emit(c, NotificationEvent.TASK_DECIDED, fx.accessStore.getRequest(task, c)!!)
+        }
+        svc.drainOnce()
+        val deeThread = "thread:addr:dee@x:task.decided"
+        threads.updated.clear()
+
+        fx.dataSource.connection.use { c ->
+            RequestParticipants.add(c, task, listOf("cc@x"), ParticipantKind.CC)
+            RequestEvents.record(c, task, RequestEventKind.CC_ADDED, "sam@x", "slack", "cc@x")
+            val req = fx.accessStore.getRequest(task, c)!!
+            svc.emitCcAdded(c, req, "cc@x")
+            svc.emitCcChanged(c, req)
+        }
+        svc.drainOnce()
+        assertEquals(
+            setOf(
+                samThread to NotificationEvent.TASK_DECIDED,
+                reqThread to NotificationEvent.TASK_DECIDED,
+                deeThread to NotificationEvent.TASK_DECIDED,
+                "thread:addr:cc@x:task.cc_added" to NotificationEvent.TASK_CC_ADDED,
+            ),
+            threads.updated.map { it.ref to it.event }.toSet(),
+            "each message is redrawn as its last event drew it",
+        )
+        assertTrue(threads.updated.all { it.redraw && it.ccs == listOf("cc@x") }, "got: ${threads.updated}")
+        assertTrue(threads.replies.isEmpty(), "the mention already says who was added: ${threads.replies}")
+
+        threads.updated.clear()
+        fx.dataSource.connection.use { c ->
+            RequestParticipants.remove(c, task, "cc@x", ParticipantKind.CC)
+            RequestEvents.record(c, task, RequestEventKind.CC_REMOVED, "sam@x", "console", "cc@x")
+        }
+        assertTrue(requestNotifier(fx.accessStore, svc)(task, "cc-removed", null))
+        svc.drainOnce()
+        assertEquals(setOf(samThread, reqThread, deeThread), threads.updated.map { it.ref }.toSet())
+        assertTrue(threads.updated.all { it.ccs.isEmpty() })
+        assertEquals(setOf(samThread, reqThread, deeThread), threads.replies.map { it.first }.toSet(), "a console change is announced")
+    }
+
+    @Test
+    fun `cp-go's request-notified signal enqueues a close and a new CC's thread`() {
+        val task = newTask()
+        val notify = requestNotifier(fx.accessStore, svc)
+        assertTrue(notify(task.id, "cancelled", null))
+        assertEquals(1, countRows(task.id, NotificationEvent.TASK_CANCELLED, task.principal))
+        assertTrue(notify(task.id, "cc-added", "cc@x"))
+        assertEquals(1, countRows(task.id, NotificationEvent.TASK_CC_ADDED, "cc@x"))
+        assertFalse(notify(task.id, "cc-added", null), "a CC signal names the CC")
+        assertTrue(notify(task.id, "cc-removed", null))
+        assertTrue(notify(task.id, "commented", null))
+        assertFalse(notify(task.id, "bogus", null))
     }
 
     @Test

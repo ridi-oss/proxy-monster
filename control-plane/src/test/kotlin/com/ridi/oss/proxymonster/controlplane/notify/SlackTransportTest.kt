@@ -114,6 +114,67 @@ class SlackTransportTest {
         )
     }
 
+    @Test
+    fun `a long statement is previewed and posted whole in the thread, in a channel and a DM`() = runBlocking {
+        val sql = (1..30).joinToString("\n") { "UPDATE t SET a = $it WHERE id = $it;" }
+        for (toChannel in listOf(true, false)) {
+            slack.clearRecorded()
+            val transport = SlackTransport(http, botToken, "https://console.example", NotificationRenderer(), slack.apiBase, toChannel = toChannel)
+            val ref = transport.deliver("C1", message(statement = RenderedStatement(sql, true, full = sql)), "en")
+            assertTrue(ref is DeliveryResult.Sent)
+            val posts = slack.requestsFor("chat.postMessage")
+            val summary = posts.first().blocks().first()["text"]!!.jsonObject["text"]!!.jsonPrimitive.content
+            assertTrue(summary.contains("id = 5;") && !summary.contains("id = 6;"), summary)
+            assertTrue(summary.contains("in the thread"), summary)
+            assertTrue(posts.first().blocks().actionElements().any { it["action_id"]?.jsonPrimitive?.content == SlackTransport.ACTION_APPROVE })
+            val reply = posts.drop(1).single()
+            assertTrue(reply.json!!["thread_ts"] != null)
+            assertEquals(sql, reply.json!!["text"]!!.jsonPrimitive.content.substringAfter("```\n").substringBeforeLast("\n```"))
+        }
+    }
+
+    @Test
+    fun `either many lines or many characters makes a preview`() = runBlocking {
+        val channel = SlackTransport(http, botToken, "https://console.example", NotificationRenderer(), slack.apiBase, toChannel = true)
+        val manyLines = (1..6).joinToString("\n") { "SELECT $it;" }
+        val oneLongLine = "SELECT '" + "x".repeat(400) + "';"
+        for (sql in listOf(manyLines, oneLongLine)) {
+            slack.clearRecorded()
+            channel.deliver("C1", message(statement = RenderedStatement(sql, true, full = sql)), "en")
+            assertEquals(2, slack.requestsFor("chat.postMessage").size, sql.take(20))
+        }
+        slack.clearRecorded()
+        val short = (1..5).joinToString("\n") { "SELECT $it;" }
+        channel.deliver("C1", message(statement = RenderedStatement(short, true, full = short)), "en")
+        assertEquals(1, slack.requestsFor("chat.postMessage").size)
+    }
+
+    @Test
+    fun `a statement too long for a thread is reviewed in the console only`() = runBlocking {
+        val sql = (1..80).joinToString("\n") { "UPDATE t SET a = $it WHERE id = $it;" }
+        for (full in listOf(sql, null)) {
+            slack.clearRecorded()
+            val dm = SlackTransport(http, botToken, "https://console.example", NotificationRenderer(), slack.apiBase)
+            val all = NotificationAction.entries.toSet()
+            dm.deliver("U1", message(actions = all, statement = RenderedStatement(sql, true, full = full)), "en")
+            val post = slack.requestsFor("chat.postMessage").single()
+            val summary = post.blocks().first()["text"]!!.jsonObject["text"]!!.jsonPrimitive.content
+            assertTrue(summary.contains("in the console") && !summary.contains("id = 6;"), summary)
+            val ids = post.blocks().actionElements().mapNotNull { it["action_id"]?.jsonPrimitive?.content }
+            val vouching = setOf(SlackTransport.ACTION_APPROVE, SlackTransport.ACTION_APPROVE_ONLY, SlackTransport.ACTION_LGTM, SlackTransport.ACTION_REVIEW)
+            assertTrue(ids.none { it in vouching } && SlackTransport.ACTION_DENY in ids, "full=${full != null}: $ids")
+        }
+    }
+
+    @Test
+    fun `a statement withheld from the thread stays whole in the message`() = runBlocking {
+        val channel = SlackTransport(http, botToken, "https://console.example", NotificationRenderer(), slack.apiBase, toChannel = true)
+        val sql = (1..30).joinToString("\n") { "SELECT $it;" }
+        channel.deliver("C1", message(statement = RenderedStatement(sql, true)), "en")
+        val post = slack.requestsFor("chat.postMessage").single()
+        assertTrue(post.blocks().first()["text"]!!.jsonObject["text"]!!.jsonPrimitive.content.contains("SELECT 30;"))
+    }
+
     // ---- delivery: chat.postMessage as JSON ---------------------------------------------------
 
     @Test
@@ -197,6 +258,16 @@ class SlackTransportTest {
     }
 
     // ---- update: edit by handle ---------------------------------------------------------------
+
+    @Test
+    fun `an edit posts its statement into the thread, a redraw of it does not`() = runBlocking {
+        val sql = (1..30).joinToString("\n") { "UPDATE t SET a = $it WHERE id = $it;" }
+        val edited = message(event = NotificationEvent.TASK_EDITED, statement = RenderedStatement(sql, true, full = sql))
+        transport.update("C1:1.0", edited, "en")
+        assertEquals(1, slack.requestsFor("chat.postMessage").size)
+        transport.update("C1:1.0", edited.copy(redraw = true), "en")
+        assertEquals(1, slack.requestsFor("chat.postMessage").size)
+    }
 
     @Test
     fun `update edits by channel-ts and returns the same ref`() = runBlocking {

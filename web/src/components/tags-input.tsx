@@ -1,8 +1,8 @@
-'use client'
+'use client';
 
-import { useState } from 'react'
-import { X } from 'lucide-react'
-import { cn } from '@/lib/utils'
+import { useState } from 'react';
+import { X } from 'lucide-react';
+import { cn } from '@/lib/utils';
 
 /** Chip-style multi-value input. Enter or comma adds; Backspace on empty removes the last. */
 export function TagsInput({
@@ -12,20 +12,20 @@ export function TagsInput({
   id,
   className,
 }: {
-  value: string[]
-  onChange: (next: string[]) => void
-  placeholder?: string
-  id?: string
-  className?: string
+  value: string[];
+  onChange: (next: string[]) => void;
+  placeholder?: string;
+  id?: string;
+  className?: string;
 }) {
-  const [draft, setDraft] = useState('')
+  const [draft, setDraft] = useState('');
 
   const add = (raw: string) => {
-    const t = raw.trim().replace(/,$/, '')
-    if (t && !value.includes(t)) onChange([...value, t])
-    setDraft('')
-  }
-  const remove = (t: string) => onChange(value.filter((x) => x !== t))
+    const t = raw.trim().replace(/,$/, '');
+    if (t && !value.includes(t)) onChange([...value, t]);
+    setDraft('');
+  };
+  const remove = (t: string) => onChange(value.filter((x) => x !== t));
 
   return (
     <div
@@ -57,15 +57,15 @@ export function TagsInput({
         onChange={(e) => setDraft(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === 'Enter' || e.key === ',') {
-            e.preventDefault()
-            add(draft)
+            e.preventDefault();
+            add(draft);
           } else if (e.key === 'Backspace' && !draft && value.length) {
-            remove(value[value.length - 1])
+            remove(value[value.length - 1]);
           }
         }}
         onBlur={() => draft && add(draft)}
         className="placeholder:text-muted-foreground min-w-24 flex-1 bg-transparent outline-none"
       />
     </div>
-  )
+  );
 }

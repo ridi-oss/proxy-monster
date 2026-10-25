@@ -104,3 +104,5 @@ func (d *Decider) MayConnect(ctx context.Context, principal string, ids []int64,
 func (d *Decider) Validate(_ context.Context, src string) ([]string, error) {
 	return d.schema.Validate(src), nil
 }
+
+func (d *Decider) SchemaText(policySources []string) string { return d.schema.TextFor(policySources) }

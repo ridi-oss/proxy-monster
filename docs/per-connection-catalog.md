@@ -59,10 +59,10 @@ whole freshness decision into the control plane, dissolves all of it.
 The implementation lives in `proto/src/main/proto/controlplane.proto`, the
 control-plane per-connection catalog + Decide (`ConnectionCatalog.kt` /
 `ConnectionDecide.kt`, wired via `ControlPlaneGrpcService.decide`), the Go proxy
-held-connection refetch (`goproxy/sqldb/refetch.go`, `goproxy/cp/client.go`),
-the DB-side hash (`goproxy/mysql/queries.go`, `goproxy/postgres/queries.go`),
-and the config-channel split (a second `grpc.ClientConn` in
-`goproxy/boot/boot.go`).
+held-connection refetch (`goproxy/sqldb/proxy_command_runner.go`,
+`goproxy/cp/client.go`), the DB-side hash (`goproxy/mysql/queries.go`,
+`goproxy/postgres/queries.go`), and the config-channel split (a second
+`grpc.ClientConn` in `goproxy/boot/boot.go`).
 
 ## Two catalogs — why separate
 
@@ -607,14 +607,14 @@ endpoint, same `x-pm-secret-token`), owned by a config-side client in
   SHA) to restore collision-resistance.
 - Refetch hash/columns coherence (ABA revert window, bounded). The Go proxy's
   content hash is measured before and after the per-schema introspection
-  (`sqldb.Refetcher`) and trusted only if both match; this catches a single
-  concurrent change but not an external `A→B→A` byte-identical revert landing
-  between the back-to-back probe queries (a ~microsecond window). It would push
-  `columns(B)` under `hash(A)`, letting a later connection at state A satisfy an
-  `unchanged` gate against the wrong fragment. It cannot arise on the priority
-  self-DDL path (no external race) and is a refinement of the external-drift
-  class. Robust fix: derive the hash from the same snapshot/query as the
-  fragment rows so they cannot diverge.
+  (`sqldb.ProxyCommandRunner`) and trusted only if both match; this catches a
+  single concurrent change but not an external `A→B→A` byte-identical revert
+  landing between the back-to-back probe queries (a ~microsecond window). It
+  would push `columns(B)` under `hash(A)`, letting a later connection at state A
+  satisfy an `unchanged` gate against the wrong fragment. It cannot arise on the
+  priority self-DDL path (no external race) and is a refinement of the
+  external-drift class. Robust fix: derive the hash from the same snapshot/query
+  as the fragment rows so they cannot diverge.
 - PostgreSQL held-connection-probe residuals (experimental, fail-closed). A
   catalog-changing extended-protocol statement ending in `PortalSuspended`
   (row-limited Execute) defers its `after_statement` refetch to the next

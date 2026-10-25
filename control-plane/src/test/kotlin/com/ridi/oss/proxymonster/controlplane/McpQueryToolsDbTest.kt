@@ -1,9 +1,5 @@
 package com.ridi.oss.proxymonster.controlplane
 
-import com.ridi.oss.proxymonster.auth.AuthorizationCodeInput
-import com.ridi.oss.proxymonster.auth.ConsumeAuthorizationCodeInput
-import com.ridi.oss.proxymonster.auth.OAuthAuthorizationStore
-import com.ridi.oss.proxymonster.auth.pkceS256
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
 import com.ridi.oss.proxymonster.controlplane.grpc.ControlPlaneGrpcService
 import com.ridi.oss.proxymonster.controlplane.grpc.GrpcServer
@@ -14,6 +10,7 @@ import com.ridi.oss.proxymonster.controlplane.management.McpCapabilityRegistry
 import com.ridi.oss.proxymonster.controlplane.management.McpGate
 import com.ridi.oss.proxymonster.controlplane.management.PolicyManagementService
 import com.ridi.oss.proxymonster.controlplane.mcp.installMcp
+import com.ridi.oss.proxymonster.controlplane.support.McpTokens
 import com.ridi.oss.proxymonster.controlplane.support.EnforcementFixture
 import com.ridi.oss.proxymonster.controlplane.support.PerConnectionCatalogFixture
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
@@ -89,7 +86,7 @@ class McpQueryToolsDbTest {
     private lateinit var fx: EnforcementFixture
     private lateinit var pcf: PerConnectionCatalogFixture
     private lateinit var core: ControlPlaneCore
-    private lateinit var oauth: OAuthAuthorizationStore
+    private lateinit var mcpTokens: McpTokens
     private lateinit var resultStore: QueryResultStore
     private lateinit var runExecService: RunExecService
     private lateinit var appScope: CoroutineScope
@@ -108,7 +105,7 @@ class McpQueryToolsDbTest {
         fx = EnforcementFixture.mysql()
         pcf = PerConnectionCatalogFixture(fx)
         core = pcf.core
-        oauth = OAuthAuthorizationStore(fx.dataSource)
+        mcpTokens = McpTokens(fx.dataSource, RESOURCE)
         resultStore = QueryResultStore(fx.dataSource, ResultCrypto(ByteArray(32) { it.toByte() }))
         runExecService = RunExecService(core)
         appScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -923,17 +920,7 @@ class McpQueryToolsDbTest {
         row.jsonArray.map { (it as? JsonPrimitive)?.takeUnless { p -> p.toString() == "null" }?.content }
     }
 
-    private fun token(principal: String, scopes: Set<String>): String {
-        val consent = oauth.rememberConsent(principal, CLIENT_ID, RESOURCE, scopes)
-        val code = oauth.createAuthorizationCode(
-            AuthorizationCodeInput(CLIENT_ID, principal, REDIRECT_URI, RESOURCE, scopes, CHALLENGE, consentId = consent.id),
-        )
-        return assertNotNull(
-            oauth.consumeAuthorizationCode(
-                ConsumeAuthorizationCodeInput(code, CLIENT_ID, REDIRECT_URI, RESOURCE, VERIFIER, 600, 3_600),
-            ),
-        ).accessToken
-    }
+    private fun token(principal: String, scopes: Set<String>): String = mcpTokens.token(principal, scopes)
 
     private fun scalar(query: String, vararg values: String): Long = fx.dataSource.connection.use { c ->
         c.prepareStatement(query).use { ps ->
@@ -964,9 +951,5 @@ class McpQueryToolsDbTest {
         const val ANALYST = "analyst"
         val TEST_JSON = Json { ignoreUnknownKeys = true; encodeDefaults = true }
         const val RESOURCE = "http://localhost/mcp"
-        const val CLIENT_ID = "https://client.example/mcp.json"
-        const val REDIRECT_URI = "http://127.0.0.1:43110/callback"
-        val VERIFIER = "m".repeat(43)
-        val CHALLENGE = pkceS256(VERIFIER)
     }
 }

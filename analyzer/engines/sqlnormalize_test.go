@@ -35,6 +35,20 @@ func TestSqlNormalizeEqualClasses(t *testing.T) {
 			want:    "select mixedcase from users",
 		},
 		{
+			name:    "athena explain keyword case",
+			dialect: "athena",
+			left:    "EXPLAIN SELECT a FROM t",
+			right:   "explain select a from t",
+			want:    "explain select a from t",
+		},
+		{
+			name:    "athena hive ddl keyword case",
+			dialect: "athena",
+			left:    "CREATE EXTERNAL TABLE T (A INT) LOCATION 's3://b/'; SELECT A FROM T",
+			right:   "create external table t (a int) location 's3://b/'; select a from t",
+			want:    "create external table t ( a int ) location 's3://b/' ; select a from t",
+		},
+		{
 			name:    "trailing semicolons",
 			dialect: "postgres",
 			left:    "SELECT 1;;;;",

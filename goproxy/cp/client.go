@@ -323,12 +323,12 @@ func (c *Client) Decide(req spi.DecideRequest) spi.DecisionOutcome {
 		Token:          req.Token,
 		DatasourceName: c.datasourceName,
 		Sql:            req.SQL,
-		SearchPath:     append([]string(nil), req.Session.Namespace...),
+		SearchPath:     append([]string(nil), req.Snapshot.Namespace...),
 		ClientAddr:     req.ClientAddr,
 		TempColumns:    temps,
 		ConnectionId:   append([]byte(nil), req.ConnectionID...),
-		Session:        req.Session.Clone().SessionObservation,
-		CurrentCatalog: req.Session.CurrentCatalog,
+		Session:        req.Snapshot.Clone().SessionObservation,
+		CurrentCatalog: req.Snapshot.CurrentCatalog,
 	}
 
 	var targetErr *spi.TargetError
@@ -389,13 +389,13 @@ func runBeforeDecide(commands []*pb.ProxyCommand, req *spi.DecideRequest, wireRe
 	if len(run) == 0 {
 		return nil
 	}
-	if req.RunCommands == nil {
+	if req.Commands == nil {
 		return errors.New("control plane demanded pre-decision commands but no runner is configured")
 	}
-	if err := req.RunCommands(run, &req.Session); err != nil {
+	if err := req.Commands.RunAll(run, &req.Snapshot); err != nil {
 		return err
 	}
-	wireReq.Session = req.Session.Clone().SessionObservation
+	wireReq.Session = req.Snapshot.Clone().SessionObservation
 	return nil
 }
 
@@ -491,8 +491,8 @@ func (c *Client) PushCatalog(catalog *pb.CatalogRequest) error {
 }
 
 // PushSchemaFragment applies one measured connection-local schema fragment and returns its generation.
-// The fragment is the proto message the refetcher built; it stamps DatasourceName before sending (the
-// refetcher does not know it), mirroring PushCatalog.
+// The fragment is the proto message the command runner built; it stamps DatasourceName before sending (the
+// command runner does not know it), mirroring PushCatalog.
 func (c *Client) PushSchemaFragment(push *pb.SchemaFragmentPush) (uint64, error) {
 	push.DatasourceName = c.datasourceName
 	ctx, cancel := context.WithTimeout(context.Background(), rpcDeadline)

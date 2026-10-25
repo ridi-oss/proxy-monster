@@ -1,134 +1,133 @@
-'use client'
+'use client';
 
-import { useMemo } from 'react'
-import { useAuth } from '@/lib/auth'
-import type { AccessRequest } from '@/lib/api/types'
-import { useAccessRequests, useApprovalInbox, useInvolvedApprovals } from '@/lib/hooks'
+import { useMemo } from 'react';
+import { useAuth } from '@/lib/auth';
+import type { AccessRequest } from '@/lib/api/types';
+import { useAccessRequests, useApprovalInbox, useInvolvedApprovals } from '@/lib/hooks';
 
-export type WorkflowTab = 'all' | 'incoming' | 'outgoing'
+export type WorkflowTab = 'all' | 'incoming' | 'outgoing';
 
 export interface WorkflowRequestEntry {
-  request: AccessRequest
-  incoming: boolean
-  outgoing: boolean
+  request: AccessRequest;
+  incoming: boolean;
+  outgoing: boolean;
 }
 
-const POLL_OPTIONS = { refreshInterval: 15_000 }
+const POLL_OPTIONS = { refreshInterval: 15_000 };
 
 function firstError(...errors: unknown[]): unknown {
-  return errors.find((error) => error != null)
+  return errors.find((error) => error != null);
 }
 
 function newestFirst(a: AccessRequest, b: AccessRequest): number {
-  const createdAtDifference = Date.parse(b.createdAt) - Date.parse(a.createdAt)
-  return createdAtDifference || b.id - a.id
+  const createdAtDifference = Date.parse(b.createdAt) - Date.parse(a.createdAt);
+  return createdAtDifference || b.id - a.id;
 }
 
 function sortedRequests(requests: AccessRequest[]): AccessRequest[] {
-  return [...requests].sort(newestFirst)
+  return [...requests].sort(newestFirst);
 }
 
 function sortedEntries(entries: WorkflowRequestEntry[]): WorkflowRequestEntry[] {
-  return [...entries].sort((a, b) => newestFirst(a.request, b.request))
+  return [...entries].sort((a, b) => newestFirst(a.request, b.request));
 }
 
 export function useWorkflowIncomingRequests(): {
-  requests: AccessRequest[]
-  count: number
-  isLoading: boolean
-  error: unknown
+  requests: AccessRequest[];
+  count: number;
+  isLoading: boolean;
+  error: unknown;
 } {
   // ROLE requests intentionally remain unscoped: canApprove is only the admin bit,
   // while each ROLE decision endpoint authorizes the acting principal per request.
-  const roleRequests = useAccessRequests('PENDING', POLL_OPTIONS)
-  const queryRequests = useApprovalInbox(POLL_OPTIONS)
+  const roleRequests = useAccessRequests('PENDING', POLL_OPTIONS);
+  const queryRequests = useApprovalInbox(POLL_OPTIONS);
 
   const requests = useMemo(() => {
-    const byId = new Map<number, AccessRequest>()
+    const byId = new Map<number, AccessRequest>();
     for (const request of roleRequests.data ?? []) {
-      if (request.kind === 'ROLE') byId.set(request.id, request)
+      if (request.kind === 'ROLE') byId.set(request.id, request);
     }
     for (const request of queryRequests.data ?? []) {
-      if (request.kind === 'QUERY') byId.set(request.id, request)
+      if (request.kind === 'QUERY') byId.set(request.id, request);
     }
-    return sortedRequests([...byId.values()])
-  }, [queryRequests.data, roleRequests.data])
+    return sortedRequests([...byId.values()]);
+  }, [queryRequests.data, roleRequests.data]);
 
   return {
     requests,
     count: requests.length,
     isLoading: roleRequests.isLoading || queryRequests.isLoading,
     error: firstError(roleRequests.error, queryRequests.error),
-  }
+  };
 }
 
 export function useWorkflowRequests(): {
-  lists: Record<WorkflowTab, WorkflowRequestEntry[]>
-  incomingCount: number
-  roleRequestsById: ReadonlyMap<number, AccessRequest>
-  isLoading: boolean
-  error: unknown
-  roleLookupLoading: boolean
-  roleLookupError: unknown
+  lists: Record<WorkflowTab, WorkflowRequestEntry[]>;
+  incomingCount: number;
+  roleRequestsById: ReadonlyMap<number, AccessRequest>;
+  isLoading: boolean;
+  error: unknown;
+  roleLookupLoading: boolean;
+  roleLookupError: unknown;
 } {
-  const { identity } = useAuth()
-  const incoming = useWorkflowIncomingRequests()
-  const roleLookup = useAccessRequests(undefined, POLL_OPTIONS)
-  const queryInvolved = useInvolvedApprovals(POLL_OPTIONS)
+  const { identity } = useAuth();
+  const incoming = useWorkflowIncomingRequests();
+  const roleLookup = useAccessRequests(undefined, POLL_OPTIONS);
+  const queryInvolved = useInvolvedApprovals(POLL_OPTIONS);
 
   const outgoingRequests = useMemo(() => {
-    const principal = identity?.principal
+    const principal = identity?.principal;
     return [
       ...(roleLookup.data ?? []).filter(
         (request) => (request.kind === 'ROLE' || request.kind === 'RATE_RESET') && request.principal === principal,
       ),
       ...(queryInvolved.data ?? []).filter((request) => request.principal === principal),
-    ]
-  }, [identity?.principal, queryInvolved.data, roleLookup.data])
+    ];
+  }, [identity?.principal, queryInvolved.data, roleLookup.data]);
 
   // Others' requests the caller approved, ran, or was notified about.
   // A role or rate-reset row shows only while the task.read-filtered access list still has it; its detail renders
   // from the row, while a query's detail is fetched with a live check.
   const involvedRequests = useMemo(() => {
-    const readable = new Set((roleLookup.data ?? []).map((request) => request.id))
+    const readable = new Set((roleLookup.data ?? []).map((request) => request.id));
     return (queryInvolved.data ?? []).filter(
       (request) => request.principal !== identity?.principal && (request.kind === 'QUERY' || readable.has(request.id)),
-    )
-  }, [identity?.principal, queryInvolved.data, roleLookup.data])
+    );
+  }, [identity?.principal, queryInvolved.data, roleLookup.data]);
 
   const lists = useMemo<Record<WorkflowTab, WorkflowRequestEntry[]>>(() => {
-    const byId = new Map<number, WorkflowRequestEntry>()
+    const byId = new Map<number, WorkflowRequestEntry>();
 
     for (const request of incoming.requests) {
-      byId.set(request.id, { request, incoming: true, outgoing: false })
+      byId.set(request.id, { request, incoming: true, outgoing: false });
     }
     for (const request of outgoingRequests) {
-      const existing = byId.get(request.id)
-      byId.set(request.id, existing
-        ? { ...existing, outgoing: true }
-        : { request, incoming: false, outgoing: true })
+      const existing = byId.get(request.id);
+      byId.set(request.id, existing ? { ...existing, outgoing: true } : { request, incoming: false, outgoing: true });
     }
 
     for (const request of involvedRequests) {
-      if (!byId.has(request.id)) byId.set(request.id, { request, incoming: false, outgoing: false })
+      if (!byId.has(request.id)) byId.set(request.id, { request, incoming: false, outgoing: false });
     }
 
-    const all = sortedEntries([...byId.values()])
+    const all = sortedEntries([...byId.values()]);
     return {
       all,
       incoming: all.filter((entry) => entry.incoming),
       outgoing: all.filter((entry) => entry.outgoing),
-    }
-  }, [incoming.requests, involvedRequests, outgoingRequests])
+    };
+  }, [incoming.requests, involvedRequests, outgoingRequests]);
 
   const roleRequestsById = useMemo<ReadonlyMap<number, AccessRequest>>(
-    () => new Map(
-      (roleLookup.data ?? [])
-        .filter((request) => request.kind === 'ROLE' || request.kind === 'RATE_RESET')
-        .map((request) => [request.id, request]),
-    ),
+    () =>
+      new Map(
+        (roleLookup.data ?? [])
+          .filter((request) => request.kind === 'ROLE' || request.kind === 'RATE_RESET')
+          .map((request) => [request.id, request]),
+      ),
     [roleLookup.data],
-  )
+  );
 
   return {
     lists,
@@ -138,5 +137,5 @@ export function useWorkflowRequests(): {
     error: firstError(incoming.error, roleLookup.error, queryInvolved.error),
     roleLookupLoading: roleLookup.isLoading,
     roleLookupError: roleLookup.error,
-  }
+  };
 }

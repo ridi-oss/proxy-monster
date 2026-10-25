@@ -173,15 +173,16 @@ func TestReadPullRequestsReadsEveryPRInOneQueryAndMapsEachField(t *testing.T) {
 		},
 		Checks: []Check{
 			{Name: "build", Required: true, Status: CheckCompleted, Conclusion: s("SUCCESS")},
+			{Name: "pm/query executed", Required: true, Status: CheckInProgress, Own: true},
 			{Name: "ci/legacy", Status: CheckInProgress},
 		},
 		Files: []ChangedFile{{"sql/old.sql", "DELETED"}, {"sql/new.sql", "ADDED"}},
 		Commits: []CommitAuthor{
-			{UserID: s("101"), Email: s("alice@acme.com")},
-			{UserID: s("101"), Email: s(" alice@acme.com")},
+			{UserID: s("101"), Login: s("alice"), Email: s("alice@acme.com")},
+			{UserID: s("101"), Login: s("alice"), Email: s(" alice@acme.com")},
 			{},
-			{UserID: s("102"), Email: s("bob@acme.com")},
-			{UserID: s("101"), Email: s("merge@acme.com"), Merge: true},
+			{UserID: s("102"), Login: s("bob"), Email: s("bob@acme.com")},
+			{UserID: s("101"), Login: s("alice"), Email: s("merge@acme.com"), Merge: true},
 			{Email: s("nouser@acme.com")},
 		},
 	}
@@ -192,7 +193,7 @@ func TestReadPullRequestsReadsEveryPRInOneQueryAndMapsEachField(t *testing.T) {
 	}
 	closed := prs[2]
 	if closed.Open || !closed.Merged || !closed.MergedAt.Equal(*ts("2026-10-08T12:00:00Z")) || *closed.MergeCommit != "merge2" ||
-		closed.Author != nil || closed.AutoMerge != nil || closed.Checks != nil {
+		*closed.MergedBy != (User{"104", "dave"}) || closed.Author != nil || closed.AutoMerge != nil || closed.Checks != nil {
 		t.Fatalf("merged PR %+v", closed)
 	}
 	if rl := c.RateLimit(); rl == nil || rl.Remaining != 4999 || !rl.ResetAt.Equal(*ts("2026-10-09T01:00:00Z")) {
@@ -707,7 +708,7 @@ func TestARollupIsPagedUntilComplete(t *testing.T) {
 	for _, c := range got[1].Checks {
 		names = append(names, c.Name+"="+*orEmpty(c.Conclusion))
 	}
-	if strings.Join(names, " ") != "build=SUCCESS ci/legacy= e2e=TIMED_OUT" {
+	if strings.Join(names, " ") != "build=SUCCESS pm/query executed= ci/legacy= e2e=TIMED_OUT" {
 		t.Fatalf("checks %v", names)
 	}
 	page := f.to("POST", "/graphql")[1].json(t)

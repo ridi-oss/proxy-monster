@@ -1,10 +1,10 @@
-'use client'
+'use client';
 
-import Link from 'next/link'
-import { usePathname } from 'next/navigation'
-import { useTranslations } from 'next-intl'
-import { AdminGuard } from '@/components/admin-guard'
-import { cn } from '@/lib/utils'
+import Link from 'next/link';
+import { usePathname } from 'next/navigation';
+import { useTranslations } from 'next-intl';
+import { AdminGuard } from '@/components/admin-guard';
+import { cn } from '@/lib/utils';
 
 // `labelKey` resolves against the Nav namespace at render (both en + ko catalogs carry every key).
 const PRIMARY_NAV = [
@@ -12,18 +12,18 @@ const PRIMARY_NAV = [
   { labelKey: 'policies', href: '/admin/policies' },
   { labelKey: 'users', href: '/admin/users' },
   { labelKey: 'groups', href: '/admin/groups' },
-] as const
+] as const;
 
 const POLICY_NAV = [
   { labelKey: 'policyRoles', href: '/admin/policies', exact: true },
   { labelKey: 'policyAssignments', href: '/admin/policies/assignments', exact: false },
   { labelKey: 'policyMaskFns', href: '/admin/policies/mask-fns', exact: false },
   { labelKey: 'policyCedarPolicies', href: '/admin/policies/cedar-policies', exact: false },
-] as const
+] as const;
 
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
-  const pathname = usePathname()
-  const t = useTranslations('Nav')
+  const pathname = usePathname();
+  const t = useTranslations('Nav');
 
   return (
     <AdminGuard>
@@ -35,7 +35,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
           </div>
           <nav aria-label={t('adminNavLabel')} className="min-h-0 flex-1 overflow-y-auto p-2">
             {PRIMARY_NAV.map((item) => {
-              const active = pathname === item.href || pathname.startsWith(`${item.href}/`)
+              const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
               return (
                 <div key={item.href}>
                   <Link
@@ -55,7 +55,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
                       {POLICY_NAV.map((policy) => {
                         const policyActive = policy.exact
                           ? pathname === policy.href
-                          : pathname === policy.href || pathname.startsWith(`${policy.href}/`)
+                          : pathname === policy.href || pathname.startsWith(`${policy.href}/`);
                         return (
                           <Link
                             key={policy.href}
@@ -70,17 +70,17 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
                           >
                             {t(policy.labelKey)}
                           </Link>
-                        )
+                        );
                       })}
                     </div>
                   )}
                 </div>
-              )
+              );
             })}
           </nav>
         </aside>
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">{children}</div>
       </div>
     </AdminGuard>
-  )
+  );
 }

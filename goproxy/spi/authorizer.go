@@ -40,7 +40,7 @@ type Authorizer struct {
 	token        string
 	clientAddr   string
 	connectionID []byte
-	session      SessionObservation
+	snapshot     SessionSnapshot
 	nsDirty      bool
 	sanitizeDiag bool
 	// The previous statement's in-flight completion report; Authorize waits for it so the control plane's
@@ -92,10 +92,13 @@ const completionWait = 35 * time.Second
 // docs/diagnostic-redaction.md.
 func (a *Authorizer) SanitizeDiagnostics() bool { return a.sanitizeDiag }
 
-// SetNamespace replaces the cached namespace from an authoritative target DB protocol signal. It copies
-// namespace so a caller cannot mutate the authorization context after the signal is consumed.
-func (a *Authorizer) SetNamespace(namespace []string) {
-	a.session.Namespace = append([]string{}, namespace...)
+// Snapshot is the session snapshot the last decision was made under.
+func (a *Authorizer) Snapshot() SessionSnapshot { return a.snapshot.Clone() }
+
+// SetSnapshot replaces the cached snapshot with one the protocol probed itself (Postgres Bind); the cache is
+// clean after it. It copies snapshot so the caller cannot mutate the authorization context afterwards.
+func (a *Authorizer) SetSnapshot(snapshot SessionSnapshot) {
+	a.snapshot = snapshot.Clone()
 	a.nsDirty = false
 }
 
@@ -104,9 +107,9 @@ func (a *Authorizer) SetNamespace(namespace []string) {
 // its cache is dirty, and ProbeTempColumns only when the protocol supplies it (the PG temp overlay).
 type AuthzInput struct {
 	SQL              string
-	ProbeSession     func() (SessionObservation, error)
+	ProbeSession     func() (SessionSnapshot, error)
 	ProbeTempColumns func() ([]TempColumn, error)
-	RunCommands      func([]*pb.ProxyCommand, *SessionObservation) error
+	Commands         ProxyCommandRunner
 	CheckTargetError func(sql string) (*TargetError, error)
 }
 
@@ -122,12 +125,12 @@ func (a *Authorizer) Authorize(in AuthzInput) Verdict {
 		}
 		a.pendingCompletion = nil
 	}
-	if a.nsDirty || a.session.Namespace == nil {
-		session, err := in.ProbeSession()
+	if a.nsDirty || a.snapshot.Namespace == nil {
+		snapshot, err := in.ProbeSession()
 		if err != nil {
 			return Fail{Message: "namespace probe failed: " + err.Error()}
 		}
-		a.session = session.Clone()
+		a.snapshot = snapshot.Clone()
 		a.nsDirty = false
 	}
 
@@ -140,13 +143,13 @@ func (a *Authorizer) Authorize(in AuthzInput) Verdict {
 	}
 
 	out := a.client.Decide(DecideRequest{
-		Session:          a.session.Clone(),
+		Snapshot:         a.snapshot.Clone(),
 		Token:            a.token,
 		SQL:              in.SQL,
 		ClientAddr:       a.clientAddr,
 		TempColumns:      temps,
 		ConnectionID:     a.connectionID,
-		RunCommands:      in.RunCommands,
+		Commands:         in.Commands,
 		CheckTargetError: in.CheckTargetError,
 	})
 	if out.IsErr() {

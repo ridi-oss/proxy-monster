@@ -72,13 +72,15 @@ func (c *Client) PoliciesChanged(ctx context.Context) error {
 	return c.post(ctx, c.upstream.JoinPath("/internal/policies-changed").String(), struct{}{}, nil)
 }
 
-// RequestNotified asks Kotlin to send the notification for a request a Go write opened ("requested") or decided
-// ("decided").
-func (c *Client) RequestNotified(ctx context.Context, id int64, event string) error {
+// RequestNotified asks Kotlin to send the notification for a request a Go write opened ("requested"), decided
+// ("decided"), returned to pending ("reopened"), commented on ("commented"), closed ("cancelled"), or added
+// principal as a CC to ("cc-added") or removed one from it ("cc-removed").
+func (c *Client) RequestNotified(ctx context.Context, id int64, event, principal string) error {
 	return c.post(ctx, c.upstream.JoinPath("/internal/request-notified").String(), struct {
-		ID    int64  `json:"id"`
-		Event string `json:"event"`
-	}{id, event}, nil)
+		ID        int64  `json:"id"`
+		Event     string `json:"event"`
+		Principal string `json:"principal,omitempty"`
+	}{id, event, principal}, nil)
 }
 
 // SessionsEnded tells Kotlin the principal's web sessions ended, so it closes their editor runs.

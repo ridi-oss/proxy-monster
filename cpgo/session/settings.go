@@ -30,6 +30,10 @@ type Settings struct {
 	ElevatedScopeTTL int64
 	// MCPAccessTTL is an MCP access token's lifetime.
 	MCPAccessTTL int64
+	// MCPRefreshTTL is an MCP OAuth refresh token's lifetime.
+	MCPRefreshTTL int64
+	// OAuthDebugAutoConsent skips the consent page under PM_AUTH_DEBUG.
+	OAuthDebugAutoConsent bool
 
 	AbsoluteSeconds, IdleSeconds, SlideSeconds   int64
 	IdleWarnLeadSeconds, AbsoluteWarnLeadSeconds int64
@@ -82,6 +86,17 @@ func ParseDuration(raw string) (int64, error) {
 	return total, nil
 }
 
+// MCPScopes is every scope an MCP tool requires (McpCapabilityRegistry.supportedScopes), sorted.
+func MCPScopes() []string {
+	return []string{
+		"mcp:approvals:write", "mcp:datasources:write", "mcp:identity:write", "mcp:policies:write",
+		"mcp:query", "mcp:read", "mcp:tokens",
+	}
+}
+
+// Issuer is this server's origin, the MCP resource without its /mcp path.
+func (s Settings) Issuer() string { return strings.TrimSuffix(s.MCPResource, "/mcp") }
+
 // WebRedirect is a console path, under PM_WEB_ORIGIN when that is set.
 func (s Settings) WebRedirect(path string) string {
 	if strings.TrimSpace(s.WebOrigin) == "" {
@@ -90,12 +105,12 @@ func (s Settings) WebRedirect(path string) string {
 	return strings.TrimRight(strings.TrimSpace(s.WebOrigin), "/") + path
 }
 
-// WebBase is the console's origin for links pmon prints: PM_WEB_ORIGIN, else this server's own origin.
+// WebBase is the console's origin for links it hands out: PM_WEB_ORIGIN, else this server's own origin.
 func (s Settings) WebBase() string {
 	if origin := strings.TrimRight(strings.TrimSpace(s.WebOrigin), "/"); origin != "" {
 		return origin
 	}
-	return strings.TrimSuffix(s.MCPResource, "/mcp")
+	return s.Issuer()
 }
 
 // CanonicalResource is Kotlin's canonicalMcpResource for a URI it accepted: lowercase scheme and host, path /mcp.

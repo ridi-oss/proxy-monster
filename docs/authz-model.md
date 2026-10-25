@@ -343,9 +343,9 @@ of a route and the gate it calls. Paths are relative to
 | OIDC web login | `/auth/oidc/login`, `/auth/oidc/callback` | `cpgo/routes/oidc/oidc.go` | none — this mints the session |
 | CLI device authorization | `/auth/device/start`, `/auth/device/confirm`, `/auth/device/authorize`, `/auth/device/poll` | `cpgo/routes/device/device.go` | start and poll: none — the handle is the credential; confirm and authorize: a live session, and authorize also the signed confirm cookie |
 | Daemon session renew, logout, MCP token | `/auth/session/renew`, `/auth/session/logout`, `/auth/session/mcp-token` | `cpgo/routes/device/device.go` | `Authorization: Bearer <renewalToken>` only |
-| OAuth 2.1 authorization server | `/.well-known/oauth-authorization-server`, `/oauth/**` | `oauth/OAuthRoutes.kt` | protocol-native (PKCE, client metadata, consent CSRF); `/oauth/consents` needs a session |
+| OAuth 2.1 authorization server | `/.well-known/oauth-authorization-server`, `/oauth/**` | `cpgo/routes/oauth/oauth.go` | protocol-native (PKCE, client metadata, consent CSRF); `/oauth/pending` and `/oauth/consents` need a session |
 | MCP admin surface | `/mcp`, `/.well-known/oauth-protected-resource**` | `mcp/McpServer.kt` | MCP access-token bearer + host/origin checks in an interceptor; metadata routes public |
-| CI token exchange | `/api/workload/token` | `WorkloadTokenRoutes.kt` | none — verifies the CI OIDC JWT itself; mints a `WORKLOAD` bearer |
+| CI token exchange | `/api/workload/token` | `cpgo/routes/workload/workload.go` | none — verifies the CI OIDC JWT itself; mints a `WORKLOAD` bearer |
 | GitHub SQL source | `/api/github/requests` | `GitHubSourceRoutes.kt` | `requireWorkload` — `WORKLOAD` bearer; filing adds Cedar `task.request` for the Workload on the datasource |
 | SCIM 2.0 provisioning | `/api/scim/v2/**` | `Scim.kt` | `requireScimAuth` — `PM_SCIM_TOKEN` bearer, TLS-only; 501 when unconfigured |
 | Audit ingest (from the proxy) | `/api/ingest/decision` | `App.kt` | `X-PM-Ingest-Token` vs `PM_SECRET_TOKEN`; open when that env is unset (dev only) |
@@ -356,14 +356,14 @@ of a route and the gate it calls. Paths are relative to
 | Editor sessions and tasks | `/api/editor/**` | `Query.kt` | `requireApi` + owner scope; cancel adds `task.cancel`, result adds `task.assume` |
 | Task-completion SSE | `/api/tasks/events` | `App.kt` | resolves the session itself; each push re-filtered through `task.read` |
 | Editor query history | `/api/query-history` | `cpgo/routes/me/me.go` | `requireApi`, own rows only |
-| Query-approval workflow | `/api/approvals**` | `Approvals.kt`; the own-requests list in `cpgo/routes/access/access.go` | `requireApi` + per-route Cedar (`task.read` / `task.approve` / `task.run` / `task.cancel` / `task.assume` / `task.force_run`) |
-| Request threads (every kind) | `/api/requests**` | `RequestThreads.kt` | `requireApi` + per-route Cedar (`task.read` / `task.comment` / `task.cc` / `task.cancel`) |
+| Query-approval workflow | `/api/approvals**` | `Approvals.kt`; the inbox, `{id}`, approve, reject and unapprove in `cpgo/routes/access/approvals.go`, the own-requests list in `access.go` | `requireApi` + per-route Cedar (`task.read` / `task.approve` / `task.run` / `task.cancel` / `task.assume` / `task.force_run`) |
+| Request threads (every kind) | `/api/requests**` | `cpgo/routes/access/threads.go` | `requireApi` + per-route Cedar (`task.read` / `task.comment` / `task.cc` / `task.cancel`) |
 | JIT access requests and grants | `/api/access-requests**`, `/api/access-grants**` | `cpgo/routes/access/access.go`, `access_write.go` | `requireApi` + `task.read` forward-filtering; create = `task.request` on the datasource; approve and reject = `task.approve` with the `workflow-viewer` channel; revoke = `grant.revoke` |
 | Wire tokens | `/api/wire-tokens`, `/api/tokens**` | `cpgo/routes/tokens/tokens.go` | `requireAuthz(token.mint / token.list / token.revoke)` on the token's real owner and kind |
 | Roles, mask functions | `/api/roles**`, `/api/mask-fns**` | `cpgo/routes/policies/policies.go`, `policies_write.go` | `requireAdmin(admin.policies)`; `GET /api/roles` is `requireApi` |
 | Principal-to-role assignment | `/api/role-assignments**` | `cpgo/routes/policies/policies.go`, `policies_write.go` | `requireAdmin(admin.identity)` |
 | Users, groups, group-to-role map | `/api/users**`, `/api/groups**` | `cpgo/routes/identity/identity.go` | `requireAdmin(admin.identity)` |
-| Cedar policies | `/api/policies**` | `cpgo/routes/policies/policies_cedar.go`; `/api/policies/schema` in `authz/CedarPolicyStore.kt` | `requireAdmin(admin.policies)` |
+| Cedar policies | `/api/policies**` | `cpgo/routes/policies/policies_cedar.go` | `requireAdmin(admin.policies)` |
 
 - `requireApi()` (`Datasources.kt`) — a live web session, returning the caller
   principal so a route never re-reads it behind an assertion. Authentication

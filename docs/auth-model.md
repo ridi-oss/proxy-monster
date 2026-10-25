@@ -197,8 +197,9 @@ JWT for a control-plane bearer token at `POST /api/workload/token` with body
 
 - **Trusted issuers.** `PM_CI_OIDC_ISSUERS=<name>=<issuerUrl>,…`, e.g.
   `github=https://token.actions.githubusercontent.com`. `name` is `[a-z0-9-]`,
-  unique; the issuer URL must be HTTPS. Unset or empty turns the endpoint off
-  (404 `workload.not_configured`).
+  unique; the issuer URL must be HTTPS unless `PM_AUTH_DEBUG` is on. Unset or
+  empty turns the endpoint off (404 `workload.not_configured`).
+  `PM_CI_OIDC_CA_FILE` adds PEM CA certificates trusted for the issuers.
 - **Audience.** `PM_CI_OIDC_AUDIENCE`, one value for every issuer since it names
   this control plane. It defaults to the public origin of `PM_MCP_RESOURCE`,
   e.g. `https://pm.example.com`.

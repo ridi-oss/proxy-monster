@@ -87,4 +87,76 @@ class CatalogIdentityDbTest {
             (dataSource as AutoCloseable).close()
         }
     }
+
+    @Test
+    fun `classification keys are written in the canonical spelling decide joins on`() {
+        requireDockerOrSkip()
+        val dataSource = SharedPostgres.hikari(SharedPostgres.freshDatabase("pm_canonical_keys"))
+        try {
+            Flyway.configure().dataSource(dataSource).load().migrate()
+            val store = DatasourceStore(dataSource)
+            val mysql = store.create(DatasourceInput("shop", "mysql", dbName = "app"))
+            store.storePushedCatalog(mysql.id, listOf("app"), 1, "8.0", snapshotOf(pushedColumn("app", "users", "ssn", "text", 1, true, catalog = "def")), currentCatalog = "def")
+            val written = store.upsertClassification(mysql.id, ClassificationInput("App", "Users", "SSN", listOf("pii"), catalog = "def"))
+            assertEquals(listOf("app", "users", "ssn"), listOf(written.schema, written.table, written.column))
+            assertEquals(listOf("pii"), store.catalog(mysql.id).columns.single().classification!!.tags)
+            assertEquals(true, store.deleteClassification(mysql.id, "APP", "users", "Ssn", "def"))
+
+            val athena = store.create(DatasourceInput("lake", "athena", dbName = "hr"))
+            store.storePushedCatalog(athena.id, listOf("hr"), null, "3", snapshotOf(pushedColumn("hr", "salaries", "ssn", "string", 1, true, catalog = "awsdatacatalog")), currentCatalog = "awsdatacatalog")
+            store.upsertClassification(athena.id, ClassificationInput("HR", "Salaries", "SSN", listOf("pii"), catalog = "AwsDataCatalog"))
+            assertEquals(listOf("pii"), store.catalog(athena.id).columns.single().classification!!.tags)
+
+            val pg = store.create(DatasourceInput("pg", "postgres", dbName = "a"))
+            store.storePushedCatalog(
+                pg.id, listOf("public"), null, "16.3",
+                snapshotOf(
+                    pushedColumn("public", "users", "ssn", "text", 1, true, catalog = "a"),
+                    pushedColumn("App", "T", "SSN", "text", 1, true, catalog = "a"),
+                ),
+                currentCatalog = "a",
+            )
+            val folded = store.upsertClassification(pg.id, ClassificationInput("public", "Users", "SSN", listOf("pii"), catalog = "a"))
+            assertEquals(listOf("public", "users", "ssn"), listOf(folded.schema, folded.table, folded.column), "unquoted folds")
+            val quoted = store.upsertClassification(pg.id, ClassificationInput("\"App\"", "\"T\"", "\"SSN\"", listOf("pii"), catalog = "a"))
+            assertEquals(listOf("App", "T", "SSN"), listOf(quoted.schema, quoted.table, quoted.column), "quoted stays exact")
+            assertEquals(listOf(listOf("pii"), listOf("pii")), store.catalog(pg.id).columns.map { it.classification?.tags })
+            assertFailsWith<ManagementException> {
+                store.upsertClassification(pg.id, ClassificationInput("public", "a b", "c", listOf("pii"), catalog = "a"))
+            }
+
+            // A browsed Postgres name sent quoted, the way the console sends it, keys the exact catalog row.
+            val shop = store.create(DatasourceInput("browsed", "postgres", dbName = "Shop"))
+            store.storePushedCatalog(
+                shop.id, listOf("public"), null, "16.3",
+                snapshotOf(
+                    pushedColumn("public", "Users", "SSN", "text", 1, true, catalog = "Shop"),
+                    pushedColumn("public", "a\"b", "c", "text", 1, true, catalog = "Shop"),
+                ),
+                currentCatalog = "Shop",
+            )
+            val q = { name: String -> shop.engine.definition.quoteIdentifier(name) }
+            for ((table, column) in listOf("Users" to "SSN", "a\"b" to "c")) {
+                store.upsertClassification(shop.id, ClassificationInput(q("public"), q(table), q(column), listOf("pii"), catalog = q("Shop")))
+            }
+            assertEquals(listOf(listOf("pii"), listOf("pii")), store.catalog(shop.id).columns.map { it.classification?.tags })
+            assertFailsWith<ManagementException> {
+                store.upsertClassification(shop.id, ClassificationInput("public", "Users", "SSN", listOf("pii"), catalog = "Shop"))
+            }
+
+            val unintrospected = store.create(DatasourceInput("fresh", "mysql", dbName = "app"))
+            val refused = assertFailsWith<ManagementException> {
+                store.upsertClassification(unintrospected.id, ClassificationInput("app", "users", "ssn", listOf("pii"), catalog = "def"))
+            }
+            assertEquals("datasource.case_mode_unknown", refused.error.code)
+            for ((mode, expected) in listOf(0 to listOf("App", "Users", "ssn"), 2 to listOf("app", "users", "ssn"))) {
+                val ds = store.create(DatasourceInput("mysql$mode", "mysql", dbName = "App"))
+                store.storePushedCatalog(ds.id, listOf("App"), mode, "8.0", snapshotOf(), currentCatalog = "def")
+                val key = store.upsertClassification(ds.id, ClassificationInput("App", "Users", "SSN", listOf("pii"), catalog = "def"))
+                assertEquals(expected, listOf(key.schema, key.table, key.column), "lower_case_table_names=$mode")
+            }
+        } finally {
+            (dataSource as AutoCloseable).close()
+        }
+    }
 }

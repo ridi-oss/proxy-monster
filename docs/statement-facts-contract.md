@@ -28,8 +28,8 @@ Kotlin's entire job is a generic walk over it.
 
 ### Wire format — protobuf both directions
 
-The analyzer↔JVM boundary (`cmd/libsqlglot` ↔ the `analyzer/jvm` FFM binding) is
-real proto messages, one byte buffer in and one out, both directions — no
+The analyzer↔JVM boundary (`cmd/libanalyzer` ↔ the `analyzer/jvm` FFM binding)
+is real proto messages, one byte buffer in and one out, both directions — no
 hand-rolled JSON at this boundary. `protoc-gen-go` generates the Go bindings and
 the `com.google.protobuf` Gradle plugin generates the Kotlin ones from the same
 `proto/src/main/proto/analyzer.proto`, so schema drift is a compile-time

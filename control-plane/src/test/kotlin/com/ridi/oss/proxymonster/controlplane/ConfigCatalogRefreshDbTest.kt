@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.grpc.Engine
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
 import com.ridi.oss.proxymonster.controlplane.grpc.CONTROL_PROTOCOL_VERSION
 import com.ridi.oss.proxymonster.controlplane.grpc.ControlPlaneGrpcService
@@ -31,7 +32,9 @@ import kotlin.test.assertIs
 import kotlin.test.assertTrue
 import kotlin.test.fail
 
-private const val WINDOW_MILLIS = 1_000L
+// Three DDLs must land inside one window even on a loaded CI runner.
+private const val WINDOW_MILLIS = CONFIG_CATALOG_REFRESH_WINDOW_MILLIS
+private const val SETTLE_MILLIS = WINDOW_MILLIS + 1_000L
 
 abstract class ConfigCatalogRefreshDbContract {
     protected abstract fun createEnforcement(): EnforcementFixture
@@ -64,13 +67,13 @@ abstract class ConfigCatalogRefreshDbContract {
     private val ds get() = fixture.datasource
     private val writer = "writer@example.com"
 
-    private fun schema(): String = if (ds.engine.isMySql) ds.dbName else ds.defaultSchemas.first { it !in ds.engine.systemSchemas }
+    private fun schema(): String = if (ds.engine == Engine.MYSQL) ds.dbName else ds.defaultSchemas.first { it !in ds.engine.systemSchemas }
 
     private fun target(): Connection = DriverManager.getConnection(
         fixture.enforcement.targetJdbcUrl, fixture.enforcement.targetUser, fixture.enforcement.targetPassword,
     )
 
-    private fun table(name: String) = if (ds.engine.isMySql) "`${schema()}`.`$name`" else "\"${schema()}\".\"$name\""
+    private fun table(name: String) = if (ds.engine == Engine.MYSQL) "`${schema()}`.`$name`" else "\"${schema()}\".\"$name\""
 
     /**
      * RefreshCatalog events a proxy attached on the Events stream receives while [body] runs and one window
@@ -92,7 +95,7 @@ abstract class ConfigCatalogRefreshDbContract {
         try {
             withTimeout(5_000) { while (ds.name !in fixture.core.proxyEventsHub.attached()) delay(20) }
             body()
-            delay(WINDOW_MILLIS * 2)
+            delay(SETTLE_MILLIS)
         } finally {
             proxy.cancel()
             withTimeout(5_000) { while (ds.name in fixture.core.proxyEventsHub.attached()) delay(20) }
@@ -101,7 +104,7 @@ abstract class ConfigCatalogRefreshDbContract {
     }
 
     private suspend fun open(held: Connection, principal: String = writer): OpenConnection {
-        val opened = fixture.core.connectionCatalog.open(Binding(ds.name, principal, "USER", ds.effectiveCatalog), ds.namespaces(listOf(schema())))
+        val opened = fixture.core.connectionCatalog.open(Binding(ds.name, principal, "USER", ds.effectiveCatalog, ds.engine), ds.namespaces(listOf(schema())))
         fixture.pushFromTarget(held, opened.connectionId, schema())
         return opened
     }
@@ -164,7 +167,7 @@ abstract class ConfigCatalogRefreshDbContract {
                     held.autoCommit = false
                     val opened = open(held)
                     runDdl(held, opened, "CREATE TABLE ${table(name)} (id BIGINT)")
-                    delay(WINDOW_MILLIS * 2)
+                    delay(SETTLE_MILLIS)
                     val commit = decide(opened, "COMMIT")
                     assertEquals(EnfAction.ALLOW, commit.ctx.action, commit.ctx.denyReason)
                     assertEquals(listOf(schema()), commit.afterStatement.map { it.schema }, "COMMIT re-measures the DDL's schema")
@@ -192,7 +195,7 @@ abstract class ConfigCatalogRefreshDbContract {
                     assertEquals(EnfAction.ALLOW, rollback.ctx.action, rollback.ctx.denyReason)
                     assertEquals(emptyList(), rollback.afterStatement)
                     held.rollback()
-                    delay(WINDOW_MILLIS * 2)
+                    delay(SETTLE_MILLIS)
                     val commit = decide(opened, "COMMIT")
                     assertEquals(emptyList(), commit.afterStatement, "ROLLBACK cleared the connection's DDL")
                 }
@@ -252,7 +255,7 @@ abstract class ConfigCatalogRefreshDbContract {
         val name = "cfgref_detached_${System.nanoTime()}"
         try {
             target().use { held -> runDdl(held, open(held), "CREATE TABLE ${table(name)} (id BIGINT)") }
-            delay(WINDOW_MILLIS * 2)
+            delay(SETTLE_MILLIS)
         } finally {
             dropTables(name)
         }

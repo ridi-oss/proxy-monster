@@ -168,6 +168,7 @@ func pullRequestPB(pr PullRequest) *pb.PullRequest {
 		HeadSha:     pr.HeadSHA,
 		BaseRef:     pr.BaseRef,
 		Author:      userPB(pr.Author),
+		MergedBy:    userPB(pr.MergedBy),
 
 		Mergeable:         pr.Mergeable,
 		MergeState:        pr.MergeState,
@@ -187,7 +188,7 @@ func pullRequestPB(pr PullRequest) *pb.PullRequest {
 	if pr.Checks != nil {
 		out.Checks = &pb.Checks{}
 		for _, c := range pr.Checks {
-			pc := &pb.Check{Name: c.Name, Required: c.Required, Status: pb.CheckStatus(pb.CheckStatus_value[c.Status])}
+			pc := &pb.Check{Name: c.Name, Required: c.Required, Own: c.Own, Status: pb.CheckStatus(pb.CheckStatus_value[c.Status])}
 			if c.Conclusion != nil {
 				pc.Conclusion = pb.CheckConclusion(pb.CheckConclusion_value[*c.Conclusion])
 			}
@@ -198,7 +199,7 @@ func pullRequestPB(pr PullRequest) *pb.PullRequest {
 		out.Files = append(out.Files, &pb.ChangedFile{Path: f.Path, Change: pb.FileChange(pb.FileChange_value[f.Change])})
 	}
 	for _, c := range pr.Commits {
-		out.Commits = append(out.Commits, &pb.CommitAuthor{UserId: c.UserID, Email: c.Email, Merge: c.Merge})
+		out.Commits = append(out.Commits, &pb.CommitAuthor{UserId: c.UserID, Login: c.Login, Email: c.Email, Merge: c.Merge})
 	}
 	return out
 }

@@ -15,7 +15,6 @@ import (
 	"github.com/ridi-oss/proxy-monster/cpgo/internal/dbtest"
 	"github.com/ridi-oss/proxy-monster/cpgo/internal/fakeidp"
 	"github.com/ridi-oss/proxy-monster/cpgo/internal/routetest"
-	"github.com/ridi-oss/proxy-monster/cpgo/routes/device"
 	"github.com/ridi-oss/proxy-monster/cpgo/routes/oidc"
 	"github.com/ridi-oss/proxy-monster/cpgo/session"
 	"github.com/ridi-oss/proxy-monster/cpgo/store/db"
@@ -53,7 +52,7 @@ func (s *sweepEnv) session(principal, kind, refresh string) int64 {
 		s.t.Fatal(err)
 	}
 	if kind == "DAEMON" {
-		s.e.Exec(s.t, `UPDATE principal_session SET renewal_token_hash = $1 WHERE id = $2`, device.SHA256Hex("pmr_"+itoa(id)), id)
+		s.e.Exec(s.t, `UPDATE principal_session SET renewal_token_hash = $1 WHERE id = $2`, session.TokenHash("pmr_"+itoa(id)), id)
 	}
 	return id
 }

@@ -23,7 +23,7 @@ func usersSchema(t *testing.T) *schema.Mapping {
 func TestMySQLWithoutKnownVersionFailsValidation(t *testing.T) {
 	out := Probe(
 		"SELECT 1 /*!50700 , ssn */ FROM users",
-		&pb.EngineConfig{Engine: pb.Engine_MYSQL, Datasource: &pb.EngineDatasource{MysqlLowerCaseTableNames: proto.Int32(0)}},
+		&pb.EngineConfig{Engine: pb.Engine_MYSQL, Target: &pb.TargetSettings{MysqlLowerCaseTableNames: proto.Int32(0)}},
 		usersSchema(t),
 		nil,
 		NamespaceConfig{Catalog: "def", SearchPath: []string{"acme"}},
@@ -36,7 +36,7 @@ func TestMySQLWithoutKnownVersionFailsValidation(t *testing.T) {
 func TestMySQLWithUnparseableVersionFailsValidation(t *testing.T) {
 	out := Probe(
 		"SELECT id FROM users",
-		&pb.EngineConfig{Engine: pb.Engine_MYSQL, Datasource: &pb.EngineDatasource{EngineVersion: "not-a-version", MysqlLowerCaseTableNames: proto.Int32(0)}},
+		&pb.EngineConfig{Engine: pb.Engine_MYSQL, Target: &pb.TargetSettings{EngineVersion: "not-a-version", MysqlLowerCaseTableNames: proto.Int32(0)}},
 		usersSchema(t),
 		nil,
 		NamespaceConfig{Catalog: "def", SearchPath: []string{"acme"}},
@@ -49,7 +49,7 @@ func TestMySQLWithUnparseableVersionFailsValidation(t *testing.T) {
 func TestMySQLWithValidVersionRequiresLowerCaseTableNames(t *testing.T) {
 	out := Probe(
 		"SELECT id FROM users",
-		&pb.EngineConfig{Engine: pb.Engine_MYSQL, Datasource: &pb.EngineDatasource{EngineVersion: "8.0.46"}},
+		&pb.EngineConfig{Engine: pb.Engine_MYSQL, Target: &pb.TargetSettings{EngineVersion: "8.0.46"}},
 		usersSchema(t),
 		nil,
 		NamespaceConfig{Catalog: "def", SearchPath: []string{"acme"}},
@@ -81,7 +81,7 @@ func TestPostgresWithoutVersionOrMySQLModeResolves(t *testing.T) {
 func TestExecutableCommentAnalyzableWithKnownVersion(t *testing.T) {
 	out := Probe(
 		"SELECT 1 /*!50700 , ssn */ FROM users",
-		&pb.EngineConfig{Engine: pb.Engine_MYSQL, Datasource: &pb.EngineDatasource{EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(0)}},
+		&pb.EngineConfig{Engine: pb.Engine_MYSQL, Target: &pb.TargetSettings{EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(0)}},
 		usersSchema(t),
 		nil,
 		NamespaceConfig{Catalog: "def", SearchPath: []string{"acme"}},
@@ -125,7 +125,7 @@ func TestMysqlVersionID(t *testing.T) {
 func TestExecutableCommentGateRespectsVersionThreshold(t *testing.T) {
 	out := Probe(
 		"SELECT 1 /*!50700 , ssn */ FROM users",
-		&pb.EngineConfig{Engine: pb.Engine_MYSQL, Datasource: &pb.EngineDatasource{EngineVersion: "5.6.0", MysqlLowerCaseTableNames: proto.Int32(0)}},
+		&pb.EngineConfig{Engine: pb.Engine_MYSQL, Target: &pb.TargetSettings{EngineVersion: "5.6.0", MysqlLowerCaseTableNames: proto.Int32(0)}},
 		usersSchema(t),
 		nil,
 		NamespaceConfig{Catalog: "def", SearchPath: []string{"acme"}},
@@ -143,14 +143,14 @@ func TestExecutableCommentGateRespectsVersionThreshold(t *testing.T) {
 }
 
 func TestCreateEngineRejectsUnspecifiedEngine(t *testing.T) {
-	if _, err := openSession(&pb.EngineConfig{}); err == nil {
-		t.Fatal("openSession with ENGINE_UNSPECIFIED unexpectedly succeeded")
+	if _, err := newSession(&pb.EngineConfig{}); err == nil {
+		t.Fatal("newSessionSettings with ENGINE_UNSPECIFIED unexpectedly succeeded")
 	}
 }
 
 func TestCreateEngineRejectsNilConfig(t *testing.T) {
-	if _, err := openSession(nil); err == nil {
-		t.Fatal("openSession(nil) unexpectedly succeeded")
+	if _, err := newSession(nil); err == nil {
+		t.Fatal("newSession(nil) unexpectedly succeeded")
 	}
 }
 
@@ -158,24 +158,27 @@ func TestCreateEngineRejectsNilConfig(t *testing.T) {
 // builds as if no session facts were observed. The oneof makes a foreign fact unrepresentable rather than
 // something each engine must refuse.
 func TestCreateEngineIgnoresAnotherEnginesSessionArm(t *testing.T) {
-	sess, err := openSession(&pb.EngineConfig{
-		Engine:     pb.Engine_MYSQL,
-		Datasource: &pb.EngineDatasource{EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(0)},
-		Session:    &pb.SessionObservation{Engine: &pb.SessionObservation_Postgres{Postgres: &pb.PostgresSession{SystemXidVisible: proto.Bool(false), FunctionShadowingObserved: true}}},
+	session, err := newSession(&pb.EngineConfig{
+		Engine:  pb.Engine_MYSQL,
+		Target:  &pb.TargetSettings{EngineVersion: "8.0.46", MysqlLowerCaseTableNames: proto.Int32(0)},
+		Session: &pb.SessionObservation{Engine: &pb.SessionObservation_Postgres{Postgres: &pb.PostgresSession{SystemXidVisible: proto.Bool(false), FunctionShadowingObserved: true}}},
 	})
-	if _, isMySQL := sess.(*mysqlSession); err != nil || !isMySQL {
-		t.Fatalf("MySQL engine with a PostgreSQL session arm = %v, %v", sess, err)
+	if err != nil || session == nil {
+		t.Fatalf("MySQL engine with a PostgreSQL session arm = %v, %v", session, err)
+	}
+	if session.engine != MySQL {
+		t.Fatalf("MySQL engine with a PostgreSQL session arm = %v, %v", session, err)
 	}
 }
 
 func TestCreateEngineValidatesPostgresFunctionShadowingContext(t *testing.T) {
-	if _, err := openSession(&pb.EngineConfig{
+	if _, err := newSession(&pb.EngineConfig{
 		Engine:  pb.Engine_POSTGRES,
 		Session: &pb.SessionObservation{Engine: &pb.SessionObservation_Postgres{Postgres: &pb.PostgresSession{ShadowedFunctions: []string{"unnest"}}}},
 	}); err == nil {
 		t.Fatal("unobserved PostgreSQL function shadow list unexpectedly succeeded")
 	}
-	if _, err := openSession(&pb.EngineConfig{
+	if _, err := newSession(&pb.EngineConfig{
 		Engine:  pb.Engine_POSTGRES,
 		Session: &pb.SessionObservation{Engine: &pb.SessionObservation_Postgres{Postgres: &pb.PostgresSession{FunctionShadowingObserved: true}}},
 	}); err != nil {

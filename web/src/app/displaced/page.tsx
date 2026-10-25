@@ -1,13 +1,13 @@
-'use client'
+'use client';
 
-import { useRouter } from 'next/navigation'
-import { useTranslations } from 'next-intl'
-import { MonitorSmartphone } from 'lucide-react'
-import { Button } from '@/components/ui/button'
+import { useRouter } from 'next/navigation';
+import { useTranslations } from 'next-intl';
+import { MonitorSmartphone } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 
 export default function DisplacedPage() {
-  const t = useTranslations('Session')
-  const router = useRouter()
+  const t = useTranslations('Session');
+  const router = useRouter();
 
   return (
     <div className="flex min-h-svh items-center justify-center px-4">
@@ -22,5 +22,5 @@ export default function DisplacedPage() {
         <Button onClick={() => router.replace('/login')}>{t('displaced.signInAgain')}</Button>
       </div>
     </div>
-  )
+  );
 }

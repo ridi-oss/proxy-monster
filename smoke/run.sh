@@ -90,12 +90,12 @@ wait "$compose_pid" || { echo "smoke: the datastores did not come up; see $SMOKE
 # next dev takes seconds to start, so the console starts now and is awaited once the proxies are up.
 echo "smoke: starting the console on :$WEB"
 (
-  cd "$ROOT/web" && exec env PM_PROXY_TARGET="http://127.0.0.1:$CP_HTTP" PM_WEB_DEV_ORIGINS=127.0.0.1,localhost \
+  cd "$ROOT/web" && exec env PM_CP_URL="http://127.0.0.1:$CP_HTTP" PM_WEB_DEV_ORIGINS=127.0.0.1,localhost \
     pnpm exec next dev -p "$WEB" -H 127.0.0.1 > "$SMOKE_DIR/logs/web.log" 2>&1
 ) &
 pids+=($!)
 
-# The fake GitHub (smoke/fake_github.py, run inside smoke.py): its HTTPS cert, which cp-go (PM_GITHUB_CA_FILE) and the
+# The fake GitHub (smoke/fake_github.py, run inside smoke.py): its HTTPS cert, which cp-go (PM_GITHUB_CA_FILE and PM_CI_OIDC_CA_FILE) and the
 # Kotlin control plane (a throwaway truststore) trust, the key that signs its CI tokens, and the App key cp-go signs with.
 GH="$SMOKE_DIR/github"
 rm -f "$GH"/*
@@ -115,10 +115,11 @@ echo "smoke: starting control plane on :$CP_HTTP"
     PM_HTTP_PORT="$CP_HTTP" PM_GRPC_PORT="$CP_GRPC" \
     PM_CP_CHILD_HTTP_PORT="$CP_CHILD_HTTP" PM_CP_CHILD_GRPC_PORT="$CP_CHILD_GRPC" \
     PM_CP_CHILD="$ROOT/control-plane/build/install/control-plane/bin/control-plane" \
-    PM_DEV=true PM_AUTH_DEBUG=true PM_SECRET_TOKEN="$SECRET" PM_RESULT_KEY="$RESULT_KEY" \
+    PM_DEV=true PM_AUTH_DEBUG=true PM_INSTANCE_NAME=smoke PM_SECRET_TOKEN="$SECRET" PM_RESULT_KEY="$RESULT_KEY" \
     PM_GITHUB_APP_ID=1 PM_GITHUB_APP_PRIVATE_KEY_FILE="$GH/app-key.pem" PM_GITHUB_API_URL="https://127.0.0.1:$GITHUB_TLS" \
     PM_GITHUB_IDENTITY=commit-email \
     PM_CI_OIDC_ISSUERS="smoke=https://127.0.0.1:$GITHUB_TLS" PM_CI_OIDC_AUDIENCE=smoke-github \
+    PM_CI_OIDC_CA_FILE="$GH/tls-cert.pem" \
     PM_GITHUB_CA_FILE="$GH/tls-cert.pem" \
     JAVA_OPTS="-Djavax.net.ssl.trustStore=$GH/truststore.p12 -Djavax.net.ssl.trustStoreType=PKCS12 -Djavax.net.ssl.trustStorePassword=smoke-github" \
     "$SMOKE_DIR/bin/cp-go" > "$SMOKE_DIR/logs/control-plane.log" 2>&1

@@ -112,7 +112,6 @@ class AuthAuditRecorder(private val auditStore: AuditStore) {
         const val CHANNEL_PMON = "pmon"
         const val CHANNEL_OAUTH = "oauth"
         const val CHANNEL_SESSION = "session"
-        const val CHANNEL_WORKLOAD = "workload"
 
         const val ACTION_OIDC_LOGIN = "auth.oidc.login"
         const val ACTION_LOGOUT = "auth.logout"

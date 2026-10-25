@@ -5,6 +5,8 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -32,7 +34,9 @@ import (
 	"github.com/ridi-oss/proxy-monster/cpgo/grpcsvc"
 	"github.com/ridi-oss/proxy-monster/cpgo/idp"
 	"github.com/ridi-oss/proxy-monster/cpgo/routes"
+	"github.com/ridi-oss/proxy-monster/cpgo/routes/oauth"
 	"github.com/ridi-oss/proxy-monster/cpgo/routes/oidc"
+	"github.com/ridi-oss/proxy-monster/cpgo/routes/workload"
 	"github.com/ridi-oss/proxy-monster/cpgo/session"
 	"github.com/ridi-oss/proxy-monster/cpgo/store"
 	"github.com/ridi-oss/proxy-monster/cpgo/tailnet"
@@ -41,6 +45,7 @@ import (
 type config struct {
 	HTTPPort       int            `env:"PM_HTTP_PORT" default:"8080" help:"Public HTTP port."`
 	GRPCPort       int            `env:"PM_GRPC_PORT" default:"9090" help:"Public gRPC port."`
+	BindHost       string         `env:"PM_BIND_HOST" help:"Address the public ports listen on; empty listens on every interface."`
 	TrustedProxies []string       `env:"PM_TRUSTED_PROXIES" sep:"," help:"Peers whose X-Forwarded-* headers are honored."`
 	WebURL         string         `env:"PM_WEB_URL" help:"Web console cp-go forwards non-control-plane paths to, e.g. http://web:3000. Empty serves only the control plane's paths."`
 	Child          string         `env:"PM_CP_CHILD" default:"/app/bin/control-plane" help:"Kotlin control plane start script."`
@@ -66,6 +71,8 @@ type config struct {
 	ResultKey           string `env:"PM_RESULT_KEY" hidden:"" group:"kotlin" help:"Base64 AES-256 key for stored results and refresh tokens."`
 	ElevatedScopeTTL    string `env:"PM_ELEVATED_SCOPE_TTL" default:"3600" group:"kotlin" help:"Seconds MCP scopes beyond read and query last after approval."`
 	OAuthAccessTTL      string `env:"PM_OAUTH_ACCESS_TTL" name:"oauth-access-ttl" default:"600" group:"kotlin" help:"Seconds an MCP access token lasts."`
+	OAuthRefreshTTL     string `env:"PM_OAUTH_REFRESH_TTL" name:"oauth-refresh-ttl" default:"21600" group:"kotlin" help:"Seconds an MCP refresh token lasts."`
+	OAuthAutoConsent    bool   `env:"PM_OAUTH_DEBUG_AUTO_CONSENT" name:"oauth-debug-auto-consent" default:"true" negatable:"" group:"kotlin" help:"Under PM_AUTH_DEBUG, authorize MCP clients without the consent page."`
 	SessionWindow       string `env:"PM_SESSION_WINDOW" default:"7200" group:"kotlin" help:"Wire session window: seconds, or h/m/s as in 1h30m."`
 	WebAbsolute         string `env:"PM_WEB_SESSION_ABSOLUTE" default:"7200" group:"kotlin" help:"Web session lifetime."`
 	WebIdle             string `env:"PM_WEB_SESSION_IDLE" default:"900" group:"kotlin" help:"Web session idle timeout."`
@@ -84,13 +91,18 @@ type config struct {
 	OIDCUserAttributes string `env:"PM_OIDC_USER_ATTRIBUTES" group:"kotlin" help:"id_token claims kept as Cedar User attributes; read only with OIDC login on."`
 	IdPRecheck         string `env:"PM_IDP_RECHECK_INTERVAL" name:"idp-recheck-interval" default:"300" group:"kotlin" help:"Seconds between IdP liveness rechecks of each session."`
 
+	CIIssuers  string `env:"PM_CI_OIDC_ISSUERS" name:"ci-oidc-issuers" group:"kotlin" help:"Trusted CI OIDC issuers, name=issuerUrl,… e.g. github=https://token.actions.githubusercontent.com; empty turns the CI token exchange off."`
+	CIAudience string `env:"PM_CI_OIDC_AUDIENCE" name:"ci-oidc-audience" group:"kotlin" help:"Audience every CI OIDC token must carry; default the control plane's origin."`
+	CICAFile   string `env:"PM_CI_OIDC_CA_FILE" name:"ci-oidc-ca-file" help:"PEM CA certificates trusted for the CI OIDC issuers besides the system ones."`
+
 	Session session.Settings `kong:"-"`
 	// OIDC is nil unless OIDC login is on.
 	OIDC *idp.Config `kong:"-"`
 	// Web is nil when PM_WEB_URL is empty.
-	Web    *url.URL      `kong:"-"`
-	Schema *authz.Schema `kong:"-"`
-	Crypto *idp.Crypto   `kong:"-"`
+	Web    *url.URL          `kong:"-"`
+	Schema *authz.Schema     `kong:"-"`
+	Crypto *idp.Crypto       `kong:"-"`
+	CI     []workload.Issuer `kong:"-"`
 }
 
 // kotlinEnv is the group:"kotlin" settings as parsed here, so the child uses the values Go uses wherever they
@@ -129,6 +141,9 @@ func sessionSettings(c config) (session.Settings, error) {
 		MCPResource:      session.CanonicalResource(c.MCPResource),
 		ElevatedScopeTTL: session.ClampSeconds(c.ElevatedScopeTTL, 3600),
 		MCPAccessTTL:     session.ClampSeconds(c.OAuthAccessTTL, 600),
+		MCPRefreshTTL:    session.ClampSeconds(c.OAuthRefreshTTL, 21600),
+
+		OAuthDebugAutoConsent: c.OAuthAutoConsent,
 	}
 	for _, d := range []struct {
 		env, raw string
@@ -217,8 +232,35 @@ func settle(c config) (config, error) {
 	if c.Schema, err = authz.NewSchema(attrs); err != nil {
 		return c, err
 	}
+	audience := strings.TrimSpace(c.CIAudience)
+	if audience == "" {
+		audience = c.Session.Issuer()
+	}
+	if c.CI, err = workload.ParseIssuers(c.CIIssuers, audience, c.AuthDebug); err != nil {
+		return c, err
+	}
 	c.Crypto, err = idp.NewCrypto(c.ResultKey)
 	return c, err
+}
+
+// ciVerifier checks CI OIDC tokens against cfg.CI, trusting PM_CI_OIDC_CA_FILE besides the system roots.
+func ciVerifier(cfg config) (*workload.Verifier, error) {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if cfg.CICAFile != "" {
+		pem, err := os.ReadFile(cfg.CICAFile)
+		if err != nil {
+			return nil, fmt.Errorf("PM_CI_OIDC_CA_FILE: %w", err)
+		}
+		roots, err := x509.SystemCertPool()
+		if err != nil {
+			roots = x509.NewCertPool()
+		}
+		if !roots.AppendCertsFromPEM(pem) {
+			return nil, errors.New("PM_CI_OIDC_CA_FILE: no PEM certificate found")
+		}
+		transport.TLSClientConfig = &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}
+	}
+	return workload.NewVerifier(cfg.CI, &http.Client{Transport: transport}), nil
 }
 
 // run serves cfg, as settle returns it, until ctx ends or the child exits, and returns the process exit code.
@@ -228,6 +270,11 @@ func run(ctx context.Context, cfg config) int {
 	internalToken := cfg.InternalToken
 	if internalToken == "" {
 		internalToken = rand.Text()
+	}
+	ci, err := ciVerifier(cfg)
+	if err != nil {
+		slog.Error("cp-go: " + err.Error())
+		return 1
 	}
 	// Before the child starts, so its first call into Go finds the bridge.
 	served := make(chan error, 5)
@@ -286,7 +333,7 @@ func run(ctx context.Context, cfg config) int {
 			AuthDebug: cfg.Session.AuthDebug,
 			Authz:     authz.NewDecider(pool, cfg.Schema),
 			Kotlin:    kotlin,
-		}, login)
+		}, login, oauth.HTTPResolver{AllowSpecialUse: cfg.Session.AuthDebug}, ci)
 		h := front.Route(mux, front.NewHTTP(httpUpstream, edges))
 		if cfg.Web != nil {
 			h = front.Split(h, front.NewHTTP(cfg.Web, edges))
@@ -294,7 +341,7 @@ func run(ctx context.Context, cfg config) int {
 		return h
 	}
 	httpSrv := &http.Server{
-		Addr:              ":" + strconv.Itoa(cfg.HTTPPort),
+		Addr:              net.JoinHostPort(cfg.BindHost, strconv.Itoa(cfg.HTTPPort)),
 		Handler:           serve(front.ParseTrustedEdges(cfg.TrustedProxies)),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
@@ -306,7 +353,7 @@ func run(ctx context.Context, cfg config) int {
 		slog.Error("cp-go: listening for HTTP: " + err.Error())
 		return shutdownChild(kt)
 	}
-	grpcLn, err := net.Listen("tcp", ":"+strconv.Itoa(cfg.GRPCPort))
+	grpcLn, err := net.Listen("tcp", net.JoinHostPort(cfg.BindHost, strconv.Itoa(cfg.GRPCPort)))
 	if err != nil {
 		_ = httpLn.Close()
 		slog.Error("cp-go: listening for gRPC: " + err.Error())

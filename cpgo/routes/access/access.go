@@ -12,13 +12,20 @@ import (
 )
 
 func Register(mux *http.ServeMux, pool *pgxpool.Pool, gate api.Gate) {
-	ac := access{pool: pool, authz: gate.Authz, kotlin: gate.Kotlin}
+	ac := access{pool: pool, authz: gate.Authz, kotlin: gate.Kotlin, storesResults: gate.Sessions.Settings().ResultKey}
 	mux.HandleFunc("GET /api/access-requests", gate.RequireAPI(api.Serve(ac.requests)))
 	mux.HandleFunc("GET /api/access-grants", gate.RequireAPI(api.Serve(ac.grants)))
 	mux.HandleFunc("GET /api/approvals", gate.RequireAPI(api.Serve(ac.ownApprovals)))
 	mux.HandleFunc("POST /api/access-requests", gate.RequireAPI(api.Serve(ac.createRequest)))
 	mux.HandleFunc("POST /api/access-requests/{id}/approve", gate.RequireAPI(api.Serve(api.WithID(ac.approve))))
 	mux.HandleFunc("POST /api/access-requests/{id}/reject", gate.RequireAPI(api.Serve(api.WithID(ac.reject))))
+	mux.HandleFunc("GET /api/requests/involved", gate.RequireAPI(api.Serve(ac.involved)))
+	mux.HandleFunc("GET /api/requests/{id}/thread", gate.RequireAPI(api.Serve(api.WithID(ac.thread))))
+	mux.HandleFunc("POST /api/requests/{id}/comments", gate.RequireAPI(api.Serve(api.WithID(ac.comment))))
+	mux.HandleFunc("POST /api/requests/{id}/ccs", gate.RequireAPI(api.Serve(api.WithID(ac.addCC))))
+	mux.HandleFunc("DELETE /api/requests/{id}/ccs/{principal}", gate.RequireAPI(api.Serve(api.WithID(ac.removeCC))))
+	mux.HandleFunc("POST /api/requests/{id}/close", gate.RequireAPI(api.Serve(api.WithID(ac.close))))
+	registerApprovals(mux, gate, ac)
 	mux.HandleFunc("POST /api/access-grants/{id}/revoke", gate.RequireAPIElse(api.Serve(ac.unauthenticatedRevoke), api.Serve(api.WithID(ac.revokeGrant))))
 }
 
@@ -143,6 +150,8 @@ type access struct {
 	pool   *pgxpool.Pool
 	authz  api.Authorizer
 	kotlin api.Kotlin
+	// storesResults is whether PM_RESULT_KEY is set; without it an approved query request neither runs nor shows results.
+	storesResults bool
 }
 
 // requests lists the requests (status-filtered when asked) the caller may task.read.

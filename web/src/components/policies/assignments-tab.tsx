@@ -1,67 +1,48 @@
-'use client'
+'use client';
 
 // Assignments tab — maps a principal (email / IdP group) to a base role.
 // IdP groups resolve server-side; this is the explicit principal-level override.
-import { Fragment, useState } from 'react'
-import { useTranslations } from 'next-intl'
-import { Loader2, Plus, Trash2 } from 'lucide-react'
-import { mutate } from 'swr'
-import { createRoleAssignment, deleteRoleAssignment } from '@/lib/api/client'
-import { useRoleAssignments, useRoles, swrKeys } from '@/lib/hooks'
-import type { Role, RoleAssignment } from '@/lib/api/types'
-import { Button } from '@/components/ui/button'
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table'
-import { EmptyState, ErrorState, LoadingState } from '@/components/page-scaffold'
-import { toast } from 'sonner'
+import { Fragment, useState } from 'react';
+import { useTranslations } from 'next-intl';
+import { Loader2, Plus, Trash2 } from 'lucide-react';
+import { mutate } from 'swr';
+import { createRoleAssignment, deleteRoleAssignment } from '@/lib/api/client';
+import { useRoleAssignments, useRoles, swrKeys } from '@/lib/hooks';
+import type { Role, RoleAssignment } from '@/lib/api/types';
+import { Button } from '@/components/ui/button';
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { EmptyState, ErrorState, LoadingState } from '@/components/page-scaffold';
+import { toast } from 'sonner';
 
 export function AssignmentsTab() {
-  const t = useTranslations('Policies')
-  const { data: assignments, error, isLoading } = useRoleAssignments()
-  const { data: roles } = useRoles()
-  const [adding, setAdding] = useState(false)
-  const [deleting, setDeleting] = useState<RoleAssignment | null>(null)
-  const [deleteError, setDeleteError] = useState<string | null>(null)
-  const [deleteBusy, setDeleteBusy] = useState(false)
+  const t = useTranslations('Policies');
+  const { data: assignments, error, isLoading } = useRoleAssignments();
+  const { data: roles } = useRoles();
+  const [adding, setAdding] = useState(false);
+  const [deleting, setDeleting] = useState<RoleAssignment | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
 
   const handleDelete = async (a: RoleAssignment) => {
-    setDeleteBusy(true)
-    setDeleteError(null)
+    setDeleteBusy(true);
+    setDeleteError(null);
     try {
-      await deleteRoleAssignment(a.id)
-      await mutate(swrKeys.roleAssignments)
-      setDeleting(null)
-      toast.success(t('assignments.toastRemoved', { roleName: a.roleName, principal: a.principal }))
+      await deleteRoleAssignment(a.id);
+      await mutate(swrKeys.roleAssignments);
+      setDeleting(null);
+      toast.success(t('assignments.toastRemoved', { roleName: a.roleName, principal: a.principal }));
     } catch (err) {
-      setDeleteError(err instanceof Error ? err.message : t('assignments.removeFailed'))
+      setDeleteError(err instanceof Error ? err.message : t('assignments.removeFailed'));
     } finally {
-      setDeleteBusy(false)
+      setDeleteBusy(false);
     }
-  }
+  };
 
-  const noRoles = (roles?.length ?? 0) === 0
+  const noRoles = (roles?.length ?? 0) === 0;
 
   return (
     <div className="space-y-4">
@@ -116,8 +97,8 @@ export function AssignmentsTab() {
                         variant="ghost"
                         className="text-destructive hover:text-destructive"
                         onClick={() => {
-                          setDeleteError(null)
-                          setDeleting((prev) => (prev?.id === a.id ? null : a))
+                          setDeleteError(null);
+                          setDeleting((prev) => (prev?.id === a.id ? null : a));
                         }}
                         aria-label={t('assignments.remove')}
                       >
@@ -137,17 +118,10 @@ export function AssignmentsTab() {
                                 code: (chunks) => <code className="font-mono">{chunks}</code>,
                               })}
                             </p>
-                            {deleteError && (
-                              <p className="mt-1 text-xs text-red-500">{deleteError}</p>
-                            )}
+                            {deleteError && <p className="mt-1 text-xs text-red-500">{deleteError}</p>}
                           </div>
                           <div className="flex items-center gap-2">
-                            <Button
-                              size="xs"
-                              variant="outline"
-                              onClick={() => setDeleting(null)}
-                              disabled={deleteBusy}
-                            >
+                            <Button size="xs" variant="outline" onClick={() => setDeleting(null)} disabled={deleteBusy}>
                               {t('common.cancel')}
                             </Button>
                             <Button
@@ -156,9 +130,7 @@ export function AssignmentsTab() {
                               onClick={() => handleDelete(a)}
                               disabled={deleteBusy}
                             >
-                              {deleteBusy ? (
-                                <Loader2 className="size-3 animate-spin" />
-                              ) : null}
+                              {deleteBusy ? <Loader2 className="size-3 animate-spin" /> : null}
                               {t('assignments.remove')}
                             </Button>
                           </div>
@@ -181,51 +153,43 @@ export function AssignmentsTab() {
         />
       )}
     </div>
-  )
+  );
 }
 
 // ---- Assign dialog ----------------------------------------------------------
 
-function AssignDialog({
-  roles,
-  onClose,
-  onSaved,
-}: {
-  roles: Role[]
-  onClose: () => void
-  onSaved: () => void
-}) {
-  const t = useTranslations('Policies')
-  const [principal, setPrincipal] = useState('')
-  const [roleId, setRoleId] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+function AssignDialog({ roles, onClose, onSaved }: { roles: Role[]; onClose: () => void; onSaved: () => void }) {
+  const t = useTranslations('Policies');
+  const [principal, setPrincipal] = useState('');
+  const [roleId, setRoleId] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const valid = principal.trim().length > 0 && roleId != null
+  const valid = principal.trim().length > 0 && roleId != null;
 
   const handleSave = async () => {
-    if (!valid || !roleId) return
-    setBusy(true)
-    setError(null)
+    if (!valid || !roleId) return;
+    setBusy(true);
+    setError(null);
     try {
-      await createRoleAssignment({ principal: principal.trim(), roleId: Number(roleId) })
+      await createRoleAssignment({ principal: principal.trim(), roleId: Number(roleId) });
       toast.success(
         t('assignments.toastAssigned', {
           roleName: roles.find((r) => String(r.id) === roleId)?.name ?? '',
           principal: principal.trim(),
         }),
-      )
-      onSaved()
-      onClose()
+      );
+      onSaved();
+      onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('assignments.assignFailed'))
+      setError(err instanceof Error ? err.message : t('assignments.assignFailed'));
     } finally {
-      setBusy(false)
+      setBusy(false);
     }
-  }
+  };
 
   const roleLabel = (v: string | null) =>
-    v ? (roles.find((r) => String(r.id) === v)?.name ?? '') : t('assignments.selectRole')
+    v ? (roles.find((r) => String(r.id) === v)?.name ?? '') : t('assignments.selectRole');
 
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
@@ -282,5 +246,5 @@ function AssignDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
-  )
+  );
 }

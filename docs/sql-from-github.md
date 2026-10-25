@@ -34,7 +34,7 @@ acme/shop
 # .github/workflows/sql.yml
 on:
   pull_request: { types: [opened, synchronize, reopened] }
-permissions: { id-token: write, contents: read }
+permissions: { id-token: write, contents: read, checks: write }
 jobs:
   file:
     runs-on: ubuntu-latest
@@ -51,6 +51,7 @@ jobs:
       - uses: ridi-oss/proxy-monster/sql-action@v1
         with:
           server: https://proxy-monster.internal.example
+          instance: shop
           dir: db/orders
           datasource: shop-mysql
           schema: orders
@@ -143,11 +144,23 @@ where the head commit is the one the Action filed from.
 
 ## Running
 
-`query executed` is a required check posted by the control plane's GitHub App,
-named Proxy Monster. The ruleset requires it with its source pinned to the App,
-so an Actions job cannot post a passing check under that name, and the ruleset's
-bypass list is empty. For a PR that adds no matching file, `query executed`
-completes as `skipped` at once, which GitHub counts as passing.
+`<instance>/query executed` is a required check posted by the control plane's
+GitHub App, where `<instance>` is the control plane's `PM_INSTANCE_NAME`; below
+it is `query executed` for short. Each control plane posts its own, so a dev and
+a prod instance on one repository never share a check, and renaming an instance
+renames its check, which the ruleset must follow. The ruleset's bypass list is
+empty.
+
+For a commit that adds no matching file, the Action posts `query executed` as
+`skipped` itself with the workflow's `GITHUB_TOKEN`, which GitHub counts as
+passing; with its `instance` input set, it does so without the control plane, so
+a PR without SQL merges while the control plane is down. The control plane posts
+nothing on such a commit, and a check it posted there earlier completes as
+`skipped`. A commit that adds SQL waits for the control plane. Since the ruleset
+then cannot pin the check to the App, a PR author who edits a workflow can post
+a passing `query executed` too; that merges the SQL before it runs, never runs
+it unapproved: once merged, it still runs when approved
+([Merged before it ran](#merged-before-it-ran)).
 
 For a PR that adds files, the control plane runs them when all of these hold:
 
@@ -169,7 +182,9 @@ For a PR that adds files, the control plane runs them when all of these hold:
   PR could not merge, and SQL that ran would sit on the target without `main`.
   Any other check still running on the head also waits, so a branch that
   requires no checks does not run the SQL ahead of CI; a finished optional check
-  does not block, whatever its conclusion;
+  does not block, whatever its conclusion. Another instance's
+  `<instance>/query executed` does not hold the run, since it too waits for the
+  merge;
 - GitHub would merge the PR once `query executed` passes. A PR approved by a
   reviewer who is not the required code owner, one with conflicts, or one whose
   branch is behind under a strict rule waits. The control plane reads GitHub's
@@ -186,17 +201,17 @@ For a PR that adds files, the control plane runs them when all of these hold:
   PR B branched before PR A's `0041` merged; B's `0042` may depend on the schema
   `0041` creates, and B's CI never ran on top of it
   ([Branches that are behind](#branches-that-are-behind));
-- no other PR's request in the scope is EXECUTING, or EXECUTED but not yet
-  merged, unless that PR's current version of some file has failed. A ran `0041`
-  and waits to merge, so B waits. If A's `0042` failed, A cannot merge until its
-  author pushes a fix, so A stops holding the scope and B is not blocked by a PR
-  that may never merge.
+- no other PR's request in the scope is EXECUTING, EXECUTED but not yet merged,
+  or merged but not yet run, unless that PR's current version of some file has
+  failed. A ran `0041` and waits to merge, so B waits. If A's `0042` failed, A
+  cannot merge until its author pushes a fix, so A stops holding the scope and B
+  is not blocked by a PR that may never merge.
 
 It runs the PR's files in key order, each on its own connection whose statements
 share it, and stops at the first failure. It re-checks a PR on every poll (see
 [Reaching the control plane](#reaching-the-control-plane)). Without auto-merge
-nothing runs and `query executed` stays pending, so a PR cannot merge un-run
-SQL.
+nothing runs and `query executed` stays pending, so while the check is required
+a PR cannot merge un-run SQL.
 
 While auto-merge is off on an approved PR, two places tell the author to enable
 it:
@@ -210,6 +225,17 @@ With auto-merge on, neither mentions it: the check says what it is waiting on
 
 On success `query executed` turns green; it is the last pending check, so GitHub
 merges at once. On failure it turns red and nothing merges.
+
+### Merged before it ran
+
+A PR can still merge first: the base does not require `query executed`, or an
+admin bypassed the rule. Its files at the merged commit then run anyway, as
+whoever merged it (for auto-merge, whoever enabled it): an approved file right
+away, a pending one once approved, in the order the PRs merged. Until it runs it
+holds its scope, so a PR merged after it, or not merged yet, cannot run ahead of
+it; if one of that PR's files fails or is rejected, it stops holding the scope,
+as an unmerged PR does. A file pushed after the last filing does not run; the
+check fails with "Merged before this commit's SQL files were filed".
 
 ### One PR at a time
 

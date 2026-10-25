@@ -1,12 +1,12 @@
-'use client'
+'use client';
 
 // Schema/table/column explorer for the editor's left rail (BigQuery-style).
 // Schemas and tables are collapsible; `pii`-tagged columns are flagged loud
 // (red dot), any other tag amber. Clicking a row selects it; a schema or table row also
 // toggles, a table opens its tab, and a column opens its table's tab with the column flashed.
-import { createContext, useCallback, useContext, useMemo, useState } from 'react'
-import { useTranslations } from 'next-intl'
-import { toast } from 'sonner'
+import { createContext, useCallback, useContext, useMemo, useState } from 'react';
+import { useTranslations } from 'next-intl';
+import { toast } from 'sonner';
 import {
   Check,
   ChevronRight,
@@ -21,186 +21,206 @@ import {
   Table2,
   TextCursorInput,
   X,
-} from 'lucide-react'
-import { schemaKey } from '@/lib/catalog'
-import { copyText } from '@/lib/clipboard'
-import { cn } from '@/lib/utils'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
+} from 'lucide-react';
+import { schemaKey } from '@/lib/catalog';
+import { copyText } from '@/lib/clipboard';
+import { cn } from '@/lib/utils';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import type { TreeColumn, TreeTable } from './catalog-schema'
-import { usePersistedExpandedSchemas } from './use-persisted-expanded-schemas'
-import { usePersistedFlag } from './use-persisted-flag'
+} from '@/components/ui/dropdown-menu';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import type { TreeColumn, TreeTable } from './catalog-schema';
+import { usePersistedExpandedSchemas } from './use-persisted-expanded-schemas';
+import { usePersistedFlag } from './use-persisted-flag';
 
 interface Props {
-  datasourceId: number
-  tables: TreeTable[]
+  datasourceId: number;
+  tables: TreeTable[];
   /** Insert a name at the caret. Without it, tables are leaves and columns never show. */
-  onInsert?: (text: string) => void
-  onOpenTable: (table: TreeTable) => void
-  onSelectColumn?: (table: TreeTable, column: string) => void
+  onInsert?: (text: string) => void;
+  onOpenTable: (table: TreeTable) => void;
+  onSelectColumn?: (table: TreeTable, column: string) => void;
   /** The configured search path, used until the session reports [searchPath]. */
-  defaultSchemas?: string[]
+  defaultSchemas?: string[];
   /** The session's live search path: undefined before the session opens, null when it could not be read.
    *  Its schemas are marked and start expanded; with no path to match, every schema starts expanded. */
-  searchPath?: string[] | null
-  currentCatalog?: string | null
+  searchPath?: string[] | null;
+  currentCatalog?: string | null;
   /** Make a schema the session's default; absent where the datasource cannot (Athena). */
-  onUseSchema?: (schema: string) => void
+  onUseSchema?: (schema: string) => void;
 }
 
 interface VisibleTable {
-  table: TreeTable
-  columns: TreeColumn[]
+  table: TreeTable;
+  columns: TreeColumn[];
   /** Only some of its columns match the filter, so it opens to show them. */
-  columnMatch: boolean
+  columnMatch: boolean;
 }
 
 interface SchemaGroup {
-  key: string
-  catalog: string
-  label: string
-  schema: string
-  system: boolean
-  tables: VisibleTable[]
+  key: string;
+  catalog: string;
+  label: string;
+  schema: string;
+  system: boolean;
+  tables: VisibleTable[];
 }
 
-type Expansion = Record<string, boolean>
+type Expansion = Record<string, boolean>;
 
 interface TreeContext {
-  query: string
-  onInsert?: (text: string) => void
-  onOpenTable: (table: TreeTable) => void
-  onSelectColumn?: (table: TreeTable, column: string) => void
-  onUseSchema?: (schema: string) => void
-  pathKeys: string[]
+  query: string;
+  onInsert?: (text: string) => void;
+  onOpenTable: (table: TreeTable) => void;
+  onSelectColumn?: (table: TreeTable, column: string) => void;
+  onUseSchema?: (schema: string) => void;
+  pathKeys: string[];
   // A marker the user sets by clicking a row; independent of whatever tab or panel is showing.
-  selected: string | null
-  select: (id: string) => void
+  selected: string | null;
+  select: (id: string) => void;
 }
-const Tree = createContext<TreeContext>({ query: '', onOpenTable: () => {}, pathKeys: [], selected: null, select: () => {} })
-const SELECTED = 'bg-primary/15 font-medium'
+const Tree = createContext<TreeContext>({
+  query: '',
+  onOpenTable: () => {},
+  pathKeys: [],
+  selected: null,
+  select: () => {},
+});
+const SELECTED = 'bg-primary/15 font-medium';
 
 function useSelection(id: string) {
-  const { selected, select } = useContext(Tree)
-  return { selected: selected === id, select: () => select(id) }
+  const { selected, select } = useContext(Tree);
+  return { selected: selected === id, select: () => select(id) };
 }
 
 export function SchemaTree({
-  datasourceId, tables, onInsert, onOpenTable, onSelectColumn, defaultSchemas, searchPath, currentCatalog,
+  datasourceId,
+  tables,
+  onInsert,
+  onOpenTable,
+  onSelectColumn,
+  defaultSchemas,
+  searchPath,
+  currentCatalog,
   onUseSchema,
 }: Props) {
-  const t = useTranslations('Query')
-  const withColumns = onInsert != null
-  const [filter, setFilter] = useState('')
-  const [showSystem, setShowSystem] = usePersistedFlag('pm.query.showSystemSchemas', false)
-  const [expandedSchemas, setExpandedSchemas] = usePersistedExpandedSchemas(datasourceId)
-  const [openTables, setOpenTables] = useState<Expansion>({})
-  const [selected, setSelected] = useState<string | null>(null)
+  const t = useTranslations('Query');
+  const withColumns = onInsert != null;
+  const [filter, setFilter] = useState('');
+  const [showSystem, setShowSystem] = usePersistedFlag('pm.query.showSystemSchemas', false);
+  const [expandedSchemas, setExpandedSchemas] = usePersistedExpandedSchemas(datasourceId);
+  const [openTables, setOpenTables] = useState<Expansion>({});
+  const [selected, setSelected] = useState<string | null>(null);
   // Expansion while filtering is separate and starts over with each new filter.
-  const [filterExpansion, setFilterExpansion] = useState<{ filter: string; open: Expansion }>({ filter: '', open: {} })
-  const query = filter.trim().toLowerCase()
-  const filterOpen = filterExpansion.filter === query ? filterExpansion.open : {}
+  const [filterExpansion, setFilterExpansion] = useState<{ filter: string; open: Expansion }>({ filter: '', open: {} });
+  const query = filter.trim().toLowerCase();
+  const filterOpen = filterExpansion.filter === query ? filterExpansion.open : {};
 
   const { groups, hiddenSystemSchemas } = useMemo(() => {
-    const bySchema = new Map<string, SchemaGroup>()
-    const hidden = new Set<string>()
-    const multipleCatalogs = new Set(tables.map((table) => table.catalog)).size > 1
+    const bySchema = new Map<string, SchemaGroup>();
+    const hidden = new Set<string>();
+    const multipleCatalogs = new Set(tables.map((table) => table.catalog)).size > 1;
 
     for (const table of tables) {
-      const key = schemaKey(table.catalog, table.schema)
+      const key = schemaKey(table.catalog, table.schema);
       if (table.system && !showSystem) {
-        hidden.add(key)
-        continue
+        hidden.add(key);
+        continue;
       }
-      let columns = table.columns
-      let columnMatch = false
+      let columns = table.columns;
+      let columnMatch = false;
       if (query) {
-        const schemaMatches = table.schema.toLowerCase().includes(query) || table.catalog.toLowerCase().includes(query)
-        const tableMatches =
-          table.name.toLowerCase().includes(query) || table.qualified.toLowerCase().includes(query)
+        const schemaMatches = table.schema.toLowerCase().includes(query) || table.catalog.toLowerCase().includes(query);
+        const tableMatches = table.name.toLowerCase().includes(query) || table.qualified.toLowerCase().includes(query);
         if (!schemaMatches && !tableMatches) {
-          if (!withColumns) continue
-          columns = table.columns.filter((column) => column.name.toLowerCase().includes(query))
-          if (columns.length === 0) continue
-          columnMatch = true
+          if (!withColumns) continue;
+          columns = table.columns.filter((column) => column.name.toLowerCase().includes(query));
+          if (columns.length === 0) continue;
+          columnMatch = true;
         }
       }
 
-      let group = bySchema.get(key)
+      let group = bySchema.get(key);
       if (!group) {
         group = {
-          key, catalog: table.catalog, schema: table.schema, system: table.system,
+          key,
+          catalog: table.catalog,
+          schema: table.schema,
+          system: table.system,
           label: multipleCatalogs ? `${table.schema} (${table.catalog})` : table.schema,
           tables: [],
-        }
-        bySchema.set(key, group)
+        };
+        bySchema.set(key, group);
       }
-      group.tables.push({ table, columns, columnMatch })
+      group.tables.push({ table, columns, columnMatch });
     }
 
-    return { groups: [...bySchema.values()], hiddenSystemSchemas: hidden.size }
-  }, [tables, query, showSystem, withColumns])
+    return { groups: [...bySchema.values()], hiddenSystemSchemas: hidden.size };
+  }, [tables, query, showSystem, withColumns]);
 
   // A path's non-system schemas present in the tree, in path order: [0] is where unqualified names resolve first.
-  const keysOf = useCallback((path: string[]) => {
-    const catalogOf = new Map(
-      tables
-        .filter((table) => !table.system && (currentCatalog == null || table.catalog === currentCatalog))
-        .map((table) => [table.schema, table.catalog]),
-    )
-    return path.filter((schema) => catalogOf.has(schema)).map((schema) => schemaKey(catalogOf.get(schema)!, schema))
-  }, [tables, currentCatalog])
+  const keysOf = useCallback(
+    (path: string[]) => {
+      const catalogOf = new Map(
+        tables
+          .filter((table) => !table.system && (currentCatalog == null || table.catalog === currentCatalog))
+          .map((table) => [table.schema, table.catalog]),
+      );
+      return path.filter((schema) => catalogOf.has(schema)).map((schema) => schemaKey(catalogOf.get(schema)!, schema));
+    },
+    [tables, currentCatalog],
+  );
   // Markers claim only what is known: the configured default before the session opens, nothing when unread.
   const pathKeys = useMemo(
-    () => keysOf(searchPath === undefined ? defaultSchemas ?? [] : searchPath ?? []),
+    () => keysOf(searchPath === undefined ? (defaultSchemas ?? []) : (searchPath ?? [])),
     [keysOf, searchPath, defaultSchemas],
-  )
+  );
   const defaultOpen = useMemo(() => {
-    const keys = keysOf(searchPath ?? defaultSchemas ?? [])
-    return keys.length > 0 ? new Set(keys) : null
-  }, [keysOf, searchPath, defaultSchemas])
+    const keys = keysOf(searchPath ?? defaultSchemas ?? []);
+    return keys.length > 0 ? new Set(keys) : null;
+  }, [keysOf, searchPath, defaultSchemas]);
   const context = useMemo<TreeContext>(
     () => ({ query, onInsert, onOpenTable, onSelectColumn, onUseSchema, pathKeys, selected, select: setSelected }),
     [query, onInsert, onOpenTable, onSelectColumn, onUseSchema, pathKeys, selected],
-  )
+  );
 
   const schemaOpen = (key: string) =>
-    query ? filterOpen[key] ?? true : expandedSchemas[key] ?? (defaultOpen?.has(key) ?? true)
+    query ? (filterOpen[key] ?? true) : (expandedSchemas[key] ?? defaultOpen?.has(key) ?? true);
   const tableOpen = (visible: VisibleTable) =>
-    query ? filterOpen[visible.table.key] ?? visible.columnMatch : openTables[visible.table.key] === true
+    query ? (filterOpen[visible.table.key] ?? visible.columnMatch) : openTables[visible.table.key] === true;
 
-  const setFilterOpen = (open: Expansion) => setFilterExpansion({ filter: query, open })
+  const setFilterOpen = (open: Expansion) => setFilterExpansion({ filter: query, open });
 
   const toggleSchema = (key: string) => {
-    if (query) setFilterOpen({ ...filterOpen, [key]: !schemaOpen(key) })
-    else setExpandedSchemas({ ...expandedSchemas, [key]: !schemaOpen(key) })
-  }
+    if (query) setFilterOpen({ ...filterOpen, [key]: !schemaOpen(key) });
+    else setExpandedSchemas({ ...expandedSchemas, [key]: !schemaOpen(key) });
+  };
   const toggleTable = (visible: VisibleTable) => {
-    const key = visible.table.key
-    if (query) setFilterOpen({ ...filterOpen, [key]: !tableOpen(visible) })
-    else setOpenTables({ ...openTables, [key]: !tableOpen(visible) })
-  }
+    const key = visible.table.key;
+    if (query) setFilterOpen({ ...filterOpen, [key]: !tableOpen(visible) });
+    else setOpenTables({ ...openTables, [key]: !tableOpen(visible) });
+  };
 
   const setAll = (open: boolean) => {
     if (query) {
-      const next: Expansion = {}
+      const next: Expansion = {};
       for (const group of groups) {
-        next[group.key] = open
-        for (const { table } of group.tables) next[table.key] = open
+        next[group.key] = open;
+        for (const { table } of group.tables) next[table.key] = open;
       }
-      setFilterOpen(next)
-      return
+      setFilterOpen(next);
+      return;
     }
-    setExpandedSchemas({ ...expandedSchemas, ...Object.fromEntries(groups.map((group) => [group.key, open])) })
-    setOpenTables(open ? Object.fromEntries(groups.flatMap((group) => group.tables.map(({ table }) => [table.key, true]))) : {})
-  }
+    setExpandedSchemas({ ...expandedSchemas, ...Object.fromEntries(groups.map((group) => [group.key, open])) });
+    setOpenTables(
+      open ? Object.fromEntries(groups.flatMap((group) => group.tables.map(({ table }) => [table.key, true]))) : {},
+    );
+  };
 
   return (
     <div data-testid="schema-tree" className="flex min-h-0 flex-1 flex-col">
@@ -212,8 +232,8 @@ export function SchemaTree({
             onChange={(e) => setFilter(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === 'Escape' && filter) {
-                e.preventDefault()
-                setFilter('')
+                e.preventDefault();
+                setFilter('');
               }
             }}
             placeholder={t(withColumns ? 'schema.filterPlaceholder' : 'schema.filterTablesPlaceholder')}
@@ -261,7 +281,7 @@ export function SchemaTree({
       <div
         className="min-h-0 flex-1 overflow-y-auto px-1 pb-2"
         onClick={(e) => {
-          if (!(e.target as Element).closest('[data-tree-node]')) setSelected(null)
+          if (!(e.target as Element).closest('[data-tree-node]')) setSelected(null);
         }}
       >
         <Tree.Provider value={context}>
@@ -296,7 +316,7 @@ export function SchemaTree({
         )}
       </div>
     </div>
-  )
+  );
 }
 
 function TreeAction({ label, onClick, children }: { label: string; onClick: () => void; children: React.ReactNode }) {
@@ -307,27 +327,27 @@ function TreeAction({ label, onClick, children }: { label: string; onClick: () =
       </TooltipTrigger>
       <TooltipContent>{label}</TooltipContent>
     </Tooltip>
-  )
+  );
 }
 
 /** Marks every case-insensitive occurrence of `query` in `text`. */
 export function Highlight({ text, query }: { text: string; query: string }) {
-  if (!query) return text
-  const lower = text.toLowerCase()
-  const parts: React.ReactNode[] = []
-  let from = 0
+  if (!query) return text;
+  const lower = text.toLowerCase();
+  const parts: React.ReactNode[] = [];
+  let from = 0;
   for (let at = lower.indexOf(query); at !== -1; at = lower.indexOf(query, from)) {
-    if (at > from) parts.push(text.slice(from, at))
+    if (at > from) parts.push(text.slice(from, at));
     parts.push(
       <mark key={at} className="rounded-sm bg-yellow-400/40 text-inherit dark:bg-yellow-300/30">
         {text.slice(at, at + query.length)}
       </mark>,
-    )
-    from = at + query.length
+    );
+    from = at + query.length;
   }
-  if (from === 0) return text
-  parts.push(text.slice(from))
-  return parts
+  if (from === 0) return text;
+  parts.push(text.slice(from));
+  return parts;
 }
 
 function SchemaGroupNode({
@@ -337,18 +357,18 @@ function SchemaGroupNode({
   onToggle,
   onToggleTable,
 }: {
-  group: SchemaGroup
-  expanded: boolean
-  tableOpen: (visible: VisibleTable) => boolean
-  onToggle: () => void
-  onToggleTable: (visible: VisibleTable) => void
+  group: SchemaGroup;
+  expanded: boolean;
+  tableOpen: (visible: VisibleTable) => boolean;
+  onToggle: () => void;
+  onToggleTable: (visible: VisibleTable) => void;
 }) {
-  const t = useTranslations('Query')
-  const { query, pathKeys, onUseSchema } = useContext(Tree)
-  const { selected, select } = useSelection(group.key)
-  const position = pathKeys.indexOf(group.key)
-  const schemaRef = group.tables[0]?.table.schemaRef ?? group.schema
-  const insertable = group.tables[0]?.table.insert != null
+  const t = useTranslations('Query');
+  const { query, pathKeys, onUseSchema } = useContext(Tree);
+  const { selected, select } = useSelection(group.key);
+  const position = pathKeys.indexOf(group.key);
+  const schemaRef = group.tables[0]?.table.schemaRef ?? group.schema;
+  const insertable = group.tables[0]?.table.insert != null;
   return (
     <div
       data-testid="schema-group"
@@ -359,8 +379,8 @@ function SchemaGroupNode({
       <Row
         selected={selected}
         onClick={() => {
-          select()
-          onToggle()
+          select();
+          onToggle();
         }}
         toggle={{
           open: expanded,
@@ -405,43 +425,46 @@ function SchemaGroupNode({
         </div>
       )}
     </div>
-  )
+  );
 }
 
-function TableNode({ visible: { table, columns }, open, onToggle }: {
-  visible: VisibleTable
-  open: boolean
-  onToggle: () => void
+function TableNode({
+  visible: { table, columns },
+  open,
+  onToggle,
+}: {
+  visible: VisibleTable;
+  open: boolean;
+  onToggle: () => void;
 }) {
-  const t = useTranslations('Query')
-  const { query, onInsert, onOpenTable } = useContext(Tree)
-  const { selected, select } = useSelection(table.key)
-  const withColumns = onInsert != null
+  const t = useTranslations('Query');
+  const { query, onInsert, onOpenTable } = useContext(Tree);
+  const { selected, select } = useSelection(table.key);
+  const withColumns = onInsert != null;
 
   return (
-    <div
-      data-testid="schema-table"
-      data-catalog={table.catalog}
-      data-schema={table.schema}
-      data-table={table.name}
-    >
+    <div data-testid="schema-table" data-catalog={table.catalog} data-schema={table.schema} data-table={table.name}>
       <Row
         selected={selected}
         onClick={() => {
-          select()
-          onOpenTable(table)
-          if (withColumns) onToggle()
+          select();
+          onOpenTable(table);
+          if (withColumns) onToggle();
         }}
-        toggle={withColumns ? {
-          open,
-          label: open
-            ? t('schema.collapseTable', { table: table.qualified })
-            : t('schema.expandTable', { table: table.qualified }),
-          onToggle: () => {
-            select()
-            onToggle()
-          },
-        } : undefined}
+        toggle={
+          withColumns
+            ? {
+                open,
+                label: open
+                  ? t('schema.collapseTable', { table: table.qualified })
+                  : t('schema.expandTable', { table: table.qualified }),
+                onToggle: () => {
+                  select();
+                  onToggle();
+                },
+              }
+            : undefined
+        }
         icon={<Table2 className="text-muted-foreground size-3.5 shrink-0" />}
         label={<Highlight text={table.name} query={query} />}
         title={t('schema.openTableTitle', { table: table.qualified })}
@@ -468,22 +491,22 @@ function TableNode({ visible: { table, columns }, open, onToggle }: {
         </div>
       )}
     </div>
-  )
+  );
 }
 
 function ColumnRow({ table, column }: { table: TreeTable; column: TreeColumn }) {
-  const t = useTranslations('Query')
-  const { query, onSelectColumn } = useContext(Tree)
-  const { selected, select } = useSelection(JSON.stringify([table.key, column.name]))
+  const t = useTranslations('Query');
+  const { query, onSelectColumn } = useContext(Tree);
+  const { selected, select } = useSelection(JSON.stringify([table.key, column.name]));
   // Any tag makes a column classified; `pii` keeps the louder icon as the common case.
-  const pii = column.tags.includes('pii')
-  const sensitive = column.tags.length > 0
+  const pii = column.tags.includes('pii');
+  const sensitive = column.tags.length > 0;
   return (
     <Row
       selected={selected}
       onClick={() => {
-        select()
-        onSelectColumn?.(table, column.name)
+        select();
+        onSelectColumn?.(table, column.name);
       }}
       icon={
         pii ? (
@@ -511,25 +534,35 @@ function ColumnRow({ table, column }: { table: TreeTable; column: TreeColumn }) 
       name={column.ref}
       insertable={table.insert != null}
     />
-  )
+  );
 }
 
 /** One tree row: the row click is the node's action; copy/insert show on hover and act on `name`. */
 function Row({
-  selected, onClick, toggle, icon, label, labelClassName, title, aside, name, insertable, onUse,
+  selected,
+  onClick,
+  toggle,
+  icon,
+  label,
+  labelClassName,
+  title,
+  aside,
+  name,
+  insertable,
+  onUse,
 }: {
-  selected: boolean
-  onClick: () => void
-  toggle?: { open: boolean; label: string; onToggle?: () => void }
-  icon: React.ReactNode
-  label: React.ReactNode
-  labelClassName?: string
-  title: string
-  aside?: React.ReactNode
-  name: string
+  selected: boolean;
+  onClick: () => void;
+  toggle?: { open: boolean; label: string; onToggle?: () => void };
+  icon: React.ReactNode;
+  label: React.ReactNode;
+  labelClassName?: string;
+  title: string;
+  aside?: React.ReactNode;
+  name: string;
   /** False for a table outside the current catalog: its name would resolve elsewhere in the editor. */
-  insertable: boolean
-  onUse?: () => void
+  insertable: boolean;
+  onUse?: () => void;
 }) {
   return (
     <div
@@ -545,10 +578,13 @@ function Row({
           type="button"
           aria-expanded={toggle.open}
           aria-label={toggle.label}
-          onClick={toggle.onToggle && ((e) => {
-            e.stopPropagation()
-            toggle.onToggle?.()
-          })}
+          onClick={
+            toggle.onToggle &&
+            ((e) => {
+              e.stopPropagation();
+              toggle.onToggle?.();
+            })
+          }
           className="text-muted-foreground flex size-5 shrink-0 items-center justify-center"
         >
           <ChevronRight className={cn('size-3.5 transition-transform', toggle.open && 'rotate-90')} />
@@ -568,14 +604,15 @@ function Row({
       {aside}
       <RowActions name={name} insertable={insertable} onUse={onUse} />
     </div>
-  )
+  );
 }
 
 function RowActions({ name, insertable, onUse }: { name: string; insertable: boolean; onUse?: () => void }) {
-  const t = useTranslations('Query')
-  const { onInsert } = useContext(Tree)
-  const [copied, setCopied] = useState(false)
-  const action = 'text-muted-foreground hover:text-foreground hover:bg-background flex size-5 shrink-0 items-center justify-center rounded'
+  const t = useTranslations('Query');
+  const { onInsert } = useContext(Tree);
+  const [copied, setCopied] = useState(false);
+  const action =
+    'text-muted-foreground hover:text-foreground hover:bg-background flex size-5 shrink-0 items-center justify-center rounded';
   return (
     <span className="hidden shrink-0 items-center group-hover:flex group-has-[:focus-visible]:flex">
       <button
@@ -583,14 +620,14 @@ function RowActions({ name, insertable, onUse }: { name: string; insertable: boo
         aria-label={copied ? t('schema.copied') : t('schema.copyName', { name })}
         title={copied ? t('schema.copied') : t('schema.copyName', { name })}
         onClick={(e) => {
-          e.stopPropagation()
+          e.stopPropagation();
           copyText(name).then(
             () => {
-              setCopied(true)
-              window.setTimeout(() => setCopied(false), 1500)
+              setCopied(true);
+              window.setTimeout(() => setCopied(false), 1500);
             },
             () => toast.error(t('schema.copyFailed')),
-          )
+          );
         }}
         className={action}
       >
@@ -602,8 +639,8 @@ function RowActions({ name, insertable, onUse }: { name: string; insertable: boo
           aria-label={t('schema.insertName', { name })}
           title={t('schema.insertName', { name })}
           onClick={(e) => {
-            e.stopPropagation()
-            onInsert(name)
+            e.stopPropagation();
+            onInsert(name);
           }}
           className={action}
         >
@@ -616,8 +653,8 @@ function RowActions({ name, insertable, onUse }: { name: string; insertable: boo
           aria-label={t('schema.useSchema', { name })}
           title={t('schema.useSchema', { name })}
           onClick={(e) => {
-            e.stopPropagation()
-            onUse()
+            e.stopPropagation();
+            onUse();
           }}
           className={action}
         >
@@ -625,5 +662,5 @@ function RowActions({ name, insertable, onUse }: { name: string; insertable: boo
         </button>
       )}
     </span>
-  )
+  );
 }

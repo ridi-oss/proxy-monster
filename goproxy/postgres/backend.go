@@ -15,13 +15,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
-
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 
 	"github.com/jackc/pgx/v5/pgproto3"
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
-	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/wire"
 )
 
@@ -174,8 +171,8 @@ func dialTargetDbAuthParams(ctx context.Context, config spi.TargetConfig, extra 
 			if err := validateStartupParameters(parameters); err != nil {
 				return nil, nil, pgproto3.BackendKeyData{}, 0, "", err
 			}
-			core := sessionCore{targetDb: frontend, lastTxStatus: message.TxStatus}
-			catalog, err := core.probeCurrentCatalog()
+			c := connection{targetDb: frontend, lastTxStatus: message.TxStatus}
+			catalog, err := c.probeCurrentCatalog()
 			if err != nil {
 				return nil, nil, pgproto3.BackendKeyData{}, 0, "", err
 			}
@@ -183,7 +180,7 @@ func dialTargetDbAuthParams(ctx context.Context, config spi.TargetConfig, extra 
 				return nil, nil, pgproto3.BackendKeyData{}, 0, "", fmt.Errorf("clear target-DB auth deadline: %w", err)
 			}
 			keep = true
-			return conn, parameters, keyData, core.lastTxStatus, catalog, nil
+			return conn, parameters, keyData, c.lastTxStatus, catalog, nil
 		case *pgproto3.ErrorResponse:
 			return nil, nil, pgproto3.BackendKeyData{}, 0, "", fmt.Errorf("target-DB startup failed: %s", message.Message)
 		case *pgproto3.NoticeResponse:
@@ -238,8 +235,8 @@ func containsString(values []string, want string) bool {
 }
 
 // probeCurrentCatalog runs once at connect; a Postgres session cannot change its database afterwards.
-func (c *sessionCore) probeCurrentCatalog() (string, error) {
-	rows, err := c.runProbe("SELECT pg_catalog.current_database()", 1, true)
+func (c *connection) probeCurrentCatalog() (string, error) {
+	rows, err := c.runProbe("SELECT pg_catalog.current_database()", 1)
 	if err != nil {
 		return "", fmt.Errorf("target-DB catalog probe: %w", err)
 	}
@@ -249,14 +246,14 @@ func (c *sessionCore) probeCurrentCatalog() (string, error) {
 	return *rows[0][0], nil
 }
 
-func (c *sessionCore) probeSession() (spi.SessionObservation, error) {
-	rows, err := c.runProbe(namespaceProbeSQL, 1, false)
+func (c *connection) probeSession() (spi.SessionSnapshot, error) {
+	rows, err := c.runProbe(namespaceProbeSQL, 1)
 	if err != nil {
-		return spi.SessionObservation{}, fmt.Errorf("target-DB namespace probe: %w", err)
+		return spi.SessionSnapshot{}, fmt.Errorf("target-DB namespace probe: %w", err)
 	}
-	observed, err := sessionFromRows(rows)
-	observed.CurrentCatalog = c.currentCatalog
-	return observed, err
+	snapshot, err := snapshotFromRows(rows)
+	snapshot.CurrentCatalog = c.currentCatalog
+	return snapshot, err
 }
 
 type postgresNamespaceObservation struct {
@@ -265,27 +262,28 @@ type postgresNamespaceObservation struct {
 	PgCatalogXIDVisible *bool    `json:"pg_catalog_xid_visible"`
 }
 
-func sessionFromRows(rows [][]*string) (spi.SessionObservation, error) {
+func snapshotFromRows(rows [][]*string) (spi.SessionSnapshot, error) {
 	if len(rows) != 1 || len(rows[0]) != 1 || rows[0][0] == nil {
-		return spi.SessionObservation{}, errors.New("namespace probe returned a malformed result")
+		return spi.SessionSnapshot{}, errors.New("namespace probe returned a malformed result")
 	}
 	var observed postgresNamespaceObservation
 	decoder := json.NewDecoder(strings.NewReader(*rows[0][0]))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&observed); err != nil {
-		return spi.SessionObservation{}, fmt.Errorf("namespace probe returned invalid JSON: %w", err)
+		return spi.SessionSnapshot{}, fmt.Errorf("namespace probe returned invalid JSON: %w", err)
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return spi.SessionObservation{}, errors.New("namespace probe returned trailing JSON")
+		return spi.SessionSnapshot{}, errors.New("namespace probe returned trailing JSON")
 	}
 	seen := make(map[string]bool, len(observed.ShadowedFunctions))
 	for _, name := range observed.ShadowedFunctions {
-		if name == "" || name != strings.ToLower(name) || seen[name] {
-			return spi.SessionObservation{}, fmt.Errorf("namespace probe returned invalid shadowed function %q", name)
+		// The probe selects only proname = 'unnest'.
+		if name != "unnest" || seen[name] {
+			return spi.SessionSnapshot{}, fmt.Errorf("namespace probe returned invalid shadowed function %q", name)
 		}
 		seen[name] = true
 	}
-	return spi.SessionObservation{
+	return spi.SessionSnapshot{
 		Namespace: observed.SearchPath,
 		SessionObservation: &enginepb.SessionObservation{Engine: &enginepb.SessionObservation_Postgres{Postgres: &enginepb.PostgresSession{
 			ShadowedFunctions:         observed.ShadowedFunctions,
@@ -295,8 +293,8 @@ func sessionFromRows(rows [][]*string) (spi.SessionObservation, error) {
 	}, nil
 }
 
-func (c *sessionCore) probeTempColumns() ([]spi.TempColumn, error) {
-	rows, err := c.runProbe(tempColumnsProbeSQL, 6, false)
+func (c *connection) probeTempColumns() ([]spi.TempColumn, error) {
+	rows, err := c.runProbe(tempColumnsProbeSQL, 6)
 	if err != nil {
 		return nil, fmt.Errorf("target DB temp-column probe: %w", err)
 	}
@@ -325,19 +323,19 @@ func tempColumnsFromRows(rows [][]*string) ([]spi.TempColumn, error) {
 	return columns, nil
 }
 
-func (c *sessionCore) runProbe(sql string, expectedColumns int, quiet bool) ([][]*string, error) {
+func (c *connection) runProbe(sql string, expectedColumns int) ([][]*string, error) {
 	c.targetDb.Send(&pgproto3.Query{String: sql})
-	return c.collectProbe(expectedColumns, quiet)
+	return c.collectProbe(expectedColumns)
 }
 
-func (c *sessionCore) collectProbe(expectedColumns int, quiet bool) ([][]*string, error) {
+func (c *connection) collectProbe(expectedColumns int) ([][]*string, error) {
 	if err := c.targetDb.Flush(); err != nil {
 		return nil, err
 	}
 	result := spi.StatementResult{Rows: make([][]*string, 0)}
 	collector := rowsCollector{expected: expectedColumns, result: &result}
 	emit := collector.emit
-	if !quiet && c.forward != nil {
+	if c.forward != nil {
 		emit = func(message pgproto3.BackendMessage, rowBytes int64) error {
 			switch message.(type) {
 			case *pgproto3.ParameterStatus, *pgproto3.NoticeResponse, *pgproto3.NotificationResponse:
@@ -357,26 +355,22 @@ func (c *sessionCore) collectProbe(expectedColumns int, quiet bool) ([][]*string
 	return result.Rows, nil
 }
 
-func (c *sessionCore) authzInput(sql string, runCommands func([]*pb.ProxyCommand, *spi.SessionObservation) error) spi.AuthzInput {
+func (c *connection) authzInput(sql string, commandRunner spi.ProxyCommandRunner) spi.AuthzInput {
 	// In an aborted transaction the probe below returns the session's last snapshot instead of querying.
 	if c.pendingDirty {
 		c.authz.MarkNamespaceDirty()
 		c.pendingDirty = false
 	}
 	return spi.AuthzInput{
-		SQL:         sql,
-		RunCommands: runCommands,
-		ProbeSession: func() (spi.SessionObservation, error) {
+		SQL:      sql,
+		Commands: commandRunner,
+		ProbeSession: func() (spi.SessionSnapshot, error) {
 			// Postgres never reports MysqlAnsiQuotes: it has no ANSI_QUOTES mode, and its string-lexing
 			// divergence (standard_conforming_strings) fails the connection closed at the relay instead.
 			if c.lastTxStatus == 'E' {
-				return c.session.Clone(), nil
+				return c.authz.Snapshot(), nil
 			}
-			session, err := c.probeSession()
-			if err == nil {
-				c.session = session.Clone()
-			}
-			return session, err
+			return c.probeSession()
 		},
 		ProbeTempColumns: func() ([]spi.TempColumn, error) {
 			if c.lastTxStatus == 'E' {
@@ -389,28 +383,6 @@ func (c *sessionCore) authzInput(sql string, runCommands func([]*pb.ProxyCommand
 			return temps, err
 		},
 	}
-}
-
-func (s *Server) refetcher(sess *session, extended bool) *sqldb.Refetcher {
-	probe := func(sql string, expectedColumns int) ([][]*string, error) {
-		return sess.sessionCore.runProbe(sql, expectedColumns, false)
-	}
-	if extended {
-		probe = func(sql string, expectedColumns int) ([][]*string, error) {
-			return s.runExtendedProbe(sess, sql, expectedColumns)
-		}
-	}
-	refetcher := sqldb.NewRefetcher(Queries, sess.authz.ConnectionID(), sess.backendGen, probe, s.client.PushSchemaFragment)
-	refetcher.Catalog = sess.currentCatalog
-	return refetcher
-}
-
-func (s *Server) quietRefetcher(sess *session) *sqldb.Refetcher {
-	refetcher := sqldb.NewRefetcher(Queries, sess.authz.ConnectionID(), sess.backendGen, func(sql string, expectedColumns int) ([][]*string, error) {
-		return sess.sessionCore.runProbe(sql, expectedColumns, true)
-	}, s.client.PushSchemaFragment)
-	refetcher.Catalog = sess.currentCatalog
-	return refetcher
 }
 
 func (s *Server) forwardCancelRequest(message *pgproto3.CancelRequest) {

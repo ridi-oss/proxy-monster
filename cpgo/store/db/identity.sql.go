@@ -10,6 +10,30 @@ import (
 	"time"
 )
 
+const activePrincipalsByEmail = `-- name: ActivePrincipalsByEmail :many
+SELECT principal FROM app_user WHERE lower(email) = lower($1::text) AND active LIMIT 2
+`
+
+func (q *Queries) ActivePrincipalsByEmail(ctx context.Context, email string) ([]string, error) {
+	rows, err := q.db.Query(ctx, activePrincipalsByEmail, email)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var principal string
+		if err := rows.Scan(&principal); err != nil {
+			return nil, err
+		}
+		items = append(items, principal)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const addGroupMember = `-- name: AddGroupMember :execrows
 INSERT INTO group_member (group_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING
 `
@@ -373,6 +397,25 @@ func (q *Queries) GroupsOfUsers(ctx context.Context) ([]GroupsOfUsersRow, error)
 		return nil, err
 	}
 	return items, nil
+}
+
+const isActivePrincipal = `-- name: IsActivePrincipal :one
+SELECT EXISTS (
+    SELECT 1 FROM app_user WHERE active AND principal = $1::text
+    UNION ALL
+    SELECT 1 FROM principal_role pr LEFT JOIN app_user u ON u.principal = pr.principal
+    WHERE (u.id IS NULL OR u.active) AND pr.principal = $1::text
+    UNION ALL
+    SELECT 1 FROM access_grant ag LEFT JOIN app_user u ON u.principal = ag.principal
+    WHERE ag.revoked_at IS NULL AND (ag.expires_at IS NULL OR ag.expires_at > now())
+      AND (u.id IS NULL OR u.active) AND ag.principal = $1::text)
+`
+
+func (q *Queries) IsActivePrincipal(ctx context.Context, principal string) (bool, error) {
+	row := q.db.QueryRow(ctx, isActivePrincipal, principal)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
 }
 
 const isTombstone = `-- name: IsTombstone :one

@@ -9,10 +9,10 @@ gradle = "8.14.5"
 # to compile; the analyzer also calls sqlglot-go's probe via the Foreign Function & Memory API
 # (java.lang.foreign), which JDK 24 provides.
 java = "temurin-24.0.2"
-# Go builds the analyzer's c-shared native lib (analyzer/cmd/libsqlglot, via cgo) as part of the
+# Go builds the analyzer's c-shared native lib (analyzer/cmd/libanalyzer, via cgo) as part of the
 # Gradle build; matches analyzer/go.mod. (Zig — the Linux cross C compiler for the all-targets fat-jar
 # build, -Psqlglot.native.all=true — is only needed for that; add it when CI is wired.)
-go = "1.26"
+go = "1.26.10"
 # Go protobuf generation. Buf provides the compiler; the two local plugins emit the checked-in Go files.
 buf = "1.72.0"
 protoc-gen-go = "1.35.2"
@@ -115,12 +115,12 @@ PM_CONTROL_PLANE_GRPC="${PM_CONTROL_PLANE_GRPC:-127.0.0.1:9090}" \
 [tasks.web]
 description = "Run the web console on :41300 against the local control plane"
 shell = "bash -c"
-# web/next.config.ts defaults PM_PROXY_TARGET to :41390; the control-plane task serves :8080, so point
+# web/next.config.ts defaults PM_CP_URL to :41390; the control-plane task serves :8080, so point
 # the console there.
 run = '''
 set -euo pipefail
 pnpm -C web install
-PM_PROXY_TARGET="${PM_PROXY_TARGET:-http://127.0.0.1:8080}" pnpm -C web dev
+PM_CP_URL="${PM_CP_URL:-${PM_PROXY_TARGET:-http://127.0.0.1:8080}}" pnpm -C web dev
 '''
 
 [tasks.dev]
@@ -169,7 +169,7 @@ start proxy-postgres \
   PM_TARGET_PORT="${PM_PG_TARGET_PORT:-5433}"
 # Hand web the same control-plane URL this task just waited on, so the console's /api and /auth rewrite
 # can never point somewhere else.
-start web PM_PROXY_TARGET="${PM_PROXY_TARGET:-$cp_url}"
+start web PM_CP_URL="${PM_CP_URL:-${PM_PROXY_TARGET:-$cp_url}}"
 
 cat <<BANNER
 
@@ -191,7 +191,7 @@ description = "Regenerate the checked-in Go protobuf bindings"
 shell = "bash -c"
 run = '''
 set -euo pipefail
-(cd analyzer && buf generate ../proto/src/main/proto --path ../proto/src/main/proto/analyzer.proto --path ../proto/src/main/proto/engine.proto --path ../proto/src/main/proto/athena.proto)
+(cd analyzer && buf generate ../proto/src/main/proto --path ../proto/src/main/proto/analyzer.proto --path ../proto/src/main/proto/engine.proto --path ../proto/src/main/proto/athena.proto --path ../proto/src/main/proto/engine_call.proto)
 (cd goproxy && buf generate ../proto/src/main/proto --path ../proto/src/main/proto/controlplane.proto)
 (cd cpgo && buf generate ../proto/src/main/proto --path ../proto/src/main/proto/controlplane.proto --path ../proto/src/main/proto/github_source.proto)
 '''
@@ -231,6 +231,7 @@ files=(
   analyzer/probe/pb/analyzer.pb.go
   analyzer/probe/pb/engine.pb.go
   analyzer/probe/pb/athena.pb.go
+  analyzer/probe/pb/engine_call.pb.go
   goproxy/internal/pb/controlplane.pb.go
   goproxy/internal/pb/controlplane_grpc.pb.go
   cpgo/grpcsvc/pb/controlplane.pb.go
@@ -249,26 +250,26 @@ fi
 '''
 
 [tasks.lint]
-description = "Lint: prettier over docs/config (md, json, yaml, css) + eslint over the web sources"
+description = "Lint: prettier over sources, docs and config (ts, js, md, json, yaml, css) + eslint over the web sources"
 shell = "bash -c"
-# Prettier owns the prose-and-config formats; TypeScript stays with eslint, which already has the
-# Next.js rule set. It is invoked by path from the repo root rather than through `pnpm -C web exec`,
-# because its scope is the whole tree and both `.prettierrc.json` and `.prettierignore` are resolved
-# relative to the working directory. `--write` instead of `--check` reformats in place.
+# Prettier owns formatting and eslint the Next.js rule set. Prettier is invoked by path from the repo
+# root rather than through `pnpm -C web exec`, because its scope is the whole tree and both
+# `.prettierrc.json` and `.prettierignore` are resolved relative to the working directory. `--write`
+# instead of `--check` reformats in place.
 run = '''
 set -euo pipefail
 pnpm -C web install
-./web/node_modules/.bin/prettier --check '**/*.{md,json,yml,yaml,css}'
+./web/node_modules/.bin/prettier --check '**/*.{ts,tsx,js,mjs,cjs,md,json,yml,yaml,css}'
 pnpm -C web lint
 '''
 
 [tasks.format]
-description = "Reformat the prose-and-config files prettier owns (md, json, yaml, css) in place"
+description = "Reformat the files prettier owns (ts, js, md, json, yaml, css) in place"
 shell = "bash -c"
 run = '''
 set -euo pipefail
 pnpm -C web install
-./web/node_modules/.bin/prettier --write '**/*.{md,json,yml,yaml,css}'
+./web/node_modules/.bin/prettier --write '**/*.{ts,tsx,js,mjs,cjs,md,json,yml,yaml,css}'
 '''
 
 [tasks.verify]

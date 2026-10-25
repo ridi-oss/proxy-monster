@@ -171,7 +171,7 @@ class GitHubSourceFlowDbTest {
         )
         flow = GitHubSourceFlow(
             adapter, approvals, core.accessStore, core.datasourceStore, core.policyStore, core.authz, notifications,
-            locale = "en",
+            locale = "en", checkName = checkName,
         )
         server = GrpcServer(0, ControlPlaneGrpcService(core), secretToken = null).also { it.start() }
         rawChannel = NettyChannelBuilder.forAddress("localhost", server.boundPort).usePlaintext().build()
@@ -188,6 +188,8 @@ class GitHubSourceFlowDbTest {
     private fun schema() = "s${seq.incrementAndGet()}"
 
     private fun number() = seq.incrementAndGet()
+
+    private val checkName = GitHubSourceFlow.checkName("pm")
 
     private val green = Check("build", required = true, status = CheckStatus.COMPLETED, conclusion = CheckConclusion.SUCCESS)
 
@@ -340,7 +342,9 @@ class GitHubSourceFlowDbTest {
             setBody(input(n, schema, listOf("db/$schema/001_init.sql" to "create table t (id int)")))
         }
         assertEquals(HttpStatusCode.OK, response.status)
-        val filed = response.body<GitHubRequestsResponse>().requests.single()
+        val body = response.body<GitHubRequestsResponse>()
+        assertEquals(checkName, body.checkName)
+        val filed = body.requests.single()
         assertEquals("PENDING", filed.status)
         assertEquals("github", filed.source)
         assertEquals(schema, filed.pullRequest!!.defaultSchema)
@@ -407,6 +411,23 @@ class GitHubSourceFlowDbTest {
         val kept = file(n, schema, listOf("db/a.sql" to "CREATE TABLE a (id bigint) -- reformatted")).single()
         assertEquals(second.id, kept.id)
         assertEquals("APPROVED", kept.status)
+    }
+
+    @Test
+    fun `an edit is credited to the author of the newest commit`() {
+        val n = number()
+        val schema = schema()
+        open(n)
+        val first = file(n, schema, listOf("db/e.sql" to "create table e (id int)")).single()
+        update(n) {
+            it.copy(
+                headSha = "sha$n-2",
+                commits = listOf(CommitAuthor(aliceUser.id, null, merge = false, login = aliceUser.login), CommitAuthor(carolUser.id, null, merge = false, login = carolUser.login)),
+            )
+        }
+        file(n, schema, listOf("db/e.sql" to "create table e (id bigint)"))
+        val edited = RequestEvents.list(dataSource, first.id).single { it.kind == "edited" }
+        assertEquals(carol, edited.actor)
     }
 
     @Test
@@ -778,6 +799,199 @@ class GitHubSourceFlowDbTest {
     }
 
     @Test
+    fun `an approved file merged before it ran runs after the merge, as whoever merged`() {
+        val n = number()
+        open(n)
+        val req = file(n, schema(), listOf("db/m.sql" to "create table m (id int)")).single()
+        update(n) { it.copy(reviews = it.reviews + approval(bobUser)) }
+        pollWithProxy()
+        assertEquals("APPROVED", status(req.id))
+        assertEquals("Approved — enable auto-merge to run and merge", lastCheck(n).title)
+
+        merge(n)
+        update(n) { it.copy(mergedBy = carolUser) }
+        pollWithProxy()
+        val ran = assertNotNull(core.accessStore.getRequest(req.id))
+        assertEquals("EXECUTED", ran.status)
+        assertEquals(carol, ran.executedBy)
+        assertNotNull(ran.mergedAt)
+        assertEquals(checkName to CheckConclusion.SUCCESS, lastCheck(n).name to lastCheck(n).conclusion)
+    }
+
+    @Test
+    fun `a file merged before approval runs once approved, holding its scope until then`() {
+        val schema = schema()
+        val n = number()
+        open(n)
+        val req = file(n, schema, listOf("db/1_first.sql" to "create table first (id int)")).single()
+        merge(n)
+        update(n) { it.copy(mergedBy = carolUser) }
+        pollWithProxy()
+        assertEquals("PENDING", status(req.id))
+        assertEquals(CheckStatus.IN_PROGRESS, lastCheck(n).status)
+
+        val later = number()
+        open(later)
+        val next = file(later, schema, listOf("db/2_second.sql" to "create table second (id int)")).single()
+        readyToMerge(later)
+        pollWithProxy()
+        assertEquals("APPROVED", status(next.id))
+        assertEquals("Waiting for #$n's merged SQL to run", lastCheck(later).title)
+
+        update(n) { it.copy(reviews = it.reviews + approval(bobUser)) }
+        pollWithProxy()
+        assertEquals("EXECUTED", status(req.id))
+        pollWithProxy()
+        assertEquals("EXECUTED", status(next.id))
+    }
+
+    @Test
+    fun `merged files wait for those merged before them, not after`() {
+        val schema = schema()
+        val first = number()
+        open(first)
+        val a = file(first, schema, listOf("db/1_a.sql" to "create table a (id int)")).single()
+        merge(first)
+        update(first) { it.copy(mergedBy = carolUser) }
+        pollWithProxy()
+
+        val second = number()
+        open(second)
+        val b = file(second, schema, listOf("db/2_b.sql" to "create table b (id int)")).single()
+        update(second) { it.copy(reviews = it.reviews + approval(bobUser)) }
+        merge(second)
+        update(second) { it.copy(mergedBy = carolUser) }
+        pollWithProxy()
+        assertEquals("APPROVED", status(b.id))
+        assertEquals("Waiting for #$first's merged SQL to run", lastCheck(second).title)
+
+        update(first) { it.copy(reviews = it.reviews + approval(bobUser)) }
+        pollWithProxy()
+        assertEquals("EXECUTED", status(a.id))
+        pollWithProxy()
+        assertEquals("EXECUTED", status(b.id))
+    }
+
+    @Test
+    fun `pull requests merged between polls run in merge order`() {
+        val schema = schema()
+        val (first, second) = number() to number()
+        val files = listOf(first to "db/1_a.sql", second to "db/2_b.sql").associate { (n, path) ->
+            open(n)
+            n to file(n, schema, listOf(path to "create table t$n (id int)")).single()
+        }
+        val at = Instant.now()
+        for ((n, mergedAt) in listOf(second to at, first to at.plusSeconds(10))) {
+            update(n) { it.copy(reviews = it.reviews + approval(bobUser)) }
+            update(n) { it.copy(open = false, merged = true, mergedAt = mergedAt, mergeCommit = "merge$n", mergedBy = carolUser) }
+        }
+        pollWithProxy()
+        val (a, b) = listOf(first, second).map { assertNotNull(core.accessStore.getRequest(files.getValue(it).id)?.executedAt) }
+        assertTrue(Instant.parse(b) < Instant.parse(a), "#$second merged first and ran at $b, #$first at $a")
+    }
+
+    @Test
+    fun `a merged pull request whose file failed does not hold the scope`() {
+        val schema = schema()
+        val n = number()
+        open(n)
+        val filed = file(n, schema, listOf("db/1_bad.sql" to "create table bad (id int) broken", "db/2_after.sql" to "create table after1 (id int)"))
+        update(n) { it.copy(reviews = it.reviews + approval(bobUser)) }
+        merge(n)
+        update(n) { it.copy(mergedBy = carolUser) }
+        pollWithProxy(fail = "broken")
+        assertEquals(listOf("FAILED", "APPROVED"), filed.map { status(it.id) })
+
+        val later = number()
+        open(later)
+        val fix = file(later, schema, listOf("db/3_fix.sql" to "create table fix (id int)")).single()
+        readyToMerge(later)
+        pollWithProxy()
+        assertEquals("EXECUTED", status(fix.id))
+    }
+
+    @Test
+    fun `a merged pull request with a rejected file does not hold the scope`() {
+        val schema = schema()
+        val n = number()
+        open(n)
+        val filed = file(n, schema, listOf("db/1_no.sql" to "create table no1 (id int)", "db/2_rest.sql" to "create table rest (id int)"))
+        merge(n)
+        update(n) { it.copy(mergedBy = carolUser) }
+        approvals.reject(bob, null, AuditActor(bob, channel = Channel.WORKFLOW_VIEWER.contextValue), filed.first().id, "not this one")
+        pollWithProxy()
+
+        val later = number()
+        open(later)
+        val next = file(later, schema, listOf("db/3_next.sql" to "create table next1 (id int)")).single()
+        readyToMerge(later)
+        pollWithProxy()
+        assertEquals("EXECUTED", status(next.id))
+    }
+
+    @Test
+    fun `pull requests merged in the same second run in number order`() {
+        val schema = schema()
+        val (first, second) = number() to number()
+        val a = run { open(first); file(first, schema, listOf("db/1_a.sql" to "create table s$first (id int)")).single() }
+        val b = run { open(second); file(second, schema, listOf("db/2_b.sql" to "create table s$second (id int)")).single() }
+        val at = Instant.now()
+        update(second) { it.copy(reviews = it.reviews + approval(bobUser)) }
+        for (n in listOf(first, second)) {
+            update(n) { it.copy(open = false, merged = true, mergedAt = at, mergeCommit = "merge$n", mergedBy = carolUser) }
+        }
+        pollWithProxy()
+        assertEquals("APPROVED", status(b.id))
+
+        update(first) { it.copy(reviews = it.reviews + approval(bobUser)) }
+        pollWithProxy()
+        assertEquals("EXECUTED", status(a.id))
+        pollWithProxy()
+        assertEquals("EXECUTED", status(b.id))
+    }
+
+    @Test
+    fun `a merge of a later commit after every file ran stays green`() {
+        val n = number()
+        open(n)
+        file(n, schema(), listOf("db/c.sql" to "create table c (id int)"))
+        readyToMerge(n)
+        pollWithProxy()
+        update(n) { it.copy(headSha = "sha$n-2") }
+        merge(n)
+        pollWithProxy()
+        assertEquals(CheckConclusion.SUCCESS, lastCheck(n, "sha$n-2").conclusion)
+    }
+
+    @Test
+    fun `a file changed after it was filed and then merged does not run`() {
+        val n = number()
+        open(n)
+        val req = file(n, schema(), listOf("db/c.sql" to "create table c (id int)")).single()
+        update(n) { it.copy(reviews = it.reviews + approval(bobUser)) }
+        pollWithProxy()
+        update(n) { it.copy(headSha = "sha$n-2") }
+        merge(n)
+        update(n) { it.copy(mergedBy = carolUser) }
+        pollWithProxy()
+        assertEquals("CANCELLED", status(req.id))
+        val check = lastCheck(n, "sha$n-2")
+        assertEquals(CheckConclusion.FAILURE to "Merged before this commit's SQL files were filed", check.conclusion to check.title)
+    }
+
+    @Test
+    fun `another instance's check does not hold the run`() {
+        val n = number()
+        open(n)
+        val req = file(n, schema(), listOf("db/c.sql" to "create table c (id int)")).single()
+        readyToMerge(n)
+        val running = Check("x", required = true, status = CheckStatus.IN_PROGRESS, conclusion = null)
+        update(n) { it.copy(checks = listOf(green, running.copy(name = "prod/query executed"))) }
+        pollWithProxy()
+        assertEquals("EXECUTED", status(req.id))
+    }
+
+    @Test
     fun `a pull request closed before its run cancels its requests`() {
         val n = number()
         open(n)
@@ -793,6 +1007,26 @@ class GitHubSourceFlowDbTest {
         open(n)
         assertEquals(emptyList(), file(n, schema(), emptyList()))
         assertEquals(CheckStatus.COMPLETED to CheckConclusion.SKIPPED, lastCheck(n).status to lastCheck(n).conclusion)
+    }
+
+    @Test
+    fun `a commit the Action marked skipped gets no check of its own`() {
+        val n = number()
+        open(n)
+        val skipped = Check(checkName, required = true, status = CheckStatus.COMPLETED, conclusion = CheckConclusion.SKIPPED)
+        update(n) { it.copy(checks = listOf(green, skipped)) }
+        assertEquals(emptyList(), file(n, schema(), emptyList()))
+        assertEquals(null, adapter.checks.lastOrNull { it.headSha == "sha$n" })
+    }
+
+    @Test
+    fun `SQL on a commit another step marked skipped still gets the check`() {
+        val n = number()
+        open(n)
+        val skipped = Check(checkName, required = true, status = CheckStatus.COMPLETED, conclusion = CheckConclusion.SKIPPED)
+        update(n) { it.copy(checks = listOf(green, skipped)) }
+        file(n, schema(), listOf("db/c.sql" to "create table c (id int)"))
+        assertEquals(CheckStatus.IN_PROGRESS to "Waiting for approval of db/c.sql", lastCheck(n).status to lastCheck(n).title)
     }
 
     @Test
@@ -962,7 +1196,7 @@ class GitHubSourceFlowDbTest {
     fun `a required context absent from the rollup, or failed, waits for checks`() {
         val n = number()
         open(n, baseRef = "base$n")
-        adapter.branchRules["base$n"] = BranchRules(setOf("lint", GitHubSourceFlow.CHECK_NAME))
+        adapter.branchRules["base$n"] = BranchRules(setOf("lint", checkName))
         val req = file(n, schema(), listOf("db/c.sql" to "create table c (id int)")).single()
         readyToMerge(n)
         pollWithProxy()
@@ -1042,7 +1276,7 @@ class GitHubSourceFlowDbTest {
         val n = number()
         open(n, baseRef = "base$n")
         val rules = BranchRules(
-            setOf(GitHubSourceFlow.CHECK_NAME), strict = true, threadResolution = true, mergeMethods = setOf("squash", "rebase"), unchecked = listOf("merge_queue"),
+            setOf(checkName), strict = true, threadResolution = true, mergeMethods = setOf("squash", "rebase"), unchecked = listOf("merge_queue"),
         )
         adapter.branchRules["base$n"] = rules
         val req = file(n, schema(), listOf("db/c.sql" to "create table c (id int)")).single()

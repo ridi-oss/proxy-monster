@@ -2,6 +2,7 @@ package com.ridi.oss.proxymonster.controlplane.notify
 
 import com.ridi.oss.proxymonster.controlplane.i18n.MessageCatalog
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -37,7 +38,8 @@ class NotificationRendererTest {
     @Test
     fun `every key resolves in both locales`() {
         for (locale in MessageCatalog.LOCALES) {
-            for (event in NotificationEvent.entries) {
+            // A CC change redraws each message as its last event drew it, so it is never rendered itself.
+            for (event in NotificationEvent.entries - NotificationEvent.TASK_CC_CHANGED) {
                 for (approved in listOf(true, false)) {
                     val m = message(event, RenderedStatement("SELECT 1", complete = true), approved)
                     val summary = renderer.summary(m, locale)
@@ -167,6 +169,37 @@ class NotificationRendererTest {
         val m = message(NotificationEvent.TASK_REQUESTED, RenderedStatement(evil, true))
         val summary = renderer.summary(m, "en")
         assertFalse(summary.contains("``` *Security"), "the fence closer is neutralized, so the prose stays inside the block: $summary")
+    }
+
+    @Test
+    fun `the statement follows the sentence as its own code block`() {
+        val ko = renderer.summary(message(NotificationEvent.TASK_REQUESTED, RenderedStatement("UPDATE t SET a = 1", true)).copy(reason = null), "ko")
+        assertEquals("*alice@example.com* 님이 *acme-mysql*에서 *pii-reader* 역할로 다음 쿼리를 실행하고자 합니다.\n```\nUPDATE t SET a = 1\n```", ko)
+    }
+
+    @Test
+    fun `every query message opens with the title and keeps the reason`() {
+        val m = message(NotificationEvent.TASK_EXECUTED, RenderedStatement("UPDATE t SET a = 1", true)).copy(title = "Refund 8812", reason = "ticket 8812")
+        assertEquals("*Refund 8812*\n*alice@example.com* 님이 *acme-mysql*에서 *pii-reader* 역할로 요청한 다음 쿼리가 실행되었습니다 (3행).\n> ticket 8812\n```\nUPDATE t SET a = 1\n```", renderer.summary(m, "ko"))
+    }
+
+    @Test
+    fun `a finished run without a row count names no count`() {
+        for (locale in MessageCatalog.LOCALES) {
+            val m = message(NotificationEvent.TASK_EXECUTED, RenderedStatement("UPDATE t SET a = 1", true))
+            assertFalse(renderer.summary(m.copy(rowCount = null), locale).contains("—"), locale)
+            assertTrue(renderer.summary(m, locale).contains("3"), locale)
+        }
+    }
+
+    @Test
+    fun `a thread line names the actor and a cc by their display`() {
+        val event = com.ridi.oss.proxymonster.controlplane.RequestEvent(
+            id = 1, kind = "cc_added", actor = "bob@example.com", body = "carol@example.com", origin = "web", createdAt = "2026-10-22T00:00:00Z",
+        )
+        val names = mapOf("bob@example.com" to "<@UBOB>", "carol@example.com" to "<@UCAROL>")
+        assertEquals("*<@UBOB>* added <@UCAROL> as a CC.", renderer.threadLine(event, "en", names))
+        assertEquals("*bob@example.com* added carol@example.com as a CC.", renderer.threadLine(event, "en"))
     }
 
     @Test

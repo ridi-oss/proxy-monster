@@ -1,0 +1,111 @@
+syntax = "proto3";
+
+// The control plane's calls into a target engine's Go definition (analyzer/engines), over the same FFM
+// boundary as analyzer.proto: analyzer/cmd/libanalyzer exports EngineCall, which takes one
+// EngineCallRequest and returns one EngineCallResponse.
+package proxymonster.analyzer.v1;
+
+import "engine.proto";
+import "analyzer.proto";
+
+option java_package = "com.ridi.oss.proxymonster.analyzer.pb";
+option java_multiple_files = true;
+
+message EngineCallRequest {
+  proxymonster.v1.Engine engine = 1;
+  oneof call {
+    // The engine's constant facts; the caller reads them once.
+    EngineFactsCall facts = 2;
+    // The analyzer catalog for a datasource registered on this database name: MySQL "def".
+    string catalog_name = 3;
+    // The schema an unqualified table resolves to for a datasource registered on this database name.
+    string default_schema = 4;
+    // How the engine treats this canonical schema name.
+    string schema_kind = 5;
+    // The analyzer config for one statement decision or a batch split.
+    AnalyzerConfigCall analyzer_config = 6;
+    // (comparable version, isAurora) from the raw version() string.
+    string server_version = 7;
+    // The classification-manifest series a parsed version belongs to: MySQL "8.0".
+    string manifest_series = 8;
+    // The function inventory the analyzer resolves calls against.
+    FunctionCatalogCall function_catalog = 9;
+    // Refuses a ConnectionInfo this engine's proxies must not publish.
+    EngineConnectionInfo connection_info = 10;
+    // The statement that makes this canonical schema a session's default.
+    string default_schema_statement = 11;
+  }
+}
+
+message EngineCallResponse {
+  // Set when the call failed; the result is then empty.
+  string error = 1;
+  oneof result {
+    EngineFacts facts = 2;
+    // catalog_name, default_schema, manifest_series, default_schema_statement.
+    string text = 3;
+    SchemaKind schema_kind = 4;
+    EngineConfig analyzer_config = 5;
+    ServerVersion server_version = 6;
+    FunctionCatalog function_catalog = 7;
+    // connection_info: the info is publishable.
+    bool valid = 8;
+  }
+}
+
+message EngineFactsCall {}
+
+message EngineFacts {
+  // The persistence, registration, and JSON name: "mysql".
+  string wire_name = 1;
+  // Quotes an identifier in the engine's SQL; a quote inside the name is doubled.
+  string identifier_quote = 2;
+  // The fixed system schemas whose content is the same on every datasource of one version.
+  repeated string system_schemas = 3;
+  // The ConnectionInfo property keys this engine's proxies may publish.
+  repeated string connection_properties = 4;
+  // One connection's catalog measurement answers for every connection of the datasource.
+  bool catalog_is_connection_independent = 5;
+  // The proxy can prepare a statement on the target without running it.
+  bool checks_target_errors = 6;
+  // The system columns every table has beyond its introspected ones: PostgreSQL ctid tid, xmin xid.
+  repeated ImplicitColumn implicit_columns = 7;
+  // The engine has a statement that sets a session's default schema.
+  bool default_schema_settable = 8;
+}
+
+message ImplicitColumn {
+  string name = 1;
+  string data_type = 2;
+}
+
+message SchemaKind {
+  // One of the fixed system schemas.
+  bool fixed_system = 1;
+  // A fixed system schema or a per-session one: Postgres pg_temp_3, pg_toast.
+  bool system = 2;
+  // The session temp schema: Postgres pg_temp, pg_temp_3.
+  bool temp = 3;
+}
+
+message AnalyzerConfigCall {
+  TargetSettings target = 1;
+  SessionObservation session = 2;
+}
+
+message ServerVersion {
+  // Absent when the raw string is not a version.
+  optional string version = 1;
+  bool aurora = 2;
+}
+
+message FunctionCatalogCall {
+  // Routine names per schema as the proxy introspected them, in schema order.
+  repeated SchemaFunctions routines = 1;
+  string engine_version = 2;
+}
+
+message EngineConnectionInfo {
+  string endpoint = 1;
+  map<string, string> properties = 2;
+}

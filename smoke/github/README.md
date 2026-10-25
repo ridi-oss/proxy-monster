@@ -6,17 +6,18 @@ the control plane files, approves, runs, and merges them. It is run by hand,
 before a release that touches this flow. CI runs the `github` leg of
 `smoke/run.sh` instead, which drives the same flow against a fake GitHub.
 
-| Scenario | What it checks                                                                |
-| -------- | ----------------------------------------------------------------------------- |
-| S1       | a file that fails partway turns the check red and leaves the PR open          |
-| S2       | another PR still runs and merges                                              |
-| S1b      | the fix needs a new approval and an update onto S2's merge                    |
-| S3       | of two approved PRs, one merges first and the other waits for an update       |
-| S4       | SQL changed after approval edits the same request, which needs approval again |
-| S5       | editing a file that already merged fails the Action                           |
-| S6       | numeric keys run `9_` before `10_`                                            |
-| S7       | an admin's force-run lets a PR that is behind run without an update           |
-| S8       | a push that only reformats the SQL keeps the approval                         |
+| Scenario | What it checks                                                                                                  |
+| -------- | --------------------------------------------------------------------------------------------------------------- |
+| S1       | a file that fails partway turns the check red and leaves the PR open                                            |
+| S2       | another PR still runs and merges                                                                                |
+| S1b      | the fix needs a new approval and an update onto S2's merge                                                      |
+| S3       | of two approved PRs, one merges first and the other waits for an update                                         |
+| S4       | SQL changed after approval edits the same request, which needs approval again                                   |
+| S5       | editing a file that already merged fails the Action                                                             |
+| S6       | numeric keys run `9_` before `10_`                                                                              |
+| S7       | an admin's force-run lets a PR that is behind run without an update                                             |
+| S8       | a push that only reformats the SQL keeps the approval                                                           |
+| S9       | a PR without SQL gets the check as skipped from the workflow and merges, also while the control plane is paused |
 
 A full run takes about 20 minutes and leaves its tables in the target database.
 
@@ -37,6 +38,7 @@ end.
 | C8       | only rebase merges allowed               | a squash auto-merge holds the run               |
 | C9       | signed commits required                  | a rule the gate does not evaluate holds the run |
 | C10      | classic branch protection                | classic protection holds the run                |
+| C11      | no ruleset                               | a PR merged before approval runs once approved  |
 
 It takes about 30 minutes. It mints the App's token from `PM_GITHUB_E2E_APP_KEY`
 (default `~/.cache/proxy-monster/github-e2e/app-key.pem`) to post a check run of
@@ -64,8 +66,8 @@ It creates, recording each step so a rerun skips what is done:
    control-plane URL, audience, datasource, schema, role, and directory;
 3. the App's installation on that repository only: it opens the install page,
    where you click **Install**;
-4. the ruleset in [ruleset.json](./ruleset.json), requiring the App's
-   `query executed` check;
+4. the ruleset in [ruleset.json](./ruleset.json), requiring the
+   `github-e2e/query executed` check;
 5. a self-hosted runner labeled `pm-github-e2e`, running a pm-ci built from this
    checkout;
 6. a control-plane user whose email is your commit email, so the author and the
@@ -76,9 +78,10 @@ steps wait for your click. If your browser is on another machine, pass
 `--callback-host <name it reaches this one by>` and `--callback-bind 0.0.0.0`.
 
 It ends by printing the control-plane settings to restart it with
-(`PM_GITHUB_APP_ID`, `PM_GITHUB_APP_PRIVATE_KEY_FILE`, `PM_GITHUB_IDENTITY`,
-`PM_CI_OIDC_ISSUERS`, `PM_CI_OIDC_AUDIENCE`) and the env file `run.py` reads.
-Its state lives in `~/.cache/proxy-monster/github-e2e` (`--state-dir`).
+(`PM_INSTANCE_NAME=github-e2e`, `PM_GITHUB_APP_ID`,
+`PM_GITHUB_APP_PRIVATE_KEY_FILE`, `PM_GITHUB_IDENTITY`, `PM_CI_OIDC_ISSUERS`,
+`PM_CI_OIDC_AUDIENCE`) and the env file `run.py` reads. Its state lives in
+`~/.cache/proxy-monster/github-e2e` (`--state-dir`).
 
 ## Running it
 

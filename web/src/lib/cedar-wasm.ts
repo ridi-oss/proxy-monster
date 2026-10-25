@@ -1,4 +1,4 @@
-'use client'
+'use client';
 
 // Lazy loader for the Cedar WASM SDK (~4MB), used by the Cedar policy editor's
 // linter (@ridi/codemirror-lang-cedar). The binary is served as a static
@@ -6,16 +6,16 @@
 // so no bundler-specific WASM handling is needed. It is imported dynamically and
 // initialized once, only when a caller actually opens the editor.
 
-import { useEffect, useState } from 'react'
-import type { CedarWasmModule } from '@ridi/codemirror-lang-cedar'
+import { useEffect, useState } from 'react';
+import type { CedarWasmModule } from '@ridi/codemirror-lang-cedar';
 
-let loader: Promise<CedarWasmModule> | null = null
+let loader: Promise<CedarWasmModule> | null = null;
 
 async function loadCedarWasm(): Promise<CedarWasmModule> {
   if (!loader) {
     loader = (async () => {
-      const mod = await import('@cedar-policy/cedar-wasm/web')
-      await mod.default({ module_or_path: '/cedar/cedar_wasm_bg.wasm' })
+      const mod = await import('@cedar-policy/cedar-wasm/web');
+      await mod.default({ module_or_path: '/cedar/cedar_wasm_bg.wasm' });
       // Syntax checking (policySetTextToParts + checkParsePolicySet) plus, when a
       // schema is supplied, strict type validation (validate) and schema-aware
       // completion (schemaToJson).
@@ -24,10 +24,10 @@ async function loadCedarWasm(): Promise<CedarWasmModule> {
         checkParsePolicySet: mod.checkParsePolicySet,
         validate: mod.validate,
         schemaToJson: mod.schemaToJson,
-      } as CedarWasmModule
-    })()
+      } as CedarWasmModule;
+    })();
   }
-  return loader
+  return loader;
 }
 
 /**
@@ -36,20 +36,20 @@ async function loadCedarWasm(): Promise<CedarWasmModule> {
  * process-wide, so opening the editor repeatedly initializes the WASM only once.
  */
 export function useCedarWasm(enabled: boolean): CedarWasmModule | null {
-  const [wasm, setWasm] = useState<CedarWasmModule | null>(null)
+  const [wasm, setWasm] = useState<CedarWasmModule | null>(null);
   useEffect(() => {
-    if (!enabled || wasm) return
-    let cancelled = false
+    if (!enabled || wasm) return;
+    let cancelled = false;
     loadCedarWasm()
       .then((m) => {
-        if (!cancelled) setWasm(m)
+        if (!cancelled) setWasm(m);
       })
       .catch(() => {
         /* no live linting if the WASM can't load — server-side Validate still works */
-      })
+      });
     return () => {
-      cancelled = true
-    }
-  }, [enabled, wasm])
-  return wasm
+      cancelled = true;
+    };
+  }, [enabled, wasm]);
+  return wasm;
 }

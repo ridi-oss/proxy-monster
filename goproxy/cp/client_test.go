@@ -438,7 +438,7 @@ func TestDecideMapsRequestAndRetriesBeforeDecide(t *testing.T) {
 	c := startFakeControlPlane(t, fake)
 	var run [][]*pb.ProxyCommand
 	request := spi.DecideRequest{
-		Session: spi.SessionObservation{
+		Snapshot: spi.SessionSnapshot{
 			Namespace: []string{"public", "app"},
 			SessionObservation: &enginepb.SessionObservation{Engine: &enginepb.SessionObservation_Postgres{Postgres: &enginepb.PostgresSession{
 				ShadowedFunctions: []string{"unnest"}, FunctionShadowingObserved: true, SystemXidVisible: proto.Bool(true),
@@ -449,17 +449,17 @@ func TestDecideMapsRequestAndRetriesBeforeDecide(t *testing.T) {
 		ClientAddr:   "10.0.0.9:5555",
 		TempColumns:  []spi.TempColumn{{Schema: "pg_temp_3", Table: "t", Column: "c", SqlType: "text", Ordinal: 5}},
 		ConnectionID: []byte("0123456789abcdef"),
-		RunCommands: func(commands []*pb.ProxyCommand, _ *spi.SessionObservation) error {
+		Commands: commandRunnerFunc(func(commands []*pb.ProxyCommand, _ *spi.SessionSnapshot) error {
 			run = append(run, commands)
 			return nil
-		},
+		}),
 	}
 	out := c.Decide(request)
 	if out.IsErr() || out.Decision.Action != "MASK" || out.Decision.Generation != 4 {
 		t.Fatalf("Decide = %+v", out)
 	}
 	if len(run) != 1 || len(run[0]) != 1 || !proto.Equal(run[0][0], refetch("app", []byte("old"))) {
-		t.Fatalf("RunCommands calls = %+v", run)
+		t.Fatalf("RunAll calls = %+v", run)
 	}
 
 	fake.mu.Lock()
@@ -471,7 +471,7 @@ func TestDecideMapsRequestAndRetriesBeforeDecide(t *testing.T) {
 	}
 	req := requests[0]
 	if req.GetToken() != request.Token || req.GetDatasourceName() != "ds-1" || req.GetSql() != request.SQL || req.GetClientAddr() != request.ClientAddr ||
-		!reflect.DeepEqual(req.GetSearchPath(), request.Session.Namespace) || !reflect.DeepEqual(req.GetConnectionId(), request.ConnectionID) {
+		!reflect.DeepEqual(req.GetSearchPath(), request.Snapshot.Namespace) || !reflect.DeepEqual(req.GetConnectionId(), request.ConnectionID) {
 		t.Fatalf("DecisionRequest = %+v", req)
 	}
 	if !req.GetSession().GetPostgres().GetFunctionShadowingObserved() ||
@@ -532,7 +532,7 @@ func TestDecideOmitsUnobservedPostgresTypeVisibility(t *testing.T) {
 	fake := &fakeControlPlane{}
 	c := startFakeControlPlane(t, fake)
 	out := c.Decide(spi.DecideRequest{
-		Session: spi.SessionObservation{
+		Snapshot: spi.SessionSnapshot{
 			Namespace:          []string{"public"},
 			SessionObservation: &enginepb.SessionObservation{Engine: &enginepb.SessionObservation_Postgres{Postgres: &enginepb.PostgresSession{FunctionShadowingObserved: true}}},
 		},
@@ -564,7 +564,7 @@ func TestDecideBeforeDecideFailures(t *testing.T) {
 	})
 	t.Run("runner error", func(t *testing.T) {
 		c := startFakeControlPlane(t, &fakeControlPlane{decideResp: wireBefore(refetch("app", nil))})
-		out := c.Decide(spi.DecideRequest{RunCommands: func([]*pb.ProxyCommand, *spi.SessionObservation) error { return errors.New("probe failed") }})
+		out := c.Decide(spi.DecideRequest{Commands: commandRunnerFunc(func([]*pb.ProxyCommand, *spi.SessionSnapshot) error { return errors.New("probe failed") })})
 		if !out.IsErr() || !strings.Contains(out.Err, "probe failed") {
 			t.Fatalf("Decide = %+v", out)
 		}
@@ -573,7 +573,7 @@ func TestDecideBeforeDecideFailures(t *testing.T) {
 		fake := &fakeControlPlane{decideResp: wireBefore(refetch("app", nil))}
 		c := startFakeControlPlane(t, fake)
 		runs := 0
-		out := c.Decide(spi.DecideRequest{RunCommands: func([]*pb.ProxyCommand, *spi.SessionObservation) error { runs++; return nil }})
+		out := c.Decide(spi.DecideRequest{Commands: commandRunnerFunc(func([]*pb.ProxyCommand, *spi.SessionSnapshot) error { runs++; return nil })})
 		if !out.IsErr() || !strings.Contains(out.Err, "4 times") {
 			t.Fatalf("Decide = %+v", out)
 		}
@@ -1312,4 +1312,10 @@ func TestDecisionFromWireCarriesCapsAndDeniesNegative(t *testing.T) {
 			t.Fatalf("negative cap %+v = %s, want DENY", bad, got.Action)
 		}
 	}
+}
+
+type commandRunnerFunc func([]*pb.ProxyCommand, *spi.SessionSnapshot) error
+
+func (f commandRunnerFunc) RunAll(commands []*pb.ProxyCommand, snapshot *spi.SessionSnapshot) error {
+	return f(commands, snapshot)
 }

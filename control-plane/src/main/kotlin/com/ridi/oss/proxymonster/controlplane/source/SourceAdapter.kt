@@ -35,11 +35,12 @@ data class Review(
     val commit: String? = null,
 )
 
-data class Check(val name: String, val required: Boolean, val status: CheckStatus, val conclusion: CheckConclusion?)
+/** [own] when this GitHub App posted it. */
+data class Check(val name: String, val required: Boolean, val status: CheckStatus, val conclusion: CheckConclusion?, val own: Boolean = false)
 
 data class ChangedFile(val path: String, val change: FileChange)
 
-data class CommitAuthor(val userId: String?, val email: String?, val merge: Boolean)
+data class CommitAuthor(val userId: String?, val email: String?, val merge: Boolean, val login: String? = null)
 
 /** [mergeMethod] is GitHub's MERGE, SQUASH or REBASE. */
 data class AutoMerge(val enabledBy: SourceUser?, val enabledAt: Instant?, val mergeMethod: String? = null)
@@ -65,6 +66,8 @@ data class PullRequest(
     val draft: Boolean = false,
     val merged: Boolean,
     val mergedAt: Instant?,
+    /** Who merged it; for auto-merge, who enabled it. */
+    val mergedBy: SourceUser? = null,
     /** The merge commit once [merged]. */
     val mergeCommit: String? = null,
     val headSha: String,

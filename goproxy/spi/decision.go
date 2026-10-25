@@ -147,30 +147,36 @@ type TempColumn struct {
 // DecideRequest is the complete per-query control-plane request plus the callback used to satisfy
 // before_decide commands on the held target-DB connection.
 type DecideRequest struct {
-	Session      SessionObservation
+	Snapshot     SessionSnapshot
 	Token        string
 	SQL          string
 	ClientAddr   string
 	TempColumns  []TempColumn
 	ConnectionID []byte
-	// RunCommands executes one before-decide round on the held target connection; the dialect's command
-	// runner interprets each ProxyCommand arm and may extend Session with what it fetched.
-	RunCommands func([]*pb.ProxyCommand, *SessionObservation) error
+	// Commands runs one before-decide round on the held target connection and may extend Session with what
+	// it fetched.
+	Commands ProxyCommandRunner
 	// CheckTargetError prepares sql on the target without executing it; nil means the statement prepared.
 	CheckTargetError func(sql string) (*TargetError, error)
 }
 
-// SessionObservation is what the pre-statement probe returned: the connection's current catalog and
+// ProxyCommandRunner runs the ProxyCommands the control plane attaches to a decision or a connection open on the
+// held target connection: Refetch, and Athena's FetchAthenaPreparedDefinition, which adds to session.
+type ProxyCommandRunner interface {
+	RunAll(commands []*pb.ProxyCommand, snapshot *SessionSnapshot) error
+}
+
+// SessionSnapshot is what the pre-statement probe returned: the connection's current catalog and
 // effective namespace plus the session facts the wire carries as-is. The Authorizer caches it as one value and
 // the decision carries it whole, so every fact reaches the control plane from the same probe.
-type SessionObservation struct {
+type SessionSnapshot struct {
 	CurrentCatalog string
 	Namespace      []string
 	*enginepb.SessionObservation
 }
 
 // Clone copies the observation so a cached snapshot cannot be mutated through shared state.
-func (o SessionObservation) Clone() SessionObservation {
+func (o SessionSnapshot) Clone() SessionSnapshot {
 	o.Namespace = append([]string{}, o.Namespace...)
 	if o.SessionObservation != nil {
 		o.SessionObservation = proto.Clone(o.SessionObservation).(*enginepb.SessionObservation)

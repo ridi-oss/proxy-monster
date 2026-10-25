@@ -3,95 +3,95 @@
 // field names/shape in lockstep (docs/web-console.md: "one shape, no parallel UI").
 
 /** Enforcement verdict (DESIGN.md). ERROR = internal failure, distinct from fail-closed DENY. */
-export type Decision = 'ALLOW' | 'MASK' | 'DENY' | 'ERROR'
+export type Decision = 'ALLOW' | 'MASK' | 'DENY' | 'ERROR';
 
 /** One audit event, as returned by GET /api/audit. */
 export interface AuditEvent {
-  id?: number | null // server-assigned
-  ts: string | null // ISO-8601 instant; server fills if null
-  kind: string
-  principal: string
-  roles: string[]
-  datasource: string
-  clientAddr: string | null
-  statement: string
-  decision: Decision
-  failedStage: string | null // parse|validate|convert|lineage
-  maskedColumns: string[]
-  piiTouched: string[]
-  latencyMs: number
-  detail: string | null
-  effectiveNamespace?: string[]
-  channel?: string | null
-  contextTags?: string[]
-  authzAction?: string | null
-  authzResource?: string | null
-  outcome?: string | null
-  rowsReturned?: number | null
-  bytesReturned?: number | null
-  decisionId?: number | null
+  id?: number | null; // server-assigned
+  ts: string | null; // ISO-8601 instant; server fills if null
+  kind: string;
+  principal: string;
+  roles: string[];
+  datasource: string;
+  clientAddr: string | null;
+  statement: string;
+  decision: Decision;
+  failedStage: string | null; // parse|validate|convert|lineage
+  maskedColumns: string[];
+  piiTouched: string[];
+  latencyMs: number;
+  detail: string | null;
+  effectiveNamespace?: string[];
+  channel?: string | null;
+  contextTags?: string[];
+  authzAction?: string | null;
+  authzResource?: string | null;
+  outcome?: string | null;
+  rowsReturned?: number | null;
+  bytesReturned?: number | null;
+  decisionId?: number | null;
 }
 
 /** The authenticated principal, as returned by GET /auth/me and POST /auth/debug. */
 export interface Identity {
-  principal: string
-  roles: string[]
+  principal: string;
+  roles: string[];
   /**
    * The simulated source address a debug-login session authorizes under, when one was chosen. Absent for
    * every ordinary session, and absent whenever the control-plane is not honoring it.
    */
-  requesterIp?: string | null
+  requesterIp?: string | null;
 }
 
 /** Coarse Cedar-backed capabilities for the authenticated principal. */
 /** GET /api/mcp/connect — what the "Connect an agent" page installs. */
 export interface McpConnectInfo {
-  instanceName: string
-  instanceDescription: string
-  mcpUrl: string
-  installName: string
+  instanceName: string;
+  instanceDescription: string;
+  mcpUrl: string;
+  installName: string;
 }
 
 export interface MePermissions {
-  isAdmin: boolean
-  canReadAllAudit: boolean
-  canApprove: boolean
+  isAdmin: boolean;
+  canReadAllAudit: boolean;
+  canApprove: boolean;
 }
 
 /** Why a web session could not be resolved by the authenticated session routes. */
-export type SessionReason = 'none' | 'expired' | 'displaced' | 'bind_mismatch'
+export type SessionReason = 'none' | 'expired' | 'displaced' | 'bind_mismatch';
 
 /** Server-authoritative web-session deadlines returned by the session status endpoints. */
 export interface SessionStatus {
-  now: string
-  idleExpiresAt: string
-  absoluteExpiresAt: string
-  principal: string
-  sessionId: number
+  now: string;
+  idleExpiresAt: string;
+  absoluteExpiresAt: string;
+  principal: string;
+  sessionId: number;
 }
 
 /** Auth capabilities and web-session timings from GET /auth/config. */
 export interface AuthConfig {
-  oidcEnabled: boolean
-  authDebug: boolean
+  oidcEnabled: boolean;
+  authDebug: boolean;
   session: {
-    heartbeatMs: number
-    idleWarnLeadMs: number
-    absoluteWarnLeadMs: number
-    absoluteCapAmount: number
-    absoluteCapUnit: 'hours' | 'minutes' | 'seconds'
-  }
+    heartbeatMs: number;
+    idleWarnLeadMs: number;
+    absoluteWarnLeadMs: number;
+    absoluteCapAmount: number;
+    absoluteCapUnit: 'hours' | 'minutes' | 'seconds';
+  };
 }
 
 // ---- Datasources (control-plane/.../Datasources.kt) -------------------------
 
 /** Supported target engines. */
-export type Engine = 'postgres' | 'mysql'
+export type Engine = 'postgres' | 'mysql';
 
 /** Nonsecret endpoint and properties a proxy publishes for clients; never a credential. */
 export interface ConnectionInfo {
-  endpoint: string
-  properties: Record<string, string>
+  endpoint: string;
+  properties: Record<string, string>;
 }
 
 /**
@@ -100,37 +100,39 @@ export interface ConnectionInfo {
  * is authoritative and overwrites them on registration.
  */
 export interface Datasource {
-  id: number
-  name: string
-  engine: string
-  host: string
-  port: number
-  dbName: string
-  currentCatalog?: string | null
-  connectionInfo?: ConnectionInfo | null
-  description?: string
+  id: number;
+  name: string;
+  engine: string;
+  host: string;
+  port: number;
+  dbName: string;
+  currentCatalog?: string | null;
+  connectionInfo?: ConnectionInfo | null;
+  description?: string;
   /** Policy-posture tags (`preset:*`, docs/access-model.md) — set by the proxy's `PM_DATASOURCE_TAGS` at
    *  registration, or by an admin edit. Empty by default (safe "production" posture). */
-  tags: string[]
-  defaultSchemas: string[]
-  mysqlLowerCaseTableNames?: number | null
-  catalogSyncedAt?: string | null
+  tags: string[];
+  defaultSchemas: string[];
+  mysqlLowerCaseTableNames?: number | null;
+  catalogSyncedAt?: string | null;
   /** Last time a proxy's Events stream opened for this datasource. Null = never seen. For CURRENT
    *  attachment (not just "seen at some point"), use `getDatasourcesLive()` / `useDatasourcesLive()`. */
-  lastSeenAt?: string | null
-  engineVersion?: string | null
+  lastSeenAt?: string | null;
+  engineVersion?: string | null;
   /** The client-facing `host:port` a wire client dials to reach this datasource's proxy — set by the proxy
    *  at registration, distinct from the advisory `host`/`port` above. Null until a proxy advertises one. */
-  advertiseAddr?: string | null
+  advertiseAddr?: string | null;
   /** PEM certificate chain to trust for this datasource's proxy, leaf first, as advertised at registration.
    *  pmon uses it as its root pool; the console offers the same bytes for download. Null when the proxy
    *  published none — which is NOT the same as having no TLS (see advertiseWireTls). */
-  advertiseCertChain?: string | null
+  advertiseCertChain?: string | null;
   /** Whether the proxy serves TLS at all. Independent of the chain: an operator may serve a publicly-trusted
    *  certificate and publish nothing, so clients verify against their own trust store. Only false is plaintext. */
-  advertiseWireTls?: boolean
+  advertiseWireTls?: boolean;
   /** Whether an editor session on it can set its default schema (Athena cannot). */
-  defaultSchemaSettable?: boolean
+  defaultSchemaSettable?: boolean;
+  /** The engine's identifier quote. Classification names are SQL identifier text, so a browsed name is sent quoted. */
+  identifierQuote: string;
 }
 
 /**
@@ -139,457 +141,511 @@ export interface Datasource {
  * Only `name` is required; there are no credential fields.
  */
 export interface DatasourceInput {
-  name: string
-  engine: Engine
-  host?: string
-  port?: number
-  dbName?: string
+  name: string;
+  engine: Engine;
+  host?: string;
+  port?: number;
+  dbName?: string;
 }
 
 /** Result of POST .../refresh — how many connected proxy streams were nudged to re-introspect. */
 export interface RefreshResult {
-  notified: number
+  notified: number;
 }
 
 /** Result of POST .../test — whether a proxy is currently attached; the target is never dialed. */
 export interface TestResult {
-  ok: boolean
-  message: string
+  ok: boolean;
+  message: string;
 }
 
 // ---- Catalog + classification (control-plane/.../Datasources.kt) ------------
 
 /** A column's classification (tags + optional mask function), upserted by table+column. */
 export interface Classification {
-  catalog: string
-  schema: string
-  table: string
-  column: string
-  tags: string[]
-  maskFnId?: number | null
-  maskFnName?: string | null
+  catalog: string;
+  schema: string;
+  table: string;
+  column: string;
+  tags: string[];
+  maskFnId?: number | null;
+  maskFnName?: string | null;
 }
 
 /** A catalog column joined with its classification (if any). */
 export interface CatalogColumn {
-  catalog: string
-  schema: string
-  table: string
-  column: string
-  dataType: string
-  sqlType: string
-  ordinal: number
-  nullable: boolean
-  classification?: Classification | null
-  system?: boolean
+  catalog: string;
+  schema: string;
+  table: string;
+  column: string;
+  dataType: string;
+  sqlType: string;
+  ordinal: number;
+  nullable: boolean;
+  classification?: Classification | null;
+  system?: boolean;
 }
 
 // ---- Live table detail ------------------------------------------------------
 
 export interface TableDetailColumn {
-  name: string
-  dataType: string
-  ordinal: number
-  nullable: boolean
-  defaultValue: string | null
-  characterMaximumLength: number | null
-  numericPrecision: number | null
-  numericScale: number | null
-  partOfIndex: boolean
-  autoIncrement: boolean
-  comment: string | null
-  charset: string | null
-  collation: string | null
-  classification: Classification | null
+  name: string;
+  dataType: string;
+  ordinal: number;
+  nullable: boolean;
+  defaultValue: string | null;
+  characterMaximumLength: number | null;
+  numericPrecision: number | null;
+  numericScale: number | null;
+  partOfIndex: boolean;
+  autoIncrement: boolean;
+  comment: string | null;
+  charset: string | null;
+  collation: string | null;
+  classification: Classification | null;
 }
 
 export interface TableIndexColumn {
-  name: string
-  position: number
-  direction: string | null
+  name: string;
+  position: number;
+  direction: string | null;
 }
 
 export interface TableIndex {
-  name: string
-  columns: TableIndexColumn[]
-  unique: boolean
-  type: string
+  name: string;
+  columns: TableIndexColumn[];
+  unique: boolean;
+  type: string;
 }
 
 export interface TableRelation {
-  name: string
-  sourceCatalog: string
-  sourceSchema: string
-  sourceTable: string
-  sourceColumns: string[]
-  targetCatalog: string
-  targetSchema: string
-  targetTable: string
-  targetColumns: string[]
-  onUpdate: string | null
-  onDelete: string | null
+  name: string;
+  sourceCatalog: string;
+  sourceSchema: string;
+  sourceTable: string;
+  sourceColumns: string[];
+  targetCatalog: string;
+  targetSchema: string;
+  targetTable: string;
+  targetColumns: string[];
+  onUpdate: string | null;
+  onDelete: string | null;
 }
 
 export interface TableMetadata {
-  engine: string
-  estimatedRows: number | null
-  rowFormat: string | null
-  onDiskBytes: number | null
-  collation: string | null
-  comment: string | null
+  engine: string;
+  estimatedRows: number | null;
+  rowFormat: string | null;
+  onDiskBytes: number | null;
+  collation: string | null;
+  comment: string | null;
 }
 
 export interface TableDetail {
-  catalog: string
-  schema: string
-  table: string
-  columns: TableDetailColumn[]
-  indexes: TableIndex[]
-  foreignKeys: TableRelation[]
-  referencedBy: TableRelation[]
-  metadata: TableMetadata
+  catalog: string;
+  schema: string;
+  table: string;
+  columns: TableDetailColumn[];
+  indexes: TableIndex[];
+  foreignKeys: TableRelation[];
+  referencedBy: TableRelation[];
+  metadata: TableMetadata;
 }
 
 /** Upsert body for a classification. Omitted `schema` uses the captured non-system datasource default; it is required before introspection captures one. */
 export interface ClassificationInput {
-  catalog: string
-  schema?: string
-  table: string
-  column: string
-  tags: string[]
-  maskFnId?: number | null
+  catalog: string;
+  schema?: string;
+  table: string;
+  column: string;
+  tags: string[];
+  maskFnId?: number | null;
 }
 
 /** Delete body for a classification. Omitted `schema` uses the same captured default as upsert. */
 export interface ClassificationDelete {
-  catalog: string
-  schema?: string
-  table: string
-  column: string
+  catalog: string;
+  schema?: string;
+  table: string;
+  column: string;
 }
 
 // ---- Roles & principal mapping (control-plane/.../Policies.kt) --------------
 
 export interface Role {
-  id: number
-  name: string
-  description?: string | null
+  id: number;
+  name: string;
+  description?: string | null;
 }
 
 export interface RoleInput {
-  name: string
-  description?: string | null
+  name: string;
+  description?: string | null;
 }
 
 export interface RoleAssignment {
-  id: number
-  principal: string
-  roleId: number
-  roleName: string
+  id: number;
+  principal: string;
+  roleId: number;
+  roleName: string;
 }
 
 export interface RoleAssignmentInput {
-  principal: string
-  roleId: number
+  principal: string;
+  roleId: number;
 }
 
 // ---- Cedar policies (control-plane/.../authz/CedarPolicyStore.kt) -----------
 
 /** A named Cedar policy row: source text + enabled flag + audit metadata. */
 export interface CedarPolicy {
-  id: number
+  id: number;
   /** Provenance: SYSTEM rows are migration-owned and immutable through the API except
    *  enable/disable; USER rows are full CRUD. The backend enforces this — the console mirrors it. */
-  origin: 'SYSTEM' | 'USER'
+  origin: 'SYSTEM' | 'USER';
   /** Stable key of a shipped system policy (e.g. `system:catalog-read`); null for USER rows. */
-  systemKey?: string | null
-  name: string
-  cedarSrc: string
-  enabled: boolean
-  updatedBy?: string | null
-  updatedAt: string
+  systemKey?: string | null;
+  name: string;
+  cedarSrc: string;
+  enabled: boolean;
+  updatedBy?: string | null;
+  updatedAt: string;
 }
 
 /** Create/update body for a Cedar policy. Server validates `cedarSrc` (400 with messages on invalid). */
 export interface CedarPolicyInput {
-  name: string
-  cedarSrc: string
-  enabled: boolean
+  name: string;
+  cedarSrc: string;
+  enabled: boolean;
 }
 
 // ---- Users & groups (control-plane/.../Users.kt) ----
 
-export interface GroupRef { id: number; name: string }
-export interface AppUser { id: number; principal: string; displayName?: string | null;
-  email?: string | null; source: string; externalId?: string | null; active: boolean;
-  createdAt: string; groups: GroupRef[] }
-export interface AppUserInput { principal: string; displayName?: string | null;
-  email?: string | null; active: boolean }
-export interface AppGroup { id: number; name: string; description?: string | null;
-  source: string; externalId?: string | null; memberCount: number; roles: GroupRef[] }
-export interface AppGroupInput { name: string; description?: string | null }
-export interface GroupMember { userId: number; principal: string; displayName?: string | null }
-export interface GroupRoleMapping { roleId: number; roleName: string }
+export interface GroupRef {
+  id: number;
+  name: string;
+}
+export interface AppUser {
+  id: number;
+  principal: string;
+  displayName?: string | null;
+  email?: string | null;
+  source: string;
+  externalId?: string | null;
+  active: boolean;
+  createdAt: string;
+  groups: GroupRef[];
+}
+export interface AppUserInput {
+  principal: string;
+  displayName?: string | null;
+  email?: string | null;
+  active: boolean;
+}
+export interface AppGroup {
+  id: number;
+  name: string;
+  description?: string | null;
+  source: string;
+  externalId?: string | null;
+  memberCount: number;
+  roles: GroupRef[];
+}
+export interface AppGroupInput {
+  name: string;
+  description?: string | null;
+}
+export interface GroupMember {
+  userId: number;
+  principal: string;
+  displayName?: string | null;
+}
+export interface GroupRoleMapping {
+  roleId: number;
+  roleName: string;
+}
 
 // ---- Mask functions (control-plane/.../Policies.kt) -------------------------
 
-export type MaskFnKind = 'FIXED' | 'LAST_N' | 'FORMAT_PRESERVING' | 'NULL'
+export type MaskFnKind = 'FIXED' | 'LAST_N' | 'FORMAT_PRESERVING' | 'NULL';
 
 export interface MaskFn {
-  id: number
-  name: string
-  kind: string
+  id: number;
+  name: string;
+  kind: string;
 }
 
 export interface MaskFnInput {
-  name: string
-  kind: MaskFnKind
+  name: string;
+  kind: MaskFnKind;
 }
 
 // ---- JIT access (control-plane/.../Access.kt) -------------------------------
 
 export type AccessRequestStatus =
-  | 'DRAFT' | 'PENDING' | 'APPROVED' | 'REJECTED'
-  | 'EXECUTING' | 'EXECUTED' | 'FAILED' | 'CANCELLED' | 'DELETED' | 'ALREADY_RAN'
+  | 'DRAFT'
+  | 'PENDING'
+  | 'APPROVED'
+  | 'REJECTED'
+  | 'EXECUTING'
+  | 'EXECUTED'
+  | 'FAILED'
+  | 'CANCELLED'
+  | 'DELETED'
+  | 'ALREADY_RAN';
 
 export interface AccessRequest {
-  id: number
-  principal: string
-  roleId?: number | null
-  roleName?: string | null
-  datasourceId?: number | null
-  datasourceName?: string | null
-  reason?: string | null
-  requestedDurationSec: number
-  status: string
-  decidedBy?: string | null
-  decidedAt?: string | null
-  rejectionReason?: string | null
-  createdAt: string
-  kind: 'ROLE' | 'QUERY' | 'RATE_RESET'
+  id: number;
+  principal: string;
+  roleId?: number | null;
+  roleName?: string | null;
+  datasourceId?: number | null;
+  datasourceName?: string | null;
+  reason?: string | null;
+  requestedDurationSec: number;
+  status: string;
+  decidedBy?: string | null;
+  decidedAt?: string | null;
+  rejectionReason?: string | null;
+  createdAt: string;
+  kind: 'ROLE' | 'QUERY' | 'RATE_RESET';
   /** The task's statements joined in run order — the request's readable form, never what is authorized. */
-  sql?: string | null
-  sqlHash?: string | null
+  sql?: string | null;
+  sqlHash?: string | null;
   /** How many statements the task holds. 1 for an ordinary single-statement request. */
-  statementCount?: number
-  denyReason?: string | null
-  sourceDecisionId?: number | null
-  title?: string | null
-  evaluatedDecision?: 'ALLOW' | 'MASK' | 'DENY' | null
-  approvedAt?: string | null
-  executingAt?: string | null
-  executedAt?: string | null
-  executeAs: string[]
-  creatorKind?: 'WIRE' | 'EDITOR' | 'WORKFLOW' | null
+  statementCount?: number;
+  denyReason?: string | null;
+  sourceDecisionId?: number | null;
+  title?: string | null;
+  evaluatedDecision?: 'ALLOW' | 'MASK' | 'DENY' | null;
+  approvedAt?: string | null;
+  executingAt?: string | null;
+  executedAt?: string | null;
+  executeAs: string[];
+  creatorKind?: 'WIRE' | 'EDITOR' | 'WORKFLOW' | null;
   /** Grows with each edit of the SQL; an approval names the revision it approves. */
-  revision: number
-  revisedAt?: string | null
-  source?: 'console' | 'mcp' | 'github'
-  scope?: string | null
-  changeKey?: string | null
-  mergedAt?: string | null
-  pullRequest?: PullRequestRef | null
+  revision: number;
+  revisedAt?: string | null;
+  source?: 'console' | 'mcp' | 'github';
+  scope?: string | null;
+  changeKey?: string | null;
+  mergedAt?: string | null;
+  pullRequest?: PullRequestRef | null;
   /** An admin let this GitHub request skip its scope's freshness and one-PR-at-a-time checks. */
-  forceRun?: boolean
-  forceRunBy?: string | null
-  ccs?: string[]
+  forceRun?: boolean;
+  forceRunBy?: string | null;
+  ccs?: string[];
 }
 
 /** One entry of a query request's timeline. `actor` is null for an event the system made. */
 export interface RequestEvent {
-  id: number
+  id: number;
   kind:
-    | 'requested' | 'edited' | 'approved' | 'rejected' | 'unapproved' | 'expired' | 'withdrawn' | 'closed'
-    | 'ran' | 'executed' | 'failed' | 'cancelled' | 'comment' | 'lgtm' | 'cc_added' | 'cc_removed'
-  actor?: string | null
-  body?: string | null
-  revision?: number | null
-  origin: string
-  createdAt: string
-  editedAt?: string | null
-  deleted?: boolean
+    | 'requested'
+    | 'edited'
+    | 'approved'
+    | 'rejected'
+    | 'unapproved'
+    | 'expired'
+    | 'withdrawn'
+    | 'closed'
+    | 'ran'
+    | 'executed'
+    | 'failed'
+    | 'cancelled'
+    | 'comment'
+    | 'lgtm'
+    | 'cc_added'
+    | 'cc_removed';
+  actor?: string | null;
+  body?: string | null;
+  revision?: number | null;
+  origin: string;
+  createdAt: string;
+  editedAt?: string | null;
+  deleted?: boolean;
 }
 
 /** A request's thread and what the caller may do on it. Shared by every request kind. */
 export interface RequestThread {
-  requestId: number
-  ccs: string[]
+  requestId: number;
+  ccs: string[];
   /** Approvers who were notified or acted, and CCs. */
-  participants: string[]
-  timeline: RequestEvent[]
-  canComment: boolean
-  canCc: boolean
-  canClose: boolean
-  canDecide: boolean
+  participants: string[];
+  timeline: RequestEvent[];
+  canComment: boolean;
+  canCc: boolean;
+  canClose: boolean;
+  canDecide: boolean;
 }
 
 /** The pull request a GitHub request came from. */
 export interface PullRequestRef {
   /** `owner/name` of the pull request's repository. */
-  repository: string
-  pr: number
-  prUrl?: string | null
+  repository: string;
+  pr: number;
+  prUrl?: string | null;
   /** The file's path in git. */
-  path?: string | null
-  headSha?: string | null
-  mergeSha?: string | null
+  path?: string | null;
+  headSha?: string | null;
+  mergeSha?: string | null;
 }
 
 export interface AccessRequestInput {
-  roleId: number
-  datasourceId?: number | null
-  reason?: string | null
-  requestedDurationSec: number
+  roleId: number;
+  datasourceId?: number | null;
+  reason?: string | null;
+  requestedDurationSec: number;
 }
 
 export interface AccessGrant {
-  id: number
-  principal: string
-  roleId: number
-  roleName: string
-  grantedBy?: string | null
-  grantedAt: string
-  expiresAt?: string | null
-  revokedAt?: string | null
+  id: number;
+  principal: string;
+  roleId: number;
+  roleName: string;
+  grantedBy?: string | null;
+  grantedAt: string;
+  expiresAt?: string | null;
+  revokedAt?: string | null;
 }
 
 export type CreateQueryRequestInput =
   | { sourceDecisionId: number; reason: string; title?: string; roleId?: number }
-  | { datasourceId: number; sql: string; title: string; reason: string; roleId?: number }
+  | { datasourceId: number; sql: string; title: string; reason: string; roleId?: number };
 
 export interface CreateQueryRequestResponse {
-  request: AccessRequest
-  wouldAllow: boolean
+  request: AccessRequest;
+  wouldAllow: boolean;
 }
 
 export interface DiscoverRolesRequest {
-  datasourceId: number
-  sql: string
+  datasourceId: number;
+  sql: string;
 }
 
 export interface RoleOption {
-  roleId: number
-  roleName: string
+  roleId: number;
+  roleName: string;
   /** What the query returns under this role, PREVIEWED under `{R}` on workflow-executor in the requester's
    *  context. Execution runs in the approver's context and can mask further, so this is the previewed
    *  outcome, not a guaranteed one. `maskedColumns` is empty on a plain ALLOW. */
-  decision: 'ALLOW' | 'MASK'
-  maskedColumns: string[]
+  decision: 'ALLOW' | 'MASK';
+  maskedColumns: string[];
 }
 
 export interface DiscoverRolesResponse {
-  options: RoleOption[]
+  options: RoleOption[];
 }
 
 /** Latest task-child metadata — never the rows themselves. */
 export interface QueryResultMeta {
-  taskId: number
+  taskId: number;
   /** The statement's 0-based position in its task's batch. A single-statement task has only ordinal 0. */
-  ordinal: number
+  ordinal: number;
   /** The statement itself. */
-  sql?: string | null
-  executedBy?: string | null
-  executedAt?: string | null
-  rowCount?: number | null
-  expiresAt?: string | null
+  sql?: string | null;
+  executedBy?: string | null;
+  executedAt?: string | null;
+  rowCount?: number | null;
+  expiresAt?: string | null;
   /** SKIPPED: a statement the batch never reached, because an earlier one denied or failed. */
-  status?: 'RUNNING' | 'DONE' | 'FAILED' | 'CANCELLED' | 'SKIPPED' | null
-  errorCode?: string | null
+  status?: 'RUNNING' | 'DONE' | 'FAILED' | 'CANCELLED' | 'SKIPPED' | null;
+  errorCode?: string | null;
   /**
    * Present only when the failure was a POLICY DENIAL: the reason the decision recorded, and the audit
    * decision it was recorded under — the id an approval request is opened against. A denial is a decision,
    * not an error, and these are what let the console offer the request rather than a bare failure message.
    */
-  denyReason?: string | null
-  decisionId?: number | null
-  columns: string[]
+  denyReason?: string | null;
+  decisionId?: number | null;
+  columns: string[];
 }
 
 export interface QueryRequestDetail {
-  request: AccessRequest
-  canDecide: boolean
-  canApproveAndRun?: boolean
-  canReject?: boolean
-  canUnapprove?: boolean
+  request: AccessRequest;
+  canDecide: boolean;
+  canApproveAndRun?: boolean;
+  canReject?: boolean;
+  canUnapprove?: boolean;
   /** Close a request that has not run; canCancel stops a running one. */
-  canClose?: boolean
-  result?: QueryResultMeta | null
+  canClose?: boolean;
+  result?: QueryResultMeta | null;
   /** Every statement of the batch, in run order. One entry for a single-statement request. */
-  statements?: QueryResultMeta[]
-  canExecute?: boolean
-  canCancel?: boolean
-  canEdit?: boolean
-  canForceRun?: boolean
+  statements?: QueryResultMeta[];
+  canExecute?: boolean;
+  canCancel?: boolean;
+  canEdit?: boolean;
+  canForceRun?: boolean;
 }
 
 /** Decrypted rows of an APPROVER_EXEC result (returned only to an authorized viewer). */
 export interface QueryResultView {
-  meta: QueryResultMeta
-  columns: string[]
-  rows: (string | null)[][]
+  meta: QueryResultMeta;
+  columns: string[];
+  rows: (string | null)[][];
   /**
    * The verdict of the LIVE view re-decision these rows were released under — the viewer's own context can
    * narrow an execution's ALLOW to a MASK, so this describes the release, not the stored execution. Only
    * these two values reach a caller holding rows: a denied view is a 403 with no body. Absent on a FAILED
    * view (no rows to label).
    */
-  decision?: 'ALLOW' | 'MASK' | null
-  maskedColumns: string[]
+  decision?: 'ALLOW' | 'MASK' | null;
+  maskedColumns: string[];
   /** A FAILED run's target-DB error, raw or redacted per this viewer; null otherwise. */
-  errorDetail?: string | null
+  errorDetail?: string | null;
   /** Row count the viewer's own result cap cut this release to; null when every stored row was released. */
-  truncatedAt?: number | null
+  truncatedAt?: number | null;
   /** The EXECUTION's cap ended the stored rows — independent of a further view-time truncation. */
-  truncatedByCap?: boolean
+  truncatedByCap?: boolean;
 }
 
 /** Submit acknowledgement; completion is observed through task polling. */
 export interface ExecuteQueryRequestResponse {
-  decision: 'EXECUTING'
+  decision: 'EXECUTING';
 }
 
 // ---- Web SQL query (POST /api/datasources/{id}/query) ------------------------
 
 /** Body for the enforcing query endpoint. */
 export interface QueryRequest {
-  sql: string
-  maxRows?: number
+  sql: string;
+  maxRows?: number;
 }
 
 /** One recalled query from the principal's editor history (GET /api/query-history). */
 export interface QueryHistoryEntry {
-  sql: string
-  datasourceId?: number | null
-  ranAt: string
+  sql: string;
+  datasourceId?: number | null;
+  ranAt: string;
 }
 
 // ---- Wire tokens (DESIGN.md — expiring-only) --------------------------------
 
 /** A wire token's metadata (never the secret). `kind`: SESSION (daemon) | USER (generated). */
 export interface WireTokenInfo {
-  id: number
-  kind: string
-  principal: string
-  name?: string | null
-  createdAt: string
-  expiresAt: string // always set — tokens are expiring-only
-  revokedAt?: string | null
-  lastUsedAt?: string | null
+  id: number;
+  kind: string;
+  principal: string;
+  name?: string | null;
+  createdAt: string;
+  expiresAt: string; // always set — tokens are expiring-only
+  revokedAt?: string | null;
+  lastUsedAt?: string | null;
 }
 
 /** Returned exactly once at generation — the only time the plaintext token is shown. */
 export interface IssuedToken {
-  token: string
-  id: number
-  kind: string
-  name?: string | null
-  expiresAt: string
+  token: string;
+  id: number;
+  kind: string;
+  name?: string | null;
+  expiresAt: string;
 }
 
 /** Generate a managed (USER) token: optional name + TTL in seconds (clamped server-side). */
 export interface CreateTokenInput {
-  name?: string | null
-  ttlSeconds?: number
+  name?: string | null;
+  ttlSeconds?: number;
 }
 
 /**
@@ -599,21 +655,21 @@ export interface CreateTokenInput {
  * control-plane `QueryResponse`.
  */
 export interface QueryResponse {
-  decision: 'ALLOW' | 'MASK' | 'DENY'
-  decisionId?: number | null
-  denyReason?: string | null
+  decision: 'ALLOW' | 'MASK' | 'DENY';
+  decisionId?: number | null;
+  denyReason?: string | null;
   /** A stable code for denyReason: `rate_spent` when a result rate is spent. */
-  denyCode?: string | null
-  maskedColumns: string[]
-  piiTouched: string[]
-  effectiveRoles: string[]
-  columns: string[]
-  rows: (string | null)[][]
-  rowsAffected?: number | null
+  denyCode?: string | null;
+  maskedColumns: string[];
+  piiTouched: string[];
+  effectiveRoles: string[];
+  columns: string[];
+  rows: (string | null)[][];
+  rowsAffected?: number | null;
   /** The verdict's row cap, and whether it — not the requested page size — ended this result. */
-  truncatedByCap?: boolean
-  capRows?: number | null
-  latencyMs: number
+  truncatedByCap?: boolean;
+  capRows?: number | null;
+  latencyMs: number;
 }
 
 // ---- Async editor tasks (editor-as-task) -----------------------------
@@ -623,28 +679,27 @@ export interface QueryResponse {
 /** POST /api/editor/sessions/{id}/query ack: the born-APPROVED task + its single result child. */
 /** POST /api/editor/sessions/{id}/default-schema: the statement the server ran, its outcome, and the new path. */
 export interface DefaultSchemaResult {
-  statement: string
-  result: QueryResultMeta | null
-  searchPath: string[] | null
+  statement: string;
+  result: QueryResultMeta | null;
+  searchPath: string[] | null;
 }
 
 export interface EditorSubmitResponse {
-  taskId: number
-  childId: number
+  taskId: number;
+  childId: number;
   /** The statements the submit was split into, in run order — one result child each. */
-  statements?: string[]
+  statements?: string[];
 }
 
 /** GET /api/editor/tasks/{taskId}: the parent task status + its child result metadata (rows are behind
  *  the /result endpoint). `result` is null until the child exists; `result.status` walks
  *  RUNNING → DONE / FAILED. */
 export interface EditorTaskStatus {
-  taskId: number
-  status: 'APPROVED' | 'EXECUTING' | 'EXECUTED' | 'FAILED' | 'CANCELLED'
+  taskId: number;
+  status: 'APPROVED' | 'EXECUTING' | 'EXECUTED' | 'FAILED' | 'CANCELLED';
   // The child metadata the server actually sends here IS QueryResultMeta; a structural copy of it drifted
   // from the real shape and silently hid the fields a denial needs.
-  result: QueryResultMeta | null
+  result: QueryResultMeta | null;
   /** Every statement of the batch, in run order, each with its own status. */
-  statements?: QueryResultMeta[]
+  statements?: QueryResultMeta[];
 }
-

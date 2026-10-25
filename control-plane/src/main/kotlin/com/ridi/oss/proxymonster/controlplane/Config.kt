@@ -1,6 +1,5 @@
 package com.ridi.oss.proxymonster.controlplane
 
-import com.ridi.oss.proxymonster.auth.clampTtlSeconds
 import com.ridi.oss.proxymonster.controlplane.authz.UserAttribute
 import java.net.URI
 
@@ -383,7 +382,7 @@ data class Config(
                 slackChannelOnly = slackMode == "channel",
                 instanceName = instanceName,
                 instanceDescription = instanceDescription,
-                ciOidcIssuers = parseCiOidcIssuers(env, env("PM_CI_OIDC_AUDIENCE")?.trim()?.ifEmpty { null } ?: mcpIssuer),
+                ciOidcIssuers = parseCiOidcIssuers(env, env("PM_CI_OIDC_AUDIENCE")?.trim()?.ifEmpty { null } ?: mcpIssuer, authDebug),
                 github = github,
                 cpGoBridge = cpGoBridge,
             )
@@ -444,7 +443,7 @@ data class Config(
 
         // The audience names this control plane, so it is one value for every issuer: its public origin unless
         // PM_CI_OIDC_AUDIENCE overrides it.
-        private fun parseCiOidcIssuers(env: (String) -> String?, audience: String): List<CiOidcIssuer> {
+        private fun parseCiOidcIssuers(env: (String) -> String?, audience: String, authDebug: Boolean): List<CiOidcIssuer> {
             val raw = env("PM_CI_OIDC_ISSUERS") ?: return emptyList()
             val issuers = raw.split(',').map { it.trim() }.filter { it.isNotEmpty() }.map { entry ->
                 val name = entry.substringBefore('=', "").trim()
@@ -452,7 +451,7 @@ data class Config(
                 require(CI_ISSUER_NAME.matches(name) && issuer.isNotEmpty()) {
                     "PM_CI_OIDC_ISSUERS entry '$entry' must be '<name>=<issuerUrl>' with name [a-z0-9-]"
                 }
-                requireSecureOidcUri(issuer, "PM_CI_OIDC_ISSUERS issuer")
+                if (!authDebug) requireSecureOidcUri(issuer, "PM_CI_OIDC_ISSUERS issuer")
                 CiOidcIssuer(name, issuer, audience)
             }
             require(issuers.map { it.name }.toSet().size == issuers.size) { "PM_CI_OIDC_ISSUERS names must be unique" }

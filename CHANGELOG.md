@@ -1,5 +1,118 @@
 # Changelog
 
+## [0.1.41](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.40...server-v0.1.41) (2026-10-23)
+
+
+### Features
+
+* **analyzer:** EngineCall, the control plane's questions answered by the Go engine ([7ed007f](https://github.com/ridi-oss/proxy-monster/commit/7ed007f7dffa5c8989bd7066f2dbd54ec2e0b9e9))
+* **control-plane:** keep a request's CC list on every Slack message ([598fdf1](https://github.com/ridi-oss/proxy-monster/commit/598fdf1bc252508de6b8cca5692b9c1119f3e9e7))
+* **control-plane:** name people in a request's Slack thread by mention ([a110da0](https://github.com/ridi-oss/proxy-monster/commit/a110da0c27a607836d662d43b9126471ee024344))
+* **control-plane:** open a request's Slack message with its title ([10870c4](https://github.com/ridi-oss/proxy-monster/commit/10870c4e47fea3ebc3cd79ed2a34b71ec0250a44))
+* **control-plane:** post a long query into its Slack thread ([c5a38c2](https://github.com/ridi-oss/proxy-monster/commit/c5a38c2437ed9181c85e7af59d88112433c1662a))
+* **control-plane:** say a request's Slack message as a sentence, then its SQL ([b824f01](https://github.com/ridi-oss/proxy-monster/commit/b824f01664643d73d1cb9524f9611a7fff523b2c))
+* **cpgo:** serve the policy schema in Go ([ff98644](https://github.com/ridi-oss/proxy-monster/commit/ff9864456635a01fe21f3d80f985d754800f8626))
+* credit a pull request's SQL edit to whoever wrote the commit ([0290e5b](https://github.com/ridi-oss/proxy-monster/commit/0290e5b6a99a26097dc3fcd0e7ecf960cd952769))
+
+
+### Bug Fixes
+
+* **analyzer:** fold call names, EXCLUDED and the search path by the dialect ([bc1f02a](https://github.com/ridi-oss/proxy-monster/commit/bc1f02aa4bdd8d3bedef06ddf974aab639a608aa))
+* **analyzer:** Postgres routine names are the exact proname ([400b259](https://github.com/ridi-oss/proxy-monster/commit/400b2598c8989634e5b39d7022ad39d73fa5a0bb))
+* **control-plane:** compare already-canonical catalog names exactly ([dbd3400](https://github.com/ridi-oss/proxy-monster/commit/dbd3400378b077302274376df274f7418fbd82e2))
+* **goproxy:** Athena names fold once, as the analyzer keys them ([049b39c](https://github.com/ridi-oss/proxy-monster/commit/049b39c28f1dcf9a20d3e2da5259adbb203f712d))
+* **goproxy:** MySQL lower_case_table_names=2 fragments fold by utf8mb3_general_ci ([d24053f](https://github.com/ridi-oss/proxy-monster/commit/d24053f3caab7a704dd05b49a2b83ca32e8d8218))
+* **goproxy:** one engine session per target connection ([4fa384b](https://github.com/ridi-oss/proxy-monster/commit/4fa384b028752a9f189405201287af9ab752a4a7))
+* **goproxy:** table detail returns names in canonical spelling ([eb7f76d](https://github.com/ridi-oss/proxy-monster/commit/eb7f76dd31907e63bf0644dfabdca8a0f1c9ee50))
+* **l10n:** call a rejected request 반려 in Korean ([78d86f3](https://github.com/ridi-oss/proxy-monster/commit/78d86f3f6cd6131a7c5cfac213586e6d2fcf6680))
+* read classification names as SQL identifiers ([c16f9da](https://github.com/ridi-oss/proxy-monster/commit/c16f9dafdebe7c720c59ea686369ff3824ffa536))
+
+
+### Refactoring
+
+* **analyzer:** an Engine keeps what it is and how its target behaves in Traits ([12b9a20](https://github.com/ridi-oss/proxy-monster/commit/12b9a2075712a84dc790fe0eef72004865f2c61c))
+* **analyzer:** engine code sits in the file it belongs to ([ff46d17](https://github.com/ridi-oss/proxy-monster/commit/ff46d171d036c3f2bc9d32024abeeb39afdb0991))
+* **analyzer:** engine files are named for what they hold ([732c24e](https://github.com/ridi-oss/proxy-monster/commit/732c24e60f09e566e3756f30dd21c26a5935fda1))
+* **analyzer:** engine hooks and traits replace the per-statement session ([260c801](https://github.com/ridi-oss/proxy-monster/commit/260c801bd4586ee0bf32ea69e6bc8a88fb21f8b0))
+* **analyzer:** engines.Datasource and the session settings become one Session ([5f2936f](https://github.com/ridi-oss/proxy-monster/commit/5f2936f3165b8c89facc4a39af5cfa0103bf73cb))
+* **analyzer:** the catalog-row trait is catalogColumnNames ([eab462e](https://github.com/ridi-oss/proxy-monster/commit/eab462ebca53756617df94b2fe92d1becfb5205d))
+* **control-plane:** EngineDefinition wraps the Go engine ([316d389](https://github.com/ridi-oss/proxy-monster/commit/316d389f5fd665e3e740bcde39f15f84ae9bcf57))
+* **control-plane:** engines read requests, one authorizer asks Cedar ([db5528a](https://github.com/ridi-oss/proxy-monster/commit/db5528a5055e7c6e59bc6745b733ff5c7613f6df))
+* **goproxy:** a run's session is a connection ([0af5004](https://github.com/ridi-oss/proxy-monster/commit/0af5004d2ee309c0a5066fe8264e788c81488e5b))
+* **goproxy:** a wire client and a run share one connection type ([8b53038](https://github.com/ridi-oss/proxy-monster/commit/8b53038f53692c0d1a528e24dc2a004faaa16c35))
+* **goproxy:** command runner files are named for what they hold ([9a9b43e](https://github.com/ridi-oss/proxy-monster/commit/9a9b43e5145bbd1f9787c6a37834eb2cd828496e))
+* **goproxy:** one ProxyCommandRunner per connection ([baa2b1b](https://github.com/ridi-oss/proxy-monster/commit/baa2b1b1f087b06f12e09a5ce30b84b3597dfb0b))
+* **goproxy:** the Authorizer holds the SessionSnapshot ([bc57fa1](https://github.com/ridi-oss/proxy-monster/commit/bc57fa1b1e8e2eba27679132d3e4be2e31e2d660))
+* **goproxy:** the wire client's file is wire_client.go ([8bb0abf](https://github.com/ridi-oss/proxy-monster/commit/8bb0abfe179092d6e4b54744943bde02e24f560e))
+* name catalog column names alike, read engines from the Go engine ([0591994](https://github.com/ridi-oss/proxy-monster/commit/0591994a786700d9bf6151e8b3bcec97429b2319))
+* the analyzer's JVM binding is named for the analyzer ([61c89b4](https://github.com/ridi-oss/proxy-monster/commit/61c89b476db8c33db3f2cf3bcd3346dd58b15f99))
+
+## [0.1.40](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.39...server-v0.1.40) (2026-10-21)
+
+
+### Features
+
+* **control-plane:** name the query executed check after the instance ([888e33d](https://github.com/ridi-oss/proxy-monster/commit/888e33d3bc101c61a4776b61f8de6467e419de80))
+* **control-plane:** run a pull request's SQL that merged before it ran ([0f182de](https://github.com/ridi-oss/proxy-monster/commit/0f182debd1180cd8881d95e41c374bf5f1f05d46))
+* **cpgo:** serve request threads in Go ([d8e0654](https://github.com/ridi-oss/proxy-monster/commit/d8e065499bf9d41d158f1aa5fe660fcb1c0567c6))
+* **cpgo:** serve the MCP OAuth authorization server in Go ([1c1a68a](https://github.com/ridi-oss/proxy-monster/commit/1c1a68a27cda5b712327f301262ce23d5b907783))
+* **sql-action:** post the skipped check from the workflow ([ddd8a7f](https://github.com/ridi-oss/proxy-monster/commit/ddd8a7f04f91c3bf076f155fd2111bcbe2343d8c))
+
+
+### Refactoring
+
+* **analyzer:** rename EngineDatasource to TargetSettings ([ed1e149](https://github.com/ridi-oss/proxy-monster/commit/ed1e14995708779112fdeb30f914e5260e814666))
+
+
+### Build & Dependencies
+
+* check TypeScript formatting with Prettier ([fbddbc9](https://github.com/ridi-oss/proxy-monster/commit/fbddbc9a179caf8ec85219b512de71f548f257d6))
+
+## [0.1.39](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.38...server-v0.1.39) (2026-10-21)
+
+
+### Features
+
+* **web:** link URLs in request comments, opening in a new tab ([b14e58c](https://github.com/ridi-oss/proxy-monster/commit/b14e58c5fc8575be522a2a01a9f826776b745ac8))
+* **web:** show the MCP OAuth consent page in the web console ([0b8f693](https://github.com/ridi-oss/proxy-monster/commit/0b8f6931857f670d57cf40b40a31d659142c36cd))
+* **web:** show the role a query request runs as ([974f86f](https://github.com/ridi-oss/proxy-monster/commit/974f86f266b1936a46a28ec796ee61f249344d8b))
+
+
+### Bug Fixes
+
+* **cpgo:** honor PM_BIND_HOST on the public listeners ([84d0bfc](https://github.com/ridi-oss/proxy-monster/commit/84d0bfccc460b31b8636c10d27f626f189a21d8b))
+* **notify:** show Slack replies as plain text, with mentions as usernames ([7f9cf38](https://github.com/ridi-oss/proxy-monster/commit/7f9cf383c4a784073f6f6b197d617bf7b8866aeb))
+
+
+### Refactoring
+
+* **analyzer:** read keywords from sqlglot-go's token flags in SqlNormalize ([cc9021c](https://github.com/ridi-oss/proxy-monster/commit/cc9021ca00b9050e03b0efc2e43602e7785fc41b))
+* **notify:** one Slack mrkdwn escape ([74bb84e](https://github.com/ridi-oss/proxy-monster/commit/74bb84eff724f3cdd8a22bddcb1bd0c8dee2c6fe))
+* **web:** read the control plane's URL at run time as PM_CP_URL ([446fcd0](https://github.com/ridi-oss/proxy-monster/commit/446fcd00801d431ceb45dbe000ad9b7ed8d2e3ea))
+
+
+### Build & Dependencies
+
+* build every Go binary with Go 1.26.10 ([5e4abb9](https://github.com/ridi-oss/proxy-monster/commit/5e4abb986f4a5966cf4833ff651f7c4baf56f507))
+* stop trusting emSign ECC Root CA - G3 in the control plane and web images ([4a11548](https://github.com/ridi-oss/proxy-monster/commit/4a115489a80067256c495ecfd28823df08b96ebd))
+
+## [0.1.38](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.37...server-v0.1.38) (2026-10-20)
+
+
+### Bug Fixes
+
+* **control-plane:** run a PR's SQL only when GitHub would merge it ([4666ee4](https://github.com/ridi-oss/proxy-monster/commit/4666ee462422ac96734f479d5906a6c4585a3d3a))
+* **control-plane:** wait for running checks and drafts before running a PR's SQL ([7333ec0](https://github.com/ridi-oss/proxy-monster/commit/7333ec0760eda14160f190b655b806391556a1d9))
+
+
+### Refactoring
+
+* **cpgo:** check every setting before run starts anything ([1cb0342](https://github.com/ridi-oss/proxy-monster/commit/1cb0342f68212c7df6b59eddf5c16141b33773d5))
+* **goproxy:** give mysql and postgres their own Provider and target ([da9867f](https://github.com/ridi-oss/proxy-monster/commit/da9867f03f0e0943fa8b7623c678859baddf9a74))
+* **goproxy:** replace the relay.Db interface with the sqldb.Queries struct ([2e91deb](https://github.com/ridi-oss/proxy-monster/commit/2e91debcd9b02a83e59fa96ffa7f64c79d4065b7))
+* **goproxy:** the mysql and postgres Server and RunSession hold their target ([7b77160](https://github.com/ridi-oss/proxy-monster/commit/7b77160a9944816181d86bc298c89729dfbaf51d))
+* **goproxy:** update package docs, docs and comments for the new paths ([a8c7988](https://github.com/ridi-oss/proxy-monster/commit/a8c7988f5b7c08cbd1086de4805e26efe023e86e))
+
 ## [0.1.37](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.36...server-v0.1.37) (2026-10-20)
 
 

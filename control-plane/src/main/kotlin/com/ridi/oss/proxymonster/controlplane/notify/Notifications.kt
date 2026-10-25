@@ -20,6 +20,8 @@ enum class NotificationEvent(val wire: String) {
     TASK_REOPENED("task.reopened"),
     /** Someone was added as a CC: their own thread, like a receipt. */
     TASK_CC_ADDED("task.cc_added"),
+    /** The CC list changed: every message is redrawn as it stands, to show the new list. */
+    TASK_CC_CHANGED("task.cc_changed"),
     TASK_EXECUTED("task.executed"),
     TASK_FAILED("task.failed"),
     TASK_CANCELLED("task.cancelled"),
@@ -105,9 +107,13 @@ enum class StatementDisclosure {
  *
  * [complete] is the gate on approve-and-run: an approver may only decide from a message carrying the WHOLE
  * statement. The test is what the recipient can read, never which mode the operator configured — a statement
- * shown under FULL is still elided by a transport's own length ceiling. See [renderStatement].
+ * shown under FULL is still elided by a transport's own length ceiling. See [renderStatement]. [full] is the
+ * whole statement when it may be posted in a thread, and [preview] marks [text] as a preview of it.
  */
-data class RenderedStatement(val text: String?, val complete: Boolean)
+data class RenderedStatement(val text: String?, val complete: Boolean, val full: String? = null, val preview: StatementPreview? = null)
+
+/** Where a previewed statement can be read whole: its thread, or only the console. */
+enum class StatementPreview { THREAD, CONSOLE }
 
 /**
  * The statement text to place in a message. [show] is the disclosure decision the caller has already made
@@ -156,6 +162,7 @@ data class NotificationMessage(
     val roleName: String?,
     val reason: String?,
     val statement: RenderedStatement,
+    val title: String? = null,
     val decidedBy: String? = null,
     /** DECIDED only: approved rather than rejected. The two read completely differently to a recipient,
      *  and the outbox row records only that a decision happened. */
@@ -187,9 +194,11 @@ data class NotificationMessage(
     val durationSec: Long = 0,
     /** A rate reset's spent rate, as the requester's denial named it. */
     val spentRate: String? = null,
-    /** Mentioned on a message everyone in a channel reads: who may approve, and the CCs. */
+    /** Mentioned on a message everyone in a channel reads: who may approve. */
     val approvers: List<String> = emptyList(),
     val ccs: List<String> = emptyList(),
+    /** Redrawn for a CC change, so nothing new goes into its thread. */
+    val redraw: Boolean = false,
 )
 
 /** [ordinal] is 0-based, as stored on the `query_result` child. */
@@ -248,6 +257,9 @@ interface NotificationTransport {
 
     /** True when a delivered message is a thread that later timeline entries are posted into. */
     val supportsReplies: Boolean get() = false
+
+    /** How a reply names [principal], such as a mention; null leaves it as written. */
+    suspend fun nameOf(principal: String): String? = null
 
     /** Post [text] into the thread of [threadRef]; a Sent result carries the reply's own ref. */
     suspend fun reply(threadRef: String, text: String): DeliveryResult = DeliveryResult.Drop("no threads")

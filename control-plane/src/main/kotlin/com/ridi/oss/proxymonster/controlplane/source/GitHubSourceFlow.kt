@@ -58,12 +58,13 @@ data class GitHubRequestsInput(
 )
 
 @Serializable
-data class GitHubRequestsResponse(val requests: List<AccessRequest>)
+/** [checkName] is the check this control plane posts, so the Action can confirm it posts the same one. */
+data class GitHubRequestsResponse(val requests: List<AccessRequest>, val checkName: String)
 
 /**
  * SQL files from GitHub pull requests (docs/sql-from-github.md): files each pull request's new files as
- * requests, follows its reviews, and runs its approved files when it is ready to merge, reporting through the
- * required `query executed` check. Every evaluation runs under one lock.
+ * requests, follows its reviews, and runs its approved files when it is ready to merge, or once merged, reporting
+ * through the required [checkName] check. Every evaluation runs under one lock.
  */
 class GitHubSourceFlow(
     private val adapter: SourceAdapter,
@@ -75,6 +76,7 @@ class GitHubSourceFlow(
     private val notifications: NotificationService?,
     private val catalog: MessageCatalog = MessageCatalog(DOMAIN),
     private val locale: String,
+    val checkName: String,
     private val clock: Clock = Clock.systemUTC(),
     private val log: Logger = LoggerFactory.getLogger(GitHubSourceFlow::class.java),
     private val webUrl: String = "https://github.com",
@@ -155,6 +157,7 @@ class GitHubSourceFlow(
             }
 
             val actor = AuditActor("workload:${workload.name}", clientAddr = null, channel = Channel.GITHUB.contextValue)
+            val editor = if (existing.any { it.status in OPEN }) pushedBy(repo, pr) ?: actor else actor
             val prUrl = "$webUrl/$repository/pull/$number"
             val taken = HashSet<Long>()
             val filed = keyed.map { k ->
@@ -171,7 +174,7 @@ class GitHubSourceFlow(
                 val unrun = existing.firstOrNull { free(it) && it.status in OPEN && it.pullRequest?.path == k.file.path }
                     ?: existing.firstOrNull { free(it) && it.status in OPEN && it.changeKey == k.key }
                 (
-                    unrun?.let { approvals.editFromPullRequest(it, k.file.content, k.statements, origin, actor, alreadyRan()) }
+                    unrun?.let { approvals.editFromPullRequest(it, k.file.content, k.statements, origin, editor, alreadyRan()) }
                         ?: existing.firstOrNull { free(it) && it.changeKey == k.key && it.status !in DEAD }
                         ?: approvals.requestFromPullRequest(requester, actor, ds, role.name, k.statements, origin, SOURCE_GITHUB, alreadyRan())
                     ).also { taken += it.id }
@@ -183,6 +186,16 @@ class GitHubSourceFlow(
             evaluateLocked(repo, number, dismissIfChanged(repo, pr, existing, keyed))
             filed.mapNotNull { accessStore.getRequest(it.id) }
         }
+    }
+
+    /** The principal of whoever wrote [pr]'s newest commit, or null when they map to none. */
+    private suspend fun pushedBy(repo: Repo, pr: PullRequest): AuditActor? {
+        val commit = pr.commits.lastOrNull { !it.merge } ?: return null
+        val user = SourceUser(commit.userId ?: return null, commit.login ?: return null)
+        val principal = safely("resolve commit author") {
+            adapter.resolveUser(repo.owner, user, MappingRole.REQUESTER, pr.commitEmailsBy(user))
+        } ?: return null
+        return AuditActor(principal, clientAddr = null, channel = Channel.GITHUB.contextValue)
     }
 
     /**
@@ -212,11 +225,13 @@ class GitHubSourceFlow(
     }
 
     suspend fun pollOnce() {
-        for ((repository, numbers) in accessStore.pullRequestsToPoll()) {
-            val repo = Repo.parse(repository) ?: continue
-            val read = safely("read pull requests") { adapter.readPullRequests(repo, numbers) } ?: continue
-            for (number in numbers) evaluate(repo, number, read[number])
+        val read = accessStore.pullRequestsToPoll().flatMap { (repository, numbers) ->
+            val repo = Repo.parse(repository) ?: return@flatMap emptyList()
+            val prs = safely("read pull requests") { adapter.readPullRequests(repo, numbers) } ?: return@flatMap emptyList()
+            numbers.map { Triple(repo, it, prs[it]) }
         }
+        // Merged pull requests first, in merge order, so each sees the merges before it.
+        for ((repo, number, pr) in read.sortedBy { it.third?.mergedAt ?: Instant.MAX }) evaluate(repo, number, pr)
     }
 
     suspend fun runPollLoop() {
@@ -263,10 +278,9 @@ class GitHubSourceFlow(
                 val keys = scoped.filter { it.pullRequest?.headSha == pr.headSha }.mapNotNull { it.changeKey }
                 accessStore.markMerged(repository, number, scope, keys, at, pr.mergeCommit)
             }
-            rows.filter { it.status in OPEN }.forEach { accessStore.endUnstarted(it.id, CANCELLED) }
-            return
-        }
-        if (!pr.open) {
+            // An approved file at the merged commit still runs; one that changed after it was filed cannot.
+            rows.filter { it.status in OPEN && it.pullRequest?.headSha != pr.headSha }.forEach { accessStore.endUnstarted(it.id, CANCELLED) }
+        } else if (!pr.open) {
             rows.filter { it.status == "EXECUTED" && it.mergedAt == null }
                 .forEach { notifications?.emitEvent(NotificationEvent.TASK_CLOSED_AFTER_RUN, it) }
             rows.filter { it.status in OPEN }.forEach { accessStore.endUnstarted(it.id, CANCELLED) }
@@ -328,6 +342,9 @@ class GitHubSourceFlow(
 
         val green = Triple(CheckStatus.COMPLETED, CheckConclusion.SUCCESS as CheckConclusion?, text("check.executed"))
         val blocked: Triple<CheckStatus, CheckConclusion?, String>? = when {
+            !filedAtHead && pr.merged ->
+                if (active.isNotEmpty() && active.all { it.status == "EXECUTED" }) green
+                else Triple(CheckStatus.COMPLETED, CheckConclusion.FAILURE, text("check.merged_unfiled"))
             !filedAtHead -> pending(text("check.waiting_files"))
             // Every file's key already ran, in this pull request or another.
             active.isEmpty() && filed.any(::keyExecuted) ->
@@ -340,6 +357,7 @@ class GitHubSourceFlow(
                 Triple(CheckStatus.COMPLETED, CheckConclusion.FAILURE, text("check.cannot_run"))
             active.any { it.status == "EXECUTING" } -> pending(text("check.running", "path" to active.first { it.status == "EXECUTING" }.pullRequest?.path))
             active.any { it.status == "PENDING" } -> pending(text("check.awaiting_approval", "path" to active.first { it.status == "PENDING" }.pullRequest?.path))
+            pr.merged -> null
             pr.draft -> pending(text("check.waiting_draft"))
             pr.autoMerge == null -> pending(text("check.approved_enable_automerge"))
             else -> {
@@ -352,12 +370,12 @@ class GitHubSourceFlow(
         val toRun = active.filter { it.status == "APPROVED" }
         for ((scope, scoped) in toRun.filter { it.scope != null }.groupBy { it.scope!! }) {
             if (scoped.all { it.forceRun }) continue
-            waitingOn(scope, repo, number, pr.headSha)?.let { return post(pending(it)) }
+            val waiting = if (pr.merged) busyTitle(scope, repo, number) else waitingOn(scope, repo, number, pr.headSha)
+            waiting?.let { return post(pending(it)) }
         }
-        val enabledBy = pr.autoMerge?.enabledBy
-        val executor = enabledBy?.let {
-            safely("map auto-merge enabler") { adapter.resolveUser(repo.owner, it, MappingRole.REQUESTER, pr.commitEmailsBy(it)) }
-        } ?: return post(pending(text("check.executor_unmapped")))
+        val executor = (if (pr.merged) pr.mergedBy else pr.autoMerge?.enabledBy)?.let {
+            safely("map executor") { adapter.resolveUser(repo.owner, it, MappingRole.REQUESTER, pr.commitEmailsBy(it)) }
+        } ?: return post(pending(text(if (pr.merged) "check.merger_unmapped" else "check.executor_unmapped")))
 
         for (row in toRun) {
             if (keyExecuted(row)) {
@@ -406,7 +424,8 @@ class GitHubSourceFlow(
     /** Why another pull request's unmerged run holds the scope, or null when none does. */
     private fun busyTitle(scope: String, repo: Repo, number: Int): String? =
         accessStore.scopeBlocker(scope, repo.fullName, number)?.let { blocker ->
-            blocker.pullRequest?.pr?.let { text("check.waiting_merge", "pr" to it.toString()) } ?: text("check.update_branch")
+            val pr = blocker.pullRequest?.pr?.toString() ?: return@let text("check.update_branch")
+            text(if (blocker.mergedAt != null) "check.waiting_merged_run" else "check.waiting_merge", "pr" to pr)
         }
 
     private suspend fun postCheck(
@@ -418,11 +437,15 @@ class GitHubSourceFlow(
         title: String,
         summary: String,
     ) {
+        // The Action posts this check as skipped on a commit with no SQL in its step's directory; with nothing to
+        // run here either, that one is enough. Any other result is posted beside it, so it still holds the merge.
+        val checks = pr.checks.orEmpty().filter { it.name == checkName }
+        if (conclusion == CheckConclusion.SKIPPED && checks.any { !it.own } && checks.none { it.own }) return
         val key = repo.fullName to number
         val state = PostedState(pr.headSha, status, conclusion, title)
         if (posted[key] == state) return
         safely("post check") {
-            adapter.postCheck(repo, pr.headSha, CHECK_NAME, status, conclusion, title, summary)
+            adapter.postCheck(repo, pr.headSha, checkName, status, conclusion, title, summary)
             posted[key] = state
         }
     }
@@ -435,12 +458,13 @@ class GitHubSourceFlow(
 
     /**
      * Every context [required] or the rollup marks required ran green on the head, and no other check is still
-     * running: a branch that requires no checks would otherwise run the SQL before CI that may still fail.
+     * running: a branch that requires no checks would otherwise run the SQL before CI that may still fail. Every
+     * proxy-monster's check is left out, since each waits for the merge.
      */
     private fun checksGreen(pr: PullRequest, required: Set<String>): Boolean {
-        val checks = pr.checks?.filter { it.name != CHECK_NAME } ?: return false
+        val checks = pr.checks?.filterNot { isQueryCheck(it.name) } ?: return false
         if (checks.any { it.status != CheckStatus.COMPLETED }) return false
-        val needed = (required + checks.filter { it.required }.map { it.name }) - CHECK_NAME
+        val needed = (required + checks.filter { it.required }.map { it.name }).filterNot(::isQueryCheck)
         return needed.all { name ->
             val runs = checks.filter { it.name == name }
             runs.isNotEmpty() && runs.all { it.conclusion in GREEN }
@@ -452,7 +476,7 @@ class GitHubSourceFlow(
      * check is required, GitHub reports every such PR as blocked, so the rules behind that verdict are read here.
      */
     private suspend fun mergeBlocked(repo: Repo, pr: PullRequest, rules: BranchRules): String? {
-        val ownRequired = CHECK_NAME in rules.contexts || pr.checks.orEmpty().any { it.name == CHECK_NAME && it.required }
+        val ownRequired = checkName in rules.contexts || pr.checks.orEmpty().any { it.own && it.required }
         val method = pr.autoMerge?.mergeMethod?.lowercase()
         return when {
             pr.mergeable == "CONFLICTING" -> text("check.conflicts")
@@ -492,7 +516,12 @@ class GitHubSourceFlow(
     private fun unsplittable() = TaskServiceException(HttpStatusCode.Conflict, ApiError("approval.unsplittable_sql"))
 
     companion object {
-        const val CHECK_NAME = "query executed"
+        private const val CHECK_SUFFIX = "query executed"
+
+        /** The check one instance posts: `<instance>/query executed`. */
+        fun checkName(instanceName: String) = "$instanceName/$CHECK_SUFFIX"
+
+        private fun isQueryCheck(name: String) = name == CHECK_SUFFIX || name.endsWith("/$CHECK_SUFFIX")
         const val DOMAIN = "github"
         private const val DELETED = "DELETED"
         private const val ALREADY_RAN = "ALREADY_RAN"

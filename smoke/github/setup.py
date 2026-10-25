@@ -196,9 +196,6 @@ def add_ruleset(st):
         return
     ruleset = json.load(open(os.path.join(HERE, "ruleset.json")))
     ruleset["name"] = RULESET
-    for rule in ruleset["rules"]:
-        for check in rule.get("parameters", {}).get("required_status_checks", []):
-            check["integration_id"] = st.get("app")["id"]
     r = subprocess.run(["gh", "api", "-X", "POST", f"repos/{full}/rulesets", "--input", "-"],
                        input=json.dumps(ruleset), text=True, capture_output=True)
     if r.returncode != 0:
@@ -310,6 +307,7 @@ def main():
     print(f"""
 Start the control plane with:
   PM_AUTH_DEBUG=true
+  PM_INSTANCE_NAME=github-e2e
   PM_GITHUB_APP_ID={app['id']}
   PM_GITHUB_APP_PRIVATE_KEY_FILE={app['key_file']}
   PM_GITHUB_IDENTITY=commit-email

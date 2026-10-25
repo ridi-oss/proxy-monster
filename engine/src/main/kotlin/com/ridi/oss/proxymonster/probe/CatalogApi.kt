@@ -11,7 +11,7 @@ import com.ridi.oss.proxymonster.analyzer.pb.StatementFacts
  *
  * [column]'s identity arrives already canonical: goproxy normalizes every catalog column (its bulk
  * introspection push AND the per-connection schema-fragment refetch path both call
- * analyzer/engines.NormalizeRelation directly, in-process) before it ever reaches the control plane. No
+ * analyzer/engines.Session.CatalogColumnNames directly, in-process) before it ever reaches the control plane. No
  * normalization decision is made here — this is pure concatenation of already-canonical parts.
  */
 fun columnKey(namespace: Namespace, column: Column): String {
@@ -41,7 +41,7 @@ class Analyzer internal constructor(
     // literal on its own, and fail-closes a genuine multi-statement (>1 parsed statement) — so no
     // pre-cleaning is needed here.
     fun analyze(sql: String): StatementFacts =
-        SqlglotProbe.analyze(sql, namespaceProto, catalogProto, engineConfigProto)
+        GoAnalyzer.analyze(sql, namespaceProto, catalogProto, engineConfigProto)
 }
 
 /** Build an [Analyzer] from an insertion-ordered flat catalog and engine config snapshot. */

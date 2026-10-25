@@ -120,6 +120,8 @@ message Check {
   bool required = 2;
   CheckStatus status = 3;
   CheckConclusion conclusion = 4;
+  // Posted by this GitHub App.
+  bool own = 5;
 }
 
 // Unset in PullRequest when the head commit's rollup could not be read, which differs from no checks.
@@ -136,6 +138,7 @@ message CommitAuthor {
   optional string user_id = 1;
   optional string email = 2;
   bool merge = 3;
+  optional string login = 4;
 }
 
 message AutoMerge {
@@ -167,6 +170,8 @@ message PullRequest {
   string review_decision = 17;
   int32 unresolved_threads = 18;
   bool can_be_rebased = 19;
+  // Who merged it; for auto-merge, the user who enabled it.
+  SourceUser merged_by = 20;
 }
 
 message ReadPullRequestsRequest {

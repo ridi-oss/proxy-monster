@@ -3,7 +3,7 @@ package com.ridi.oss.proxymonster.probe
 import com.ridi.oss.proxymonster.analyzer.pb.EngineConfig as PbEngineConfig
 import com.ridi.oss.proxymonster.analyzer.pb.SplitResponse
 import com.ridi.oss.proxymonster.analyzer.pb.splitRequest
-import com.ridi.oss.sqlglotgo.Sqlglot
+import com.ridi.oss.proxymonster.analyzer.GoBinding
 
 /**
  * Cut a batch into its statements at the target's own boundaries — null when it cannot be split safely,
@@ -14,12 +14,12 @@ import com.ridi.oss.sqlglotgo.Sqlglot
  */
 fun splitStatements(sql: String, engineConfig: PbEngineConfig): List<String>? = try {
     // Protobuf encodes an unpaired surrogate as `?`, so Go would split SQL the caller never wrote.
-    if (!Sqlglot.hasWellFormedUtf16(sql)) return null
+    if (!GoBinding.hasWellFormedUtf16(sql)) return null
     val request = splitRequest {
         this.sql = sql
         this.engineConfig = engineConfig
     }
-    val response = SplitResponse.parseFrom(Sqlglot.splitStatements(request.toByteArray()))
+    val response = SplitResponse.parseFrom(GoBinding.splitStatements(request.toByteArray()))
     if (response.ok) response.statementsList.toList() else null
 } catch (_: Throwable) {
     null

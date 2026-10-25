@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 
@@ -106,16 +105,15 @@ func (o oidcLogin) redirectTarget(path string) string {
 
 // failureTarget is where a failed login lands: back to its continuation with the error, else the login page.
 func failureTarget(st *oauthState, oauthErr, consoleErr string) string {
-	q := func(s string) string { return strings.ReplaceAll(url.QueryEscape(s), "+", "%20") }
 	switch {
 	case st != nil && st.ReturnTo != nil && *st.ReturnTo == "/oauth/resume":
-		return "/oauth/resume?error=" + q(oauthErr)
+		return "/oauth/resume?error=" + api.URLParameter(oauthErr)
 	case st != nil && st.ReturnTo != nil && *st.ReturnTo == "/auth/reauth-complete":
-		return "/login?error=" + q(consoleErr) + "&callbackUrl=%2Fauth%2Freauth-complete"
+		return "/login?error=" + api.URLParameter(consoleErr) + "&callbackUrl=%2Fauth%2Freauth-complete"
 	case st != nil && st.ReturnTo != nil:
-		return "/login?error=" + q(consoleErr) + "&return_to=" + q(*st.ReturnTo)
+		return "/login?error=" + api.URLParameter(consoleErr) + "&return_to=" + api.URLParameter(*st.ReturnTo)
 	}
-	return "/login?error=" + q(consoleErr)
+	return "/login?error=" + api.URLParameter(consoleErr)
 }
 
 func (o oidcLogin) callback(w http.ResponseWriter, r *http.Request) error {

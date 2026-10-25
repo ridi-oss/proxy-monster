@@ -122,13 +122,13 @@ func TestTheServiceMapsEveryPullRequestField(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := out.PullRequests[2]
-	if !m.Merged || m.Open || m.GetMergedAt().AsTime().Format(time.RFC3339) != "2026-10-08T12:00:00Z" || m.GetMergeCommit() != "merge2" {
+	if !m.Merged || m.Open || m.GetMergedAt().AsTime().Format(time.RFC3339) != "2026-10-08T12:00:00Z" || m.GetMergeCommit() != "merge2" || m.MergedBy.GetLogin() != "dave" {
 		t.Fatalf("merged %v", m)
 	}
 	o := out.PullRequests[1]
 	c := o.Checks.Checks
-	if len(c) != 2 || c[0].Status != pb.CheckStatus_COMPLETED || c[0].Conclusion != pb.CheckConclusion_SUCCESS || !c[0].Required ||
-		c[1].Status != pb.CheckStatus_IN_PROGRESS || c[1].Conclusion != pb.CheckConclusion_CHECK_CONCLUSION_UNSPECIFIED {
+	if len(c) != 3 || c[0].Status != pb.CheckStatus_COMPLETED || c[0].Conclusion != pb.CheckConclusion_SUCCESS || !c[0].Required || c[0].Own ||
+		!c[1].Own || c[2].Status != pb.CheckStatus_IN_PROGRESS || c[2].Conclusion != pb.CheckConclusion_CHECK_CONCLUSION_UNSPECIFIED {
 		t.Fatalf("checks %v", c)
 	}
 	if o.Files[0].Change != pb.FileChange_DELETED || o.Files[1].Change != pb.FileChange_ADDED || o.Reviews[1].State != pb.ReviewState_DISMISSED {

@@ -41,9 +41,9 @@ func decodeProbeResult(t *testing.T, sql, dialect string, cols []*pb.Column, ns 
 	t.Helper()
 	engineConfig := &pb.EngineConfig{Engine: pb.Engine_POSTGRES}
 	if dialect == "mysql" {
-		engineConfig = &pb.EngineConfig{Engine: pb.Engine_MYSQL, Datasource: &pb.EngineDatasource{EngineVersion: "8.0.46"}}
+		engineConfig = &pb.EngineConfig{Engine: pb.Engine_MYSQL, Target: &pb.TargetSettings{EngineVersion: "8.0.46"}}
 		if len(mysqlLowerCaseTableNames) == 1 {
-			engineConfig.Datasource.MysqlLowerCaseTableNames = proto.Int32(mysqlLowerCaseTableNames[0])
+			engineConfig.Target.MysqlLowerCaseTableNames = proto.Int32(mysqlLowerCaseTableNames[0])
 		}
 	}
 	return analyzeProbe(t, &pb.AnalyzeRequest{Sql: sql, EngineConfig: engineConfig, Namespace: ns, Catalog: snapshotWith(cols, testFunctionCatalog(dialect == "mysql", ns.GetSearchPath()))})

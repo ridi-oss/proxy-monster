@@ -29,12 +29,15 @@ func TestDatasourceWrites(t *testing.T) {
 	if body := do(http.MethodPost, "/api/datasources", `{"name":"x","engine":"oracle"}`, admin, http.StatusBadRequest); body != `{"code":"datasource.invalid_engine","params":{"engine":"oracle"}}` {
 		t.Fatalf("invalid engine: %s", body)
 	}
+	if body := do(http.MethodPost, "/api/datasources", `{"name":"x","engine":"MySQL"}`, admin, http.StatusBadRequest); body != `{"code":"datasource.invalid_engine","params":{"engine":"MySQL"}}` {
+		t.Fatalf("engine is case-sensitive: %s", body)
+	}
 	if body := do(http.MethodPost, "/api/datasources", `{"name":" "}`, admin, http.StatusBadRequest); body != `{"code":"common.field_required","params":{"fields":"name"}}` {
 		t.Fatalf("blank name: %s", body)
 	}
-	created := do(http.MethodPost, "/api/datasources", `{"name":"orders","engine":"MySQL","host":"db","port":3306,"dbName":"app"}`, admin, http.StatusCreated)
+	created := do(http.MethodPost, "/api/datasources", `{"name":"orders","engine":"mysql","host":"db","port":3306,"dbName":"app"}`, admin, http.StatusCreated)
 	var id int64
-	if _, err := fmt.Sscanf(created, `{"id":%d`, &id); err != nil || created != fmt.Sprintf(`{"id":%d,"name":"orders","engine":"mysql","host":"db","port":3306,"dbName":"app","tags":[],"defaultSchemas":[],"advertiseWireTls":false,"description":"","defaultSchemaSettable":true}`, id) {
+	if _, err := fmt.Sscanf(created, `{"id":%d`, &id); err != nil || created != fmt.Sprintf(`{"id":%d,"name":"orders","engine":"mysql","host":"db","port":3306,"dbName":"app","tags":[],"defaultSchemas":[],"advertiseWireTls":false,"description":"","defaultSchemaSettable":true,"identifierQuote":"`+"`"+`"}`, id) {
 		t.Fatalf("created %s", created)
 	}
 	row := func() string {
@@ -75,7 +78,7 @@ func TestDatasourceWrites(t *testing.T) {
 		t.Fatalf("same db_name must keep the catalog: %s", kept)
 	}
 	moved := do(http.MethodPut, fmt.Sprintf("/api/datasources/%d", id), `{"name":"orders-2","engine":"mysql","host":"db2","port":3307,"dbName":"other"}`, admin, http.StatusOK)
-	if moved != fmt.Sprintf(`{"id":%d,"name":"orders-2","engine":"mysql","host":"db2","port":3307,"dbName":"other","tags":[],"defaultSchemas":[],"advertiseWireTls":false,"description":"","defaultSchemaSettable":true}`, id) || catalogKept() != 0 {
+	if moved != fmt.Sprintf(`{"id":%d,"name":"orders-2","engine":"mysql","host":"db2","port":3307,"dbName":"other","tags":[],"defaultSchemas":[],"advertiseWireTls":false,"description":"","defaultSchemaSettable":true,"identifierQuote":"`+"`"+`"}`, id) || catalogKept() != 0 {
 		t.Fatalf("a db_name change must drop the catalog: %s", moved)
 	}
 	do(http.MethodPut, "/api/datasources/999999", `{"name":"x"}`, admin, http.StatusNotFound)

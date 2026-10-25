@@ -1,4 +1,4 @@
-import { defineConfig } from 'playwright/test'
+import { defineConfig } from 'playwright/test';
 
 // Run from web/ by smoke/run.sh; SMOKE_WEB_URL is the console already started against the smoke stack.
 export default defineConfig({
@@ -9,4 +9,4 @@ export default defineConfig({
   retries: 0,
   reporter: [['list']],
   use: { baseURL: process.env.SMOKE_WEB_URL, browserName: 'chromium' },
-})
+});

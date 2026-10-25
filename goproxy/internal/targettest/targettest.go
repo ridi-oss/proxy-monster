@@ -194,21 +194,20 @@ func RunRefetchIntegration(t *testing.T, queries sqldb.Queries, conn *sql.Conn, 
 	connectionID := []byte("refetch-test-connection")
 	const generation = uint64(41)
 	var pushes []*pb.SchemaFragmentPush
-	refetcher := sqldb.Refetcher{
-		Catalog:           catalog,
-		Queries:           queries,
-		ConnectionID:      connectionID,
-		BackendGeneration: generation,
-		Probe: func(statement string, expectedColumns int) ([][]*string, error) {
-			return QueryStrings(conn, statement, expectedColumns)
-		},
-		Push: func(push *pb.SchemaFragmentPush) (uint64, error) {
-			pushes = append(pushes, push)
-			return uint64(len(pushes)), nil
-		},
+	probe := func(statement string, expectedColumns int) ([][]*string, error) {
+		return QueryStrings(conn, statement, expectedColumns)
 	}
-	if err := refetcher.Run(&pb.Refetch{Catalog: catalog, Schema: schema, IfHashDiffers: ifHashDiffers}); err != nil {
-		t.Fatalf("Refetcher.Run(%q): %v", schema, err)
+	session, err := sqldb.NewSession(queries, probe)
+	if err != nil {
+		t.Fatalf("session probe: %v", err)
+	}
+	commandRunner := sqldb.NewProxyCommandRunner(queries, session, connectionID, generation, probe, func(push *pb.SchemaFragmentPush) (uint64, error) {
+		pushes = append(pushes, push)
+		return uint64(len(pushes)), nil
+	})
+	commandRunner.Catalog = catalog
+	if err := commandRunner.Refetch(&pb.Refetch{Catalog: catalog, Schema: schema, IfHashDiffers: ifHashDiffers}); err != nil {
+		t.Fatalf("ProxyCommandRunner.Refetch(%q): %v", schema, err)
 	}
 	if len(pushes) != 1 {
 		t.Fatalf("push count = %d, want exactly 1", len(pushes))

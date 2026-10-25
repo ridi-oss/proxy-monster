@@ -349,8 +349,8 @@ back. A scope is a ceiling: it never grants what your roles do not.
 When your team files SQL from pull requests
 ([sql-from-github.md](../sql-from-github.md)), a failed file shows on the PR:
 
-- The `query executed` check turns red with `<path> failed`, and the PR comment
-  shows the failed statement and the target's error.
+- The `<instance>/query executed` check turns red with `<path> failed`, and the
+  PR comment shows the failed statement and the target's error.
 - Statements before the failed one were applied; it and the ones after it were
   not. On MySQL each DDL statement commits on its own, so a failure at statement
   3 of 5 leaves 1 and 2 applied.

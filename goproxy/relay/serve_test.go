@@ -27,7 +27,7 @@ func okOutcome(action string, masks []*pb.ColumnMask) spi.DecisionOutcome {
 }
 
 func serveInput() spi.AuthzInput {
-	return spi.AuthzInput{SQL: "SELECT 1", ProbeSession: func() (spi.SessionObservation, error) { return spi.SessionObservation{Namespace: []string{"app"}}, nil }}
+	return spi.AuthzInput{SQL: "SELECT 1", ProbeSession: func() (spi.SessionSnapshot, error) { return spi.SessionSnapshot{Namespace: []string{"app"}}, nil }}
 }
 
 func TestServeStatementFailHasNoDecision(t *testing.T) {
@@ -89,9 +89,9 @@ func TestServeStatementRefetchesOnlyAfterCleanCompletion(t *testing.T) {
 func TestServeStatementGuardWrapsOnlyRun(t *testing.T) {
 	var events []string
 	in := serveInput()
-	in.ProbeSession = func() (spi.SessionObservation, error) {
+	in.ProbeSession = func() (spi.SessionSnapshot, error) {
 		events = append(events, "authorize")
-		return spi.SessionObservation{Namespace: []string{"app"}}, nil
+		return spi.SessionSnapshot{Namespace: []string{"app"}}, nil
 	}
 	authz := spi.NewAuthorizer(&fakeDecider{outcome: okOutcome("ALLOW", nil)}, "", nil)
 	guard := func(exec func() error) error {
@@ -233,7 +233,7 @@ func (r *blockingReporter) ReportCompletion(spi.CompletionReport) {
 
 type countingRunner struct{ calls *int }
 
-func (r countingRunner) RunAll([]*pb.ProxyCommand, *spi.SessionObservation) error {
+func (r countingRunner) RunAll([]*pb.ProxyCommand, *spi.SessionSnapshot) error {
 	*r.calls++
 	return nil
 }

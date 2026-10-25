@@ -1,69 +1,50 @@
-'use client'
+'use client';
 
 // Mask functions tab — CRUD for the deterministic transform library that column
 // policies reference when action=MASK. The transform is fully specified by its
 // kind (FIXED / LAST_N / FORMAT_PRESERVING / NULL).
-import { Fragment, useState } from 'react'
-import { useTranslations } from 'next-intl'
-import { Loader2, Pencil, Plus, Trash2 } from 'lucide-react'
-import { mutate } from 'swr'
-import { createMaskFn, deleteMaskFn, updateMaskFn } from '@/lib/api/client'
-import { useMaskFns, swrKeys } from '@/lib/hooks'
-import type { MaskFn, MaskFnInput, MaskFnKind } from '@/lib/api/types'
-import { Button } from '@/components/ui/button'
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table'
-import { EmptyState, ErrorState, LoadingState } from '@/components/page-scaffold'
-import { toast } from 'sonner'
+import { Fragment, useState } from 'react';
+import { useTranslations } from 'next-intl';
+import { Loader2, Pencil, Plus, Trash2 } from 'lucide-react';
+import { mutate } from 'swr';
+import { createMaskFn, deleteMaskFn, updateMaskFn } from '@/lib/api/client';
+import { useMaskFns, swrKeys } from '@/lib/hooks';
+import type { MaskFn, MaskFnInput, MaskFnKind } from '@/lib/api/types';
+import { Button } from '@/components/ui/button';
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { EmptyState, ErrorState, LoadingState } from '@/components/page-scaffold';
+import { toast } from 'sonner';
 
-const KINDS: MaskFnKind[] = ['FIXED', 'LAST_N', 'FORMAT_PRESERVING', 'NULL']
+const KINDS: MaskFnKind[] = ['FIXED', 'LAST_N', 'FORMAT_PRESERVING', 'NULL'];
 
 export function MaskFnsTab() {
-  const t = useTranslations('Policies')
-  const { data, error, isLoading } = useMaskFns()
+  const t = useTranslations('Policies');
+  const { data, error, isLoading } = useMaskFns();
 
-  const [editing, setEditing] = useState<MaskFn | null>(null)
-  const [creating, setCreating] = useState(false)
-  const [deleting, setDeleting] = useState<MaskFn | null>(null)
-  const [deleteError, setDeleteError] = useState<string | null>(null)
-  const [deleteBusy, setDeleteBusy] = useState(false)
+  const [editing, setEditing] = useState<MaskFn | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [deleting, setDeleting] = useState<MaskFn | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
 
   const handleDelete = async (fn: MaskFn) => {
-    setDeleteBusy(true)
-    setDeleteError(null)
+    setDeleteBusy(true);
+    setDeleteError(null);
     try {
-      await deleteMaskFn(fn.id)
-      await mutate(swrKeys.maskFns)
-      setDeleting(null)
-      toast.success(t('maskFns.toastDeleted', { name: fn.name }))
+      await deleteMaskFn(fn.id);
+      await mutate(swrKeys.maskFns);
+      setDeleting(null);
+      toast.success(t('maskFns.toastDeleted', { name: fn.name }));
     } catch (err) {
-      setDeleteError(err instanceof Error ? err.message : t('maskFns.deleteFailed'))
+      setDeleteError(err instanceof Error ? err.message : t('maskFns.deleteFailed'));
     } finally {
-      setDeleteBusy(false)
+      setDeleteBusy(false);
     }
-  }
+  };
 
   return (
     <div className="space-y-4">
@@ -118,8 +99,8 @@ export function MaskFnsTab() {
                           size="icon-xs"
                           variant="ghost"
                           onClick={() => {
-                            setDeleting(null)
-                            setEditing(fn)
+                            setDeleting(null);
+                            setEditing(fn);
                           }}
                           aria-label={t('common.edit')}
                         >
@@ -130,9 +111,9 @@ export function MaskFnsTab() {
                           variant="ghost"
                           className="text-destructive hover:text-destructive"
                           onClick={() => {
-                            setEditing(null)
-                            setDeleteError(null)
-                            setDeleting((prev) => (prev?.id === fn.id ? null : fn))
+                            setEditing(null);
+                            setDeleteError(null);
+                            setDeleting((prev) => (prev?.id === fn.id ? null : fn));
                           }}
                           aria-label={t('common.delete')}
                         >
@@ -149,20 +130,11 @@ export function MaskFnsTab() {
                             <p className="text-sm font-medium text-red-500">
                               {t('maskFns.deleteConfirm', { name: fn.name })}
                             </p>
-                            <p className="text-muted-foreground text-xs">
-                              {t('maskFns.deleteConsequence')}
-                            </p>
-                            {deleteError && (
-                              <p className="mt-1 text-xs text-red-500">{deleteError}</p>
-                            )}
+                            <p className="text-muted-foreground text-xs">{t('maskFns.deleteConsequence')}</p>
+                            {deleteError && <p className="mt-1 text-xs text-red-500">{deleteError}</p>}
                           </div>
                           <div className="flex items-center gap-2">
-                            <Button
-                              size="xs"
-                              variant="outline"
-                              onClick={() => setDeleting(null)}
-                              disabled={deleteBusy}
-                            >
+                            <Button size="xs" variant="outline" onClick={() => setDeleting(null)} disabled={deleteBusy}>
                               {t('common.cancel')}
                             </Button>
                             <Button
@@ -171,9 +143,7 @@ export function MaskFnsTab() {
                               onClick={() => handleDelete(fn)}
                               disabled={deleteBusy}
                             >
-                              {deleteBusy ? (
-                                <Loader2 className="size-3 animate-spin" />
-                              ) : null}
+                              {deleteBusy ? <Loader2 className="size-3 animate-spin" /> : null}
                               {t('common.delete')}
                             </Button>
                           </div>
@@ -192,14 +162,14 @@ export function MaskFnsTab() {
         <MaskFnDialog
           editing={editing}
           onClose={() => {
-            setCreating(false)
-            setEditing(null)
+            setCreating(false);
+            setEditing(null);
           }}
           onSaved={() => mutate(swrKeys.maskFns)}
         />
       )}
     </div>
-  )
+  );
 }
 
 // ---- Mask function dialog ---------------------------------------------------
@@ -209,56 +179,53 @@ function MaskFnDialog({
   onClose,
   onSaved,
 }: {
-  editing: MaskFn | null
-  onClose: () => void
-  onSaved: () => void
+  editing: MaskFn | null;
+  onClose: () => void;
+  onSaved: () => void;
 }) {
-  const t = useTranslations('Policies')
+  const t = useTranslations('Policies');
   const KIND_LABEL: Record<MaskFnKind, string> = {
     FIXED: t('maskFns.kinds.FIXED'),
     LAST_N: t('maskFns.kinds.LAST_N'),
     FORMAT_PRESERVING: t('maskFns.kinds.FORMAT_PRESERVING'),
     NULL: t('maskFns.kinds.NULL'),
-  }
-  const [name, setName] = useState(editing?.name ?? '')
-  const [kind, setKind] = useState<MaskFnKind>((editing?.kind as MaskFnKind) ?? 'FIXED')
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  };
+  const [name, setName] = useState(editing?.name ?? '');
+  const [kind, setKind] = useState<MaskFnKind>((editing?.kind as MaskFnKind) ?? 'FIXED');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const valid = name.trim().length > 0
+  const valid = name.trim().length > 0;
 
   const handleSave = async () => {
-    if (!valid) return
-    setBusy(true)
-    setError(null)
-    const input: MaskFnInput = { name: name.trim(), kind }
+    if (!valid) return;
+    setBusy(true);
+    setError(null);
+    const input: MaskFnInput = { name: name.trim(), kind };
     try {
       if (editing) {
-        await updateMaskFn(editing.id, input)
-        toast.success(t('maskFns.toastUpdated', { name: input.name }))
+        await updateMaskFn(editing.id, input);
+        toast.success(t('maskFns.toastUpdated', { name: input.name }));
       } else {
-        await createMaskFn(input)
-        toast.success(t('maskFns.toastCreated', { name: input.name }))
+        await createMaskFn(input);
+        toast.success(t('maskFns.toastCreated', { name: input.name }));
       }
-      onSaved()
-      onClose()
+      onSaved();
+      onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('maskFns.saveFailed'))
+      setError(err instanceof Error ? err.message : t('maskFns.saveFailed'));
     } finally {
-      setBusy(false)
+      setBusy(false);
     }
-  }
+  };
 
-  const kindLabel = (v: string | null) =>
-    v ? (KIND_LABEL[v as MaskFnKind] ?? v) : t('maskFns.selectKind')
+  const kindLabel = (v: string | null) => (v ? (KIND_LABEL[v as MaskFnKind] ?? v) : t('maskFns.selectKind'));
 
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>
-            {editing ? t('maskFns.dialogEditTitle', { name: editing.name }) : t('maskFns.add')}
-          </DialogTitle>
+          <DialogTitle>{editing ? t('maskFns.dialogEditTitle', { name: editing.name }) : t('maskFns.add')}</DialogTitle>
         </DialogHeader>
 
         {error && (
@@ -282,14 +249,9 @@ function MaskFnDialog({
 
           <div className="space-y-1.5">
             <Label>{t('maskFns.colKind')}</Label>
-            <Select
-              value={kind}
-              onValueChange={(v: string | null) => setKind((v as MaskFnKind) ?? 'FIXED')}
-            >
+            <Select value={kind} onValueChange={(v: string | null) => setKind((v as MaskFnKind) ?? 'FIXED')}>
               <SelectTrigger className="w-full">
-                <SelectValue placeholder={t('maskFns.selectKind')}>
-                  {(v: string | null) => kindLabel(v)}
-                </SelectValue>
+                <SelectValue placeholder={t('maskFns.selectKind')}>{(v: string | null) => kindLabel(v)}</SelectValue>
               </SelectTrigger>
               <SelectContent>
                 {KINDS.map((k) => (
@@ -313,5 +275,5 @@ function MaskFnDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
-  )
+  );
 }

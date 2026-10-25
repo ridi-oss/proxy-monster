@@ -16,7 +16,7 @@ import com.nimbusds.jose.jwk.RSAKey
 import com.nimbusds.jose.jwk.gen.RSAKeyGenerator
 import com.nimbusds.jwt.JWTClaimsSet
 import com.nimbusds.jwt.SignedJWT
-import com.ridi.oss.proxymonster.auth.pkceS256
+import com.ridi.oss.proxymonster.controlplane.support.pkceS256
 import com.ridi.oss.proxymonster.controlplane.authz.UserAttribute
 import com.ridi.oss.proxymonster.controlplane.management.auditEntity
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres

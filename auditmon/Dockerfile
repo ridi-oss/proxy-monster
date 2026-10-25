@@ -10,7 +10,7 @@
 # AUDITMON_DB_DSN (the read-only Postgres DSN named by the config's db_dsn_env), AWS_REGION + a task IAM
 # role for S3 + KMS, and any webhook URL env the alert sinks reference (e.g. SECOPS_WEBHOOK_URL).
 
-FROM golang:1.26-bookworm AS build
+FROM golang:1.26.10-bookworm AS build
 WORKDIR /workspace
 COPY . .
 # All deps are pure Go (pgx, aws-sdk-go-v2), so CGO off → a fully static binary and the runtime image

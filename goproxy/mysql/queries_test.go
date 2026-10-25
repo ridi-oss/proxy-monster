@@ -7,6 +7,7 @@ import (
 
 	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
 
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/targettest"
 )
@@ -35,7 +36,7 @@ func TestMySqlSchemaHashSQL(t *testing.T) {
 		// The WHERE filter must be mode-aware (CASE WHEN @@lower_case_table_names = 2 THEN LOWER(...)):
 		// a canonical (possibly-folded) schema parameter must still match a live mode-2 server whose
 		// information_schema preserves the original stored case.
-		"CASE WHEN @@lower_case_table_names = 2 THEN LOWER(CAST(TABLE_SCHEMA AS BINARY)) ELSE CAST(TABLE_SCHEMA AS BINARY) END",
+		"CASE WHEN @@lower_case_table_names = 2 THEN CAST(LOWER(CONVERT(TABLE_SCHEMA USING utf8mb3) COLLATE utf8mb3_general_ci) AS BINARY) ELSE CAST(TABLE_SCHEMA AS BINARY) END",
 	} {
 		if !strings.Contains(sql, fragment) {
 			t.Errorf("SchemaHashSQL missing %q:\n%s", fragment, sql)
@@ -58,7 +59,7 @@ func TestMySqlSchemaHashSQL(t *testing.T) {
 		"CAST(TABLE_SCHEMA AS BINARY)",
 		"ORDER BY CAST(TABLE_NAME AS BINARY), ORDINAL_POSITION, CAST(COLUMN_NAME AS BINARY)",
 		"X'" + fmt.Sprintf("%x", []byte(schema)) + "'",
-		"CASE WHEN @@lower_case_table_names = 2 THEN LOWER(CAST(TABLE_SCHEMA AS BINARY)) ELSE CAST(TABLE_SCHEMA AS BINARY) END",
+		"CASE WHEN @@lower_case_table_names = 2 THEN CAST(LOWER(CONVERT(TABLE_SCHEMA USING utf8mb3) COLLATE utf8mb3_general_ci) AS BINARY) ELSE CAST(TABLE_SCHEMA AS BINARY) END",
 	} {
 		if !strings.Contains(columnsSQL, fragment) {
 			t.Errorf("SchemaColumnsSQL missing %q: %s", fragment, columnsSQL)
@@ -74,29 +75,29 @@ func TestMySqlSchemaHashSQL(t *testing.T) {
 	}
 }
 
-func TestMySqlNormalizeColumns(t *testing.T) {
+func TestMySqlCanonicalColumns(t *testing.T) {
 	in := []*analyzerpb.Column{
 		{Schema: "AppDB", Table: "UserRows", Column: "CustomerID", DataType: "int", Ordinal: 1, Nullable: true},
 	}
 	// mode 1 (case-insensitive): schema/table fold too, alongside the always-unconditional column fold.
-	out := Queries.NormalizeColumns(1, in)
+	out := lctnSession(t, 1).CanonicalColumns(in)
 	if len(out) != 1 {
-		t.Fatalf("NormalizeColumns returned %d columns, want 1", len(out))
+		t.Fatalf("CanonicalColumns returned %d columns, want 1", len(out))
 	}
 	got := out[0]
 	if got.GetSchema() != "appdb" || got.GetTable() != "userrows" || got.GetColumn() != "customerid" {
 		t.Errorf("mode 1: got %s.%s.%s, want appdb.userrows.customerid", got.GetSchema(), got.GetTable(), got.GetColumn())
 	}
 	if got.GetDataType() != "int" || got.GetOrdinal() != 1 || !got.GetNullable() {
-		t.Errorf("NormalizeColumns must preserve non-identity fields, got %+v", got)
+		t.Errorf("CanonicalColumns must preserve non-identity fields, got %+v", got)
 	}
-	// Input must not be mutated (NormalizeColumns builds new analyzerpb.Column values).
+	// Input must not be mutated (CanonicalColumns builds new analyzerpb.Column values).
 	if in[0].GetSchema() != "AppDB" {
-		t.Errorf("NormalizeColumns mutated its input: %+v", in[0])
+		t.Errorf("CanonicalColumns mutated its input: %+v", in[0])
 	}
 
 	// mode 0 (case-sensitive): schema/table stay verbatim; the column still folds unconditionally.
-	out0 := Queries.NormalizeColumns(0, in)
+	out0 := lctnSession(t, 0).CanonicalColumns(in)
 	if out0[0].GetSchema() != "AppDB" || out0[0].GetTable() != "UserRows" || out0[0].GetColumn() != "customerid" {
 		t.Errorf("mode 0: got %s.%s.%s, want AppDB.UserRows.customerid", out0[0].GetSchema(), out0[0].GetTable(), out0[0].GetColumn())
 	}
@@ -109,9 +110,9 @@ func TestMySqlNormalizeColumns(t *testing.T) {
 		{Schema: "AppDB", Table: "UserRows", Column: "EmailAddr", DataType: "varchar", Ordinal: 2, Nullable: true},
 		{Schema: "AppDB", Table: "OrderRows", Column: "OrderID", DataType: "bigint", Ordinal: 1, Nullable: false},
 	}
-	outMulti := Queries.NormalizeColumns(1, multi)
+	outMulti := lctnSession(t, 1).CanonicalColumns(multi)
 	if len(outMulti) != 3 {
-		t.Fatalf("NormalizeColumns returned %d columns, want 3", len(outMulti))
+		t.Fatalf("CanonicalColumns returned %d columns, want 3", len(outMulti))
 	}
 	wantSchema := []string{"appdb", "appdb", "appdb"}
 	wantTable := []string{"userrows", "userrows", "orderrows"}
@@ -138,13 +139,13 @@ func TestFragmentColumnsFromRowsModeAwareSchemaCheck(t *testing.T) {
 	}
 
 	t.Run("MySQL mode 0 rejects a case-differing schema (no legitimate divergence)", func(t *testing.T) {
-		if _, err := sqldb.FragmentColumnsFromRows(Queries, 0, "App", row("app")); err == nil {
+		if _, err := sqldb.FragmentColumnsFromRows(lctnSession(t, 0), "App", row("app")); err == nil {
 			t.Fatal("FragmentColumnsFromRows succeeded, want a strict mismatch under mode 0")
 		}
 	})
 
 	t.Run("MySQL mode 2 accepts the live stored spelling diverging in case from the canonical request", func(t *testing.T) {
-		got, err := sqldb.FragmentColumnsFromRows(Queries, 2, "app", row("App"))
+		got, err := sqldb.FragmentColumnsFromRows(lctnSession(t, 2), "app", row("App"))
 		if err != nil {
 			t.Fatalf("FragmentColumnsFromRows: %v", err)
 		}
@@ -184,7 +185,7 @@ func TestMySqlSchemaHashFromRows(t *testing.T) {
 var _ sqldb.Queries = Queries
 
 func TestFoldFunctionNameMatchesTheResolverFold(t *testing.T) {
-	if got := Queries.FoldFunctionName("AddTax"); got != "addtax" {
+	if got := lctnSession(t, 0).FunctionName("AddTax").String(); got != "addtax" {
 		t.Fatalf("mysql fold = %q, want addtax", got)
 	}
 }
@@ -205,4 +206,14 @@ func TestRoutinesSQLHoldsLoadablesUnderMysqlSchemaOnly(t *testing.T) {
 	if strings.Contains(appHash, "mysql.func") || !strings.Contains(mysqlHash, "mysql.func") {
 		t.Fatal("only the mysql schema's hash covers mysql.func")
 	}
+}
+
+// lctnSession is a MySQL engine session under lower_case_table_names n.
+func lctnSession(t *testing.T, n int32) *engines.Session {
+	t.Helper()
+	session, err := engines.MySQL.NewSession(&analyzerpb.TargetSettings{EngineVersion: "8.0.40", MysqlLowerCaseTableNames: &n})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return session
 }

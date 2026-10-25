@@ -32,8 +32,9 @@ func gitRepo(t *testing.T) *testRepo {
 
 func (r *testRepo) git(args ...string) string {
 	r.t.Helper()
+	// No detached auto-maintenance: it holds .git/objects/maintenance.lock while TempDir cleanup runs.
 	full := append([]string{"-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false",
-		"-c", "init.defaultBranch=main"}, args...)
+		"-c", "init.defaultBranch=main", "-c", "maintenance.auto=false"}, args...)
 	cmd := exec.Command("git", full...)
 	cmd.Dir = r.dir
 	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
@@ -302,6 +303,8 @@ const (
 	testJWT      = "eyJhbGciOiJSUzI1NiJ9.secret-jwt.sig"
 	testOIDCAuth = "gh-request-token"
 	testBearer   = "pmw_secret_workload_token"
+
+	testGitHubToken = "ghs_actions_token"
 )
 
 type fakeSQLServer struct {
@@ -312,6 +315,9 @@ type fakeSQLServer struct {
 	requestsCode int
 	requestsBody string
 	audience     string
+	checkName    string
+	checkRuns    []map[string]any
+	checkAuth    []string
 }
 
 func newFakeSQLServer(t *testing.T) *fakeSQLServer {
@@ -356,7 +362,17 @@ func newFakeSQLServer(t *testing.T) *fakeSQLServer {
 		for i, file := range files {
 			reqs = append(reqs, map[string]any{"id": 101 + i, "status": "PENDING", "pullRequest": map[string]any{"path": file.(map[string]any)["path"]}})
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"requests": reqs})
+		_ = json.NewEncoder(w).Encode(map[string]any{"requests": reqs, "checkName": f.checkName})
+	})
+	mux.HandleFunc("POST /repos/acme/shop/check-runs", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		f.mu.Lock()
+		f.checkRuns = append(f.checkRuns, body)
+		f.checkAuth = append(f.checkAuth, r.Header.Get("Authorization"))
+		f.mu.Unlock()
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{"id":1}`)
 	})
 	f.srv = httptest.NewServer(mux)
 	t.Cleanup(f.srv.Close)
@@ -367,6 +383,8 @@ func (f *fakeSQLServer) env(gitDir string, out io.Writer) sqlEnv {
 	vars := map[string]string{
 		"ACTIONS_ID_TOKEN_REQUEST_URL":   f.srv.URL + "/oidc?api-version=2.0",
 		"ACTIONS_ID_TOKEN_REQUEST_TOKEN": testOIDCAuth,
+		"GITHUB_TOKEN":                   testGitHubToken,
+		"GITHUB_API_URL":                 f.srv.URL,
 	}
 	return sqlEnv{getenv: func(k string) string { return vars[k] }, http: f.srv.Client(), out: out, gitDir: gitDir}
 }
@@ -604,5 +622,87 @@ func TestSQLFileLargeResponse(t *testing.T) {
 	}
 	if out.String() != "filed db/orders/00042_a.sql as request 101 (PENDING)\n" {
 		t.Fatalf("stdout = %q", out.String())
+	}
+}
+
+func TestSQLFileWithoutSQLPostsTheSkippedCheckEvenWithTheControlPlaneDown(t *testing.T) {
+	f := newFakeSQLServer(t)
+	f.requestsCode, f.requestsBody = http.StatusServiceUnavailable, ""
+	r, base, head := branchRepo(t, map[string]string{"db/orders/00001.sql": "x"}, func(r *testRepo) {
+		r.write(map[string]string{"README.md": "docs"})
+	})
+	var out bytes.Buffer
+	c := fileCmd(f, base, head)
+	c.Instance = "shop-dev"
+	if err := c.run(context.Background(), f.env(r.dir, &out)); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.checkRuns) != 1 || f.checkAuth[0] != "Bearer "+testGitHubToken {
+		t.Fatalf("check runs %v auth %v", f.checkRuns, f.checkAuth)
+	}
+	run := f.checkRuns[0]
+	if run["name"] != "shop-dev/query executed" || run["head_sha"] != head || run["status"] != "completed" || run["conclusion"] != "skipped" {
+		t.Fatalf("check run %v", run)
+	}
+	if len(f.requests) != 1 || !strings.Contains(out.String(), "did not take the empty filing") {
+		t.Fatalf("requests %d, stdout %q", len(f.requests), out.String())
+	}
+}
+
+func TestSQLFileWithSQLLeavesTheCheckToTheControlPlane(t *testing.T) {
+	f := newFakeSQLServer(t)
+	f.checkName = "shop-dev/query executed"
+	r, base, head := branchRepo(t, map[string]string{"db/orders/00001.sql": "x"}, func(r *testRepo) {
+		r.write(map[string]string{"db/orders/00002.sql": "select 2;"})
+	})
+	c := fileCmd(f, base, head)
+	c.Instance = "shop-dev"
+	if err := c.run(context.Background(), f.env(r.dir, io.Discard)); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.checkRuns) != 0 || len(f.requests) != 1 {
+		t.Fatalf("check runs %v, requests %d", f.checkRuns, len(f.requests))
+	}
+}
+
+func TestSQLFileRefusesAnInstanceTheControlPlaneDoesNotPost(t *testing.T) {
+	f := newFakeSQLServer(t)
+	f.checkName = "shop-prod/query executed"
+	r, base, head := branchRepo(t, map[string]string{"db/orders/00001.sql": "x"}, func(r *testRepo) {
+		r.write(map[string]string{"db/orders/00002.sql": "select 2;"})
+	})
+	c := fileCmd(f, base, head)
+	c.Instance = "shop-dev"
+	err := c.run(context.Background(), f.env(r.dir, io.Discard))
+	if err == nil || !strings.Contains(err.Error(), `the control plane posts "shop-prod/query executed"`) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestSQLFileWithoutSQLNeedsGitHubToken(t *testing.T) {
+	f := newFakeSQLServer(t)
+	r, base, head := branchRepo(t, map[string]string{"db/orders/00001.sql": "x"}, func(r *testRepo) {})
+	env := f.env(r.dir, io.Discard)
+	get := env.getenv
+	env.getenv = func(k string) string {
+		if k == "GITHUB_TOKEN" {
+			return ""
+		}
+		return get(k)
+	}
+	c := fileCmd(f, base, head)
+	c.Instance = "shop-dev"
+	if err := c.run(context.Background(), env); err == nil || !strings.Contains(err.Error(), "GITHUB_TOKEN is not set") {
+		t.Fatalf("err = %v", err)
+	}
+	for _, bad := range []string{"Shop_Dev", "-shop", "shop-", strings.Repeat("a", 41)} {
+		c.Instance = bad
+		if err := c.run(context.Background(), f.env(r.dir, io.Discard)); err == nil || !strings.Contains(err.Error(), "invalid --instance") {
+			t.Fatalf("%q: err = %v", bad, err)
+		}
+	}
+	c.Instance = "shop--dev"
+	if err := c.run(context.Background(), f.env(r.dir, io.Discard)); err != nil {
+		t.Fatalf("shop--dev: %v", err)
 	}
 }

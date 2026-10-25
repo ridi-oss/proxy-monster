@@ -1,32 +1,32 @@
-'use client'
+'use client';
 
 // Results panel for the editor (docs/web-console.md decisionColor as the load-bearing
 // token). A decision banner colored by ALLOW/MASK/DENY (effective roles +
 // latency always; masked columns on MASK; deny reason + a Request-access button
 // on DENY), then Results / Details tabs. DENY returns no rows, so its Results
 // tab shows the deny callout instead of a grid.
-import Link from 'next/link'
-import { useTranslations } from 'next-intl'
-import { AlertTriangle, ShieldAlert } from 'lucide-react'
-import type { QueryResponse } from '@/lib/api/types'
-import { decisionTone } from '@/lib/decision'
-import { cn } from '@/lib/utils'
-import { Button } from '@/components/ui/button'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { Loader2 } from 'lucide-react'
+import Link from 'next/link';
+import { useTranslations } from 'next-intl';
+import { AlertTriangle, ShieldAlert } from 'lucide-react';
+import type { QueryResponse } from '@/lib/api/types';
+import { decisionTone } from '@/lib/decision';
+import { cn } from '@/lib/utils';
+import { Button } from '@/components/ui/button';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Loader2 } from 'lucide-react';
 
 interface Props {
-  result: QueryResponse | null
-  running: boolean
-  canceling?: boolean
-  canceled?: boolean
-  error: string | null
-  onCancel?: () => void
-  onRequestAccess: () => void
+  result: QueryResponse | null;
+  running: boolean;
+  canceling?: boolean;
+  canceled?: boolean;
+  error: string | null;
+  onCancel?: () => void;
+  onRequestAccess: () => void;
   /** A spent `@cap` rate denied the statement (docs/result-caps.md): offer a rate boost role instead. */
-  onRequestRateBoost?: () => void
+  onRequestRateBoost?: () => void;
   /** Row count a stored result's view cap cut the release to (`QueryResultView.truncatedAt`). */
-  truncatedAt?: number | null
+  truncatedAt?: number | null;
 }
 
 export function ResultsPanel({
@@ -40,9 +40,9 @@ export function ResultsPanel({
   onRequestRateBoost,
   truncatedAt = null,
 }: Props) {
-  const t = useTranslations('Query')
-  const tone = result ? decisionTone[result.decision] : null
-  const cappedAt = result?.truncatedByCap ? (result.capRows ?? result.rows.length) : truncatedAt
+  const t = useTranslations('Query');
+  const tone = result ? decisionTone[result.decision] : null;
+  const cappedAt = result?.truncatedByCap ? (result.capRows ?? result.rows.length) : truncatedAt;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -86,9 +86,7 @@ export function ResultsPanel({
             {result.decision !== 'DENY' && (
               <span className="text-muted-foreground font-mono text-xs">
                 {t('results.rowCount', { count: result.rows.length })}
-                {result.rowsAffected != null
-                  ? t('results.rowsAffectedSuffix', { count: result.rowsAffected })
-                  : ''}
+                {result.rowsAffected != null ? t('results.rowsAffectedSuffix', { count: result.rowsAffected }) : ''}
               </span>
             )}
             <span className="text-muted-foreground font-mono text-xs">{result.latencyMs} ms</span>
@@ -158,27 +156,21 @@ export function ResultsPanel({
             <Centered>
               <div className="text-center">
                 <p className="text-sm font-medium">{t('results.canceledTitle')}</p>
-                <p className="text-muted-foreground mt-1 text-xs">
-                  {t('results.canceledDescription')}
-                </p>
+                <p className="text-muted-foreground mt-1 text-xs">{t('results.canceledDescription')}</p>
               </div>
             </Centered>
           ) : !result ? (
             <Centered>
               <div className="text-center">
                 <p className="text-sm font-medium">{t('results.noResultsTitle')}</p>
-                <p className="text-muted-foreground mt-1 text-xs">
-                  {t('results.noResultsDescription')}
-                </p>
+                <p className="text-muted-foreground mt-1 text-xs">{t('results.noResultsDescription')}</p>
               </div>
             </Centered>
           ) : result.decision === 'DENY' ? (
             <DenyCallout result={result} onRequestAccess={onRequestAccess} onRequestRateBoost={onRequestRateBoost} />
           ) : (
             <div className="flex h-full min-h-0 flex-col">
-              {cappedAt != null && (
-                <CapNotice rows={cappedAt} onRequestAccess={onRequestAccess} />
-              )}
+              {cappedAt != null && <CapNotice rows={cappedAt} onRequestAccess={onRequestAccess} />}
               <ResultGrid result={result} />
             </div>
           )}
@@ -195,16 +187,16 @@ export function ResultsPanel({
         </TabsContent>
       </Tabs>
     </div>
-  )
+  );
 }
 
 function Centered({ children }: { children: React.ReactNode }) {
-  return <div className="flex min-h-0 flex-1 items-center justify-center p-6">{children}</div>
+  return <div className="flex min-h-0 flex-1 items-center justify-center p-6">{children}</div>;
 }
 
 /** A result the verdict's cap ended, not the requested page size — so the set is INCOMPLETE. */
 function CapNotice({ rows, onRequestAccess }: { rows: number; onRequestAccess: () => void }) {
-  const t = useTranslations('Query')
+  const t = useTranslations('Query');
   return (
     <div
       data-testid="result-cap-notice"
@@ -216,7 +208,7 @@ function CapNotice({ rows, onRequestAccess }: { rows: number; onRequestAccess: (
         {t('results.requestAccess')}
       </Button>
     </div>
-  )
+  );
 }
 
 function DenyCallout({
@@ -224,12 +216,12 @@ function DenyCallout({
   onRequestAccess,
   onRequestRateBoost,
 }: {
-  result: QueryResponse
-  onRequestAccess: () => void
-  onRequestRateBoost?: () => void
+  result: QueryResponse;
+  onRequestAccess: () => void;
+  onRequestRateBoost?: () => void;
 }) {
-  const t = useTranslations('Query')
-  const rateDeny = result.denyCode === 'rate_spent' && onRequestRateBoost != null
+  const t = useTranslations('Query');
+  const rateDeny = result.denyCode === 'rate_spent' && onRequestRateBoost != null;
   return (
     <div className="flex min-h-0 flex-1 items-start justify-center overflow-y-auto p-6">
       <div className="max-w-lg rounded-xl border border-red-500/30 bg-red-500/10 p-4">
@@ -237,9 +229,7 @@ function DenyCallout({
           <ShieldAlert className="size-4 text-red-500" />
           <p className="font-semibold text-red-500">{t('results.denyTitle')}</p>
         </div>
-        <p className="mt-2 text-sm">
-          {result.denyReason || t('results.denyFallback')}
-        </p>
+        <p className="mt-2 text-sm">{result.denyReason || t('results.denyFallback')}</p>
         {result.piiTouched.length > 0 && (
           <p className="text-muted-foreground mt-2 text-xs">
             {t('results.piiTouched')}{' '}
@@ -281,12 +271,12 @@ function DenyCallout({
         </div>
       </div>
     </div>
-  )
+  );
 }
 
 function ResultGrid({ result }: { result: QueryResponse }) {
-  const t = useTranslations('Query')
-  const masked = new Set(result.maskedColumns)
+  const t = useTranslations('Query');
+  const masked = new Set(result.maskedColumns);
 
   if (result.columns.length === 0) {
     return (
@@ -300,7 +290,7 @@ function ResultGrid({ result }: { result: QueryResponse }) {
           )}
         </div>
       </Centered>
-    )
+    );
   }
 
   return (
@@ -308,11 +298,9 @@ function ResultGrid({ result }: { result: QueryResponse }) {
       <table className="w-full border-collapse text-xs">
         <thead className="bg-muted/50 sticky top-0 z-10 backdrop-blur">
           <tr>
-            <th className="text-muted-foreground border-b border-r px-2 py-1.5 text-right font-mono font-normal">
-              #
-            </th>
+            <th className="text-muted-foreground border-b border-r px-2 py-1.5 text-right font-mono font-normal">#</th>
             {result.columns.map((col, i) => {
-              const isMasked = masked.has(col)
+              const isMasked = masked.has(col);
               return (
                 <th
                   key={`${col}-${i}`}
@@ -327,17 +315,14 @@ function ResultGrid({ result }: { result: QueryResponse }) {
                     )}
                   </span>
                 </th>
-              )
+              );
             })}
           </tr>
         </thead>
         <tbody>
           {result.rows.length === 0 ? (
             <tr>
-              <td
-                colSpan={result.columns.length + 1}
-                className="text-muted-foreground px-3 py-8 text-center"
-              >
+              <td colSpan={result.columns.length + 1} className="text-muted-foreground px-3 py-8 text-center">
                 {t('results.noRows')}
               </td>
             </tr>
@@ -348,13 +333,10 @@ function ResultGrid({ result }: { result: QueryResponse }) {
                   {ri + 1}
                 </td>
                 {result.columns.map((col, ci) => {
-                  const value = row[ci]
-                  const isMasked = masked.has(col)
+                  const value = row[ci];
+                  const isMasked = masked.has(col);
                   return (
-                    <td
-                      key={ci}
-                      className="border-b border-r px-3 py-1 align-top font-mono"
-                    >
+                    <td key={ci} className="border-b border-r px-3 py-1 align-top font-mono">
                       {value == null ? (
                         <span className="text-muted-foreground/50 italic">NULL</span>
                       ) : (
@@ -368,7 +350,7 @@ function ResultGrid({ result }: { result: QueryResponse }) {
                         </span>
                       )}
                     </td>
-                  )
+                  );
                 })}
               </tr>
             ))
@@ -376,21 +358,24 @@ function ResultGrid({ result }: { result: QueryResponse }) {
         </tbody>
       </table>
     </div>
-  )
+  );
 }
 
 function Details({ result }: { result: QueryResponse }) {
-  const t = useTranslations('Query')
+  const t = useTranslations('Query');
   const rows: [string, React.ReactNode][] = [
     [t('results.detailDecision'), result.decision],
     [t('results.detailLatency'), `${result.latencyMs} ms`],
     [t('results.detailEffectiveRoles'), result.effectiveRoles.join(', ') || '—'],
     [t('results.detailMaskedColumns'), result.maskedColumns.join(', ') || '—'],
     [t('results.detailPiiTouched'), result.piiTouched.join(', ') || '—'],
-    [t('results.detailRowsReturned'), result.decision === 'DENY' ? t('results.rowsDenied') : String(result.rows.length)],
+    [
+      t('results.detailRowsReturned'),
+      result.decision === 'DENY' ? t('results.rowsDenied') : String(result.rows.length),
+    ],
     [t('results.detailRowsAffected'), result.rowsAffected != null ? String(result.rowsAffected) : '—'],
-  ]
-  if (result.denyReason) rows.push([t('results.detailDenyReason'), result.denyReason])
+  ];
+  if (result.denyReason) rows.push([t('results.detailDenyReason'), result.denyReason]);
 
   return (
     <dl className="grid max-w-2xl grid-cols-[160px_1fr] gap-x-4 gap-y-2 text-sm">
@@ -401,5 +386,5 @@ function Details({ result }: { result: QueryResponse }) {
         </div>
       ))}
     </dl>
-  )
+  );
 }

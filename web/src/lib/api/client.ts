@@ -4,7 +4,7 @@
 // API base is NEXT_PUBLIC_API_URL (default ""), which means same-origin — Next's
 // rewrites (next.config.ts) forward /api and /auth to the control-plane on :41390.
 
-import { translateApiError } from '@/lib/i18n/errors'
+import { translateApiError } from '@/lib/i18n/errors';
 import type {
   AccessGrant,
   AccessRequest,
@@ -56,17 +56,17 @@ import type {
   TableDetail,
   TestResult,
   WireTokenInfo,
-} from './types'
+} from './types';
 
 /** API base; "" means same-origin so requests go through Next's rewrites. */
-export const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? ''
-const BASE = API_BASE
+export const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? '';
+const BASE = API_BASE;
 
 function safeJsonParse(text: string): unknown {
   try {
-    return JSON.parse(text)
+    return JSON.parse(text);
   } catch {
-    return null
+    return null;
   }
 }
 
@@ -78,23 +78,17 @@ function safeJsonParse(text: string): unknown {
  * are exposed too, for the rare caller that wants to branch on the error kind itself.
  */
 export class ApiError extends Error {
-  readonly status: number
-  readonly code?: string
-  readonly params?: Record<string, string>
-  readonly reason?: string
-  constructor(
-    status: number,
-    message: string,
-    code?: string,
-    params?: Record<string, string>,
-    reason?: string,
-  ) {
-    super(message)
-    this.name = 'ApiError'
-    this.status = status
-    this.code = code
-    this.params = params
-    this.reason = reason
+  readonly status: number;
+  readonly code?: string;
+  readonly params?: Record<string, string>;
+  readonly reason?: string;
+  constructor(status: number, message: string, code?: string, params?: Record<string, string>, reason?: string) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.code = code;
+    this.params = params;
+    this.reason = reason;
   }
 }
 
@@ -103,13 +97,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     credentials: 'include',
     headers: { 'Content-Type': 'application/json', ...init?.headers },
     ...init,
-  })
+  });
   if (!res.ok) {
-    const bodyText = await res.text().catch(() => '')
-    const parsed = bodyText ? safeJsonParse(bodyText) : null
+    const bodyText = await res.text().catch(() => '');
+    const parsed = bodyText ? safeJsonParse(bodyText) : null;
     if (parsed && typeof parsed === 'object' && typeof (parsed as { code?: unknown }).code === 'string') {
-      const { code, params } = parsed as { code: string; params?: Record<string, string> }
-      throw new ApiError(res.status, translateApiError(code, params ?? {}), code, params)
+      const { code, params } = parsed as { code: string; params?: Record<string, string> };
+      throw new ApiError(res.status, translateApiError(code, params ?? {}), code, params);
     }
     if (parsed && typeof parsed === 'object' && typeof (parsed as { reason?: unknown }).reason === 'string') {
       throw new ApiError(
@@ -118,42 +112,42 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
         undefined,
         undefined,
         (parsed as { reason: string }).reason,
-      )
+      );
     }
-    throw new ApiError(res.status, bodyText || res.statusText)
+    throw new ApiError(res.status, bodyText || res.statusText);
   }
-  if (res.status === 204) return undefined as T
-  return (await res.json()) as T
+  if (res.status === 204) return undefined as T;
+  return (await res.json()) as T;
 }
 
 /** GET /auth/config — which login methods this control-plane offers (OIDC/SSO / debug). */
 export function getAuthConfig(): Promise<AuthConfig> {
-  return request<AuthConfig>('/auth/config')
+  return request<AuthConfig>('/auth/config');
 }
 
 /** GET /auth/me — resolves the current principal, or throws ApiError(401) if unauthenticated. */
 export function getMe(): Promise<Identity> {
-  return request<Identity>('/auth/me')
+  return request<Identity>('/auth/me');
 }
 
 /** GET /auth/session/status — observes authoritative session deadlines without extending idle activity. */
 export function getSessionStatus(): Promise<SessionStatus> {
-  return request<SessionStatus>('/auth/session/status')
+  return request<SessionStatus>('/auth/session/status');
 }
 
 /** POST /auth/session/heartbeat — records visible activity and returns authoritative session deadlines. */
 export function touchSession(): Promise<SessionStatus> {
-  return request<SessionStatus>('/auth/session/heartbeat', { method: 'POST' })
+  return request<SessionStatus>('/auth/session/heartbeat', { method: 'POST' });
 }
 
 /** GET /api/mcp/connect — this instance's MCP install name and URL. */
 export function getMcpConnect(): Promise<McpConnectInfo> {
-  return request<McpConnectInfo>('/api/mcp/connect')
+  return request<McpConnectInfo>('/api/mcp/connect');
 }
 
 /** GET /api/me/permissions — resolves coarse Cedar-backed capabilities for the current principal. */
 export function getMePermissions(): Promise<MePermissions> {
-  return request<MePermissions>('/api/me/permissions')
+  return request<MePermissions>('/api/me/permissions');
 }
 
 /**
@@ -161,15 +155,11 @@ export function getMePermissions(): Promise<MePermissions> {
  * address the session's decisions authorize under, so a network-conditioned policy can be exercised from a
  * dev box where every request arrives from loopback.
  */
-export function debugLogin(
-  principal: string,
-  roles: string[],
-  requesterIp?: string,
-): Promise<Identity> {
+export function debugLogin(principal: string, roles: string[], requesterIp?: string): Promise<Identity> {
   return request<Identity>('/auth/debug', {
     method: 'POST',
     body: JSON.stringify({ principal, roles, requesterIp: requesterIp || null }),
-  })
+  });
 }
 
 /** POST /auth/logout — conditionally ends a specific session, or unconditionally ends the current one. */
@@ -177,35 +167,35 @@ export function logout(sessionId?: number): Promise<{ ended: boolean }> {
   return request<{ ended: boolean }>('/auth/logout', {
     method: 'POST',
     body: JSON.stringify(sessionId === undefined ? {} : { sessionId }),
-  })
+  });
 }
 
 /** GET /api/audit?limit=N — newest-first audit events. */
 export function getAuditEvents(limit = 100): Promise<AuditEvent[]> {
-  return request<AuditEvent[]>(`/api/audit?limit=${limit}`)
+  return request<AuditEvent[]>(`/api/audit?limit=${limit}`);
 }
 
 export function getAuditEvent(id: number): Promise<AuditEvent> {
-  return request<AuditEvent>(`/api/audit/${id}`)
+  return request<AuditEvent>(`/api/audit/${id}`);
 }
 
 // ---- Datasources -----------------------------------------------------------
 
 export function getDatasources(connectable = false): Promise<Datasource[]> {
-  return request<Datasource[]>(`/api/datasources${connectable ? '?connectable=true' : ''}`)
+  return request<Datasource[]>(`/api/datasources${connectable ? '?connectable=true' : ''}`);
 }
 
 /** GET /api/datasources/live — names of datasources with a proxy CURRENTLY attached (an open gRPC
  *  Events stream), not just "seen at some point" (`lastSeenAt`). */
 export function getDatasourcesLive(): Promise<string[]> {
-  return request<string[]>('/api/datasources/live')
+  return request<string[]>('/api/datasources/live');
 }
 
 export function createDatasource(input: DatasourceInput): Promise<Datasource> {
   return request<Datasource>('/api/datasources', {
     method: 'POST',
     body: JSON.stringify(input),
-  })
+  });
 }
 
 /**
@@ -219,33 +209,33 @@ export function saveLocale(locale: string): Promise<void> {
   return request<void>('/api/me/locale', {
     method: 'PUT',
     body: JSON.stringify({ locale }),
-  })
+  });
 }
 
 export function updateDatasource(id: number, input: DatasourceInput): Promise<Datasource> {
   return request<Datasource>(`/api/datasources/${id}`, {
     method: 'PUT',
     body: JSON.stringify(input),
-  })
+  });
 }
 
 export function deleteDatasource(id: number): Promise<void> {
-  return request<void>(`/api/datasources/${id}`, { method: 'DELETE' })
+  return request<void>(`/api/datasources/${id}`, { method: 'DELETE' });
 }
 
 export function testDatasource(id: number): Promise<TestResult> {
-  return request<TestResult>(`/api/datasources/${id}/test`, { method: 'POST' })
+  return request<TestResult>(`/api/datasources/${id}/test`, { method: 'POST' });
 }
 
 /** POST /api/datasources/{id}/refresh — nudge any connected proxy stream(s) to re-introspect and push a fresh catalog. */
 export function refreshDatasource(id: number): Promise<RefreshResult> {
-  return request<RefreshResult>(`/api/datasources/${id}/refresh`, { method: 'POST' })
+  return request<RefreshResult>(`/api/datasources/${id}/refresh`, { method: 'POST' });
 }
 
 // ---- Catalog + classification ----------------------------------------------
 
 export function getCatalog(datasourceId: number): Promise<CatalogColumn[]> {
-  return request<CatalogColumn[]>(`/api/datasources/${datasourceId}/catalog`)
+  return request<CatalogColumn[]>(`/api/datasources/${datasourceId}/catalog`);
 }
 
 export function getTableDetail(
@@ -254,8 +244,8 @@ export function getTableDetail(
   schema: string,
   table: string,
 ): Promise<TableDetail> {
-  const query = new URLSearchParams({ catalog, schema, table })
-  return request<TableDetail>(`/api/datasources/${datasourceId}/table-detail?${query}`)
+  const query = new URLSearchParams({ catalog, schema, table });
+  return request<TableDetail>(`/api/datasources/${datasourceId}/table-detail?${query}`);
 }
 
 // ---- Web SQL query ---------------------------------------------------------
@@ -269,7 +259,7 @@ export function runQuery(datasourceId: number, input: QueryRequest): Promise<Que
   return request<QueryResponse>(`/api/datasources/${datasourceId}/query`, {
     method: 'POST',
     body: JSON.stringify(input),
-  })
+  });
 }
 
 // ---- Persistent editor sessions -----------------------------------
@@ -280,12 +270,12 @@ export function openEditorSession(datasourceId: number): Promise<{ sessionId: st
   return request<{ sessionId: string }>(`/api/editor/sessions`, {
     method: 'POST',
     body: JSON.stringify({ datasourceId }),
-  })
+  });
 }
 
 /** GET /api/editor/sessions/{id} — the held connection's effective namespace, as the proxy last read it. */
 export function getEditorSession(sessionId: string): Promise<{ searchPath: string[] | null }> {
-  return request<{ searchPath: string[] | null }>(`/api/editor/sessions/${encodeURIComponent(sessionId)}`)
+  return request<{ searchPath: string[] | null }>(`/api/editor/sessions/${encodeURIComponent(sessionId)}`);
 }
 
 /** POST /api/editor/sessions/{id}/default-schema — the server builds and runs the engine's statement. */
@@ -293,7 +283,7 @@ export function setEditorDefaultSchema(sessionId: string, schema: string): Promi
   return request<DefaultSchemaResult>(`/api/editor/sessions/${encodeURIComponent(sessionId)}/default-schema`, {
     method: 'POST',
     body: JSON.stringify({ schema }),
-  })
+  });
 }
 
 /**
@@ -305,125 +295,116 @@ export function submitEditorQuery(sessionId: string, input: QueryRequest): Promi
   return request<EditorSubmitResponse>(`/api/editor/sessions/${encodeURIComponent(sessionId)}/query`, {
     method: 'POST',
     body: JSON.stringify(input),
-  })
+  });
 }
 
 /** GET /api/editor/tasks/{taskId} — poll an editor task's status + its result metadata. */
 export function getEditorTask(taskId: number): Promise<EditorTaskStatus> {
-  return request<EditorTaskStatus>(`/api/editor/tasks/${taskId}`)
+  return request<EditorTaskStatus>(`/api/editor/tasks/${taskId}`);
 }
 
 /** GET /api/editor/tasks/{taskId}/result — the saved, re-decided rows once the task is DONE. */
 export function getEditorResult(taskId: number, ordinal?: number): Promise<QueryResultView> {
-  const qs = ordinal == null ? '' : `?statement=${ordinal}`
-  return request<QueryResultView>(`/api/editor/tasks/${taskId}/result${qs}`)
+  const qs = ordinal == null ? '' : `?statement=${ordinal}`;
+  return request<QueryResultView>(`/api/editor/tasks/${taskId}/result${qs}`);
 }
 
 /** POST /api/editor/tasks/{taskId}/cancel — cancel a running editor task. */
 export function cancelEditorTask(taskId: number): Promise<EditorTaskStatus> {
-  return request<EditorTaskStatus>(`/api/editor/tasks/${taskId}/cancel`, { method: 'POST' })
+  return request<EditorTaskStatus>(`/api/editor/tasks/${taskId}/cancel`, { method: 'POST' });
 }
 
 /** DELETE /api/editor/tasks/{taskId} — drop a task's saved rows (close-tab / re-run supersede). Idempotent. */
 export function deleteEditorTask(taskId: number): Promise<void> {
-  return request<void>(`/api/editor/tasks/${taskId}`, { method: 'DELETE' })
+  return request<void>(`/api/editor/tasks/${taskId}`, { method: 'DELETE' });
 }
 
 /** DELETE /api/editor/sessions/{id} — close the session, freeing its target-DB connection. */
 export function closeEditorSession(sessionId: string): Promise<void> {
-  return request<void>(`/api/editor/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' })
+  return request<void>(`/api/editor/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
 }
 
 /** GET /api/query-history — the current principal's recent distinct queries (newest first). */
 export function getQueryHistory(limit = 50): Promise<QueryHistoryEntry[]> {
-  return request<QueryHistoryEntry[]>(`/api/query-history?limit=${limit}`)
+  return request<QueryHistoryEntry[]>(`/api/query-history?limit=${limit}`);
 }
 
-export function putClassification(
-  datasourceId: number,
-  input: ClassificationInput,
-): Promise<Classification> {
+export function putClassification(datasourceId: number, input: ClassificationInput): Promise<Classification> {
   return request<Classification>(`/api/datasources/${datasourceId}/classification`, {
     method: 'PUT',
     body: JSON.stringify(input),
-  })
+  });
 }
 
-export function deleteClassification(
-  datasourceId: number,
-  body: ClassificationDelete,
-): Promise<void> {
+export function deleteClassification(datasourceId: number, body: ClassificationDelete): Promise<void> {
   return request<void>(`/api/datasources/${datasourceId}/classification`, {
     method: 'DELETE',
     body: JSON.stringify(body),
-  })
+  });
 }
 
 // ---- Roles & principal mapping ---------------------------------------------
 
 export function getRoles(): Promise<Role[]> {
-  return request<Role[]>('/api/roles')
+  return request<Role[]>('/api/roles');
 }
 
 export function createRole(input: RoleInput): Promise<Role> {
-  return request<Role>('/api/roles', { method: 'POST', body: JSON.stringify(input) })
+  return request<Role>('/api/roles', { method: 'POST', body: JSON.stringify(input) });
 }
 
 export function updateRole(id: number, input: RoleInput): Promise<Role> {
-  return request<Role>(`/api/roles/${id}`, { method: 'PUT', body: JSON.stringify(input) })
+  return request<Role>(`/api/roles/${id}`, { method: 'PUT', body: JSON.stringify(input) });
 }
 
 export function deleteRole(id: number): Promise<void> {
-  return request<void>(`/api/roles/${id}`, { method: 'DELETE' })
+  return request<void>(`/api/roles/${id}`, { method: 'DELETE' });
 }
 
-export function getRoleAssignments(params?: {
-  principal?: string
-  roleId?: number
-}): Promise<RoleAssignment[]> {
-  const q = new URLSearchParams()
-  if (params?.principal) q.set('principal', params.principal)
-  if (params?.roleId != null) q.set('roleId', String(params.roleId))
-  const qs = q.toString()
-  return request<RoleAssignment[]>(`/api/role-assignments${qs ? `?${qs}` : ''}`)
+export function getRoleAssignments(params?: { principal?: string; roleId?: number }): Promise<RoleAssignment[]> {
+  const q = new URLSearchParams();
+  if (params?.principal) q.set('principal', params.principal);
+  if (params?.roleId != null) q.set('roleId', String(params.roleId));
+  const qs = q.toString();
+  return request<RoleAssignment[]>(`/api/role-assignments${qs ? `?${qs}` : ''}`);
 }
 
 export function createRoleAssignment(input: RoleAssignmentInput): Promise<RoleAssignment> {
   return request<RoleAssignment>('/api/role-assignments', {
     method: 'POST',
     body: JSON.stringify(input),
-  })
+  });
 }
 
 export function deleteRoleAssignment(id: number): Promise<void> {
-  return request<void>(`/api/role-assignments/${id}`, { method: 'DELETE' })
+  return request<void>(`/api/role-assignments/${id}`, { method: 'DELETE' });
 }
 
 // ---- Cedar policies ----------------------------------------------------------
 
 export function getCedarPolicies(): Promise<CedarPolicy[]> {
-  return request<CedarPolicy[]>('/api/policies')
+  return request<CedarPolicy[]>('/api/policies');
 }
 
 export function createCedarPolicy(input: CedarPolicyInput): Promise<CedarPolicy> {
-  return request<CedarPolicy>('/api/policies', { method: 'POST', body: JSON.stringify(input) })
+  return request<CedarPolicy>('/api/policies', { method: 'POST', body: JSON.stringify(input) });
 }
 
 export function updateCedarPolicy(id: number, input: CedarPolicyInput): Promise<CedarPolicy> {
   return request<CedarPolicy>(`/api/policies/${id}`, {
     method: 'PUT',
     body: JSON.stringify(input),
-  })
+  });
 }
 
 export function setCedarPolicyEnabled(id: number, enabled: boolean): Promise<CedarPolicy> {
   return request<CedarPolicy>(`/api/policies/${id}/${enabled ? 'enable' : 'disable'}`, {
     method: 'POST',
-  })
+  });
 }
 
 export function deleteCedarPolicy(id: number): Promise<void> {
-  return request<void>(`/api/policies/${id}`, { method: 'DELETE' })
+  return request<void>(`/api/policies/${id}`, { method: 'DELETE' });
 }
 
 /** POST /api/policies/validate — Cedar-syntax-check without saving; `errors` is empty when valid. */
@@ -431,137 +412,134 @@ export function validateCedarPolicy(cedarSrc: string): Promise<{ errors: string[
   return request<{ errors: string[] }>('/api/policies/validate', {
     method: 'POST',
     body: JSON.stringify({ cedarSrc }),
-  })
+  });
 }
 
 /** GET /api/policies/schema — the authz Cedar schema text, for in-editor schema-aware lint/completion. */
 export function getCedarSchema(): Promise<{ schema: string }> {
-  return request<{ schema: string }>('/api/policies/schema')
+  return request<{ schema: string }>('/api/policies/schema');
 }
 
 // ---- Users & groups --------------------------------------------------------
 
 export function getUsers(): Promise<AppUser[]> {
-  return request<AppUser[]>('/api/users')
+  return request<AppUser[]>('/api/users');
 }
 
 export function createUser(input: AppUserInput): Promise<AppUser> {
-  return request<AppUser>('/api/users', { method: 'POST', body: JSON.stringify(input) })
+  return request<AppUser>('/api/users', { method: 'POST', body: JSON.stringify(input) });
 }
 
 export function updateUser(id: number, input: AppUserInput): Promise<AppUser> {
-  return request<AppUser>(`/api/users/${id}`, { method: 'PUT', body: JSON.stringify(input) })
+  return request<AppUser>(`/api/users/${id}`, { method: 'PUT', body: JSON.stringify(input) });
 }
 
 export function deleteUser(id: number): Promise<void> {
-  return request<void>(`/api/users/${id}`, { method: 'DELETE' })
+  return request<void>(`/api/users/${id}`, { method: 'DELETE' });
 }
 
 export function getGroups(): Promise<AppGroup[]> {
-  return request<AppGroup[]>('/api/groups')
+  return request<AppGroup[]>('/api/groups');
 }
 
 export function createGroup(input: AppGroupInput): Promise<AppGroup> {
-  return request<AppGroup>('/api/groups', { method: 'POST', body: JSON.stringify(input) })
+  return request<AppGroup>('/api/groups', { method: 'POST', body: JSON.stringify(input) });
 }
 
 export function updateGroup(id: number, input: AppGroupInput): Promise<AppGroup> {
-  return request<AppGroup>(`/api/groups/${id}`, { method: 'PUT', body: JSON.stringify(input) })
+  return request<AppGroup>(`/api/groups/${id}`, { method: 'PUT', body: JSON.stringify(input) });
 }
 
 export function deleteGroup(id: number): Promise<void> {
-  return request<void>(`/api/groups/${id}`, { method: 'DELETE' })
+  return request<void>(`/api/groups/${id}`, { method: 'DELETE' });
 }
 
 export function getGroupMembers(groupId: number): Promise<GroupMember[]> {
-  return request<GroupMember[]>(`/api/groups/${groupId}/members`)
+  return request<GroupMember[]>(`/api/groups/${groupId}/members`);
 }
 
 export function addGroupMember(groupId: number, userId: number): Promise<GroupMember> {
   return request<GroupMember>(`/api/groups/${groupId}/members`, {
     method: 'POST',
     body: JSON.stringify({ userId }),
-  })
+  });
 }
 
 export function removeGroupMember(groupId: number, userId: number): Promise<void> {
-  return request<void>(`/api/groups/${groupId}/members/${userId}`, { method: 'DELETE' })
+  return request<void>(`/api/groups/${groupId}/members/${userId}`, { method: 'DELETE' });
 }
 
 export function getGroupRoles(groupId: number): Promise<GroupRoleMapping[]> {
-  return request<GroupRoleMapping[]>(`/api/groups/${groupId}/roles`)
+  return request<GroupRoleMapping[]>(`/api/groups/${groupId}/roles`);
 }
 
 export function addGroupRole(groupId: number, roleId: number): Promise<GroupRoleMapping> {
   return request<GroupRoleMapping>(`/api/groups/${groupId}/roles`, {
     method: 'POST',
     body: JSON.stringify({ roleId }),
-  })
+  });
 }
 
 export function removeGroupRole(groupId: number, roleId: number): Promise<void> {
-  return request<void>(`/api/groups/${groupId}/roles/${roleId}`, { method: 'DELETE' })
+  return request<void>(`/api/groups/${groupId}/roles/${roleId}`, { method: 'DELETE' });
 }
 
 // ---- Mask functions --------------------------------------------------------
 
 export function getMaskFns(): Promise<MaskFn[]> {
-  return request<MaskFn[]>('/api/mask-fns')
+  return request<MaskFn[]>('/api/mask-fns');
 }
 
 export function createMaskFn(input: MaskFnInput): Promise<MaskFn> {
-  return request<MaskFn>('/api/mask-fns', { method: 'POST', body: JSON.stringify(input) })
+  return request<MaskFn>('/api/mask-fns', { method: 'POST', body: JSON.stringify(input) });
 }
 
 export function updateMaskFn(id: number, input: MaskFnInput): Promise<MaskFn> {
-  return request<MaskFn>(`/api/mask-fns/${id}`, { method: 'PUT', body: JSON.stringify(input) })
+  return request<MaskFn>(`/api/mask-fns/${id}`, { method: 'PUT', body: JSON.stringify(input) });
 }
 
 export function deleteMaskFn(id: number): Promise<void> {
-  return request<void>(`/api/mask-fns/${id}`, { method: 'DELETE' })
+  return request<void>(`/api/mask-fns/${id}`, { method: 'DELETE' });
 }
 
 // ---- JIT access ------------------------------------------------------------
 
 export function getAccessRequests(status?: string): Promise<AccessRequest[]> {
-  const qs = status ? `?status=${encodeURIComponent(status)}` : ''
-  return request<AccessRequest[]>(`/api/access-requests${qs}`)
+  const qs = status ? `?status=${encodeURIComponent(status)}` : '';
+  return request<AccessRequest[]>(`/api/access-requests${qs}`);
 }
 
 export function createAccessRequest(input: AccessRequestInput): Promise<AccessRequest> {
   return request<AccessRequest>('/api/access-requests', {
     method: 'POST',
     body: JSON.stringify(input),
-  })
+  });
 }
 
 export function approveAccessRequest(id: number, durationSec?: number): Promise<AccessRequest> {
   return request<AccessRequest>(`/api/access-requests/${id}/approve`, {
     method: 'POST',
     body: JSON.stringify(durationSec != null ? { durationSec } : {}),
-  })
+  });
 }
 
 export function rejectAccessRequest(id: number, reason: string): Promise<AccessRequest> {
   return request<AccessRequest>(`/api/access-requests/${id}/reject`, {
     method: 'POST',
     body: JSON.stringify({ reason }),
-  })
+  });
 }
 
-export function getAccessGrants(params?: {
-  principal?: string
-  active?: boolean
-}): Promise<AccessGrant[]> {
-  const q = new URLSearchParams()
-  if (params?.principal) q.set('principal', params.principal)
-  if (params?.active) q.set('active', 'true')
-  const qs = q.toString()
-  return request<AccessGrant[]>(`/api/access-grants${qs ? `?${qs}` : ''}`)
+export function getAccessGrants(params?: { principal?: string; active?: boolean }): Promise<AccessGrant[]> {
+  const q = new URLSearchParams();
+  if (params?.principal) q.set('principal', params.principal);
+  if (params?.active) q.set('active', 'true');
+  const qs = q.toString();
+  return request<AccessGrant[]>(`/api/access-grants${qs ? `?${qs}` : ''}`);
 }
 
 export function revokeAccessGrant(id: number): Promise<void> {
-  return request<void>(`/api/access-grants/${id}/revoke`, { method: 'POST' })
+  return request<void>(`/api/access-grants/${id}/revoke`, { method: 'POST' });
 }
 
 // ---- Query approvals -------------------------------------------------------
@@ -570,26 +548,26 @@ export function createApproval(input: CreateQueryRequestInput): Promise<CreateQu
   return request<CreateQueryRequestResponse>('/api/approvals', {
     method: 'POST',
     body: JSON.stringify(input),
-  })
+  });
 }
 
 export function discoverApprovalRoles(input: DiscoverRolesRequest): Promise<DiscoverRolesResponse> {
   return request<DiscoverRolesResponse>('/api/approvals/discover-roles', {
     method: 'POST',
     body: JSON.stringify(input),
-  })
+  });
 }
 
 export function getApprovalInbox(): Promise<AccessRequest[]> {
-  return request<AccessRequest[]>('/api/approvals/inbox')
+  return request<AccessRequest[]>('/api/approvals/inbox');
 }
 
 export function getInvolvedApprovals(): Promise<AccessRequest[]> {
-  return request<AccessRequest[]>('/api/requests/involved')
+  return request<AccessRequest[]>('/api/requests/involved');
 }
 
 export function getApproval(id: number): Promise<QueryRequestDetail> {
-  return request<QueryRequestDetail>(`/api/approvals/${id}`)
+  return request<QueryRequestDetail>(`/api/approvals/${id}`);
 }
 
 /** Approve the revision the approver read; the server refuses it if the request was edited since. */
@@ -597,7 +575,7 @@ export function approveApproval(id: number, revision: number): Promise<AccessReq
   return request<AccessRequest>(`/api/approvals/${id}/approve`, {
     method: 'POST',
     body: JSON.stringify({ revision }),
-  })
+  });
 }
 
 /** Replace the SQL of the caller's own pending or approved request; it goes back to pending. */
@@ -605,76 +583,79 @@ export function editApproval(id: number, input: { sql: string; reason?: string }
   return request<AccessRequest>(`/api/approvals/${id}/edit`, {
     method: 'POST',
     body: JSON.stringify(input),
-  })
+  });
 }
 
 export function rejectApproval(id: number, reason: string): Promise<AccessRequest> {
   return request<AccessRequest>(`/api/approvals/${id}/reject`, {
     method: 'POST',
     body: JSON.stringify({ reason }),
-  })
+  });
 }
 
 // ---- Task execution / result ------------------------------------------------
 
 /** Submit an approved task for asynchronous execution. */
 export function executeApproval(id: number): Promise<ExecuteQueryRequestResponse> {
-  return request<ExecuteQueryRequestResponse>(`/api/approvals/${id}/execute`, { method: 'POST' })
+  return request<ExecuteQueryRequestResponse>(`/api/approvals/${id}/execute`, { method: 'POST' });
 }
 
 /** Cancel an executing approved task. */
 export function commentOnApproval(id: number, body: string | null, lgtm = false): Promise<RequestEvent> {
-  return request<RequestEvent>(`/api/requests/${id}/comments`, { method: 'POST', body: JSON.stringify({ body, lgtm }) })
+  return request<RequestEvent>(`/api/requests/${id}/comments`, {
+    method: 'POST',
+    body: JSON.stringify({ body, lgtm }),
+  });
 }
 
 export function addApprovalCc(id: number, principal: string): Promise<AccessRequest> {
-  return request<AccessRequest>(`/api/requests/${id}/ccs`, { method: 'POST', body: JSON.stringify({ principal }) })
+  return request<AccessRequest>(`/api/requests/${id}/ccs`, { method: 'POST', body: JSON.stringify({ principal }) });
 }
 
 export function removeApprovalCc(id: number, principal: string): Promise<AccessRequest> {
-  return request<AccessRequest>(`/api/requests/${id}/ccs/${encodeURIComponent(principal)}`, { method: 'DELETE' })
+  return request<AccessRequest>(`/api/requests/${id}/ccs/${encodeURIComponent(principal)}`, { method: 'DELETE' });
 }
 
 export function getRequestThread(id: number): Promise<RequestThread> {
-  return request<RequestThread>(`/api/requests/${id}/thread`)
+  return request<RequestThread>(`/api/requests/${id}/thread`);
 }
 
 export function closeRequest(id: number): Promise<AccessRequest> {
-  return request<AccessRequest>(`/api/requests/${id}/close`, { method: 'POST' })
+  return request<AccessRequest>(`/api/requests/${id}/close`, { method: 'POST' });
 }
 
 export function unapproveApproval(id: number): Promise<AccessRequest> {
-  return request<AccessRequest>(`/api/approvals/${id}/unapprove`, { method: 'POST' })
+  return request<AccessRequest>(`/api/approvals/${id}/unapprove`, { method: 'POST' });
 }
 
 export function cancelApproval(id: number): Promise<AccessRequest> {
-  return request<AccessRequest>(`/api/approvals/${id}/cancel`, { method: 'POST' })
+  return request<AccessRequest>(`/api/approvals/${id}/cancel`, { method: 'POST' });
 }
 
 export function forceRunApproval(id: number): Promise<AccessRequest> {
-  return request<AccessRequest>(`/api/approvals/${id}/force-run`, { method: 'POST' })
+  return request<AccessRequest>(`/api/approvals/${id}/force-run`, { method: 'POST' });
 }
 
 /** Fetch decrypted rows after the latest child reaches DONE. */
 /** [ordinal] selects one statement of a batch; omit it for the active statement. */
 export function getApprovalResult(id: number, ordinal?: number): Promise<QueryResultView> {
-  const qs = ordinal == null ? '' : `?statement=${ordinal}`
-  return request<QueryResultView>(`/api/approvals/${id}/result${qs}`)
+  const qs = ordinal == null ? '' : `?statement=${ordinal}`;
+  return request<QueryResultView>(`/api/approvals/${id}/result${qs}`);
 }
 
 // ---- Wire tokens (expiring-only) -------------------------------------------
 
 /** GET /api/tokens — the current principal's wire tokens (metadata only, never the secret). */
 export function getTokens(): Promise<WireTokenInfo[]> {
-  return request<WireTokenInfo[]>('/api/tokens')
+  return request<WireTokenInfo[]>('/api/tokens');
 }
 
 /** POST /api/tokens — generate a managed (USER) expiring token; the plaintext is returned once. */
 export function createToken(input: CreateTokenInput): Promise<IssuedToken> {
-  return request<IssuedToken>('/api/tokens', { method: 'POST', body: JSON.stringify(input) })
+  return request<IssuedToken>('/api/tokens', { method: 'POST', body: JSON.stringify(input) });
 }
 
 /** DELETE /api/tokens/{id} — revoke a token. */
 export function revokeToken(id: number): Promise<void> {
-  return request<void>(`/api/tokens/${id}`, { method: 'DELETE' })
+  return request<void>(`/api/tokens/${id}`, { method: 'DELETE' });
 }

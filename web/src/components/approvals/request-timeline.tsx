@@ -1,23 +1,38 @@
-'use client'
+'use client';
 
-import { useState } from 'react'
-import { useTranslations } from 'next-intl'
-import { toast } from 'sonner'
-import { X } from 'lucide-react'
-import { addApprovalCc, closeRequest, commentOnApproval, removeApprovalCc } from '@/lib/api/client'
-import type { AccessRequest, RequestEvent } from '@/lib/api/types'
-import { useRequestThread } from '@/lib/hooks'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Textarea } from '@/components/ui/textarea'
+import { useState } from 'react';
+import { useTranslations } from 'next-intl';
+import { toast } from 'sonner';
+import { X } from 'lucide-react';
+import { addApprovalCc, closeRequest, commentOnApproval, removeApprovalCc } from '@/lib/api/client';
+import type { AccessRequest, RequestEvent } from '@/lib/api/types';
+import { useRequestThread } from '@/lib/hooks';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
 
 function errorText(err: unknown, fallback: string): string {
-  return err instanceof Error ? err.message : fallback
+  return err instanceof Error ? err.message : fallback;
+}
+
+const URL_RE = /(https?:\/\/[^\s<>"]*[^\s<>".,;:!?)\]'])/;
+
+/** Comment text with each http(s) URL as a link that opens in a new tab. */
+export function Linkified({ text }: { text: string }) {
+  return text.split(URL_RE).map((part, i) =>
+    i % 2 === 1 ? (
+      <a key={i} href={part} target="_blank" rel="noopener noreferrer" className="underline">
+        {part}
+      </a>
+    ) : (
+      part
+    ),
+  );
 }
 
 function EventLine({ event, onRequest }: { event: RequestEvent; onRequest: boolean }) {
-  const t = useTranslations('Workflows')
-  const when = new Date(event.createdAt).toLocaleString()
+  const t = useTranslations('Workflows');
+  const when = new Date(event.createdAt).toLocaleString();
   if (event.kind === 'comment' || event.kind === 'lgtm') {
     return (
       <li className="space-y-1" data-testid={`timeline-${event.kind}`}>
@@ -36,18 +51,22 @@ function EventLine({ event, onRequest }: { event: RequestEvent; onRequest: boole
         {event.deleted ? (
           <p className="text-muted-foreground text-sm italic">{t('timeline.deleted')}</p>
         ) : (
-          event.body && <p className="text-sm whitespace-pre-wrap break-words">{event.body}</p>
+          event.body && (
+            <p className="text-sm whitespace-pre-wrap break-words">
+              <Linkified text={event.body} />
+            </p>
+          )
         )}
       </li>
-    )
+    );
   }
-  const text = t(`timeline.events.${event.kind}`, { body: event.body ?? '', revision: event.revision ?? 1 })
+  const text = t(`timeline.events.${event.kind}`, { body: event.body ?? '', revision: event.revision ?? 1 });
   return (
     <li className="text-muted-foreground text-xs" data-testid={`timeline-${event.kind}`}>
       {event.actor && <span className="text-foreground font-medium">{event.actor} </span>}
       {text} · {when}
     </li>
-  )
+  );
 }
 
 /** A request's comments, LGTMs, CCs, and state changes, oldest first. Works for every request kind. */
@@ -56,36 +75,36 @@ export function RequestTimeline({
   principal,
   onChanged,
 }: {
-  request: AccessRequest
-  principal?: string
-  onChanged?: () => void
+  request: AccessRequest;
+  principal?: string;
+  onChanged?: () => void;
 }) {
-  const t = useTranslations('Workflows')
-  const id = request.id
-  const { data: thread, mutate } = useRequestThread(id, { refreshInterval: 15_000 })
-  const [body, setBody] = useState('')
-  const [cc, setCc] = useState('')
-  const [busy, setBusy] = useState<'comment' | 'lgtm' | 'cc' | null>(null)
-  if (!thread) return null
-  const ccs = thread.ccs
-  const isRequester = request.principal === principal
-  const members = new Set([request.principal, ...thread.participants, ...ccs])
+  const t = useTranslations('Workflows');
+  const id = request.id;
+  const { data: thread, mutate } = useRequestThread(id, { refreshInterval: 15_000 });
+  const [body, setBody] = useState('');
+  const [cc, setCc] = useState('');
+  const [busy, setBusy] = useState<'comment' | 'lgtm' | 'cc' | null>(null);
+  if (!thread) return null;
+  const ccs = thread.ccs;
+  const isRequester = request.principal === principal;
+  const members = new Set([request.principal, ...thread.participants, ...ccs]);
   // Only a Slack channel reply can come from someone not on the request; every other comment passed task.comment.
-  const onRequest = (actor?: string | null) => actor == null || members.has(actor)
+  const onRequest = (actor?: string | null) => actor == null || members.has(actor);
 
   const run = async (kind: 'comment' | 'lgtm' | 'cc', action: () => Promise<unknown>, after: () => void) => {
-    setBusy(kind)
+    setBusy(kind);
     try {
-      await action()
-      after()
-      await mutate()
-      onChanged?.()
+      await action();
+      after();
+      await mutate();
+      onChanged?.();
     } catch (err) {
-      toast.error(errorText(err, t('timeline.failed')))
+      toast.error(errorText(err, t('timeline.failed')));
     } finally {
-      setBusy(null)
+      setBusy(null);
     }
-  }
+  };
 
   return (
     <div className="space-y-4 border-t pt-4" data-testid="approval-timeline">
@@ -94,14 +113,23 @@ export function RequestTimeline({
         <div className="flex flex-wrap items-center gap-2">
           {ccs.length === 0 && <span className="text-muted-foreground text-sm">—</span>}
           {ccs.map((p) => (
-            <span key={p} className="bg-muted inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-mono text-xs">
+            <span
+              key={p}
+              className="bg-muted inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-mono text-xs"
+            >
               {p}
               {thread.canCc && (
                 <button
                   type="button"
                   aria-label={t('timeline.removeCc', { principal: p })}
                   disabled={busy !== null}
-                  onClick={() => run('cc', () => removeApprovalCc(id, p), () => {})}
+                  onClick={() =>
+                    run(
+                      'cc',
+                      () => removeApprovalCc(id, p),
+                      () => {},
+                    )
+                  }
                 >
                   <X className="size-3" />
                 </button>
@@ -113,8 +141,13 @@ export function RequestTimeline({
           <form
             className="flex max-w-md gap-2"
             onSubmit={(e) => {
-              e.preventDefault()
-              if (cc.trim()) void run('cc', () => addApprovalCc(id, cc.trim()), () => setCc(''))
+              e.preventDefault();
+              if (cc.trim())
+                void run(
+                  'cc',
+                  () => addApprovalCc(id, cc.trim()),
+                  () => setCc(''),
+                );
             }}
           >
             <Input
@@ -132,7 +165,9 @@ export function RequestTimeline({
       </div>
 
       <div className="space-y-2">
-        <p className="text-muted-foreground text-[10px] font-semibold tracking-widest uppercase">{t('timeline.heading')}</p>
+        <p className="text-muted-foreground text-[10px] font-semibold tracking-widest uppercase">
+          {t('timeline.heading')}
+        </p>
         <ol className="space-y-3">
           {thread.timeline.map((event) => (
             <EventLine key={event.id} event={event} onRequest={event.origin !== 'slack' || onRequest(event.actor)} />
@@ -154,7 +189,13 @@ export function RequestTimeline({
             <Button
               size="sm"
               disabled={!body.trim() || busy !== null}
-              onClick={() => run('comment', () => commentOnApproval(id, body.trim()), () => setBody(''))}
+              onClick={() =>
+                run(
+                  'comment',
+                  () => commentOnApproval(id, body.trim()),
+                  () => setBody(''),
+                )
+              }
             >
               {t('timeline.comment')}
             </Button>
@@ -163,7 +204,13 @@ export function RequestTimeline({
                 size="sm"
                 variant="outline"
                 disabled={busy !== null}
-                onClick={() => run('lgtm', () => commentOnApproval(id, body.trim() || null, true), () => setBody(''))}
+                onClick={() =>
+                  run(
+                    'lgtm',
+                    () => commentOnApproval(id, body.trim() || null, true),
+                    () => setBody(''),
+                  )
+                }
               >
                 {t('timeline.giveLgtm')}
               </Button>
@@ -172,34 +219,34 @@ export function RequestTimeline({
         </div>
       )}
     </div>
-  )
+  );
 }
 
 /** Closes a request that has not started, for whoever Cedar lets do so. Renders nothing otherwise. */
 export function CloseRequestButton({ request, onClosed }: { request: AccessRequest; onClosed?: () => void }) {
-  const t = useTranslations('Workflows')
-  const { data: thread, mutate } = useRequestThread(request.id)
-  const [busy, setBusy] = useState(false)
-  if (!thread?.canClose) return null
+  const t = useTranslations('Workflows');
+  const { data: thread, mutate } = useRequestThread(request.id);
+  const [busy, setBusy] = useState(false);
+  if (!thread?.canClose) return null;
   return (
     <Button
       variant="outline"
       disabled={busy}
       onClick={async () => {
-        setBusy(true)
+        setBusy(true);
         try {
-          await closeRequest(request.id)
-          toast.success(t('approvalDetail.closedToast'))
-          await mutate()
-          onClosed?.()
+          await closeRequest(request.id);
+          toast.success(t('approvalDetail.closedToast'));
+          await mutate();
+          onClosed?.();
         } catch (err) {
-          toast.error(errorText(err, t('approvalDetail.closeFailed')))
+          toast.error(errorText(err, t('approvalDetail.closeFailed')));
         } finally {
-          setBusy(false)
+          setBusy(false);
         }
       }}
     >
       {busy ? t('actions.closing') : t('actions.close')}
     </Button>
-  )
+  );
 }

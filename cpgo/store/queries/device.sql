@@ -63,7 +63,7 @@ UPDATE oauth_consent c SET revoked_at = now(), updated_at = now()
 WHERE c.id = ANY(sqlc.arg(ids)::bigint[]) AND c.revoked_at IS NULL
   AND NOT EXISTS (SELECT 1 FROM proxy_token t WHERE t.consent_id = c.id AND t.revoked_at IS NULL AND t.expires_at > now());
 
--- name: PmonConsent :one
+-- name: UpsertConsent :one
 INSERT INTO oauth_consent (principal, client_id, resource, scope) VALUES ($1, $2, $3, $4)
 ON CONFLICT (principal, client_id, resource, scope) WHERE revoked_at IS NULL DO UPDATE SET updated_at = now()
 RETURNING id;

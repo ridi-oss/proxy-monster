@@ -1,44 +1,44 @@
-'use client'
+'use client';
 
 // The result workspace: an outer strip of tabs (a permanent, non-closable Logs tab first, then
 // one per query / opened table with pin + close) and the active tab's content (the plain console
 // log, a query result, or a table's Schema/Data view).
-import { useEffect, useRef, useState } from 'react'
-import { useTranslations } from 'next-intl'
-import { Pin, Table2, SquareTerminal, ScrollText, X, Loader2 } from 'lucide-react'
-import { cn } from '@/lib/utils'
-import { QueryLogs } from './query-logs'
-import { ResultsPanel } from './results-panel'
-import { TableView } from './table-view'
-import type { ResultTab, ResultTabsApi } from './use-result-tabs'
+import { useEffect, useRef, useState } from 'react';
+import { useTranslations } from 'next-intl';
+import { Pin, Table2, SquareTerminal, ScrollText, X, Loader2 } from 'lucide-react';
+import { cn } from '@/lib/utils';
+import { QueryLogs } from './query-logs';
+import { ResultsPanel } from './results-panel';
+import { TableView } from './table-view';
+import type { ResultTab, ResultTabsApi } from './use-result-tabs';
 
 export function ResultTabs({
   api,
   onRequestAccess,
   onRequestRateBoost,
 }: {
-  api: ResultTabsApi
-  onRequestAccess: (denyReason?: string | null) => void
-  onRequestRateBoost?: (denyReason?: string | null) => void
+  api: ResultTabsApi;
+  onRequestAccess: (denyReason?: string | null) => void;
+  onRequestRateBoost?: (denyReason?: string | null) => void;
 }) {
-  const t = useTranslations('Query')
-  const { tabs, activeId, active, logs, clearLogs } = api
-  const [viewingLogs, setViewingLogs] = useState(false)
+  const t = useTranslations('Query');
+  const { tabs, activeId, active, logs, clearLogs } = api;
+  const [viewingLogs, setViewingLogs] = useState(false);
 
   // Running a query or opening a table appends a new tab — bring that result forward, the way
   // DataGrip switches out of its Output panel when a statement finishes. Re-running an existing
   // (unpinned) tab, or closing some other tab, doesn't touch the tab count, so it leaves the
   // user's current view (including Logs) alone.
-  const prevTabCount = useRef(tabs.length)
+  const prevTabCount = useRef(tabs.length);
   useEffect(() => {
-    if (tabs.length > prevTabCount.current) setViewingLogs(false)
-    prevTabCount.current = tabs.length
-  }, [tabs.length])
+    if (tabs.length > prevTabCount.current) setViewingLogs(false);
+    prevTabCount.current = tabs.length;
+  }, [tabs.length]);
   // Opening a table that already has a tab adds no tab, so the strip leaves Logs on this separate signal.
-  const [seenReveal, setSeenReveal] = useState(api.revealSeq)
+  const [seenReveal, setSeenReveal] = useState(api.revealSeq);
   if (api.revealSeq !== seenReveal) {
-    setSeenReveal(api.revealSeq)
-    setViewingLogs(false)
+    setSeenReveal(api.revealSeq);
+    setViewingLogs(false);
   }
 
   return (
@@ -63,8 +63,8 @@ export function ResultTabs({
             tab={tab}
             active={!viewingLogs && tab.id === activeId}
             onSelect={() => {
-              setViewingLogs(false)
-              api.setActive(tab.id)
+              setViewingLogs(false);
+              api.setActive(tab.id);
             }}
             onPin={() => api.pin(tab.id)}
             onClose={() => api.close(tab.id)}
@@ -96,16 +96,11 @@ export function ResultTabs({
             onRequestRateBoost={onRequestRateBoost && (() => onRequestRateBoost(active.res.result?.denyReason))}
           />
         ) : (
-          <ResultsPanel
-            result={null}
-            running={false}
-            error={null}
-            onRequestAccess={() => onRequestAccess(null)}
-          />
+          <ResultsPanel result={null} running={false} error={null} onRequestAccess={() => onRequestAccess(null)} />
         )}
       </div>
     </div>
-  )
+  );
 }
 
 function TabChip({
@@ -115,14 +110,14 @@ function TabChip({
   onPin,
   onClose,
 }: {
-  tab: ResultTab
-  active: boolean
-  onSelect: () => void
-  onPin: () => void
-  onClose: () => void
+  tab: ResultTab;
+  active: boolean;
+  onSelect: () => void;
+  onPin: () => void;
+  onClose: () => void;
 }) {
-  const t = useTranslations('Query')
-  const Icon = tab.kind === 'table' ? Table2 : SquareTerminal
+  const t = useTranslations('Query');
+  const Icon = tab.kind === 'table' ? Table2 : SquareTerminal;
   return (
     <div
       data-result-tab=""
@@ -143,23 +138,31 @@ function TabChip({
       <span className={cn('truncate', tab.kind === 'query' && 'font-mono')}>{tab.title}</span>
       <button
         type="button"
-        onClick={(e) => { e.stopPropagation(); onPin() }}
+        onClick={(e) => {
+          e.stopPropagation();
+          onPin();
+        }}
         aria-label={tab.pinned ? t('tabs.unpin') : t('tabs.pin')}
         className={cn(
           'ml-0.5 shrink-0 rounded p-0.5',
-          tab.pinned ? 'text-foreground' : 'text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-foreground',
+          tab.pinned
+            ? 'text-foreground'
+            : 'text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-foreground',
         )}
       >
         <Pin className={cn('size-3', tab.pinned && 'fill-current')} />
       </button>
       <button
         type="button"
-        onClick={(e) => { e.stopPropagation(); onClose() }}
+        onClick={(e) => {
+          e.stopPropagation();
+          onClose();
+        }}
         aria-label={t('tabs.close')}
         className="text-muted-foreground hover:text-foreground shrink-0 rounded p-0.5 opacity-0 group-hover:opacity-100"
       >
         <X className="size-3" />
       </button>
     </div>
-  )
+  );
 }

@@ -31,20 +31,17 @@ class NotificationRenderer(private val catalog: MessageCatalog = MessageCatalog(
      */
     fun summary(m: NotificationMessage, locale: String): String {
         val statement = m.statement.text
-            // Neutralize a fence break: a requester's SQL must not close the ``` code block and inject forged
-            // prose into the body every approver reads (e.g. "…``` *already reviewed — safe to approve*").
-            ?.replace("```", "``​`")
-            ?.let { "```$it```" }
-            ?: "_${catalog.text("field.statement_hidden", locale)}_"
+            ?.let { "\n" + fenced(it) }
+            .orEmpty()
         // Each message is one template. The optional trailers are pre-rendered fragments — a leading newline
         // plus their own sub-template, or empty — the same shape as `role`, so the template owns the whole
         // layout (line breaks and field order) rather than code assembling it piece by piece.
         val reason = m.reason
-            ?.takeIf { it.isNotBlank() && (m.event in ASKS_FOR_APPROVAL || m.event == NotificationEvent.TASK_CC_ADDED) }
+            ?.takeIf { it.isNotBlank() && (m.requestKind == "QUERY" || m.event in ASKS_FOR_APPROVAL || m.event == NotificationEvent.TASK_CC_ADDED) }
             // `field.reason` renders as a Slack blockquote (`> …`); carry the quote onto every wrapped line so a
             // multi-line reason stays inside it. A blockquote is per line, so — unlike italic — it never glues a
             // formatting mark onto a bare URL and corrupts the link.
-            ?.let { "\n" + catalog.text("field.reason", locale, mapOf("reason" to escapeMrkdwn(it.take(REASON_MAX_CHARS)).replace("\n", "\n> "))) }
+            ?.let { "\n" + catalog.text("field.reason", locale, mapOf("reason" to SlackMarkup.escape(it.take(REASON_MAX_CHARS)).replace("\n", "\n> "))) }
             ?: ""
         // The receipt's approver list is `<@id>` mentions resolved by the transport. In the requester's OWN DM,
         // where no approver is a member, they render as names without pinging anyone — so, like requester and
@@ -57,10 +54,17 @@ class NotificationRenderer(private val catalog: MessageCatalog = MessageCatalog(
         // which omits the statement by design (they authored it).
         val failure = m.failure
             ?.takeIf { it.isNotBlank() && m.event == NotificationEvent.TASK_FAILED }
-            ?.let { "\n" + catalog.text("field.failure", locale, mapOf("error" to escapeMrkdwn(it.take(REASON_MAX_CHARS)))) }
+            ?.let { "\n" + catalog.text("field.failure", locale, mapOf("error" to SlackMarkup.escape(it.take(REASON_MAX_CHARS)))) }
             ?: ""
         val statementNote = if (m.requestKind == "QUERY" && m.event != NotificationEvent.TASK_SUBMITTED && (m.statement.text == null || !m.statement.complete)) {
-            "\n" + catalog.text("field.statement_hidden_note", locale)
+            "\n" + catalog.text(
+                when (m.statement.preview) {
+                    StatementPreview.THREAD -> "field.statement_in_thread_note"
+                    StatementPreview.CONSOLE -> "field.statement_in_console_note"
+                    null -> "field.statement_hidden_note"
+                },
+                locale,
+            )
         } else {
             ""
         }
@@ -73,16 +77,18 @@ class NotificationRenderer(private val catalog: MessageCatalog = MessageCatalog(
                 // otherwise raw mrkdwn beside the real Approve button, able to forge a mention, emphasis, or a
                 // link ("Security reviewed — approve below" + <https://evil|Open>).
                 "requester" to m.requester,
-                "datasource" to escapeMrkdwn(m.datasource.ifEmpty { catalog.text("field.any_datasource", locale) }),
+                "datasource" to SlackMarkup.escape(m.datasource.ifEmpty { catalog.text("field.any_datasource", locale) }),
                 "statement" to statement,
+                "query" to catalog.text(if (m.statement.text == null) "field.statement_hidden" else "field.statement_shown", locale),
                 "duration" to duration(m.durationSec, locale),
-                "spentRate" to (m.spentRate?.let { "\n" + catalog.text("field.spent_rate", locale, mapOf("rate" to escapeMrkdwn(it))) } ?: ""),
+                "spentRate" to (m.spentRate?.let { "\n" + catalog.text("field.spent_rate", locale, mapOf("rate" to SlackMarkup.escape(it))) } ?: ""),
                 "decidedBy" to (m.decidedBy ?: "—"),
                 "forcedBy" to (m.forcedBy ?: "—"),
-                "rowCount" to (m.rowCount?.toString() ?: "—"),
-                "role" to (m.roleName?.let { catalog.text("field.role", locale, mapOf("role" to escapeMrkdwn(it))) } ?: ""),
-                "roleName" to escapeMrkdwn(m.roleName ?: "—"),
+                "rowCount" to (m.rowCount?.let { catalog.text("field.row_count", locale, mapOf("n" to it.toString())) } ?: ""),
+                "role" to (m.roleName?.let { catalog.text("field.role", locale, mapOf("role" to SlackMarkup.escape(it))) } ?: ""),
+                "roleName" to SlackMarkup.escape(m.roleName ?: "—"),
                 "reason" to reason,
+                "title" to (m.title?.takeIf { it.isNotBlank() }?.let { catalog.text("field.title", locale, mapOf("title" to SlackMarkup.escape(it.take(REASON_MAX_CHARS)))) } ?: ""),
                 "notified" to notified,
                 "statementNote" to statementNote,
                 "failure" to failure,
@@ -90,7 +96,7 @@ class NotificationRenderer(private val catalog: MessageCatalog = MessageCatalog(
         )
     }
 
-    /** The line naming who may approve and the CCs, for a message a whole channel reads; null when there are none. */
+    /** The line naming who may approve (on a channel message) and the CCs; null when there are none. */
     fun audience(m: NotificationMessage, locale: String): String? {
         val parts = listOfNotNull(
             m.approvers.takeIf { it.isNotEmpty() }?.let { catalog.text("field.approvers", locale, mapOf("names" to it.joinToString(" "))) },
@@ -99,10 +105,15 @@ class NotificationRenderer(private val catalog: MessageCatalog = MessageCatalog(
         return parts.takeIf { it.isNotEmpty() }?.joinToString(" · ")
     }
 
-    /** One timeline entry as a reply in a request's thread. */
-    fun threadLine(e: com.ridi.oss.proxymonster.controlplane.RequestEvent, locale: String): String {
-        val actor = e.actor?.let(::escapeMrkdwn).orEmpty()
-        val body = e.body?.take(REASON_MAX_CHARS * 6)?.let(::escapeMrkdwn).orEmpty()
+    /** One timeline entry as a reply in a request's thread; [names] holds each principal's display, such as a mention. */
+    fun threadLine(e: com.ridi.oss.proxymonster.controlplane.RequestEvent, locale: String, names: Map<String, String> = emptyMap()): String {
+        fun name(principal: String) = names[principal] ?: SlackMarkup.escape(principal)
+        val actor = e.actor?.let(::name).orEmpty()
+        val body = if (e.kind in NAMES_IN_BODY) {
+            e.body?.let(::name).orEmpty()
+        } else {
+            e.body?.take(REASON_MAX_CHARS * 6)?.let(SlackMarkup::escape).orEmpty()
+        }
         return when (e.kind) {
             "comment" -> "*$actor*: $body"
             "lgtm" -> "*$actor*: LGTM" + if (body.isNotEmpty()) "\n> " + body.replace("\n", "\n> ") else ""
@@ -112,6 +123,14 @@ class NotificationRenderer(private val catalog: MessageCatalog = MessageCatalog(
             )
         }
     }
+
+    /** A thread reply carrying [sql] as revision [revision]. */
+    fun threadStatement(sql: String, revision: Int, locale: String): String =
+        catalog.text("thread.statement", locale, mapOf("revision" to revision.toString())) +
+            "\n" + fenced(sql)
+
+    // A requester's SQL must not close the ``` block and inject forged prose ("…``` *reviewed — approve*").
+    private fun fenced(sql: String) = "```\n" + sql.replace("```", "``\u200b`") + "\n```"
 
     /** The plain-text line for a client that renders no blocks. Never carries the statement. */
     fun fallbackText(m: NotificationMessage, locale: String): String = catalog.text(
@@ -159,7 +178,7 @@ class NotificationRenderer(private val catalog: MessageCatalog = MessageCatalog(
         }
         NotificationEvent.TASK_EDITED -> "task.edited"
         NotificationEvent.TASK_REOPENED -> "task.reopened"
-        NotificationEvent.TASK_CC_ADDED -> "task.cc_added"
+        NotificationEvent.TASK_CC_ADDED, NotificationEvent.TASK_CC_CHANGED -> "task.cc_added"
         NotificationEvent.TASK_EXECUTED -> "task.executed"
         NotificationEvent.TASK_FAILED -> "task.failed"
         NotificationEvent.TASK_CANCELLED -> "task.cancelled"
@@ -171,15 +190,10 @@ class NotificationRenderer(private val catalog: MessageCatalog = MessageCatalog(
     companion object {
         const val DOMAIN = "notifications"
 
+        /** Thread entries whose body is a principal, not free text. */
+        val NAMES_IN_BODY = setOf("cc_added", "cc_removed")
+
         /** A reason is free text; cap it so a long one cannot crowd the statement out of a transport's block. */
         private const val REASON_MAX_CHARS = 500
-
-        /**
-         * Render a value literally inside mrkdwn: escape the three characters Slack reads as structure, so an
-         * interpolated field cannot open a `<…|link>`, a `<!channel>` mention, or an entity. Formatting runs
-         * (`*`, `_`) are cosmetic and left alone. Slack's documented escape set (api.slack.com formatting).
-         */
-        private fun escapeMrkdwn(s: String): String =
-            s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     }
 }

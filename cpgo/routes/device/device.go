@@ -3,12 +3,9 @@ package device
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"math/big"
 	"net/http"
-	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -16,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ridi-oss/proxy-monster/cpgo/api"
 	"github.com/ridi-oss/proxy-monster/cpgo/audit"
@@ -47,14 +45,6 @@ const (
 // defaultScopes is what a pmon login grants when it names none; anything else is elevated and time-boxed.
 func defaultScopes() []string { return []string{"mcp:query", "mcp:read"} }
 
-// supportedScopes is every scope an MCP tool requires (McpCapabilityRegistry.supportedScopes).
-func supportedScopes() []string {
-	return []string{
-		"mcp:approvals:write", "mcp:datasources:write", "mcp:identity:write", "mcp:policies:write",
-		"mcp:query", "mcp:read", "mcp:tokens",
-	}
-}
-
 // device serves pmon's login (/auth/device/*) and its daemon session (/auth/session/{renew,logout,mcp-token}).
 type device struct {
 	websession.Auth
@@ -78,20 +68,8 @@ type deviceLogin struct {
 	elevatedUntil *time.Time
 }
 
-// canonicalScopes is the stored form: trimmed, non-empty, sorted, distinct, space-joined.
-func canonicalScopes(scopes []string) string {
-	var out []string
-	for _, s := range scopes {
-		if s = strings.TrimSpace(s); s != "" {
-			out = append(out, s)
-		}
-	}
-	slices.Sort(out)
-	return strings.Join(slices.Compact(out), " ")
-}
-
 func parseScopes(raw string) []string {
-	return strings.Fields(canonicalScopes(strings.Split(raw, " ")))
+	return strings.Fields(session.CanonicalScopes(strings.Split(raw, " ")))
 }
 
 func elevated(scopes []string) bool {
@@ -122,16 +100,6 @@ func newUserCode() string {
 		b.WriteByte(userCodeAlphabet[n.Int64()])
 	}
 	return b.String()
-}
-
-func SHA256Hex(s string) string {
-	sum := sha256.Sum256([]byte(s))
-	return hex.EncodeToString(sum[:])
-}
-
-// encodeURLParameter is Ktor's String.encodeURLParameter: percent-encoding with %20 for a space.
-func encodeURLParameter(s string) string {
-	return strings.ReplaceAll(url.QueryEscape(s), "+", "%20")
 }
 
 func (d device) deviceLogin(ctx context.Context, where string, arg string) (*deviceLogin, error) {
@@ -181,7 +149,7 @@ func (d device) start(w http.ResponseWriter, r *http.Request) error {
 		return api.CodeNoScopes.Err()
 	}
 	for _, s := range scopes {
-		if !slices.Contains(supportedScopes(), s) {
+		if !slices.Contains(session.MCPScopes(), s) {
 			return api.CodeUnknownScope.Err("scope", api.Truncate(s, 200))
 		}
 	}
@@ -190,7 +158,7 @@ func (d device) start(w http.ResponseWriter, r *http.Request) error {
 	for attempt := 1; ; attempt++ {
 		userCode = newUserCode()
 		err := db.New(d.Pool).CreateDeviceLogin(r.Context(), db.CreateDeviceLoginParams{Handle: handle, UserCode: &userCode,
-			IntervalSec: devicePollInterval, TtlSeconds: ttl, ExpiresAt: time.Now().Add(deviceLoginTTL), Scopes: canonicalScopes(scopes)})
+			IntervalSec: devicePollInterval, TtlSeconds: ttl, ExpiresAt: time.Now().Add(deviceLoginTTL), Scopes: session.CanonicalScopes(scopes)})
 		var pgErr *pgconn.PgError
 		if err == nil {
 			break
@@ -206,18 +174,8 @@ func (d device) start(w http.ResponseWriter, r *http.Request) error {
 		UserCode                string `json:"userCode"`
 		Handle                  string `json:"handle"`
 		Interval                int    `json:"interval"`
-	}{verifyURI, verifyURI + "?user_code=" + encodeURLParameter(userCode), userCode, handle, devicePollInterval})
+	}{verifyURI, verifyURI + "?user_code=" + api.URLParameter(userCode), userCode, handle, devicePollInterval})
 	return nil
-}
-
-// liveSession is the request's web session, ending it when the device cookie does not match.
-func (d device) liveSession(r *http.Request) (*session.Web, error) {
-	s, err := d.Sessions.Resolve(r.Context(), r)
-	if errors.Is(err, session.ErrDeviceMismatch) {
-		d.EndSession(r.Context(), s.ID, session.EndedDeviceMismatch)
-		return nil, nil
-	}
-	return s, err
 }
 
 func pending(l *deviceLogin) bool {
@@ -226,7 +184,7 @@ func pending(l *deviceLogin) bool {
 
 // confirm binds this browser and its web session to the code the signed-in person confirmed on /device.
 func (d device) confirm(w http.ResponseWriter, r *http.Request) error {
-	s, err := d.liveSession(r)
+	s, err := d.Live(r)
 	if err != nil {
 		return err
 	}
@@ -268,7 +226,7 @@ func (d device) authorize(w http.ResponseWriter, r *http.Request) error {
 	userCode := strings.TrimSpace(r.URL.Query().Get("user_code"))
 	back := "/device"
 	if userCode != "" {
-		back += "?user_code=" + encodeURLParameter(userCode)
+		back += "?user_code=" + api.URLParameter(userCode)
 	}
 	back = d.Sessions.Settings().WebRedirect(back)
 	var verified verifySession
@@ -288,7 +246,7 @@ func (d device) authorize(w http.ResponseWriter, r *http.Request) error {
 		bounce()
 		return nil
 	}
-	s, err := d.liveSession(r)
+	s, err := d.Live(r)
 	if err != nil {
 		return err
 	}
@@ -383,7 +341,7 @@ func (d device) poll(w http.ResponseWriter, r *http.Request) error {
 			return api.CodeLoginCompleted.Err()
 		}
 		renewal := "pmr_" + api.RandomToken(32)
-		renewalHash, scopes := SHA256Hex(renewal), canonicalScopes(l.scopes)
+		renewalHash, scopes := session.TokenHash(renewal), session.CanonicalScopes(l.scopes)
 		created, err := q.CreateDaemonSession(ctx, db.CreateDaemonSessionParams{Principal: principal, Handle: &l.handle,
 			RefreshTokenEnc: l.refreshEnc, TtlSeconds: &l.ttlSeconds, WindowSeconds: float64(d.Sessions.Settings().SessionWindowSeconds),
 			RenewalTokenHash: &renewalHash, Scopes: &scopes, ElevatedUntil: l.elevatedUntil})
@@ -427,7 +385,7 @@ func isDeactivated(ctx context.Context, tx pgx.Tx, principal string) (bool, erro
 func issueSession(ctx context.Context, tx pgx.Tx, principal string, ttl, sessionID int64) (*tokens.IssuedToken, error) {
 	token := "pmt_" + api.RandomToken(32)
 	out := tokens.IssuedToken{Token: token, Kind: "SESSION"}
-	row, err := db.New(tx).IssueSessionToken(ctx, db.IssueSessionTokenParams{TokenHash: SHA256Hex(token), Principal: principal,
+	row, err := db.New(tx).IssueSessionToken(ctx, db.IssueSessionTokenParams{TokenHash: session.TokenHash(token), Principal: principal,
 		Ttl: min(max(ttl, tokens.TokenMinTTL), tokens.TokenMaxTTL), PrincipalSessionID: &sessionID})
 	out.ID, out.ExpiresAt = row.ID, api.JavaInstant(row.ExpiresAt)
 	return &out, err
@@ -457,7 +415,7 @@ func (d device) bearerSession(r *http.Request) (*daemonSession, error) {
 	if !strings.HasPrefix(header, "Bearer ") {
 		return nil, api.CodeMissingRenewalToken.Err()
 	}
-	hash := SHA256Hex(strings.TrimSpace(strings.TrimPrefix(header, "Bearer ")))
+	hash := session.TokenHash(strings.TrimSpace(strings.TrimPrefix(header, "Bearer ")))
 	row, err := db.New(d.Pool).DaemonSessionByRenewal(r.Context(), &hash)
 	return scanDaemon(db.DaemonSessionRow(row), err)
 }
@@ -560,6 +518,26 @@ func (d device) logout(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
+// EndByConsent ends every pmon login that minted an MCP token under consent id, so pmon cannot mint it back.
+func EndByConsent(ctx context.Context, pool *pgxpool.Pool, consentID int64, principal string) error {
+	return pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		q := db.New(tx)
+		if err := q.LockPrincipal(ctx, principal); err != nil {
+			return err
+		}
+		ids, err := q.DaemonsByConsent(ctx, &consentID)
+		if err != nil {
+			return err
+		}
+		for _, id := range ids {
+			if _, err := endDaemon(ctx, tx, id, false); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 // endDaemon ends daemon session id and revokes its tokens, or retires its SESSION tokens when replaced,
 // then revokes each consent left with no live token. "" when it had already ended.
 func endDaemon(ctx context.Context, tx pgx.Tx, id int64, replaced bool) (string, error) {
@@ -630,15 +608,15 @@ func (d device) mcpToken(w http.ResponseWriter, r *http.Request) error {
 				expires = c
 			}
 		}
-		scope := canonicalScopes(scopes)
+		scope := session.CanonicalScopes(scopes)
 		q := db.New(tx)
-		consentID, err := q.PmonConsent(ctx, db.PmonConsentParams{Principal: fresh.principal, ClientID: pmonClientID, Resource: settings.MCPResource, Scope: scope})
+		consentID, err := q.UpsertConsent(ctx, db.UpsertConsentParams{Principal: fresh.principal, ClientID: pmonClientID, Resource: settings.MCPResource, Scope: scope})
 		if err != nil {
 			return err
 		}
 		access := "pma_" + api.RandomToken(32)
 		clientID, family := pmonClientID, "pmf_"+api.RandomToken(24)
-		tokenID, err := q.MintMcpAccessToken(ctx, db.MintMcpAccessTokenParams{TokenHash: SHA256Hex(access), Principal: fresh.principal,
+		tokenID, err := q.MintMcpAccessToken(ctx, db.MintMcpAccessTokenParams{TokenHash: session.TokenHash(access), Principal: fresh.principal,
 			ExpiresAt: expires, Resource: &settings.MCPResource, ClientID: &clientID, Scope: &scope, RefreshFamily: &family,
 			ConsentID: &consentID, PrincipalSessionID: &fresh.id})
 		if err != nil {
@@ -661,7 +639,7 @@ func mcpScopes(s *daemonSession, now time.Time) []string {
 	open := s.elevatedUntil != nil && now.Before(*s.elevatedUntil)
 	var out []string
 	for _, sc := range s.scopes {
-		if (open || slices.Contains(defaultScopes(), sc)) && slices.Contains(supportedScopes(), sc) {
+		if (open || slices.Contains(defaultScopes(), sc)) && slices.Contains(session.MCPScopes(), sc) {
 			out = append(out, sc)
 		}
 	}

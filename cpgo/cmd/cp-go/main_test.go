@@ -21,6 +21,7 @@ import (
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 
 	"github.com/ridi-oss/proxy-monster/cpgo/internal/dbtest"
+	"github.com/ridi-oss/proxy-monster/cpgo/routes/workload"
 	"github.com/ridi-oss/proxy-monster/cpgo/session"
 )
 
@@ -92,7 +93,7 @@ func startFront(t *testing.T, opts ...func(*config)) (config, context.CancelFunc
 	// exits before serving, and a fresh set of ports is the fix.
 	for attempt := 1; ; attempt++ {
 		cfg := parseConfig(t)
-		cfg.HTTPPort, cfg.GRPCPort = freePort(t), freePort(t)
+		cfg.HTTPPort, cfg.GRPCPort, cfg.BindHost = freePort(t), freePort(t), "127.0.0.1"
 		cfg.Child, cfg.ChildHTTPPort, cfg.ChildGRPCPort = os.Args[0], freePort(t), freePort(t)
 		cfg.StartTimeout = 30 * time.Second
 		cfg.DBURL, cfg.DBUser, cfg.DBPassword = st.JDBCURL, st.User, st.Password
@@ -194,13 +195,14 @@ var sharedEnv = map[string]string{
 	"PM_DB_URL": "jdbc:postgresql://db.example/pm", "PM_DB_USER": "pm-user", "PM_DB_PASSWORD": "pm-password",
 	"PM_SESSION_SECRET": "a-session-secret-of-at-least-32-chars", "PM_SECRET_TOKEN": "secret-token", "PM_AUTH_DEBUG": "false",
 	"PM_MCP_RESOURCE": "https://pm.example.com/mcp", "PM_INSTANCE_NAME": "pm", "PM_WEB_ORIGIN": "https://web.example.com", "PM_RESULT_KEY": "result-key",
-	"PM_ELEVATED_SCOPE_TTL": "1800", "PM_OAUTH_ACCESS_TTL": "300", "PM_SESSION_WINDOW": "3h",
+	"PM_ELEVATED_SCOPE_TTL": "1800", "PM_OAUTH_ACCESS_TTL": "300", "PM_OAUTH_REFRESH_TTL": "7200", "PM_OAUTH_DEBUG_AUTO_CONSENT": "false", "PM_SESSION_WINDOW": "3h",
 	"PM_WEB_SESSION_ABSOLUTE": "4h", "PM_WEB_SESSION_IDLE": "10m", "PM_WEB_SESSION_SLIDE": "1m",
 	"PM_WEB_SESSION_IDLE_WARN_LEAD": "30", "PM_WEB_SESSION_ABSOLUTE_WARN_LEAD": "2m", "PM_WEB_SESSION_HEARTBEAT": "45",
 	"PM_OIDC_ISSUER": "https://idp.example.com", "PM_OIDC_CLIENT_ID": "client", "PM_OIDC_CLIENT_SECRET": "client-secret",
 	"PM_OIDC_REDIRECT_URI": "https://pm.example.com/auth/oidc/callback", "PM_OIDC_SCOPES": "openid email",
 	"PM_OIDC_GROUP_MAP": "idp-admins=system:admin", "PM_OIDC_GROUP_PREFIX": "okta-", "PM_OIDC_USER_ATTRIBUTES": "department",
 	"PM_IDP_RECHECK_INTERVAL": "60", "PM_GITHUB_APP_ID": "7", "PM_GITHUB_API_URL": "https://ghe.example.com/api/v3",
+	"PM_CI_OIDC_ISSUERS": "github=https://token.actions.githubusercontent.com", "PM_CI_OIDC_AUDIENCE": "proxy-monster",
 }
 
 func parseConfig(t *testing.T, args ...string) config {
@@ -238,7 +240,7 @@ func TestTheChildGetsEverySharedSettingGoParsed(t *testing.T) {
 	}
 	wantSession := session.Settings{
 		Secret: "a-session-secret-of-at-least-32-chars", Secure: true, ResultKey: true, WebOrigin: "https://web.example.com",
-		OIDCEnabled: true, MCPResource: "https://pm.example.com/mcp", ElevatedScopeTTL: 1800, MCPAccessTTL: 300,
+		OIDCEnabled: true, MCPResource: "https://pm.example.com/mcp", ElevatedScopeTTL: 1800, MCPAccessTTL: 300, MCPRefreshTTL: 7200,
 		SessionWindowSeconds: 3 * 3600, AbsoluteSeconds: 4 * 3600, IdleSeconds: 600, SlideSeconds: 60,
 		IdleWarnLeadSeconds: 30, AbsoluteWarnLeadSeconds: 120, HeartbeatSeconds: 45,
 	}
@@ -270,6 +272,7 @@ func TestTheChildGetsGosDefaultsAndFlags(t *testing.T) {
 		"PM_DB_URL=jdbc:postgresql://flag/pm", "PM_DB_USER=from-env", "PM_DB_PASSWORD=proxymonster",
 		"PM_SESSION_SECRET=dev-insecure-session-secret-change-me", "PM_AUTH_DEBUG=false",
 		"PM_MCP_RESOURCE=http://127.0.0.1:8080/mcp", "PM_ELEVATED_SCOPE_TTL=3600", "PM_OAUTH_ACCESS_TTL=600",
+		"PM_OAUTH_REFRESH_TTL=21600", "PM_OAUTH_DEBUG_AUTO_CONSENT=true",
 		"PM_SESSION_WINDOW=7200", "PM_WEB_SESSION_ABSOLUTE=7200", "PM_WEB_SESSION_IDLE=900", "PM_WEB_SESSION_SLIDE=120",
 		"PM_WEB_SESSION_IDLE_WARN_LEAD=60", "PM_WEB_SESSION_ABSOLUTE_WARN_LEAD=300", "PM_WEB_SESSION_HEARTBEAT=90",
 		"PM_OIDC_SCOPES=openid profile email groups offline_access", "PM_IDP_RECHECK_INTERVAL=300",
@@ -294,6 +297,9 @@ func TestSettleRefusesBadSettings(t *testing.T) {
 		{[]string{"--web-idle=soon"}, "PM_WEB_SESSION_IDLE"},
 		{[]string{"--idp-recheck-interval=0"}, "PM_IDP_RECHECK_INTERVAL"},
 		{[]string{"--result-key=not-base64"}, "PM_RESULT_KEY"},
+		{[]string{"--ci-oidc-issuers=GitHub=https://ci.example.com"}, "PM_CI_OIDC_ISSUERS entry"},
+		{[]string{"--ci-oidc-issuers=github=http://ci.example.com", "--no-auth-debug"}, "HTTPS issuer URI"},
+		{[]string{"--ci-oidc-issuers=github=http://127.0.0.1:1"}, ""},
 	} {
 		_, err := settle(parseConfig(t, tc.args...))
 		switch {
@@ -302,6 +308,16 @@ func TestSettleRefusesBadSettings(t *testing.T) {
 		case tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)):
 			t.Errorf("%v: got %v, want %q", tc.args, err, tc.want)
 		}
+	}
+}
+
+func TestSettleDefaultsTheCIAudienceToTheOrigin(t *testing.T) {
+	cfg, err := settle(parseConfig(t, "--ci-oidc-issuers=github=https://ci.example.com", "--mcp-resource=https://PM.example.com:8443/mcp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []workload.Issuer{{Name: "github", URL: "https://ci.example.com", Audience: "https://pm.example.com:8443"}}; !slices.Equal(cfg.CI, want) {
+		t.Errorf("issuers %+v, want %+v", cfg.CI, want)
 	}
 }
 

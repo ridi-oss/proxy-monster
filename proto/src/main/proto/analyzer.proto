@@ -1,7 +1,7 @@
 syntax = "proto3";
 
 // The analyzer <-> JVM wire protocol (docs/statement-facts-contract.md). Single source of
-// truth for both sides' generated bindings at the sqlglot-go FFM boundary (analyzer/cmd/libsqlglot
+// truth for both sides' generated bindings at the sqlglot-go FFM boundary (analyzer/cmd/libanalyzer
 // <-> analyzer/jvm's java.lang.foreign binding). Distinct wire boundary from controlplane.proto (that
 // one is proxy<->control-plane gRPC); own file/package so a `buf generate` scoped to this boundary
 // never touches that file's messages/services — the one thing both boundaries share, the engine
@@ -78,11 +78,11 @@ message Namespace {
   reserved "mysql_version_id";
 }
 
-// Every engine-specific analysis setting: the engine, what its datasource reported, and what the proxy
+// Every engine-specific analysis setting: the engine, what its target reported, and what the proxy
 // observed on the session. The analyzer builds its sqlglot-go Dialect once from it.
 message EngineConfig {
   proxymonster.v1.Engine engine = 1;
-  EngineDatasource datasource = 9;
+  TargetSettings target = 9;
   // What the proxy observed on the target session right before this statement. Forwarded by the
   // control plane exactly as the proxy sent it on DecisionRequest.session.
   SessionObservation session = 8;
@@ -91,12 +91,14 @@ message EngineConfig {
     "postgres_function_shadowing_observed", "postgres_system_xid_visible";
 }
 
-// What the engine reads from a registered datasource, as its target reported it at introspection.
-message EngineDatasource {
+// What the engine reads from a target: what the target reported, and its ConnectionInfo properties.
+message TargetSettings {
   // A clean major.minor[.patch]; MySQL fails closed without one.
   string engine_version = 1;
   // MySQL's server-level lower_case_table_names (0..2); required for MySQL, unset for the others.
   optional int32 mysql_lower_case_table_names = 2;
+  // ConnectionInfo properties: Athena "workgroup".
+  map<string, string> properties = 3;
 }
 
 // Per-statement facts from the proxy that change how the analyzer parses or resolves a statement: what
@@ -167,12 +169,12 @@ message SplitResponse {
 
 // Column names to put in the engine's canonical spelling, the one the analyzer keys its catalog on. Only
 // catalog, schema, table and column are read. ParseColumns reads them as SQL identifiers a person typed;
-// IntrospectedColumns as names the engine's own catalog reported.
+// CatalogColumnNames as names the engine's own catalog reported.
 message ColumnNamesRequest {
   proxymonster.v1.Engine engine = 1;
   reserved 2;
   reserved "mysql_lower_case_table_names";
-  EngineDatasource datasource = 4;
+  TargetSettings target = 4;
   repeated Column columns = 3;
 }
 

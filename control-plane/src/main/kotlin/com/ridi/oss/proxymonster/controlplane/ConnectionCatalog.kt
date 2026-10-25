@@ -2,6 +2,7 @@ package com.ridi.oss.proxymonster.controlplane
 
 import com.google.protobuf.ByteString
 import com.ridi.oss.proxymonster.analyzer.pb.SessionObservation
+import com.ridi.oss.proxymonster.grpc.Engine
 import com.ridi.oss.proxymonster.grpc.ObjectRef
 import com.ridi.oss.proxymonster.grpc.Refetch
 import com.ridi.oss.proxymonster.grpc.SchemaFragmentPush
@@ -69,7 +70,7 @@ data class Authoritative(
     val measuredNanos: Long,
 )
 
-data class Binding(val datasourceName: String, val principal: String, val tokenKind: String, val catalog: String)
+data class Binding(val datasourceName: String, val principal: String, val tokenKind: String, val catalog: String, val engine: Engine)
 
 data class HeldSchema(
     val pooledRef: PoolKey,
@@ -392,7 +393,7 @@ class ConnectionCatalogRegistry(
     fun freshnessGate(connection: EnforcementConnection, requiredSchemas: Collection<ObjectRef>): Set<ObjectRef> {
         val now = clockNanos()
         return requiredSchemas.asSequence()
-            .filter { it.schema.isNotBlank() && it.catalog.isNotBlank() && !it.schema.startsWith("pg_temp", ignoreCase = true) }
+            .filter { it.schema.isNotBlank() && it.catalog.isNotBlank() && !connection.binding.engine.isTempSchema(it.schema) }
             .distinct()
             .filterTo(LinkedHashSet()) { schema ->
                 val held = connection.held[schema]
@@ -446,7 +447,7 @@ class ConnectionCatalogRegistry(
         create: (ObjectRef) -> PendingRefetch,
     ): List<Refetch> = synchronized(stateLock) {
         schemas.asSequence()
-            .filter { it.schema.isNotBlank() && it.catalog.isNotBlank() && !it.schema.startsWith("pg_temp", ignoreCase = true) }
+            .filter { it.schema.isNotBlank() && it.catalog.isNotBlank() && !connection.binding.engine.isTempSchema(it.schema) }
             .distinct()
             .map { schema ->
                 val pending = connection.pending.getOrPut(schema) { create(schema) }.mark()

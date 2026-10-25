@@ -49,7 +49,8 @@
     "requesterReason": "요청자 사유",
     "grantDuration": "부여 기간",
     "source": "출처",
-    "scope": "범위"
+    "scope": "범위",
+    "runsAs": "실행 역할"
   },
   "durations": {
     "asRequested": "요청한 기간대로",
@@ -261,7 +262,7 @@
       "requested": "님이 요청했습니다 (리비전 {revision})",
       "edited": "님이 SQL을 수정했습니다 (리비전 {revision})",
       "approved": "님이 승인했습니다 (리비전 {revision})",
-      "rejected": "님이 거부했습니다: {body}",
+      "rejected": "님이 반려했습니다: {body}",
       "unapproved": "님이 승인을 취소했습니다",
       "expired": "승인이 만료되어 다시 승인 대기 중입니다.",
       "withdrawn": "— 승인한 리뷰가 더 이상 유효하지 않아 다시 승인 대기 중입니다",

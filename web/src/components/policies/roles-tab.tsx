@@ -1,61 +1,48 @@
-'use client'
+'use client';
 
 // Roles tab — CRUD for app roles. Each role is the unit that policies and JIT
 // grants attach to. Name is the stable identifier; description is optional prose.
-import { Fragment, useState } from 'react'
-import { useTranslations } from 'next-intl'
-import { Loader2, Pencil, Plus, Trash2 } from 'lucide-react'
-import { mutate } from 'swr'
-import { createRole, deleteRole, updateRole } from '@/lib/api/client'
-import { useRoles, swrKeys } from '@/lib/hooks'
-import type { Role, RoleInput } from '@/lib/api/types'
-import { cn } from '@/lib/utils'
-import { Button } from '@/components/ui/button'
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Textarea } from '@/components/ui/textarea'
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table'
-import { EmptyState, ErrorState, LoadingState } from '@/components/page-scaffold'
-import { toast } from 'sonner'
+import { Fragment, useState } from 'react';
+import { useTranslations } from 'next-intl';
+import { Loader2, Pencil, Plus, Trash2 } from 'lucide-react';
+import { mutate } from 'swr';
+import { createRole, deleteRole, updateRole } from '@/lib/api/client';
+import { useRoles, swrKeys } from '@/lib/hooks';
+import type { Role, RoleInput } from '@/lib/api/types';
+import { cn } from '@/lib/utils';
+import { Button } from '@/components/ui/button';
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Textarea } from '@/components/ui/textarea';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { EmptyState, ErrorState, LoadingState } from '@/components/page-scaffold';
+import { toast } from 'sonner';
 
 export function RolesTab() {
-  const t = useTranslations('Policies')
-  const { data, error, isLoading } = useRoles()
-  const [editing, setEditing] = useState<Role | null>(null)
-  const [creating, setCreating] = useState(false)
+  const t = useTranslations('Policies');
+  const { data, error, isLoading } = useRoles();
+  const [editing, setEditing] = useState<Role | null>(null);
+  const [creating, setCreating] = useState(false);
   // Role pending deletion — show inline confirm row
-  const [deleting, setDeleting] = useState<Role | null>(null)
-  const [deleteError, setDeleteError] = useState<string | null>(null)
-  const [deleteBusy, setDeleteBusy] = useState(false)
+  const [deleting, setDeleting] = useState<Role | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
 
   const handleDelete = async (role: Role) => {
-    setDeleteBusy(true)
-    setDeleteError(null)
+    setDeleteBusy(true);
+    setDeleteError(null);
     try {
-      await deleteRole(role.id)
-      await mutate(swrKeys.roles)
-      setDeleting(null)
-      toast.success(t('roles.toastDeleted', { name: role.name }))
+      await deleteRole(role.id);
+      await mutate(swrKeys.roles);
+      setDeleting(null);
+      toast.success(t('roles.toastDeleted', { name: role.name }));
     } catch (err) {
-      setDeleteError(err instanceof Error ? err.message : t('roles.deleteFailed'))
+      setDeleteError(err instanceof Error ? err.message : t('roles.deleteFailed'));
     } finally {
-      setDeleteBusy(false)
+      setDeleteBusy(false);
     }
-  }
+  };
 
   return (
     <div className="space-y-4">
@@ -101,12 +88,7 @@ export function RolesTab() {
                       <code className="font-mono text-sm font-semibold">{role.name}</code>
                     </TableCell>
                     <TableCell>
-                      <span
-                        className={cn(
-                          'text-sm',
-                          !role.description && 'text-muted-foreground italic',
-                        )}
-                      >
+                      <span className={cn('text-sm', !role.description && 'text-muted-foreground italic')}>
                         {role.description || '—'}
                       </span>
                     </TableCell>
@@ -116,8 +98,8 @@ export function RolesTab() {
                           size="icon-xs"
                           variant="ghost"
                           onClick={() => {
-                            setDeleting(null)
-                            setEditing(role)
+                            setDeleting(null);
+                            setEditing(role);
                           }}
                           aria-label={t('common.edit')}
                         >
@@ -128,9 +110,9 @@ export function RolesTab() {
                           variant="ghost"
                           className="text-destructive hover:text-destructive"
                           onClick={() => {
-                            setEditing(null)
-                            setDeleteError(null)
-                            setDeleting((prev) => (prev?.id === role.id ? null : role))
+                            setEditing(null);
+                            setDeleteError(null);
+                            setDeleting((prev) => (prev?.id === role.id ? null : role));
                           }}
                           aria-label={t('common.delete')}
                         >
@@ -148,20 +130,11 @@ export function RolesTab() {
                             <p className="text-sm font-medium text-red-500">
                               {t('roles.deleteConfirm', { name: role.name })}
                             </p>
-                            <p className="text-muted-foreground text-xs">
-                              {t('roles.deleteConsequence')}
-                            </p>
-                            {deleteError && (
-                              <p className="mt-1 text-xs text-red-500">{deleteError}</p>
-                            )}
+                            <p className="text-muted-foreground text-xs">{t('roles.deleteConsequence')}</p>
+                            {deleteError && <p className="mt-1 text-xs text-red-500">{deleteError}</p>}
                           </div>
                           <div className="flex items-center gap-2">
-                            <Button
-                              size="xs"
-                              variant="outline"
-                              onClick={() => setDeleting(null)}
-                              disabled={deleteBusy}
-                            >
+                            <Button size="xs" variant="outline" onClick={() => setDeleting(null)} disabled={deleteBusy}>
                               {t('common.cancel')}
                             </Button>
                             <Button
@@ -170,9 +143,7 @@ export function RolesTab() {
                               onClick={() => handleDelete(role)}
                               disabled={deleteBusy}
                             >
-                              {deleteBusy ? (
-                                <Loader2 className="size-3 animate-spin" />
-                              ) : null}
+                              {deleteBusy ? <Loader2 className="size-3 animate-spin" /> : null}
                               {t('common.delete')}
                             </Button>
                           </div>
@@ -192,67 +163,57 @@ export function RolesTab() {
         <RoleDialog
           editing={editing}
           onClose={() => {
-            setCreating(false)
-            setEditing(null)
+            setCreating(false);
+            setEditing(null);
           }}
           onSaved={() => mutate(swrKeys.roles)}
         />
       )}
     </div>
-  )
+  );
 }
 
 // ---- Role dialog ------------------------------------------------------------
 
-function RoleDialog({
-  editing,
-  onClose,
-  onSaved,
-}: {
-  editing: Role | null
-  onClose: () => void
-  onSaved: () => void
-}) {
-  const t = useTranslations('Policies')
-  const [name, setName] = useState(editing?.name ?? '')
-  const [description, setDescription] = useState(editing?.description ?? '')
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+function RoleDialog({ editing, onClose, onSaved }: { editing: Role | null; onClose: () => void; onSaved: () => void }) {
+  const t = useTranslations('Policies');
+  const [name, setName] = useState(editing?.name ?? '');
+  const [description, setDescription] = useState(editing?.description ?? '');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const valid = name.trim().length > 0
+  const valid = name.trim().length > 0;
 
   const handleSave = async () => {
-    if (!valid) return
-    setBusy(true)
-    setError(null)
+    if (!valid) return;
+    setBusy(true);
+    setError(null);
     const input: RoleInput = {
       name: name.trim(),
       description: description.trim() || null,
-    }
+    };
     try {
       if (editing) {
-        await updateRole(editing.id, input)
-        toast.success(t('roles.toastUpdated', { name: input.name }))
+        await updateRole(editing.id, input);
+        toast.success(t('roles.toastUpdated', { name: input.name }));
       } else {
-        await createRole(input)
-        toast.success(t('roles.toastCreated', { name: input.name }))
+        await createRole(input);
+        toast.success(t('roles.toastCreated', { name: input.name }));
       }
-      onSaved()
-      onClose()
+      onSaved();
+      onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('roles.saveFailed'))
+      setError(err instanceof Error ? err.message : t('roles.saveFailed'));
     } finally {
-      setBusy(false)
+      setBusy(false);
     }
-  }
+  };
 
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>
-            {editing ? t('roles.dialogEditTitle', { name: editing.name }) : t('roles.add')}
-          </DialogTitle>
+          <DialogTitle>{editing ? t('roles.dialogEditTitle', { name: editing.name }) : t('roles.add')}</DialogTitle>
         </DialogHeader>
 
         {error && (
@@ -296,5 +257,5 @@ function RoleDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
-  )
+  );
 }

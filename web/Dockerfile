@@ -2,12 +2,9 @@
 # sibling modules needed). Build from web/:
 #   docker build -t proxy-monster-web .
 #
-# Runtime env: PM_PROXY_TARGET (control-plane base URL the /api and /auth rewrites forward to —
-# see next.config.ts; set this to wherever control-plane is reachable from inside the
-# cluster/VPC, e.g. http://control-plane.internal:8080) and NEXT_LOCALE-independent i18n (cookie-
-# based, no env needed). PORT/HOSTNAME below make the standalone server listen on 0.0.0.0 so it's
-# reachable from outside the container — the generated server.js defaults HOSTNAME to "localhost"
-# otherwise, which is unreachable from outside the container network namespace.
+# Runtime env: PM_CP_URL, the control plane's base URL its paths are forwarded to (web/src/proxy.ts),
+# needed only when they reach this container. PORT/HOSTNAME below make the standalone server listen
+# on 0.0.0.0; server.js otherwise defaults HOSTNAME to "localhost", unreachable from outside it.
 
 # Match ../mise.toml's node/pnpm pins — bump both together.
 FROM node:24-alpine AS base
@@ -30,6 +27,7 @@ FROM base AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 
+RUN apk upgrade --no-cache ca-certificates-bundle
 RUN addgroup --system --gid 10001 nodejs && adduser --system --uid 10001 --ingroup nodejs nextjs
 
 # `output: "standalone"` (next.config.ts) traces the minimal node_modules subset the built server
@@ -46,4 +44,5 @@ EXPOSE 41300
 HEALTHCHECK --interval=10s --timeout=3s --start-period=15s --retries=5 \
     CMD wget -qO- --spider "http://127.0.0.1:${PORT}/" || exit 1
 
-CMD ["node", "server.js"]
+# Alpine's upgraded CA store instead of the roots built into Node, which still trust emSign ECC Root CA - G3 (CVE-2026-111943).
+CMD ["node", "--use-openssl-ca", "server.js"]

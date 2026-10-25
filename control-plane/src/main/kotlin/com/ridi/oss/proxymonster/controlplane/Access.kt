@@ -737,6 +737,8 @@ class AccessStore(internal val dataSource: DataSource) {
         setLong(2, id)
         setString(3, repository)
         if (pr == null) setNull(4, java.sql.Types.INTEGER) else setInt(4, pr)
+        setString(5, repository)
+        if (pr == null) setNull(6, java.sql.Types.INTEGER) else setInt(6, pr)
     }
 
     /** Every request filed from one pull request, any status, in file order. */
@@ -1117,22 +1119,6 @@ class AccessStore(internal val dataSource: DataSource) {
         }
     }
 
-    /** Requests [principal] filed or took part in, newest first, at most [limit]. */
-    fun listInvolvedRequests(principal: String, limit: Int): List<AccessRequest> = dataSource.connection.use { c ->
-        c.prepareStatement(
-            """$REQ_SELECT
-               WHERE $WORKFLOW_REQUEST
-                 AND (ar.principal = ? OR EXISTS (
-                      SELECT 1 FROM request_participant p WHERE p.request_id = ar.id AND p.principal = ?))
-               ORDER BY ar.created_at DESC LIMIT ?""",
-        ).use { ps ->
-            ps.setString(1, principal)
-            ps.setString(2, principal)
-            ps.setInt(3, limit)
-            ps.executeQuery().use { rs -> val o = ArrayList<AccessRequest>(); while (rs.next()) o += rs.toRequest(); o }
-        }
-    }
-
     /** Approve: mark the request APPROVED and insert a time-boxed grant. */
     fun approve(id: Long, durationSec: Long?, decidedBy: String): AccessRequest? {
         dataSource.inTx { c -> approve(id, durationSec, decidedBy, c) }
@@ -1379,17 +1365,25 @@ class AccessStore(internal val dataSource: DataSource) {
                FROM access_grant ag JOIN app_role r ON r.id = ag.role_id AND r.deleted_at IS NULL"""
 
         /**
-         * Over `access_request r`: another pull request's run that holds the scope, unless that pull request's
-         * latest filing has a file whose current version failed. Binds scope, id, repository, pr.
+         * Over `access_request r`: another pull request's run that holds the scope: one not yet merged, or a file
+         * merged before this pull request (ties by number) that has not run; unless that pull request's latest
+         * filing has a file whose current version failed or was rejected, so it cannot run. Binds scope, id,
+         * repository, pr, repository, pr.
          */
         const val SCOPE_BUSY_WHERE =
             """r.scope = ? AND r.id <> ?
                AND NOT COALESCE(r.source = 'github' AND r.repository = ? AND r.pr = ?, FALSE)
                AND (r.status = 'EXECUTING'
-                    OR (r.status = 'EXECUTED' AND r.merged_at IS NULL AND r.source = 'github'
+                    OR (r.source = 'github'
+                        AND ((r.status = 'EXECUTED' AND r.merged_at IS NULL)
+                             OR (r.status IN ('PENDING', 'APPROVED') AND r.merged_at IS NOT NULL
+                                 AND NOT EXISTS (SELECT 1 FROM access_request m
+                                                 WHERE m.scope = r.scope AND m.repository = ? AND m.pr = ?
+                                                   AND (m.merged_at, m.pr) < (r.merged_at, r.pr))))
                         AND NOT EXISTS (SELECT 1 FROM access_request f
                                         WHERE f.scope = r.scope AND f.repository = r.repository AND f.pr = r.pr
-                                          AND f.status = 'FAILED' AND f.head_sha IS NOT DISTINCT FROM f.filed_head
+                                          AND f.status IN ('FAILED', 'REJECTED')
+                                          AND f.head_sha IS NOT DISTINCT FROM f.filed_head
                                           AND NOT EXISTS (SELECT 1 FROM access_request n
                                                           WHERE n.scope = f.scope AND n.repository = f.repository
                                                             AND n.pr = f.pr AND n.path = f.path AND n.id > f.id

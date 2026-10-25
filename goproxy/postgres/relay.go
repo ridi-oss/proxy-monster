@@ -31,7 +31,7 @@ type streamOpts struct{ extended, soft bool }
 // pgTargetDbErr carries both forms of a PostgreSQL ErrorResponse — the raw message and the diagnostic-redacted
 // message — from streamResult to its caller. It is NOT relay.TargetDbError: streamResult also serves
 // internal catalog probes and refetches (collectProbe), whose errors must stay proxy-internal and never be
-// surfaced as a query's error detail. Only the statement site (RunSession.ServeStatement) promotes this to
+// surfaced as a query's error detail. Only the statement site (connection.ServeStatement) promotes this to
 // relay.TargetDbError, so provenance is decided there, not for every ErrorResponse streamResult sees.
 type pgTargetDbErr struct {
 	message  string
@@ -43,7 +43,7 @@ func (e *pgTargetDbErr) Error() string { return e.message }
 // emit receives each frame as the CLIENT should see it (masks already applied) plus the byte size of the
 // TARGET-DB row it came from, so a caller measuring result volume charges the target's row rather than the
 // rewritten one. rowBytes is 0 for every frame that is not a DataRow.
-func (c *sessionCore) streamResult(masks []*pb.ColumnMask, opts streamOpts, emit func(message pgproto3.BackendMessage, rowBytes int64) error) (targetDbErr error, err error) {
+func (c *connection) streamResult(masks []*pb.ColumnMask, opts streamOpts, emit func(message pgproto3.BackendMessage, rowBytes int64) error) (targetDbErr error, err error) {
 	var masker *relay.RowMasker
 	columnCount := -1
 	fail := func(cause error) bool {
@@ -267,30 +267,30 @@ func resultCapError(dec *spi.Decision, relayed spi.RelayStats, rowBytes int64) *
 	}
 }
 
-func (s *Server) cancelCappedQuery(sess *session) {
-	if sess.keyData.ProcessID != 0 {
-		_ = sendCancelRequest(s.target.config, sess.keyData.ProcessID, sess.keyData.SecretKey)
+func (s *Server) cancelCappedQuery(wireState *clientWireState) {
+	if wireState.keyData.ProcessID != 0 {
+		_ = sendCancelRequest(s.target.config, wireState.keyData.ProcessID, wireState.keyData.SecretKey)
 	}
 }
 
-func (s *Server) handleQuery(sess *session, sql string) error {
+func (s *Server) handleQuery(wireState *clientWireState, sql string) error {
 	batch := splitBatch(sql)
 	if batch == nil {
-		_, err := s.serveQuery(sess, sql, relayQuery)
+		_, err := s.serveQuery(wireState, sql, relayQuery)
 		return err
 	}
 	explicit := explicitTransaction(batch)
 	for i, statement := range batch {
 		if statement.MayControlTransaction && !(explicit && (i == 0 || i == len(batch)-1)) {
-			if err := abortTransaction(sess); err != nil {
-				return closeRelay(sess, err)
+			if err := abortTransaction(wireState); err != nil {
+				return closeRelay(wireState, err)
 			}
-			return sendError(sess.client, "ERROR", "0A000",
+			return sendError(wireState.client, "ERROR", "0A000",
 				"proxy-monster: a multi-statement query may only begin with BEGIN and end with COMMIT; send other transaction control as its own query",
-				true, sess.lastTxStatus)
+				true, wireState.lastTxStatus)
 		}
 	}
-	return s.handleBatch(sess, batch, explicit)
+	return s.handleBatch(wireState, batch, explicit)
 }
 
 // explicitTransaction reports a batch that opens its own transaction first and commits it last, which runs as
@@ -314,11 +314,11 @@ func splitBatch(sql string) []engines.BatchStatement {
 
 // handleBatch decides each statement right before it runs and answers with one ReadyForQuery. From an idle
 // session the batch runs in the proxy's own transaction, so a deny or error undoes it, as PostgreSQL does.
-func (s *Server) handleBatch(sess *session, batch []engines.BatchStatement, explicit bool) error {
-	owned := !explicit && sess.lastTxStatus == 'I'
+func (s *Server) handleBatch(wireState *clientWireState, batch []engines.BatchStatement, explicit bool) error {
+	owned := !explicit && wireState.lastTxStatus == 'I'
 	failed := false
 	if owned {
-		result, err := s.serveQuery(sess, "BEGIN", relayBatchControl)
+		result, err := s.serveQuery(wireState, "BEGIN", relayBatchControl)
 		if err != nil {
 			return err
 		}
@@ -328,35 +328,35 @@ func (s *Server) handleBatch(sess *session, batch []engines.BatchStatement, expl
 		if failed {
 			break
 		}
-		result, err := s.serveQuery(sess, statement.SQL, relayBatchStatement)
+		result, err := s.serveQuery(wireState, statement.SQL, relayBatchStatement)
 		if err != nil {
 			return err
 		}
 		failed = result.stop
 		// PREPARE TRANSACTION is not marked as transaction control, but it ends the transaction.
-		if sess.lastTxStatus == 'I' && !(explicit && i == len(batch)-1) {
+		if wireState.lastTxStatus == 'I' && !(explicit && i == len(batch)-1) {
 			owned, failed = false, true
-			if err := sendError(sess.client, "ERROR", "0A000", "proxy-monster: a statement ended the multi-statement query's transaction", false, 0); err != nil {
+			if err := sendError(wireState.client, "ERROR", "0A000", "proxy-monster: a statement ended the multi-statement query's transaction", false, 0); err != nil {
 				return err
 			}
 		}
 	}
 	if owned {
 		end := "COMMIT"
-		if failed || sess.lastTxStatus == 'E' {
+		if failed || wireState.lastTxStatus == 'E' {
 			end = "ROLLBACK"
 		}
-		if _, err := s.serveQuery(sess, end, relayBatchControl); err != nil {
+		if _, err := s.serveQuery(wireState, end, relayBatchControl); err != nil {
 			return err
 		}
 		// A denied or failed COMMIT/ROLLBACK leaves the batch pending in a transaction the client never
 		// opened; closing the connection makes the target roll it back.
-		if sess.lastTxStatus != 'I' {
-			return closeRelay(sess, fmt.Errorf("multi-statement query's %s left the transaction open", end))
+		if wireState.lastTxStatus != 'I' {
+			return closeRelay(wireState, fmt.Errorf("multi-statement query's %s left the transaction open", end))
 		}
 	}
-	sess.client.Send(&pgproto3.ReadyForQuery{TxStatus: sess.lastTxStatus})
-	return sess.client.Flush()
+	wireState.client.Send(&pgproto3.ReadyForQuery{TxStatus: wireState.lastTxStatus})
+	return wireState.client.Flush()
 }
 
 type relayMode int
@@ -375,23 +375,22 @@ type queryResult struct {
 }
 
 // serveQuery serves one statement.
-func (s *Server) serveQuery(sess *session, sql string, mode relayMode) (queryResult, error) {
-	ref := s.refetcher(sess, false)
+func (s *Server) serveQuery(wireState *clientWireState, sql string, mode relayMode) (queryResult, error) {
 	start := time.Now()
 	var relayStats spi.RelayStats
 	relayStatus := relay.StatusError
 	var result queryResult
-	in := sess.authzInput(sql, ref.RunAll)
-	in.CheckTargetError = func(sql string) (*spi.TargetError, error) { return s.checkTargetErrorAndSync(sess, sql) }
-	decision, denied, err := relay.ServeStatement(sess.authz, in, ref, nil,
+	in := wireState.authzInput(sql, wireState.commandRunner)
+	in.CheckTargetError = func(sql string) (*spi.TargetError, error) { return s.checkTargetErrorAndSync(wireState, sql) }
+	decision, denied, err := relay.ServeStatement(wireState.authz, in, wireState.commandRunner, nil,
 		func(toSend string, masks []*pb.ColumnMask, dec *spi.Decision) (bool, error) {
-			sess.targetDb.Send(&pgproto3.Query{String: toSend})
-			if err := sess.targetDb.Flush(); err != nil {
+			wireState.targetDb.Send(&pgproto3.Query{String: toSend})
+			if err := wireState.targetDb.Flush(); err != nil {
 				return false, err
 			}
 			bufferedFrames := 0
 			var capped *pgproto3.ErrorResponse
-			targetDbErr, streamErr := sess.streamResult(masks, streamOpts{}, func(message pgproto3.BackendMessage, rowBytes int64) error {
+			targetDbErr, streamErr := wireState.streamResult(masks, streamOpts{}, func(message pgproto3.BackendMessage, rowBytes int64) error {
 				switch message.(type) {
 				case *pgproto3.DataRow:
 					if capped != nil {
@@ -399,7 +398,7 @@ func (s *Server) serveQuery(sess *session, sql string, mode relayMode) (queryRes
 					}
 					capped = resultCapError(dec, relayStats, rowBytes)
 					if capped != nil {
-						s.cancelCappedQuery(sess)
+						s.cancelCappedQuery(wireState)
 						return nil
 					}
 					relayStats.Rows++
@@ -407,7 +406,7 @@ func (s *Server) serveQuery(sess *session, sql string, mode relayMode) (queryRes
 				case *pgproto3.ReadyForQuery:
 					// A capped statement fails its transaction, so its ReadyForQuery waits for the abort below.
 					if capped != nil {
-						sess.client.Send(capped)
+						wireState.client.Send(capped)
 						return nil
 					}
 					if mode != relayQuery {
@@ -424,27 +423,27 @@ func (s *Server) serveQuery(sess *session, sql string, mode relayMode) (queryRes
 						return nil
 					}
 				}
-				sess.client.Send(message)
+				wireState.client.Send(message)
 				bufferedFrames++
 				if bufferedFrames >= clientFlushThreshold {
 					bufferedFrames = 0
-					return sess.client.Flush()
+					return wireState.client.Flush()
 				}
 				return nil
 			})
 			if streamErr != nil {
-				return false, mapWireStreamError(sess, streamErr)
+				return false, mapWireStreamError(wireState, streamErr)
 			}
 			if capped != nil {
-				if err := abortTransaction(sess); err != nil {
+				if err := abortTransaction(wireState); err != nil {
 					return false, err
 				}
 				if mode == relayQuery {
-					sess.client.Send(&pgproto3.ReadyForQuery{TxStatus: sess.lastTxStatus})
+					wireState.client.Send(&pgproto3.ReadyForQuery{TxStatus: wireState.lastTxStatus})
 				}
 			}
-			sess.pendingDirty = true
-			if err := sess.client.Flush(); err != nil {
+			wireState.pendingDirty = true
+			if err := wireState.client.Flush(); err != nil {
 				return false, err
 			}
 			relayStatus = relay.RelayStatus(targetDbErr == nil && capped == nil, nil)
@@ -454,26 +453,26 @@ func (s *Server) serveQuery(sess *session, sql string, mode relayMode) (queryRes
 	// Post-relay, best-effort completion: only a relayed (Proceed) statement reports. A DENY relayed
 	// nothing, and EmitCompletion additionally no-ops for a decision with no audit id.
 	if !denied {
-		sess.authz.AwaitCompletion(relay.EmitCompletion(s.client, decision, relayStats, relayStatus, start))
+		wireState.authz.AwaitCompletion(relay.EmitCompletion(s.client, decision, relayStats, relayStatus, start))
 	}
 	if err != nil {
 		var fail relay.FailError
 		if errors.As(err, &fail) {
-			if err := abortTransaction(sess); err != nil {
-				return queryResult{stop: true}, closeRelay(sess, err)
+			if err := abortTransaction(wireState); err != nil {
+				return queryResult{stop: true}, closeRelay(wireState, err)
 			}
-			return queryResult{stop: true}, sendError(sess.client, "ERROR", "58000", "proxy-monster: "+fail.Message, mode == relayQuery, sess.lastTxStatus)
+			return queryResult{stop: true}, sendError(wireState.client, "ERROR", "58000", "proxy-monster: "+fail.Message, mode == relayQuery, wireState.lastTxStatus)
 		}
-		return result, closeRelay(sess, err)
+		return result, closeRelay(wireState, err)
 	}
 	if denied && decision != nil && decision.TargetError != nil {
 		if targetErr, ok := decision.TargetError.Message.(*pgproto3.ErrorResponse); ok {
-			forwardTargetError(sess, targetErr)
+			forwardTargetError(wireState, targetErr)
 			if mode == relayQuery {
-				sess.client.Send(&pgproto3.ReadyForQuery{TxStatus: sess.lastTxStatus})
+				wireState.client.Send(&pgproto3.ReadyForQuery{TxStatus: wireState.lastTxStatus})
 			}
-			sess.authz.AwaitCompletion(relay.EmitCompletion(s.client, decision, spi.RelayStats{}, relay.StatusError, start))
-			return queryResult{stop: true}, sess.client.Flush()
+			wireState.authz.AwaitCompletion(relay.EmitCompletion(s.client, decision, spi.RelayStats{}, relay.StatusError, start))
+			return queryResult{stop: true}, wireState.client.Flush()
 		}
 	}
 	if denied {
@@ -481,40 +480,40 @@ func (s *Server) serveQuery(sess *session, sql string, mode relayMode) (queryRes
 		if decision != nil && decision.DenyReason != "" {
 			reason = decision.DenyReason
 		}
-		if err := abortTransaction(sess); err != nil {
-			return queryResult{stop: true}, closeRelay(sess, err)
+		if err := abortTransaction(wireState); err != nil {
+			return queryResult{stop: true}, closeRelay(wireState, err)
 		}
-		return queryResult{stop: true}, sendError(sess.client, "ERROR", "42501", "proxy-monster denied: "+reason, mode == relayQuery, sess.lastTxStatus)
+		return queryResult{stop: true}, sendError(wireState.client, "ERROR", "42501", "proxy-monster denied: "+reason, mode == relayQuery, wireState.lastTxStatus)
 	}
 	return result, nil
 }
 
 // abortTransaction fails an open target transaction as a target-DB error would, so a refusal the target
 // never saw still makes a later COMMIT roll back.
-func abortTransaction(sess *session) error {
-	if sess.lastTxStatus != 'T' {
+func abortTransaction(wireState *clientWireState) error {
+	if wireState.lastTxStatus != 'T' {
 		return nil
 	}
-	sess.targetDb.Send(&pgproto3.Query{String: "DO $$BEGIN RAISE EXCEPTION 'proxy-monster refused the statement'; END$$"})
-	if err := sess.targetDb.Flush(); err != nil {
+	wireState.targetDb.Send(&pgproto3.Query{String: "DO $$BEGIN RAISE EXCEPTION 'proxy-monster refused the statement'; END$$"})
+	if err := wireState.targetDb.Flush(); err != nil {
 		return err
 	}
-	_, err := sess.streamResult(nil, streamOpts{}, nil)
+	_, err := wireState.streamResult(nil, streamOpts{}, nil)
 	return err
 }
 
-func mapWireStreamError(sess *session, err error) error {
+func mapWireStreamError(wireState *clientWireState, err error) error {
 	switch {
 	case errors.Is(err, errMaskUnbound):
-		return failClosedRelay(sess, "0A000", "proxy-monster: required mask could not be bound to a result column", err)
+		return failClosedRelay(wireState, "0A000", "proxy-monster: required mask could not be bound to a result column", err)
 	case errors.Is(err, errCopyStream):
-		return failClosedRelay(sess, "0A000", "proxy-monster: COPY is not supported", err)
+		return failClosedRelay(wireState, "0A000", "proxy-monster: COPY is not supported", err)
 	case errors.Is(err, errClientEncoding):
-		return failClosedRelay(sess, "0A000", "proxy-monster: client_encoding must remain UTF8", err)
+		return failClosedRelay(wireState, "0A000", "proxy-monster: client_encoding must remain UTF8", err)
 	case errors.Is(err, errStdConformingStrings):
-		return failClosedRelay(sess, "0A000", "proxy-monster: standard_conforming_strings must remain on", err)
+		return failClosedRelay(wireState, "0A000", "proxy-monster: standard_conforming_strings must remain on", err)
 	case errors.Is(err, errUnexpectedFrame):
-		return failClosedRelay(sess, "58000", "proxy-monster: malformed target-DB response", err)
+		return failClosedRelay(wireState, "58000", "proxy-monster: malformed target-DB response", err)
 	default:
 		return err
 	}
@@ -534,24 +533,24 @@ func guardParameterStatusValue(name, value string) error {
 	return nil
 }
 
-func (s *Server) guardParameterStatus(sess *session, message *pgproto3.ParameterStatus) error {
-	sess.client.Send(message)
+func (s *Server) guardParameterStatus(wireState *clientWireState, message *pgproto3.ParameterStatus) error {
+	wireState.client.Send(message)
 	if message.Name == "search_path" {
-		sess.authz.MarkNamespaceDirty()
+		wireState.authz.MarkNamespaceDirty()
 	}
 	if err := guardParameterStatusValue(message.Name, message.Value); err != nil {
-		return mapWireStreamError(sess, err)
+		return mapWireStreamError(wireState, err)
 	}
 	return nil
 }
 
-func failClosedRelay(sess *session, code, message string, cause error) error {
-	_ = sendError(sess.client, "ERROR", code, message, true, sess.lastTxStatus)
-	return closeRelay(sess, cause)
+func failClosedRelay(wireState *clientWireState, code, message string, cause error) error {
+	_ = sendError(wireState.client, "ERROR", code, message, true, wireState.lastTxStatus)
+	return closeRelay(wireState, cause)
 }
 
-func closeRelay(sess *session, cause error) error {
-	_ = sess.clientConn.Close()
-	_ = sess.targetDbConn.Close()
+func closeRelay(wireState *clientWireState, cause error) error {
+	_ = wireState.clientConn.Close()
+	_ = wireState.targetDbConn.Close()
 	return cause
 }

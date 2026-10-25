@@ -180,7 +180,8 @@ func prResponse(prs ...string) string {
 	return `{"data":{"rateLimit":` + rate + `,"repository":{` + strings.Join(parts, ",") + `}}}`
 }
 
-const defaultChecks = `{"__typename":"CheckRun","name":"build","status":"COMPLETED","conclusion":"SUCCESS","isRequired":true},
+const defaultChecks = `{"__typename":"CheckRun","name":"build","status":"COMPLETED","conclusion":"SUCCESS","isRequired":true,"checkSuite":{"app":{"databaseId":777}}},
+  {"__typename":"CheckRun","name":"pm/query executed","status":"IN_PROGRESS","conclusion":null,"isRequired":true,"checkSuite":{"app":{"databaseId":12345}}},
   {"__typename":"StatusContext","context":"ci/legacy","state":"PENDING","isRequired":false}`
 
 type prOpts struct {
@@ -223,18 +224,18 @@ func pr(number int, o prOpts) string {
     {"path":"sql/old.sql","changeType":"DELETED"},{"path":"sql/new.sql","changeType":"ADDED"}]},
   "commits":{"nodes":[{"commit":{"oid":%q,"statusCheckRollup":%s}}]},
   "authors":{"nodes":[
-    {"commit":{"parents":{"totalCount":1},"author":{"email":"alice@acme.com","user":{"databaseId":101}}}},
-    {"commit":{"parents":{"totalCount":1},"author":{"email":" alice@acme.com","user":{"databaseId":101}}}},
+    {"commit":{"parents":{"totalCount":1},"author":{"email":"alice@acme.com","user":{"databaseId":101,"login":"alice"}}}},
+    {"commit":{"parents":{"totalCount":1},"author":{"email":" alice@acme.com","user":{"databaseId":101,"login":"alice"}}}},
     {"commit":{"parents":{"totalCount":1},"author":null}},
-    {"commit":{"parents":{"totalCount":1},"author":{"email":"bob@acme.com","user":{"databaseId":102}}}},
-    {"commit":{"parents":{"totalCount":2},"author":{"email":"merge@acme.com","user":{"databaseId":101}}}},
+    {"commit":{"parents":{"totalCount":1},"author":{"email":"bob@acme.com","user":{"databaseId":102,"login":"bob"}}}},
+    {"commit":{"parents":{"totalCount":2},"author":{"email":"merge@acme.com","user":{"databaseId":101,"login":"alice"}}}},
     {"commit":{"parents":{"totalCount":1},"author":{"email":"nouser@acme.com","user":null}}}]}}`,
 		o.threadsNext != "", nextCursor(o.threadsNext), o.filesNext != "", nextCursor(o.filesNext), o.rollupOID, rollup)
 }
 
 func merged(number int) string {
 	return fmt.Sprintf(`{"state":"MERGED","merged":true,"mergedAt":"2026-10-08T12:00:00Z","mergeCommit":{"oid":"merge%d"},
-  "headRefOid":"sha2","baseRefName":"main","author":null,"autoMergeRequest":null,
+  "mergedBy":{"login":"dave","databaseId":104},"headRefOid":"sha2","baseRefName":"main","author":null,"autoMergeRequest":null,
   "isDraft":false,"mergeable":"UNKNOWN","canBeRebased":false,"mergeStateStatus":"UNKNOWN","reviewDecision":null,"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},
   "reviews":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"files":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},
   "commits":{"nodes":[{"commit":{"oid":"sha2","statusCheckRollup":null}}]},"authors":{"nodes":[]}}`, number)

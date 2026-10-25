@@ -1,20 +1,20 @@
-'use client'
+'use client';
 
 // A RATE_RESET request is history only: resets are gone, so none is ever pending again.
-import type { ReactNode } from 'react'
-import { useTranslations } from 'next-intl'
-import { mutate } from 'swr'
-import type { AccessRequest } from '@/lib/api/types'
-import { swrKeys } from '@/lib/hooks'
-import { cn } from '@/lib/utils'
-import { RequestTimeline } from '@/components/approvals/request-timeline'
-import { useAuth } from '@/lib/auth'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import type { ReactNode } from 'react';
+import { useTranslations } from 'next-intl';
+import { mutate } from 'swr';
+import type { AccessRequest } from '@/lib/api/types';
+import { swrKeys } from '@/lib/hooks';
+import { cn } from '@/lib/utils';
+import { RequestTimeline } from '@/components/approvals/request-timeline';
+import { useAuth } from '@/lib/auth';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 
 const STATUS_STYLE: Record<string, string> = {
   APPROVED: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400',
   REJECTED: 'border-red-500/30 bg-red-500/10 text-red-500',
-}
+};
 
 function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -22,19 +22,19 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
       <p className="text-muted-foreground text-[10px] font-semibold tracking-widest uppercase">{label}</p>
       <div className="text-sm">{children}</div>
     </div>
-  )
+  );
 }
 
 function refresh(id: number) {
-  void mutate(swrKeys.requestThread(id))
-  void mutate(swrKeys.involvedApprovals)
-  void mutate(swrKeys.accessRequests('PENDING'))
-  void mutate(swrKeys.accessRequests(undefined))
+  void mutate(swrKeys.requestThread(id));
+  void mutate(swrKeys.involvedApprovals);
+  void mutate(swrKeys.accessRequests('PENDING'));
+  void mutate(swrKeys.accessRequests(undefined));
 }
 
 export function RateResetRequestDetail({ request }: { request: AccessRequest }) {
-  const t = useTranslations('Workflows')
-  const { identity } = useAuth()
+  const t = useTranslations('Workflows');
+  const { identity } = useAuth();
 
   return (
     <div data-workflow-detail-kind="RATE_RESET">
@@ -66,7 +66,9 @@ export function RateResetRequestDetail({ request }: { request: AccessRequest }) 
               <code className="font-mono">{new Date(request.createdAt).toLocaleString()}</code>
             </Field>
             <Field label={t('fields.decided')}>
-              <code className="font-mono">{request.decidedAt ? new Date(request.decidedAt).toLocaleString() : '—'}</code>
+              <code className="font-mono">
+                {request.decidedAt ? new Date(request.decidedAt).toLocaleString() : '—'}
+              </code>
             </Field>
             <Field label={t('fields.decidedBy')}>
               <code className="font-mono">{request.decidedBy ?? '—'}</code>
@@ -83,5 +85,5 @@ export function RateResetRequestDetail({ request }: { request: AccessRequest }) 
         </CardContent>
       </Card>
     </div>
-  )
+  );
 }

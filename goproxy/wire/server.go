@@ -33,7 +33,7 @@ const (
 )
 
 // backendGeneration is a monotonic counter shared across every wire connection of both engines; each run's
-// refetcher keys on its value to invalidate a stale schema fetch.
+// command runner keys on its value to invalidate a stale schema fetch.
 var backendGeneration atomic.Uint64
 
 // NextBackendGeneration returns the next backend generation and whether it is within range. Out of range is
@@ -181,7 +181,7 @@ func (s *Server) Shutdown() {
 
 // Drain gracefully winds the broker down for a rolling redeploy: it stops accepting new connections, lets
 // in-flight statements finish, and unblocks every idle handler so it can forward a protocol-level shutdown
-// notice (see each protocol's conn.go) and close. It waits for all handlers to return, bounded by ctx; any
+// notice (see each protocol's wire_client.go) and close. It waits for all handlers to return, bounded by ctx; any
 // connection still live when ctx is done is force-closed. Forcing the client read deadline only interrupts a
 // handler blocked reading the next command — an in-flight relay reads the target DB and writes the client, so
 // it is untouched and runs to completion.

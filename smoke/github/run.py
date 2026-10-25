@@ -2,6 +2,8 @@
 """SQL files from GitHub against real GitHub: opens pull requests in a test repository and checks how the control
 plane files, approves, runs, and merges them. Setup and settings are in README.md next to this file."""
 import json
+import os
+import signal
 import time
 
 from e2e import *  # noqa: F403
@@ -152,5 +154,34 @@ check("S8 revision and approval kept", (d8.get("status"), d8.get("revision")) ==
 automerge(H)
 check("S8 merges without re-approval", bool(wait_merged(H)))
 check("S8 table exists", table_exists(s8))
+
+
+# S9: a PR without SQL gets its check as skipped from the workflow, also while the control plane is paused
+def workflow_check(pr):
+    for r in json.loads(gh("api", f"repos/{REPO}/commits/{head(pr)}/check-runs"))["check_runs"]:
+        if r["name"] == CHECK and r["app"]["slug"] == "github-actions":
+            return r["conclusion"]
+    return None
+
+
+I = open_pr(f"s9-{SFX}", {f"docs/s9_{SFX}.md": "no SQL\n"}, f"docs: s9 {SFX}")
+log("S9 PR", I)
+check("S9 the workflow marks a PR without SQL skipped", wait("S9 skipped", lambda: workflow_check(I) == "skipped", 300))
+time.sleep(30)
+check("S9 the control plane posts no check of its own", approval_check(I)[0] is None, str(approval_check(I)))
+automerge(I)
+check("S9 merges", bool(wait_merged(I)))
+
+port = CP.rsplit(":", 1)[1].split("/")[0]
+cp_pid = int(sh("lsof", "-ti", f"tcp:{port}", "-sTCP:LISTEN").split()[0])
+os.kill(cp_pid, signal.SIGSTOP)
+try:
+    J = open_pr(f"s9b-{SFX}", {f"docs/s9b_{SFX}.md": "no SQL\n"}, f"docs: s9b {SFX}")
+    log("S9 PR with the control plane paused", J)
+    automerge(J)
+    check("S9 skipped while the control plane is paused", wait("S9b skipped", lambda: workflow_check(J) == "skipped", 300))
+    check("S9 merges while the control plane is paused", bool(wait_merged(J)))
+finally:
+    os.kill(cp_pid, signal.SIGCONT)
 
 finish()

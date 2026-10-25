@@ -23,15 +23,15 @@ func (runTestDecider) Decide(spi.DecideRequest) spi.DecisionOutcome {
 	return spi.DecisionOutcome{Decision: &spi.Decision{Action: "ALLOW"}}
 }
 
-func scriptedMySQLRun(t *testing.T, decider spi.ControlPlane, maxRows int, response []byte) (*RunSession, <-chan string) {
+func scriptedConnection(t *testing.T, decider spi.ControlPlane, maxRows int, response []byte) (*connection, <-chan string) {
 	t.Helper()
 	client, server := net.Pipe()
 	t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
 	_ = client.SetDeadline(time.Now().Add(5 * time.Second))
 	_ = server.SetDeadline(time.Now().Add(5 * time.Second))
 	authz := spi.NewAuthorizer(decider, "", nil)
-	authz.SetNamespace([]string{"test"})
-	s := &RunSession{conn: client, authz: authz, ref: &sqldb.Refetcher{Catalog: "def"}}
+	authz.SetSnapshot(spi.SessionSnapshot{Namespace: []string{"test"}})
+	c := &connection{targetDbConn: client, deprecateEOF: true, authz: authz, commandRunner: &sqldb.ProxyCommandRunner{Catalog: "def"}}
 	writes := make(chan string, 3)
 	go func() {
 		defer close(writes)
@@ -58,13 +58,13 @@ func scriptedMySQLRun(t *testing.T, decider spi.ControlPlane, maxRows int, respo
 			_ = mysqlwire.WritePacket(server, 1, mysqlwire.OKPacket())
 		}
 	}()
-	return s, writes
+	return c, writes
 }
 
 func runMySQLStatement(t *testing.T, maxRows int, response []byte) (spi.StatementResult, error, []string) {
 	t.Helper()
-	s, writes := scriptedMySQLRun(t, runTestDecider{}, maxRows, response)
-	result, err := s.ServeStatement("SELECT 1", maxRows)
+	c, writes := scriptedConnection(t, runTestDecider{}, maxRows, response)
+	result, err := c.ServeStatement("SELECT 1", maxRows)
 	var got []string
 	for write := range writes {
 		got = append(got, write)
@@ -126,8 +126,8 @@ func TestRunStatementMySQLResetsAfterTargetDbError(t *testing.T) {
 // The repro raises MySQL 1242.
 func TestRunStatementMySQLCapturesRawAndRedactedTargetDbError(t *testing.T) {
 	response := mysqlPacket(t, mysqlwire.ErrPacketState(1242, "21000", "Subquery returns more than 1 row"))
-	s, writes := scriptedMySQLRun(t, runTestDecider{}, 2, response)
-	_, err := s.ServeStatement("SELECT email FROM tb_user WHERE 1 = (SELECT 1 UNION ALL SELECT 2)", 2)
+	c, writes := scriptedConnection(t, runTestDecider{}, 2, response)
+	_, err := c.ServeStatement("SELECT email FROM tb_user WHERE 1 = (SELECT 1 UNION ALL SELECT 2)", 2)
 	for range writes {
 	}
 	var tdbErr relay.TargetDbError

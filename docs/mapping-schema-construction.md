@@ -87,7 +87,7 @@ Input: the curated catalog as flat `Column` rows
 an empty catalog means the namespace catalog (which system relations are
 included is the access-model curation's call —
 [access-model.md](./access-model.md)). Go nests them into a depth-3
-`schema.Mapping` (`analyzer/engines/wire.go`):
+`schema.Mapping` (`analyzer/engines/ffm.go`):
 
 ```
 mapping := schema.NewMapping()                     // sqlglot-go schema pkg — depth-3
@@ -123,7 +123,7 @@ Two rules the construction must hold:
   matching follows `@@lower_case_table_names` — mode `0` preserves
   case-sensitive identity, modes `1` and `2` compare through lowercase keys.
   goproxy normalizes catalog identities at introspection via
-  `engines.MySQL.IntrospectedColumns`; the same canonical parts feed mapping
+  `engines.Session.CatalogColumnNames`; the same canonical parts feed mapping
   construction, analyzer output keys, and Kotlin catalog-key matching — not one
   lookup site.
 

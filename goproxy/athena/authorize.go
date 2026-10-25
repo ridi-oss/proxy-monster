@@ -12,16 +12,18 @@ import (
 )
 
 // authorize obtains the control plane's verdict for one statement in the target's fixed scope.
-func (t *target) authorize(authz *spi.Authorizer, refetcher *refetcher, sql string, parameters []string, maxRows int) spi.Verdict {
+func (t *target) authorize(authz *spi.Authorizer, commandRunner *proxyCommandRunner, sql string, parameters []string, maxRows int) spi.Verdict {
+	// The snapshot carries this request's parameters and row cap, so a cached one would be stale.
+	authz.MarkNamespaceDirty()
 	return authz.Authorize(spi.AuthzInput{
 		SQL: sql,
-		ProbeSession: func() (spi.SessionObservation, error) {
-			return spi.SessionObservation{
-				CurrentCatalog: t.catalogIdentity(), Namespace: []string{t.config.database},
+		ProbeSession: func() (spi.SessionSnapshot, error) {
+			return spi.SessionSnapshot{
+				CurrentCatalog: t.catalogIdentity(), Namespace: []string{t.databaseIdentity()},
 				SessionObservation: &enginepb.SessionObservation{Engine: &enginepb.SessionObservation_Athena{Athena: &enginepb.AthenaSqlContext{Workgroup: t.config.workgroup, ExecutionParameters: parameters, MaxRows: uint32(max(maxRows, 0))}}},
 			}, nil
 		},
-		RunCommands: refetcher.RunAll,
+		Commands: commandRunner,
 	})
 }
 

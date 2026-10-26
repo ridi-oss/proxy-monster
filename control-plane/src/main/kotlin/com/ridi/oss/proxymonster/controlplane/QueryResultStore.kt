@@ -1,7 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
-import com.ridi.oss.proxymonster.analyzer.pb.ResultFingerprint
-import com.google.protobuf.InvalidProtocolBufferException
+import com.ridi.oss.proxymonster.grpc.ResultRequirements
 import com.ridi.oss.proxymonster.storage.StoredResult
 import com.ridi.oss.proxymonster.grpc.RunError
 import com.ridi.oss.proxymonster.grpc.runResultRows
@@ -39,19 +38,12 @@ data class QueryResultMeta(
     val columns: List<String> = emptyList(),
 )
 
-@Serializable
 data class DecryptedResult(
     val columns: List<String>,
     val rows: List<List<String?>>,
     // The backend's own affected-row count for a DML statement (UPDATE/INSERT/DELETE), which has no result
     // set of its own. Null for a statement that returns rows (e.g. SELECT), where [rows].size IS the count.
     val rowsAffected: Int? = null,
-    // The executed decision's requirements (ResultFingerprint), frozen with the bytes so a view denies drift
-    // ([decideResultView]). NULL for a result stored before this field existed (legacy) — distinct from a
-    // present-but-empty fingerprint (a genuine passthrough result), so a legacy view always fails closed
-    // rather than being mistaken for a grant-less passthrough and released raw.
-    @Serializable(with = ResultFingerprintSerializer::class)
-    val resultFingerprint: ResultFingerprint? = null,
     /** The EXECUTION's verdict cap ended this result, which a view over the stored rows cannot re-derive. */
     val truncatedByCap: Boolean = false,
 )
@@ -66,17 +58,15 @@ class ResultAccess(
     val sql: String?,
     decrypt: () -> DecryptedResult?,
     decryptError: () -> RunError? = { null },
+    /** What the view of this DONE or FAILED result is decided from; null denies. */
+    val requirements: ResultRequirements? = null,
 ) {
     val decrypted: DecryptedResult? by lazy(decrypt)
     val errorDetail: RunError? by lazy(decryptError)
 }
 
-/** Protobuf at rest, so a Go control-plane reads the same bytes. The JSON fallback covers results stored
- *  before the migration and dies with them, one retention window later. */
+/** Protobuf at rest, so a Go control-plane reads the same bytes. */
 internal object ResultPayloadCodec {
-    private val json = Json
-    private val legacySerializer = DecryptedResult.serializer()
-
     fun encode(result: DecryptedResult): ByteArray = storedResult {
         rows = runResultRows {
             columns.addAll(result.columns)
@@ -89,28 +79,15 @@ internal object ResultPayloadCodec {
             )
         }
         result.rowsAffected?.let { rowsAffected = it }
-        result.resultFingerprint?.let { resultFingerprint = it }
         truncatedByCap = result.truncatedByCap
     }.toByteArray()
 
-    fun decode(plaintext: ByteArray): DecryptedResult =
-        try {
-            fromStored(StoredResult.parseFrom(plaintext))
-        } catch (protoFailure: InvalidProtocolBufferException) {
-            // Parsing decides the format, never the leading byte: `{` is itself a valid protobuf tag
-            // (field 15), so a newer schema's unknown field would be misread as JSON.
-            try {
-                json.decodeFromString(legacySerializer, plaintext.toString(Charsets.UTF_8))
-            } catch (jsonFailure: Exception) {
-                throw protoFailure.also { it.addSuppressed(jsonFailure) }
-            }
-        }
+    fun decode(plaintext: ByteArray): DecryptedResult = fromStored(StoredResult.parseFrom(plaintext))
 
     private fun fromStored(stored: StoredResult) = DecryptedResult(
         columns = stored.rows.columnsList,
         rows = stored.rows.rowsList.map { row -> row.valuesList.map { if (it.isNull) null else it.value } },
         rowsAffected = if (stored.hasRowsAffected()) stored.rowsAffected else null,
-        resultFingerprint = if (stored.hasResultFingerprint()) stored.resultFingerprint else null,
         truncatedByCap = stored.truncatedByCap,
     )
 }
@@ -121,6 +98,7 @@ class QueryResultStore(private val dataSource: DataSource, private val crypto: R
         val sql: String?,
         val ciphertext: ByteArray?,
         val errorDetail: ByteArray?,
+        val requirements: ByteArray?,
     )
 
     private val json = Json
@@ -187,6 +165,18 @@ class QueryResultStore(private val dataSource: DataSource, private val crypto: R
         ps.setTimestamp(1, Timestamp.from(Instant.now().plusSeconds(RESULT_RETENTION_SEC)))
         ps.setLong(2, taskId)
         ps.executeUpdate()
+    }
+
+    /** Stores the running child's [requirements] when its run's decision arrives, for a DONE and a FAILED view alike. */
+    fun recordRequirements(taskId: Long, requirements: ResultRequirements) {
+        dataSource.inTx { c ->
+            val child = runningChild(c, taskId) ?: return@inTx
+            c.prepareStatement("UPDATE query_result SET requirements = ? WHERE id = ? AND status = 'RUNNING'").use { ps ->
+                ps.setBytes(1, requirements.toByteArray())
+                ps.setLong(2, child.id)
+                ps.executeUpdate()
+            }
+        }
     }
 
     fun completeRun(
@@ -386,14 +376,14 @@ class QueryResultStore(private val dataSource: DataSource, private val crypto: R
         val row = dataSource.connection.use { c ->
             val selector = if (ordinal == null) activeOrdinalClause() else "ordinal = ?"
             c.prepareStatement(
-                "SELECT $META_COLS, qr.sql, ciphertext, error_detail FROM query_result qr " +
+                "SELECT $META_COLS, qr.sql, ciphertext, error_detail, requirements FROM query_result qr " +
                     "WHERE task_id = ? AND $selector",
             ).use { ps ->
                 ps.setLong(1, taskId)
                 if (ordinal == null) ps.setLong(2, taskId) else ps.setInt(2, ordinal)
                 ps.executeQuery().use { rs ->
                     if (!rs.next()) return null
-                    RawResultRow(rs.toMeta(), rs.getString("sql"), rs.getBytes("ciphertext"), rs.getBytes("error_detail"))
+                    RawResultRow(rs.toMeta(), rs.getString("sql"), rs.getBytes("ciphertext"), rs.getBytes("error_detail"), rs.getBytes("requirements"))
                 }
             }
         }
@@ -409,10 +399,11 @@ class QueryResultStore(private val dataSource: DataSource, private val crypto: R
             row.sql,
             decrypt = { payload?.let { ResultPayloadCodec.decode(crypto.decrypt(it)) } },
             decryptError = { errorBytes?.let { RunError.parseFrom(crypto.decrypt(it)) } },
+            requirements = row.requirements?.takeIf { !expired }?.let { ResultRequirements.parseFrom(it) },
         )
     }
 
-    // Expiry drops the decryptable PAYLOAD (ciphertext, row_count, columns, the encrypted error_detail) and
+    // Expiry drops the PAYLOAD (ciphertext, row_count, columns, error_detail, requirements) and
     // clears expires_at, but keeps the child row and its sql/sql_hash/status/error_code/executed_* for durable
     // audit and web preview. A purged row still exists yet reads back with no payload (accessFor's `decrypted`
     // is null → the route returns 410). Clearing expires_at makes the row fall out of this sweep's WHERE, so
@@ -420,7 +411,7 @@ class QueryResultStore(private val dataSource: DataSource, private val crypto: R
     fun purgeExpired(): Int = dataSource.connection.use { c ->
         c.prepareStatement(
             "UPDATE query_result SET ciphertext = NULL, row_count = NULL, columns = NULL, error_detail = NULL, " +
-                "expires_at = NULL WHERE expires_at <= ?",
+                "requirements = NULL, expires_at = NULL WHERE expires_at <= ?",
         ).use { ps ->
             ps.setTimestamp(1, Timestamp.from(Instant.now()))
             ps.executeUpdate()

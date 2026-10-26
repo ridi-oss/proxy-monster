@@ -402,12 +402,12 @@ func TestTrimmedVerdict(t *testing.T) {
 		{"not a message", []byte("ÿ")},
 		{"effective roles", variant(func(v *pb.Verdict) { v.EffectiveRoles = []string{"admin"} })},
 		{"rewritten sql", variant(func(v *pb.Verdict) { v.RewrittenSql = proto.String("select 1") })},
-		{"result fingerprint", variant(func(v *pb.Verdict) { v.ResultFingerprint = []*apb.RequireResultReadGrant{{}} })},
 		{"after statement", variant(func(v *pb.Verdict) { v.AfterStatement = []*pb.ProxyCommand{{}} })},
 		{"submission", variant(func(v *pb.Verdict) {
 			v.Submission = &apb.Submission{Engine: &apb.Submission_Athena{Athena: &apb.AthenaSubmission{ExecutionParameters: []string{"1"}}}}
 		})},
 		{"deny reason", variant(func(v *pb.Verdict) { v.DenyReason = "x" })},
+		{"result requirements", variant(func(v *pb.Verdict) { v.ResultRequirements = &pb.ResultRequirements{} })},
 		{"generation", variant(func(v *pb.Verdict) { v.Generation = 3 })},
 		{"DENY", variant(func(v *pb.Verdict) { v.Decision = pb.EnfAction_DENY })},
 		{"ALLOW with masks", variant(func(v *pb.Verdict) { v.Decision = pb.EnfAction_ALLOW })},

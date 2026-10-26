@@ -1,5 +1,7 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.grpc.ResultRequirements
+import com.ridi.oss.proxymonster.grpc.RunError
 import com.ridi.oss.proxymonster.controlplane.authz.UserParents
 import com.ridi.oss.proxymonster.controlplane.authz.Authz
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
@@ -7,7 +9,6 @@ import com.ridi.oss.proxymonster.controlplane.authz.AuthzContext
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzDecision
 import com.ridi.oss.proxymonster.controlplane.authz.authorizeWithContext
 import com.ridi.oss.proxymonster.grpc.EnfAction
-import com.ridi.oss.proxymonster.grpc.RunError
 import com.ridi.oss.proxymonster.probe.splitStatements
 import io.ktor.http.HttpStatusCode
 import kotlinx.coroutines.CoroutineScope
@@ -46,6 +47,7 @@ class EditorTaskService(
         val preflight: () -> Boolean,
         val statementAt: suspend (Int) -> String?,
         val onStatement: suspend (Int, QueryResponse) -> Boolean,
+        val onDecision: (ResultRequirements) -> Unit,
     )
 
     /** Submit on a held editor session (its one target-DB connection). */
@@ -58,7 +60,7 @@ class EditorTaskService(
             // One mutex hold for the batch, so a concurrent submit cannot land inside its transaction.
             runExecService.runBatchOnSession(
                 sessionId, principal, statementCount = b.statementCount, maxRows = maxRows,
-                statementAt = b.statementAt, onStatement = b.onStatement,
+                statementAt = b.statementAt, onStatement = b.onStatement, onDecision = b.onDecision,
                 requesterIp = requesterIp, taskId = b.taskId, preflight = b.preflight,
                 exchangeTimeoutMs = config.queryExchangeTimeoutMs,
             )
@@ -73,7 +75,7 @@ class EditorTaskService(
             // No assumeRoles: an EDITOR token, so every statement decides on the editor channel.
             runExecService.runBatch(
                 principal, ds, statementCount = b.statementCount, maxRows = maxRows,
-                statementAt = b.statementAt, onStatement = b.onStatement,
+                statementAt = b.statementAt, onStatement = b.onStatement, onDecision = b.onDecision,
                 approverExec = false, requesterIp = requesterIp, taskId = b.taskId, preflight = b.preflight,
                 exchangeTimeoutMs = config.queryExchangeTimeoutMs,
             )
@@ -131,6 +133,7 @@ class EditorTaskService(
                         statementAt = { ordinal ->
                             if (ordinal == 0) statements[0] else store.startNextRun(task.id, principal)?.sql
                         },
+                        onDecision = { store.recordRequirements(task.id, it) },
                         onStatement = { ordinal, response ->
                             if (response.decision == EnfAction.DENY) {
                                 denyReason = response.denyReason
@@ -139,7 +142,7 @@ class EditorTaskService(
                                 batchFailure = if (response.denyCode == RATE_SPENT_CODE) "approval.rate_spent" else "approval.execute_denied"
                                 false
                             } else {
-                                val result = DecryptedResult(response.columns, response.rows, response.rowsAffected, response.resultFingerprint, response.truncatedByCap)
+                                val result = DecryptedResult(response.columns, response.rows, response.rowsAffected, response.truncatedByCap)
                                 // The parent flips to EXECUTED only on the LAST statement. The per-statement Decide
                                 // already wrote the real audit decision, so no task-level row is added here.
                                 val last = ordinal == statements.lastIndex
@@ -180,7 +183,7 @@ class EditorTaskService(
             if (failureCode != null) {
                 // Child FAILED + parent FAILED in ONE transaction (mirrors the success path's single commit).
                 runCatching {
-                    store.failRun(task.id, failureCode, denyReason, denyDecisionId, diagnostic = diagnostic) { conn, _ ->
+                    store.failRun(task.id, failureCode, denyReason, denyDecisionId, diagnostic) { conn, _ ->
                         accessStore.markFailed(task.id, conn)
                     }
                 }
@@ -248,15 +251,12 @@ class EditorTaskService(
             throw serviceNotFound("editor task")
         }
         val meta = access.meta
-        // One re-decision gates both the FAILED diagnostic and the DONE rows. Not audited here — the
-        // per-statement Decide already recorded it. No AuditStore: the rows were charged at execution.
-        val structure = task.datasourceId?.let(datasourceStore::get)?.let { ds ->
-            runExecService.openSessionStructure(taskId, principal, ds)
-        }
+        // One decision gates both the FAILED diagnostic and the DONE rows. Not audited here — the
+        // per-statement Decide already recorded it, and the rows were charged at execution.
         val ctx = viewerDecision(
-            principal, task, access.sql, AuthzContext(requesterIp = requesterIp),
-            datasourceStore, policyStore, accessStore, userGroupStore, roleResolver, authz,
-            systemClassification, Channel.EDITOR, structure = structure,
+            principal, task, access.requirements,
+            AuthzContext(requesterIp = requesterIp), datasourceStore, policyStore, userGroupStore, roleResolver, authz,
+            systemClassification, Channel.EDITOR,
         )
         if (meta.status == "FAILED" && access.errorDetail != null) {
             return QueryResultView(meta, emptyList(), emptyList(), errorDetail = failedDiagnosticForViewer(ctx, access.errorDetail))

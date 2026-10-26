@@ -678,11 +678,11 @@ class ApprovalService(
         val access = queryResultStore?.accessFor(id, ordinal) ?: throw serviceNotFound(REQUEST)
         val meta = access.meta
         if (!mayReadResult(principal, requesterIp, req)) throw serviceNotFound(REQUEST)
-        // One re-decision on the released child's own statement gates both the FAILED diagnostic and the rows.
-        // No AuditStore: the rows were charged at execution, so a spent rate must not gate the view.
+        // One decision gates both the FAILED diagnostic and the rows. The rows were charged at execution, so a
+        // spent rate does not gate the view.
         val ctx = viewerDecision(
-            principal, req, access.sql, AuthzContext(requesterIp = requesterIp),
-            datasourceStore, policyStore, accessStore, userGroupStore, roleResolver, authz,
+            principal, req, access.requirements,
+            AuthzContext(requesterIp = requesterIp), datasourceStore, policyStore, userGroupStore, roleResolver, authz,
             systemClassification, Channel.WORKFLOW_VIEWER,
         )
         if (meta.status == "FAILED" && access.errorDetail != null) {

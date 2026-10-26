@@ -427,10 +427,10 @@ func sendDecision(stream runStream, decision *spi.Decision) bool {
 			DenyReason:          decision.DenyReason,
 			DenyCode:            decision.DenyCode,
 			EffectiveRoles:      append([]string(nil), decision.EffectiveRoles...),
-			ResultFingerprint:   decision.ResultFingerprint,
 			SanitizeDiagnostics: decision.SanitizeDiagnostics,
 			MaxRows:             decision.MaxRows,
 			MaxBytes:            decision.MaxBytes,
+			ResultRequirements:  decision.ResultRequirements,
 		},
 	}}) == nil
 }

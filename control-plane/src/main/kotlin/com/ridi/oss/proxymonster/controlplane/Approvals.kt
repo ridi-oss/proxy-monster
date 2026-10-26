@@ -1,6 +1,5 @@
 package com.ridi.oss.proxymonster.controlplane
 
-import com.ridi.oss.proxymonster.analyzer.pb.SessionObservation
 import com.ridi.oss.proxymonster.analyzer.pb.StatementKind
 import com.ridi.oss.proxymonster.controlplane.authz.UserParents
 import com.ridi.oss.proxymonster.controlplane.authz.Authz
@@ -13,6 +12,7 @@ import com.ridi.oss.proxymonster.controlplane.authz.resolveContextTags
 import com.ridi.oss.proxymonster.controlplane.notify.NotificationService
 import com.ridi.oss.proxymonster.grpc.EnfAction
 import com.ridi.oss.proxymonster.grpc.RunError
+import com.ridi.oss.proxymonster.grpc.ResultRequirements
 import com.ridi.oss.proxymonster.probe.Masking
 import com.ridi.oss.proxymonster.probe.bindMasks
 import io.ktor.http.HttpStatusCode
@@ -217,43 +217,47 @@ internal fun failedDiagnosticForViewer(ctx: DecisionContext?, diagnostic: RunErr
 }
 
 /**
- * The GET /result view's re-decision: decide [childSql] as [viewer] under its live execute-as roles {R}.
- * Null if the SQL, datasource, or roles are gone (a soft-deleted role grants nothing).
+ * The GET /result view's decision: the stored [requirements] authorized for [viewer] under the task's live
+ * execute-as roles {R} with the datasource's current classifications, as [decideQuery] authorizes what it
+ * analyzed. Null when the datasource or every role is gone (a soft-deleted role grants nothing).
  */
 internal fun viewerDecision(
     viewer: String,
     req: AccessRequest,
-    childSql: String?,
+    requirements: ResultRequirements?,
     callerContext: AuthzContext,
     datasourceStore: DatasourceStore,
     policyStore: PolicyStore,
-    accessStore: AccessStore,
     userGroupStore: UserGroupStore,
     roleResolver: RoleResolver,
     authz: Authz,
     systemClassification: SystemClassificationService?,
     channel: Channel,
-    auditStore: AuditStore? = null,
-    // An open editor session's connection catalog; null re-decides against the datasource's config catalog.
-    structure: ConnectionStructure? = null,
 ): DecisionContext? {
-    val sql = childSql ?: return null
     val ds = req.datasourceId?.let(datasourceStore::get) ?: return null
     val roles = policyStore.liveRoleNames(req.executeAs).ifEmpty { return null }
-    return decideQuery(
-        principal = viewer, ds = ds, sql = sql, channel = channel,
-        catalog = structure?.catalog ?: datasourceStore.catalog(ds.id), policyStore = policyStore, accessStore = accessStore,
-        userGroupStore = userGroupStore, roleResolver = roleResolver, authz = authz, auditStore = auditStore,
-        providedRoles = roles, context = callerContext, systemClassification = systemClassification,
-        liveSearchPath = structure?.inputs?.searchPath ?: req.pullRequest?.defaultSchema?.let { listOf(it) },
-        session = structure?.inputs?.session ?: SessionObservation.getDefaultInstance(),
-        tempColumns = structure?.inputs?.tempColumns.orEmpty(),
+    // Absent requirements are empty facts, which decideFacts denies as unanalyzed.
+    val facts = (requirements ?: ResultRequirements.getDefaultInstance()).facts
+    val tempTables = requirements?.tempTablesList.orEmpty().toSet()
+    val classifications = datasourceStore.classificationsFor(ds.id)
+    val rowsByKey = (facts.resultReadsList.filter { it.hasColumn() }.map { it.column } + facts.diagnosticLeakColumnsList)
+        .associate { ref ->
+            ref.key to CatalogColumn(
+                ref.catalog, ref.schema, ref.table, ref.column, dataType = "", sqlType = "", ordinal = 0, nullable = true,
+                classification = classifications[columnRef(ref.catalog, ref.schema, ref.table, ref.column)],
+                isTemp = ref.tableRef() in tempTables,
+            )
+        }
+    return decideFacts(
+        viewer, ds, channel, rowsByKey, facts, policyStore, userGroupStore, roleResolver, authz,
+        auditStore = null, providedRoles = roles, context = callerContext, systemClassification = systemClassification,
+        tempTables = tempTables,
     )
 }
 
 /**
- * Re-apply R's masks to a stored result's [decrypted] bytes under the viewer's live [ctx]. Every
- * uncertainty denies: policy DENY, passthrough mismatch, fingerprint drift, an unbound mask.
+ * Apply the view decision [ctx] to a stored result's [decrypted] bytes. Every uncertainty denies: policy DENY,
+ * a width mismatch, an unbound mask.
  */
 internal fun decideResultView(ctx: DecisionContext, decrypted: DecryptedResult): ResultViewDecision {
     // The viewer's own caps bound the release exactly as they bound a wire relay: the longest prefix within
@@ -282,15 +286,6 @@ internal fun decideResultView(ctx: DecisionContext, decrypted: DecryptedResult):
     if (ctx.action == EnfAction.DENY) {
         return ResultViewDecision.Denied(ctx.denyReason ?: ctx.detail ?: "view decision denied")
     }
-    // A stored result must never be released through the passthrough relay unless it was itself frozen as a
-    // grant-less passthrough. If its SQL became unanalyzable since execution (a dropped table/column →
-    // exception.unanalyzable), the live re-decision turns passthrough while the stored bytes still hold the
-    // columnar, possibly masked, result. A legacy result (null fingerprint) is likewise unverifiable. Both
-    // fail closed — only a present, grant-less fingerprint takes the raw-release path below.
-    val storedFingerprint = decrypted.resultFingerprint
-    if (ctx.passthrough && (storedFingerprint == null || storedFingerprint.grantsList.isNotEmpty())) {
-        return ResultViewDecision.Denied("stored result no longer matches the live query decision")
-    }
     if (ctx.passthrough) {
         // The re-decision already ran full Cedar authorization under {R} in the viewer's live context and
         // returned non-DENY (checked above). A passthrough carries no column-masking model — there is nothing
@@ -309,15 +304,6 @@ internal fun decideResultView(ctx: DecisionContext, decrypted: DecryptedResult):
             return ResultViewDecision.Denied("stored result row width does not match its columns")
         }
         return allowed(decrypted.columns, decrypted.rows)
-    }
-    // Apply the re-decided masks only when the frozen requirements still match the live re-decision — then
-    // each masked column keeps the same output ordinals, so ctx.masks bind to the same stored columns they
-    // did at execution ([resultFingerprint]). Any drift (a reorder, a namespace change, a legacy result with
-    // no frozen fingerprint) denies fail-closed. This does NOT freeze the mask FUNCTIONS or Cedar verdicts:
-    // masking is re-decided under {R} at view, so a policy that liberalizes between execute and view can
-    // still narrow (or widen) the masks — matched requirements only prove the ordinal binding is sound.
-    if (storedFingerprint == null || storedFingerprint != fingerprintOf(ctx.resultFingerprint)) {
-        return ResultViewDecision.Denied("stored result no longer matches the live query decision")
     }
     // A plan-only EXPLAIN's stored bytes are the target DB's plan output, not the inner query's columns
     // (the analyzer emits no output_columns for it), so the projection-width check below can never hold.
@@ -571,6 +557,7 @@ internal suspend fun runApprovedTask(
             statementAt = { ordinal ->
                 if (ordinal == 0) statements[0].sql else store.startNextRun(id, executor)?.sql
             },
+            onDecision = { store.recordRequirements(id, it) },
             onStatement = { ordinal, response ->
                 val last = ordinal == statements.lastIndex
                 if (response.decision == EnfAction.DENY) {
@@ -580,7 +567,7 @@ internal suspend fun runApprovedTask(
                     batchFailure = if (response.denyCode == RATE_SPENT_CODE) "approval.rate_spent" else "approval.execute_denied"
                     false
                 } else {
-                    val result = DecryptedResult(response.columns, response.rows, response.rowsAffected, response.resultFingerprint, response.truncatedByCap)
+                    val result = DecryptedResult(response.columns, response.rows, response.rowsAffected, response.truncatedByCap)
                     // The parent flips to EXECUTED only on the LAST statement, so a crash mid-batch cannot
                     // leave a task EXECUTED with statements unrun.
                     val completed = store.completeRun(id, result, QueryResultStore.RESULT_RETENTION_SEC, response.decisionId) { conn, _ ->

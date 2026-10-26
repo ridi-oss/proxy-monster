@@ -68,10 +68,6 @@ type Decision struct {
 	// ForwardTargetError: send the client TargetError (redacted) and run nothing.
 	ForwardTargetError bool
 	TargetError        *TargetError
-	// ResultFingerprint is the decision's authorization requirements (the analyzer's result-read grants). The
-	// proxy does not interpret them; it only echoes them back on a RunDecision so an execute-under-R run can
-	// freeze them with the stored result (the control plane's result-view drift gate).
-	ResultFingerprint []*enginepb.RequireResultReadGrant
 	// MaxRows / MaxBytes are the result caps the control plane resolved from the statement's Cedar permits
 	// (Verdict.max_rows / max_bytes); 0 = uncapped. See docs/result-caps.md.
 	MaxRows  int64
@@ -79,6 +75,8 @@ type Decision struct {
 	// Submission is the engine-specific companion to RewrittenSQL (analyzer.proto Submission); the dialect
 	// reads its own arm. nil = the text is the whole submission.
 	Submission *enginepb.Submission
+	// ResultRequirements is echoed on RunDecision for the control plane; the proxy does not read it.
+	ResultRequirements *pb.ResultRequirements
 }
 
 // PageRows is the row count a paging caller should ask the target DB for: its own page size narrowed by the

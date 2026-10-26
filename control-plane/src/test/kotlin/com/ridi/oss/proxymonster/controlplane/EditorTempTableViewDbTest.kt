@@ -44,13 +44,11 @@ import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
-import kotlin.test.assertNotNull
-import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * Editor results over connection-only structure on PostgreSQL: while the session is open the view re-decides
- * against that connection's catalog. A fake proxy holds one real target connection and calls the real Decide.
+ * Editor results on PostgreSQL are viewed from what each run stored, not from the session's later state. A
+ * fake proxy holds one real target connection and calls the real Decide.
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class EditorTempTableViewDbTest {
@@ -111,7 +109,7 @@ class EditorTempTableViewDbTest {
     }
 
     @Test
-    fun `a select from a session temp table is viewable while the session is open, refused after it closes`() = runBlocking {
+    fun `a select from a session temp table stays viewable after the session closes`() = runBlocking {
         var select = 0L
         withSession { session, verdicts ->
             val create = submit(session, "create temp table t3 as select 7 as n")
@@ -119,12 +117,22 @@ class EditorTempTableViewDbTest {
             select = submit(session, "select n from t3")
             assertEquals("EXECUTED", core.accessStore.getRequest(select)?.status)
             assertEquals(listOf(WireEnfAction.ALLOW, WireEnfAction.ALLOW), verdicts.toList())
-
-            val view = service.result(principal, null, select, null)
-            assertEquals(listOf("n"), view.columns)
-            assertEquals(listOf(listOf<String?>("7")), view.rows)
+            assertEquals(listOf(listOf<String?>("7")), service.result(principal, null, select, null).rows)
         }
-        assertDenied(select)
+        val view = service.result(principal, null, select, null)
+        assertEquals(listOf("n"), view.columns)
+        assertEquals(listOf(listOf<String?>("7")), view.rows)
+    }
+
+    @Test
+    fun `a result stays viewable after a later search_path change and the session's close`() = runBlocking {
+        var select = 0L
+        withSession { session, _ ->
+            select = submit(session, "select id, email from users order by id")
+            assertEquals("EXECUTED", core.accessStore.getRequest(submit(session, "set search_path to pg_catalog"))?.status)
+            assertEquals(listOf(listOf<String?>("1", "a@x"), listOf<String?>("2", "b@x")), service.result(principal, null, select, null).rows)
+        }
+        assertEquals(listOf(listOf<String?>("1", "a@x"), listOf<String?>("2", "b@x")), service.result(principal, null, select, null).rows)
     }
 
     @Test
@@ -140,13 +148,10 @@ class EditorTempTableViewDbTest {
     }
 
     @Test
-    fun `another principal cannot view against someone else's open session`() = runBlocking {
+    fun `another principal cannot view someone else's result`() = runBlocking {
         withSession { session, _ ->
             submit(session, "create temp table t5 as select 9 as n")
             val select = submit(session, "select n from t5")
-            val ds = core.datasourceStore.get(fx.datasource.id)!!
-            assertNull(runExecService.openSessionStructure(select, other, ds))
-            assertNotNull(runExecService.openSessionStructure(select, principal, ds))
             val denied = assertFailsWith<TaskServiceException> { service.result(other, null, select, null) }
             assertEquals("common.not_found", denied.error.code)
         }
@@ -247,8 +252,7 @@ class EditorTempTableViewDbTest {
         }
         out.send(proxyRunMsg {
             decision = runDecision {
-                decision = verdict.decision; decisionId = verdict.decisionId
-                resultFingerprint += verdict.resultFingerprintList
+                decision = verdict.decision; decisionId = verdict.decisionId; resultRequirements = verdict.resultRequirements
             }
         })
         held.createStatement().use { st ->

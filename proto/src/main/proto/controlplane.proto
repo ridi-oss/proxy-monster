@@ -334,11 +334,7 @@ message Verdict {
   // decision and NOT latched: the control plane sets it on any decision whose diagnostics could carry a
   // protected value. A blanket bool, deliberately DENY-inclusive and whole-row-safe.
   bool sanitize_diagnostics = 10;
-  // The decision's authorization requirements (the analyzer's result-read grants). The proxy does not read
-  // them — like decision_id, it echoes them back on RunDecision purely so an execute-under-R run freezes
-  // them with the stored result and a later view can deny authorization drift (the control-plane result-view
-  // gate). Empty for a decision that needs no result-read grants.
-  repeated proxymonster.analyzer.v1.RequireResultReadGrant result_fingerprint = 11;
+  reserved 11; // was result_fingerprint
   // The result caps this statement's result.cap policies annotate (docs/result-caps.md), resolved by the
   // control plane: 0 = uncapped, which only a result.cap forbid produces. Set explicitly on every verdict.
   int64 max_rows = 12;
@@ -349,6 +345,15 @@ message Verdict {
   bool forward_target_error = 15;
   // A stable code for the deny_reason the caller can branch on: "rate_spent", or empty.
   string deny_code = 16;
+  // Set on a non-wire verdict; the proxy echoes it on RunDecision without reading it.
+  ResultRequirements result_requirements = 17;
+}
+
+// What a stored result's view is decided from, stored in query_result.requirements: the execution's
+// statement facts, trimmed to the fields the decision reads, and which tables were session temp tables.
+message ResultRequirements {
+  proxymonster.analyzer.v1.StatementFacts facts = 1;
+  repeated ObjectRef temp_tables = 2;
 }
 message BeforeDecide {
   repeated ProxyCommand commands = 1;
@@ -448,10 +453,7 @@ message RunDecision {
   repeated string masked_columns = 3;
   string deny_reason = 4;
   repeated string effective_roles = 5;
-  // The decision's authorization requirements (the analyzer's result-read grants), forwarded from
-  // Verdict.result_fingerprint. An execute-under-R run freezes them with the stored result so a later view
-  // denies authorization drift.
-  repeated proxymonster.analyzer.v1.RequireResultReadGrant result_fingerprint = 6;
+  reserved 6; // was result_fingerprint
   // Verdict.sanitize_diagnostics echoed back, so the caller returns the failure form the decision
   // dictated: redacted when set, raw otherwise.
   bool sanitize_diagnostics = 7;
@@ -461,6 +463,8 @@ message RunDecision {
   int64 max_bytes = 9;
   // Verdict.deny_code echoed back.
   string deny_code = 10;
+  // Verdict.result_requirements echoed back.
+  ResultRequirements result_requirements = 11;
 }
 message RunResultRows {
   repeated string columns = 1;

@@ -240,10 +240,7 @@ func emitLineageFacts(root exp.Expression, session *Session, qualifySchema schem
 			}
 		}
 	}
-	// Flatten and sort the reference columns: report.References is a map, so iterating it directly emits the
-	// DENY grants in a random order per run. The control-plane freezes these grants as a stored result's
-	// fingerprint and compares them for equality at view, so a nondeterministic order would make an unchanged
-	// query's fingerprint differ between execute and view and falsely deny the view.
+	// report.References is a map; sort its columns so the same statement always yields the same facts.
 	refCols := []string{}
 	for _, refs := range report.References {
 		refCols = append(refCols, refs...)

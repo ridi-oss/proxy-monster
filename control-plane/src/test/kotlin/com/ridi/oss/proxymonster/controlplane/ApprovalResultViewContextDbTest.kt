@@ -36,7 +36,7 @@ import kotlinx.serialization.json.Json
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.TestInstance
-import com.ridi.oss.proxymonster.analyzer.pb.RequireResultReadGrant
+import com.ridi.oss.proxymonster.grpc.ResultRequirements
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
@@ -244,10 +244,8 @@ class ApprovalResultViewContextDbTest {
         columns: List<String> = listOf("id", "email", "ssn"),
         rows: List<List<String?>> = listOf(listOf("1", "a@x", rawSsn)),
         truncatedByCap: Boolean = false,
-        // The execution-time requirements frozen with the result. Defaults to what the real decision emits
-        // for [sql] under the execute-as role, so a same-schema view matches and releases; a test that
-        // simulates a schema change between execute and view passes a different (drifted/empty) set.
-        resultFingerprint: List<RequireResultReadGrant>? = fx.decide(sql, providedRoles = setOf(roleName)).resultFingerprint,
+        // What the execution stored for the view; null models a legacy result.
+        resultRequirements: ResultRequirements = fx.decide(sql, channel = Channel.WORKFLOW_EXECUTOR, providedRoles = setOf(roleName)).resultRequirements!!,
         decisionId: Long? = executionDecision(sql),
         sourceDecisionId: Long? = null,
     ): Long {
@@ -269,7 +267,8 @@ class ApprovalResultViewContextDbTest {
         }
         fx.dataSource.connection.use { c -> c.prepareStatement("INSERT INTO query_result (task_id, sql, sql_hash) VALUES (?, ?, 'fixture')").use { ps -> ps.setLong(1, reqId); ps.setString(2, sql); ps.executeUpdate() } }
         assertNotNull(resultStore.startNextRun(reqId, executor))
-        assertNotNull(resultStore.completeRun(reqId, DecryptedResult(columns, rows, resultFingerprint = resultFingerprint?.let { fingerprintOf(it) }, truncatedByCap = truncatedByCap), 3600, decisionId ?: executionDecision(sql)))
+        resultStore.recordRequirements(reqId, resultRequirements)
+        assertNotNull(resultStore.completeRun(reqId, DecryptedResult(columns, rows, truncatedByCap = truncatedByCap), 3600, decisionId ?: executionDecision(sql)))
         // The FK's ON DELETE SET NULL can still leave a DONE row without its decision.
         if (decisionId == null) fx.dataSource.connection.use { c -> c.prepareStatement("UPDATE query_result SET decision_id = NULL WHERE task_id = ?").use { ps -> ps.setLong(1, reqId); ps.executeUpdate() } }
         return reqId
@@ -302,6 +301,8 @@ class ApprovalResultViewContextDbTest {
             }
         }
         assertNotNull(resultStore.startNextRun(reqId, executor))
+        val requirements = fx.decide("SELECT id, email, ssn FROM users", channel = Channel.WORKFLOW_EXECUTOR, providedRoles = setOf(roleName)).resultRequirements!!
+        resultStore.recordRequirements(reqId, requirements)
         assertNotNull(resultStore.failRun(reqId, "approval.query_failed", diagnostic = runError { message = redactedForm; rawMessage = rawText; targetDbError = true }))
         return reqId
     }
@@ -580,7 +581,7 @@ class ApprovalResultViewContextDbTest {
             fx.policyStore, fx.accessStore, fx.userGroupStore, fx.roleResolver, fx.authz,
             providedRoles = setOf(roleName), liveSearchPath = listOf("sales"),
         )
-        val id = seedResult(sql = sql, columns = listOf("id", "amount"), rows = listOf(listOf("1", "4242")), resultFingerprint = ran.resultFingerprint)
+        val id = seedResult(sql = sql, columns = listOf("id", "amount"), rows = listOf(listOf("1", "4242")), resultRequirements = ran.resultRequirements!!)
         fx.dataSource.connection.use { c ->
             c.prepareStatement("UPDATE access_request SET source = 'github', repository = 'acme/shop', pr = 1, default_schema = 'sales' WHERE id = ?").use { ps -> ps.setLong(1, id); ps.executeUpdate() }
         }
@@ -768,35 +769,122 @@ class ApprovalResultViewContextDbTest {
         assertFalse(responseBody.contains(sentinel), "an extra stored cell must never bypass ordinal masking")
     }
 
-    // A column reorder between execute and view (e.g. MySQL `MODIFY ssn ... FIRST`) re-expands `SELECT *` to
-    // the same columns in a new order, so the masked column lands on a different ordinal. The stored bytes
-    // still hold the raw ssn at its ORIGINAL ordinal, so the re-decision's mask — bound to the NEW ordinal —
-    // would mask a different column and release the ssn cleartext. The frozen requirement digest carries each
-    // masked column's ordinals, so it no longer matches the live one and the view denies. (A count/name check
-    // misses this: same count, and the reordered labels come from the same columns.)
+    // The view reads only what the run stored and the current classifications, so a table dropped after
+    // execution does not change it: the classified column stays masked.
     @Test
-    fun `a column reorder between execute and view fails closed rather than misbinding the mask`() = testApplication {
+    fun `a result over a table dropped after execution stays viewable and masked`() = testApplication {
         resetMutableAuthzState()
-        // Freeze the digest of a projection where ssn sat at ordinal 0, then view the result whose live
-        // re-decision projects ssn at ordinal 2 — the masked column's ordinals no longer line up.
-        val reordered = fx.decide("SELECT ssn, email, id FROM users", providedRoles = setOf(roleName)).resultFingerprint
-        val id = seedResult(rows = listOf(listOf("1", "a@x", rawSsn)), resultFingerprint = reordered)
+        val sql = "SELECT id, secret FROM archive"
+        val tableEuid = "${fx.datasource.name}/${fx.datasource.dbName}/public/archive"
+        fx.execOnTarget("CREATE TABLE archive (id BIGINT, secret VARCHAR(32))")
+        fx.datasourceStore.pushTestCatalog(fx.datasource, fx.targetJdbcUrl, fx.targetUser, fx.targetPassword)
+        fx.datasourceStore.upsertClassification(
+            fx.datasource.id,
+            ClassificationInput(schema = "public", table = "archive", column = "secret", tags = listOf("pii"), catalog = fx.datasource.dbName),
+        )
+        val policy = fx.cedarPolicyStore.create(
+            CedarPolicyInput(
+                name = "approval-view-archive-masked",
+                cedarSrc = """permit(principal in Role::"$roleName", action == Action::"result.read.masked", resource in Table::"$tableEuid");""",
+            ),
+            updatedBy = "test-fixture",
+        )
+        try {
+            val id = seedResult(sql = sql, columns = listOf("id", "secret"), rows = listOf(listOf("1", rawSsn)))
+            fx.execOnTarget("DROP TABLE archive")
+            fx.datasourceStore.pushTestCatalog(fx.datasource, fx.targetJdbcUrl, fx.targetUser, fx.targetPassword)
+            assertTrue(fx.datasourceStore.catalog(fx.datasource.id).columns.none { it.table == "archive" })
+            val client = wire()
+            client.login(executor)
+
+            val view = client.get("/api/approvals/$id/result").body<QueryResultView>()
+            assertTrue("secret" in view.maskedColumns)
+            assertFalse(view.rows.single()[1] == rawSsn, "the classified column of a dropped table stays masked")
+        } finally {
+            fx.cedarPolicyStore.delete(policy.id)
+        }
+    }
+
+    // Each stored result's masks bind to its own output positions, however another result orders the same columns.
+    @Test
+    fun `each stored result masks the positions its own execution recorded`() = testApplication {
+        resetMutableAuthzState()
+        val ssnLast = seedResult()
+        val ssnFirst = seedResult(
+            sql = "SELECT ssn, id, email FROM users",
+            columns = listOf("ssn", "id", "email"),
+            rows = listOf(listOf(rawSsn, "1", "a@x")),
+        )
         val client = wire()
         client.login(executor)
 
-        val response = client.get("/api/approvals/$id/result") {
-            header("X-Forwarded-For", "100.100.5.5")
-        }
-        assertEquals(HttpStatusCode.Forbidden, response.status)
-        val responseBody = response.bodyAsText()
-        assertEquals("approval.result_view_denied", Json.decodeFromString<ApiError>(responseBody).code)
-        assertFalse(responseBody.contains(rawSsn), "a reorder must not slide the mask off the ssn and leak it")
+        assertEquals(listOf("1", "a@x", maskedSsn), client.get("/api/approvals/$ssnLast/result").body<QueryResultView>().rows.single())
+        assertEquals(listOf(maskedSsn, "1", "a@x"), client.get("/api/approvals/$ssnFirst/result").body<QueryResultView>().rows.single())
     }
 
-    // The digest compares base-column identity, not result-set labels, so a stored column whose label differs
-    // from the analyzer's output name (an unaliased expression like `cast(id …)`, whose DB label is
-    // engine-specific) is NOT falsely denied — the value is masked and released. The pre-fix name-equality
-    // check denied this outright. Modeled by storing arbitrary labels over the same requirement digest.
+    // A column read only in a predicate is part of what a result stores, so classifying it later denies the view.
+    @Test
+    fun `a predicate column classified after execution denies the view`() = testApplication {
+        resetMutableAuthzState()
+        val id = seedResult(
+            sql = "SELECT id FROM users WHERE region = 'kr'",
+            columns = listOf("id"),
+            rows = listOf(listOf("1")),
+        )
+        val client = wire()
+        client.login(executor)
+        assertEquals(HttpStatusCode.OK, client.get("/api/approvals/$id/result").status)
+
+        fx.datasourceStore.upsertClassification(
+            fx.datasource.id,
+            ClassificationInput(schema = "public", table = "users", column = "region", tags = listOf("pii"), catalog = fx.datasource.dbName),
+        )
+        try {
+            assertEquals(HttpStatusCode.Forbidden, client.get("/api/approvals/$id/result").status)
+        } finally {
+            fx.datasourceStore.deleteClassification(fx.datasource.id, "public", "users", "region", fx.datasource.dbName)
+        }
+    }
+
+    // The view decides under the task's live execute-as roles, so changing them changes the masks.
+    @Test
+    fun `a view under different execute-as roles gets those roles' masks`() = testApplication {
+        resetMutableAuthzState()
+        val maskedOnly = "pii-masked-reader"
+        val maskedOnlyId = fx.policyStore.listRoles().firstOrNull { it.name == maskedOnly }?.id ?: fx.policyStore.createRole(RoleInput(maskedOnly)).id
+        val usersTableEuid = "${fx.datasource.name}/${fx.datasource.dbName}/public/users"
+        val policies = listOf(
+            """permit(principal in Role::"$maskedOnly", action in [Action::"datasource.connect", Action::"stmt.cat.read"], resource in Datasource::"${fx.datasource.name}");""",
+            """permit(principal in Role::"$maskedOnly", action == Action::"result.read.masked", resource in Table::"$usersTableEuid");""",
+            """permit(principal in Role::"$maskedOnly", action == Action::"result.read.unmasked", resource in Table::"$usersTableEuid") unless { resource in Tag::"pii" };""",
+        ).mapIndexed { index, cedarSrc ->
+            fx.cedarPolicyStore.create(CedarPolicyInput(name = "approval-view-masked-only-$index", cedarSrc = cedarSrc), updatedBy = "test-fixture").id
+        }
+        try {
+            val id = seedResult()
+            val client = wire()
+            client.login(executor)
+            val asRole = client.get("/api/approvals/$id/result") { header("X-Forwarded-For", "100.100.5.5") }.body<QueryResultView>()
+            assertEquals(rawSsn, asRole.rows.single()[2], "the stored role unmasks ssn on the segregated network")
+
+            fx.dataSource.connection.use { c ->
+                c.prepareStatement("UPDATE access_request SET role_id = ?, execute_as = ?::jsonb WHERE id = ?").use { ps ->
+                    ps.setLong(1, maskedOnlyId)
+                    ps.setString(2, "[\"$maskedOnly\"]")
+                    ps.setLong(3, id)
+                    ps.executeUpdate()
+                }
+            }
+            val asMaskedOnly = client.get("/api/approvals/$id/result") { header("X-Forwarded-For", "100.100.5.5") }.body<QueryResultView>()
+            assertEquals(maskedSsn, asMaskedOnly.rows.single()[2], "a masked-only role masks the same stored ssn")
+            assertEquals(listOf("ssn"), asMaskedOnly.maskedColumns)
+        } finally {
+            policies.forEach { fx.cedarPolicyStore.delete(it) }
+        }
+    }
+
+    // Masks bind by ordinal, not label: a stored label that differs from the analyzer's output name (an
+    // unaliased `cast(id …)`) is masked and released, not denied.
     @Test
     fun `a result whose labels differ from the analyzer names is released, not falsely denied`() = testApplication {
         resetMutableAuthzState()
@@ -811,13 +899,11 @@ class ApprovalResultViewContextDbTest {
         assertEquals(maskedSsn, view.rows.single()[2], "the ssn is still masked by ordinal, just not falsely denied")
     }
 
-    // A result stored before the digest was recorded (legacy) carries none. An analyzable result whose live
-    // re-decision DOES have a digest then has nothing to prove its mask bindings against, so the view denies
-    // fail-closed rather than releasing the stored bytes with unverified masks.
+    // A legacy result stored no requirements, so there is nothing to decide its view from.
     @Test
-    fun `a legacy result with no stored digest fails closed`() = testApplication {
+    fun `a legacy result with no stored requirements fails closed`() = testApplication {
         resetMutableAuthzState()
-        val id = seedResult(rows = listOf(listOf("1", "a@x", rawSsn)), resultFingerprint = null)
+        val id = seedResult(rows = listOf(listOf("1", "a@x", rawSsn)), resultRequirements = ResultRequirements.getDefaultInstance())
         val client = wire()
         client.login(executor)
 
@@ -827,37 +913,10 @@ class ApprovalResultViewContextDbTest {
         assertEquals(HttpStatusCode.Forbidden, response.status)
         val responseBody = response.bodyAsText()
         assertEquals("approval.result_view_denied", Json.decodeFromString<ApiError>(responseBody).code)
-        assertFalse(responseBody.contains(rawSsn), "a result with no digest must not release stored PII")
+        assertFalse(responseBody.contains(rawSsn), "a result with no requirements must not release stored PII")
     }
 
-    // A stored analyzable result (non-empty digest) whose SQL later re-decides as a passthrough relay (its
-    // table/column dropped → exception.unanalyzable) must NOT take the raw-release passthrough shortcut — the
-    // stored bytes still hold the columnar, possibly masked, result. It fails closed instead.
-    @Test
-    fun `a stored analyzable result that re-decides as passthrough fails closed`() = testApplication {
-        resetMutableAuthzState()
-        val sentinel = "LEAK-SENTINEL-PASSTHROUGH"
-        // SHOW re-decides as an authorized passthrough at view; the stored digest is non-empty as if the row
-        // had been an analyzable columnar result at execution.
-        val id = seedResult(
-            sql = "SHOW search_path",
-            columns = listOf("search_path"),
-            rows = listOf(listOf(sentinel)),
-            resultFingerprint = fx.decide("SELECT ssn FROM users", providedRoles = setOf(roleName)).resultFingerprint,
-        )
-        val client = wire()
-        client.login(executor)
-
-        val response = client.get("/api/approvals/$id/result")
-        assertEquals(HttpStatusCode.Forbidden, response.status)
-        val responseBody = response.bodyAsText()
-        assertEquals("approval.result_view_denied", Json.decodeFromString<ApiError>(responseBody).code)
-        assertFalse(responseBody.contains(sentinel), "a columnar result must not release raw through a passthrough re-decision")
-    }
-
-    // A LEGACY result (null fingerprint) whose SQL now re-decides as a passthrough must fail closed too — a
-    // null fingerprint is unverifiable, so it can't be mistaken for a genuine grant-less passthrough and
-    // released raw. Guards the null-vs-empty distinction on the passthrough path.
+    // A legacy passthrough result (no stored requirements) fails closed rather than releasing raw.
     @Test
     fun `a legacy result that re-decides as passthrough fails closed`() = testApplication {
         resetMutableAuthzState()
@@ -866,7 +925,7 @@ class ApprovalResultViewContextDbTest {
             sql = "SHOW search_path",
             columns = listOf("search_path"),
             rows = listOf(listOf(sentinel)),
-            resultFingerprint = null,
+            resultRequirements = ResultRequirements.getDefaultInstance(),
         )
         val client = wire()
         client.login(executor)
@@ -942,14 +1001,4 @@ class ApprovalResultViewContextDbTest {
         assertFalse(client.get("/api/approvals/${seedResult()}/result").body<QueryResultView>().truncatedByCap)
     }
 
-    // The digest freezes the WHOLE analyzer requirement set, not just projected columns — a scanned table
-    // (here uncovered by count(*)) changes it — so drift in a value that shaped which rows were stored, not
-    // just which were projected, is caught. Guards against regressing to a projection-only fingerprint.
-    @Test
-    fun `the digest captures scanned-table requirements beyond the projection`() = testApplication {
-        resetMutableAuthzState()
-        val projected = fx.decide("SELECT id FROM users", providedRoles = setOf(roleName)).resultFingerprint
-        val scanned = fx.decide("SELECT count(*) FROM users", providedRoles = setOf(roleName)).resultFingerprint
-        assertFalse(fingerprintOf(projected) == fingerprintOf(scanned), "an uncovered table scan must change the fingerprint")
-    }
 }

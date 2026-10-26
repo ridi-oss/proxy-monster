@@ -73,11 +73,11 @@ class AccountManagementEnforcementDbTest {
         )
     }
 
-    private fun decide(sql: String, who: String) = decideQuery(
+    private fun decide(sql: String, who: String, channel: Channel = Channel.WIRE) = decideQuery(
         principal = who,
         ds = datasource,
         sql = sql,
-        channel = Channel.WIRE,
+        channel = channel,
         catalog = fx.datasourceStore.catalog(datasource.id),
         policyStore = fx.policyStore,
         accessStore = fx.accessStore,
@@ -121,13 +121,10 @@ class AccountManagementEnforcementDbTest {
         val stored = DecryptedResult(
             columns = listOf("user", "host", "generated password", "auth_factor"),
             rows = listOf(listOf("books-frontend", "10.23.0.0/255.255.0.0", "}q7=x!P2b0Kd", "1")),
-            // A genuine passthrough stores a present-but-empty fingerprint (no result-read grants); null would
-            // read as a legacy result and fail closed at view.
-            resultFingerprint = fingerprintOf(emptyList()),
         )
         val viewCtx = viewerDecision(
-            admin, request(), createUserRandom, AuthzContext(requesterIp = "10.23.1.1"),
-            fx.datasourceStore, fx.policyStore, fx.accessStore, fx.userGroupStore, fx.roleResolver, fx.authz,
+            admin, request(), decide(createUserRandom, admin, Channel.WORKFLOW_EXECUTOR).resultRequirements, AuthzContext(requesterIp = "10.23.1.1"),
+            fx.datasourceStore, fx.policyStore, fx.userGroupStore, fx.roleResolver, fx.authz,
             null, Channel.WIRE,
         )!!
         val view = decideResultView(viewCtx, stored)

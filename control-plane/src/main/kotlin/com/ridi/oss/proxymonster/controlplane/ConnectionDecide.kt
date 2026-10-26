@@ -10,7 +10,6 @@ import com.ridi.oss.proxymonster.grpc.Refetch
 import com.ridi.oss.proxymonster.grpc.TargetCheck
 import com.ridi.oss.proxymonster.grpc.checkTargetError
 import com.ridi.oss.proxymonster.grpc.proxyCommand
-import kotlinx.coroutines.sync.withLock
 
 sealed interface EnforcementOutcome {
     data class Verdict(
@@ -166,7 +165,6 @@ suspend fun decideConnection(
         core.auditStore.insert(decisionRecord)
     }
     check(connection.generation == generationAtEntry) { "connection generation changed during serialized decide" }
-    if (channel == Channel.EDITOR) connection.lastEditorDecide = EditorDecideInputs(searchPath, session, tempColumns)
     EnforcementOutcome.Verdict(effectiveCtx, decisionId, generationAtEntry, afterStatement)
 }
 
@@ -188,15 +186,4 @@ private fun heldCatalog(core: ControlPlaneCore, connection: EnforcementConnectio
         columns,
         ds.engine.functionCatalog(core.connectionCatalog.heldRoutines(connection), ds.engineVersion),
     )
-}
-
-/** The structure an open editor connection's latest Decide resolved against; null once it has none. */
-data class ConnectionStructure(val catalog: Catalog, val inputs: EditorDecideInputs)
-
-suspend fun connectionStructure(core: ControlPlaneCore, connectionId: ByteString, binding: Binding, ds: Datasource): ConnectionStructure? {
-    val connection = core.connectionCatalog.find(connectionId)?.takeIf { it.binding == binding } ?: return null
-    return connection.mutex.withLock {
-        if (core.connectionCatalog.find(connectionId) !== connection) return@withLock null
-        connection.lastEditorDecide?.let { ConnectionStructure(heldCatalog(core, connection, ds), it) }
-    }
 }

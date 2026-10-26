@@ -1,13 +1,14 @@
 package com.ridi.oss.proxymonster.controlplane
 
 import com.google.protobuf.ByteString
+import com.ridi.oss.proxymonster.grpc.ResultRequirements
 import com.ridi.oss.proxymonster.grpc.ControlRunMsg
 import com.ridi.oss.proxymonster.grpc.EnfAction
 import com.ridi.oss.proxymonster.grpc.ProxyRunMsg
 import com.ridi.oss.proxymonster.grpc.RunError
+import com.ridi.oss.proxymonster.grpc.runError
 import com.ridi.oss.proxymonster.grpc.RunServing
 import com.ridi.oss.proxymonster.grpc.controlRunMsg
-import com.ridi.oss.proxymonster.grpc.runError
 import com.ridi.oss.proxymonster.grpc.runCancel
 import com.ridi.oss.proxymonster.grpc.runClose
 import com.ridi.oss.proxymonster.grpc.runQuery
@@ -346,6 +347,7 @@ class RunExecService(
         beforeSend: (Int) -> Unit = {},
         onStreamFailure: () -> Unit = {},
         onNamespace: (List<String>?) -> Unit = {},
+        onDecision: (ResultRequirements) -> Unit = {},
     ) {
         // One statement at a time per stream: the next is sent only after this one's response.
         for (ordinal in 0 until statementCount) {
@@ -367,7 +369,7 @@ class RunExecService(
                 throw ProxyRunException("proxy run stream closed before the query was sent", e)
             }
             val response = try {
-                withTimeout(exchangeTimeoutMs) { collectResponse(inbound, started, onNamespace) }
+                withTimeout(exchangeTimeoutMs) { collectResponse(inbound, started, onNamespace, onDecision) }
             } catch (e: TimeoutCancellationException) {
                 onStreamFailure()
                 throw ProxyRunTimeoutException(e)
@@ -393,6 +395,8 @@ class RunExecService(
         maxRows: Int,
         statementAt: suspend (Int) -> String?,
         onStatement: suspend (Int, QueryResponse) -> Boolean,
+        // The run's ResultRequirements, as each statement's decision arrives.
+        onDecision: (ResultRequirements) -> Unit = {},
         approverExec: Boolean = false,
         assumeRoles: Set<String> = emptySet(),
         requesterIp: String? = null,
@@ -469,6 +473,7 @@ class RunExecService(
                 preflight = preflight,
                 statementAt = statementAt,
                 onStatement = onStatement,
+                onDecision = onDecision,
             )
         } finally {
             val ar = activeRun
@@ -507,7 +512,6 @@ class RunExecService(
     // authz relaxation. The per-session token carries a fixed absolute TTL (sliding refresh-on-activity is a
     // follow-up); the session is bounded by idle-sweep and explicit close.
     private val openSessions = ConcurrentHashMap<String, OpenEditorSession>()
-    private val taskSessions = ConcurrentHashMap<Long, String>()
 
     /**
      * Open a persistent editor session: mint a per-session EDITOR token, dial one proxy stream, and hold it.
@@ -613,6 +617,7 @@ class RunExecService(
         maxRows: Int,
         statementAt: suspend (Int) -> String?,
         onStatement: suspend (Int, QueryResponse) -> Boolean,
+        onDecision: (ResultRequirements) -> Unit = {},
         requesterIp: String? = null,
         taskId: Long? = null,
         preflight: (() -> Boolean)? = null,
@@ -627,7 +632,6 @@ class RunExecService(
                 // rather than run a query on (and refresh the registry entry of) a since-revoked token. `!==` is a
                 // safe identity check: sessionId is a fresh UUID, so a re-open can never resurrect the same object.
                 if (openSessions[sessionId] !== session) throw ProxyRunException("no such editor session")
-                taskId?.let { taskSessions[it] = sessionId }
                 val run = taskId?.let { id -> ActiveRun(session.attached.outbound).also { activeRuns[id] = it } }
                 try {
                     // The session outlives this call, so any stream failure must drop it here: the run loop
@@ -644,6 +648,7 @@ class RunExecService(
                         statementAt = statementAt,
                         onStatement = onStatement,
                         onNamespace = { session.namespace = it },
+                        onDecision = onDecision,
                         beforeSend = {
                             session.lastUsedNanos = System.nanoTime()
                             // Refresh the requester_ip this statement's decision will see to the CURRENT
@@ -701,7 +706,6 @@ class RunExecService(
     /** End a session's proxy stream + revoke its token. Idempotent (a missing session is a no-op). */
     fun closeSession(sessionId: String) {
         val session = openSessions.remove(sessionId) ?: return
-        taskSessions.values.removeIf { it == sessionId }
         try {
             session.attached.outbound.trySend(controlRunMsg { close = runClose {} })
         } finally {
@@ -710,13 +714,6 @@ class RunExecService(
             session.tokenHash?.let(core.runRequesterIps::remove)
             core.runChannels.remove(sessionId)
         }
-    }
-
-    /** The catalog [taskId]'s editor session last decided against, while that session is open and owned by [principal]. */
-    suspend fun openSessionStructure(taskId: Long, principal: String, ds: Datasource): ConnectionStructure? {
-        val session = taskSessions[taskId]?.let(openSessions::get)
-            ?.takeIf { it.principal == principal && it.datasourceName == ds.name } ?: return null
-        return connectionStructure(core, session.connectionId, Binding(ds.name, principal, TokenKind.EDITOR.name, ds.effectiveCatalog, ds.engine), ds)
     }
 
     /** Reap sessions idle longer than [maxIdleMs] (called on a timer) — releases the target-DB connection. */
@@ -772,6 +769,7 @@ class RunExecService(
         inbound: Channel<ProxyRunMsg>,
         started: Long,
         onNamespace: (List<String>?) -> Unit = {},
+        onDecision: (ResultRequirements) -> Unit = {},
     ): QueryResponse {
         var decision: com.ridi.oss.proxymonster.grpc.RunDecision? = null
         var action: EnfAction? = null
@@ -786,6 +784,9 @@ class RunExecService(
                     val mapped = received.decision.knownOrDeny()
                     decision = received
                     action = mapped
+                    // Mid-stream: a failure must go through the stream-failure path, or a held session keeps unread frames.
+                    runCatching { onDecision(received.resultRequirements) }
+                        .onFailure { throw ProxyRunException("could not record the run's result requirements", it) }
                     if (mapped == EnfAction.DENY) {
                         return response(received, mapped, emptyList(), emptyList(), null, started)
                     }
@@ -880,9 +881,6 @@ class RunExecService(
             val (rowCount, bytes) = resultVolume(rows)
             core.auditStore.insert(completionEvent(recorded, decisionId, rowCount, bytes, "ok", latencyMs))
         }
-        // The decision's requirements, forwarded structured on RunDecision from the Verdict; a stored result
-        // freezes them so a later view denies drift ([decideResultView]).
-        val resultFingerprint = fingerprintOf(decision.resultFingerprintList)
         return QueryResponse(
             decision = action,
             decisionId = decisionId,
@@ -894,7 +892,6 @@ class RunExecService(
             columns = columns,
             rows = rows,
             rowsAffected = rowsAffected,
-            resultFingerprint = resultFingerprint,
             truncatedByCap = truncatedByCap,
             capRows = decision.maxRows.takeIf { it > 0 },
             latencyMs = latencyMs,

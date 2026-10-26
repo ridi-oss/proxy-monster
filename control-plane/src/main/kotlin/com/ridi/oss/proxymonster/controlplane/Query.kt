@@ -37,14 +37,13 @@ import com.ridi.oss.proxymonster.analyzer.pb.Column
 import com.ridi.oss.proxymonster.analyzer.pb.Submission
 import com.ridi.oss.proxymonster.analyzer.pb.FailureClass
 import com.ridi.oss.proxymonster.analyzer.pb.MaskedDisposition
-import com.ridi.oss.proxymonster.analyzer.pb.RequireResultReadGrant
 import com.ridi.oss.proxymonster.analyzer.pb.SessionObservation
-import com.ridi.oss.proxymonster.analyzer.pb.ResultFingerprint
+import com.ridi.oss.proxymonster.grpc.ResultRequirements
 import com.ridi.oss.proxymonster.analyzer.pb.StatementFacts
 import com.ridi.oss.proxymonster.analyzer.pb.StatementKind
 import com.ridi.oss.proxymonster.analyzer.pb.catalogSnapshot
 import com.ridi.oss.proxymonster.analyzer.pb.column
-import com.ridi.oss.proxymonster.analyzer.pb.resultFingerprint
+import com.ridi.oss.proxymonster.grpc.resultRequirements
 import com.ridi.oss.proxymonster.analyzer.pb.namespace as pbNamespace
 import com.ridi.oss.proxymonster.probe.Analyzer
 import com.ridi.oss.proxymonster.probe.Dialect
@@ -116,10 +115,6 @@ data class QueryResponse(
     val columns: List<String> = emptyList(),
     val rows: List<List<String?>> = emptyList(),
     val rowsAffected: Int? = null,
-    // The executed decision's requirements ([ResultFingerprint]), frozen with the stored result so a later
-    // view can deny drift ([decideResultView]). Carried back from the Decide handler on the RunDecision.
-    @Serializable(with = ResultFingerprintSerializer::class)
-    val resultFingerprint: ResultFingerprint = ResultFingerprint.getDefaultInstance(),
     // The verdict's row cap, and whether it — not the requested page size — ended this result.
     val truncatedByCap: Boolean = false,
     val capRows: Long? = null,
@@ -154,23 +149,18 @@ enum class Channel(val contextValue: String) {
     GITHUB("github"),
 }
 
-/** The analyzer's result-read grants bundled as the [ResultFingerprint] message [decideResultView] freezes
- *  with a stored result and compares (by the message's own structural equality). */
-internal fun fingerprintOf(requirements: List<RequireResultReadGrant>): ResultFingerprint =
-    resultFingerprint { grants.addAll(requirements) }
-
-/**
- * kotlinx serializer for [ResultFingerprint]: a `@Serializable` payload ([QueryResponse], [DecryptedResult])
- * holds the proto MESSAGE itself, persisted as base64 of its proto bytes. kotlinx can't serialize a protobuf
- * message directly, so this delegates to proto's own serialization rather than exposing a raw ByteArray field.
- */
-object ResultFingerprintSerializer : KSerializer<ResultFingerprint> {
-    override val descriptor = PrimitiveSerialDescriptor("ResultFingerprint", PrimitiveKind.STRING)
-    override fun serialize(encoder: Encoder, value: ResultFingerprint) =
-        encoder.encodeString(java.util.Base64.getEncoder().encodeToString(value.toByteArray()))
-    override fun deserialize(decoder: Decoder): ResultFingerprint =
-        ResultFingerprint.parseFrom(java.util.Base64.getDecoder().decode(decoder.decodeString()))
+/** What a stored result's view reads: the [facts] fields [decideFacts] reads, and which referenced tables were temp. */
+internal fun resultRequirementsOf(facts: StatementFacts, tempTables: Set<ObjectRef>): ResultRequirements {
+    val referenced = facts.resultReadsList.flatMap { listOf(it.column, it.table) } + facts.diagnosticLeakColumnsList
+    return resultRequirements {
+        this.facts = facts.toBuilder().clearDetail().clearRewrittenSql().clearSources()
+            .clearSchemaQualifierCandidates().clearNamespaceQualifierCandidates().clearPredicateLiterals()
+            .clearAthenaPreparedDefinitionNeed().clearSubmission().build()
+        this.tempTables += referenced.map { it.tableRef() }.distinct().filter { it in tempTables }
+    }
 }
+
+internal fun ObjectRef.tableRef(): ObjectRef = toBuilder().clearColumn().build()
 
 /** The verdict for a statement, without executing it: action + masks (output col → kind) + context. */
 data class DecisionContext(
@@ -198,13 +188,8 @@ data class DecisionContext(
     val outputColumns: List<String> = emptyList(),
     /** The analyzer's classified statement kind (STMT_UNKNOWN for a passthrough / pre-parse failure). */
     val statementKind: StatementKind = StatementKind.STATEMENT_KIND_STMT_UNKNOWN,
-    /** The decision's authorization requirements — the analyzer's result-read grants (empty for a
-     * passthrough / unanalyzed statement). Carried structured to the proxy and back; an execute-under-R
-     * result freezes them ([fingerprintOf]) and the view denies if the live re-decision's differ.
-     * E.g. a column reorder moves `ssn` from ordinal 1 to 0, so the frozen grant (ssn MASK_OUTPUT @1) no
-     * longer matches the live one (@0) and the re-decided mask can't bind to the wrong stored column and
-     * leak it. See [decideResultView]. */
-    val resultFingerprint: List<RequireResultReadGrant> = emptyList(),
+    /** What a stored result's view is decided from ([viewerDecision]); null on the wire or when nothing was analyzed. */
+    val resultRequirements: ResultRequirements? = null,
     /** The derived `context.tags` this decision was evaluated under, surfaced so [decisionRecord]
      * logs which tags the request earned. Stamped on EVERY decision that runs after context derivation —
      * ALLOW, MASK, DENY (structural + policy), and passthrough alike — so an audit row carries the attested
@@ -399,8 +384,8 @@ internal sealed interface CatalogCoverage {
 }
 
 /** Analyzer keys remain opaque and must each match exactly one row in the already-unique index. */
-internal fun catalogCoverage(index: CatalogColumnIndex, touched: Set<String>): CatalogCoverage {
-    val missing = touched.firstOrNull { it !in index.rowsByKey } ?: return CatalogCoverage.Covered
+internal fun catalogCoverage(rowsByKey: Map<String, CatalogColumn>, touched: Set<String>): CatalogCoverage {
+    val missing = touched.firstOrNull { it !in rowsByKey } ?: return CatalogCoverage.Covered
     return CatalogCoverage.Denied("fail-closed: analyzer emitted column absent from catalog: $missing")
 }
 
@@ -490,7 +475,32 @@ fun decideQuery(
     }
     val catalogIndex = catalogAndFacts.first
     val facts = catalogAndFacts.second
+    val tempTables = tempColumns.mapTo(HashSet()) { columnRef(it.catalog, it.schema, it.table, it.column).tableRef() }
+    val ctx = decideFacts(
+        principal, ds, channel, catalogIndex.rowsByKey, facts, policyStore, userGroupStore, roleResolver, authz, auditStore,
+        providedRoles, context, systemClassification, tempTables,
+    )
+    // A wire statement's result is never stored.
+    return if (channel == Channel.WIRE) ctx else ctx.copy(resultRequirements = resultRequirementsOf(facts, tempTables))
+}
 
+/** The authorization half of [decideQuery]: the verdict for [facts], whose column rows are [rowsByKey]. */
+internal fun decideFacts(
+    principal: String,
+    ds: Datasource,
+    channel: Channel,
+    rowsByKey: Map<String, CatalogColumn>,
+    facts: StatementFacts,
+    policyStore: PolicyStore,
+    userGroupStore: UserGroupStore,
+    roleResolver: RoleResolver,
+    authz: Authz,
+    auditStore: AuditStore?,
+    providedRoles: Set<String>?,
+    context: AuthzContext,
+    systemClassification: SystemClassificationService?,
+    tempTables: Set<ObjectRef>,
+): DecisionContext {
     if (facts.failureClass == FailureClass.FAILURE_CLASS_INADMISSIBLE ||
         facts.failureClass == FailureClass.FAILURE_CLASS_UNSPECIFIED && !facts.resolved
     ) {
@@ -651,7 +661,7 @@ fun decideQuery(
         }
         return passthroughAllow(roleList, "passthrough (no data touched)", derivedTags)
             .copy(
-                sanitizeDiagnostics = !readsAllUnmasked(principal, parents, ds, catalogIndex.rowsByKey.values.toList(), facts.diagnosticLeakColumnsList, context, authz, systemClassification),
+                sanitizeDiagnostics = !readsAllUnmasked(principal, parents, ds, rowsByKey.values.toList(), facts.diagnosticLeakColumnsList, context, authz, systemClassification),
                 schemaCandidates = facts.namespaceQualifierCandidatesList.toSet(),
                 statementKind = statementKind,
             )
@@ -706,7 +716,7 @@ fun decideQuery(
     val columnGrants = facts.resultReadsList.filter { it.hasColumn() }
     val columnKeys = LinkedHashMap<String, ObjectRef>()
     for (grant in columnGrants) columnKeys.putIfAbsent(grant.column.key, grant.column)
-    when (val coverage = catalogCoverage(catalogIndex, columnKeys.keys)) {
+    when (val coverage = catalogCoverage(rowsByKey, columnKeys.keys)) {
         CatalogCoverage.Covered -> Unit
         // A resolved statement traced a column key with no row in the catalog index. This is NOT a stale
         // fragment: a column truly absent from the catalog fails to RESOLVE (the analyzer is built from the
@@ -756,7 +766,7 @@ fun decideQuery(
             .copy(catalogMiss = true, schemaCandidates = facts.namespaceQualifierCandidatesList.toSet())
     }
     val columnRefs = columnKeys.keys.map { key ->
-        val row = catalogIndex.rowsByKey.getValue(key)
+        val row = rowsByKey.getValue(key)
         ColumnRef(key, row.catalog, row.schema, row.table, row.column, row.classification?.tags ?: emptyList())
     }
     val touchedTableIds = buildSet {
@@ -819,7 +829,7 @@ fun decideQuery(
     var hasMandatoryRedaction = false
     for (grant in columnGrants) {
         val key = grant.column.key
-        val row = catalogIndex.rowsByKey.getValue(key)
+        val row = rowsByKey.getValue(key)
         val systemRedacted = key in systemRedactedColumns
         val authorizedVerdict = if (row.isTemp) {
             ColumnVerdict.UNMASKED
@@ -876,8 +886,7 @@ fun decideQuery(
         }
     }
 
-    val tempTableIds = tempColumns.mapTo(HashSet()) { Triple(it.catalog, it.schema, it.table) }
-    val tableGrants = facts.resultReadsList.filter { it.hasTable() && Triple(it.table.catalog, it.table.schema, it.table.table) !in tempTableIds }
+    val tableGrants = facts.resultReadsList.filter { it.hasTable() && it.table.tableRef() !in tempTables }
     if (tableGrants.isNotEmpty()) {
         val refs = tableGrants.map { grant ->
             val table = grant.table
@@ -927,7 +936,7 @@ fun decideQuery(
     // TODO: rename to tagged_columns_touched. Needs a migration plus the Go verifier, the SIEM export name,
     // and the console; the canonical form is positional, so CHAIN_VERSION is unaffected.
     val tagged = columnKeys.keys.filter {
-        catalogIndex.rowsByKey.getValue(it).classification?.tags?.isNotEmpty() == true
+        rowsByKey.getValue(it).classification?.tags?.isNotEmpty() == true
     }
     val referencedSchemas = buildSet {
         facts.sourcesList.mapTo(this) { namespace(it.catalog, it.schema) }
@@ -936,7 +945,7 @@ fun decideQuery(
     // MASK/DENY always redacts; an ALLOW redacts iff the analyzer's leak set holds a column the viewer
     // can't read unmasked. `select id from users` (all readable) relays raw.
     val sanitizeDiagnostics = action != EnfAction.ALLOW ||
-        !readsAllUnmasked(principal, parents, ds, catalogIndex.rowsByKey.values.toList(), facts.diagnosticLeakColumnsList, context, authz, systemClassification)
+        !readsAllUnmasked(principal, parents, ds, rowsByKey.values.toList(), facts.diagnosticLeakColumnsList, context, authz, systemClassification)
     return DecisionContext(
         action = action,
         denyReason = null,
@@ -948,7 +957,6 @@ fun decideQuery(
         passthrough = false,
         outputColumns = facts.outputColumnsList,
         statementKind = statementKind,
-        resultFingerprint = facts.resultReadsList,
         contextTags = derivedTags,
         unmaskablePermitted = unmaskablePermitted,
         sanitizeDiagnostics = sanitizeDiagnostics,

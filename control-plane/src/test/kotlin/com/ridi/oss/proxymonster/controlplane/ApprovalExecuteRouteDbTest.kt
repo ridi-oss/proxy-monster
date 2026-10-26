@@ -317,10 +317,9 @@ class ApprovalExecuteRouteDbTest {
             }
             // The metadata poll keeps the generic code; both text forms ride only on accessFor.
             assertEquals("approval.query_failed", resultStore.meta(id)?.errorCode)
-            assertEquals(
-                runError { message = "ERROR: 42P01 undefined_table"; rawMessage = "ERROR: relation \"nope\" does not exist"; targetDbError = true },
-                resultStore.accessFor(id)?.errorDetail,
-            )
+            val diagnostic = resultStore.accessFor(id)?.errorDetail
+            assertEquals("ERROR: 42P01 undefined_table", diagnostic?.message)
+            assertEquals("ERROR: relation \"nope\" does not exist", diagnostic?.rawMessage)
 
             awaitUntil("Events stream detached") { datasource.name !in core.proxyEventsHub.attached() }
         }

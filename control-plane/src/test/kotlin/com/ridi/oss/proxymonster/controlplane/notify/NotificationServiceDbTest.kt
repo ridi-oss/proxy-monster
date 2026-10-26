@@ -405,7 +405,7 @@ class NotificationServiceDbTest {
             RequestEvents.record(c, task, RequestEventKind.CC_ADDED, "sam@x", "slack", "cc@x")
             val req = fx.accessStore.getRequest(task, c)!!
             svc.emitCcAdded(c, req, "cc@x")
-            svc.emitCcChanged(c, req)
+            svc.emitRedraw(c, req)
         }
         svc.drainOnce()
         assertEquals(

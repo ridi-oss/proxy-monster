@@ -61,9 +61,11 @@ function EventLine({ event, onRequest }: { event: RequestEvent; onRequest: boole
     );
   }
   const text = t(`timeline.events.${event.kind}`, { body: event.body ?? '', revision: event.revision ?? 1 });
+  // A code reviewer who maps to no user is named by their GitHub login, the body.
+  const actor = event.actor ?? (event.kind.startsWith('code_') ? event.body : null);
   return (
     <li className="text-muted-foreground text-xs" data-testid={`timeline-${event.kind}`}>
-      {event.actor && <span className="text-foreground font-medium">{event.actor} </span>}
+      {actor && <span className="text-foreground font-medium">{actor} </span>}
       {text} · {when}
     </li>
   );

@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane.notify
 
+import com.ridi.oss.proxymonster.controlplane.CodeReview
 import com.ridi.oss.proxymonster.controlplane.RequestEvents
 import java.sql.Connection
 import java.sql.Timestamp
@@ -300,6 +301,9 @@ class NotificationStore(private val dataSource: DataSource) {
             ps.executeQuery().use { rs -> val o = ArrayList<String>(); while (rs.next()) o += rs.getString(1); o }
         }
     }
+
+    fun codeReviews(taskId: Long): List<CodeReview> =
+        dataSource.connection.use { c -> RequestEvents.codeReviews(c, taskId) }
 
     /** [recipientsOfRequest] on the store's own connection, for a delivery-time read outside any transaction. */
     fun recipientsOfRequest(taskId: Long): Set<String> =

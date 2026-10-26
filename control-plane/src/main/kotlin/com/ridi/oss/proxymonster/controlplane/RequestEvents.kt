@@ -13,7 +13,12 @@ enum class RequestEventKind(val wire: String) {
     UNAPPROVED("unapproved"), EXPIRED("expired"), WITHDRAWN("withdrawn"), CLOSED("closed"),
     RAN("ran"), EXECUTED("executed"), FAILED("failed"), CANCELLED("cancelled"),
     COMMENT("comment"), LGTM("lgtm"), CC_ADDED("cc_added"), CC_REMOVED("cc_removed"),
+    CODE_APPROVED("code_approved"), CODE_CHANGES_REQUESTED("code_changes_requested"),
+    CODE_REVIEW_DISMISSED("code_review_dismissed"),
 }
+
+/** A reviewer's standing code review; [name] is a principal when [principal], else their GitHub login. */
+data class CodeReview(val name: String, val principal: Boolean, val approved: Boolean)
 
 /** One timeline entry. [actor] is null for an event the system made. */
 @Serializable
@@ -41,12 +46,13 @@ object RequestEvents {
         // A Slack reply: the thread it was written in, and the reply itself.
         sourceThread: String? = null,
         slackRef: String? = null,
+        githubReviewId: String? = null,
     ): RequestEvent? =
         c.prepareStatement(
-            """INSERT INTO request_event (request_id, kind, actor, body, revision, origin, source_thread, slack_ref)
-               SELECT id, ?, ?, ?, revision, ?, ?, ? FROM access_request
+            """INSERT INTO request_event (request_id, kind, actor, body, revision, origin, source_thread, slack_ref, github_review_id)
+               SELECT id, ?, ?, ?, revision, ?, ?, ?, ? FROM access_request
                WHERE id = ? AND creator_kind = 'WORKFLOW'
-               ON CONFLICT (slack_ref) WHERE slack_ref IS NOT NULL DO NOTHING
+               ON CONFLICT DO NOTHING
                RETURNING $COLUMNS""",
         ).use { ps ->
             ps.setString(1, kind.wire)
@@ -55,7 +61,8 @@ object RequestEvents {
             ps.setString(4, origin)
             ps.setString(5, sourceThread)
             ps.setString(6, slackRef)
-            ps.setLong(7, requestId)
+            ps.setString(7, githubReviewId)
+            ps.setLong(8, requestId)
             ps.executeQuery().use { rs -> if (rs.next()) rs.toEvent() else null }
         }?.also {
             if (actor != null && kind in DECISIONS && !actor.startsWith(SYSTEM_PREFIX)) {
@@ -73,6 +80,39 @@ object RequestEvents {
             ps.executeQuery().use { rs ->
                 val out = ArrayList<Pair<RequestEvent, String?>>()
                 while (rs.next()) out += rs.toEvent() to rs.getString(10)
+                out
+            }
+        }
+
+    /** The GitHub reviews recorded on each of [requestIds], as (request, kind, review) triples. */
+    fun githubReviews(c: Connection, requestIds: List<Long>): Set<Triple<Long, String, String>> =
+        c.prepareStatement(
+            "SELECT request_id, kind, github_review_id FROM request_event WHERE request_id = ANY(?) AND github_review_id IS NOT NULL",
+        ).use { ps ->
+            ps.setArray(1, c.createArrayOf("bigint", requestIds.toTypedArray()))
+            ps.executeQuery().use { rs ->
+                buildSet { while (rs.next()) add(Triple(rs.getLong(1), rs.getString(2), rs.getString(3))) }
+            }
+        }
+
+    /** Each reviewer's latest GitHub review of [requestId] that still stands, in the order they reviewed. */
+    fun codeReviews(c: Connection, requestId: Long): List<CodeReview> =
+        c.prepareStatement(
+            """SELECT actor, body, kind FROM (
+                 SELECT DISTINCT ON (COALESCE(actor, body)) actor, body, kind, id FROM request_event
+                 WHERE request_id = ? AND github_review_id IS NOT NULL
+                 ORDER BY COALESCE(actor, body), id DESC
+               ) latest
+               WHERE kind <> 'code_review_dismissed'
+               ORDER BY id""",
+        ).use { ps ->
+            ps.setLong(1, requestId)
+            ps.executeQuery().use { rs ->
+                val out = ArrayList<CodeReview>()
+                while (rs.next()) {
+                    val actor = rs.getString(1)
+                    out += CodeReview(actor ?: rs.getString(2), actor != null, rs.getString(3) != RequestEventKind.CODE_CHANGES_REQUESTED.wire)
+                }
                 out
             }
         }

@@ -39,7 +39,7 @@ class NotificationRendererTest {
     fun `every key resolves in both locales`() {
         for (locale in MessageCatalog.LOCALES) {
             // A CC change redraws each message as its last event drew it, so it is never rendered itself.
-            for (event in NotificationEvent.entries - NotificationEvent.TASK_CC_CHANGED) {
+            for (event in NotificationEvent.entries - NotificationEvent.TASK_REDRAWN) {
                 for (approved in listOf(true, false)) {
                     val m = message(event, RenderedStatement("SELECT 1", complete = true), approved)
                     val summary = renderer.summary(m, locale)
@@ -190,6 +190,26 @@ class NotificationRendererTest {
             assertFalse(renderer.summary(m.copy(rowCount = null), locale).contains("—"), locale)
             assertTrue(renderer.summary(m, locale).contains("3"), locale)
         }
+    }
+
+    @Test
+    fun `a code review names its reviewer, by GitHub login when they map to no user, and shows on the message`() {
+        fun review(kind: String, actor: String?, login: String) = com.ridi.oss.proxymonster.controlplane.RequestEvent(
+            id = 1, kind = kind, actor = actor, body = login, origin = "github", createdAt = "2026-10-26T00:00:00Z",
+        )
+        assertEquals(
+            "*<@UBOB>* approved the code on GitHub.",
+            renderer.threadLine(review("code_approved", "bob@example.com", "bob"), "en", mapOf("bob@example.com" to "<@UBOB>")),
+        )
+        assertEquals(
+            "*mallory* requested changes to the code on GitHub.",
+            renderer.threadLine(review("code_changes_requested", null, "mallory"), "en"),
+        )
+        val m = message(NotificationEvent.TASK_REQUESTED, RenderedStatement("SELECT 1", true)).copy(
+            ccs = listOf("<@UCAROL>"),
+            codeReviews = listOf(com.ridi.oss.proxymonster.controlplane.CodeReview("<@UBOB>", true, true), com.ridi.oss.proxymonster.controlplane.CodeReview("mallory", false, false)),
+        )
+        assertEquals("CC: <@UCAROL> · Code review: ✅ <@UBOB> 🔴 mallory", renderer.audience(m, "en"))
     }
 
     @Test

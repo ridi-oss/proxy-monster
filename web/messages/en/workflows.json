@@ -272,7 +272,10 @@
       "failed": "The run failed.",
       "cancelled": "The run was canceled.",
       "cc_added": "added {body} as a CC",
-      "cc_removed": "removed {body} from the CCs"
+      "cc_removed": "removed {body} from the CCs",
+      "code_approved": "approved the code on GitHub",
+      "code_changes_requested": "requested changes to the code on GitHub",
+      "code_review_dismissed": "had their code review on GitHub dismissed"
     },
     "notOnRequest": "not on this request",
     "edited": "edited",

@@ -96,11 +96,17 @@ class NotificationRenderer(private val catalog: MessageCatalog = MessageCatalog(
         )
     }
 
-    /** The line naming who may approve (on a channel message) and the CCs; null when there are none. */
+    /** The line naming who may approve (on a channel message), the CCs, and the code reviews; null when there are none. */
     fun audience(m: NotificationMessage, locale: String): String? {
         val parts = listOfNotNull(
             m.approvers.takeIf { it.isNotEmpty() }?.let { catalog.text("field.approvers", locale, mapOf("names" to it.joinToString(" "))) },
             m.ccs.takeIf { it.isNotEmpty() }?.let { catalog.text("field.ccs", locale, mapOf("names" to it.joinToString(" "))) },
+            m.codeReviews.takeIf { it.isNotEmpty() }?.let { reviews ->
+                val names = reviews.joinToString(" ") {
+                    catalog.text(if (it.approved) "field.code_review_approved" else "field.code_review_changes_requested", locale, mapOf("name" to it.name))
+                }
+                catalog.text("field.code_reviews", locale, mapOf("names" to names))
+            },
         )
         return parts.takeIf { it.isNotEmpty() }?.joinToString(" · ")
     }
@@ -108,7 +114,8 @@ class NotificationRenderer(private val catalog: MessageCatalog = MessageCatalog(
     /** One timeline entry as a reply in a request's thread; [names] holds each principal's display, such as a mention. */
     fun threadLine(e: com.ridi.oss.proxymonster.controlplane.RequestEvent, locale: String, names: Map<String, String> = emptyMap()): String {
         fun name(principal: String) = names[principal] ?: SlackMarkup.escape(principal)
-        val actor = e.actor?.let(::name).orEmpty()
+        // A code reviewer who maps to no user is named by their GitHub login, the body.
+        val actor = e.actor?.let(::name) ?: e.body?.takeIf { e.kind in CODE_REVIEWS }?.let(SlackMarkup::escape).orEmpty()
         val body = if (e.kind in NAMES_IN_BODY) {
             e.body?.let(::name).orEmpty()
         } else {
@@ -178,7 +185,7 @@ class NotificationRenderer(private val catalog: MessageCatalog = MessageCatalog(
         }
         NotificationEvent.TASK_EDITED -> "task.edited"
         NotificationEvent.TASK_REOPENED -> "task.reopened"
-        NotificationEvent.TASK_CC_ADDED, NotificationEvent.TASK_CC_CHANGED -> "task.cc_added"
+        NotificationEvent.TASK_CC_ADDED, NotificationEvent.TASK_REDRAWN -> "task.cc_added"
         NotificationEvent.TASK_EXECUTED -> "task.executed"
         NotificationEvent.TASK_FAILED -> "task.failed"
         NotificationEvent.TASK_CANCELLED -> "task.cancelled"
@@ -192,6 +199,7 @@ class NotificationRenderer(private val catalog: MessageCatalog = MessageCatalog(
 
         /** Thread entries whose body is a principal, not free text. */
         val NAMES_IN_BODY = setOf("cc_added", "cc_removed")
+        private val CODE_REVIEWS = setOf("code_approved", "code_changes_requested")
 
         /** A reason is free text; cap it so a long one cannot crowd the statement out of a transport's block. */
         private const val REASON_MAX_CHARS = 500

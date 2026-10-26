@@ -45,7 +45,10 @@
     "statement_shown": "다음 쿼리",
     "row_count": " ({n}행)",
     "statement_in_thread_note": "_전체 쿼리는 스레드에 있습니다._",
-    "statement_in_console_note": "_쿼리가 너무 길어 Slack에서 검토할 수 없습니다. 요청을 열어 콘솔에서 검토하세요._"
+    "statement_in_console_note": "_쿼리가 너무 길어 Slack에서 검토할 수 없습니다. 요청을 열어 콘솔에서 검토하세요._",
+    "code_reviews": "코드 리뷰: {names}",
+    "code_review_approved": "✅ {name}",
+    "code_review_changes_requested": "🔴 {name}"
   },
   "action": {
     "review": "검토",
@@ -96,6 +99,8 @@
     "cancelled": "실행이 취소되었습니다.",
     "cc_added": "*{actor}* 님이 {body} 님을 참조로 추가했습니다.",
     "cc_removed": "*{actor}* 님이 {body} 님을 참조에서 뺐습니다.",
+    "code_approved": "*{actor}* 님이 GitHub에서 코드를 승인했습니다.",
+    "code_changes_requested": "*{actor}* 님이 GitHub에서 코드 변경을 요청했습니다.",
     "statement": "전체 쿼리 (리비전 {revision}):"
   },
   "role": {

@@ -94,7 +94,7 @@ fun requestNotifier(accessStore: AccessStore, notifications: NotificationService
                 if (principal == null) return false
                 req?.let { notifications?.emitCcAddedEvent(it, principal) }
             }
-            "cc-removed" -> req?.let { notifications?.emitCcChangedEvent(it) }
+            "cc-removed" -> req?.let { notifications?.emitRedrawEvent(it) }
             else -> return false
         }
         return true

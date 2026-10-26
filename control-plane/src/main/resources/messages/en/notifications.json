@@ -45,7 +45,10 @@
     "statement_shown": "the following query",
     "row_count": " ({n} rows)",
     "statement_in_thread_note": "_The full query is in the thread._",
-    "statement_in_console_note": "_This query is too long to review in Slack. Open the request to review it in the console._"
+    "statement_in_console_note": "_This query is too long to review in Slack. Open the request to review it in the console._",
+    "code_reviews": "Code review: {names}",
+    "code_review_approved": "✅ {name}",
+    "code_review_changes_requested": "🔴 {name}"
   },
   "action": {
     "review": "Review",
@@ -96,6 +99,8 @@
     "cancelled": "The run was canceled.",
     "cc_added": "*{actor}* added {body} as a CC.",
     "cc_removed": "*{actor}* removed {body} from the CCs.",
+    "code_approved": "*{actor}* approved the code on GitHub.",
+    "code_changes_requested": "*{actor}* requested changes to the code on GitHub.",
     "statement": "Full query (revision {revision}):"
   },
   "role": {

@@ -8,6 +8,8 @@ import com.ridi.oss.proxymonster.controlplane.Channel
 import com.ridi.oss.proxymonster.controlplane.DatasourceStore
 import com.ridi.oss.proxymonster.controlplane.PolicyStore
 import com.ridi.oss.proxymonster.controlplane.PullRequestRef
+import com.ridi.oss.proxymonster.controlplane.RequestEventKind
+import com.ridi.oss.proxymonster.controlplane.RequestEvents
 import com.ridi.oss.proxymonster.controlplane.RequestOrigin
 import com.ridi.oss.proxymonster.controlplane.SOURCE_GITHUB
 import com.ridi.oss.proxymonster.controlplane.TaskServiceException
@@ -22,6 +24,7 @@ import com.ridi.oss.proxymonster.controlplane.changeKey
 import com.ridi.oss.proxymonster.controlplane.compareFileKeys
 import com.ridi.oss.proxymonster.controlplane.contentHash
 import com.ridi.oss.proxymonster.controlplane.dialect
+import com.ridi.oss.proxymonster.controlplane.inTx
 import com.ridi.oss.proxymonster.controlplane.i18n.MessageCatalog
 import com.ridi.oss.proxymonster.controlplane.management.AuditActor
 import com.ridi.oss.proxymonster.controlplane.notify.NotificationEvent
@@ -296,6 +299,7 @@ class GitHubSourceFlow(
         rows.filter { it.status in OPEN && keyExecuted(it) }.forEach { accessStore.endUnstarted(it.id, ALREADY_RAN) }
         applyReviews(repo, pr, accessStore.listGithubRequests(repository, number))
         rows = accessStore.listGithubRequests(repository, number)
+        showReviews(repo, pr, rows)
         decideAndRun(repo, number, pr, rows)
     }
 
@@ -327,6 +331,42 @@ class GitHubSourceFlow(
                 if (approvals.approveFromReview(principal, row.id, review.id, review.url) != null) break
             }
         }
+    }
+
+    /**
+     * Records each code review once on every live request of the pull request, for its messages, thread and
+     * timeline; a request's approval already records the review it came from.
+     */
+    private suspend fun showReviews(repo: Repo, pr: PullRequest, rows: List<AccessRequest>) {
+        val live = rows.filter { it.status != DELETED && it.status != ALREADY_RAN }
+        if (live.isEmpty()) return
+        val recorded = accessStore.dataSource.connection.use { RequestEvents.githubReviews(it, live.map { r -> r.id }) }
+        // Only each reviewer's latest review, so an older one found in the same poll cannot land after it.
+        val missing = latestReviews(pr).values.sortedBy { it.submittedAt ?: Instant.EPOCH }.flatMap { review ->
+            val kind = when (review.state) {
+                ReviewState.APPROVED -> RequestEventKind.CODE_APPROVED
+                ReviewState.CHANGES_REQUESTED -> RequestEventKind.CODE_CHANGES_REQUESTED
+                ReviewState.DISMISSED -> RequestEventKind.CODE_REVIEW_DISMISSED
+                else -> return@flatMap emptyList()
+            }
+            live.filter { row ->
+                val seen = recorded.filter { it.first == row.id && it.third == review.id }.map { it.second }
+                if (kind == RequestEventKind.CODE_REVIEW_DISMISSED) seen.isNotEmpty() && kind.wire !in seen else seen.isEmpty()
+            }.map { Triple(it, kind, review) }
+        }
+        if (missing.isEmpty()) return
+        val principals = missing.map { it.third }.distinctBy { it.id }.associate { review ->
+            review.id to safely("map reviewer") { adapter.resolveUser(repo.owner, review.reviewer!!, MappingRole.REVIEWER) }
+        }
+        accessStore.dataSource.inTx { c ->
+            for ((row, kind, review) in missing) {
+                RequestEvents.record(
+                    c, row.id, kind, principals[review.id], SOURCE_GITHUB, review.reviewer!!.login, githubReviewId = review.id,
+                )
+            }
+            missing.map { it.first }.distinctBy { it.id }.forEach { notifications?.emitRedraw(c, it) }
+        }
+        notifications?.wake()
     }
 
     private suspend fun decideAndRun(repo: Repo, number: Int, pr: PullRequest, rows: List<AccessRequest>) {

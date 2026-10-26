@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane.support
 
+import com.ridi.oss.proxymonster.controlplane.CodeReview
 import com.ridi.oss.proxymonster.controlplane.notify.DeliveryResult
 import com.ridi.oss.proxymonster.controlplane.notify.NotificationAction
 import com.ridi.oss.proxymonster.controlplane.notify.NotificationEvent
@@ -74,6 +75,7 @@ class FakeTransport(
         val revision: Int = 1,
         val ccs: List<String> = emptyList(),
         val redraw: Boolean = false,
+        val codeReviews: List<CodeReview> = emptyList(),
     )
 
     val delivered: MutableList<Delivered> = Collections.synchronizedList(mutableListOf())
@@ -99,7 +101,7 @@ class FakeTransport(
     }
 
     override suspend fun update(externalRef: String, message: NotificationMessage, locale: String): DeliveryResult {
-        updated += Updated(externalRef, message.event, message.statement, message.actions, message.revision, message.ccs, message.redraw)
+        updated += Updated(externalRef, message.event, message.statement, message.actions, message.revision, message.ccs, message.redraw, message.codeReviews)
         if (supportsReplies) return DeliveryResult.Sent(externalRef)
         return updateResult
     }

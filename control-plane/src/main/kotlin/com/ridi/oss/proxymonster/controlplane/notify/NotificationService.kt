@@ -132,32 +132,32 @@ class NotificationService(
         }.onFailure { log.warn("notification emit failed task={} event=task.cc_added", req.id, it) }
     }
 
-    /** Redraw every message of [req] that shows its CC list. */
-    fun emitCcChanged(c: Connection, req: AccessRequest) {
+    /** Redraw every message of [req], to show its current CCs and code reviews. */
+    fun emitRedraw(c: Connection, req: AccessRequest) {
         if (!enabled) return
         runCatching {
             val targets = threadTargets(c, req)
             for (transport in transports.filter { it.supportsReplies && it.serves(req) }) {
                 for ((recipient, kind) in targetsOn(transport, req, targets)) {
-                    store.enqueue(c, req.id, NotificationEvent.TASK_CC_CHANGED, transport.name, recipient, kind)
+                    store.enqueue(c, req.id, NotificationEvent.TASK_REDRAWN, transport.name, recipient, kind)
                 }
             }
-        }.onFailure { log.warn("notification emit failed task={} event=task.cc_changed", req.id, it) }
+        }.onFailure { log.warn("notification emit failed task={} event=task.redrawn", req.id, it) }
     }
 
-    /** [emitCcAdded] and [emitCcChanged] on their own transaction, then wake the drainer. */
+    /** [emitCcAdded] and [emitRedraw] on their own transaction, then wake the drainer. */
     fun emitCcAddedEvent(req: AccessRequest, cc: String) {
         if (!enabled) return
-        runCatching { store.inTransaction { c -> emitCcAdded(c, req, cc); emitCcChanged(c, req) } }
+        runCatching { store.inTransaction { c -> emitCcAdded(c, req, cc); emitRedraw(c, req) } }
             .onFailure { log.warn("notification emit failed task={} event=task.cc_added", req.id, it) }
         wake()
     }
 
-    /** [emitCcChanged] on its own transaction, then wake the drainer. */
-    fun emitCcChangedEvent(req: AccessRequest) {
+    /** [emitRedraw] on its own transaction, then wake the drainer. */
+    fun emitRedrawEvent(req: AccessRequest) {
         if (!enabled) return
-        runCatching { store.inTransaction { c -> emitCcChanged(c, req) } }
-            .onFailure { log.warn("notification emit failed task={} event=task.cc_changed", req.id, it) }
+        runCatching { store.inTransaction { c -> emitRedraw(c, req) } }
+            .onFailure { log.warn("notification emit failed task={} event=task.redrawn", req.id, it) }
         wake()
     }
 
@@ -284,7 +284,7 @@ class NotificationService(
                 accessStore.getRequest(thread.taskId)?.ccs?.contains(thread.recipient) != true
             val locale = store.localeOf(thread.recipient) ?: defaultLocale
             for ((event, sourceThread) in store.eventsAfter(thread.taskId, thread.lastEventId)) {
-                if (!removed && event.kind != RequestEventKind.REQUESTED.wire && sourceThread != thread.externalRef && !event.deleted &&
+                if (!removed && event.kind !in UNTHREADED && sourceThread != thread.externalRef && !event.deleted &&
                     !event.byMention
                 ) {
                     when (val r = transport.reply(thread.externalRef, renderer.threadLine(event, locale, namesIn(event, transport)))) {
@@ -331,7 +331,7 @@ class NotificationService(
 
         val locale = store.localeOf(row.recipient) ?: defaultLocale
         val existingRef = store.externalRef(row.taskId, transport.name, row.recipient, row.kind)
-        if (row.event == NotificationEvent.TASK_CC_CHANGED) return redraw(row, req, transport, existingRef, locale)
+        if (row.event == NotificationEvent.TASK_REDRAWN) return redraw(row, req, transport, existingRef, locale)
         val message = buildMessage(row, req, transport)
 
         // A non-update row that already left a ref was delivered by a prior attempt whose markSent did not
@@ -473,6 +473,7 @@ class NotificationService(
             forcedBy = req.forceRunBy,
             approvers = if (transport.sharedAudience) store.approversOf(req.id) else emptyList(),
             ccs = req.ccs,
+            codeReviews = if (req.pullRequest != null) store.codeReviews(req.id) else emptyList(),
         )
     }
 
@@ -540,8 +541,10 @@ class NotificationService(
     companion object {
         const val DRAIN_BATCH = 32
         const val MAX_ATTEMPTS = 6
+        // A dismissed review only drops off the messages' review line.
+        private val UNTHREADED = setOf(RequestEventKind.REQUESTED.wire, RequestEventKind.CODE_REVIEW_DISMISSED.wire)
         private val REDRAWABLE = NotificationEvent.entries.filter {
-            (it.isCreation || it.isUpdate) && it != NotificationEvent.TASK_CC_CHANGED
+            (it.isCreation || it.isUpdate) && it != NotificationEvent.TASK_REDRAWN
         }
         private const val BACKOFF_BASE_SEC = 15L
         private const val BACKOFF_CAP_SEC = 900L

@@ -294,7 +294,7 @@ class ResultCapsE2eDbTest {
         val client = login(analyst)
         val sql = "select id from users"
         val before = relayed(analyst)
-        val fingerprint = fx.decide(sql, channel = Channel.EDITOR).resultFingerprint
+        val requirements = fx.decide(sql, channel = Channel.EDITOR).resultRequirements!!
         val decisionId = decisionRow(analyst, sql, Channel.EDITOR)
         supervisorScope {
             val (opened, proxy) = withFakeProxy(
@@ -308,7 +308,7 @@ class ResultCapsE2eDbTest {
                 req.send(proxyRunMsg {
                     decision = runDecision {
                         decision = WireEnfAction.ALLOW; this.decisionId = decisionId; maxRows = 3
-                        resultFingerprint.addAll(fingerprint)
+                        resultRequirements = requirements
                     }
                 })
                 req.send(rowsChunk(listOf("id"), listOf(listOf("1"), listOf("2"), listOf("3"))))
@@ -434,7 +434,7 @@ class ResultCapsE2eDbTest {
                 req.send(proxyRunMsg {
                     decision = runDecision {
                         decision = WireEnfAction.ALLOW; maxRows = 0; decisionId = executionDecisionId
-                        resultFingerprint.addAll(approverExec.resultFingerprint)
+                        resultRequirements = approverExec.resultRequirements!!
                     }
                 })
                 stored.chunked(1000).forEach { req.send(rowsChunk(listOf("ssn"), it)) }
@@ -469,9 +469,10 @@ class ResultCapsE2eDbTest {
                 ps.setString(1, approver); ps.setLong(2, cappedId); ps.executeUpdate()
             }
         }
-        val cappedFingerprint = fx.decide(sql, principal = approver, channel = Channel.WORKFLOW_EXECUTOR, providedRoles = setOf("e2e-capped-viewer")).resultFingerprint
+        val cappedRequirements = fx.decide(sql, principal = approver, channel = Channel.WORKFLOW_EXECUTOR, providedRoles = setOf("e2e-capped-viewer")).resultRequirements!!
         assertNotNull(resultStore.startNextRun(cappedId, approver))
-        assertNotNull(resultStore.completeRun(cappedId, DecryptedResult(listOf("ssn"), stored, resultFingerprint = fingerprintOf(cappedFingerprint)), 3600, decisionRow(approver, sql, Channel.WORKFLOW_EXECUTOR)))
+        resultStore.recordRequirements(cappedId, cappedRequirements)
+        assertNotNull(resultStore.completeRun(cappedId, DecryptedResult(listOf("ssn"), stored), 3600, decisionRow(approver, sql, Channel.WORKFLOW_EXECUTOR)))
         fx.dataSource.connection.use { c ->
             c.prepareStatement("UPDATE access_request SET status='EXECUTED' WHERE id=?").use { ps -> ps.setLong(1, cappedId); ps.executeUpdate() }
         }

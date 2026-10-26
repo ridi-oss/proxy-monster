@@ -205,7 +205,8 @@ Verified on the real Cedar engine in [docs/cedar-sim/](./cedar-sim/)
 - `query_result` — the encrypted result child (`task_id` FK), holding R's
   execution-enforced rows (AES-256-GCM via `ResultCrypto` / `QueryResultStore`,
   24 h retention). Status `RUNNING|DONE|FAILED|CANCELLED`. No per-column
-  decision is stored — masking is re-decided live at each view.
+  decision is stored — each view authorizes the stored statement requirements
+  live, without re-analyzing the SQL.
 
 The full task-and-child shape (status states, timestamps) is in
 [task-execution.md](./task-execution.md#data-model); the approval workflow is

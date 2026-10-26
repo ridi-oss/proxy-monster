@@ -6,7 +6,9 @@ import com.ridi.oss.proxymonster.grpc.ColumnMask
 import com.ridi.oss.proxymonster.grpc.EnfAction
 import com.ridi.oss.proxymonster.grpc.Refetch
 import com.ridi.oss.proxymonster.grpc.columnMask
+import com.ridi.oss.proxymonster.grpc.objectRef
 import com.ridi.oss.proxymonster.grpc.refetch
+import com.ridi.oss.proxymonster.grpc.resultRequirements
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -76,6 +78,14 @@ class GrpcMappersTest {
         val forwarded = ctx(EnfAction.ALLOW).copy(forwardTargetError = true).toWireDecision(1, 0, emptyList()).verdict
         assertTrue(forwarded.forwardTargetError)
         assertFalse(ctx(EnfAction.ALLOW).toWireDecision(1, 0, emptyList()).verdict.forwardTargetError)
+    }
+
+    @Test
+    fun `result requirements cross only when the decision has them`() {
+        val requirements = resultRequirements { tempTables += objectRef { table = "scratch" } }
+        val run = ctx(EnfAction.ALLOW).copy(resultRequirements = requirements).toWireDecision(1, 0, emptyList()).verdict
+        assertEquals(requirements, run.resultRequirements)
+        assertFalse(ctx(EnfAction.ALLOW).toWireDecision(1, 0, emptyList()).verdict.hasResultRequirements())
     }
 
     @Test

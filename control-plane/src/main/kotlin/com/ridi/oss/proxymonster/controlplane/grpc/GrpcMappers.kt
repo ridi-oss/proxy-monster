@@ -40,10 +40,8 @@ internal fun DecisionContext.toWireDecision(
             // decision in decideQuery (Cedar + engine capability + action).
             this.sanitizeDiagnostics = ctx.sanitizeDiagnostics
             forwardTargetError = ctx.forwardTargetError
-            // Echoed back on RunDecision so an execute-under-R run freezes it with the stored result and a
-            // later view denies authorization drift (decideResultView). The proxy does not read these.
-            resultFingerprint.addAll(ctx.resultFingerprint)
             ctx.submission?.let { submission = it }
+            ctx.resultRequirements?.let { resultRequirements = it }
         }
     }
 }

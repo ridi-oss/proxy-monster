@@ -1,6 +1,5 @@
 package com.ridi.oss.proxymonster.controlplane
 
-import com.ridi.oss.proxymonster.analyzer.pb.ResultFingerprint
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
 import com.ridi.oss.proxymonster.controlplane.grpc.CONTROL_PROTOCOL_VERSION
 import com.ridi.oss.proxymonster.controlplane.grpc.ControlPlaneGrpcService
@@ -569,10 +568,9 @@ class EditorSubmitRouteDbTest {
             awaitUntil("target-DB error marks the editor task FAILED") { resultStore.meta(ack.taskId)?.status == "FAILED" }
             assertEquals("approval.query_failed", resultStore.meta(ack.taskId)?.errorCode)
             // Both forms persist, so the FAILED /result view re-gates per viewer like the approval path.
-            assertEquals(
-                runError { message = "ERROR: 42P01 undefined_table"; rawMessage = "ERROR: relation \"nope\" does not exist"; targetDbError = true },
-                resultStore.accessFor(ack.taskId)?.errorDetail,
-            )
+            val diagnostic = resultStore.accessFor(ack.taskId)?.errorDetail
+            assertEquals("ERROR: 42P01 undefined_table", diagnostic?.message)
+            assertEquals("ERROR: relation \"nope\" does not exist", diagnostic?.rawMessage)
 
             client.delete("/api/editor/sessions/${session.sessionId}")
             session.await()
@@ -751,11 +749,14 @@ class EditorSubmitRouteDbTest {
             caller, datasource.id, listOf("select 42"), listOf("editor-analyst"), caller,
         )
         resultStore.startNextRun(task.id, caller)
-        // A present-but-empty fingerprint is a grant-less passthrough, which releases raw; an ABSENT one is
-        // legacy and fails closed, which would mask the gate under test.
+        val requirements = decideQuery(
+            caller, datasource, "select 42", com.ridi.oss.proxymonster.controlplane.Channel.EDITOR, core.datasourceStore.catalog(datasource.id), core.policyStore,
+            core.accessStore, core.userGroupStore, core.roleResolver, core.authz,
+        ).resultRequirements!!
+        resultStore.recordRequirements(task.id, requirements)
         resultStore.completeRun(
             task.id,
-            DecryptedResult(listOf("n"), listOf(listOf("42")), resultFingerprint = ResultFingerprint.getDefaultInstance()),
+            DecryptedResult(listOf("n"), listOf(listOf("42"))),
             3600,
             core.auditStore.insert(AuditEvent(principal = caller, datasource = datasource.name, statement = "select 42", decision = Decision.ALLOW)),
         )

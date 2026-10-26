@@ -101,8 +101,7 @@ original context needed to authorize and enforce later responses:
 
 Keep the context immutable except for narrowly defined shape/expiry updates.
 Concurrent association must not replace an existing execution's owner or
-instructions. The current `Verdict.result_fingerprint` is a grant list, not a
-small shape hash; do not retain full grants or catalog snapshots solely for
+instructions. Do not retain full grants or catalog snapshots solely for
 backlogged reanalysis.
 
 Do not retain result rows, SQL history, AWS status copies, SDK clients, request

@@ -85,7 +85,7 @@ private const val TABLE_DETAIL_STREAM_TIMEOUT_MS = 60_000L
 // error instead of a stalled run channel. Bump it on any incompatible wire change. It MUST match the proxy's
 // goproxy cp.ProtocolVersion; the two are separate constants in separate languages kept in lockstep by hand —
 // a server-v* release always ships both at the same value.
-internal const val CONTROL_PROTOCOL_VERSION = 5
+internal const val CONTROL_PROTOCOL_VERSION = 6
 
 /**
  * Build the session-temp overlay from a decide request's proxy-supplied [temps], applying BOTH

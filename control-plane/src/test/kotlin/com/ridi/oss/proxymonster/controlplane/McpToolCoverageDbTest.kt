@@ -1,6 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
-import com.ridi.oss.proxymonster.analyzer.pb.RequireResultReadGrant
+import com.ridi.oss.proxymonster.grpc.ResultRequirements
 import com.ridi.oss.proxymonster.analyzer.pb.catalogSnapshot
 import com.ridi.oss.proxymonster.controlplane.grpc.ControlPlaneGrpcService
 import com.ridi.oss.proxymonster.controlplane.grpc.GrpcServer
@@ -100,8 +100,8 @@ class McpToolCoverageDbTest {
         core.policyStore.createAssignment(RoleAssignmentInput(admin, role("system:admin")))
         val req = tokens.token(requester, ALL_MCP_SCOPES)
         val adm = tokens.token(admin, ALL_MCP_SCOPES)
-        val editorFingerprint = fx.decide(sql, requester, Channel.EDITOR).resultFingerprint
-        val executeFingerprint = fx.decide(sql, admin, Channel.WORKFLOW_EXECUTOR, providedRoles = setOf(ANALYST)).resultFingerprint
+        val editorRequirements = fx.decide(sql, requester, Channel.EDITOR).resultRequirements!!
+        val executeRequirements = fx.decide(sql, admin, Channel.WORKFLOW_EXECUTOR, providedRoles = setOf(ANALYST)).resultRequirements!!
         val ownAudit = core.auditStore.insert(AuditEvent(principal = requester, datasource = ds.name, statement = "cov", decision = Decision.ALLOW))
         val cancelTask = core.accessStore.createEditorTask(requester, ds.id, listOf(sql), listOf(ANALYST), approver = requester)
         val deleteTask = core.accessStore.createEditorTask(requester, ds.id, listOf(sql), listOf(ANALYST), approver = requester)
@@ -312,9 +312,9 @@ class McpToolCoverageDbTest {
             core, stub, ds.name,
             respond = { identity, _, _ ->
                 if (identity?.kind == TokenKind.APPROVER_EXEC.name) {
-                    masked(executeFingerprint, execution(admin, Channel.WORKFLOW_EXECUTOR))
+                    masked(executeRequirements, execution(admin, Channel.WORKFLOW_EXECUTOR))
                 } else {
-                    masked(editorFingerprint, execution(requester, Channel.EDITOR))
+                    masked(editorRequirements, execution(requester, Channel.EDITOR))
                 }
             },
             tableDetail = { open ->
@@ -338,13 +338,13 @@ class McpToolCoverageDbTest {
         AuditEvent(principal = principal, datasource = fx.datasource.name, statement = sql, decision = Decision.MASK, channel = channel.contextValue),
     )
 
-    private fun masked(fingerprint: List<RequireResultReadGrant>, decisionId: Long): List<ProxyRunMsg> = listOf(
+    private fun masked(requirements: ResultRequirements, decisionId: Long): List<ProxyRunMsg> = listOf(
         proxyRunMsg {
             decision = runDecision {
                 decision = EnfAction.MASK
                 this.decisionId = decisionId
                 maskedColumns += "ssn"
-                resultFingerprint += fingerprint
+                resultRequirements = requirements
             }
         },
         proxyRunMsg {

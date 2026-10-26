@@ -57,11 +57,11 @@ class SchemaKeyWiringTest {
         val index = buildCatalogColumnIndex(catalog, specs, analyzerFor(namespace, specs, postgresEngineConfig))
 
         val denied = assertIs<CatalogCoverage.Denied>(
-            catalogCoverage(index, setOf("acme.analytics.users.ssn")),
+            catalogCoverage(index.rowsByKey, setOf("acme.analytics.users.ssn")),
         )
 
         assertContains(denied.reason, "absent from catalog")
-        assertIs<CatalogCoverage.Covered>(catalogCoverage(index, setOf("acme.public.users.ssn")))
+        assertIs<CatalogCoverage.Covered>(catalogCoverage(index.rowsByKey, setOf("acme.public.users.ssn")))
     }
 
     @Test

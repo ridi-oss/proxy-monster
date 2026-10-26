@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.grpc.ResultRequirements
 import com.ridi.oss.proxymonster.analyzer.pb.StatementKind
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
 import com.ridi.oss.proxymonster.grpc.columnMask
@@ -77,16 +78,30 @@ class ApprovalResultAssumeMysqlDbTest {
         context = AuthzContext(requesterIp = ip),
     )
 
+    // What a run of [sql] stores for its view; the facts do not depend on who ran it.
+    private fun requirementsOf(sql: String) = decideQuery(
+        principal = requester, ds = datasource, sql = sql, channel = Channel.WORKFLOW_EXECUTOR,
+        catalog = fx.datasourceStore.catalog(datasource.id), policyStore = fx.policyStore,
+        accessStore = fx.accessStore, userGroupStore = fx.userGroupStore, roleResolver = fx.roleResolver,
+        authz = fx.authz, providedRoles = setOf(roleName),
+    ).resultRequirements!!
+
     private fun viewerCtx(
         childSql: String?,
         ip: String,
         req: AccessRequest = request(),
         channel: Channel = Channel.WORKFLOW_VIEWER,
+    ) = viewerCtxOf(childSql?.let(::requirementsOf), ip, req, channel)!!
+
+    private fun viewerCtxOf(
+        requirements: ResultRequirements?,
+        ip: String,
+        req: AccessRequest = request(),
+        channel: Channel = Channel.WORKFLOW_VIEWER,
     ) = viewerDecision(
-        requester, req, childSql, AuthzContext(requesterIp = ip),
-        fx.datasourceStore, fx.policyStore, fx.accessStore, fx.userGroupStore, fx.roleResolver, fx.authz,
-        null, channel,
-    )!!
+        requester, req, requirements, AuthzContext(requesterIp = ip),
+        fx.datasourceStore, fx.policyStore, fx.userGroupStore, fx.roleResolver, fx.authz, null, channel,
+    )
 
     private fun request(
         sql: String = "SELECT ssn FROM users",
@@ -127,19 +142,13 @@ class ApprovalResultAssumeMysqlDbTest {
                 ),
             ),
         )
-        // Freeze the execution-time requirement digest the way the real run does (R executing on the trusted
-        // network), so the view's re-decision matches and the masks bind (an empty digest would fail closed as
-        // a pre-fingerprint legacy result).
-        val decrypted = DecryptedResult(
-            listOf("ssn"),
-            listOf(listOf(rawSsn)),
-            resultFingerprint = fingerprintOf(decide(Channel.WORKFLOW_EXECUTOR, "100.100.1.10").resultFingerprint),
-        )
+        val requirements = decide(Channel.WORKFLOW_EXECUTOR, "100.100.1.10").resultRequirements!!
+        val decrypted = DecryptedResult(listOf("ssn"), listOf(listOf(rawSsn)))
 
-        val trusted = decideResultView(viewerCtx(request().sql, "100.100.1.10"), decrypted)
+        val trusted = decideResultView(viewerCtxOf(requirements, "100.100.1.10")!!, decrypted)
         assertEquals(rawSsn, assertIs<ResultViewDecision.Allowed>(trusted).rows.single().single())
 
-        val outside = decideResultView(viewerCtx(request().sql, "100.99.1.10"), decrypted)
+        val outside = decideResultView(viewerCtxOf(requirements, "100.99.1.10")!!, decrypted)
         assertEquals(maskedSsn, assertIs<ResultViewDecision.Allowed>(outside).rows.single().single())
     }
 
@@ -174,7 +183,7 @@ class ApprovalResultAssumeMysqlDbTest {
         // authorizes it, "authorized to run" is "authorized to see": the stored bytes are released verbatim
         // rather than fail-closing on "re-decided as passthrough".
         val ddl = "CREATE TABLE `users` (\n  `ssn` varchar(20) DEFAULT NULL\n)"
-        val stored = DecryptedResult(listOf("Table", "Create Table"), listOf(listOf("users", ddl)), resultFingerprint = fingerprintOf(emptyList()))
+        val stored = DecryptedResult(listOf("Table", "Create Table"), listOf(listOf("users", ddl)))
         val redecide = decideQuery(
             principal = requester, ds = datasource, sql = "SHOW CREATE TABLE users", channel = Channel.EDITOR,
             catalog = fx.datasourceStore.catalog(datasource.id), policyStore = fx.policyStore,
@@ -193,9 +202,8 @@ class ApprovalResultAssumeMysqlDbTest {
 
     @Test
     fun `the view releases the longest prefix within the viewer's own caps`() {
-        val fingerprint = fingerprintOf(decide(Channel.WORKFLOW_EXECUTOR, "100.100.1.10").resultFingerprint)
         val rows = List(6) { listOf("x".repeat(10)) }
-        val stored = DecryptedResult(listOf("ssn"), rows, resultFingerprint = fingerprint)
+        val stored = DecryptedResult(listOf("ssn"), rows)
         val ctx = viewerCtx(request().sql, "100.100.1.10")
 
         val byRows = assertIs<ResultViewDecision.Allowed>(decideResultView(ctx.copy(maxRows = 4, maxBytes = 1_000), stored))
@@ -218,7 +226,7 @@ class ApprovalResultAssumeMysqlDbTest {
         // role with no datasource.connect on this system:production datasource, SHOW CREATE TABLE re-decides
         // DENY at the Cedar connect gate, so the view refuses it — the DENY branch, not a blanket passthrough
         // deny. (Contrast the released-as-is case above, which runs under the connect-holding {R}.)
-        val stored = DecryptedResult(listOf("Table", "Create Table"), listOf(listOf("users", "CREATE TABLE `users` ()")), resultFingerprint = fingerprintOf(emptyList()))
+        val stored = DecryptedResult(listOf("Table", "Create Table"), listOf(listOf("users", "CREATE TABLE `users` ()")))
         val view = decideResultView(
             viewerCtx(
                 "SHOW CREATE TABLE users", "100.99.1.10", channel = Channel.EDITOR,
@@ -233,25 +241,26 @@ class ApprovalResultAssumeMysqlDbTest {
     fun `a passthrough result with a mismatched row width is refused`() {
         // The passthrough release path's structural check: stored bytes whose row width does not match the
         // column count are refused rather than released (two columns, a one-cell row).
-        val stored = DecryptedResult(listOf("Table", "Create Table"), listOf(listOf("users")), resultFingerprint = fingerprintOf(emptyList()))
+        val stored = DecryptedResult(listOf("Table", "Create Table"), listOf(listOf("users")))
         val view = decideResultView(viewerCtx("SHOW CREATE TABLE users", "100.99.1.10", channel = Channel.EDITOR), stored)
         assertIs<ResultViewDecision.Denied>(view)
     }
 
-    // A plan-only EXPLAIN result view: freeze the fingerprint the way the real run does, then re-decide
-    // under [roleName] from [ip]. The stored bytes are the target DB's real plan output.
+    // A plan-only EXPLAIN result viewed under [roleName] from [ip]. The stored bytes are the target DB's real plan output.
     private fun viewExplain(
         sql: String,
-        stored: DecryptedResult,
+        stored: StoredExplain,
         roleName: String = this.roleName,
         roleId: Long = this.roleId,
         ip: String = "100.100.1.10",
-    ): ResultViewDecision = decideResultView(
-        viewerCtx(sql, ip, req = request(sql, roleName, roleId), channel = Channel.EDITOR),
-        stored,
-    )
+    ): ResultViewDecision =
+        viewerCtxOf(stored.requirements, ip, req = request(sql, roleName, roleId), channel = Channel.EDITOR)
+            ?.let { decideResultView(it, stored.result) }
+            ?: ResultViewDecision.Denied("no view decision")
 
-    private fun storedExplain(sql: String, executeIp: String = "100.100.1.10"): DecryptedResult {
+    private class StoredExplain(val result: DecryptedResult, val requirements: ResultRequirements)
+
+    private fun storedExplain(sql: String, executeIp: String = "100.100.1.10"): StoredExplain {
         val plan = fx.execOnTarget(sql)
         val executed = decideQuery(
             principal = requester, ds = datasource, sql = sql, channel = Channel.WORKFLOW_EXECUTOR,
@@ -259,7 +268,7 @@ class ApprovalResultAssumeMysqlDbTest {
             accessStore = fx.accessStore, userGroupStore = fx.userGroupStore, roleResolver = fx.roleResolver,
             authz = fx.authz, providedRoles = setOf(roleName), context = AuthzContext(requesterIp = executeIp),
         )
-        return DecryptedResult(plan.columns, plan.rows, resultFingerprint = fingerprintOf(executed.resultFingerprint))
+        return StoredExplain(DecryptedResult(plan.columns, plan.rows), executed.resultRequirements!!)
     }
 
     // The release must come from the plan-only EXPLAIN branch, not passthrough or the projection path.
@@ -275,8 +284,8 @@ class ApprovalResultAssumeMysqlDbTest {
         val stored = storedExplain("EXPLAIN SELECT id FROM users")
         assertPlanOnlyExplain(viewerCtx("EXPLAIN SELECT id FROM users", "100.100.1.10", req = request("EXPLAIN SELECT id FROM users"), channel = Channel.EDITOR))
         val allowed = assertIs<ResultViewDecision.Allowed>(viewExplain("EXPLAIN SELECT id FROM users", stored))
-        assertEquals(stored.columns, allowed.columns)
-        assertEquals(stored.rows, allowed.rows)
+        assertEquals(stored.result.columns, allowed.columns)
+        assertEquals(stored.result.rows, allowed.rows)
         assertTrue(allowed.maskedColumns.isEmpty(), "a released plan masks nothing")
     }
 
@@ -320,19 +329,17 @@ class ApprovalResultAssumeMysqlDbTest {
     }
 
     @Test
-    fun `an explain with a drifted fingerprint is refused before the release path`() {
+    fun `an explain with no stored requirements is refused before the release path`() {
         val stored = storedExplain("EXPLAIN SELECT id FROM users")
-        val drifted = DecryptedResult(stored.columns, stored.rows, resultFingerprint = null)
-        assertIs<ResultViewDecision.Denied>(viewExplain("EXPLAIN SELECT id FROM users", drifted))
+        val legacy = StoredExplain(stored.result, ResultRequirements.getDefaultInstance())
+        assertIs<ResultViewDecision.Denied>(viewExplain("EXPLAIN SELECT id FROM users", legacy))
     }
 
     @Test
     fun `a malformed-width explain plan is refused`() {
         val stored = storedExplain("EXPLAIN SELECT id FROM users")
-        check(stored.columns.size > 1)
-        val malformed = DecryptedResult(
-            stored.columns.dropLast(1), stored.rows, resultFingerprint = stored.resultFingerprint,
-        )
+        check(stored.result.columns.size > 1)
+        val malformed = StoredExplain(DecryptedResult(stored.result.columns.dropLast(1), stored.result.rows), stored.requirements)
         assertIs<ResultViewDecision.Denied>(viewExplain("EXPLAIN SELECT id FROM users", malformed))
     }
 
@@ -340,7 +347,7 @@ class ApprovalResultAssumeMysqlDbTest {
     fun `an explain analyze of a read releases like a plan-only explain and a protected predicate still denies`() {
         val stored = storedExplain("EXPLAIN ANALYZE SELECT id FROM users")
         val allowed = assertIs<ResultViewDecision.Allowed>(viewExplain("EXPLAIN ANALYZE SELECT id FROM users", stored))
-        assertEquals(stored.rows, allowed.rows)
+        assertEquals(stored.result.rows, allowed.rows)
 
         val predicate = "EXPLAIN ANALYZE SELECT id FROM users WHERE ssn = '$rawSsn'"
         val denied = storedExplain(predicate)
@@ -358,8 +365,8 @@ class ApprovalResultAssumeMysqlDbTest {
         val stored = storedExplain(sql)
         assertPlanOnlyExplain(viewerCtx(sql, "100.100.1.10", req = request(sql), channel = Channel.EDITOR))
         val allowed = assertIs<ResultViewDecision.Allowed>(viewExplain(sql, stored))
-        assertEquals(stored.columns, allowed.columns)
-        assertEquals(stored.rows, allowed.rows)
+        assertEquals(stored.result.columns, allowed.columns)
+        assertEquals(stored.result.rows, allowed.rows)
 
         // The JSON plan embeds the predicate as attached_condition, so the protected-predicate deny must
         // survive option handling too.
@@ -377,8 +384,8 @@ class ApprovalResultAssumeMysqlDbTest {
         val stored = storedExplain(sql)
         assertPlanOnlyExplain(viewerCtx(sql, "100.100.1.10", req = request(sql), channel = Channel.EDITOR))
         val allowed = assertIs<ResultViewDecision.Allowed>(viewExplain(sql, stored))
-        assertEquals(stored.columns, allowed.columns)
-        assertEquals(stored.rows, allowed.rows)
+        assertEquals(stored.result.columns, allowed.columns)
+        assertEquals(stored.result.rows, allowed.rows)
     }
 
     @Test
@@ -392,10 +399,10 @@ class ApprovalResultAssumeMysqlDbTest {
             req = request("EXPLAIN SELECT id FROM users"), channel = Channel.EDITOR,
         )
         val nonExplain = explainCtx.copy(statementKind = StatementKind.STATEMENT_KIND_STMT_UNKNOWN)
-        assertIs<ResultViewDecision.Denied>(decideResultView(nonExplain, stored))
+        assertIs<ResultViewDecision.Denied>(decideResultView(nonExplain, stored.result))
         val maskedExplain = explainCtx.copy(
             masks = listOf(columnMask { column = "ssn"; maskFn = "mask"; kind = "PARTIAL"; ordinal = 0 }),
         )
-        assertIs<ResultViewDecision.Denied>(decideResultView(maskedExplain, stored))
+        assertIs<ResultViewDecision.Denied>(decideResultView(maskedExplain, stored.result))
     }
 }

@@ -566,7 +566,7 @@ class AccessStore(internal val dataSource: DataSource) {
                 if (transitioned) {
                     RequestEvents.record(
                         c, id, if (approved) RequestEventKind.APPROVED else RequestEventKind.REJECTED,
-                        decidedBy, actor.channel, rejectionReason,
+                        decidedBy, actor.channel, rejectionReason, githubReviewId = reviewId,
                     )
                     recorder.record(
                         c, actor, AuthzAction.TASK_APPROVE, auditEntity("AccessRequest", id.toString()),

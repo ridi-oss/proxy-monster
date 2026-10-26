@@ -1,5 +1,7 @@
 package com.ridi.oss.proxymonster.controlplane.notify
 
+import com.ridi.oss.proxymonster.controlplane.CodeReview
+
 /**
  * Out-of-band task notifications (docs/notifications.md).
  *
@@ -20,8 +22,8 @@ enum class NotificationEvent(val wire: String) {
     TASK_REOPENED("task.reopened"),
     /** Someone was added as a CC: their own thread, like a receipt. */
     TASK_CC_ADDED("task.cc_added"),
-    /** The CC list changed: every message is redrawn as it stands, to show the new list. */
-    TASK_CC_CHANGED("task.cc_changed"),
+    /** The CC list or the code reviews changed: every message is redrawn as it stands, to show them. */
+    TASK_REDRAWN("task.redrawn"),
     TASK_EXECUTED("task.executed"),
     TASK_FAILED("task.failed"),
     TASK_CANCELLED("task.cancelled"),
@@ -197,7 +199,9 @@ data class NotificationMessage(
     /** Mentioned on a message everyone in a channel reads: who may approve. */
     val approvers: List<String> = emptyList(),
     val ccs: List<String> = emptyList(),
-    /** Redrawn for a CC change, so nothing new goes into its thread. */
+    /** A pull request's code reviews; a reviewer who maps to no user is named by their GitHub login. */
+    val codeReviews: List<CodeReview> = emptyList(),
+    /** Redrawn for a CC or review change, so nothing new goes into its thread. */
     val redraw: Boolean = false,
 )
 

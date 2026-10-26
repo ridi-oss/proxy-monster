@@ -272,7 +272,10 @@
       "failed": "실행이 실패했습니다.",
       "cancelled": "실행이 취소되었습니다.",
       "cc_added": "님이 {body} 님을 참조로 추가했습니다",
-      "cc_removed": "님이 {body} 님을 참조에서 뺐습니다"
+      "cc_removed": "님이 {body} 님을 참조에서 뺐습니다",
+      "code_approved": "님이 GitHub에서 코드를 승인했습니다",
+      "code_changes_requested": "님이 GitHub에서 코드 변경을 요청했습니다",
+      "code_review_dismissed": "님의 GitHub 코드 리뷰가 해제되었습니다"
     },
     "notOnRequest": "이 요청의 참여자가 아님",
     "edited": "수정됨",

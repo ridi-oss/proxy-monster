@@ -108,6 +108,9 @@ class SlackTransport(
             notifiedApprovers = message.notifiedApprovers.map { mentionFor(it) },
             approvers = message.approvers.map { mentionFor(it) },
             ccs = message.ccs.map { mentionFor(it) },
+            codeReviews = message.codeReviews.map {
+                it.copy(name = if (it.principal) mentionFor(it.name) else SlackMarkup.escape(it.name))
+            },
         )
 
     override suspend fun deliver(to: String, message: NotificationMessage, locale: String): DeliveryResult {

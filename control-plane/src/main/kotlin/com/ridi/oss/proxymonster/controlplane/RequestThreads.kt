@@ -132,7 +132,7 @@ class RequestThreads(
                 RequestEvents.record(c, id, if (add) RequestEventKind.CC_ADDED else RequestEventKind.CC_REMOVED, principal, actor.channel, cc)
                 accessStore.getRequest(id, c)?.let {
                     if (add) notifications?.emitCcAdded(c, it, cc)
-                    notifications?.emitCcChanged(c, it)
+                    notifications?.emitRedraw(c, it)
                 }
             }
         }

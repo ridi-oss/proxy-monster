@@ -52,6 +52,7 @@ sql:
       - ../control-plane/src/main/resources/db/migration/V47__remove_rate_reset.sql
       - ../control-plane/src/main/resources/db/migration/V48__rate_boost_roles.sql
       - ../control-plane/src/main/resources/db/migration/V49__query_result_requirements.sql
+      - ../control-plane/src/main/resources/db/migration/V50__code_reviews.sql
     queries: store/queries
     gen:
       go:

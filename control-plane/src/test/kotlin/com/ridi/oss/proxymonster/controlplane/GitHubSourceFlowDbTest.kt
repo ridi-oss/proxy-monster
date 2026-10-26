@@ -1400,6 +1400,125 @@ class GitHubSourceFlowDbTest {
     }
 
     @Test
+    fun `code reviews show on every request of the pull request, and a new one goes into their threads`() {
+        val n = number()
+        open(n)
+        val reqs = file(n, schema(), listOf("db/1_a.sql" to "create table ra (id int)", "db/2_b.sql" to "create table rb (id int)"))
+        fun events(kind: String) = reqs.map { r -> RequestEvents.list(dataSource, r.id).filter { it.kind == kind }.map { it.actor to it.body } }
+        fun reviews() = reqs.map { r -> dataSource.connection.use { RequestEvents.codeReviews(it, r.id) } }
+
+        // carol may not approve the SQL, so her review is shown, not counted.
+        update(n) { it.copy(reviews = listOf(approval(carolUser, id = "c1"))) }
+        recheck(n)
+        recheck(n)
+        assertEquals(listOf(listOf(carol to "carol"), listOf(carol to "carol")), events("code_approved"))
+        assertTrue(reqs.all { status(it.id) == "PENDING" })
+
+        // bob's review approves both files, which their approval already says; mallory maps to no user.
+        update(n) {
+            it.copy(
+                reviews = it.reviews + approval(bobUser, id = "b1") +
+                    approval(malloryUser, id = "m1", state = ReviewState.CHANGES_REQUESTED, submittedAt = Instant.now().plusSeconds(10)),
+            )
+        }
+        recheck(n)
+        assertTrue(reqs.all { status(it.id) == "APPROVED" })
+        assertEquals(listOf(listOf(carol to "carol"), listOf(carol to "carol")), events("code_approved"))
+        assertEquals(listOf(listOf(null to "mallory"), listOf(null to "mallory")), events("code_changes_requested"))
+        val standing = listOf(CodeReview(carol, true, true), CodeReview(bob, true, true), CodeReview("mallory", false, false))
+        assertEquals(listOf(standing, standing), reviews())
+
+        // A dismissal drops the review from the messages and posts nothing.
+        update(n) { pr -> pr.copy(reviews = pr.reviews.map { if (it.id == "c1") it.copy(state = ReviewState.DISMISSED) else it }) }
+        recheck(n)
+        assertEquals(listOf(standing.drop(1), standing.drop(1)), reviews())
+        assertEquals(listOf(listOf(carol to "carol"), listOf(carol to "carol")), events("code_review_dismissed"))
+        assertEquals(1, events("code_approved").first().size)
+    }
+
+    @Test
+    fun `only a reviewer's latest review shows when a poll finds several`() {
+        val n = number()
+        open(n)
+        val req = file(n, schema(), listOf("db/1_a.sql" to "create table rl (id int)")).single()
+        update(n) {
+            it.copy(
+                reviews = listOf(
+                    approval(carolUser, id = "o1", state = ReviewState.CHANGES_REQUESTED, submittedAt = Instant.now().plusSeconds(5)),
+                    approval(carolUser, id = "o2", submittedAt = Instant.now().plusSeconds(10)),
+                ),
+            )
+        }
+        recheck(n)
+        assertEquals(listOf("code_approved"), RequestEvents.list(dataSource, req.id).map { it.kind }.filter { it.startsWith("code_") })
+        assertEquals(listOf(CodeReview(carol, true, true)), dataSource.connection.use { RequestEvents.codeReviews(it, req.id) })
+    }
+
+    @Test
+    fun `a code review redraws every delivered message of its requests and goes into each thread once`() {
+        val threaded = FakeTransport(name = "threads", supportsReplies = true)
+        val service = NotificationService(
+            store = NotificationStore(dataSource),
+            recipients = RecipientResolver(core.authz, core.roleResolver) { listOf(alice, bob, carol) },
+            transports = listOf(threaded),
+            accessStore = core.accessStore,
+            queryResultStore = resultStore,
+            webBaseUrl = "https://console.example",
+            disclosure = StatementDisclosure.AUTO,
+            defaultLocale = "en",
+        )
+        val threadedApprovals = ApprovalService(
+            config, core.accessStore, core.auditStore, core.datasourceStore, core.policyStore, core.userGroupStore,
+            resultStore, core.roleResolver, core.authz, RunExecService(core), appScope, notifications = service,
+        )
+        val threadedFlow = GitHubSourceFlow(
+            adapter, threadedApprovals, core.accessStore, core.datasourceStore, core.policyStore, core.authz, service,
+            locale = "en", checkName = checkName,
+        )
+        fun drain() = runBlocking { while (service.drainOnce() > 0) Unit }
+        fun poll(n: Int) = runBlocking { threadedFlow.evaluate(repo, n, adapter.readPullRequests(repo, listOf(n))[n]) }
+        val n = number()
+        open(n)
+        runBlocking { threadedFlow.file(workload, input(n, schema(), listOf("db/x.sql" to "create table rx (id int)"))) }
+        drain()
+        val threads = threaded.delivered.map { "thread:${it.to}:${it.event.wire}" }.toSet()
+        assertTrue(threads.size >= 2, "the approvers' messages and the requester's receipt")
+
+        update(n) {
+            it.copy(
+                reviews = listOf(
+                    approval(carolUser, id = "tc1"),
+                    approval(malloryUser, id = "tm1", state = ReviewState.CHANGES_REQUESTED, submittedAt = Instant.now().plusSeconds(10)),
+                ),
+            )
+        }
+        poll(n)
+        drain()
+        val redrawn = threaded.updated.filter { it.redraw }
+        assertEquals(threads, redrawn.map { it.ref }.toSet())
+        assertTrue(redrawn.all { it.codeReviews == listOf(CodeReview(carol, true, true), CodeReview("mallory", false, false)) })
+        val notes = threaded.replies.filter { "the code on GitHub" in it.second }
+        assertEquals(threads, notes.filter { "approved" in it.second }.map { it.first }.toSet())
+        assertEquals(threads, notes.filter { "requested changes" in it.second }.map { it.first }.toSet())
+        assertEquals(threads.size * 2, notes.size)
+
+        poll(n)
+        drain()
+        assertEquals(redrawn.size, threaded.updated.count { it.redraw })
+        assertEquals(notes.size, threaded.replies.count { "the code on GitHub" in it.second })
+
+        // A dismissal redraws the messages without the review and posts nothing.
+        val replies = threaded.replies.toList()
+        update(n) { pr -> pr.copy(reviews = pr.reviews.map { if (it.id == "tc1") it.copy(state = ReviewState.DISMISSED) else it }) }
+        poll(n)
+        drain()
+        val dismissed = threaded.updated.filter { it.redraw }.drop(redrawn.size)
+        assertEquals(threads, dismissed.map { it.ref }.toSet())
+        assertTrue(dismissed.all { it.codeReviews == listOf(CodeReview("mallory", false, false)) })
+        assertEquals(replies, threaded.replies.toList())
+    }
+
+    @Test
     fun `a console approval survives the approver's dismissed or changes-requested review`() {
         val n = number()
         open(n)

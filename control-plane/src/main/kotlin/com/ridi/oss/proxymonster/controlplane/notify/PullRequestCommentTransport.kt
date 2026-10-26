@@ -57,7 +57,7 @@ class PullRequestCommentTransport(
     internal fun body(m: NotificationMessage, locale: String): String {
         val key = when (m.event) {
             NotificationEvent.TASK_REQUESTED, NotificationEvent.TASK_SUBMITTED, NotificationEvent.TASK_EDITED,
-            NotificationEvent.TASK_REOPENED, NotificationEvent.TASK_CC_ADDED, NotificationEvent.TASK_CC_CHANGED -> "comment.requested"
+            NotificationEvent.TASK_REOPENED, NotificationEvent.TASK_CC_ADDED, NotificationEvent.TASK_REDRAWN -> "comment.requested"
             NotificationEvent.TASK_DECIDED -> if (m.approved == true) "comment.decided_approved" else "comment.decided_rejected"
             NotificationEvent.TASK_EXECUTED -> "comment.executed"
             NotificationEvent.TASK_FAILED -> if (m.failedStatement != null) "comment.failed_at" else "comment.failed"

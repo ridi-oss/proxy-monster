@@ -456,7 +456,10 @@ export interface RequestEvent {
     | 'comment'
     | 'lgtm'
     | 'cc_added'
-    | 'cc_removed';
+    | 'cc_removed'
+    | 'code_approved'
+    | 'code_changes_requested'
+    | 'code_review_dismissed';
   actor?: string | null;
   body?: string | null;
   revision?: number | null;

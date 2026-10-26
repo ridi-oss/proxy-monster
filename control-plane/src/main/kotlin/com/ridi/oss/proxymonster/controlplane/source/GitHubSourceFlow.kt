@@ -126,26 +126,31 @@ class GitHubSourceFlow(
         val scope = input.scope?.trim()?.takeIf { it.isNotEmpty() } ?: "${ds.name}/${input.schema}"
         val dialect = ds.engine.dialect
 
-        val splitConfig = ds.splitEngineConfig()
-        val keyed = files.map { f ->
-            val statements = splitStatements(f.content, splitConfig)?.takeIf { it.isNotEmpty() } ?: throw unsplittable()
-            val hash = contentHash(f.content, dialect)
-            Keyed(f, statements, changeKey(f.key, hash), hash)
-        }
-
         return mutex.withLock {
             val all = accessStore.listGithubRequests(repository, number)
             val existing = all.filter { it.scope == scope }
-            if (keyed.isEmpty()) {
+            if (files.isEmpty()) {
                 existing.filter { it.status in OPEN }.forEach { accessStore.endUnstarted(it.id, DELETED) }
                 accessStore.setPrHead(repository, number, scope, emptyList(), pr.headSha, input.order.wireName)
-                val current = dismissIfChanged(repo, pr, existing, keyed)
+                val current = dismissIfChanged(repo, pr, existing, emptyList())
                 if (all.isEmpty()) {
                     postCheck(repo, number, current, CheckStatus.COMPLETED, CheckConclusion.SKIPPED, text("check.no_sql"), "")
                 } else {
                     evaluateLocked(repo, number, current)
                 }
                 return@withLock emptyList()
+            }
+            // Each push to a draft would file its requests again; they are filed once it is ready for review.
+            if (pr.draft) {
+                postCheck(repo, number, pr, CheckStatus.IN_PROGRESS, null, text("check.waiting_draft"), "")
+                return@withLock emptyList()
+            }
+
+            val splitConfig = ds.splitEngineConfig()
+            val keyed = files.map { f ->
+                val statements = splitStatements(f.content, splitConfig)?.takeIf { it.isNotEmpty() } ?: throw unsplittable()
+                val hash = contentHash(f.content, dialect)
+                Keyed(f, statements, changeKey(f.key, hash), hash)
             }
 
             val requester = all.firstOrNull()?.principal
@@ -345,7 +350,7 @@ class GitHubSourceFlow(
             !filedAtHead && pr.merged ->
                 if (active.isNotEmpty() && active.all { it.status == "EXECUTED" }) green
                 else Triple(CheckStatus.COMPLETED, CheckConclusion.FAILURE, text("check.merged_unfiled"))
-            !filedAtHead -> pending(text("check.waiting_files"))
+            !filedAtHead -> pending(text(if (pr.draft) "check.waiting_draft" else "check.waiting_files"))
             // Every file's key already ran, in this pull request or another.
             active.isEmpty() && filed.any(::keyExecuted) ->
                 green

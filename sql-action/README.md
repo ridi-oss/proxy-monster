@@ -33,7 +33,8 @@ Requirements:
   `PM_CI_OIDC_ISSUERS=github=https://token.actions.githubusercontent.com`. Its
   audience, `PM_CI_OIDC_AUDIENCE`, defaults to its public origin, which is the
   `server` origin here; set the input only when the control plane overrides it.
-- It runs on `pull_request` events.
+- It runs on `pull_request` events of types `opened`, `synchronize`, `reopened`
+  and `ready_for_review`: a draft files its SQL once it is marked ready.
 
 The action runs `pm-ci`, a small Go binary in this directory, released on its
 own train (`pm-ci-v*` tags). Released binaries cover Linux and macOS on x64 and

@@ -33,7 +33,7 @@ acme/shop
 ```yaml
 # .github/workflows/sql.yml
 on:
-  pull_request: { types: [opened, synchronize, reopened] }
+  pull_request: { types: [opened, synchronize, reopened, ready_for_review] }
 permissions: { id-token: write, contents: read, checks: write }
 jobs:
   file:
@@ -167,8 +167,9 @@ For a PR that adds files, the control plane runs them when all of these hold:
 - every scope's latest filing is for the PR's current head. Alice pushes a fix
   to `0042`; until the Action files that push, the control plane has not seen
   the new `0042`, so the old one must not run;
-- the PR is not a draft. Workflows that skip drafts have not run yet, so no
-  check would hold the SQL back;
+- the PR is not a draft. A draft's files are not filed at all: the control plane
+  keeps `query executed` pending until the Action files the PR again on
+  `ready_for_review`, so pushes to a draft do not file new requests;
 - auto-merge is enabled on the PR;
 - every request in the current set is approved: per scope, the newest request
   for each path in that scope's latest filing;
@@ -299,10 +300,10 @@ webhooks to it. GitHub Actions reach it over the tailnet instead, and the
 control plane reads GitHub through the API, outbound.
 
 - Filing: the repository's workflow runs on `pull_request` (`opened`,
-  `synchronize`, `reopened`). It joins the tailnet as an ephemeral node with
-  `tailscale/github-action` under a tag the tailnet ACL lets reach only the
-  control plane, authenticates by the GitHub OIDC token exchange, and files a
-  step's files at `POST /api/github/requests` with
+  `synchronize`, `reopened`, `ready_for_review`). It joins the tailnet as an
+  ephemeral node with `tailscale/github-action` under a tag the tailnet ACL lets
+  reach only the control plane, authenticates by the GitHub OIDC token exchange,
+  and files a step's files at `POST /api/github/requests` with
   `{repository, pr, headSha, scope?, datasource, schema, role, files: [{path, key, content}], order?}`,
   where `headSha` is the full SHA of the commit the files were read from and
   `order` is `numeric` (the default) or `string`.

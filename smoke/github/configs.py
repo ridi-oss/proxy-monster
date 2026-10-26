@@ -71,9 +71,14 @@ def sql_pr(name, b, extra=None, draft=False):
     pr = open_pr(f"{b}-pr", files, f"db: {name} {SFX}", base=b, draft=draft)
     opened.append(pr)
     log(name, "PR", pr, "onto", b)
+    if not draft:
+        filed(pr)
+    return pr, t
+
+
+def filed(pr):
     wait_title(pr, "Waiting for approval")
     approve_pending(pr)
-    return pr, t
 
 
 KEY = [200]
@@ -124,14 +129,15 @@ def close(pr):
 
 log("suffix", SFX)
 try:
-    # C1: a draft waits until it is marked ready, then runs.
+    # C1: a draft files nothing until it is marked ready, then runs.
     b = branch("draft")
     protect(b)
     pr, t = sql_pr("draft", b, draft=True)
     c = wait_title(pr, "marked ready")
-    check("C1 an approved draft waits", bool(c), str(c))
+    check("C1 a draft waits to be marked ready", bool(c), str(c))
     check("C1 nothing ran while a draft", not table_exists(t))
     gh("pr", "ready", str(pr), "-R", REPO)
+    filed(pr)
     automerge(pr)
     merged_into(b, pr, t, "C1")
 

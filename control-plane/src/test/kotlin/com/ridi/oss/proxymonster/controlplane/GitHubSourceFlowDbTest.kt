@@ -1232,17 +1232,56 @@ class GitHubSourceFlowDbTest {
     }
 
     @Test
-    fun `an approved draft waits until it is marked ready`() {
+    fun `a draft files nothing until it is marked ready`() {
         val n = number()
         open(n)
         update(n) { it.copy(draft = true) }
+        assertEquals(emptyList(), file(n, schema(), listOf("db/c.sql" to "create table c (id int)")))
+        assertEquals(emptyList(), core.accessStore.listGithubRequests("acme/shop", n))
+        assertEquals(CheckStatus.IN_PROGRESS, lastCheck(n).status)
+        assertEquals("Waiting for the pull request to be marked ready for review", lastCheck(n).title)
+
+        update(n) { it.copy(draft = false) }
         val req = file(n, schema(), listOf("db/c.sql" to "create table c (id int)")).single()
         readyToMerge(n)
+        pollWithProxy()
+        assertEquals("EXECUTED", status(req.id))
+    }
+
+    @Test
+    fun `an approved request waits while its pull request is back in draft`() {
+        val n = number()
+        open(n)
+        val req = file(n, schema(), listOf("db/c.sql" to "create table c (id int)")).single()
+        readyToMerge(n)
+        update(n) { it.copy(draft = true) }
         pollWithProxy()
         assertEquals("APPROVED", status(req.id))
         assertEquals("Waiting for the pull request to be marked ready for review", lastCheck(n).title)
 
         update(n) { it.copy(draft = false) }
+        pollWithProxy()
+        assertEquals("EXECUTED", status(req.id))
+    }
+
+    @Test
+    fun `pushes to a draft file nothing, and marking it ready files the new SQL for approval`() {
+        val n = number()
+        val schema = schema()
+        open(n)
+        val req = file(n, schema, listOf("db/c.sql" to "create table c (id int)")).single()
+        readyToMerge(n)
+        update(n) { it.copy(draft = true, headSha = "sha$n-2") }
+        val draft = listOf("db/c.sql" to "create table c (id int, v int)", "db/d.sql" to "create procedure p() begin select 1 end")
+        assertEquals(emptyList(), file(n, schema, draft))
+        pollWithProxy()
+        assertEquals("APPROVED" to 1, status(req.id) to core.accessStore.getRequest(req.id)?.revision)
+        assertEquals("Waiting for the pull request to be marked ready for review", lastCheck(n, "sha$n-2").title)
+
+        update(n) { it.copy(draft = false, headSha = "sha$n-3") }
+        val edited = file(n, schema, listOf("db/c.sql" to "create table c (id int, v int)")).single()
+        assertEquals(Triple(req.id, "PENDING", 2), Triple(edited.id, edited.status, edited.revision))
+        readyToMerge(n)
         pollWithProxy()
         assertEquals("EXECUTED", status(req.id))
     }

@@ -528,7 +528,7 @@ func (c *Client) CloseConnection(connectionID []byte) error {
 // plane sees a detach immediately followed by an attach.
 func (c *Client) StreamEvents(
 	onRefresh func(),
-	onOpenRun func(spi.RunOpen),
+	onOpenRun func(*pb.OpenRunChannel, error),
 	onOpenTableDetail func(sessionID string, table *enginepb.ObjectRef),
 ) error {
 	timings := defaultEventLoopTimings()
@@ -550,7 +550,7 @@ func (c *Client) streamEvents(
 	parent context.Context,
 	maxAge time.Duration,
 	onRefresh func(),
-	onOpenRun func(spi.RunOpen),
+	onOpenRun func(*pb.OpenRunChannel, error),
 	onOpenTableDetail func(sessionID string, table *enginepb.ObjectRef),
 ) error {
 	ctx, cancel := context.WithTimeout(c.outCtx(parent), maxAge)
@@ -585,18 +585,8 @@ func (c *Client) streamEvents(
 			onRefresh()
 		case ev.GetOpenRunChannel() != nil:
 			e := ev.GetOpenRunChannel()
-			onOpen, mapErr := commandsFromWire(e.GetOnOpen())
-			if len(e.GetConnectionId()) != 16 {
-				mapErr = fmt.Errorf("control plane returned run connection_id with %d bytes, want 16", len(e.GetConnectionId()))
-			}
-			onOpenRun(spi.RunOpen{
-				SessionID:     e.GetSessionId(),
-				Token:         e.GetEphemeralToken(),
-				ConnectionID:  append([]byte(nil), e.GetConnectionId()...),
-				OnOpen:        onOpen,
-				DefaultSchema: e.GetDefaultSchema(),
-				MapErr:        mapErr,
-			})
+			_, mapErr := commandsFromWire(e.GetOnOpen())
+			onOpenRun(e, mapErr)
 		case ev.GetOpenTableDetailChannel() != nil:
 			t := ev.GetOpenTableDetailChannel()
 			onOpenTableDetail(t.GetSessionId(), &enginepb.ObjectRef{Catalog: t.GetCatalog(), Schema: t.GetSchema(), Table: t.GetTable()})
@@ -621,7 +611,7 @@ func (c *Client) RunEventsLoop(
 	ctx context.Context,
 	resync func(),
 	onRefresh func(),
-	onOpenRun func(spi.RunOpen),
+	onOpenRun func(*pb.OpenRunChannel, error),
 	onOpenTableDetail func(sessionID string, table *enginepb.ObjectRef),
 ) error {
 	return c.runEventsLoop(ctx, defaultEventLoopTimings(), resync, onRefresh, onOpenRun, onOpenTableDetail)
@@ -632,7 +622,7 @@ func (c *Client) runEventsLoop(
 	timings eventLoopTimings,
 	resync func(),
 	onRefresh func(),
-	onOpenRun func(spi.RunOpen),
+	onOpenRun func(*pb.OpenRunChannel, error),
 	onOpenTableDetail func(sessionID string, table *enginepb.ObjectRef),
 ) error {
 	for {

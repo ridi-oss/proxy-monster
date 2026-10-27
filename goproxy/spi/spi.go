@@ -35,18 +35,6 @@ type Identity struct {
 	OnOpen       []*pb.ProxyCommand
 }
 
-// RunOpen is the fully mapped run-session open nudge. MapErr is populated for malformed commands
-// while still dispatching the session so its runner can fail it explicitly.
-type RunOpen struct {
-	SessionID    string
-	Token        string
-	ConnectionID []byte
-	OnOpen       []*pb.ProxyCommand
-	// DefaultSchema is the schema the run's target connection opens in; empty keeps the target's default.
-	DefaultSchema string
-	MapErr        error
-}
-
 // RunStream is the subset of the proxy-dialed run stream used by the runner.
 type RunStream interface {
 	Send(*pb.ProxyRunMsg) error

@@ -16,6 +16,7 @@ import (
 	"github.com/ridi-oss/proxy-monster/goproxy/config"
 	"github.com/ridi-oss/proxy-monster/goproxy/cp"
 	"github.com/ridi-oss/proxy-monster/goproxy/drain"
+	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/proxytls"
 	"github.com/ridi-oss/proxy-monster/goproxy/run"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
@@ -159,11 +160,11 @@ func Run(registry spi.Registry) error {
 				}
 			},
 			func() { runner.RefreshCatalog() },
-			func(open spi.RunOpen) {
+			func(req *pb.OpenRunChannel, mapErr error) {
 				runs.Add()
 				go func() {
 					defer runs.Done()
-					runner.Run(open, runs.Signal())
+					runner.Run(req, mapErr, runs.Signal())
 				}()
 			},
 			func(sessionID string, table *enginepb.ObjectRef) {

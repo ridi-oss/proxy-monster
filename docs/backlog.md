@@ -321,7 +321,7 @@ Fixes for gaps documented in
 - Editor: surface a canceled Athena run as CANCELLED rather than a generic
   failure; stream scan progress (bytes scanned, elapsed) during polling; record
   bytes scanned on completion and show the estimated cost. Progress and cost
-  share one run-statistics message on the run channel.
+  share one run-statistics message on the editor session.
 - Feed the resolved result cap into the Athena LIMIT rewrite alongside the
   editor's row cap.
 - Ship a narrower default `native.invoke` policy: the broad permit lets a viewer

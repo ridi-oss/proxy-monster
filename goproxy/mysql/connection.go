@@ -18,7 +18,7 @@ import (
 	"github.com/ridi-oss/proxy-monster/mysqlwire"
 )
 
-// connection is goproxy's connection to the target, for a wire client or a control-plane run.
+// connection is goproxy's connection to the target, for a wire client or an editor session.
 type connection struct {
 	targetDbConn net.Conn
 	session      *engines.Session
@@ -28,7 +28,7 @@ type connection struct {
 	authz              *spi.Authorizer
 	commandRunner      *sqldb.ProxyCommandRunner
 	guard              spi.ExecGuard
-	// deprecateEOF is the result framing the connection negotiated: the wire client's choice, always on for a run.
+	// deprecateEOF is the result framing the connection negotiated: the wire client's choice, always on for an editor session.
 	deprecateEOF bool
 }
 
@@ -130,8 +130,8 @@ func (c *connection) ServeStatement(sql string, maxRows int) (result spi.Stateme
 		}
 		h := collect.hooks()
 		h.OnSysVars = checkSysVarInvariants
-		// A run result is stored and re-gated per viewer at view time, so — unlike the wire path — redaction
-		// is NOT decided here; the run captures BOTH forms of a target-DB ERR. The hook keeps the raw packet
+		// An editor-session result is stored and re-gated per viewer at view time, so — unlike the wire path — redaction
+		// is NOT decided here; the editor session captures BOTH forms of a target-DB ERR. The hook keeps the raw packet
 		// for the full-reader view and hands the collector the redacted form for the masked view.
 		var rawErrPacket []byte
 		h.RedactErr = func(raw []byte) []byte {

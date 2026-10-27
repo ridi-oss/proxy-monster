@@ -13,7 +13,7 @@ import com.ridi.oss.proxymonster.controlplane.QueryResultStore
 import com.ridi.oss.proxymonster.controlplane.ResultCrypto
 import com.ridi.oss.proxymonster.controlplane.RoleAssignmentInput
 import com.ridi.oss.proxymonster.controlplane.RoleInput
-import com.ridi.oss.proxymonster.controlplane.RunExecService
+import com.ridi.oss.proxymonster.controlplane.EditorExecService
 import com.ridi.oss.proxymonster.controlplane.approvalRoutes
 import com.ridi.oss.proxymonster.controlplane.grpc.CONTROL_PROTOCOL_VERSION
 import com.ridi.oss.proxymonster.controlplane.grpc.ControlPlaneGrpcService
@@ -25,16 +25,16 @@ import com.ridi.oss.proxymonster.controlplane.support.testLoginRoute
 import com.ridi.oss.proxymonster.controlplane.support.webSessionCookie
 import com.ridi.oss.proxymonster.grpc.ControlPlaneGrpcKt
 import com.ridi.oss.proxymonster.grpc.EnfAction as WireEnfAction
-import com.ridi.oss.proxymonster.grpc.ProxyRunMsg
+import com.ridi.oss.proxymonster.grpc.ProxyEditorMsg
 import com.ridi.oss.proxymonster.grpc.eventsRequest
-import com.ridi.oss.proxymonster.grpc.proxyRunMsg
-import com.ridi.oss.proxymonster.grpc.runDecision
-import com.ridi.oss.proxymonster.grpc.runDone
-import com.ridi.oss.proxymonster.grpc.runReady
-import com.ridi.oss.proxymonster.grpc.runResultRows
-import com.ridi.oss.proxymonster.grpc.runRow
-import com.ridi.oss.proxymonster.grpc.runServing
-import com.ridi.oss.proxymonster.grpc.runValue
+import com.ridi.oss.proxymonster.grpc.proxyEditorMsg
+import com.ridi.oss.proxymonster.grpc.editorDecision
+import com.ridi.oss.proxymonster.grpc.editorDone
+import com.ridi.oss.proxymonster.grpc.editorReady
+import com.ridi.oss.proxymonster.grpc.editorResultRows
+import com.ridi.oss.proxymonster.grpc.editorRow
+import com.ridi.oss.proxymonster.grpc.editorServing
+import com.ridi.oss.proxymonster.grpc.editorValue
 import io.grpc.ManagedChannel
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder
 import io.ktor.client.HttpClient
@@ -84,20 +84,20 @@ import kotlin.test.fail
 /**
  * The Slack approval loop end to end, from the requester creating the workflow through the approved query
  * actually running and its result landing in the database — against a real mock Slack, real PostgreSQL +
- * Cedar, and a real fake proxy over gRPC (the same [ControlPlaneCore] wired into [RunExecService] and
+ * Cedar, and a real fake proxy over gRPC (the same [ControlPlaneCore] wired into [EditorExecService] and
  * [ControlPlaneGrpcService], so the run plays back over the true execute-under-R wire path, as in
  * `ApprovalExecuteRouteDbTest`).
  *
  * Only Slack and the target DB are mocked; the compose route, `decideQuery` + the disclosure hint,
  * the notification drain, the Socket Mode click, the Cedar `task.approve`, and the production run path
- * (`claimAndStartRun` → `runApprovedTask` → `runExecService.run`) are the real classes.
+ * (`claimAndStartRun` → `runApprovedTask` → `editorExecService.run`) are the real classes.
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class SlackNotificationE2eDbTest {
     private lateinit var fx: EnforcementFixture
     private lateinit var core: ControlPlaneCore
     private lateinit var resultStore: QueryResultStore
-    private lateinit var runExecService: RunExecService
+    private lateinit var editorExecService: EditorExecService
     private lateinit var config: Config
     private lateinit var server: GrpcServer
     private lateinit var stub: ControlPlaneGrpcKt.ControlPlaneCoroutineStub
@@ -129,7 +129,7 @@ class SlackNotificationE2eDbTest {
         fx = EnforcementFixture.postgres()
         core = ControlPlaneCore(fx.dataSource)
         resultStore = QueryResultStore(fx.dataSource, ResultCrypto(ByteArray(32) { it.toByte() }))
-        runExecService = RunExecService(core)
+        editorExecService = EditorExecService(core)
         sessionStore = PrincipalSessionStore(fx.dataSource, null)
         config = Config(
             httpPort = 0, dbUrl = "", dbUser = "", dbPassword = "", authDebug = false, secretToken = null,
@@ -150,7 +150,7 @@ class SlackNotificationE2eDbTest {
         runnerRoleId = core.policyStore.createRole(RoleInput("e2e-runner")).id
 
         // The fake proxy's transport: the SAME core, so a run dialed here attaches to the exact proxyEventsHub
-        // runExecService.run dials.
+        // editorExecService.run dials.
         server = GrpcServer(0, ControlPlaneGrpcService(core), secretToken = null).also { it.start() }
         rawChannel = NettyChannelBuilder.forAddress("localhost", server.boundPort).usePlaintext().build()
         stub = ControlPlaneGrpcKt.ControlPlaneCoroutineStub(rawChannel)
@@ -174,7 +174,7 @@ class SlackNotificationE2eDbTest {
         )
         val approvals = ApprovalService(
             config, core.accessStore, core.auditStore, core.datasourceStore, core.policyStore, core.userGroupStore,
-            resultStore, core.roleResolver, core.authz, runExecService, runScope, notifications = svc,
+            resultStore, core.roleResolver, core.authz, editorExecService, runScope, notifications = svc,
         )
         val access = com.ridi.oss.proxymonster.controlplane.AccessService(
             core.accessStore, core.datasourceStore, core.auditStore, core.roleResolver, core.authz,
@@ -208,7 +208,7 @@ class SlackNotificationE2eDbTest {
                 testLoginRoute(sessionStore, config)
                 approvalRoutes(
                     config, core.accessStore, core.auditStore, core.datasourceStore, core.policyStore,
-                    core.userGroupStore, resultStore, core.roleResolver, core.authz, runExecService,
+                    core.userGroupStore, resultStore, core.roleResolver, core.authz, editorExecService,
                     notifications = svc,
                 )
             }
@@ -227,10 +227,10 @@ class SlackNotificationE2eDbTest {
         require(predicate()) { "timed out awaiting: $what" }
     }
 
-    private fun rowsChunk(columns: List<String>, rows: List<List<String?>>): ProxyRunMsg = proxyRunMsg {
-        resultRows = runResultRows {
+    private fun rowsChunk(columns: List<String>, rows: List<List<String?>>): ProxyEditorMsg = proxyEditorMsg {
+        resultRows = editorResultRows {
             this.columns += columns
-            this.rows += rows.map { values -> runRow { this.values += values.map { v -> runValue { if (v == null) isNull = true else value = v } } } }
+            this.rows += rows.map { values -> editorRow { this.values += values.map { v -> editorValue { if (v == null) isNull = true else value = v } } } }
         }
     }
 
@@ -295,23 +295,23 @@ class SlackNotificationE2eDbTest {
                 )
 
                 // 4. The run opens its channel; the fake proxy replays ALLOW + one row + Done.
-                val open = withTimeout(10_000) { event.await() }.openRunChannel
-                val proxyRequests = Channel<ProxyRunMsg>(Channel.UNLIMITED)
+                val open = withTimeout(10_000) { event.await() }.openEditorSession
+                val proxyRequests = Channel<ProxyEditorMsg>(Channel.UNLIMITED)
                 val proxy = async {
-                    stub.runExec(proxyRequests.receiveAsFlow()).collect { control ->
+                    stub.editorExec(proxyRequests.receiveAsFlow()).collect { control ->
                         when {
                             control.hasQuery() -> {
-                                proxyRequests.send(proxyRunMsg { decision = runDecision { decision = WireEnfAction.ALLOW; decisionId = executionDecisionId } })
+                                proxyRequests.send(proxyEditorMsg { decision = editorDecision { decision = WireEnfAction.ALLOW; decisionId = executionDecisionId } })
                                 proxyRequests.send(rowsChunk(listOf("ssn"), listOf(listOf("123-45-6789"))))
-                                proxyRequests.send(proxyRunMsg { done = runDone { rowsAffected = -1 } })
+                                proxyRequests.send(proxyEditorMsg { done = editorDone { rowsAffected = -1 } })
                             }
                             control.hasClose() -> proxyRequests.close()
                             else -> fail("empty control message")
                         }
                     }
                 }
-                proxyRequests.send(proxyRunMsg { sessionReady = runReady { sessionId = open.sessionId } })
-                proxyRequests.send(proxyRunMsg { serving = runServing {} })
+                proxyRequests.send(proxyEditorMsg { sessionReady = editorReady { sessionId = open.sessionId } })
+                proxyRequests.send(proxyEditorMsg { serving = editorServing {} })
 
                 awaitUntil("run completes to EXECUTED and DONE") {
                     core.accessStore.getRequest(req.id)?.status == "EXECUTED" && resultStore.meta(req.id)?.status == "DONE"

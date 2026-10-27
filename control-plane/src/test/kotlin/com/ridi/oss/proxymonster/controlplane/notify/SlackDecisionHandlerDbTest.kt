@@ -4,7 +4,7 @@ import com.ridi.oss.proxymonster.controlplane.AccessRequest
 import com.ridi.oss.proxymonster.controlplane.Config
 import com.ridi.oss.proxymonster.controlplane.ApprovalService
 import com.ridi.oss.proxymonster.controlplane.ControlPlaneCore
-import com.ridi.oss.proxymonster.controlplane.RunExecService
+import com.ridi.oss.proxymonster.controlplane.EditorExecService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import com.ridi.oss.proxymonster.controlplane.ParticipantKind
@@ -72,7 +72,7 @@ class SlackDecisionHandlerDbTest {
                 sessionWindowSeconds = 3_600, idpRecheckIntervalSeconds = 600, devMarker = false,
             ),
             fx.accessStore, fx.auditStore, fx.datasourceStore, fx.policyStore, fx.userGroupStore,
-            null, fx.roleResolver, fx.authz, RunExecService(ControlPlaneCore(fx.dataSource)),
+            null, fx.roleResolver, fx.authz, EditorExecService(ControlPlaneCore(fx.dataSource)),
             CoroutineScope(Dispatchers.Unconfined), notifications = notifications,
         )
         approvalService = approvals

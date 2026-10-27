@@ -110,7 +110,7 @@ func (c *connection) streamResult(masks []*pb.ColumnMask, opts streamOpts, emit 
 		case *pgproto3.ErrorResponse:
 			data = false
 			// The one client-facing target-DB-error site for both relays. A PostgreSQL error can echo a
-			// masked/denied value the statement never referenced (the whole-row `DETAIL`). The run surfaces
+			// masked/denied value the statement never referenced (the whole-row `DETAIL`). An editor session surfaces
 			// targetDbErr and re-gates it per viewer at view time, so it captures BOTH the raw message and the
 			// redacted form; the wire emit below still strips per THIS decision. See docs/diagnostic-redaction.md.
 			if targetDbErr == nil {

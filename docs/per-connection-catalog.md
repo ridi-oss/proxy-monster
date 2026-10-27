@@ -13,7 +13,7 @@ channels:
   connection, on its own channel. It feeds the config/admin surfaces — catalog
   browsing, tagging/classification, table detail, the system-classification
   manifest, the liveness UI, and HTTP approval dry-run previews — and is never
-  the structure source for connection-scoped wire/editor/`RunExec` Decide.
+  the structure source for connection-scoped wire/editor/`EditorExec` Decide.
 
 Routine names travel with the columns, both in `CatalogRequest.catalog` and in
 each per-connection fragment, so function freshness rides the same generation
@@ -73,9 +73,9 @@ held-connection refetch (`goproxy/sqldb/proxy_command_runner.go`,
 | Freshness | transactionally current for the issuing connection | ambient ~12 min, a few seconds after DDL, admin refresh |
 | Kept current by | control-plane `REFETCH` commands, DB-hash-gated | proxy timer + Events `RefreshCatalog` (after-DDL and admin) |
 | Introspected on | the connection's held target-DB connection | a dedicated short-lived connection (`introspect.Run`) |
-| Channel | enforcement (`ValidateToken`/`Decide`/`PushSchemaFragment`/`CloseConnection`/`RunExec`/`ReportCompletion`) | config (`Register`/`PushCatalog`/`Events`/`TableDetailExec`) |
+| Channel | enforcement (`ValidateToken`/`Decide`/`PushSchemaFragment`/`CloseConnection`/`EditorExec`/`ReportCompletion`) | config (`Register`/`PushCatalog`/`Events`/`TableDetailExec`) |
 | Control-plane storage | in-memory content-addressed fragments + per-connection held-hash map | the `datasource` row and its `catalog` snapshot |
-| Read by | `decideConnection` → `decideQuery` (wire/editor/`RunExec`) | catalog browser, classification writes/reads, MCP `browse_catalog`, table detail, approval dry-run previews, manifest logging, liveness UI |
+| Read by | `decideConnection` → `decideQuery` (wire/editor/`EditorExec`) | catalog browser, classification writes/reads, MCP `browse_catalog`, table detail, approval dry-run previews, manifest logging, liveness UI |
 
 Their correctness contracts are opposite: enforcement must never serve a stale
 answer (a stale fragment is a wrong-ALLOW), and config must never let a browsing
@@ -255,7 +255,7 @@ proxy that forgot to refresh), not a defense against a dishonest proxy.
 ## Wire / proto contract
 
 `proto/src/main/proto/controlplane.proto` carries `Register`, `PushCatalog`,
-`ValidateToken`, `Decide`, `Events`, `RunExec`, and `TableDetailExec`, plus:
+`ValidateToken`, `Decide`, `Events`, `EditorExec`, and `TableDetailExec`, plus:
 
 ```protobuf
 // Generic, extensible command. REFETCH is today's only value.
@@ -324,8 +324,8 @@ message Verdict {
 }
 message BeforeDecide { repeated ProxyCommand commands = 1; }
 
-// OpenRunChannel carries on_open so an editor session is just another connection:
-message OpenRunChannel {
+// OpenEditorSession carries on_open so an editor session is just another connection:
+message OpenEditorSession {
   string session_id = 1;
   string ephemeral_token = 2;
   bytes  connection_id = 3;            // control-plane-minted for the session
@@ -535,7 +535,7 @@ endpoint, same `x-pm-secret-token`), owned by a config-side client in
   `Events` stream (liveness + editor/table-detail nudges), and
   `TableDetailExec`.
 - The enforcement channel carries `ValidateToken`, `Decide`,
-  `PushSchemaFragment`, `CloseConnection`, `RunExec`, `ReportCompletion`.
+  `PushSchemaFragment`, `CloseConnection`, `EditorExec`, `ReportCompletion`.
 - Config reads never touch the per-connection enforcement path — separate store,
   channel, and failure domain. Ambient config refresh is a full
   `introspect.Run` + `PushCatalog` (not the enforcement per-schema hash gate).
@@ -543,10 +543,10 @@ endpoint, same `x-pm-secret-token`), owned by a config-side client in
 ## Editor, table-detail, temp overlay
 
 - The editor session is just another connection. It already holds one target-DB
-  connection per session (`RunExecService.openSession` / one `RunExec` stream).
-  `OpenRunChannel` carries `connection_id` + `on_open`; the proxy fetches the
-  session's schemas before the first `RunQuery`; editor DDL/CALL gets the same
-  `after_statement`; `closeSession`/`sweepIdleSessions` evict.
+  connection per session (`EditorExecService.openSession` / one `EditorExec`
+  stream). `OpenEditorSession` carries `connection_id` + `on_open`; the proxy
+  fetches the session's schemas before the first `EditorQuery`; editor DDL/CALL
+  gets the same `after_statement`; `closeSession`/`sweepIdleSessions` evict.
 - The temp-column overlay is separate. Per-connection base fragments exclude
   `pg_temp*` (they carry no special trust); the per-query `temp_columns` overlay
   on `DecisionRequest` continues with its EDITOR-channel + `pg_temp*` gates

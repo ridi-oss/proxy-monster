@@ -126,7 +126,7 @@ Three facts about the system force the design.
 │            ▼                     ▼                       │  editor / workflow-viewer (tasks)
 │         same stores the REST routes use (Postgres)       │
 └──────────────────────────────────────────────────────────┘
-        │ gRPC run channel (queries run through the proxy)
+        │ gRPC editor session (queries run through the proxy)
         ▼
    wire proxy  ───────────────►  target DBs
 ```

@@ -11,7 +11,7 @@ import com.ridi.oss.proxymonster.controlplane.authz.authorizeDatasourceAction
 import com.ridi.oss.proxymonster.controlplane.authz.resolveContextTags
 import com.ridi.oss.proxymonster.controlplane.notify.NotificationService
 import com.ridi.oss.proxymonster.grpc.EnfAction
-import com.ridi.oss.proxymonster.grpc.RunError
+import com.ridi.oss.proxymonster.grpc.EditorError
 import com.ridi.oss.proxymonster.grpc.ResultRequirements
 import com.ridi.oss.proxymonster.probe.Masking
 import com.ridi.oss.proxymonster.probe.bindMasks
@@ -174,7 +174,7 @@ fun discoverRoles(
 
 // ---- APPROVAL execute-under-R + live view re-decision (approval-workflow.md) --------------------------
 //
-// Execute-under-R runs on the proxy via RunExecService.run(assumeRoles = {R}) — R alone — at the
+// Execute-under-R runs on the proxy via EditorExecService.run(assumeRoles = {R}) — R alone — at the
 // workflow-executor channel. The stored rows are R's execution-enforced output: masked per {R} in the
 // executor's context, encrypted before persistence. GET /result then re-decides at workflow-viewer under
 // exactly {R} and applies the viewer-context masks, narrowing further where that context requires — never
@@ -210,7 +210,7 @@ internal sealed class ResultViewDecision {
  * Which form of a FAILED run's stored [diagnostic] this viewer may see: the raw message when their view
  * decision relays raw, the redacted one when it sanitizes, neither on a deny or a missing re-decision.
  */
-internal fun failedDiagnosticForViewer(ctx: DecisionContext?, diagnostic: RunError?): String? = when {
+internal fun failedDiagnosticForViewer(ctx: DecisionContext?, diagnostic: EditorError?): String? = when {
     ctx == null || diagnostic == null || ctx.action == EnfAction.DENY -> null
     ctx.sanitizeDiagnostics -> diagnostic.message
     else -> diagnostic.rawMessage
@@ -397,7 +397,7 @@ fun Route.approvalRoutes(
     authz: Authz,
     // Approval execution runs on the proxy (the control-plane never dials the target). Both the
     // execute-under-R and no-R approver-exec paths go through this — never a CP-side JDBC dial.
-    runExecService: RunExecService,
+    editorExecService: EditorExecService,
     appScope: CoroutineScope = CoroutineScope(Dispatchers.Unconfined),
     // Threaded into view-as-R decisions so a query touching system tables classifies consistently.
     // Null keeps system schemas deny-by-default.
@@ -410,7 +410,7 @@ fun Route.approvalRoutes(
     notifications: NotificationService? = null,
     service: ApprovalService = ApprovalService(
         config, accessStore, auditStore, datasourceStore, policyStore, userGroupStore, queryResultStore, roleResolver,
-        authz, runExecService, appScope, systemClassification, taskCompletionHub, notifications,
+        authz, editorExecService, appScope, systemClassification, taskCompletionHub, notifications,
     ),
 ) {
     post("/api/approvals") {
@@ -519,7 +519,7 @@ internal suspend fun runApprovedTask(
     accessStore: AccessStore,
     store: QueryResultStore,
     auditStore: AuditStore,
-    runExecService: RunExecService,
+    editorExecService: EditorExecService,
     taskCompletionHub: TaskCompletionHub?,
     notifications: NotificationService?,
     log: org.slf4j.Logger,
@@ -539,9 +539,9 @@ internal suspend fun runApprovedTask(
     // Stamped onto the child that failed, so a poller tells a denial from an error and can raise a request.
     var denyReason: String? = null
     var denyDecisionId: Long? = null
-    var diagnostic: RunError? = null
+    var diagnostic: EditorError? = null
     val failureCode = try {
-        runExecService.runBatch(
+        editorExecService.runBatch(
             principal = executor,
             ds = ds,
             statementCount = statements.size,

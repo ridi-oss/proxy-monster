@@ -100,7 +100,7 @@ class RequestAuthorizationDbTest {
         core.policyStore.createAssignment(RoleAssignmentInput(principal, liveRole.id))
         for (kind in listOf(TokenKind.USER, TokenKind.SESSION)) {
             val token = issue(kind, principal, listOf("system:admin")).token
-            core.runRequesterIps.put(tokenHash(token), "10.0.0.1")
+            core.editorRequesterIps.put(tokenHash(token), "10.0.0.1")
             val resolved = core.resolveRequestIdentity(token, "198.51.100.7:45100")
             assertEquals(setOf(liveRole.name), resolved.effectiveParents.roles)
             assertNull(resolved.providedRoles)
@@ -130,7 +130,7 @@ class RequestAuthorizationDbTest {
         core.policyStore.createAssignment(RoleAssignmentInput(principal, own.id))
         for (kind in listOf(TokenKind.EDITOR, TokenKind.APPROVER_EXEC)) {
             val token = issue(kind, principal, listOf(assumed.name, "missing-role")).token
-            core.runRequesterIps.put(tokenHash(token), "203.0.113.8")
+            core.editorRequesterIps.put(tokenHash(token), "203.0.113.8")
             val resolved = core.resolveRequestIdentity(token, "10.0.0.1:49152")
             assertEquals(setOf(assumed.name), resolved.effectiveParents.roles)
             assertEquals(setOf(assumed.name, "missing-role"), resolved.providedRoles)
@@ -171,9 +171,9 @@ class RequestAuthorizationDbTest {
     @Test
     fun `task requester IP clearing never falls back to the proxy socket`() {
         val token = issue(TokenKind.EDITOR, principal()).token
-        core.runRequesterIps.put(tokenHash(token), "203.0.113.8")
+        core.editorRequesterIps.put(tokenHash(token), "203.0.113.8")
         assertEquals("203.0.113.8", core.resolveRequestIdentity(token, "10.0.0.1:49152").context.requesterIp)
-        core.runRequesterIps.set(tokenHash(token), null)
+        core.editorRequesterIps.set(tokenHash(token), null)
         assertNull(core.resolveRequestIdentity(token, "10.0.0.1:49152").context.requesterIp)
     }
 

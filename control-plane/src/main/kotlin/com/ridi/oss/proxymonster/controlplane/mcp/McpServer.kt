@@ -8,7 +8,7 @@ import com.ridi.oss.proxymonster.controlplane.DatasourceInput
 import com.ridi.oss.proxymonster.controlplane.wireName
 import com.ridi.oss.proxymonster.controlplane.ApprovalService
 import com.ridi.oss.proxymonster.controlplane.EditorTaskService
-import com.ridi.oss.proxymonster.controlplane.RunExecService
+import com.ridi.oss.proxymonster.controlplane.EditorExecService
 import com.ridi.oss.proxymonster.controlplane.SERVER_VERSION
 import com.ridi.oss.proxymonster.controlplane.TaskServiceException
 import com.ridi.oss.proxymonster.controlplane.AuditService
@@ -116,12 +116,12 @@ fun Application.installMcp(
     identityService: IdentityManagementService,
     editorTasks: EditorTaskService = EditorTaskService(
         config, core.datasourceStore, core.accessStore, queryResultStore = null, core.policyStore, core.userGroupStore,
-        core.roleResolver, core.authz, RunExecService(core), appScope = this, core.systemClassification,
+        core.roleResolver, core.authz, EditorExecService(core), appScope = this, core.systemClassification,
         core.taskCompletionHub, core.auditStore,
     ),
     approvals: ApprovalService = ApprovalService(
         config, core.accessStore, core.auditStore, core.datasourceStore, core.policyStore, core.userGroupStore,
-        queryResultStore = null, core.roleResolver, core.authz, RunExecService(core), appScope = this,
+        queryResultStore = null, core.roleResolver, core.authz, EditorExecService(core), appScope = this,
         core.systemClassification, core.taskCompletionHub,
     ),
     access: AccessService = AccessService(

@@ -11,18 +11,18 @@ import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.controlplane.support.testLoginRoute
 import com.ridi.oss.proxymonster.grpc.ControlPlaneGrpcKt
 import com.ridi.oss.proxymonster.grpc.EnfAction as WireEnfAction
-import com.ridi.oss.proxymonster.grpc.ProxyRunMsg
-import com.ridi.oss.proxymonster.grpc.RunDecision
-import com.ridi.oss.proxymonster.grpc.runDecision
-import com.ridi.oss.proxymonster.grpc.runDone
-import com.ridi.oss.proxymonster.grpc.runError
-import com.ridi.oss.proxymonster.grpc.runResultRows
-import com.ridi.oss.proxymonster.grpc.runRow
-import com.ridi.oss.proxymonster.grpc.runReady
-import com.ridi.oss.proxymonster.grpc.runServing
-import com.ridi.oss.proxymonster.grpc.runValue
+import com.ridi.oss.proxymonster.grpc.ProxyEditorMsg
+import com.ridi.oss.proxymonster.grpc.EditorDecision
+import com.ridi.oss.proxymonster.grpc.editorDecision
+import com.ridi.oss.proxymonster.grpc.editorDone
+import com.ridi.oss.proxymonster.grpc.editorError
+import com.ridi.oss.proxymonster.grpc.editorResultRows
+import com.ridi.oss.proxymonster.grpc.editorRow
+import com.ridi.oss.proxymonster.grpc.editorReady
+import com.ridi.oss.proxymonster.grpc.editorServing
+import com.ridi.oss.proxymonster.grpc.editorValue
 import com.ridi.oss.proxymonster.grpc.eventsRequest
-import com.ridi.oss.proxymonster.grpc.proxyRunMsg
+import com.ridi.oss.proxymonster.grpc.proxyEditorMsg
 import io.grpc.ManagedChannel
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder
 import io.ktor.client.HttpClient
@@ -68,9 +68,9 @@ import kotlin.test.fail
  * execute-under-R decision comes back DENY must (1) never leak columns/rows in the HTTP response
  * ([ExecuteQueryRequestResponse.result] stays null) and (2) never write a `query_result` row — the early
  * return at :642-644 must precede [QueryResultStore.save] at :657, not race it. Runs a REAL fake proxy over
- * gRPC (the SAME [ControlPlaneCore] wired into both [RunExecService] and [ControlPlaneGrpcService], so
- * the fake proxy's Events/runExec streams land on the same `proxyEventsHub` — mirrors
- * `GrpcRunExecDbTest`) so the DENY plays back over the real execute-under-R wire path, not a mock.
+ * gRPC (the SAME [ControlPlaneCore] wired into both [EditorExecService] and [ControlPlaneGrpcService], so
+ * the fake proxy's Events/editorExec streams land on the same `proxyEventsHub` — mirrors
+ * `GrpcEditorExecDbTest`) so the DENY plays back over the real execute-under-R wire path, not a mock.
  *
  * The fixture grants the executor `task.approve` outright, clearing `mayDecide` so the DENY branch is
  * isolated from the R-scoped authority gate, which gets its own coverage in
@@ -132,9 +132,9 @@ class ApprovalExecuteRouteDbTest {
         )
         cpGo = CpGoStack(config, core, database) { routing { testLoginRoute(sessionStore, config) } }
 
-        // The gRPC server + stub is the fake proxy's transport — the SAME core as the stack's RunExecService,
+        // The gRPC server + stub is the fake proxy's transport — the SAME core as the stack's EditorExecService,
         // so the fake proxy dialed through this stub attaches to the exact proxyEventsHub run() dials
-        // (GrpcRunExecDbTest.kt:72-97's shape).
+        // (GrpcEditorExecDbTest.kt:72-97's shape).
         server = GrpcServer(0, ControlPlaneGrpcService(core), secretToken = null).also { it.start() }
         rawChannel = NettyChannelBuilder.forAddress("localhost", server.boundPort).usePlaintext().build()
         stub = ControlPlaneGrpcKt.ControlPlaneCoroutineStub(rawChannel)
@@ -167,9 +167,9 @@ class ApprovalExecuteRouteDbTest {
     /** A QUERY request elevating [requester] to a fresh role R on [datasource], already APPROVED —
      *  modeling a request legitimately approved earlier so this test isolates the /execute DENY-under-R
      *  branch alone (roleId populates req.roleName, selecting the execute-under-R branch). */
-    private fun allowed(): ProxyRunMsg {
+    private fun allowed(): ProxyEditorMsg {
         val id = core.auditStore.insert(AuditEvent(principal = executor, datasource = datasource.name, statement = "select ssn from users", decision = Decision.ALLOW, channel = "workflow-executor"))
-        return proxyRunMsg { decision = runDecision { decision = WireEnfAction.ALLOW; decisionId = id } }
+        return proxyEditorMsg { decision = editorDecision { decision = WireEnfAction.ALLOW; decisionId = id } }
     }
 
     private fun seedApprovedRoleRequest(roleName: String, decidedBy: String = executor): Long {
@@ -208,7 +208,7 @@ class ApprovalExecuteRouteDbTest {
             awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }
 
             val responseDeferred = async { client.post("/api/approvals/$id/execute") }
-            val open = withTimeout(5_000) { event.await() }.openRunChannel
+            val open = withTimeout(5_000) { event.await() }.openEditorSession
 
             // Resolve the route-minted ephemeral decide token NOW, while run() still holds it live (it is
             // revoked in run()'s finally once the exchange ends). This is the ONLY way to prove the execute-
@@ -218,13 +218,13 @@ class ApprovalExecuteRouteDbTest {
             // were taken. Assertions come after the response so a mismatch never deadlocks the in-flight POST.
             val ephemeralIdentity = core.tokenStore.resolve(open.ephemeralToken)
 
-            val proxyRequests = Channel<ProxyRunMsg>(Channel.UNLIMITED)
+            val proxyRequests = Channel<ProxyEditorMsg>(Channel.UNLIMITED)
             val proxy = async {
-                stub.runExec(proxyRequests.receiveAsFlow()).collect { control ->
+                stub.editorExec(proxyRequests.receiveAsFlow()).collect { control ->
                     when {
                         control.hasQuery() -> proxyRequests.send(
-                            proxyRunMsg {
-                                decision = runDecision {
+                            proxyEditorMsg {
+                                decision = editorDecision {
                                     decision = WireEnfAction.DENY
                                     denyReason = "policy denies column ssn"
                                 }
@@ -235,8 +235,8 @@ class ApprovalExecuteRouteDbTest {
                     }
                 }
             }
-            proxyRequests.send(proxyRunMsg { sessionReady = runReady { sessionId = open.sessionId } })
-            proxyRequests.send(proxyRunMsg { serving = runServing {} })
+            proxyRequests.send(proxyEditorMsg { sessionReady = editorReady { sessionId = open.sessionId } })
+            proxyRequests.send(proxyEditorMsg { serving = editorServing {} })
 
             val response = withTimeout(5_000) { responseDeferred.await() }
             withTimeout(5_000) { proxy.await() }
@@ -280,19 +280,19 @@ class ApprovalExecuteRouteDbTest {
             awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }
 
             val responseDeferred = async { client.post("/api/approvals/$id/execute") }
-            val open = withTimeout(5_000) { event.await() }.openRunChannel
+            val open = withTimeout(5_000) { event.await() }.openEditorSession
 
-            val proxyRequests = Channel<ProxyRunMsg>(Channel.UNLIMITED)
+            val proxyRequests = Channel<ProxyEditorMsg>(Channel.UNLIMITED)
             val proxy = async {
-                stub.runExec(proxyRequests.receiveAsFlow()).collect { control ->
+                stub.editorExec(proxyRequests.receiveAsFlow()).collect { control ->
                     when {
                         // The runner sends the statement's decision, then the target DB's own ERR tagged with
                         // its provenance (already diagnostic-redacted at the wire).
                         control.hasQuery() -> {
-                            proxyRequests.send(proxyRunMsg { decision = runDecision { decision = WireEnfAction.ALLOW } })
+                            proxyRequests.send(proxyEditorMsg { decision = editorDecision { decision = WireEnfAction.ALLOW } })
                             proxyRequests.send(
-                                proxyRunMsg {
-                                    error = runError {
+                                proxyEditorMsg {
+                                    error = editorError {
                                         message = "ERROR: 42P01 undefined_table"
                                         targetDbError = true
                                         rawMessage = "ERROR: relation \"nope\" does not exist"
@@ -305,8 +305,8 @@ class ApprovalExecuteRouteDbTest {
                     }
                 }
             }
-            proxyRequests.send(proxyRunMsg { sessionReady = runReady { sessionId = open.sessionId } })
-            proxyRequests.send(proxyRunMsg { serving = runServing {} })
+            proxyRequests.send(proxyEditorMsg { sessionReady = editorReady { sessionId = open.sessionId } })
+            proxyRequests.send(proxyEditorMsg { serving = editorServing {} })
 
             val response = withTimeout(5_000) { responseDeferred.await() }
             withTimeout(5_000) { proxy.await() }
@@ -329,7 +329,7 @@ class ApprovalExecuteRouteDbTest {
     // decision, and returns the HTTP response body.
     private suspend fun ApplicationTestBuilder.queryFailsWith(
         client: HttpClient,
-        decision: RunDecision,
+        decision: EditorDecision,
     ): String {
         var body = ""
         supervisorScope {
@@ -341,17 +341,17 @@ class ApprovalExecuteRouteDbTest {
                     contentType(ContentType.Application.Json); setBody(QueryRequest("select 1", 100))
                 }
             }
-            val open = withTimeout(5_000) { event.await() }.openRunChannel
+            val open = withTimeout(5_000) { event.await() }.openEditorSession
 
-            val proxyRequests = Channel<ProxyRunMsg>(Channel.UNLIMITED)
+            val proxyRequests = Channel<ProxyEditorMsg>(Channel.UNLIMITED)
             val proxy = async {
-                stub.runExec(proxyRequests.receiveAsFlow()).collect { control ->
+                stub.editorExec(proxyRequests.receiveAsFlow()).collect { control ->
                     when {
                         control.hasQuery() -> {
-                            proxyRequests.send(proxyRunMsg { this.decision = decision })
+                            proxyRequests.send(proxyEditorMsg { this.decision = decision })
                             proxyRequests.send(
-                                proxyRunMsg {
-                                    error = runError {
+                                proxyEditorMsg {
+                                    error = editorError {
                                         message = "ERROR: 42P01 undefined_table"
                                         targetDbError = true
                                         rawMessage = "ERROR: relation \"secret_table\" does not exist"
@@ -364,8 +364,8 @@ class ApprovalExecuteRouteDbTest {
                     }
                 }
             }
-            proxyRequests.send(proxyRunMsg { sessionReady = runReady { sessionId = open.sessionId } })
-            proxyRequests.send(proxyRunMsg { serving = runServing {} })
+            proxyRequests.send(proxyEditorMsg { sessionReady = editorReady { sessionId = open.sessionId } })
+            proxyRequests.send(proxyEditorMsg { serving = editorServing {} })
 
             val response = withTimeout(5_000) { responseDeferred.await() }
             withTimeout(5_000) { proxy.await() }
@@ -383,7 +383,7 @@ class ApprovalExecuteRouteDbTest {
         val client = wireAsExecutor()
         val body = queryFailsWith(
             client,
-            runDecision { decision = WireEnfAction.MASK; sanitizeDiagnostics = true },
+            editorDecision { decision = WireEnfAction.MASK; sanitizeDiagnostics = true },
         )
         assertTrue(body.contains("ERROR: 42P01 undefined_table"), "the redacted form is returned: $body")
         assertFalse(body.contains("secret_table"), "the raw target-DB text must never reach a sanitized caller: $body")
@@ -394,7 +394,7 @@ class ApprovalExecuteRouteDbTest {
         val client = wireAsExecutor()
         val body = queryFailsWith(
             client,
-            runDecision { decision = WireEnfAction.ALLOW },
+            editorDecision { decision = WireEnfAction.ALLOW },
         )
         assertTrue(body.contains("secret_table"), "a non-sanitizing decision releases the raw form: $body")
     }
@@ -414,17 +414,17 @@ class ApprovalExecuteRouteDbTest {
                     contentType(ContentType.Application.Json); setBody(QueryRequest("select 1", 100))
                 }
             }
-            val open = withTimeout(5_000) { event.await() }.openRunChannel
+            val open = withTimeout(5_000) { event.await() }.openEditorSession
 
-            val proxyRequests = Channel<ProxyRunMsg>(Channel.UNLIMITED)
+            val proxyRequests = Channel<ProxyEditorMsg>(Channel.UNLIMITED)
             val proxy = async {
-                stub.runExec(proxyRequests.receiveAsFlow()).collect { control ->
+                stub.editorExec(proxyRequests.receiveAsFlow()).collect { control ->
                     if (control.hasClose()) proxyRequests.close()
                 }
             }
-            proxyRequests.send(proxyRunMsg { sessionReady = runReady { sessionId = open.sessionId } })
+            proxyRequests.send(proxyEditorMsg { sessionReady = editorReady { sessionId = open.sessionId } })
             // Open fails BEFORE serving (no decision), with a connection error that echoes the target host.
-            proxyRequests.send(proxyRunMsg { error = runError { message = "target-DB connection failed: dial tcp secret-host.internal:5432: connection refused" } })
+            proxyRequests.send(proxyEditorMsg { error = editorError { message = "target-DB connection failed: dial tcp secret-host.internal:5432: connection refused" } })
 
             val response = withTimeout(5_000) { responseDeferred.await() }
             proxyRequests.close()
@@ -449,23 +449,23 @@ class ApprovalExecuteRouteDbTest {
             awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }
 
             val responseDeferred = async { client.post("/api/approvals/$id/execute") }
-            val open = withTimeout(5_000) { event.await() }.openRunChannel
+            val open = withTimeout(5_000) { event.await() }.openEditorSession
 
-            val proxyRequests = Channel<ProxyRunMsg>(Channel.UNLIMITED)
+            val proxyRequests = Channel<ProxyEditorMsg>(Channel.UNLIMITED)
             val proxy = async {
-                stub.runExec(proxyRequests.receiveAsFlow()).collect { control ->
+                stub.editorExec(proxyRequests.receiveAsFlow()).collect { control ->
                     when {
                         // A decode/decision/mask-binding failure the proxy reports post-serving — untagged.
                         control.hasQuery() -> proxyRequests.send(
-                            proxyRunMsg { error = runError { message = "decision failed: analyzer unavailable" } },
+                            proxyEditorMsg { error = editorError { message = "decision failed: analyzer unavailable" } },
                         )
                         control.hasClose() -> proxyRequests.close()
                         else -> fail("control plane sent an empty editor control message")
                     }
                 }
             }
-            proxyRequests.send(proxyRunMsg { sessionReady = runReady { sessionId = open.sessionId } })
-            proxyRequests.send(proxyRunMsg { serving = runServing {} })
+            proxyRequests.send(proxyEditorMsg { sessionReady = editorReady { sessionId = open.sessionId } })
+            proxyRequests.send(proxyEditorMsg { serving = editorServing {} })
 
             val response = withTimeout(5_000) { responseDeferred.await() }
             withTimeout(5_000) { proxy.await() }
@@ -481,13 +481,13 @@ class ApprovalExecuteRouteDbTest {
         }
     }
 
-    private fun rowsChunk(columns: List<String>, rows: List<List<String?>>): ProxyRunMsg = proxyRunMsg {
-        resultRows = runResultRows {
+    private fun rowsChunk(columns: List<String>, rows: List<List<String?>>): ProxyEditorMsg = proxyEditorMsg {
+        resultRows = editorResultRows {
             this.columns += columns
             this.rows += rows.map { values ->
-                runRow {
+                editorRow {
                     this.values += values.map { value ->
-                        runValue {
+                        editorValue {
                             if (value == null) isNull = true else this.value = value
                         }
                     }
@@ -500,7 +500,7 @@ class ApprovalExecuteRouteDbTest {
      * The execute-once guard, end to end over the real HTTP + fake-proxy wire: a first successful
      * execute stores exactly one result, and a SECOND execute call (deliberately made WITHOUT attaching
      * any fake proxy) sees 409 `approval.already_executed` — the pre-dial CAS claim rejects it before
-     * `RunExecService.run` ever looks for a proxy, which is itself the proof the target is dialed at
+     * `EditorExecService.run` ever looks for a proxy, which is itself the proof the target is dialed at
      * most once: if the guard didn't fire before the dial, this second call would hang/fail on
      * `NoProxyAttachedException` instead of returning the typed 409.
      */
@@ -515,24 +515,24 @@ class ApprovalExecuteRouteDbTest {
             awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }
 
             val responseDeferred = async { client.post("/api/approvals/$id/execute") }
-            val open = withTimeout(5_000) { event.await() }.openRunChannel
+            val open = withTimeout(5_000) { event.await() }.openEditorSession
 
-            val proxyRequests = Channel<ProxyRunMsg>(Channel.UNLIMITED)
+            val proxyRequests = Channel<ProxyEditorMsg>(Channel.UNLIMITED)
             val proxy = async {
-                stub.runExec(proxyRequests.receiveAsFlow()).collect { control ->
+                stub.editorExec(proxyRequests.receiveAsFlow()).collect { control ->
                     when {
                         control.hasQuery() -> {
                             proxyRequests.send(allowed())
                             proxyRequests.send(rowsChunk(listOf("ssn"), listOf(listOf("some-value"))))
-                            proxyRequests.send(proxyRunMsg { done = runDone { rowsAffected = -1 } })
+                            proxyRequests.send(proxyEditorMsg { done = editorDone { rowsAffected = -1 } })
                         }
                         control.hasClose() -> proxyRequests.close()
                         else -> fail("control plane sent an empty editor control message")
                     }
                 }
             }
-            proxyRequests.send(proxyRunMsg { sessionReady = runReady { sessionId = open.sessionId } })
-            proxyRequests.send(proxyRunMsg { serving = runServing {} })
+            proxyRequests.send(proxyEditorMsg { sessionReady = editorReady { sessionId = open.sessionId } })
+            proxyRequests.send(proxyEditorMsg { serving = editorServing {} })
 
             val response = withTimeout(5_000) { responseDeferred.await() }
             withTimeout(5_000) { proxy.await() }
@@ -548,7 +548,7 @@ class ApprovalExecuteRouteDbTest {
         }
 
         // Deliberately no proxy is attached for this second call — the guard must fire BEFORE
-        // RunExecService.run even tries to dial one.
+        // EditorExecService.run even tries to dial one.
         val second = client.post("/api/approvals/$id/execute")
         assertEquals(HttpStatusCode.Conflict, second.status)
         val secondBody = second.body<ApiError>()
@@ -577,12 +577,12 @@ class ApprovalExecuteRouteDbTest {
             awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }
 
             val responseDeferred = async { client.post("/api/approvals/$id/execute") }
-            val open = withTimeout(5_000) { event.await() }.openRunChannel
+            val open = withTimeout(5_000) { event.await() }.openEditorSession
 
             val releaseDone = CompletableDeferred<Unit>()
-            val proxyRequests = Channel<ProxyRunMsg>(Channel.UNLIMITED)
+            val proxyRequests = Channel<ProxyEditorMsg>(Channel.UNLIMITED)
             val proxy = async {
-                stub.runExec(proxyRequests.receiveAsFlow()).collect { control ->
+                stub.editorExec(proxyRequests.receiveAsFlow()).collect { control ->
                     when {
                         control.hasQuery() -> launch {
                             proxyRequests.send(allowed())
@@ -590,7 +590,7 @@ class ApprovalExecuteRouteDbTest {
                             // Withhold Done until the test has proven the route already returned 202 and
                             // the task/child are observably in flight.
                             releaseDone.await()
-                            proxyRequests.send(proxyRunMsg { done = runDone { rowsAffected = -1 } })
+                            proxyRequests.send(proxyEditorMsg { done = editorDone { rowsAffected = -1 } })
                         }
                         control.hasCancel() -> Unit
                         control.hasClose() -> proxyRequests.close()
@@ -598,8 +598,8 @@ class ApprovalExecuteRouteDbTest {
                     }
                 }
             }
-            proxyRequests.send(proxyRunMsg { sessionReady = runReady { sessionId = open.sessionId } })
-            proxyRequests.send(proxyRunMsg { serving = runServing {} })
+            proxyRequests.send(proxyEditorMsg { sessionReady = editorReady { sessionId = open.sessionId } })
+            proxyRequests.send(proxyEditorMsg { serving = editorServing {} })
 
             // The response must come back BEFORE Done — the whole point of the async submit.
             val response = withTimeout(5_000) { responseDeferred.await() }
@@ -625,7 +625,7 @@ class ApprovalExecuteRouteDbTest {
     }
 
     @Test
-    fun `canceling an in-flight approval terminalizes both rows and emits RunCancel`() = testApplication {
+    fun `canceling an in-flight approval terminalizes both rows and emits EditorCancel`() = testApplication {
         val client = wireAsExecutor()
         val id = seedApprovedRoleRequest("exec-cancel-role")
 
@@ -633,12 +633,12 @@ class ApprovalExecuteRouteDbTest {
             val event = async { stub.events(eventsRequest { datasourceName = datasource.name; protocolVersion = CONTROL_PROTOCOL_VERSION }).first() }
             awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }
             val execute = async { client.post("/api/approvals/$id/execute") }
-            val open = withTimeout(5_000) { event.await() }.openRunChannel
+            val open = withTimeout(5_000) { event.await() }.openEditorSession
             val release = CompletableDeferred<Unit>()
             val cancelObserved = CompletableDeferred<Unit>()
-            val proxyRequests = Channel<ProxyRunMsg>(Channel.UNLIMITED)
+            val proxyRequests = Channel<ProxyEditorMsg>(Channel.UNLIMITED)
             val proxy = async {
-                stub.runExec(proxyRequests.receiveAsFlow()).collect { control ->
+                stub.editorExec(proxyRequests.receiveAsFlow()).collect { control ->
                     when {
                         control.hasQuery() -> launch { release.await() }
                         control.hasCancel() -> cancelObserved.complete(Unit)
@@ -647,8 +647,8 @@ class ApprovalExecuteRouteDbTest {
                     }
                 }
             }
-            proxyRequests.send(proxyRunMsg { sessionReady = runReady { sessionId = open.sessionId } })
-            proxyRequests.send(proxyRunMsg { serving = runServing {} })
+            proxyRequests.send(proxyEditorMsg { sessionReady = editorReady { sessionId = open.sessionId } })
+            proxyRequests.send(proxyEditorMsg { serving = editorServing {} })
             assertEquals(HttpStatusCode.Accepted, withTimeout(5_000) { execute.await() }.status)
             awaitUntil("approval child RUNNING") { resultStore.meta(id)?.status == "RUNNING" }
             assertEquals(true, client.get("/api/approvals/$id").body<QueryRequestDetail>().canCancel)

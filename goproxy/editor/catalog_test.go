@@ -1,4 +1,4 @@
-package run_test
+package editor_test
 
 import (
 	"testing"
@@ -6,36 +6,36 @@ import (
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 )
 
-func TestRunnerCatalogIdentity(t *testing.T) {
+func TestServerCatalogIdentity(t *testing.T) {
 	for _, test := range []struct {
 		name string
-		seed func(*testing.T) runEngineFixture
+		seed func(*testing.T) editorEngineFixture
 	}{
-		{"mysql", runSeedMySQL}, {"postgres", runSeedPostgres},
+		{"mysql", editorSeedMySQL}, {"postgres", editorSeedPostgres},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			fixture := test.seed(t)
 			catalog := "def"
 			if test.name == "postgres" {
-				catalog = fixture.runConfig.Db
+				catalog = fixture.editorConfig.Db
 			}
-			fake, client := runStartFakeCP(t, runSessionID)
-			open := runOpen(fixture)
+			fake, client := editorStartFakeCP(t, editorSessionID)
+			open := editorOpen(fixture)
 			for _, command := range open.OnOpen {
 				command.GetRefetch().Catalog = catalog
 			}
-			done := runLaunchOpen(t, fake, client, fixture, open)
-			runSendQuery(fake, "SELECT 1", 20)
-			runExpectDecision(t, runRecv(t, fake), pb.EnfAction_ALLOW, nil, "")
-			if message := runRecv(t, fake); message.GetResultRows() == nil {
+			done := editorLaunchOpen(t, fake, client, fixture, open)
+			editorSendQuery(fake, "SELECT 1", 20)
+			editorExpectDecision(t, editorRecv(t, fake), pb.EnfAction_ALLOW, nil, "")
+			if message := editorRecv(t, fake); message.GetResultRows() == nil {
 				t.Fatalf("result = %v", message)
 			}
-			runExpectDone(t, runRecv(t, fake), -1)
-			requests := fake.runRecordedRequests()
+			editorExpectDone(t, editorRecv(t, fake), -1)
+			requests := fake.editorRecordedRequests()
 			if len(requests) != 1 || requests[0].GetCurrentCatalog() != catalog {
 				t.Fatalf("decision requests = %v", requests)
 			}
-			fragments := fake.runRecordedFragments()
+			fragments := fake.editorRecordedFragments()
 			if len(fragments) == 0 {
 				t.Fatal("no on-open fragment was pushed")
 			}
@@ -54,7 +54,7 @@ func TestRunnerCatalogIdentity(t *testing.T) {
 			if columns == 0 {
 				t.Fatal("on-open fragments contained no columns")
 			}
-			runSendClose(fake)
+			editorSendClose(fake)
 			done()
 		})
 	}

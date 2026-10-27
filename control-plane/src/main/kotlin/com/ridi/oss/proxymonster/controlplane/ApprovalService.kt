@@ -36,7 +36,7 @@ class ApprovalService(
     private val roleResolver: RoleResolver,
     private val authz: Authz,
     // Approval execution runs on the proxy; the control plane never dials the target.
-    private val runExecService: RunExecService,
+    private val editorExecService: EditorExecService,
     private val appScope: CoroutineScope,
     // Null keeps system schemas deny-by-default in view-as-R decisions.
     private val systemClassification: SystemClassificationService? = null,
@@ -361,7 +361,7 @@ class ApprovalService(
             id = id, executor = executor, ds = ds, executeAs = executeAs,
             requesterIp = null, requesterPrincipal = req.principal, req = req,
             config = config, accessStore = accessStore, store = store, auditStore = auditStore,
-            runExecService = runExecService, taskCompletionHub = taskCompletionHub,
+            editorExecService = editorExecService, taskCompletionHub = taskCompletionHub,
             notifications = notifications, log = log,
             defaultSchema = req.pullRequest?.defaultSchema,
         )
@@ -613,7 +613,7 @@ class ApprovalService(
             auditStore.insert(conn, e3Record(principal, req, "result-canceled", Channel.WORKFLOW_EXECUTOR))
         }
         if (cancelled != null) {
-            runExecService.cancelActiveRun(id)
+            editorExecService.cancelActiveRun(id)
             // The CAS can win before the run coroutine unwinds, so push CANCELLED to both parties now.
             taskCompletionHub?.publish(listOf(req.principal, req.decidedBy).filterNotNull(), TaskEvent(id, "CANCELLED"))
             accessStore.getRequest(id)?.let { notifications?.enqueueTerminal(it) }
@@ -658,7 +658,7 @@ class ApprovalService(
                 id = id, executor = executor, ds = ds, executeAs = executeAs,
                 requesterIp = requesterIp, requesterPrincipal = req.principal, req = req,
                 config = config, accessStore = accessStore, store = store, auditStore = auditStore,
-                runExecService = runExecService, taskCompletionHub = taskCompletionHub,
+                editorExecService = editorExecService, taskCompletionHub = taskCompletionHub,
                 notifications = notifications, log = log,
             )
         }

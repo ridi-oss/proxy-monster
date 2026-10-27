@@ -15,7 +15,7 @@ option java_multiple_files = true;
 message StoredResult {
   // The rows as they crossed the wire. Mask ordinals index into its columns, so their order is
   // load-bearing.
-  RunResultRows rows = 1;
+  EditorResultRows rows = 1;
   // Absent for a row-returning statement, where the row count IS the count. `optional` because 0
   // affected rows is a real answer.
   optional int32 rows_affected = 2;

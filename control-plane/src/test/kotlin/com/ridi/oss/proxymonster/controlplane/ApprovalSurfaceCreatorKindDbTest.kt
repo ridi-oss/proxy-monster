@@ -39,7 +39,7 @@ import org.junit.jupiter.api.AfterAll
 class ApprovalSurfaceCreatorKindDbTest {
     private lateinit var dataSource: DataSource
     private lateinit var core: ControlPlaneCore
-    private lateinit var runExecService: RunExecService
+    private lateinit var editorExecService: EditorExecService
     private lateinit var resultStore: QueryResultStore
     private lateinit var datasource: Datasource
     private lateinit var config: Config
@@ -55,7 +55,7 @@ class ApprovalSurfaceCreatorKindDbTest {
         val database = SharedPostgres.migratedDatabase("pm_approval_surface")
         dataSource = SharedPostgres.hikari(database)
         core = ControlPlaneCore(dataSource)
-        runExecService = RunExecService(core)
+        editorExecService = EditorExecService(core)
         resultStore = QueryResultStore(dataSource, ResultCrypto(ByteArray(32) { it.toByte() }))
         sessionStore = PrincipalSessionStore(dataSource, null)
         datasource = core.datasourceStore.create(

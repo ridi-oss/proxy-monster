@@ -211,8 +211,8 @@ A proxy advertises its wire-TLS certificate chain at `Register`;
 
 ## SQL editor
 
-The web SQL editor executes over the proxy-dialed `RunExec` channel through the
-proxy's normal `Decide`; a persistent per-session stream holds one target-DB
+The web SQL editor executes over the proxy-dialed `EditorExec` channel through
+the proxy's normal `Decide`; a persistent per-session stream holds one target-DB
 connection so `SET`/`USE`/temp/`BEGIN` persist across queries.
 
 - 🟡 No concurrent-editor-session cap (auth'd DoS surface): each session pins
@@ -225,9 +225,9 @@ connection so `SET`/`USE`/temp/`BEGIN` persist across queries.
 
 See [`docs/result-caps.md`](./docs/result-caps.md).
 
-- 🟢 A run-channel result (the editor and the approval workflow) is bounded by
-  the channel's own 5,000-row ceiling even under an uncapped verdict. Reading a
-  larger result unbounded goes over the wire.
+- 🟢 An editor-session result (the editor and the approval workflow) is bounded
+  by the channel's own 5,000-row ceiling even under an uncapped verdict. Reading
+  a larger result unbounded goes over the wire.
 - 🟡 Parallel connections can overshoot a rate by up to one statement cap each.
   A rate is summed from completion rows, which land after a statement finishes,
   so connections that all pass `Decide` before any of them completes see the

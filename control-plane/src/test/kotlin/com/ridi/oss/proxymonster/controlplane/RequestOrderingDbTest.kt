@@ -186,7 +186,7 @@ class RequestOrderingDbTest {
     fun `MCP-created requests carry source mcp and console ones carry console`() {
         val approvals = ApprovalService(
             testConfig(), core.accessStore, core.auditStore, core.datasourceStore, core.policyStore, core.userGroupStore,
-            null, core.roleResolver, core.authz, RunExecService(core), appScope,
+            null, core.roleResolver, core.authz, EditorExecService(core), appScope,
         )
         val actor = AuditActor(requester, channel = AuditSource.MCP)
         fun create(source: String?): AccessRequest {

@@ -65,7 +65,7 @@ import org.junit.jupiter.api.AfterAll
 class ElevationContextRouteAuthzDbTest {
     private lateinit var dataSource: DataSource
     private lateinit var core: ControlPlaneCore
-    private lateinit var runExecService: RunExecService
+    private lateinit var editorExecService: EditorExecService
     // Real (non-null) result storage — required so the /execute positive control (test b below) can
     // distinguish "the R-scoped authority gate passed" (503 no_proxy_attached) from "result storage isn't
     // configured" (503 result_storage_not_configured); Approvals.kt:611 gates on it AFTER the authority
@@ -96,7 +96,7 @@ class ElevationContextRouteAuthzDbTest {
         val database = SharedPostgres.migratedDatabase("pm_elev_route")
         dataSource = SharedPostgres.hikari(database)
         core = ControlPlaneCore(dataSource)
-        runExecService = RunExecService(core) // required by approvalRoutes; /execute reaches it (test b below)
+        editorExecService = EditorExecService(core) // required by approvalRoutes; /execute reaches it (test b below)
         resultStore = QueryResultStore(dataSource, ResultCrypto(ByteArray(32) { it.toByte() }))
 
         datasource = core.datasourceStore.create(
@@ -171,7 +171,7 @@ class ElevationContextRouteAuthzDbTest {
             approvalRoutes(
                 config, core.accessStore, core.auditStore, core.datasourceStore, core.policyStore,
                 core.userGroupStore, resultStore, core.roleResolver,
-                core.authz, runExecService,
+                core.authz, editorExecService,
             )
         }
     }
@@ -356,7 +356,7 @@ class ElevationContextRouteAuthzDbTest {
         client.post("/test/session/$approver")
 
         // No trusted XFF -> requester_ip absent -> tag not derived -> mayDecide denies.
-        // This gate fires BEFORE runExecService is ever reached (Approvals.kt:603-610), so no proxy needs
+        // This gate fires BEFORE editorExecService is ever reached (Approvals.kt:603-610), so no proxy needs
         // to be attached here — a 503 (service-unavailable) instead of 403 would mean the gate leaked.
         val id = seedApprovedQueryRequest()
         val denied = client.post("/api/approvals/$id/execute")
@@ -373,7 +373,7 @@ class ElevationContextRouteAuthzDbTest {
         client.post("/test/session/$approver")
 
         // A trusted edge's in-range XFF -> requester_ip 100.100.5.5 -> trusted-network tag -> the authority
-        // gate at :603-610 passes, and the route proceeds to runExecService — which, with no proxy
+        // gate at :603-610 passes, and the route proceeds to editorExecService — which, with no proxy
         // attached in this fixture, fails 503/query.no_proxy_attached (Approvals.kt:646-647). That specific
         // status+code (NOT 403, NOT result_storage_not_configured) is the minimal honest proof the R-scoped
         // authority check passed, without standing up a second fake proxy in this file.

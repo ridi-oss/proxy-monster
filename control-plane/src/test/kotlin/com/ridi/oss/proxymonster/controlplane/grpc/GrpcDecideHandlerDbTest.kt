@@ -293,7 +293,7 @@ class GrpcDecideHandlerDbTest {
         assertNotNull(core.tokenStore.validate(user), "a USER token opens a wire session")
     }
 
-    // ---- The ControlPlaneCore.runRequesterIps carrier reaches the Cedar context ----
+    // ---- The ControlPlaneCore.editorRequesterIps carrier reaches the Cedar context ----
 
     @Test
     fun `an EDITOR token's registered requester_ip reaches Cedar and satisfies an ip-gated permit`() = runBlocking {
@@ -306,7 +306,7 @@ class GrpcDecideHandlerDbTest {
             updatedBy = null,
         )
         val issued = core.tokenStore.issue(TokenKind.EDITOR, "ipgate-editor-user", emptyList(), null, 3600)
-        core.runRequesterIps.put(tokenHash(issued.token), "203.0.113.10")
+        core.editorRequesterIps.put(tokenHash(issued.token), "203.0.113.10")
 
         val decision = stub.decide(decisionRequest { token = issued.token; datasourceName = ds.name; currentCatalog = ds.effectiveCatalog; connectionId = open(issued.token); sql = "select 1 from t" })
         assertEquals(
@@ -326,10 +326,10 @@ class GrpcDecideHandlerDbTest {
             ),
             updatedBy = null,
         )
-        // APPROVER_EXEC tokens are ONLY minted by RunExecService.run() — openSession() mints EDITOR only —
+        // APPROVER_EXEC tokens are ONLY minted by EditorExecService.run() — openSession() mints EDITOR only —
         // so covering the registry write here is what makes this token kind's requester_ip real.
         val issued = core.tokenStore.issue(TokenKind.APPROVER_EXEC, "ipgate-approver-exec-user", emptyList(), null, 3600)
-        core.runRequesterIps.put(tokenHash(issued.token), "203.0.113.20")
+        core.editorRequesterIps.put(tokenHash(issued.token), "203.0.113.20")
 
         val decision = stub.decide(decisionRequest { token = issued.token; datasourceName = ds.name; currentCatalog = ds.effectiveCatalog; connectionId = open(issued.token); sql = "select 1 from t" })
         assertTrue("statement kind 'select' is not permitted" in decision.verdict.denyReason, "expected the connect gate to pass: ${decision.verdict.denyReason}")
@@ -348,7 +348,7 @@ class GrpcDecideHandlerDbTest {
         val issued = core.tokenStore.issue(TokenKind.USER, "ipgate-wire-user", emptyList(), null, 3600)
         // Plant an entry under this USER token's hash directly — a WIRE token must never pick it up even if
         // (by whatever means) the registry happened to carry a matching entry.
-        core.runRequesterIps.put(tokenHash(issued.token), "203.0.113.30")
+        core.editorRequesterIps.put(tokenHash(issued.token), "203.0.113.30")
 
         val decision = stub.decide(decisionRequest { token = issued.token; datasourceName = ds.name; currentCatalog = ds.effectiveCatalog; connectionId = open(issued.token); sql = "select 1 from t" })
         assertEquals(EnfAction.DENY, decision.verdict.decision)
@@ -368,7 +368,7 @@ class GrpcDecideHandlerDbTest {
             ),
             updatedBy = null,
         )
-        // EDITOR token, but NOTHING put into runRequesterIps. The proxy sends a client_addr that IS in range;
+        // EDITOR token, but NOTHING put into editorRequesterIps. The proxy sends a client_addr that IS in range;
         // on the native-wire channel that would satisfy the ip-gated permit, but an editor decision must NOT
         // borrow the proxy-supplied client_addr — requester_ip stays ABSENT (fail-closed), so the permit never
         // fires and connect is denied. This is the channel-selected-source contract (not a nullable fallback).

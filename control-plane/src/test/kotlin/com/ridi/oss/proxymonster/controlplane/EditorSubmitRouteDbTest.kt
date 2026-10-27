@@ -9,20 +9,20 @@ import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.controlplane.support.testLoginRoute
 import com.ridi.oss.proxymonster.controlplane.support.webSessionCookie
 import com.ridi.oss.proxymonster.grpc.ControlPlaneGrpcKt
-import com.ridi.oss.proxymonster.grpc.ControlRunMsg
+import com.ridi.oss.proxymonster.grpc.CpEditorMsg
 import com.ridi.oss.proxymonster.grpc.EnfAction as WireEnfAction
-import com.ridi.oss.proxymonster.grpc.ProxyRunMsg
-import com.ridi.oss.proxymonster.grpc.runDecision
-import com.ridi.oss.proxymonster.grpc.runError
-import com.ridi.oss.proxymonster.grpc.runDone
-import com.ridi.oss.proxymonster.grpc.runResultRows
-import com.ridi.oss.proxymonster.grpc.runRow
-import com.ridi.oss.proxymonster.grpc.runReady
-import com.ridi.oss.proxymonster.grpc.runServing
+import com.ridi.oss.proxymonster.grpc.ProxyEditorMsg
+import com.ridi.oss.proxymonster.grpc.editorDecision
+import com.ridi.oss.proxymonster.grpc.editorError
+import com.ridi.oss.proxymonster.grpc.editorDone
+import com.ridi.oss.proxymonster.grpc.editorResultRows
+import com.ridi.oss.proxymonster.grpc.editorRow
+import com.ridi.oss.proxymonster.grpc.editorReady
+import com.ridi.oss.proxymonster.grpc.editorServing
 import com.ridi.oss.proxymonster.analyzer.pb.namespace as pbNamespace
-import com.ridi.oss.proxymonster.grpc.runValue
+import com.ridi.oss.proxymonster.grpc.editorValue
 import com.ridi.oss.proxymonster.grpc.eventsRequest
-import com.ridi.oss.proxymonster.grpc.proxyRunMsg
+import com.ridi.oss.proxymonster.grpc.proxyEditorMsg
 import io.grpc.ManagedChannel
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder
 import io.ktor.client.HttpClient
@@ -72,7 +72,7 @@ import kotlin.test.fail
 
 /**
  * End-to-end route/DB coverage for the async editor submit, over the REAL fake-proxy-over-gRPC wire (the
- * SAME [ControlPlaneCore] wired into both [RunExecService] and [ControlPlaneGrpcService], so the persistent
+ * SAME [ControlPlaneCore] wired into both [EditorExecService] and [ControlPlaneGrpcService], so the persistent
  * editor session dials the exact `proxyEventsHub`). A submit is an auto-approved EDITOR task: the route
  * returns 202 while the run proceeds async on the held session, the enforced result is SAVED (not returned
  * inline), and the client observes completion by polling. Delete-on-close removes the tab's task + rows.
@@ -87,7 +87,7 @@ import kotlin.test.fail
 class EditorSubmitRouteDbTest {
     private lateinit var dataSource: DataSource
     private lateinit var core: ControlPlaneCore
-    private lateinit var runExecService: RunExecService
+    private lateinit var editorExecService: EditorExecService
     private lateinit var resultStore: QueryResultStore
     private lateinit var datasource: Datasource
     private lateinit var config: Config
@@ -104,7 +104,7 @@ class EditorSubmitRouteDbTest {
         requireDockerOrSkip()
         dataSource = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_editor_submit"))
         core = ControlPlaneCore(dataSource)
-        runExecService = RunExecService(core)
+        editorExecService = EditorExecService(core)
         resultStore = QueryResultStore(dataSource, ResultCrypto(ByteArray(32) { it.toByte() }))
         appScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
         sessionStore = PrincipalSessionStore(dataSource, null)
@@ -155,7 +155,7 @@ class EditorSubmitRouteDbTest {
                 testLoginRoute(sessionStore, config)
                 editorSessionRoutes(
                     config, core.datasourceStore, core.accessStore, resultStore,
-                    core.policyStore, core.userGroupStore, core.roleResolver, core.authz, runExecService,
+                    core.policyStore, core.userGroupStore, core.roleResolver, core.authz, editorExecService,
                     appScope, core.systemClassification, hub, core.auditStore,
                 )
             }
@@ -169,24 +169,24 @@ class EditorSubmitRouteDbTest {
         return client
     }
 
-    private fun rowsChunk(columns: List<String>, rows: List<List<String?>>): ProxyRunMsg = proxyRunMsg {
-        resultRows = runResultRows {
+    private fun rowsChunk(columns: List<String>, rows: List<List<String?>>): ProxyEditorMsg = proxyEditorMsg {
+        resultRows = editorResultRows {
             this.columns += columns
             this.rows += rows.map { values ->
-                runRow { this.values += values.map { v -> runValue { if (v == null) isNull = true else value = v } } }
+                editorRow { this.values += values.map { v -> editorValue { if (v == null) isNull = true else value = v } } }
             }
         }
     }
 
-    private fun allowed(): ProxyRunMsg {
+    private fun allowed(): ProxyEditorMsg {
         val id = core.auditStore.insert(AuditEvent(principal = caller, datasource = datasource.name, statement = "select id from t", decision = Decision.ALLOW, channel = "editor"))
-        return proxyRunMsg { decision = runDecision { decision = WireEnfAction.ALLOW; decisionId = id } }
+        return proxyEditorMsg { decision = editorDecision { decision = WireEnfAction.ALLOW; decisionId = id } }
     }
 
     private class FakeSession(
         val sessionId: String,
-        val proxyRequests: Channel<ProxyRunMsg>,
-        val controls: Channel<ControlRunMsg>,
+        val proxyRequests: Channel<ProxyEditorMsg>,
+        val controls: Channel<CpEditorMsg>,
         val await: suspend () -> Unit,
     )
 
@@ -198,7 +198,7 @@ class EditorSubmitRouteDbTest {
     private suspend fun CoroutineScope.openFakeSession(
         client: HttpClient,
         servingNamespace: List<String>? = null,
-        onQuery: suspend (SendChannel<ProxyRunMsg>, ControlRunMsg) -> Unit,
+        onQuery: suspend (SendChannel<ProxyEditorMsg>, CpEditorMsg) -> Unit,
     ): FakeSession {
         val event = async { stub.events(eventsRequest { datasourceName = datasource.name; protocolVersion = CONTROL_PROTOCOL_VERSION }).first() }
         awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }
@@ -207,11 +207,11 @@ class EditorSubmitRouteDbTest {
                 contentType(ContentType.Application.Json); setBody(OpenEditorSessionInput(datasource.id))
             }
         }
-        val open = withTimeout(5_000) { event.await() }.openRunChannel
-        val proxyRequests = Channel<ProxyRunMsg>(Channel.UNLIMITED)
-        val controls = Channel<ControlRunMsg>(Channel.UNLIMITED)
+        val open = withTimeout(5_000) { event.await() }.openEditorSession
+        val proxyRequests = Channel<ProxyEditorMsg>(Channel.UNLIMITED)
+        val controls = Channel<CpEditorMsg>(Channel.UNLIMITED)
         val proxy = async {
-            stub.runExec(proxyRequests.receiveAsFlow()).collect { control ->
+            stub.editorExec(proxyRequests.receiveAsFlow()).collect { control ->
                 controls.send(control)
                 when {
                     control.hasQuery() -> launch { onQuery(proxyRequests, control) }
@@ -221,9 +221,9 @@ class EditorSubmitRouteDbTest {
                 }
             }
         }
-        proxyRequests.send(proxyRunMsg { sessionReady = runReady { sessionId = open.sessionId } })
-        proxyRequests.send(proxyRunMsg {
-            serving = runServing { servingNamespace?.let { namespace = pbNamespace { searchPath += it } } }
+        proxyRequests.send(proxyEditorMsg { sessionReady = editorReady { sessionId = open.sessionId } })
+        proxyRequests.send(proxyEditorMsg {
+            serving = editorServing { servingNamespace?.let { namespace = pbNamespace { searchPath += it } } }
         })
         val sessionId = withTimeout(5_000) { openDeferred.await() }.body<EditorSessionOpened>().sessionId
         return FakeSession(sessionId, proxyRequests, controls) { withTimeout(5_000) { proxy.await() } }
@@ -236,7 +236,7 @@ class EditorSubmitRouteDbTest {
             val session = openFakeSession(client) { req, _ ->
                 req.send(allowed())
                 req.send(rowsChunk(listOf("id"), listOf(listOf("1"), listOf("2"))))
-                req.send(proxyRunMsg { done = runDone { rowsAffected = -1 } })
+                req.send(proxyEditorMsg { done = editorDone { rowsAffected = -1 } })
             }
 
             val submit = client.post("/api/editor/sessions/${session.sessionId}/query") {
@@ -276,8 +276,8 @@ class EditorSubmitRouteDbTest {
             val session = openFakeSession(client, servingNamespace = listOf("pg_catalog", "public")) { req, control ->
                 req.send(allowed())
                 req.send(rowsChunk(emptyList(), emptyList()))
-                req.send(proxyRunMsg {
-                    done = runDone {
+                req.send(proxyEditorMsg {
+                    done = editorDone {
                         rowsAffected = 0
                         if (control.query.sql.startsWith("set")) namespace = pbNamespace { searchPath += listOf("pg_catalog", "billing") }
                     }
@@ -302,7 +302,7 @@ class EditorSubmitRouteDbTest {
                 awaitUntil("task EXECUTED") { core.accessStore.getRequest(ack.taskId)?.status == "EXECUTED" }
                 assertEquals(listOf("pg_catalog", "billing"), searchPath())
 
-                // A RunDone without a namespace makes it unknown rather than leaving the old one.
+                // An EditorDone without a namespace makes it unknown rather than leaving the old one.
                 val unread = client.post("/api/editor/sessions/${session.sessionId}/query") {
                     contentType(ContentType.Application.Json); setBody(QueryRequest("select 1", 100))
                 }.body<EditorSubmitResponse>()
@@ -343,8 +343,8 @@ class EditorSubmitRouteDbTest {
                     sent += control.query.sql
                     req.send(allowed())
                     req.send(rowsChunk(emptyList(), emptyList()))
-                    req.send(proxyRunMsg {
-                        done = runDone { rowsAffected = 0; namespace = pbNamespace { searchPath += listOf("pg_catalog", "bil\"ling") } }
+                    req.send(proxyEditorMsg {
+                        done = editorDone { rowsAffected = 0; namespace = pbNamespace { searchPath += listOf("pg_catalog", "bil\"ling") } }
                     })
                 }
                 val response = client.post("/api/editor/sessions/${session.sessionId}/default-schema") {
@@ -392,7 +392,7 @@ class EditorSubmitRouteDbTest {
                 seen += control.query.sql
                 req.send(allowed())
                 req.send(rowsChunk(listOf("v"), listOf(listOf(control.query.sql))))
-                req.send(proxyRunMsg { done = runDone { rowsAffected = -1 } })
+                req.send(proxyEditorMsg { done = editorDone { rowsAffected = -1 } })
             }
 
             val submit = client.post("/api/editor/sessions/${session.sessionId}/query") {
@@ -440,11 +440,11 @@ class EditorSubmitRouteDbTest {
                 seen += control.query.sql
                 // The SECOND statement is denied at execute; the third must never be sent.
                 if (control.query.sql.contains("ssn")) {
-                    req.send(proxyRunMsg { decision = runDecision { decision = WireEnfAction.DENY; denyReason = "no" } })
+                    req.send(proxyEditorMsg { decision = editorDecision { decision = WireEnfAction.DENY; denyReason = "no" } })
                 } else {
                     req.send(allowed())
                     req.send(rowsChunk(listOf("v"), listOf(listOf("1"))))
-                    req.send(proxyRunMsg { done = runDone { rowsAffected = -1 } })
+                    req.send(proxyEditorMsg { done = editorDone { rowsAffected = -1 } })
                 }
             }
 
@@ -477,7 +477,7 @@ class EditorSubmitRouteDbTest {
             val session = openFakeSession(client) { req, _ ->
                 req.send(allowed())
                 req.send(rowsChunk(listOf("id"), listOf(listOf("1"))))
-                req.send(proxyRunMsg { done = runDone { rowsAffected = -1 } })
+                req.send(proxyEditorMsg { done = editorDone { rowsAffected = -1 } })
             }
             val ack = client.post("/api/editor/sessions/${session.sessionId}/query") {
                 contentType(ContentType.Application.Json); setBody(QueryRequest("select id from t", 100))
@@ -497,7 +497,7 @@ class EditorSubmitRouteDbTest {
         val client = wire()
         supervisorScope {
             val session = openFakeSession(client) { req, _ ->
-                req.send(proxyRunMsg { decision = runDecision { decision = WireEnfAction.DENY; denyReason = "policy denies" } })
+                req.send(proxyEditorMsg { decision = editorDecision { decision = WireEnfAction.DENY; denyReason = "policy denies" } })
             }
             val ack = client.post("/api/editor/sessions/${session.sessionId}/query") {
                 contentType(ContentType.Application.Json); setBody(QueryRequest("select ssn from t", 100))
@@ -523,9 +523,9 @@ class EditorSubmitRouteDbTest {
         val client = wire()
         supervisorScope {
             val session = openFakeSession(client) { req, _ ->
-                req.send(proxyRunMsg { decision = runDecision { decision = WireEnfAction.ALLOW; decisionId = 0 } })
+                req.send(proxyEditorMsg { decision = editorDecision { decision = WireEnfAction.ALLOW; decisionId = 0 } })
                 req.send(rowsChunk(listOf("id"), listOf(listOf("1"))))
-                req.send(proxyRunMsg { done = runDone { rowsAffected = -1 } })
+                req.send(proxyEditorMsg { done = editorDone { rowsAffected = -1 } })
             }
             val ack = client.post("/api/editor/sessions/${session.sessionId}/query") {
                 contentType(ContentType.Application.Json); setBody(QueryRequest("select id from t", 100))
@@ -550,10 +550,10 @@ class EditorSubmitRouteDbTest {
         val client = wire()
         supervisorScope {
             val session = openFakeSession(client) { req, _ ->
-                req.send(proxyRunMsg { decision = runDecision { decision = WireEnfAction.ALLOW } })
+                req.send(proxyEditorMsg { decision = editorDecision { decision = WireEnfAction.ALLOW } })
                 req.send(
-                    proxyRunMsg {
-                        error = runError {
+                    proxyEditorMsg {
+                        error = editorError {
                             message = "ERROR: 42P01 undefined_table"
                             targetDbError = true
                             rawMessage = "ERROR: relation \"nope\" does not exist"
@@ -587,7 +587,7 @@ class EditorSubmitRouteDbTest {
                 req.send(allowed())
                 req.send(rowsChunk(listOf("id"), listOf(listOf("1"))))
                 release.await()
-                req.send(proxyRunMsg { done = runDone { rowsAffected = -1 } })
+                req.send(proxyEditorMsg { done = editorDone { rowsAffected = -1 } })
             }
             val ack = client.post("/api/editor/sessions/${session.sessionId}/query") {
                 contentType(ContentType.Application.Json); setBody(QueryRequest("select id from t", 100))
@@ -606,12 +606,12 @@ class EditorSubmitRouteDbTest {
     }
 
     @Test
-    fun `cancel terminalizes an in-flight editor task and emits RunCancel without closing the session`() = testApplication {
+    fun `cancel terminalizes an in-flight editor task and emits EditorCancel without closing the session`() = testApplication {
         val client = wire()
         supervisorScope {
             val held = CompletableDeferred<Unit>()
             val session = openFakeSession(client) { req, _ ->
-                req.send(proxyRunMsg { decision = runDecision { decision = WireEnfAction.ALLOW } })
+                req.send(proxyEditorMsg { decision = editorDecision { decision = WireEnfAction.ALLOW } })
                 held.await()
             }
             val ack = client.post("/api/editor/sessions/${session.sessionId}/query") {
@@ -644,7 +644,7 @@ class EditorSubmitRouteDbTest {
                 if (control.query.sql == "select first") {
                     req.send(allowed())
                     firstRelease.await()
-                    req.send(proxyRunMsg { done = runDone { rowsAffected = -1 } })
+                    req.send(proxyEditorMsg { done = editorDone { rowsAffected = -1 } })
                 } else {
                     fail("queued canceled statement crossed the wire: ${control.query.sql}")
                 }
@@ -673,7 +673,7 @@ class EditorSubmitRouteDbTest {
     }
 
     @Test
-    fun `delete of an executing editor task emits RunCancel then removes the task`() = testApplication {
+    fun `delete of an executing editor task emits EditorCancel then removes the task`() = testApplication {
         val client = wire()
         supervisorScope {
             val held = CompletableDeferred<Unit>()
@@ -791,16 +791,16 @@ class EditorSubmitRouteDbTest {
         val client = wire()
         val hour = java.time.Duration.ofHours(1)
         val before = core.auditStore.relayedVolume(caller, datasource.name, listOf(hour), java.time.Instant.now()).getValue(hour)
-        // The run channel emits no completion report, so the decision row the proxy names is what the
+        // The editor session emits no completion report, so the decision row the proxy names is what the
         // control plane charges the released rows against.
         val decisionId = core.auditStore.insert(
             AuditEvent(principal = caller, datasource = datasource.name, statement = "select id from t", decision = Decision.ALLOW, channel = "editor"),
         )
         supervisorScope {
             val session = openFakeSession(client) { req, _ ->
-                req.send(proxyRunMsg { decision = runDecision { decision = WireEnfAction.ALLOW; this.decisionId = decisionId } })
+                req.send(proxyEditorMsg { decision = editorDecision { decision = WireEnfAction.ALLOW; this.decisionId = decisionId } })
                 req.send(rowsChunk(listOf("id"), listOf(listOf("1"), listOf("22"), listOf(null))))
-                req.send(proxyRunMsg { done = runDone { rowsAffected = -1 } })
+                req.send(proxyEditorMsg { done = editorDone { rowsAffected = -1 } })
             }
             val ack = client.post("/api/editor/sessions/${session.sessionId}/query") {
                 contentType(ContentType.Application.Json); setBody(QueryRequest("select id from t", 100))

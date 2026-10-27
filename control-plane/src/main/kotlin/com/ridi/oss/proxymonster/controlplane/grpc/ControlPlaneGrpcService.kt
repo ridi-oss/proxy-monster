@@ -37,14 +37,14 @@ import com.ridi.oss.proxymonster.grpc.CatalogResponse
 import com.ridi.oss.proxymonster.grpc.CloseConnectionRequest
 import com.ridi.oss.proxymonster.grpc.CloseConnectionResponse
 import com.ridi.oss.proxymonster.grpc.CompletionReport
-import com.ridi.oss.proxymonster.grpc.ControlRunMsg
-import com.ridi.oss.proxymonster.grpc.ControlEvent
+import com.ridi.oss.proxymonster.grpc.CpEditorMsg
+import com.ridi.oss.proxymonster.grpc.CpEvent
 import com.ridi.oss.proxymonster.grpc.ControlPlaneGrpcKt
-import com.ridi.oss.proxymonster.grpc.ControlTableDetailMsg
+import com.ridi.oss.proxymonster.grpc.CpTableDetailMsg
 import com.ridi.oss.proxymonster.grpc.DecisionRequest
 import com.ridi.oss.proxymonster.grpc.Engine
 import com.ridi.oss.proxymonster.grpc.EventsRequest
-import com.ridi.oss.proxymonster.grpc.ProxyRunMsg
+import com.ridi.oss.proxymonster.grpc.ProxyEditorMsg
 import com.ridi.oss.proxymonster.grpc.ProxyTableDetailMsg
 import com.ridi.oss.proxymonster.grpc.RegisterRequest
 import com.ridi.oss.proxymonster.grpc.RegisterResponse
@@ -75,17 +75,17 @@ import kotlinx.coroutines.withTimeout
 
 // The run handler bounds only the wait for the FIRST frame (the run's id): a proxy that opens a stream but
 // never identifies its run, or never closes, must not park the handler forever. Once a stream is attached to
-// its run there is no fixed overall cap — its lifetime is the run's or session's own (see runExec). This
-// backstop sits above RUN_DIALBACK_TIMEOUT_MS so the caller's own dial-back timeout reports first on a live
+// its run there is no fixed overall cap — its lifetime is the run's or session's own (see editorExec). This
+// backstop sits above EDITOR_DIALBACK_TIMEOUT_MS so the caller's own dial-back timeout reports first on a live
 // run; it only reaps a handler the caller has already given up on.
-internal const val RUN_FIRST_FRAME_TIMEOUT_MS = 30_000L
+internal const val EDITOR_FIRST_FRAME_TIMEOUT_MS = 30_000L
 private const val TABLE_DETAIL_STREAM_TIMEOUT_MS = 60_000L
 // The proxy<->control-plane wire-protocol version this control-plane speaks, exchanged at Register so a
 // half-finished rollout (proxy and control-plane on different server-v* releases) fails fast with a clear
-// error instead of a stalled run channel. Bump it on any incompatible wire change. It MUST match the proxy's
+// error instead of a stalled editor session. Bump it on any incompatible wire change. It MUST match the proxy's
 // goproxy cp.ProtocolVersion; the two are separate constants in separate languages kept in lockstep by hand —
 // a server-v* release always ships both at the same value.
-internal const val CONTROL_PROTOCOL_VERSION = 6
+internal const val CONTROL_PROTOCOL_VERSION = 7
 
 /**
  * Build the session-temp overlay from a decide request's proxy-supplied [temps], applying BOTH
@@ -126,7 +126,7 @@ internal fun editorTempOverlay(channel: Channel, engine: Engine, temps: List<Tem
  */
 class ControlPlaneGrpcService(
     private val core: ControlPlaneCore,
-    private val firstFrameTimeoutMs: Long = RUN_FIRST_FRAME_TIMEOUT_MS,
+    private val firstFrameTimeoutMs: Long = EDITOR_FIRST_FRAME_TIMEOUT_MS,
 ) :
     ControlPlaneGrpcKt.ControlPlaneCoroutineImplBase() {
 
@@ -287,7 +287,7 @@ class ControlPlaneGrpcService(
             throw StatusException(Status.INVALID_ARGUMENT.withDescription("datasource name must not be blank"))
         }
         // Reject a half-finished rollout talking across versions here — the proxy's first call — rather than
-        // let it surface later as a stalled run channel. The proxy makes the mirror check against
+        // let it surface later as a stalled editor session. The proxy makes the mirror check against
         // RegisterResponse.protocol_version, so an OLDER control-plane is refused on that side.
         requireCompatibleProtocolVersion(request.protocolVersion)
         val engine = try {
@@ -412,15 +412,15 @@ class ControlPlaneGrpcService(
     }
 
     /**
-     * A proxy-dialed, single-request run stream. The first request must claim a pending run session;
+     * A proxy-dialed, single-request editor stream. The first request must claim a pending editor session;
      * every later proxy message is relayed to that request's private inbound channel. The request Flow is
      * collected exactly once because grpc-kotlin's bidi request stream is single-collect.
      */
-    override fun runExec(requests: Flow<ProxyRunMsg>): Flow<ControlRunMsg> = channelFlow {
+    override fun editorExec(requests: Flow<ProxyEditorMsg>): Flow<CpEditorMsg> = channelFlow {
         var sessionId: String? = null
         var attached: Attached? = null
         // Bound ONLY the wait for the first frame. There is deliberately no overall stream cap: once the
-        // stream is attached to its run, its lifetime is the run's or session's own — the caller's RunClose
+        // stream is attached to its run, its lifetime is the run's or session's own — the caller's EditorClose
         // for a one-shot run, and the idle sweep / closeSession / token expiry for a persistent editor session.
         // A fixed overall cap here would silently cut a live, actively-used session short.
         val firstFrameTimer = launch {
@@ -430,7 +430,7 @@ class ControlPlaneGrpcService(
             // stream. Re-check liveness so an attach that raced the deadline wins.
             ensureActive()
             throw StatusException(
-                Status.DEADLINE_EXCEEDED.withDescription("RunExec sent no first frame in time"),
+                Status.DEADLINE_EXCEEDED.withDescription("EditorExec sent no first frame in time"),
             )
         }
         try {
@@ -440,15 +440,15 @@ class ControlPlaneGrpcService(
                     if (!message.hasSessionReady()) {
                         throw StatusException(
                             Status.FAILED_PRECONDITION.withDescription(
-                                "the first RunExec message must be RunReady",
+                                "the first EditorExec message must be EditorReady",
                             ),
                         )
                     }
                     val id = message.sessionReady.sessionId
                     sessionId = id
-                    attached = core.runChannels.attach(id, channel)
+                    attached = core.editorSessions.attach(id, channel)
                         ?: throw StatusException(
-                            Status.NOT_FOUND.withDescription("unknown or already-claimed run session '$id'"),
+                            Status.NOT_FOUND.withDescription("unknown or already-claimed editor session '$id'"),
                         )
                     // Attached — the run/session lifecycle governs the stream from here; drop the first-frame bound.
                     firstFrameTimer.cancel()
@@ -459,7 +459,7 @@ class ControlPlaneGrpcService(
             if (attached == null) {
                 throw StatusException(
                     Status.FAILED_PRECONDITION.withDescription(
-                        "RunExec closed before RunReady",
+                        "EditorExec closed before EditorReady",
                     ),
                 )
             }
@@ -471,7 +471,7 @@ class ControlPlaneGrpcService(
         } finally {
             firstFrameTimer.cancel()
             attached?.inbound?.close()
-            sessionId?.let { core.runChannels.remove(it) }
+            sessionId?.let { core.editorSessions.remove(it) }
         }
     }
 
@@ -479,7 +479,7 @@ class ControlPlaneGrpcService(
      * A proxy-dialed, single-request table-detail stream. The first request claims the pending HTTP fetch;
      * the remaining proxy result/error is relayed to that request's private inbound channel.
      */
-    override fun tableDetailExec(requests: Flow<ProxyTableDetailMsg>): Flow<ControlTableDetailMsg> = channelFlow {
+    override fun tableDetailExec(requests: Flow<ProxyTableDetailMsg>): Flow<CpTableDetailMsg> = channelFlow {
         var sessionId: String? = null
         var attached: AttachedTableDetail? = null
         try {
@@ -531,7 +531,7 @@ class ControlPlaneGrpcService(
      * unknown datasource is NOT_FOUND (Register first). While open, the stream relays any `RefreshCatalog`
      * an admin pushes (see [ProxyEventsHub]); it emits nothing on its own.
      */
-    override fun events(request: EventsRequest): Flow<ControlEvent> = channelFlow {
+    override fun events(request: EventsRequest): Flow<CpEvent> = channelFlow {
         val name = request.datasourceName
         // Version-gate the liveness stream too, not just Register. The datasource row outlives a rejected
         // Register, so an old proxy could otherwise attach here and be treated as live — the exact mixed-version

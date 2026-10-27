@@ -11,19 +11,19 @@ import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.controlplane.support.testLoginRoute
 import com.ridi.oss.proxymonster.controlplane.support.webSessionCookie
 import com.ridi.oss.proxymonster.grpc.ControlPlaneGrpcKt
-import com.ridi.oss.proxymonster.grpc.ControlRunMsg
+import com.ridi.oss.proxymonster.grpc.CpEditorMsg
 import com.ridi.oss.proxymonster.grpc.EnfAction as WireEnfAction
-import com.ridi.oss.proxymonster.grpc.ProxyRunMsg
+import com.ridi.oss.proxymonster.grpc.ProxyEditorMsg
 import com.ridi.oss.proxymonster.grpc.decisionRequest
 import com.ridi.oss.proxymonster.grpc.eventsRequest
-import com.ridi.oss.proxymonster.grpc.proxyRunMsg
-import com.ridi.oss.proxymonster.grpc.runDecision
-import com.ridi.oss.proxymonster.grpc.runDone
-import com.ridi.oss.proxymonster.grpc.runReady
-import com.ridi.oss.proxymonster.grpc.runResultRows
-import com.ridi.oss.proxymonster.grpc.runRow
-import com.ridi.oss.proxymonster.grpc.runServing
-import com.ridi.oss.proxymonster.grpc.runValue
+import com.ridi.oss.proxymonster.grpc.proxyEditorMsg
+import com.ridi.oss.proxymonster.grpc.editorDecision
+import com.ridi.oss.proxymonster.grpc.editorDone
+import com.ridi.oss.proxymonster.grpc.editorReady
+import com.ridi.oss.proxymonster.grpc.editorResultRows
+import com.ridi.oss.proxymonster.grpc.editorRow
+import com.ridi.oss.proxymonster.grpc.editorServing
+import com.ridi.oss.proxymonster.grpc.editorValue
 import io.grpc.ManagedChannel
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder
 import io.ktor.client.HttpClient
@@ -79,16 +79,16 @@ import com.ridi.oss.proxymonster.controlplane.support.CpGoStack
 
 /**
  * Every result-cap path through the control plane's real surfaces (docs/result-caps.md): the shipped
- * policies, the gRPC Decide the wire proxy calls, the editor run channel, the workflow execute + view, the
+ * policies, the gRPC Decide the wire proxy calls, the editor session, the workflow execute + view, the
  * boost role requested on the workflow surface, and policy-save validation. MySQL target; a fake proxy over gRPC
- * answers the run channel.
+ * answers the editor session.
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class ResultCapsE2eDbTest {
     private lateinit var fx: EnforcementFixture
     private lateinit var pcf: PerConnectionCatalogFixture
     private lateinit var core: ControlPlaneCore
-    private lateinit var runExecService: RunExecService
+    private lateinit var editorExecService: EditorExecService
     private lateinit var resultStore: QueryResultStore
     private lateinit var config: Config
     private lateinit var server: GrpcServer
@@ -114,7 +114,7 @@ class ResultCapsE2eDbTest {
         fx = EnforcementFixture.mysql()
         pcf = PerConnectionCatalogFixture(fx)
         core = pcf.core
-        runExecService = RunExecService(core)
+        editorExecService = EditorExecService(core)
         resultStore = QueryResultStore(fx.dataSource, ResultCrypto(ByteArray(32) { it.toByte() }))
         appScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
         sessionStore = PrincipalSessionStore(fx.dataSource, null)
@@ -179,12 +179,12 @@ class ResultCapsE2eDbTest {
                 testLoginRoute(sessionStore, config)
                 editorSessionRoutes(
                     config, core.datasourceStore, core.accessStore, resultStore,
-                    core.policyStore, core.userGroupStore, core.roleResolver, core.authz, runExecService,
+                    core.policyStore, core.userGroupStore, core.roleResolver, core.authz, editorExecService,
                     appScope, core.systemClassification, null, core.auditStore,
                 )
                 approvalRoutes(
                     config, core.accessStore, core.auditStore, core.datasourceStore, core.policyStore,
-                    core.userGroupStore, resultStore, core.roleResolver, core.authz, runExecService,
+                    core.userGroupStore, resultStore, core.roleResolver, core.authz, editorExecService,
                 )
             }
         }
@@ -241,33 +241,33 @@ class ResultCapsE2eDbTest {
         }
     }
 
-    private fun rowsChunk(columns: List<String>, rows: List<List<String?>>): ProxyRunMsg = proxyRunMsg {
-        resultRows = runResultRows {
+    private fun rowsChunk(columns: List<String>, rows: List<List<String?>>): ProxyEditorMsg = proxyEditorMsg {
+        resultRows = editorResultRows {
             this.columns += columns
             this.rows += rows.map { values ->
-                runRow { this.values += values.map { v -> runValue { if (v == null) isNull = true else value = v } } }
+                editorRow { this.values += values.map { v -> editorValue { if (v == null) isNull = true else value = v } } }
             }
         }
     }
 
-    private class FakeProxy(val proxyRequests: SendChannel<ProxyRunMsg>, val controls: List<ControlRunMsg>, val await: suspend () -> Unit)
+    private class FakeProxy(val proxyRequests: SendChannel<ProxyEditorMsg>, val controls: List<CpEditorMsg>, val await: suspend () -> Unit)
 
     /**
-     * Attach a fake proxy, let [open] drive the HTTP side that opens a run channel, and answer each query
+     * Attach a fake proxy, let [open] drive the HTTP side that opens an editor session, and answer each query
      * with [onQuery]. Returns once the channel is serving.
      */
     private suspend fun <T> CoroutineScope.withFakeProxy(
         open: suspend () -> T,
-        onQuery: suspend (SendChannel<ProxyRunMsg>, ControlRunMsg) -> Unit,
+        onQuery: suspend (SendChannel<ProxyEditorMsg>, CpEditorMsg) -> Unit,
     ): Pair<T, FakeProxy> {
         val event = async { stub.events(eventsRequest { datasourceName = fx.datasource.name; protocolVersion = CONTROL_PROTOCOL_VERSION }).first() }
         awaitUntil("Events stream attached") { fx.datasource.name in core.proxyEventsHub.attached() }
         val opened = async { open() }
-        val channel = withTimeout(10_000) { event.await() }.openRunChannel
-        val proxyRequests = CoChannel<ProxyRunMsg>(CoChannel.UNLIMITED)
-        val controls = java.util.concurrent.CopyOnWriteArrayList<ControlRunMsg>()
+        val channel = withTimeout(10_000) { event.await() }.openEditorSession
+        val proxyRequests = CoChannel<ProxyEditorMsg>(CoChannel.UNLIMITED)
+        val controls = java.util.concurrent.CopyOnWriteArrayList<CpEditorMsg>()
         val proxy = async {
-            stub.runExec(proxyRequests.receiveAsFlow()).collect { control ->
+            stub.editorExec(proxyRequests.receiveAsFlow()).collect { control ->
                 controls += control
                 when {
                     control.hasQuery() -> launch { onQuery(proxyRequests, control) }
@@ -277,8 +277,8 @@ class ResultCapsE2eDbTest {
                 }
             }
         }
-        proxyRequests.send(proxyRunMsg { sessionReady = runReady { sessionId = channel.sessionId } })
-        proxyRequests.send(proxyRunMsg { serving = runServing {} })
+        proxyRequests.send(proxyEditorMsg { sessionReady = editorReady { sessionId = channel.sessionId } })
+        proxyRequests.send(proxyEditorMsg { serving = editorServing {} })
         return withTimeout(10_000) { opened.await() } to FakeProxy(proxyRequests, controls) { withTimeout(10_000) { proxy.await() } }
     }
 
@@ -305,14 +305,14 @@ class ResultCapsE2eDbTest {
                 },
             ) { req, control ->
                 assertEquals(100, control.query.maxRows, "the editor forwards the tab's page size")
-                req.send(proxyRunMsg {
-                    decision = runDecision {
+                req.send(proxyEditorMsg {
+                    decision = editorDecision {
                         decision = WireEnfAction.ALLOW; this.decisionId = decisionId; maxRows = 3
                         resultRequirements = requirements
                     }
                 })
                 req.send(rowsChunk(listOf("id"), listOf(listOf("1"), listOf("2"), listOf("3"))))
-                req.send(proxyRunMsg { done = runDone { rowsAffected = -1; truncatedByCap = true } })
+                req.send(proxyEditorMsg { done = editorDone { rowsAffected = -1; truncatedByCap = true } })
             }
             val ack = client.post("/api/editor/sessions/${opened.sessionId}/query") {
                 contentType(ContentType.Application.Json); setBody(QueryRequest(sql, 100))
@@ -320,7 +320,7 @@ class ResultCapsE2eDbTest {
             awaitUntil("editor child DONE") { resultStore.meta(ack.taskId)?.status == "DONE" }
 
             val after = relayed(analyst)
-            assertEquals(before.rows + 3, after.rows, "the run channel charges exactly the relayed rows")
+            assertEquals(before.rows + 3, after.rows, "the editor session charges exactly the relayed rows")
             assertEquals(1, core.auditStore.recent(100).count { it.kind == "completion" && it.decisionId == decisionId })
 
             val view = client.get("/api/editor/tasks/${ack.taskId}/result")
@@ -431,14 +431,14 @@ class ResultCapsE2eDbTest {
                 open = { approverClient.post("/api/approvals/$id/execute") },
             ) { req, control ->
                 assertEquals(5000, control.query.maxRows, "the workflow asks for the channel ceiling")
-                req.send(proxyRunMsg {
-                    decision = runDecision {
+                req.send(proxyEditorMsg {
+                    decision = editorDecision {
                         decision = WireEnfAction.ALLOW; maxRows = 0; decisionId = executionDecisionId
                         resultRequirements = approverExec.resultRequirements!!
                     }
                 })
                 stored.chunked(1000).forEach { req.send(rowsChunk(listOf("ssn"), it)) }
-                req.send(proxyRunMsg { done = runDone { rowsAffected = -1; truncatedByCap = false } })
+                req.send(proxyEditorMsg { done = editorDone { rowsAffected = -1; truncatedByCap = false } })
             }
             assertEquals(HttpStatusCode.Accepted, response.status, response.bodyAsText())
             proxy.await()

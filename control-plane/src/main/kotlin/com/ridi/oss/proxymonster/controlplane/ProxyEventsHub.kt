@@ -1,10 +1,10 @@
 package com.ridi.oss.proxymonster.controlplane
 
-import com.ridi.oss.proxymonster.grpc.ControlEvent
+import com.ridi.oss.proxymonster.grpc.CpEvent
 import com.ridi.oss.proxymonster.grpc.Refetch
-import com.ridi.oss.proxymonster.grpc.controlEvent
+import com.ridi.oss.proxymonster.grpc.cpEvent
 import com.ridi.oss.proxymonster.grpc.draining
-import com.ridi.oss.proxymonster.grpc.openRunChannel
+import com.ridi.oss.proxymonster.grpc.openEditorSession
 import com.ridi.oss.proxymonster.grpc.openTableDetailChannel
 import com.ridi.oss.proxymonster.grpc.proxyCommand
 import com.ridi.oss.proxymonster.grpc.refreshCatalog
@@ -26,7 +26,7 @@ class ProxyEventsHub {
     private val log = LoggerFactory.getLogger(ProxyEventsHub::class.java)
 
     // datasource name -> the send channel of each currently-open Events stream (one per attached replica).
-    private val streams = ConcurrentHashMap<String, CopyOnWriteArrayList<SendChannel<ControlEvent>>>()
+    private val streams = ConcurrentHashMap<String, CopyOnWriteArrayList<SendChannel<CpEvent>>>()
 
     // Serializes the drain transition (beginDraining + broadcastDraining) against the doors new work enters
     // by (register, dispatch, requestRefresh), so that a read of shuttingDown and the channel mutation that
@@ -45,11 +45,11 @@ class ProxyEventsHub {
     /** Enter drain mode: refuse new streams and new dispatches. Idempotent; call before [broadcastDraining]. */
     fun beginDraining() = synchronized(lock) { shuttingDown = true }
 
-    fun register(name: String, channel: SendChannel<ControlEvent>) = synchronized(lock) {
+    fun register(name: String, channel: SendChannel<CpEvent>) = synchronized(lock) {
         if (shuttingDown) {
             // Draining: admitting this stream would keep the hub non-empty behind awaitDrained. Tell it to
             // reconnect (re-homing wherever a load balancer fronts more than one instance) and close it.
-            channel.trySend(controlEvent { draining = draining {} })
+            channel.trySend(cpEvent { draining = draining {} })
             channel.close()
         } else {
             // Add INSIDE compute so it's atomic with deregister's remove-and-evict — otherwise a register
@@ -60,7 +60,7 @@ class ProxyEventsHub {
         }
     }
 
-    fun deregister(name: String, channel: SendChannel<ControlEvent>) {
+    fun deregister(name: String, channel: SendChannel<CpEvent>) {
         // Remove the channel and drop the map entry entirely when its last stream closes, so a churn of
         // distinct names can't accumulate empty lists forever.
         streams.compute(name) { _, list ->
@@ -79,7 +79,7 @@ class ProxyEventsHub {
         // While draining, the streams are about to be signalled and closed, so a refresh would be a lie:
         // report 0 notified rather than a count the drain immediately invalidates.
         if (shuttingDown) return@synchronized 0
-        val event = controlEvent { refreshCatalog = refreshCatalog {} }
+        val event = cpEvent { refreshCatalog = refreshCatalog {} }
         val channels = streams[name] ?: return@synchronized 0
         var notified = 0
         for (channel in channels) if (channel.trySend(event).isSuccess) notified++
@@ -103,14 +103,14 @@ class ProxyEventsHub {
      * later request either, and leaving it registered means `attached()` keeps reporting a proxy that
      * cannot be reached — the liveness view would lie until the stream's own close handler eventually ran.
      */
-    private fun dispatch(name: String, what: String, event: ControlEvent): Dispatch = synchronized(lock) {
+    private fun dispatch(name: String, what: String, event: CpEvent): Dispatch = synchronized(lock) {
         // Draining (checked under the lock, so it cannot flip between here and the trySend below): stop
         // returning SENT for work we are about to abandon. A run/table-detail request queued now would sit
         // behind the Draining signal the proxy bails on, so the caller would be told SENT for a query that is
         // then silently dropped. NOT_ATTACHED fails it closed — the caller retries and re-homes.
         if (shuttingDown) return@synchronized Dispatch.NOT_ATTACHED
         val channels = streams[name] ?: return@synchronized Dispatch.NOT_ATTACHED
-        val refused = mutableListOf<SendChannel<ControlEvent>>()
+        val refused = mutableListOf<SendChannel<CpEvent>>()
         for (channel in channels) {
             if (channel.trySend(event).isSuccess) {
                 refused.forEach { deregisterWedged(name, it, what) }
@@ -122,7 +122,7 @@ class ProxyEventsHub {
         if (refused.isEmpty()) Dispatch.NOT_ATTACHED else Dispatch.WEDGED
     }
 
-    private fun deregisterWedged(name: String, channel: SendChannel<ControlEvent>, what: String) {
+    private fun deregisterWedged(name: String, channel: SendChannel<CpEvent>, what: String) {
         log.warn(
             "proxy stream for datasource '{}' would not accept {} (closed or its buffer is full); dropping it",
             name, what,
@@ -131,10 +131,10 @@ class ProxyEventsHub {
     }
 
     /**
-     * Ask exactly one attached proxy replica to dial a run stream. The first successful non-blocking
+     * Ask exactly one attached proxy replica to dial an editor stream. The first successful non-blocking
      * send wins; broadcasting would make every replica open a target-DB connection for the same CP request.
      */
-    fun requestOpenRun(
+    fun requestOpenEditorSession(
         name: String,
         sessionId: String,
         ephemeralToken: String,
@@ -142,8 +142,8 @@ class ProxyEventsHub {
         onOpen: List<Refetch>,
         defaultSchema: String? = null,
     ): Dispatch {
-        val event = controlEvent {
-            openRunChannel = openRunChannel {
+        val event = cpEvent {
+            openEditorSession = openEditorSession {
                 this.sessionId = sessionId
                 this.ephemeralToken = ephemeralToken
                 this.connectionId = connectionId
@@ -151,12 +151,12 @@ class ProxyEventsHub {
                 if (defaultSchema != null) this.defaultSchema = defaultSchema
             }
         }
-        return dispatch(name, "an open-run request", event)
+        return dispatch(name, "an editor-session request", event)
     }
 
     /** Ask exactly one attached proxy replica to dial an on-demand table-detail stream. */
     fun requestOpenTableDetail(name: String, sessionId: String, catalog: String, schema: String, table: String): Dispatch {
-        val event = controlEvent {
+        val event = cpEvent {
             openTableDetailChannel = openTableDetailChannel {
                 this.sessionId = sessionId
                 this.catalog = catalog
@@ -181,7 +181,7 @@ class ProxyEventsHub {
      * has left. Returns the number of streams closed.
      */
     fun broadcastDraining(): Int = synchronized(lock) {
-        val event = controlEvent { draining = draining {} }
+        val event = cpEvent { draining = draining {} }
         var closed = 0
         for ((_, channels) in streams) {
             for (channel in channels) {

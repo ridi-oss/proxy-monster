@@ -49,7 +49,7 @@ class ApprovalLifecycleDbTest {
         approvals = ApprovalService(
             config, core.accessStore, core.auditStore, core.datasourceStore, core.policyStore, core.userGroupStore,
             QueryResultStore(dataSource, ResultCrypto(ByteArray(32) { it.toByte() })), core.roleResolver,
-            core.authz, RunExecService(core), CoroutineScope(Dispatchers.Unconfined),
+            core.authz, EditorExecService(core), CoroutineScope(Dispatchers.Unconfined),
         )
     }
 

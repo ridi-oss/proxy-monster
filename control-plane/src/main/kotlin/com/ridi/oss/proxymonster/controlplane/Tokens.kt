@@ -93,7 +93,7 @@ fun clampTtlSeconds(ttlSeconds: Long): Long = ttlSeconds.coerceIn(TOKEN_MIN_TTL_
 
 /**
  * SHA-256 hex digest of a wire/ephemeral token — the ONE hashing definition shared by [TokenStore] (the
- * `proxy_token.token_hash` column) and [RequesterIpRegistry] (RunExec.kt): the
+ * `proxy_token.token_hash` column) and [RequesterIpRegistry] (EditorExec.kt): the
  * CP-only decide-time carrier keys off this SAME hash so it never stores a raw token at rest in a second
  * map, and its key always matches the token row's own `token_hash`.
  */

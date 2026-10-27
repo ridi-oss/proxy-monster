@@ -7,7 +7,7 @@ import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.controlplane.support.testLoginRoute
 import com.ridi.oss.proxymonster.controlplane.support.verifyAuditChain
-import com.ridi.oss.proxymonster.grpc.ControlEvent
+import com.ridi.oss.proxymonster.grpc.CpEvent
 import com.ridi.oss.proxymonster.grpc.schemaFragmentPush
 import io.ktor.client.HttpClient
 import io.ktor.client.request.delete
@@ -150,7 +150,7 @@ class DatasourceWriteRoutesDbTest {
 
         exec("INSERT INTO access_request (principal, kind, datasource_id, status, creator_kind) VALUES ('dw-requester', 'QUERY', $b, 'PENDING', 'WORKFLOW')")
         t.send("DELETE", "/api/datasources/$b")
-        val channel = Channel<ControlEvent>(capacity = 1)
+        val channel = Channel<CpEvent>(capacity = 1)
         core.proxyEventsHub.register("dw-a2", channel)
         t.send("DELETE", "/api/datasources/$a")
         core.proxyEventsHub.deregister("dw-a2", channel)

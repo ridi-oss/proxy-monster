@@ -89,7 +89,7 @@ gantt
 | 4   | Cedar and roles     | `cedar-go` replaces `cedar-java`, `RoleResolver` moves; bridge deleted    | 2,136        | No differences on a recorded request set                        |
 | 5   | Admin CRUD          | Datasources, users, access, policies, approvals                           | 7,081        | Console admin and approvals run on Go                           |
 | 6   | Login and sessions  | OIDC login, device login, wire tokens, `ValidateToken`, IdP recheck sweep | 2,907        | Web, pmon, and MCP login work end to end                        |
-| 7   | Per-query path      | Catalog, `Decide`, `RunExec`, events, Athena                              | 6,643        | MySQL wire and editor masking match Kotlin                      |
+| 7   | Per-query path      | Catalog, `Decide`, `EditorExec`, events, Athena                           | 6,643        | MySQL wire and editor masking match Kotlin                      |
 | 8   | MCP, OAuth, cleanup | MCP server, OAuth, Flyway handover; delete the JVM build                  | 4,927        | The full gate passes with no JVM                                |
 
 Login comes after admin CRUD because it provisions users and groups from the IdP

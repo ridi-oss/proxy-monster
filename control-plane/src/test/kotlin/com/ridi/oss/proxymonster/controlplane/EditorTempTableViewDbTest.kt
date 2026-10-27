@@ -8,17 +8,17 @@ import com.ridi.oss.proxymonster.controlplane.support.PerConnectionCatalogFixtur
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.grpc.ControlPlaneGrpcKt
 import com.ridi.oss.proxymonster.grpc.EnfAction as WireEnfAction
-import com.ridi.oss.proxymonster.grpc.ProxyRunMsg
+import com.ridi.oss.proxymonster.grpc.ProxyEditorMsg
 import com.ridi.oss.proxymonster.grpc.decisionRequest
 import com.ridi.oss.proxymonster.grpc.eventsRequest
-import com.ridi.oss.proxymonster.grpc.proxyRunMsg
-import com.ridi.oss.proxymonster.grpc.runDecision
-import com.ridi.oss.proxymonster.grpc.runDone
-import com.ridi.oss.proxymonster.grpc.runReady
-import com.ridi.oss.proxymonster.grpc.runResultRows
-import com.ridi.oss.proxymonster.grpc.runRow
-import com.ridi.oss.proxymonster.grpc.runServing
-import com.ridi.oss.proxymonster.grpc.runValue
+import com.ridi.oss.proxymonster.grpc.proxyEditorMsg
+import com.ridi.oss.proxymonster.grpc.editorDecision
+import com.ridi.oss.proxymonster.grpc.editorDone
+import com.ridi.oss.proxymonster.grpc.editorReady
+import com.ridi.oss.proxymonster.grpc.editorResultRows
+import com.ridi.oss.proxymonster.grpc.editorRow
+import com.ridi.oss.proxymonster.grpc.editorServing
+import com.ridi.oss.proxymonster.grpc.editorValue
 import com.ridi.oss.proxymonster.grpc.tempColumn
 import io.grpc.ManagedChannel
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder
@@ -55,7 +55,7 @@ class EditorTempTableViewDbTest {
     private lateinit var fx: EnforcementFixture
     private lateinit var pcf: PerConnectionCatalogFixture
     private lateinit var core: ControlPlaneCore
-    private lateinit var runExecService: RunExecService
+    private lateinit var editorExecService: EditorExecService
     private lateinit var service: EditorTaskService
     private lateinit var resultStore: QueryResultStore
     private lateinit var appScope: CoroutineScope
@@ -84,7 +84,7 @@ class EditorTempTableViewDbTest {
                 fx.policyStore.createAssignment(RoleAssignmentInput(p, roles.getValue(role).id))
             }
         }
-        runExecService = RunExecService(core)
+        editorExecService = EditorExecService(core)
         resultStore = QueryResultStore(fx.dataSource, ResultCrypto(ByteArray(32) { it.toByte() }))
         appScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
         val config = Config(
@@ -94,7 +94,7 @@ class EditorTempTableViewDbTest {
         )
         service = EditorTaskService(
             config, core.datasourceStore, core.accessStore, resultStore, core.policyStore, core.userGroupStore,
-            core.roleResolver, core.authz, runExecService, appScope, core.systemClassification, null, core.auditStore,
+            core.roleResolver, core.authz, editorExecService, appScope, core.systemClassification, null, core.auditStore,
         )
         server = GrpcServer(0, ControlPlaneGrpcService(core), secretToken = null).also { it.start() }
         rawChannel = NettyChannelBuilder.forAddress("localhost", server.boundPort).usePlaintext().build()
@@ -175,25 +175,25 @@ class EditorTempTableViewDbTest {
             supervisorScope {
                 val event = async { stub.events(eventsRequest { datasourceName = ds.name; protocolVersion = CONTROL_PROTOCOL_VERSION }).first() }
                 withTimeout(10_000) { while (ds.name !in core.proxyEventsHub.attached()) delay(20) }
-                val sessionId = async { runExecService.openSession(principal, ds) }
-                val open = withTimeout(10_000) { event.await() }.openRunChannel
+                val sessionId = async { editorExecService.openSession(principal, ds) }
+                val open = withTimeout(10_000) { event.await() }.openEditorSession
                 val verdicts = CopyOnWriteArrayList<WireEnfAction>()
-                val out = KChannel<ProxyRunMsg>(KChannel.UNLIMITED)
+                val out = KChannel<ProxyEditorMsg>(KChannel.UNLIMITED)
                 val proxy = async {
-                    stub.runExec(out.receiveAsFlow()).collect { control ->
+                    stub.editorExec(out.receiveAsFlow()).collect { control ->
                         when {
                             control.hasQuery() -> serve(held, open.ephemeralToken, open.connectionId, control.query.sql, out, verdicts)
                             control.hasClose() -> out.close()
                         }
                     }
                 }
-                out.send(proxyRunMsg { sessionReady = runReady { this.sessionId = open.sessionId } })
-                out.send(proxyRunMsg { serving = runServing {} })
+                out.send(proxyEditorMsg { sessionReady = editorReady { this.sessionId = open.sessionId } })
+                out.send(proxyEditorMsg { serving = editorServing {} })
                 val session = withTimeout(10_000) { sessionId.await() }
                 try {
                     body(session, verdicts)
                 } finally {
-                    runExecService.closeSessionOwnedBy(session, principal)
+                    editorExecService.closeSessionOwnedBy(session, principal)
                     withTimeout(10_000) { proxy.await() }
                     withTimeout(10_000) { while (ds.name in core.proxyEventsHub.attached()) delay(20) }
                 }
@@ -207,7 +207,7 @@ class EditorTempTableViewDbTest {
         token: String,
         connectionId: com.google.protobuf.ByteString,
         sql: String,
-        out: KChannel<ProxyRunMsg>,
+        out: KChannel<ProxyEditorMsg>,
         verdicts: MutableList<WireEnfAction>,
     ) {
         val searchPath = held.createStatement().use { st ->
@@ -247,11 +247,11 @@ class EditorTempTableViewDbTest {
         val verdict = response.verdict
         verdicts += verdict.decision
         if (verdict.decision == WireEnfAction.DENY) {
-            out.send(proxyRunMsg { decision = runDecision { decision = WireEnfAction.DENY; decisionId = verdict.decisionId; denyReason = verdict.denyReason } })
+            out.send(proxyEditorMsg { decision = editorDecision { decision = WireEnfAction.DENY; decisionId = verdict.decisionId; denyReason = verdict.denyReason } })
             return
         }
-        out.send(proxyRunMsg {
-            decision = runDecision {
+        out.send(proxyEditorMsg {
+            decision = editorDecision {
                 decision = verdict.decision; decisionId = verdict.decisionId; resultRequirements = verdict.resultRequirements
             }
         })
@@ -261,16 +261,16 @@ class EditorTempTableViewDbTest {
                     val width = rs.metaData.columnCount
                     val columns = (1..width).map { rs.metaData.getColumnLabel(it) }
                     val rows = buildList { while (rs.next()) add((1..width).map { rs.getString(it) }) }
-                    out.send(proxyRunMsg {
-                        resultRows = runResultRows {
+                    out.send(proxyEditorMsg {
+                        resultRows = editorResultRows {
                             this.columns += columns
-                            this.rows += rows.map { r -> runRow { values += r.map { v -> runValue { if (v == null) isNull = true else value = v } } } }
+                            this.rows += rows.map { r -> editorRow { values += r.map { v -> editorValue { if (v == null) isNull = true else value = v } } } }
                         }
                     })
                 }
-                out.send(proxyRunMsg { done = runDone { rowsAffected = -1 } })
+                out.send(proxyEditorMsg { done = editorDone { rowsAffected = -1 } })
             } else {
-                out.send(proxyRunMsg { done = runDone { rowsAffected = st.updateCount } })
+                out.send(proxyEditorMsg { done = editorDone { rowsAffected = st.updateCount } })
             }
         }
     }

@@ -17,7 +17,7 @@ import (
 	"github.com/ridi-oss/proxy-monster/goproxy/wire"
 )
 
-// connection is goproxy's connection to the target, for a wire client or a control-plane run.
+// connection is goproxy's connection to the target, for a wire client or an editor session.
 type connection struct {
 	target         *target
 	session        *engines.Session
@@ -33,7 +33,7 @@ type connection struct {
 	pendingDirty   bool
 	poisoned       bool
 	tempOverlay    []spi.TempColumn
-	// forward and flushForward relay what the target reports to a wire client; a run has none.
+	// forward and flushForward relay what the target reports to a wire client; an editor session has none.
 	forward      func(pgproto3.BackendMessage)
 	flushForward func() error
 }
@@ -51,7 +51,7 @@ func (t *target) OpenConnection(ctx context.Context, authz *spi.Authorizer, guar
 	generation, ok := wire.NextBackendGeneration()
 	if !ok {
 		_ = conn.Close()
-		return nil, errors.New("run backend generation out of range")
+		return nil, errors.New("backend generation out of range")
 	}
 	c := &connection{
 		target:         t,

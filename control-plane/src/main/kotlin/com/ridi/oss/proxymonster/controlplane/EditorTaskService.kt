@@ -1,7 +1,7 @@
 package com.ridi.oss.proxymonster.controlplane
 
 import com.ridi.oss.proxymonster.grpc.ResultRequirements
-import com.ridi.oss.proxymonster.grpc.RunError
+import com.ridi.oss.proxymonster.grpc.EditorError
 import com.ridi.oss.proxymonster.controlplane.authz.UserParents
 import com.ridi.oss.proxymonster.controlplane.authz.Authz
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzAction
@@ -32,7 +32,7 @@ class EditorTaskService(
     private val userGroupStore: UserGroupStore,
     private val roleResolver: RoleResolver,
     private val authz: Authz,
-    private val runExecService: RunExecService,
+    private val editorExecService: EditorExecService,
     private val appScope: CoroutineScope,
     private val systemClassification: SystemClassificationService? = null,
     private val taskCompletionHub: TaskCompletionHub? = null,
@@ -54,11 +54,11 @@ class EditorTaskService(
     fun submitOnSession(principal: String, requesterIp: String?, sessionId: String, sql: String, maxRows: Int): Submission {
         val own = submitterParents(principal, sql)
         // Owner-scoped: a leaked session id can't target another principal's connection.
-        val dsName = runExecService.sessionDatasourceName(sessionId, principal) ?: throw serviceNotFound("editor session")
+        val dsName = editorExecService.sessionDatasourceName(sessionId, principal) ?: throw serviceNotFound("editor session")
         val ds = datasourceStore.getByName(dsName) ?: throw serviceNotFound("datasource")
         return start(principal, requesterIp, ds, own, sql) { b ->
             // One mutex hold for the batch, so a concurrent submit cannot land inside its transaction.
-            runExecService.runBatchOnSession(
+            editorExecService.runBatchOnSession(
                 sessionId, principal, statementCount = b.statementCount, maxRows = maxRows,
                 statementAt = b.statementAt, onStatement = b.onStatement, onDecision = b.onDecision,
                 requesterIp = requesterIp, taskId = b.taskId, preflight = b.preflight,
@@ -73,7 +73,7 @@ class EditorTaskService(
         val ds = datasourceStore.getByName(datasourceName) ?: throw serviceNotFound("datasource")
         return start(principal, requesterIp, ds, own, sql) { b ->
             // No assumeRoles: an EDITOR token, so every statement decides on the editor channel.
-            runExecService.runBatch(
+            editorExecService.runBatch(
                 principal, ds, statementCount = b.statementCount, maxRows = maxRows,
                 statementAt = b.statementAt, onStatement = b.onStatement, onDecision = b.onDecision,
                 approverExec = false, requesterIp = requesterIp, taskId = b.taskId, preflight = b.preflight,
@@ -120,7 +120,7 @@ class EditorTaskService(
             var denyReason: String? = null
             var denyDecisionId: Long? = null
             // The target-DB error behind a failure (both forms), stored so the FAILED view releases one per viewer.
-            var diagnostic: RunError? = null
+            var diagnostic: EditorError? = null
             val failureCode = try {
                 var batchFailure: String? = null
                 runner(
@@ -228,7 +228,7 @@ class EditorTaskService(
             }
         }
         if (cancelled != null) {
-            runExecService.cancelActiveRun(taskId)
+            editorExecService.cancelActiveRun(taskId)
             // The CAS may win well before the run coroutine unwinds, so push CANCELLED now.
             taskCompletionHub?.publish(principal, TaskEvent(taskId, "CANCELLED"))
         }
@@ -291,7 +291,7 @@ class EditorTaskService(
     suspend fun delete(principal: String, taskId: Long): Boolean {
         val task = accessStore.getRequest(taskId)
         if (task == null || !task.isEditorTaskOf(principal)) return false
-        if (task.status == "EXECUTING") runExecService.cancelActiveRun(taskId)
+        if (task.status == "EXECUTING") editorExecService.cancelActiveRun(taskId)
         queryResultStore?.deleteResultsForTask(taskId)
         return accessStore.deleteEditorTask(taskId, principal)
     }

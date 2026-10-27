@@ -355,14 +355,18 @@ class GitHubSourceFlow(
             }.map { Triple(it, kind, review) }
         }
         if (missing.isEmpty()) return
-        val principals = missing.map { it.third }.distinctBy { it.id }.associate { review ->
+        val reviews = missing.map { it.third }.distinctBy { it.id }
+        val principals = reviews.associate { review ->
             review.id to safely("map reviewer") { adapter.resolveUser(repo.owner, review.reviewer!!, MappingRole.REVIEWER) }
+        }
+        // A reviewer who maps to no principal is named by their email, else their GitHub login.
+        val names = reviews.associate { review ->
+            val login = review.reviewer!!.login
+            review.id to if (principals[review.id] != null) login else safely("reviewer email") { adapter.emailOf(repo.owner, review.reviewer) } ?: login
         }
         accessStore.dataSource.inTx { c ->
             for ((row, kind, review) in missing) {
-                RequestEvents.record(
-                    c, row.id, kind, principals[review.id], SOURCE_GITHUB, review.reviewer!!.login, githubReviewId = review.id,
-                )
+                RequestEvents.record(c, row.id, kind, principals[review.id], SOURCE_GITHUB, names[review.id], githubReviewId = review.id)
             }
             missing.map { it.first }.distinctBy { it.id }.forEach { notifications?.emitRedraw(c, it) }
         }

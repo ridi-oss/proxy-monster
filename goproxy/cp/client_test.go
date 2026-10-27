@@ -727,31 +727,29 @@ func TestPushSchemaFragmentAndCloseConnection(t *testing.T) {
 	}
 }
 
-func TestStreamEventsDispatchesMappedRunOpen(t *testing.T) {
-	connectionID := []byte("0123456789abcdef")
+func TestStreamEventsDispatchesOpenRunChannel(t *testing.T) {
+	open := &pb.OpenRunChannel{
+		SessionId: "sess-1", EphemeralToken: "eph-9", ConnectionId: []byte("0123456789abcdef"), OnOpen: []*pb.ProxyCommand{refetch("app", nil)},
+		DefaultSchema: "orders",
+	}
 	fake := &fakeControlPlane{events: []*pb.ControlEvent{
 		{Kind: &pb.ControlEvent_RefreshCatalog{RefreshCatalog: &pb.RefreshCatalog{}}},
-		{Kind: &pb.ControlEvent_OpenRunChannel{OpenRunChannel: &pb.OpenRunChannel{
-			SessionId: "sess-1", EphemeralToken: "eph-9", ConnectionId: connectionID, OnOpen: []*pb.ProxyCommand{refetch("app", nil)},
-			DefaultSchema: "orders",
-		}}},
+		{Kind: &pb.ControlEvent_OpenRunChannel{OpenRunChannel: open}},
 		{Kind: &pb.ControlEvent_OpenTableDetailChannel{OpenTableDetailChannel: &pb.OpenTableDetailChannel{SessionId: "sess-2", Catalog: "db", Schema: "public", Table: "users"}}},
 	}}
 	c := startFakeControlPlane(t, fake)
 	var refreshes int
-	var openedRun spi.RunOpen
+	var openedRun *pb.OpenRunChannel
+	var openedErr error
 	var table []string
-	err := c.StreamEvents(func() { refreshes++ }, func(open spi.RunOpen) { openedRun = open }, func(sessionID string, ref *enginepb.ObjectRef) {
+	err := c.StreamEvents(func() { refreshes++ }, func(req *pb.OpenRunChannel, mapErr error) { openedRun, openedErr = req, mapErr }, func(sessionID string, ref *enginepb.ObjectRef) {
 		table = []string{sessionID, ref.GetCatalog(), ref.GetSchema(), ref.GetTable()}
 	})
 	if err == nil {
 		t.Fatal("StreamEvents returned nil, want EOF")
 	}
-	wantRun := spi.RunOpen{SessionID: "sess-1", Token: "eph-9", ConnectionID: connectionID, OnOpen: []*pb.ProxyCommand{refetch("app", nil)}, DefaultSchema: "orders"}
-	runOnOpenEqual := commandsEqual(openedRun.OnOpen, wantRun.OnOpen)
-	openedRun.OnOpen, wantRun.OnOpen = nil, nil
-	if refreshes != 1 || !runOnOpenEqual || !reflect.DeepEqual(openedRun, wantRun) || !reflect.DeepEqual(table, []string{"sess-2", "db", "public", "users"}) {
-		t.Fatalf("dispatch refresh/run/table = %d/%+v/%v", refreshes, openedRun, table)
+	if refreshes != 1 || openedErr != nil || !proto.Equal(openedRun, open) || !reflect.DeepEqual(table, []string{"sess-2", "db", "public", "users"}) {
+		t.Fatalf("dispatch refresh/run/table = %d/%v %v/%v", refreshes, openedRun, openedErr, table)
 	}
 	fake.mu.Lock()
 	req, meta := fake.lastEventsReq, fake.lastEventsMeta
@@ -761,15 +759,16 @@ func TestStreamEventsDispatchesMappedRunOpen(t *testing.T) {
 	}
 }
 
-func TestStreamEventsDispatchesMalformedRunOpen(t *testing.T) {
+func TestStreamEventsDispatchesMalformedOpenRunChannel(t *testing.T) {
 	fake := &fakeControlPlane{events: []*pb.ControlEvent{{Kind: &pb.ControlEvent_OpenRunChannel{OpenRunChannel: &pb.OpenRunChannel{
-		SessionId: "bad", ConnectionId: []byte("short"), OnOpen: []*pb.ProxyCommand{refetch("", nil)},
+		SessionId: "bad", OnOpen: []*pb.ProxyCommand{refetch("", nil)},
 	}}}}}
 	c := startFakeControlPlane(t, fake)
-	var openedRun spi.RunOpen
-	_ = c.StreamEvents(func() {}, func(open spi.RunOpen) { openedRun = open }, func(string, *enginepb.ObjectRef) {})
-	if openedRun.SessionID != "bad" || openedRun.MapErr == nil {
-		t.Fatalf("malformed run open was not dispatched with MapErr: %+v", openedRun)
+	var openedRun *pb.OpenRunChannel
+	var openedErr error
+	_ = c.StreamEvents(func() {}, func(req *pb.OpenRunChannel, mapErr error) { openedRun, openedErr = req, mapErr }, func(string, *enginepb.ObjectRef) {})
+	if openedRun.GetSessionId() != "bad" || openedErr == nil {
+		t.Fatalf("malformed run open was not dispatched with its mapping error: %v %v", openedRun, openedErr)
 	}
 }
 
@@ -780,7 +779,7 @@ func TestStreamEventsReturnsErrDrainingOnDrainSignal(t *testing.T) {
 		{Kind: &pb.ControlEvent_Draining{Draining: &pb.Draining{}}},
 	}}
 	c := startFakeControlPlane(t, fake)
-	err := c.StreamEvents(func() {}, func(spi.RunOpen) {}, func(string, *enginepb.ObjectRef) {})
+	err := c.StreamEvents(func() {}, func(*pb.OpenRunChannel, error) {}, func(string, *enginepb.ObjectRef) {})
 	if !errors.Is(err, errDraining) {
 		t.Fatalf("StreamEvents err = %v, want errDraining", err)
 	}
@@ -838,7 +837,7 @@ func TestEventsLoopReconnectsFastOnDrain(t *testing.T) {
 			streamMaxAge:      time.Minute, // long enough that only the drain path paces this test
 			reconnect:         backoff,
 			rotationReconnect: eventsRotationReconnect,
-		}, func() {}, func() {}, func(spi.RunOpen) {}, func(string, *enginepb.ObjectRef) {})
+		}, func() {}, func() {}, func(*pb.OpenRunChannel, error) {}, func(string, *enginepb.ObjectRef) {})
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -971,7 +970,7 @@ func TestRunEventsLoopExitsOnEventsVersionRejection(t *testing.T) {
 			streamMaxAge:      time.Minute,
 			reconnect:         10 * time.Millisecond,
 			rotationReconnect: eventsRotationReconnect,
-		}, func() {}, func() {}, func(spi.RunOpen) {}, func(string, *enginepb.ObjectRef) {})
+		}, func() {}, func() {}, func(*pb.OpenRunChannel, error) {}, func(string, *enginepb.ObjectRef) {})
 	}()
 	select {
 	case err := <-errCh:
@@ -996,7 +995,7 @@ func TestStreamEventsEndsAtItsMaxAge(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	start := time.Now()
-	err := c.streamEvents(ctx, 300*time.Millisecond, func() {}, func(spi.RunOpen) {}, func(string, *enginepb.ObjectRef) {})
+	err := c.streamEvents(ctx, 300*time.Millisecond, func() {}, func(*pb.OpenRunChannel, error) {}, func(string, *enginepb.ObjectRef) {})
 	elapsed := time.Since(start)
 
 	if err == nil {
@@ -1026,7 +1025,7 @@ func TestEventsLoopReopensAfterMaxAge(t *testing.T) {
 			streamMaxAge:      150 * time.Millisecond,
 			reconnect:         10 * time.Millisecond,
 			rotationReconnect: 10 * time.Millisecond,
-		}, func() {}, func() {}, func(spi.RunOpen) {}, func(string, *enginepb.ObjectRef) {})
+		}, func() {}, func() {}, func(*pb.OpenRunChannel, error) {}, func(string, *enginepb.ObjectRef) {})
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -1065,7 +1064,7 @@ func TestEventsLoopRotationGapStaysBoundedAcrossPeriods(t *testing.T) {
 		loopDone := make(chan struct{})
 		go func() {
 			defer close(loopDone)
-			c.runEventsLoop(ctx, timings, func() {}, func() {}, func(spi.RunOpen) {}, func(string, *enginepb.ObjectRef) {})
+			c.runEventsLoop(ctx, timings, func() {}, func() {}, func(*pb.OpenRunChannel, error) {}, func(string, *enginepb.ObjectRef) {})
 		}()
 		defer func() {
 			cancel()
@@ -1143,7 +1142,7 @@ func TestEventsLoopBacksOffOnServerDeadlineExceeded(t *testing.T) {
 			streamMaxAge:      time.Minute, // long, so only the server's status ends the stream
 			reconnect:         backoff,
 			rotationReconnect: 10 * time.Millisecond,
-		}, func() {}, func() {}, func(spi.RunOpen) {}, func(string, *enginepb.ObjectRef) {})
+		}, func() {}, func() {}, func(*pb.OpenRunChannel, error) {}, func(string, *enginepb.ObjectRef) {})
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -1176,7 +1175,7 @@ func TestEventsLoopReopensWithoutWaitingForResync(t *testing.T) {
 			streamMaxAge:      150 * time.Millisecond,
 			reconnect:         10 * time.Millisecond,
 			rotationReconnect: 10 * time.Millisecond,
-		}, resync, func() {}, func(spi.RunOpen) {}, func(string, *enginepb.ObjectRef) {})
+		}, resync, func() {}, func(*pb.OpenRunChannel, error) {}, func(string, *enginepb.ObjectRef) {})
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -1249,7 +1248,7 @@ func TestEventsLoopWaitsTheBackoffBetweenReopens(t *testing.T) {
 			streamMaxAge:      time.Minute, // long enough that only the backoff paces this test
 			reconnect:         backoff,
 			rotationReconnect: eventsRotationReconnect,
-		}, func() {}, func() {}, func(spi.RunOpen) {}, func(string, *enginepb.ObjectRef) {})
+		}, func() {}, func() {}, func(*pb.OpenRunChannel, error) {}, func(string, *enginepb.ObjectRef) {})
 	}()
 	t.Cleanup(func() {
 		cancel()

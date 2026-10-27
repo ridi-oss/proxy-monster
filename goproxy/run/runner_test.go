@@ -285,18 +285,18 @@ func TestRunnerPostgresTempTablesAreSessionIsolated(t *testing.T) {
 	readSQL := "SELECT id FROM " + tempTable
 
 	fake1, client1 := runStartFakeCP(t, runSessionID+"-temp-1")
-	runLaunchOpen(t, fake1, client1, fixture, spi.RunOpen{
-		SessionID:    runSessionID + "-temp-1",
-		Token:        runToken,
-		ConnectionID: []byte("temp-session-001"),
-		OnOpen:       []*pb.ProxyCommand{&pb.ProxyCommand{Command: &pb.ProxyCommand_Refetch{Refetch: &pb.Refetch{Catalog: fixture.runConfig.Db, Schema: runPGSchema}}}},
+	runLaunchOpen(t, fake1, client1, fixture, &pb.OpenRunChannel{
+		SessionId:      runSessionID + "-temp-1",
+		EphemeralToken: runToken,
+		ConnectionId:   []byte("temp-session-001"),
+		OnOpen:         []*pb.ProxyCommand{&pb.ProxyCommand{Command: &pb.ProxyCommand_Refetch{Refetch: &pb.Refetch{Catalog: fixture.runConfig.Db, Schema: runPGSchema}}}},
 	})
 	fake2, client2 := runStartFakeCP(t, runSessionID+"-temp-2")
-	runLaunchOpen(t, fake2, client2, fixture, spi.RunOpen{
-		SessionID:    runSessionID + "-temp-2",
-		Token:        runToken,
-		ConnectionID: []byte("temp-session-002"),
-		OnOpen:       []*pb.ProxyCommand{&pb.ProxyCommand{Command: &pb.ProxyCommand_Refetch{Refetch: &pb.Refetch{Catalog: fixture.runConfig.Db, Schema: runPGSchema}}}},
+	runLaunchOpen(t, fake2, client2, fixture, &pb.OpenRunChannel{
+		SessionId:      runSessionID + "-temp-2",
+		EphemeralToken: runToken,
+		ConnectionId:   []byte("temp-session-002"),
+		OnOpen:         []*pb.ProxyCommand{&pb.ProxyCommand{Command: &pb.ProxyCommand_Refetch{Refetch: &pb.Refetch{Catalog: fixture.runConfig.Db, Schema: runPGSchema}}}},
 	})
 
 	runSendQuery(fake1, createSQL, 20)
@@ -345,33 +345,34 @@ func runRequestHasTempTable(request *pb.DecisionRequest, table, column string) b
 func TestRunnerMalformedOpen(t *testing.T) {
 	fixture := runSeedMySQL(t)
 	tests := []struct {
-		name string
-		open spi.RunOpen
+		name   string
+		open   *pb.OpenRunChannel
+		mapErr error
 	}{
 		{
 			name: "mapping error closes valid connection",
-			open: spi.RunOpen{
-				SessionID:    runSessionID,
-				Token:        runToken,
-				ConnectionID: []byte(runConnectionID),
-				MapErr:       errors.New("unsupported run open command"),
+			open: &pb.OpenRunChannel{
+				SessionId:      runSessionID,
+				EphemeralToken: runToken,
+				ConnectionId:   []byte(runConnectionID),
 			},
+			mapErr: errors.New("unsupported run open command"),
 		},
 		{
 			name: "bad connection id fails without close",
-			open: spi.RunOpen{
-				SessionID:    runSessionID + "-bad-id",
-				Token:        runToken,
-				ConnectionID: []byte("short"),
+			open: &pb.OpenRunChannel{
+				SessionId:      runSessionID + "-bad-id",
+				EphemeralToken: runToken,
+				ConnectionId:   []byte("short"),
 			},
 		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			fake, client := runStartFakeCP(t, test.open.SessionID)
+			fake, client := runStartFakeCP(t, test.open.GetSessionId())
 			done := make(chan struct{})
 			go func() {
-				run.NewRunner(client, fixture.runTarget, 0).Run(test.open, nil)
+				run.NewRunner(client, fixture.runTarget, 0).Run(test.open, test.mapErr, nil)
 				close(done)
 			}()
 			// The stream sends its run id (RunReady) the instant it opens, before the open is validated, so even
@@ -387,7 +388,7 @@ func TestRunnerMalformedOpen(t *testing.T) {
 			case <-time.After(10 * time.Second):
 				t.Fatal("runner did not terminate after malformed open")
 			}
-			if len(test.open.ConnectionID) == 16 {
+			if len(test.open.GetConnectionId()) == 16 {
 				runExpectSingleClose(t, fake)
 			} else if closes := fake.runRecordedCloses(); len(closes) != 0 {
 				t.Fatalf("CloseConnection requests = %v, want none for malformed id", closes)
@@ -1334,7 +1335,7 @@ func TestRunnerDrainReturnsWhenIdle(t *testing.T) {
 	draining := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
-		run.NewRunner(client, fixture.runTarget, 0).Run(runOpen(fixture), draining)
+		run.NewRunner(client, fixture.runTarget, 0).Run(runOpen(fixture), nil, draining)
 		close(done)
 	}()
 
@@ -1356,7 +1357,7 @@ func TestRunnerDrainLetsInFlightStatementFinish(t *testing.T) {
 	draining := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
-		run.NewRunner(client, fixture.runTarget, 0).Run(runOpen(fixture), draining)
+		run.NewRunner(client, fixture.runTarget, 0).Run(runOpen(fixture), nil, draining)
 		close(done)
 	}()
 
@@ -1388,7 +1389,7 @@ func TestRunnerDrainDoesNotStartAQueuedQuery(t *testing.T) {
 	draining := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
-		run.NewRunner(client, fixture.runTarget, 0).Run(runOpen(fixture), draining)
+		run.NewRunner(client, fixture.runTarget, 0).Run(runOpen(fixture), nil, draining)
 		close(done)
 	}()
 
@@ -1422,7 +1423,7 @@ func TestRunnerSendsRunReadyBeforeTargetDbOpenAndHeartbeats(t *testing.T) {
 	fake, client := runStartFakeCP(t, runSessionID)
 	done := make(chan struct{})
 	go func() {
-		run.NewRunner(client, fixture.runTarget, 0).Run(runOpen(fixture), nil)
+		run.NewRunner(client, fixture.runTarget, 0).Run(runOpen(fixture), nil, nil)
 		close(done)
 	}()
 
@@ -1478,7 +1479,7 @@ func TestRunnerCloseDuringTargetDbOpenAbortsTargetDb(t *testing.T) {
 	fake, client := runStartFakeCP(t, runSessionID)
 	done := make(chan struct{})
 	go func() {
-		run.NewRunner(client, fixture.runTarget, 0).Run(runOpen(fixture), nil)
+		run.NewRunner(client, fixture.runTarget, 0).Run(runOpen(fixture), nil, nil)
 		close(done)
 	}()
 
@@ -1506,7 +1507,7 @@ func TestRunnerDrainDuringTargetDbOpenAbortsTargetDb(t *testing.T) {
 	draining := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
-		run.NewRunner(client, fixture.runTarget, 0).Run(runOpen(fixture), draining)
+		run.NewRunner(client, fixture.runTarget, 0).Run(runOpen(fixture), nil, draining)
 		close(done)
 	}()
 
@@ -1542,7 +1543,7 @@ func TestRunnerDrainAsTargetDbOpenCompletesInstallsNoSession(t *testing.T) {
 	fake, client := runStartFakeCP(t, runSessionID)
 	done := make(chan struct{})
 	go func() {
-		run.NewRunner(client, fixture.runTarget, 0).Run(runOpen(fixture), draining)
+		run.NewRunner(client, fixture.runTarget, 0).Run(runOpen(fixture), nil, draining)
 		close(done)
 	}()
 
@@ -1579,7 +1580,7 @@ func TestRunnerCloseDuringRealDialAbortsIt(t *testing.T) {
 	fake, client := runStartFakeCP(t, runSessionID)
 	done := make(chan struct{})
 	go func() {
-		run.NewRunner(client, mustTarget(t, engines.MySQL, stall.config), 0).Run(runStallOpen(), nil)
+		run.NewRunner(client, mustTarget(t, engines.MySQL, stall.config), 0).Run(runStallOpen(), nil, nil)
 		close(done)
 	}()
 
@@ -1606,7 +1607,7 @@ func TestRunnerDrainDuringRealDialAbortsIt(t *testing.T) {
 	draining := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
-		run.NewRunner(client, mustTarget(t, engines.MySQL, stall.config), 0).Run(runStallOpen(), draining)
+		run.NewRunner(client, mustTarget(t, engines.MySQL, stall.config), 0).Run(runStallOpen(), nil, draining)
 		close(done)
 	}()
 
@@ -1679,12 +1680,12 @@ func runLaunchConfigured(t *testing.T, fake *runFakeCP, client *cp.Client, fixtu
 	return runLaunchOpenConfigured(t, fake, client, fixture, runOpen(fixture), 0, configure)
 }
 
-func runLaunchOpen(t *testing.T, fake *runFakeCP, client *cp.Client, fixture runEngineFixture, open spi.RunOpen) func() {
+func runLaunchOpen(t *testing.T, fake *runFakeCP, client *cp.Client, fixture runEngineFixture, open *pb.OpenRunChannel) func() {
 	t.Helper()
 	return runLaunchOpenConfigured(t, fake, client, fixture, open, 0, nil)
 }
 
-func runLaunchOpenConfigured(t *testing.T, fake *runFakeCP, client *cp.Client, fixture runEngineFixture, open spi.RunOpen, queryTimeout time.Duration, configure func(*run.Runner)) func() {
+func runLaunchOpenConfigured(t *testing.T, fake *runFakeCP, client *cp.Client, fixture runEngineFixture, open *pb.OpenRunChannel, queryTimeout time.Duration, configure func(*run.Runner)) func() {
 	t.Helper()
 	runner := run.NewRunner(client, fixture.runTarget, queryTimeout)
 	if configure != nil {
@@ -1692,7 +1693,7 @@ func runLaunchOpenConfigured(t *testing.T, fake *runFakeCP, client *cp.Client, f
 	}
 	done := make(chan struct{})
 	go func() {
-		runner.Run(open, nil)
+		runner.Run(open, nil, nil)
 		close(done)
 	}()
 	select {
@@ -1705,8 +1706,8 @@ func runLaunchOpenConfigured(t *testing.T, fake *runFakeCP, client *cp.Client, f
 		t.Fatalf("run initialization failed before SessionReady: %v", first)
 	}
 	ready := first.GetSessionReady()
-	if ready.GetSessionId() != open.SessionID {
-		t.Fatalf("SessionReady = %v, want session %q", ready, open.SessionID)
+	if ready.GetSessionId() != open.GetSessionId() {
+		t.Fatalf("SessionReady = %v, want session %q", ready, open.GetSessionId())
 	}
 	// SessionReady tells the CP which run the stream is for immediately; the target-DB open (and its on-open
 	// catalog push) runs after it and completes at RunServing. Wait for serving, then assert the push landed first.
@@ -1731,11 +1732,11 @@ func runLaunchOpenConfigured(t *testing.T, fake *runFakeCP, client *cp.Client, f
 	}
 }
 
-func runOpen(fixture runEngineFixture) spi.RunOpen {
-	return spi.RunOpen{
-		SessionID:    runSessionID,
-		Token:        runToken,
-		ConnectionID: []byte(runConnectionID),
+func runOpen(fixture runEngineFixture) *pb.OpenRunChannel {
+	return &pb.OpenRunChannel{
+		SessionId:      runSessionID,
+		EphemeralToken: runToken,
+		ConnectionId:   []byte(runConnectionID),
 		OnOpen: []*pb.ProxyCommand{{Command: &pb.ProxyCommand_Refetch{Refetch: &pb.Refetch{
 			Catalog: fixture.runCatalog(),
 			Schema:  fixture.runNamespaceForTable(),
@@ -1971,12 +1972,12 @@ func runStartStallingTarget(t *testing.T) runStallingTarget {
 
 // runStallOpen is a valid run open whose on-open catalog work is never reached (the dial to a stalling target
 // blocks first), so any schema will do.
-func runStallOpen() spi.RunOpen {
-	return spi.RunOpen{
-		SessionID:    runSessionID,
-		Token:        runToken,
-		ConnectionID: []byte(runConnectionID),
-		OnOpen:       []*pb.ProxyCommand{&pb.ProxyCommand{Command: &pb.ProxyCommand_Refetch{Refetch: &pb.Refetch{Catalog: "def", Schema: runMySQLSchema}}}},
+func runStallOpen() *pb.OpenRunChannel {
+	return &pb.OpenRunChannel{
+		SessionId:      runSessionID,
+		EphemeralToken: runToken,
+		ConnectionId:   []byte(runConnectionID),
+		OnOpen:         []*pb.ProxyCommand{&pb.ProxyCommand{Command: &pb.ProxyCommand_Refetch{Refetch: &pb.Refetch{Catalog: "def", Schema: runMySQLSchema}}}},
 	}
 }
 

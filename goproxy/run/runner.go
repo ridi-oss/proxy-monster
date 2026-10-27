@@ -59,12 +59,12 @@ func NewRunner(client spi.ControlPlane, target spi.Target, queryTimeout time.Dur
 // statement is in flight, Run returns so the control-plane session closes and the editor re-homes to the
 // replacement — mirroring how the wire server lets an idle connection go on drain. A statement already
 // executing is never interrupted; the drain is only observed between statements. A nil channel never fires.
-func (r *Runner) Run(open spi.RunOpen, draining <-chan struct{}) {
+func (r *Runner) Run(req *pb.OpenRunChannel, mapErr error, draining <-chan struct{}) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	stream, err := r.client.OpenRunStream(ctx)
 	if err != nil {
-		slog.Warn("run stream open failed", "session_id", open.SessionID, "error", err)
+		slog.Warn("run stream open failed", "session_id", req.GetSessionId(), "error", err)
 		return
 	}
 	var messages <-chan *pb.ControlRunMsg
@@ -74,18 +74,18 @@ func (r *Runner) Run(open spi.RunOpen, draining <-chan struct{}) {
 	// once and EVERY failure below is attributable to this run rather than an unmatched stream it must wait
 	// out. RunProgress heartbeats keep its no-progress bound alive through the open; RunServing (below) then
 	// tells it the target DB is ready for the query.
-	ready := &pb.RunReady{SessionId: open.SessionID}
+	ready := &pb.RunReady{SessionId: req.GetSessionId()}
 	if stream.Send(&pb.ProxyRunMsg{Kind: &pb.ProxyRunMsg_SessionReady{SessionReady: ready}}) != nil {
 		return
 	}
 
-	if open.MapErr != nil || len(open.ConnectionID) != 16 {
-		if open.MapErr == nil {
-			open.MapErr = fmt.Errorf("connection_id is %d bytes, want 16", len(open.ConnectionID))
+	if mapErr != nil || len(req.GetConnectionId()) != 16 {
+		if mapErr == nil {
+			mapErr = fmt.Errorf("connection_id is %d bytes, want 16", len(req.GetConnectionId()))
 		}
-		_ = sendError(stream, "invalid run open: "+open.MapErr.Error())
-		if len(open.ConnectionID) == 16 {
-			r.closeConnection(open.SessionID, open.ConnectionID)
+		_ = sendError(stream, "invalid run open: "+mapErr.Error())
+		if len(req.GetConnectionId()) == 16 {
+			r.closeConnection(req.GetSessionId(), req.GetConnectionId())
 		}
 		return
 	}
@@ -118,7 +118,7 @@ func (r *Runner) Run(open spi.RunOpen, draining <-chan struct{}) {
 	// a run nobody is waiting for.
 	messages = receiveRunMessages(ctx, stream)
 	var namespace *enginepb.Namespace
-	connection, namespace = r.openTargetDb(ctx, stream, messages, draining, open, guard)
+	connection, namespace = r.openTargetDb(ctx, stream, messages, draining, req, guard)
 	if connection == nil {
 		// The open failed (RunError already sent) or was aborted by an early RunClose / drain. openTargetDb owns
 		// the cleanup: a failure releases the connection before returning, while an abort reaps the cancelled
@@ -126,7 +126,7 @@ func (r *Runner) Run(open spi.RunOpen, draining <-chan struct{}) {
 		return
 	}
 	defer connection.Close()
-	defer r.closeConnection(open.SessionID, open.ConnectionID)
+	defer r.closeConnection(req.GetSessionId(), req.GetConnectionId())
 	if stream.Send(&pb.ProxyRunMsg{Kind: &pb.ProxyRunMsg_Serving{Serving: &pb.RunServing{Namespace: namespace}}}) != nil {
 		return
 	}
@@ -210,7 +210,7 @@ func (r *Runner) Run(open spi.RunOpen, draining <-chan struct{}) {
 // the open is reaped in the background (see abort). A close or drain that lands just as the open completes
 // still fails the open (the post-completion re-check) so a live session is never installed on an abandoned
 // run or a departing proxy — the editor re-homes to the replacement rather than onto a stream about to die.
-func (r *Runner) openTargetDb(ctx context.Context, stream runStream, messages <-chan *pb.ControlRunMsg, draining <-chan struct{}, open spi.RunOpen, guard spi.ExecGuard) (spi.Connection, *enginepb.Namespace) {
+func (r *Runner) openTargetDb(ctx context.Context, stream runStream, messages <-chan *pb.ControlRunMsg, draining <-chan struct{}, req *pb.OpenRunChannel, guard spi.ExecGuard) (spi.Connection, *enginepb.Namespace) {
 	openCtx, cancelOpen := context.WithCancel(ctx)
 	defer cancelOpen()
 
@@ -222,12 +222,12 @@ func (r *Runner) openTargetDb(ctx context.Context, stream runStream, messages <-
 	}
 	done := make(chan openResult, 1)
 	go func() {
-		connection, err := r.target.OpenConnection(openCtx, spi.NewAuthorizer(r.client, open.Token, open.ConnectionID), guard, r.readTimeout, open.DefaultSchema)
+		connection, err := r.target.OpenConnection(openCtx, spi.NewAuthorizer(r.client, req.GetEphemeralToken(), req.GetConnectionId()), guard, r.readTimeout, req.GetDefaultSchema())
 		if err != nil {
 			done <- openResult{err: err, errWhat: "target-DB connection failed: "}
 			return
 		}
-		if err := connection.OnOpen(openCtx, open.OnOpen); err != nil {
+		if err := connection.OnOpen(openCtx, req.GetOnOpen()); err != nil {
 			done <- openResult{connection: connection, err: err, errWhat: "run catalog initialization failed: "}
 			return
 		}
@@ -246,7 +246,7 @@ func (r *Runner) openTargetDb(ctx context.Context, stream runStream, messages <-
 			if res.connection != nil {
 				_ = res.connection.Close()
 			}
-			r.closeConnection(open.SessionID, open.ConnectionID)
+			r.closeConnection(req.GetSessionId(), req.GetConnectionId())
 		}()
 		return nil, nil
 	}
@@ -261,7 +261,7 @@ func (r *Runner) openTargetDb(ctx context.Context, stream runStream, messages <-
 				if res.connection != nil {
 					_ = res.connection.Close()
 				}
-				r.closeConnection(open.SessionID, open.ConnectionID)
+				r.closeConnection(req.GetSessionId(), req.GetConnectionId())
 				return nil, nil
 			}
 			// The open finished, but a close or drain that landed during it must not put a live session on an
@@ -269,7 +269,7 @@ func (r *Runner) openTargetDb(ctx context.Context, stream runStream, messages <-
 			// push in flight), so this cleanup is synchronous.
 			if abandonedDuringOpen(messages, draining) {
 				_ = res.connection.Close()
-				r.closeConnection(open.SessionID, open.ConnectionID)
+				r.closeConnection(req.GetSessionId(), req.GetConnectionId())
 				return nil, nil
 			}
 			return res.connection, res.namespace
@@ -286,7 +286,7 @@ func (r *Runner) openTargetDb(ctx context.Context, stream runStream, messages <-
 			}
 			// A Query or Cancel before RunServing is outside the protocol during a target-DB open (the CP sends a
 			// query only after it observes RunServing); log it so a CP regression is visible, and ignore it.
-			slog.Warn("run received a control message before RunServing; ignoring", "session_id", open.SessionID)
+			slog.Warn("run received a control message before RunServing; ignoring", "session_id", req.GetSessionId())
 		case <-draining:
 			return abort()
 		}

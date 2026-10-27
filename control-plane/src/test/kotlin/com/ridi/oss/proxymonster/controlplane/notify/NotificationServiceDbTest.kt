@@ -9,6 +9,7 @@ import com.ridi.oss.proxymonster.controlplane.QueryResultStore
 import com.ridi.oss.proxymonster.controlplane.RequestEdit
 import com.ridi.oss.proxymonster.controlplane.RequestEventKind
 import com.ridi.oss.proxymonster.controlplane.RequestEvents
+import com.ridi.oss.proxymonster.controlplane.SYSTEM_ORIGIN
 import com.ridi.oss.proxymonster.controlplane.RequestParticipants
 import com.ridi.oss.proxymonster.controlplane.ResultCrypto
 import com.ridi.oss.proxymonster.controlplane.requestNotifier
@@ -368,6 +369,59 @@ class NotificationServiceDbTest {
         svc.drainOnce()
         assertTrue(threads.replies.none { (ref, text) -> "cc@x" in ref && "after removal" in text }, "got: ${threads.replies}")
         assertTrue(threads.replies.any { (ref, text) -> ref == samThread && "after removal" in text })
+    }
+
+    private fun threadService(transport: NotificationTransport) = NotificationService(
+        store = store,
+        recipients = RecipientResolver(fx.authz, fx.roleResolver) { emptyList() },
+        transports = listOf(transport),
+        accessStore = fx.accessStore,
+        queryResultStore = null,
+        webBaseUrl = "https://console.example",
+        disclosure = StatementDisclosure.AUTO,
+        defaultLocale = "en",
+    )
+
+    @Test
+    fun `two control planes draining at once post each entry once`() = runBlocking {
+        val threads = FakeTransport(name = "threads", supportsReplies = true)
+        var during: (suspend () -> Unit)? = null
+        val overlapping = object : NotificationTransport by threads {
+            override suspend fun reply(threadRef: String, text: String): DeliveryResult {
+                during?.also { during = null }?.invoke()
+                return threads.reply(threadRef, text)
+            }
+        }
+        val first = threadService(overlapping)
+        val second = threadService(overlapping)
+        val task = newTask().id
+        fx.dataSource.connection.use { c -> store.enqueue(c, task, NotificationEvent.TASK_SUBMITTED, "threads", "req@example.com", NotificationKind.REQUESTER) }
+        first.drainOnce()
+        fx.dataSource.connection.use { c -> RequestEvents.record(c, task, RequestEventKind.COMMENT, "sam@x", "console", "why the join?") }
+
+        during = { second.drainOnce() }
+        first.drainOnce()
+        assertEquals(listOf("thread:addr:req@example.com:task.submitted" to "*sam@x*: why the join?"), threads.replies.toList())
+    }
+
+    @Test
+    fun `a request's thread gets nothing recorded after it executed or failed`() = runBlocking {
+        val threads = FakeTransport(name = "threads", supportsReplies = true)
+        val svc = threadService(threads)
+        val task = newTask().id
+        fx.dataSource.connection.use { c -> store.enqueue(c, task, NotificationEvent.TASK_SUBMITTED, "threads", "req@example.com", NotificationKind.REQUESTER) }
+        svc.drainOnce()
+        fx.dataSource.connection.use { c ->
+            RequestEvents.record(c, task, RequestEventKind.COMMENT, "sam@x", "console", "before")
+            RequestEvents.record(c, task, RequestEventKind.EXECUTED, null, SYSTEM_ORIGIN, null)
+            RequestEvents.record(c, task, RequestEventKind.COMMENT, "sam@x", "console", "after")
+            c.prepareStatement("UPDATE access_request SET status = 'EXECUTED' WHERE id = ?").use { it.setLong(1, task); it.executeUpdate() }
+        }
+        svc.drainOnce()
+        val texts = threads.replies.map { it.second }
+        assertEquals(2, texts.size, "got: $texts")
+        assertTrue("before" in texts.first(), "got: $texts")
+        assertTrue(texts.none { "after" in it }, "got: $texts")
     }
 
     @Test

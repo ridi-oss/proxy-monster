@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.1.42](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.41...server-v0.1.42) (2026-10-27)
+
+
+### Features
+
+* **control-plane:** file a pull request's SQL only once it is ready for review ([a8f7c2c](https://github.com/ridi-oss/proxy-monster/commit/a8f7c2cbe3f0065f74fc962d57b93baa6a2293b6))
+* **control-plane:** show a pull request's code reviews on its Slack messages ([fd2d72b](https://github.com/ridi-oss/proxy-monster/commit/fd2d72beeac17253cd26cef2673cd47a969b90e8))
+* **cpgo:** serve the approval inbox, detail, approve, reject and unapprove in Go ([653a29f](https://github.com/ridi-oss/proxy-monster/commit/653a29f74e5a2c2b8d77ab3f6513b423a9eb5d25))
+* **cpgo:** serve the AuthorizeRequest RPC in Go ([988607c](https://github.com/ridi-oss/proxy-monster/commit/988607c96a7d27b0091173693926c48e95a9dd5a))
+* **cpgo:** serve the workload token exchange in Go ([e7ef269](https://github.com/ridi-oss/proxy-monster/commit/e7ef2692c6413387b85cb1803d60b5d62d0270c8))
+
+
+### Bug Fixes
+
+* **control-plane:** decide a stored result's view from what it stored ([836c9bf](https://github.com/ridi-oss/proxy-monster/commit/836c9bfd02e08e735344b80bd72861165701627f))
+
+
+### Refactoring
+
+* **goproxy:** the runner takes OpenRunChannel itself ([0d5df44](https://github.com/ridi-oss/proxy-monster/commit/0d5df4486639d771c9c1a0082d9f4119de43ce90))
+
 ## [0.1.41](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.40...server-v0.1.41) (2026-10-23)
 
 

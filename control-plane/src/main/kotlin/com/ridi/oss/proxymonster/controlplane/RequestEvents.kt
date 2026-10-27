@@ -99,14 +99,17 @@ object RequestEvents {
     fun codeReviews(c: Connection, requestId: Long): List<CodeReview> =
         c.prepareStatement(
             """SELECT actor, body, kind FROM (
-                 SELECT DISTINCT ON (COALESCE(actor, body)) actor, body, kind, id FROM request_event
-                 WHERE request_id = ? AND github_review_id IS NOT NULL
+                 SELECT DISTINCT ON (COALESCE(actor, body)) actor, body, kind, id, github_review_id FROM request_event
+                 WHERE request_id = ? AND github_review_id IS NOT NULL AND kind <> 'code_review_dismissed'
                  ORDER BY COALESCE(actor, body), id DESC
                ) latest
-               WHERE kind <> 'code_review_dismissed'
+               WHERE NOT EXISTS (
+                 SELECT 1 FROM request_event d
+                 WHERE d.request_id = ? AND d.github_review_id = latest.github_review_id AND d.kind = 'code_review_dismissed')
                ORDER BY id""",
         ).use { ps ->
             ps.setLong(1, requestId)
+            ps.setLong(2, requestId)
             ps.executeQuery().use { rs ->
                 val out = ArrayList<CodeReview>()
                 while (rs.next()) {

@@ -1414,7 +1414,8 @@ class GitHubSourceFlowDbTest {
         assertEquals(listOf(listOf(carol to "carol"), listOf(carol to "carol")), events("code_approved"))
         assertTrue(reqs.all { status(it.id) == "PENDING" })
 
-        // bob's review approves both files, which their approval already says; mallory maps to no user.
+        // bob's review approves both files, which their approval already says; mallory maps to no user and is named by her email.
+        adapter.emails[malloryUser.id] = "mallory@example.com"
         update(n) {
             it.copy(
                 reviews = it.reviews + approval(bobUser, id = "b1") +
@@ -1424,8 +1425,8 @@ class GitHubSourceFlowDbTest {
         recheck(n)
         assertTrue(reqs.all { status(it.id) == "APPROVED" })
         assertEquals(listOf(listOf(carol to "carol"), listOf(carol to "carol")), events("code_approved"))
-        assertEquals(listOf(listOf(null to "mallory"), listOf(null to "mallory")), events("code_changes_requested"))
-        val standing = listOf(CodeReview(carol, true, true), CodeReview(bob, true, true), CodeReview("mallory", false, false))
+        assertEquals(listOf(listOf(null to "mallory@example.com"), listOf(null to "mallory@example.com")), events("code_changes_requested"))
+        val standing = listOf(CodeReview(carol, true, true), CodeReview(bob, true, true), CodeReview("mallory@example.com", false, false))
         assertEquals(listOf(standing, standing), reviews())
 
         // A dismissal drops the review from the messages and posts nothing.
@@ -1434,6 +1435,18 @@ class GitHubSourceFlowDbTest {
         assertEquals(listOf(standing.drop(1), standing.drop(1)), reviews())
         assertEquals(listOf(listOf(carol to "carol"), listOf(carol to "carol")), events("code_review_dismissed"))
         assertEquals(1, events("code_approved").first().size)
+    }
+
+    @Test
+    fun `a dismissal hides a review recorded under the reviewer's login before they were named by email`() {
+        val n = number()
+        open(n)
+        val req = file(n, schema(), listOf("db/a.sql" to "create table da (id int)")).single()
+        dataSource.connection.use { RequestEvents.record(it, req.id, RequestEventKind.CODE_APPROVED, null, "github", "mallory", githubReviewId = "old1") }
+        adapter.emails[malloryUser.id] = "mallory@example.com"
+        update(n) { it.copy(reviews = listOf(approval(malloryUser, id = "old1", state = ReviewState.DISMISSED))) }
+        recheck(n)
+        assertEquals(emptyList(), dataSource.connection.use { RequestEvents.codeReviews(it, req.id) })
     }
 
     @Test

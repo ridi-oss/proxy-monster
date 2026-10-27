@@ -33,6 +33,9 @@ class FakeSourceAdapter : SourceAdapter {
     /** [SourceUser.id] → principal; null or absent is unmapped. */
     val users: MutableMap<String, String?> = Collections.synchronizedMap(HashMap())
 
+    /** GitHub user id → the email GitHub reports for someone who maps to no principal. */
+    val emails: MutableMap<String, String> = Collections.synchronizedMap(HashMap())
+
     /** Principals mapped only by commit email, for requesters. */
     val commitEmailUsers: MutableMap<String, String> = Collections.synchronizedMap(HashMap())
 
@@ -100,4 +103,6 @@ class FakeSourceAdapter : SourceAdapter {
 
     override suspend fun resolveUser(org: String, user: SourceUser, role: MappingRole, commitEmails: List<String>): String? =
         users[user.id] ?: if (role == MappingRole.REQUESTER) commitEmails.firstNotNullOfOrNull { commitEmailUsers[it] } else null
+
+    override suspend fun emailOf(org: String, user: SourceUser): String? = emails[user.id]
 }

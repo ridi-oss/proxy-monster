@@ -8,7 +8,7 @@ import (
 )
 
 func TestWaitReturnsAtOnceWhenIdle(t *testing.T) {
-	tr := New()
+	tr := NewTracker()
 	start := time.Now()
 	if !tr.Wait(context.Background()) {
 		t.Fatal("Wait should report drained when nothing is in flight")
@@ -19,7 +19,7 @@ func TestWaitReturnsAtOnceWhenIdle(t *testing.T) {
 }
 
 func TestWaitBlocksUntilInflightDone(t *testing.T) {
-	tr := New()
+	tr := NewTracker()
 	tr.Add()
 	go func() {
 		time.Sleep(50 * time.Millisecond)
@@ -35,7 +35,7 @@ func TestWaitBlocksUntilInflightDone(t *testing.T) {
 }
 
 func TestWaitIsBoundedByContext(t *testing.T) {
-	tr := New()
+	tr := NewTracker()
 	tr.Add() // never Done
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
@@ -53,7 +53,7 @@ func TestWaitIsBoundedByContext(t *testing.T) {
 }
 
 func TestBeginSignalsAndReportsDraining(t *testing.T) {
-	tr := New()
+	tr := NewTracker()
 	if tr.Draining() {
 		t.Fatal("a new tracker must not be draining")
 	}
@@ -75,7 +75,7 @@ func TestBeginSignalsAndReportsDraining(t *testing.T) {
 }
 
 func TestConcurrent(t *testing.T) {
-	tr := New()
+	tr := NewTracker()
 	var wg sync.WaitGroup
 	for i := 0; i < 50; i++ {
 		tr.Add()

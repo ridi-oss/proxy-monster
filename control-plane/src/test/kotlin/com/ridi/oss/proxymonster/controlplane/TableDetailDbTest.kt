@@ -11,9 +11,9 @@ import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.controlplane.support.testLoginRoute
 import com.ridi.oss.proxymonster.controlplane.support.webSessionCookie
-import com.ridi.oss.proxymonster.grpc.ControlEvent
+import com.ridi.oss.proxymonster.grpc.CpEvent
 import com.ridi.oss.proxymonster.grpc.ProxyTableDetailMsg
-import com.ridi.oss.proxymonster.grpc.controlTableDetailMsg
+import com.ridi.oss.proxymonster.grpc.cpTableDetailMsg
 import com.ridi.oss.proxymonster.grpc.proxyTableDetailMsg
 import com.ridi.oss.proxymonster.grpc.tableDetailClose
 import com.ridi.oss.proxymonster.grpc.tableDetailError
@@ -208,7 +208,7 @@ class TableDetailDbTest {
         val pending = PendingTableDetail("grpc-table-detail", CompletableDeferred())
         core.tableDetailChannels.register(pending)
         val requests = Channel<ProxyTableDetailMsg>(Channel.BUFFERED)
-        val controls = Channel<com.ridi.oss.proxymonster.grpc.ControlTableDetailMsg>(Channel.BUFFERED)
+        val controls = Channel<com.ridi.oss.proxymonster.grpc.CpTableDetailMsg>(Channel.BUFFERED)
         val collectJob = launch {
             ControlPlaneGrpcService(core).tableDetailExec(requests.consumeAsFlow()).collect { controls.send(it) }
         }
@@ -223,7 +223,7 @@ class TableDetailDbTest {
         requests.send(result)
         assertEquals(result, withTimeout(5_000) { attached.inbound.receive() })
 
-        attached.outbound.send(controlTableDetailMsg { close = tableDetailClose {} })
+        attached.outbound.send(cpTableDetailMsg { close = tableDetailClose {} })
         assertTrue(withTimeout(5_000) { controls.receive() }.hasClose())
         requests.close()
         collectJob.join()
@@ -491,7 +491,7 @@ class TableDetailDbTest {
     ) : AutoCloseable {
         val requests = CopyOnWriteArrayList<com.ridi.oss.proxymonster.grpc.OpenTableDetailChannel>()
         private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-        private val events = Channel<ControlEvent>(Channel.UNLIMITED)
+        private val events = Channel<CpEvent>(Channel.UNLIMITED)
 
         init {
             core.proxyEventsHub.register(datasourceName, events)
@@ -500,7 +500,7 @@ class TableDetailDbTest {
                     if (!event.hasOpenTableDetailChannel()) continue
                     val open = event.openTableDetailChannel
                     requests += open
-                    val outbound = Channel<com.ridi.oss.proxymonster.grpc.ControlTableDetailMsg>(Channel.BUFFERED)
+                    val outbound = Channel<com.ridi.oss.proxymonster.grpc.CpTableDetailMsg>(Channel.BUFFERED)
                     val attached = core.tableDetailChannels.attach(open.sessionId, outbound) ?: continue
                     attached.inbound.send(responseMessage(responder(open.schema, open.table)))
                     // The service always closes a claimed stream, including result/error/not-found paths.

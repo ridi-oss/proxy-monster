@@ -9,15 +9,15 @@ import com.ridi.oss.proxymonster.controlplane.grpc.CONTROL_PROTOCOL_VERSION
 import com.ridi.oss.proxymonster.controlplane.management.McpCapabilityRegistry
 import com.ridi.oss.proxymonster.controlplane.module
 import com.ridi.oss.proxymonster.grpc.ControlPlaneGrpcKt
-import com.ridi.oss.proxymonster.grpc.ControlTableDetailMsg
-import com.ridi.oss.proxymonster.grpc.OpenRunChannel
+import com.ridi.oss.proxymonster.grpc.CpTableDetailMsg
+import com.ridi.oss.proxymonster.grpc.OpenEditorSession
 import com.ridi.oss.proxymonster.grpc.OpenTableDetailChannel
-import com.ridi.oss.proxymonster.grpc.ProxyRunMsg
+import com.ridi.oss.proxymonster.grpc.ProxyEditorMsg
 import com.ridi.oss.proxymonster.grpc.ProxyTableDetailMsg
 import com.ridi.oss.proxymonster.grpc.eventsRequest
-import com.ridi.oss.proxymonster.grpc.proxyRunMsg
-import com.ridi.oss.proxymonster.grpc.runReady
-import com.ridi.oss.proxymonster.grpc.runServing
+import com.ridi.oss.proxymonster.grpc.proxyEditorMsg
+import com.ridi.oss.proxymonster.grpc.editorReady
+import com.ridi.oss.proxymonster.grpc.editorServing
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.cookies.HttpCookies
 import io.ktor.client.request.header
@@ -186,7 +186,7 @@ suspend fun withFakeProxy(
     core: ControlPlaneCore,
     stub: ControlPlaneGrpcKt.ControlPlaneCoroutineStub,
     datasourceName: String,
-    respond: suspend (WireIdentity?, String, OpenRunChannel) -> List<ProxyRunMsg>,
+    respond: suspend (WireIdentity?, String, OpenEditorSession) -> List<ProxyEditorMsg>,
     tableDetail: ((OpenTableDetailChannel) -> ProxyTableDetailMsg)? = null,
     body: suspend () -> Unit,
 ) = supervisorScope {
@@ -196,7 +196,7 @@ suspend fun withFakeProxy(
                 if (event.hasOpenTableDetailChannel() && tableDetail != null) {
                     val open = event.openTableDetailChannel
                     launch {
-                        val outbound = Channel<ControlTableDetailMsg>(Channel.BUFFERED)
+                        val outbound = Channel<CpTableDetailMsg>(Channel.BUFFERED)
                         val attached = core.tableDetailChannels.attach(open.sessionId, outbound) ?: return@launch
                         attached.inbound.send(tableDetail(open))
                         outbound.receive()
@@ -205,14 +205,14 @@ suspend fun withFakeProxy(
                     }
                     return@collect
                 }
-                if (!event.hasOpenRunChannel()) return@collect
-                val open = event.openRunChannel
+                if (!event.hasOpenEditorSession()) return@collect
+                val open = event.openEditorSession
                 val identity = core.tokenStore.resolve(open.ephemeralToken)
                 launch {
-                    val out = Channel<ProxyRunMsg>(Channel.UNLIMITED)
-                    out.send(proxyRunMsg { sessionReady = runReady { sessionId = open.sessionId } })
-                    out.send(proxyRunMsg { serving = runServing {} })
-                    stub.runExec(out.receiveAsFlow()).collect { control ->
+                    val out = Channel<ProxyEditorMsg>(Channel.UNLIMITED)
+                    out.send(proxyEditorMsg { sessionReady = editorReady { sessionId = open.sessionId } })
+                    out.send(proxyEditorMsg { serving = editorServing {} })
+                    stub.editorExec(out.receiveAsFlow()).collect { control ->
                         when {
                             control.hasQuery() -> respond(identity, control.query.sql, open).forEach { out.send(it) }
                             control.hasClose() -> out.close()

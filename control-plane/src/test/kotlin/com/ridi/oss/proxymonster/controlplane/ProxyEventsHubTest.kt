@@ -1,6 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
-import com.ridi.oss.proxymonster.grpc.ControlEvent
+import com.ridi.oss.proxymonster.grpc.CpEvent
 import com.google.protobuf.ByteString
 import kotlinx.coroutines.channels.Channel
 import java.util.concurrent.CountDownLatch
@@ -17,34 +17,34 @@ import kotlin.test.assertTrue
  * the proxy is attached, so every query fails claiming nothing is there.
  */
 class ProxyEventsHubTest {
-    private fun openRun(hub: ProxyEventsHub, name: String) =
-        hub.requestOpenRun(name, "session", "token", ByteString.copyFrom(ByteArray(16)), emptyList())
+    private fun requestEditorSession(hub: ProxyEventsHub, name: String) =
+        hub.requestOpenEditorSession(name, "session", "token", ByteString.copyFrom(ByteArray(16)), emptyList())
 
     @Test
-    fun `the open-run event carries the default schema`() {
+    fun `the open-editor-session event carries the default schema`() {
         val hub = ProxyEventsHub()
-        val channel = Channel<ControlEvent>(Channel.BUFFERED)
+        val channel = Channel<CpEvent>(Channel.BUFFERED)
         hub.register("ds", channel)
 
-        hub.requestOpenRun("ds", "session", "token", ByteString.copyFrom(ByteArray(16)), emptyList(), defaultSchema = "orders")
-        assertEquals("orders", channel.tryReceive().getOrThrow().openRunChannel.defaultSchema)
-        openRun(hub, "ds")
-        assertEquals("", channel.tryReceive().getOrThrow().openRunChannel.defaultSchema, "null keeps the target's default")
+        hub.requestOpenEditorSession("ds", "session", "token", ByteString.copyFrom(ByteArray(16)), emptyList(), defaultSchema = "orders")
+        assertEquals("orders", channel.tryReceive().getOrThrow().openEditorSession.defaultSchema)
+        requestEditorSession(hub, "ds")
+        assertEquals("", channel.tryReceive().getOrThrow().openEditorSession.defaultSchema, "null keeps the target's default")
     }
 
     @Test
     fun `a datasource with no stream is not attached`() {
         val hub = ProxyEventsHub()
-        assertEquals(ProxyEventsHub.Dispatch.NOT_ATTACHED, openRun(hub, "absent"))
+        assertEquals(ProxyEventsHub.Dispatch.NOT_ATTACHED, requestEditorSession(hub, "absent"))
     }
 
     @Test
     fun `an open stream takes the event`() {
         val hub = ProxyEventsHub()
-        val channel = Channel<ControlEvent>(Channel.BUFFERED)
+        val channel = Channel<CpEvent>(Channel.BUFFERED)
         hub.register("ds", channel)
 
-        assertEquals(ProxyEventsHub.Dispatch.SENT, openRun(hub, "ds"))
+        assertEquals(ProxyEventsHub.Dispatch.SENT, requestEditorSession(hub, "ds"))
         assertTrue(channel.tryReceive().isSuccess, "the event should be sitting in the channel")
     }
 
@@ -53,22 +53,22 @@ class ProxyEventsHubTest {
         // Registered, but the channel is dead. Distinguishing the two is the whole point: "no proxy attached"
         // sends an operator looking for a proxy that is in fact running.
         val hub = ProxyEventsHub()
-        val channel = Channel<ControlEvent>(Channel.BUFFERED)
+        val channel = Channel<CpEvent>(Channel.BUFFERED)
         hub.register("ds", channel)
         channel.close()
 
-        assertEquals(ProxyEventsHub.Dispatch.WEDGED, openRun(hub, "ds"))
+        assertEquals(ProxyEventsHub.Dispatch.WEDGED, requestEditorSession(hub, "ds"))
     }
 
     @Test
     fun `a full buffer is WEDGED too`() {
         // A consumer that stopped draining looks the same to a non-blocking send as a closed channel does.
         val hub = ProxyEventsHub()
-        val channel = Channel<ControlEvent>(1)
+        val channel = Channel<CpEvent>(1)
         hub.register("ds", channel)
 
-        assertEquals(ProxyEventsHub.Dispatch.SENT, openRun(hub, "ds"))
-        assertEquals(ProxyEventsHub.Dispatch.WEDGED, openRun(hub, "ds"), "the single slot is taken")
+        assertEquals(ProxyEventsHub.Dispatch.SENT, requestEditorSession(hub, "ds"))
+        assertEquals(ProxyEventsHub.Dispatch.WEDGED, requestEditorSession(hub, "ds"), "the single slot is taken")
     }
 
     @Test
@@ -76,17 +76,17 @@ class ProxyEventsHubTest {
         // Left registered, the channel cannot serve a later request either, and attached() would keep
         // reporting a reachable proxy until the stream's own close handler eventually ran.
         val hub = ProxyEventsHub()
-        val channel = Channel<ControlEvent>(Channel.BUFFERED)
+        val channel = Channel<CpEvent>(Channel.BUFFERED)
         hub.register("ds", channel)
         assertEquals(setOf("ds"), hub.attached())
 
         channel.close()
-        assertEquals(ProxyEventsHub.Dispatch.WEDGED, openRun(hub, "ds"))
+        assertEquals(ProxyEventsHub.Dispatch.WEDGED, requestEditorSession(hub, "ds"))
 
         assertEquals(emptySet(), hub.attached(), "the dead stream should no longer count as attached")
         assertEquals(
             ProxyEventsHub.Dispatch.NOT_ATTACHED,
-            openRun(hub, "ds"),
+            requestEditorSession(hub, "ds"),
             "once dropped, the datasource genuinely has no proxy",
         )
     }
@@ -96,22 +96,22 @@ class ProxyEventsHubTest {
         // Eviction must not cost availability: with one dead and one healthy stream the request still goes
         // out, and only the dead one is dropped.
         val hub = ProxyEventsHub()
-        val dead = Channel<ControlEvent>(Channel.BUFFERED)
-        val live = Channel<ControlEvent>(Channel.BUFFERED)
+        val dead = Channel<CpEvent>(Channel.BUFFERED)
+        val live = Channel<CpEvent>(Channel.BUFFERED)
         hub.register("ds", dead)
         hub.register("ds", live)
         dead.close()
 
-        assertEquals(ProxyEventsHub.Dispatch.SENT, openRun(hub, "ds"))
+        assertEquals(ProxyEventsHub.Dispatch.SENT, requestEditorSession(hub, "ds"))
         assertTrue(live.tryReceive().isSuccess, "the healthy replica should have received it")
         assertEquals(setOf("ds"), hub.attached(), "the live stream keeps the datasource attached")
-        assertEquals(ProxyEventsHub.Dispatch.SENT, openRun(hub, "ds"), "the dead one is gone, not retried")
+        assertEquals(ProxyEventsHub.Dispatch.SENT, requestEditorSession(hub, "ds"), "the dead one is gone, not retried")
     }
 
     @Test
     fun `a refresh push skips a wedged stream rather than counting it`() {
         val hub = ProxyEventsHub()
-        val dead = Channel<ControlEvent>(Channel.BUFFERED)
+        val dead = Channel<CpEvent>(Channel.BUFFERED)
         hub.register("ds", dead)
         dead.close()
 
@@ -121,8 +121,8 @@ class ProxyEventsHubTest {
     @Test
     fun `broadcastDraining signals then closes every open stream`() {
         val hub = ProxyEventsHub()
-        val a = Channel<ControlEvent>(Channel.BUFFERED)
-        val b = Channel<ControlEvent>(Channel.BUFFERED)
+        val a = Channel<CpEvent>(Channel.BUFFERED)
+        val b = Channel<CpEvent>(Channel.BUFFERED)
         hub.register("ds-a", a)
         hub.register("ds-b", b)
 
@@ -139,7 +139,7 @@ class ProxyEventsHubTest {
     @Test
     fun `awaitDrained returns true once every signalled stream deregisters`() {
         val hub = ProxyEventsHub()
-        val channel = Channel<ControlEvent>(Channel.BUFFERED)
+        val channel = Channel<CpEvent>(Channel.BUFFERED)
         hub.register("ds", channel)
         hub.broadcastDraining()
 
@@ -158,7 +158,7 @@ class ProxyEventsHubTest {
         val hub = ProxyEventsHub()
         hub.beginDraining()
 
-        val late = Channel<ControlEvent>(Channel.BUFFERED)
+        val late = Channel<CpEvent>(Channel.BUFFERED)
         hub.register("ds", late)
 
         // The late stream is signalled to reconnect and closed, never added — so a reconnecting proxy cannot
@@ -172,15 +172,15 @@ class ProxyEventsHubTest {
     @Test
     fun `once draining, dispatch stops returning SENT`() {
         val hub = ProxyEventsHub()
-        val channel = Channel<ControlEvent>(Channel.BUFFERED)
+        val channel = Channel<CpEvent>(Channel.BUFFERED)
         hub.register("ds", channel)
-        assertEquals(ProxyEventsHub.Dispatch.SENT, openRun(hub, "ds"), "healthy before draining")
+        assertEquals(ProxyEventsHub.Dispatch.SENT, requestEditorSession(hub, "ds"), "healthy before draining")
 
         hub.beginDraining()
 
         // The stream is still open, but a query dispatched now must not be promised: it would ride behind the
         // Draining signal the proxy bails on and be silently dropped. NOT_ATTACHED fails it closed instead.
-        assertEquals(ProxyEventsHub.Dispatch.NOT_ATTACHED, openRun(hub, "ds"), "no SENT once draining")
+        assertEquals(ProxyEventsHub.Dispatch.NOT_ATTACHED, requestEditorSession(hub, "ds"), "no SENT once draining")
     }
 
     @Test
@@ -190,7 +190,7 @@ class ProxyEventsHubTest {
         // behind awaitDrained. This stresses the check-then-insert window; the hub's lock is what holds it.
         repeat(30) {
             val hub = ProxyEventsHub()
-            val channels = (1..12).map { Channel<ControlEvent>(Channel.BUFFERED) }
+            val channels = (1..12).map { Channel<CpEvent>(Channel.BUFFERED) }
             val start = CountDownLatch(1)
             val threads = channels.mapIndexed { i, ch -> Thread { start.await(); hub.register("ds-$i", ch) } } +
                 Thread { start.await(); hub.beginDraining(); hub.broadcastDraining() }
@@ -217,8 +217,8 @@ class ProxyEventsHubTest {
         val hub = ProxyEventsHub()
         val inClose = CountDownLatch(1)
         val releaseClose = CountDownLatch(1)
-        val delegate = Channel<ControlEvent>(Channel.UNLIMITED)
-        val parkingChannel = object : Channel<ControlEvent> by delegate {
+        val delegate = Channel<CpEvent>(Channel.UNLIMITED)
+        val parkingChannel = object : Channel<CpEvent> by delegate {
             override fun close(cause: Throwable?): Boolean {
                 inClose.countDown()
                 releaseClose.await()
@@ -232,7 +232,7 @@ class ProxyEventsHubTest {
             assertTrue(inClose.await(2, TimeUnit.SECONDS), "broadcastDraining should reach close(), holding the lock")
 
             val dispatchReturned = CountDownLatch(1)
-            Thread { openRun(hub, "ds"); dispatchReturned.countDown() }.start()
+            Thread { requestEditorSession(hub, "ds"); dispatchReturned.countDown() }.start()
             assertFalse(
                 dispatchReturned.await(300, TimeUnit.MILLISECONDS),
                 "dispatch must block while a drain holds the lock — a run enqueued now would land behind Draining",
@@ -249,7 +249,7 @@ class ProxyEventsHubTest {
     @Test
     fun `once draining, requestRefresh notifies nobody`() {
         val hub = ProxyEventsHub()
-        val channel = Channel<ControlEvent>(Channel.BUFFERED)
+        val channel = Channel<CpEvent>(Channel.BUFFERED)
         hub.register("ds", channel)
         assertEquals(1, hub.requestRefresh("ds"), "notified while live")
 

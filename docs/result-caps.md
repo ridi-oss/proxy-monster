@@ -86,7 +86,7 @@ never earned by network: a VM inside the VPC satisfies any CIDR rule.
 stops, cancels the statement on the target (`KILL QUERY` on MySQL,
 `CancelRequest` on PG), drains, and ends the result with an error the client
 sees as the terminator (MySQL `1317`, PG `57014`). The session and any open
-transaction survive. The run channel narrows its page to the cap and reports
+transaction survive. The editor session narrows its page to the cap and reports
 `truncated_by_cap` instead. A stored result is re-decided at view under the
 viewer, released as the longest prefix within the viewer's own caps, and charged
 to the viewer's rates.
@@ -144,4 +144,4 @@ to the viewer's rates.
 - Proxy, DB-backed on MySQL and PG: a 10,000-row read under a 500 cap returns
   exactly 500 rows then the error, the session and an open transaction survive,
   the completion reports 500/`error`; an uncapped verdict relays all rows.
-- Run channel: a capped result carries `truncated_by_cap`.
+- Editor session: a capped result carries `truncated_by_cap`.

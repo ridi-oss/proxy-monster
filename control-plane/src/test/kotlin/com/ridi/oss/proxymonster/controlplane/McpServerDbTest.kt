@@ -1249,12 +1249,12 @@ class McpServerDbTest {
     /** Stands in for an attached proxy that answers every OpenTableDetailChannel for [datasource] with [detail]. */
     private fun answerTableDetail(datasource: String, detail: com.ridi.oss.proxymonster.probe.TableDetail): AutoCloseable {
         val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default)
-        val events = kotlinx.coroutines.channels.Channel<com.ridi.oss.proxymonster.grpc.ControlEvent>(kotlinx.coroutines.channels.Channel.UNLIMITED)
+        val events = kotlinx.coroutines.channels.Channel<com.ridi.oss.proxymonster.grpc.CpEvent>(kotlinx.coroutines.channels.Channel.UNLIMITED)
         core.proxyEventsHub.register(datasource, events)
         scope.launch {
             for (event in events) {
                 if (!event.hasOpenTableDetailChannel()) continue
-                val outbound = kotlinx.coroutines.channels.Channel<com.ridi.oss.proxymonster.grpc.ControlTableDetailMsg>(
+                val outbound = kotlinx.coroutines.channels.Channel<com.ridi.oss.proxymonster.grpc.CpTableDetailMsg>(
                     kotlinx.coroutines.channels.Channel.BUFFERED,
                 )
                 val attached = core.tableDetailChannels.attach(event.openTableDetailChannel.sessionId, outbound) ?: continue

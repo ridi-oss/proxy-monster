@@ -140,7 +140,7 @@ class GrpcRegistrationHandlerDbTest {
     @Test
     fun `register rejects a proxy on a different wire-protocol version with a clear, actionable error`() = runBlocking {
         // A proxy from a different server-v* release (here, a higher version) must be turned away at Register —
-        // its first call — not left to fail later as a stalled run channel. An old proxy predating the field
+        // its first call — not left to fail later as a stalled editor session. An old proxy predating the field
         // sends 0, which fails this the same way.
         val failure = assertFailsWith<StatusException> {
             stub.register(

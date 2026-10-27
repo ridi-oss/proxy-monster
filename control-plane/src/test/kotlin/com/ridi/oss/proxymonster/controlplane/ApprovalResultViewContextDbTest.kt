@@ -1,6 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
-import com.ridi.oss.proxymonster.grpc.runError
+import com.ridi.oss.proxymonster.grpc.editorError
 
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
 import com.ridi.oss.proxymonster.controlplane.support.CpGoStack
@@ -57,7 +57,7 @@ import kotlin.test.assertTrue
 class ApprovalResultViewContextDbTest {
     private lateinit var fx: EnforcementFixture
     private lateinit var resultStore: QueryResultStore
-    private lateinit var runExecService: RunExecService
+    private lateinit var editorExecService: EditorExecService
     // The request detail is served by cp-go; the result route stays on the in-process Kotlin routes.
     private lateinit var cpGo: CpGoStack
     private lateinit var config: Config
@@ -80,7 +80,7 @@ class ApprovalResultViewContextDbTest {
         requireDockerOrSkip()
         fx = EnforcementFixture.postgres()
         resultStore = QueryResultStore(fx.dataSource, ResultCrypto(ByteArray(32) { it.toByte() }))
-        runExecService = RunExecService(ControlPlaneCore(fx.dataSource))
+        editorExecService = EditorExecService(ControlPlaneCore(fx.dataSource))
         config = Config(
             httpPort = 0,
             dbUrl = "",
@@ -224,7 +224,7 @@ class ApprovalResultViewContextDbTest {
                 resultStore,
                 fx.roleResolver,
                 fx.authz,
-                runExecService,
+                editorExecService,
             )
         }
     }
@@ -303,7 +303,7 @@ class ApprovalResultViewContextDbTest {
         assertNotNull(resultStore.startNextRun(reqId, executor))
         val requirements = fx.decide("SELECT id, email, ssn FROM users", channel = Channel.WORKFLOW_EXECUTOR, providedRoles = setOf(roleName)).resultRequirements!!
         resultStore.recordRequirements(reqId, requirements)
-        assertNotNull(resultStore.failRun(reqId, "approval.query_failed", diagnostic = runError { message = redactedForm; rawMessage = rawText; targetDbError = true }))
+        assertNotNull(resultStore.failRun(reqId, "approval.query_failed", diagnostic = editorError { message = redactedForm; rawMessage = rawText; targetDbError = true }))
         return reqId
     }
 

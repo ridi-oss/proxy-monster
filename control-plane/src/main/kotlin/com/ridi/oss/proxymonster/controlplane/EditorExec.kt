@@ -2,16 +2,16 @@ package com.ridi.oss.proxymonster.controlplane
 
 import com.google.protobuf.ByteString
 import com.ridi.oss.proxymonster.grpc.ResultRequirements
-import com.ridi.oss.proxymonster.grpc.ControlRunMsg
+import com.ridi.oss.proxymonster.grpc.CpEditorMsg
 import com.ridi.oss.proxymonster.grpc.EnfAction
-import com.ridi.oss.proxymonster.grpc.ProxyRunMsg
-import com.ridi.oss.proxymonster.grpc.RunError
-import com.ridi.oss.proxymonster.grpc.runError
-import com.ridi.oss.proxymonster.grpc.RunServing
-import com.ridi.oss.proxymonster.grpc.controlRunMsg
-import com.ridi.oss.proxymonster.grpc.runCancel
-import com.ridi.oss.proxymonster.grpc.runClose
-import com.ridi.oss.proxymonster.grpc.runQuery
+import com.ridi.oss.proxymonster.grpc.ProxyEditorMsg
+import com.ridi.oss.proxymonster.grpc.EditorError
+import com.ridi.oss.proxymonster.grpc.editorError
+import com.ridi.oss.proxymonster.grpc.EditorServing
+import com.ridi.oss.proxymonster.grpc.cpEditorMsg
+import com.ridi.oss.proxymonster.grpc.editorCancel
+import com.ridi.oss.proxymonster.grpc.editorClose
+import com.ridi.oss.proxymonster.grpc.editorQuery
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.TimeoutCancellationException
@@ -26,17 +26,17 @@ import kotlinx.coroutines.withTimeout
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
-// Floor for a one-shot run token's TTL; the effective TTL grows to cover PM_QUERY_TIMEOUT (see
-// RunExecService.runTokenTtlSeconds). The floor alone must outlast a full-length dial-back + target-DB open +
+// Floor for a one-shot editor-door token's TTL; the effective TTL grows to cover PM_QUERY_TIMEOUT (see
+// EditorExecService.tokenTtlSeconds). The floor alone must outlast a full-length dial-back + target-DB open +
 // exchange, so a short PM_QUERY_TIMEOUT cannot leave an opening session's token expiring mid-statement.
 private const val RUN_TOKEN_TTL_FLOOR_SECONDS = 900L
 // A persistent editor SESSION token outlives many queries; give it a generous absolute TTL (sliding
 // refresh-on-activity is a follow-up) and bound the session with idle-sweep + explicit close. Per-session
 // and revoked on close, so a long TTL is not a standing credential.
 private const val EDITOR_SESSION_TTL_SECONDS = 8 * 3600L
-// Headroom over PM_QUERY_TIMEOUT for a one-shot run token's TTL. The token must outlive the WHOLE run it
-// authorizes — the stream dial-back (RUN_DIALBACK_TIMEOUT_MS) + the hard-capped target-DB open
-// (RUN_OPEN_TIMEOUT_MS) + the query exchange (PM_QUERY_TIMEOUT + QUERY_EXCHANGE_GRACE_MS) — so this grace
+// Headroom over PM_QUERY_TIMEOUT for a one-shot editor-door token's TTL. The token must outlive the WHOLE run it
+// authorizes — the stream dial-back (EDITOR_DIALBACK_TIMEOUT_MS) + the hard-capped target-DB open
+// (EDITOR_OPEN_TIMEOUT_MS) + the query exchange (PM_QUERY_TIMEOUT + QUERY_EXCHANGE_GRACE_MS) — so this grace
 // must exceed dial-back + open + the exchange grace (15 + 120 + 150 = 285s), the remainder being a
 // revalidation buffer. The open being HARD-capped (not merely liveness-bounded) keeps that sum finite;
 // ConfigGuardTest pins the arithmetic so a change to any of those bounds cannot silently under-budget this.
@@ -46,29 +46,29 @@ private const val TOKEN_TTL_GRACE_SECONDS = 300L
 // pending run the new stream is for. This bounds only that — the proxy opening the stream and sending the id —
 // which is near-instant when the proxy is alive. A proxy that got the dispatch but cannot open the stream
 // (dead/wedged, or drained between dispatch and dial) fails here rather than hanging; the target-DB open that
-// follows is bounded by RUN_NO_PROGRESS_TIMEOUT_MS + RUN_OPEN_TIMEOUT_MS.
-internal const val RUN_DIALBACK_TIMEOUT_MS = 15_000L
-// Once the control-plane knows which run the stream is for, the proxy heartbeats RunProgress while it dials +
-// authenticates the target DB and runs its on-open catalog commands, then sends RunServing. The CP waits for
-// RunServing under TWO bounds: this no-progress gap — a dead or cut proxy stops heartbeating and fails fast —
+// follows is bounded by EDITOR_NO_PROGRESS_TIMEOUT_MS + EDITOR_OPEN_TIMEOUT_MS.
+internal const val EDITOR_DIALBACK_TIMEOUT_MS = 15_000L
+// Once the control-plane knows which run the stream is for, the proxy heartbeats EditorProgress while it dials +
+// authenticates the target DB and runs its on-open catalog commands, then sends EditorServing. The CP waits for
+// EditorServing under TWO bounds: this no-progress gap — a dead or cut proxy stops heartbeating and fails fast —
 // AND the absolute ceiling below. A heartbeat proves the PROXY is alive, NOT that the target DB is advancing, so
-// a proxy blocked on a wedged target-DB read keeps ticking; RUN_OPEN_TIMEOUT_MS is what bounds that.
-internal const val RUN_NO_PROGRESS_TIMEOUT_MS = 15_000L
+// a proxy blocked on a wedged target-DB read keeps ticking; EDITOR_OPEN_TIMEOUT_MS is what bounds that.
+internal const val EDITOR_NO_PROGRESS_TIMEOUT_MS = 15_000L
 // Absolute ceiling on the whole target-DB open (the dial-back above excluded): even while heartbeats keep the
 // no-progress bound reset, the open cannot exceed this. Sized at the old blind dial budget so a legitimately
 // slow open is not regressed, while a stalled-but-heartbeating one fails here instead of riding the target DB
-// read-idle timeout — and, being finite, it keeps the run token's TTL grace (which must outlast the open)
+// read-idle timeout — and, being finite, it keeps the editor-door token's TTL grace (which must outlast the open)
 // sufficient.
-internal const val RUN_OPEN_TIMEOUT_MS = 120_000L
+internal const val EDITOR_OPEN_TIMEOUT_MS = 120_000L
 // The table-detail channel keeps a single fixed dial bound (metadata-only introspection, no slow target DB
-// open with liveness heartbeats), so it is unaffected by the run-channel's dial-back/no-progress split.
+// open with liveness heartbeats), so it is unaffected by the editor-session's dial-back/no-progress split.
 internal const val DIAL_TIMEOUT_MS = 120_000L
 // Fallback only: every production path passes Config.queryExchangeTimeoutMs, which tracks
 // PM_QUERY_TIMEOUT plus a grace so the proxy's own watchdog always fires first. This value exists for
 // callers that supply no config, and matches the default query timeout on the same principle.
 internal const val EXCHANGE_TIMEOUT_MS = 630_000L
 
-/** A CP-driven request waiting for the proxy to dial its dedicated [ControlRunMsg] stream. */
+/** A CP-driven request waiting for the proxy to dial its dedicated [CpEditorMsg] stream. */
 data class PendingSession(
     val sessionId: String,
     val principal: String,
@@ -76,16 +76,16 @@ data class PendingSession(
     val ready: CompletableDeferred<Attached>,
 )
 
-/** The two directions of one claimed run stream. */
+/** The two directions of one claimed editor stream. */
 data class Attached(
-    val outbound: SendChannel<ControlRunMsg>,
-    val inbound: Channel<ProxyRunMsg>,
+    val outbound: SendChannel<CpEditorMsg>,
+    val inbound: Channel<ProxyEditorMsg>,
 )
 
 /** An open persistent editor session: one held proxy stream ([attached]) + its per-session token,
  *  keyed by [sessionId]. [mutex] serializes queries on the single stream (one statement at a time);
  *  [lastUsedNanos] drives idle reaping. Held only while the session is live; removed + revoked on close. */
-data class OpenEditorSession(
+data class EditorSession(
     val sessionId: String,
     val principal: String,
     val tokenId: Long,
@@ -95,7 +95,7 @@ data class OpenEditorSession(
     @Volatile var lastUsedNanos: Long = System.nanoTime(),
     val mutex: Mutex = Mutex(),
     // The HTTP requester IP observed at open, and the session token's hash — so [closeSession]
-    // can remove this session's [ControlPlaneCore.runRequesterIps] entry alongside its token revoke.
+    // can remove this session's [ControlPlaneCore.editorRequesterIps] entry alongside its token revoke.
     // Defaulted (null) so existing constructions (incl. test fixtures) compile unchanged.
     val requesterIp: String? = null,
     val tokenHash: String? = null,
@@ -105,21 +105,21 @@ data class OpenEditorSession(
 )
 
 /**
- * Matches a CP-driven request to the proxy-dialed `RunExec` stream that serves it, by the session id the
+ * Matches a CP-driven request to the proxy-dialed `EditorExec` stream that serves it, by the session id the
  * proxy sends as the stream's first frame. A session can be claimed exactly once: [attach] atomically
  * removes it from the pending map, so an unknown or duplicate stream is rejected instead of being allowed
  * to share another request's token/query.
  */
-class RunChannelRegistry {
+class EditorSessionRegistry {
     private val pending = ConcurrentHashMap<String, PendingSession>()
 
     fun register(session: PendingSession) {
         check(pending.putIfAbsent(session.sessionId, session) == null) {
-            "run session '${session.sessionId}' is already registered"
+            "editor session '${session.sessionId}' is already registered"
         }
     }
 
-    fun attach(sessionId: String, outbound: SendChannel<ControlRunMsg>): Attached? {
+    fun attach(sessionId: String, outbound: SendChannel<CpEditorMsg>): Attached? {
         val session = pending.remove(sessionId) ?: return null
         val attached = Attached(outbound, Channel(Channel.BUFFERED))
         session.ready.complete(attached)
@@ -131,7 +131,7 @@ class RunChannelRegistry {
 
 /**
  * A CP-only carrier for the HTTP requester IP (docs/authz-context.md) observed when an
- * ephemeral EDITOR/APPROVER_EXEC token was minted ([RunExecService.openSession] / [RunExecService.run]),
+ * ephemeral EDITOR/APPROVER_EXEC token was minted ([EditorExecService.openSession] / [EditorExecService.run]),
  * keyed by the token's SHA-256 hash ([tokenHash] — never the raw token, mirroring `proxy_token.token_hash`).
  * Consumed by the gRPC `decide` handler (ControlPlaneGrpcService), which sees only the resolved token — not
  * the HTTP request that minted it — so this is how the requester_ip attested at mint time reaches the async
@@ -139,12 +139,12 @@ class RunChannelRegistry {
  * success and failure/cleanup paths) so a stale entry never outlives its token. An absent entry (never minted
  * with an IP, or already removed) means [get] returns null — requester_ip is then simply absent on that
  * decision, fail-closed (a tag/policy conditioned on it doesn't fire), never a stale/wrong IP resurrected from
- * a since-revoked token. Lives on [ControlPlaneCore] (`runRequesterIps`) for the SAME reason `runChannels`
+ * a since-revoked token. Lives on [ControlPlaneCore] (`editorRequesterIps`) for the SAME reason `editorSessions`
  * does: [com.ridi.oss.proxymonster.controlplane.grpc.ControlPlaneGrpcService] is constructed independently in
- * Main.kt, before `Application.module`'s [RunExecService] exists — only `core`-held state reaches both.
+ * Main.kt, before `Application.module`'s [EditorExecService] exists — only `core`-held state reaches both.
  *
- * For a ONE-SHOT token ([RunExecService.run]) the entry is a constant of the token's short life. For a
- * PERSISTENT session ([RunExecService.openSession]) the token outlives many queries, so [runOnSession]
+ * For a ONE-SHOT token ([EditorExecService.run]) the entry is a constant of the token's short life. For a
+ * PERSISTENT session ([EditorExecService.openSession]) the token outlives many queries, so [runOnSession]
  * REFRESHES the entry ([set]) to each query's own requester_ip before the decision — requester_ip is resolved
  * fresh per decision (authz-context.md), never frozen at open time, so a session opened from one network but
  * queried from another decides against the CURRENT request's IP, not the stale one.
@@ -174,9 +174,9 @@ class RequesterIpRegistry {
     }
 }
 
-sealed class RunExecException(message: String, cause: Throwable? = null) : Exception(message, cause)
+sealed class EditorExecException(message: String, cause: Throwable? = null) : Exception(message, cause)
 
-class NoProxyAttachedException : RunExecException("no proxy is attached to this datasource")
+class NoProxyAttachedException : EditorExecException("no proxy is attached to this datasource")
 
 /**
  * A proxy IS attached, but its event stream would not accept the request — already closed by a reset the
@@ -185,12 +185,12 @@ class NoProxyAttachedException : RunExecException("no proxy is attached to this 
  * unusable, and the wedged one has been dropped so the proxy's own reconnect can replace it. Retrying
  * after that reconnect is the fix; looking for an absent proxy is not.
  */
-class ProxyStreamWedgedException : RunExecException("the proxy's event stream would not accept the request")
+class ProxyStreamWedgedException : EditorExecException("the proxy's event stream would not accept the request")
 
 class ProxyRunTimeoutException(cause: Throwable? = null) :
-    RunExecException("the proxy run channel timed out", cause)
+    EditorExecException("the proxy editor session timed out", cause)
 
-open class ProxyRunException(message: String, cause: Throwable? = null) : RunExecException(message, cause)
+open class ProxyRunException(message: String, cause: Throwable? = null) : EditorExecException(message, cause)
 
 // The target DB's own ERR for the executed statement. [message] is the RAW backend text (e.g.
 // `duplicate key value (ssn)=(123-45-6789)`) — never log or return it as-is; release [decidedMessage],
@@ -204,17 +204,17 @@ class TargetDbRunException(
     /** The form the run's own decision dictated: redacted when it sanitized diagnostics, raw otherwise. */
     val decidedMessage: String get() = if (sanitized) redactedMessage else message.orEmpty()
 
-    fun toDiagnostic(): RunError = runError {
+    fun toDiagnostic(): EditorError = editorError {
         message = redactedMessage
         rawMessage = this@TargetDbRunException.message.orEmpty()
         targetDbError = true
     }
 }
 
-class RunCanceledBeforeStartException : RunExecException("the run was canceled before it started")
+class RunCanceledBeforeStartException : EditorExecException("the run was canceled before it started")
 
-/** Runs one CP-driven query over a proxy-dialed `RunExec` stream. */
-class RunExecService(
+/** Runs one CP-driven query over a proxy-dialed `EditorExec` stream. */
+class EditorExecService(
     private val core: ControlPlaneCore,
     // The configured PM_QUERY_TIMEOUT ceiling a single statement may run for. The run/session token must
     // outlive the whole exchange it backs (dial + this window + revalidation), else a genuine long query
@@ -228,22 +228,22 @@ class RunExecService(
      * A registered in-flight run, tracked so [cancelActiveRun] can reach its stream. The [gate] serializes
      * "veto-or-send the query" against "cancel", so a cancel is strictly ordered relative to the query send:
      * it either wins the gate first and vetoes the send (nothing leaves the CP), or the query is sent first
-     * and the cancel's `RunCancel` lands AFTER it on the stream — never before, which an idle proxy would
+     * and the cancel's `EditorCancel` lands AFTER it on the stream — never before, which an idle proxy would
      * drop, letting a just-canceled query run anyway.
      */
-    private class ActiveRun(val outbound: SendChannel<ControlRunMsg>) {
+    private class ActiveRun(val outbound: SendChannel<CpEditorMsg>) {
         val gate = Mutex()
         var canceled = false
         var sent = false
     }
 
     // An editor SESSION token keeps its generous absolute TTL but is never allowed to expire before a
-    // single query on it could finish. A one-shot run token is sized per batch, at its mint site.
+    // single query on it could finish. A one-shot editor-door token is sized per batch, at its mint site.
     private val editorSessionTtlSeconds = editorSessionTtlSeconds(queryTimeoutSeconds)
 
     /**
      * Cancel the in-flight run for [taskId] if one is registered. Under the run's [ActiveRun.gate]: if the
-     * query was already dispatched, a `RunCancel` is sent down its stream (the proxy cancels the target DB
+     * query was already dispatched, a `EditorCancel` is sent down its stream (the proxy cancels the target DB
      * statement); if it has NOT been dispatched yet, the pending send is vetoed (the run coroutine throws
      * [RunCanceledBeforeStartException]) so the query never leaves the CP. Returns whether a run was found.
      */
@@ -251,24 +251,24 @@ class RunExecService(
         val run = activeRuns[taskId] ?: return false
         run.gate.withLock {
             run.canceled = true
-            if (run.sent) run.outbound.trySend(controlRunMsg { cancel = runCancel {} })
+            if (run.sent) run.outbound.trySend(cpEditorMsg { cancel = editorCancel {} })
         }
         return true
     }
 
     /**
-     * Dispatch a `RunQuery` under the task's cancel gate (when tracked): if a cancel already won, veto the
+     * Dispatch a `EditorQuery` under the task's cancel gate (when tracked): if a cancel already won, veto the
      * send with [RunCanceledBeforeStartException]; otherwise mark it sent and send UNDER the gate so a
      * racing cancel is ordered strictly after. [preflight] (a DB status re-check) runs inside the gate too.
      */
     private suspend fun sendRunQuery(
         run: ActiveRun?,
-        outbound: SendChannel<ControlRunMsg>,
+        outbound: SendChannel<CpEditorMsg>,
         preflight: (() -> Boolean)?,
         sql: String,
         maxRows: Int,
     ) {
-        val msg = controlRunMsg { query = runQuery { this.sql = sql; this.maxRows = maxRows.coerceIn(0, 5000) } }
+        val msg = cpEditorMsg { query = editorQuery { this.sql = sql; this.maxRows = maxRows.coerceIn(0, 5000) } }
         if (run == null) {
             outbound.send(msg)
             return
@@ -281,7 +281,7 @@ class RunExecService(
     }
 
     /**
-     * Run one query over a proxy-dialed RunExec stream, decided as [principal]; the proxy executes on the
+     * Run one query over a proxy-dialed EditorExec stream, decided as [principal]; the proxy executes on the
      * target and streams back the ENFORCED (decided + masked) result — the control-plane never dials.
      *
      * [approverExec] selects the ephemeral token kind: false mints an EDITOR token (the web editor), true
@@ -295,7 +295,7 @@ class RunExecService(
      * Empty (the editor / no-R approver-exec) => decide under [principal]'s own server-resolved roles.
      *
      * [requesterIp] is the requester-IP carrier: the HTTP caller's requester IP, recorded into
-     * [ControlPlaneCore.runRequesterIps] under this token's hash so the gRPC decide handler can attach it
+     * [ControlPlaneCore.editorRequesterIps] under this token's hash so the gRPC decide handler can attach it
      * to the Cedar context at decide time. This is the ONLY minter of APPROVER_EXEC tokens — [openSession]
      * mints EDITOR only — so covering it is what makes APPROVER_EXEC's requester_ip real, not just EDITOR's.
      */
@@ -310,9 +310,9 @@ class RunExecService(
         taskId: Long? = null,
         preflight: (() -> Boolean)? = null,
         exchangeTimeoutMs: Long = EXCHANGE_TIMEOUT_MS,
-        dialTimeoutMs: Long = RUN_DIALBACK_TIMEOUT_MS,
-        noProgressMs: Long = RUN_NO_PROGRESS_TIMEOUT_MS,
-        openTimeoutMs: Long = RUN_OPEN_TIMEOUT_MS,
+        dialTimeoutMs: Long = EDITOR_DIALBACK_TIMEOUT_MS,
+        noProgressMs: Long = EDITOR_NO_PROGRESS_TIMEOUT_MS,
+        openTimeoutMs: Long = EDITOR_OPEN_TIMEOUT_MS,
     ): QueryResponse {
         var only: QueryResponse? = null
         runBatch(
@@ -335,8 +335,8 @@ class RunExecService(
      * Enforcement stays per statement — every one round-trips its own Decide.
      */
     private suspend fun runStatements(
-        outbound: SendChannel<ControlRunMsg>,
-        inbound: Channel<ProxyRunMsg>,
+        outbound: SendChannel<CpEditorMsg>,
+        inbound: Channel<ProxyEditorMsg>,
         activeRun: ActiveRun?,
         statementCount: Int,
         maxRows: Int,
@@ -366,7 +366,7 @@ class RunExecService(
             } catch (e: Exception) {
                 currentCoroutineContext().ensureActive()
                 onStreamFailure()
-                throw ProxyRunException("proxy run stream closed before the query was sent", e)
+                throw ProxyRunException("proxy editor stream closed before the query was sent", e)
             }
             val response = try {
                 withTimeout(exchangeTimeoutMs) { collectResponse(inbound, started, onNamespace, onDecision) }
@@ -403,9 +403,9 @@ class RunExecService(
         taskId: Long? = null,
         preflight: (() -> Boolean)? = null,
         exchangeTimeoutMs: Long = EXCHANGE_TIMEOUT_MS,
-        dialTimeoutMs: Long = RUN_DIALBACK_TIMEOUT_MS,
-        noProgressMs: Long = RUN_NO_PROGRESS_TIMEOUT_MS,
-        openTimeoutMs: Long = RUN_OPEN_TIMEOUT_MS,
+        dialTimeoutMs: Long = EDITOR_DIALBACK_TIMEOUT_MS,
+        noProgressMs: Long = EDITOR_NO_PROGRESS_TIMEOUT_MS,
+        openTimeoutMs: Long = EDITOR_OPEN_TIMEOUT_MS,
         // The connection's default namespaces; null keeps the datasource's.
         namespaces: Collection<String>? = null,
         // The schema the target connection opens in; null keeps the datasource's.
@@ -419,12 +419,12 @@ class RunExecService(
                 // this for the ephemeral kinds, so it can never become a client-asserted role list.
                 roles = assumeRoles.toList(),
                 name = null,
-                ttlSeconds = runTokenTtlSeconds(queryTimeoutSeconds, statementCount),
+                ttlSeconds = tokenTtlSeconds(queryTimeoutSeconds, statementCount),
                 c = c,
             )
         } ?: throw ProxyRunException("principal is deprovisioned")
         val issuedTokenHash = tokenHash(issued.token)
-        core.runRequesterIps.put(issuedTokenHash, requesterIp)
+        core.editorRequesterIps.put(issuedTokenHash, requesterIp)
 
         val kind = (if (approverExec) TokenKind.APPROVER_EXEC else TokenKind.EDITOR).name
         val opened = core.connectionCatalog.open(
@@ -439,9 +439,9 @@ class RunExecService(
         var activeRun: ActiveRun? = null
 
         try {
-            core.runChannels.register(pending)
+            core.editorSessions.register(pending)
             registered = true
-            when (core.proxyEventsHub.requestOpenRun(ds.name, sessionId, issued.token, opened.connectionId, opened.onOpen, defaultSchema)) {
+            when (core.proxyEventsHub.requestOpenEditorSession(ds.name, sessionId, issued.token, opened.connectionId, opened.onOpen, defaultSchema)) {
                 ProxyEventsHub.Dispatch.SENT -> Unit
                 ProxyEventsHub.Dispatch.NOT_ATTACHED -> throw NoProxyAttachedException()
                 ProxyEventsHub.Dispatch.WEDGED -> throw ProxyStreamWedgedException()
@@ -455,8 +455,8 @@ class RunExecService(
 
             val channel = attached
             // The stream is matched to this run the moment the proxy opens it (its first frame carries the
-            // run's id); the target-DB open is still in flight. Wait for RunServing, bounding the wait by
-            // lack of progress (each RunProgress heartbeat resets it) so a stalled or broken open fails fast
+            // run's id); the target-DB open is still in flight. Wait for EditorServing, bounding the wait by
+            // lack of progress (each EditorProgress heartbeat resets it) so a stalled or broken open fails fast
             // instead of riding a blind dial budget.
             awaitServing(channel.inbound, noProgressMs, openTimeoutMs)
             // Keep 0 as the wire "use the proxy's default (500)" sentinel; the proxy re-coerces to [1,5000]
@@ -480,12 +480,12 @@ class RunExecService(
             if (taskId != null && ar != null) activeRuns.remove(taskId, ar)
             // If cancellation/timeout races the claim, remove wins while still pending; otherwise attach
             // already won and will complete [ready] synchronously, giving cleanup the outbound channel.
-            if (registered && attached == null && core.runChannels.remove(sessionId) == null) {
+            if (registered && attached == null && core.editorSessions.remove(sessionId) == null) {
                 attached = withContext(NonCancellable) { pending.ready.await() }
             }
             try {
-                attached?.outbound?.trySend(controlRunMsg { close = runClose {} })
-                // Also close inbound so the gRPC handler tears down promptly. The RunClose above aborts the
+                attached?.outbound?.trySend(cpEditorMsg { close = editorClose {} })
+                // Also close inbound so the gRPC handler tears down promptly. The EditorClose above aborts the
                 // proxy's target-DB open (it reads its inbound throughout); closing inbound here makes the handler's
                 // next forward-send fail and end its collect, so the handler and its buffered frames aren't
                 // retained until the proxy's stream close propagates back. Idempotent with the handler's own
@@ -496,8 +496,8 @@ class RunExecService(
                     core.tokenStore.revoke(issued.id, principal)
                 } finally {
                     closeConnectionCatalog(opened.connectionId, ds.name)
-                    core.runRequesterIps.remove(issuedTokenHash)
-                    if (registered) core.runChannels.remove(sessionId)
+                    core.editorRequesterIps.remove(issuedTokenHash)
+                    if (registered) core.editorSessions.remove(sessionId)
                 }
             }
         }
@@ -511,7 +511,7 @@ class RunExecService(
     // against the connection's live namespace/catalog); a persistent connection is a data-plane fact, not an
     // authz relaxation. The per-session token carries a fixed absolute TTL (sliding refresh-on-activity is a
     // follow-up); the session is bounded by idle-sweep and explicit close.
-    private val openSessions = ConcurrentHashMap<String, OpenEditorSession>()
+    private val openSessions = ConcurrentHashMap<String, EditorSession>()
 
     /**
      * Open a persistent editor session: mint a per-session EDITOR token, dial one proxy stream, and hold it.
@@ -526,7 +526,7 @@ class RunExecService(
             core.tokenStore.issue(TokenKind.EDITOR, principal, emptyList(), null, editorSessionTtlSeconds, c)
         } ?: throw ProxyRunException("principal is deprovisioned")
         val issuedTokenHash = tokenHash(issued.token)
-        core.runRequesterIps.put(issuedTokenHash, requesterIp)
+        core.editorRequesterIps.put(issuedTokenHash, requesterIp)
         val opened = core.connectionCatalog.open(
             Binding(ds.name, principal, TokenKind.EDITOR.name, ds.effectiveCatalog, ds.engine),
             ds.namespaces(ds.defaultSchemas + ds.engine.systemSchemas),
@@ -536,20 +536,20 @@ class RunExecService(
         val pending = PendingSession(sessionId, principal, issued.id, CompletableDeferred())
         var attached: Attached? = null
         try {
-            core.runChannels.register(pending)
-            when (core.proxyEventsHub.requestOpenRun(ds.name, sessionId, issued.token, opened.connectionId, opened.onOpen)) {
+            core.editorSessions.register(pending)
+            when (core.proxyEventsHub.requestOpenEditorSession(ds.name, sessionId, issued.token, opened.connectionId, opened.onOpen)) {
                 ProxyEventsHub.Dispatch.SENT -> Unit
                 ProxyEventsHub.Dispatch.NOT_ATTACHED -> throw NoProxyAttachedException()
                 ProxyEventsHub.Dispatch.WEDGED -> throw ProxyStreamWedgedException()
             }
             attached = try {
-                withTimeout(RUN_DIALBACK_TIMEOUT_MS) { pending.ready.await() }
+                withTimeout(EDITOR_DIALBACK_TIMEOUT_MS) { pending.ready.await() }
             } catch (e: TimeoutCancellationException) {
                 throw ProxyRunTimeoutException(e)
             }
-            // Wait for the target-DB open to finish (RunServing), bounded by lack of progress — see run().
-            val serving = awaitServing(attached.inbound, RUN_NO_PROGRESS_TIMEOUT_MS, RUN_OPEN_TIMEOUT_MS)
-            openSessions[sessionId] = OpenEditorSession(
+            // Wait for the target-DB open to finish (EditorServing), bounded by lack of progress — see run().
+            val serving = awaitServing(attached.inbound, EDITOR_NO_PROGRESS_TIMEOUT_MS, EDITOR_OPEN_TIMEOUT_MS)
+            openSessions[sessionId] = EditorSession(
                 sessionId, principal, issued.id, ds.name, attached, opened.connectionId,
                 requesterIp = requesterIp, tokenHash = issuedTokenHash,
                 namespace = serving.namespaceOrNull(),
@@ -558,18 +558,18 @@ class RunExecService(
         } catch (e: Throwable) {
             // If the dial raced the claim, `remove` wins while still pending; otherwise attach already
             // completed [ready], so recover the outbound channel (NonCancellable) to send a close.
-            if (attached == null && core.runChannels.remove(sessionId) == null) {
+            if (attached == null && core.editorSessions.remove(sessionId) == null) {
                 attached = withContext(NonCancellable) { pending.ready.await() }
             }
-            attached?.outbound?.trySend(controlRunMsg { close = runClose {} })
-            // Close inbound too, so the gRPC handler tears down promptly (see run()'s finally). The RunClose
+            attached?.outbound?.trySend(cpEditorMsg { close = editorClose {} })
+            // Close inbound too, so the gRPC handler tears down promptly (see run()'s finally). The EditorClose
             // above aborts the proxy's target-DB open; closing inbound ends the handler without waiting for the
             // proxy's stream close to propagate. On success the held session keeps the stream.
             attached?.inbound?.close()
             runCatching { core.tokenStore.revoke(issued.id, principal) }
             closeConnectionCatalog(opened.connectionId, ds.name)
-            core.runRequesterIps.remove(issuedTokenHash)
-            core.runChannels.remove(sessionId)
+            core.editorRequesterIps.remove(issuedTokenHash)
+            core.editorSessions.remove(sessionId)
             throw e
         }
     }
@@ -654,7 +654,7 @@ class RunExecService(
                             // Refresh the requester_ip this statement's decision will see to the CURRENT
                             // request's IP, under the mutex + before the query is sent, so the proxy's decide
                             // never reads a stale open-time one.
-                            session.tokenHash?.let { core.runRequesterIps.set(it, requesterIp) }
+                            session.tokenHash?.let { core.editorRequesterIps.set(it, requesterIp) }
                         },
                         onStreamFailure = { closeSession(sessionId) },
                     )
@@ -668,7 +668,7 @@ class RunExecService(
             // revoked. Sweep it back out so a stale entry can never outlive its token (idempotent with
             // closeSession's own remove). On the normal path the session is still live, so this is a no-op.
             if (openSessions[sessionId] !== session) {
-                session.tokenHash?.let(core.runRequesterIps::remove)
+                session.tokenHash?.let(core.editorRequesterIps::remove)
             }
         }
     }
@@ -690,7 +690,7 @@ class RunExecService(
      * id exists. Returns true iff a session the caller owned was closed.
      */
     /** Returns the open session if [principal] owns it, else null. */
-    fun sessionOwnedBy(sessionId: String, principal: String): OpenEditorSession? =
+    fun sessionOwnedBy(sessionId: String, principal: String): EditorSession? =
         openSessions[sessionId]?.takeIf { it.principal == principal }
 
     fun closeSessionOwnedBy(sessionId: String, principal: String): Boolean {
@@ -707,12 +707,12 @@ class RunExecService(
     fun closeSession(sessionId: String) {
         val session = openSessions.remove(sessionId) ?: return
         try {
-            session.attached.outbound.trySend(controlRunMsg { close = runClose {} })
+            session.attached.outbound.trySend(cpEditorMsg { close = editorClose {} })
         } finally {
             runCatching { core.tokenStore.revoke(session.tokenId, session.principal) }
             closeConnectionCatalog(session.connectionId, session.datasourceName)
-            session.tokenHash?.let(core.runRequesterIps::remove)
-            core.runChannels.remove(sessionId)
+            session.tokenHash?.let(core.editorRequesterIps::remove)
+            core.editorSessions.remove(sessionId)
         }
     }
 
@@ -730,16 +730,16 @@ class RunExecService(
     }
 
     /**
-     * Wait for the proxy to finish its target-DB open and announce RunServing, under two bounds. A stream
+     * Wait for the proxy to finish its target-DB open and announce EditorServing, under two bounds. A stream
      * closed before serving (a redeploy cutting the run) fails at once; a proxy that stops heartbeating fails
-     * within [noProgressMs]; and — because a RunProgress heartbeat proves the proxy is alive but NOT that its
+     * within [noProgressMs]; and — because an EditorProgress heartbeat proves the proxy is alive but NOT that its
      * target-DB open is advancing — a proxy that keeps ticking while its open is wedged fails at the absolute
-     * [openTimeoutMs] ceiling rather than riding the target DB read-idle timeout. A terminal RunError during the
+     * [openTimeoutMs] ceiling rather than riding the target DB read-idle timeout. A terminal EditorError during the
      * open (target DB unreachable, catalog init failed) is surfaced as-is. The stream is already matched to
      * this run (attached), so every one of these is attributable — there is no blind wait, unlike the old
-     * pre-RunReady gap.
+     * pre-EditorReady gap.
      */
-    private suspend fun awaitServing(inbound: Channel<ProxyRunMsg>, noProgressMs: Long, openTimeoutMs: Long): RunServing {
+    private suspend fun awaitServing(inbound: Channel<ProxyEditorMsg>, noProgressMs: Long, openTimeoutMs: Long): EditorServing {
         val deadlineNanos = System.nanoTime() + openTimeoutMs * 1_000_000
         while (true) {
             val remainingMs = (deadlineNanos - System.nanoTime()) / 1_000_000
@@ -750,7 +750,7 @@ class RunExecService(
                 throw ProxyRunTimeoutException(e)
             }
             val message = result.getOrNull()
-                ?: throw ProxyRunException("proxy run stream closed before it was ready to serve")
+                ?: throw ProxyRunException("proxy editor stream closed before it was ready to serve")
             when {
                 message.hasProgress() -> continue
                 message.hasServing() -> return message.serving
@@ -766,12 +766,12 @@ class RunExecService(
     }
 
     private suspend fun collectResponse(
-        inbound: Channel<ProxyRunMsg>,
+        inbound: Channel<ProxyEditorMsg>,
         started: Long,
         onNamespace: (List<String>?) -> Unit = {},
         onDecision: (ResultRequirements) -> Unit = {},
     ): QueryResponse {
-        var decision: com.ridi.oss.proxymonster.grpc.RunDecision? = null
+        var decision: com.ridi.oss.proxymonster.grpc.EditorDecision? = null
         var action: EnfAction? = null
         var columns: List<String>? = null
         val rows = ArrayList<List<String?>>()
@@ -819,7 +819,7 @@ class RunExecService(
                     val receivedAction = action
                         ?: throw ProxyRunException("proxy completed a run query without a verdict")
                     if (receivedAction == EnfAction.DENY) {
-                        throw ProxyRunException("proxy sent RunDone after a deny decision")
+                        throw ProxyRunException("proxy sent EditorDone after a deny decision")
                     }
                     val rowsAffected = message.done.rowsAffected.let { if (it == -1) null else it }
                     // An absent namespace means the proxy could not read it: it becomes unknown, not unchanged.
@@ -847,10 +847,10 @@ class RunExecService(
                 }
 
                 message.hasSessionReady() -> throw ProxyRunException(
-                    "proxy sent RunReady more than once",
+                    "proxy sent EditorReady more than once",
                 )
 
-                message.hasServing() -> throw ProxyRunException("proxy sent RunServing more than once")
+                message.hasServing() -> throw ProxyRunException("proxy sent EditorServing more than once")
 
                 // A heartbeat after serving carries no result — ignore it rather than fail the run.
                 message.hasProgress() -> Unit
@@ -859,11 +859,11 @@ class RunExecService(
             }
         }
 
-        throw ProxyRunException("proxy run stream closed before a terminal response")
+        throw ProxyRunException("proxy editor stream closed before a terminal response")
     }
 
     private fun response(
-        decision: com.ridi.oss.proxymonster.grpc.RunDecision,
+        decision: com.ridi.oss.proxymonster.grpc.EditorDecision,
         action: EnfAction,
         columns: List<String>,
         rows: List<List<String?>>,
@@ -875,8 +875,8 @@ class RunExecService(
         val recorded = decisionId?.let { core.auditStore.get(it) }
         val piiTouched = recorded?.piiTouched ?: emptyList()
         val latencyMs = (System.nanoTime() - started) / 1_000_000
-        // The proxy's run channel sends no completion report, so this is the one writer that charges a
-        // run-channel result to the principal's relayed volume; synchronous so the next Decide sees it.
+        // The proxy's editor session sends no completion report, so this is the one writer that charges a
+        // editor-session result to the principal's relayed volume; synchronous so the next Decide sees it.
         if (recorded != null && decisionId != null && action != EnfAction.DENY) {
             val (rowCount, bytes) = resultVolume(rows)
             core.auditStore.insert(completionEvent(recorded, decisionId, rowCount, bytes, "ok", latencyMs))
@@ -899,16 +899,16 @@ class RunExecService(
     }
 
     companion object {
-        // Must match goproxy `run.QueryTimeoutMessage` verbatim: the exact RunError text the proxy sends when
+        // Must match goproxy `editor.QueryTimeoutMessage` verbatim: the exact EditorError text the proxy sends when
         // its PM_QUERY_TIMEOUT watchdog aborts a statement, so a timed-out run is attributed as a timeout.
         const val QUERY_TIMEOUT_MESSAGE = "statement aborted: PM_QUERY_TIMEOUT exceeded"
 
         /**
-         * TTL for a one-shot run token, sized to outlive the whole batch it authorizes: [statementCount]
+         * TTL for a one-shot editor-door token, sized to outlive the whole batch it authorizes: [statementCount]
          * statements share one token, each able to take a full [queryTimeoutSeconds] window. The token is
          * revoked when the run ends, so this only has to cover the run that a crash left un-revoked.
          */
-        fun runTokenTtlSeconds(queryTimeoutSeconds: Long, statementCount: Int): Long {
+        fun tokenTtlSeconds(queryTimeoutSeconds: Long, statementCount: Int): Long {
             // Saturating: PM_QUERY_TIMEOUT's ceiling is near Long.MAX, so the multiplication would
             // overflow to a NEGATIVE ttl — a token already expired at issue.
             val statements = maxOf(1L, statementCount.toLong())
@@ -925,4 +925,4 @@ class RunExecService(
     }
 }
 
-private fun RunServing.namespaceOrNull(): List<String>? = if (hasNamespace()) namespace.searchPathList else null
+private fun EditorServing.namespaceOrNull(): List<String>? = if (hasNamespace()) namespace.searchPathList else null

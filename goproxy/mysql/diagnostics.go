@@ -33,7 +33,7 @@ func sanitizeErrPacket(payload []byte) []byte {
 }
 
 // redactedErrString renders the "ERROR <essno> (<SQLSTATE>): <message>" form of a sanitized ERR packet — the
-// diagnostic-redacted string a run stores for a masked view.
+// diagnostic-redacted string an editor session stores for a masked view.
 func redactedErrString(payload []byte) string {
 	if len(payload) < 3 || payload[0] != 0xff {
 		return ""

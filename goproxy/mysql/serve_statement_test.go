@@ -120,7 +120,7 @@ func TestRunStatementMySQLResetsAfterTargetDbError(t *testing.T) {
 	}
 }
 
-// A run result is stored and re-gated per viewer at view time, so a failed run surfaces the target-DB ERR
+// An editor-session result is stored and re-gated per viewer at view time, so a failed statement surfaces the target-DB ERR
 // with BOTH forms: the raw message (released to a viewer who reads unmasked) and the redacted essno symbol
 // (released to a masked viewer). The CP picks per viewer; capture does not depend on the decision (#202/#228).
 // The repro raises MySQL 1242.

@@ -32,7 +32,7 @@ const (
 	ControlPlane_PushSchemaFragment_FullMethodName = "/proxymonster.v1.ControlPlane/PushSchemaFragment"
 	ControlPlane_CloseConnection_FullMethodName    = "/proxymonster.v1.ControlPlane/CloseConnection"
 	ControlPlane_Events_FullMethodName             = "/proxymonster.v1.ControlPlane/Events"
-	ControlPlane_RunExec_FullMethodName            = "/proxymonster.v1.ControlPlane/RunExec"
+	ControlPlane_EditorExec_FullMethodName         = "/proxymonster.v1.ControlPlane/EditorExec"
 	ControlPlane_TableDetailExec_FullMethodName    = "/proxymonster.v1.ControlPlane/TableDetailExec"
 	ControlPlane_ReportCompletion_FullMethodName   = "/proxymonster.v1.ControlPlane/ReportCompletion"
 )
@@ -57,15 +57,15 @@ type ControlPlaneClient interface {
 	// Proxy-initiated connection close; the control-plane idle-sweep is the backstop.
 	CloseConnection(ctx context.Context, in *CloseConnectionRequest, opts ...grpc.CallOption) (*CloseConnectionResponse, error)
 	// Proxy-initiated stream: liveness (stream open == alive) + refresh push.
-	Events(ctx context.Context, in *EventsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ControlEvent], error)
+	Events(ctx context.Context, in *EventsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[CpEvent], error)
 	// The CP-driven execution channel. PROXY-DIALED bidi: the control-plane nudges the proxy over Events
-	// (OpenRunChannel) to open this, so data flows both ways without the control-plane ever dialing into the
+	// (OpenEditorSession) to open this, so data flows both ways without the control-plane ever dialing into the
 	// proxy. It serves web-editor and workflow execution through the same target DB + Decide path, streaming
 	// the decision and masked rows back.
-	RunExec(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[ProxyRunMsg, ControlRunMsg], error)
+	EditorExec(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[ProxyEditorMsg, CpEditorMsg], error)
 	// On-demand admin table-browser introspection. Also PROXY-DIALED: request selectors ride the Events
 	// nudge and the rich shared TableDetail response returns as JSON on this short-lived channel.
-	TableDetailExec(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[ProxyTableDetailMsg, ControlTableDetailMsg], error)
+	TableDetailExec(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[ProxyTableDetailMsg, CpTableDetailMsg], error)
 	// Post-execution result-volume report the proxy sends after it finishes relaying one statement's result
 	// to the client. Audit-only: it records a completion event chained onto the decision's audit row (never
 	// a re-decision), giving the audit monitor the rows/bytes signal the pre-execution decision could not
@@ -152,13 +152,13 @@ func (c *controlPlaneClient) CloseConnection(ctx context.Context, in *CloseConne
 	return out, nil
 }
 
-func (c *controlPlaneClient) Events(ctx context.Context, in *EventsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ControlEvent], error) {
+func (c *controlPlaneClient) Events(ctx context.Context, in *EventsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[CpEvent], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	stream, err := c.cc.NewStream(ctx, &ControlPlane_ServiceDesc.Streams[0], ControlPlane_Events_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
-	x := &grpc.GenericClientStream[EventsRequest, ControlEvent]{ClientStream: stream}
+	x := &grpc.GenericClientStream[EventsRequest, CpEvent]{ClientStream: stream}
 	if err := x.ClientStream.SendMsg(in); err != nil {
 		return nil, err
 	}
@@ -169,33 +169,33 @@ func (c *controlPlaneClient) Events(ctx context.Context, in *EventsRequest, opts
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type ControlPlane_EventsClient = grpc.ServerStreamingClient[ControlEvent]
+type ControlPlane_EventsClient = grpc.ServerStreamingClient[CpEvent]
 
-func (c *controlPlaneClient) RunExec(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[ProxyRunMsg, ControlRunMsg], error) {
+func (c *controlPlaneClient) EditorExec(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[ProxyEditorMsg, CpEditorMsg], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &ControlPlane_ServiceDesc.Streams[1], ControlPlane_RunExec_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &ControlPlane_ServiceDesc.Streams[1], ControlPlane_EditorExec_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
-	x := &grpc.GenericClientStream[ProxyRunMsg, ControlRunMsg]{ClientStream: stream}
+	x := &grpc.GenericClientStream[ProxyEditorMsg, CpEditorMsg]{ClientStream: stream}
 	return x, nil
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type ControlPlane_RunExecClient = grpc.BidiStreamingClient[ProxyRunMsg, ControlRunMsg]
+type ControlPlane_EditorExecClient = grpc.BidiStreamingClient[ProxyEditorMsg, CpEditorMsg]
 
-func (c *controlPlaneClient) TableDetailExec(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[ProxyTableDetailMsg, ControlTableDetailMsg], error) {
+func (c *controlPlaneClient) TableDetailExec(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[ProxyTableDetailMsg, CpTableDetailMsg], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	stream, err := c.cc.NewStream(ctx, &ControlPlane_ServiceDesc.Streams[2], ControlPlane_TableDetailExec_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
-	x := &grpc.GenericClientStream[ProxyTableDetailMsg, ControlTableDetailMsg]{ClientStream: stream}
+	x := &grpc.GenericClientStream[ProxyTableDetailMsg, CpTableDetailMsg]{ClientStream: stream}
 	return x, nil
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type ControlPlane_TableDetailExecClient = grpc.BidiStreamingClient[ProxyTableDetailMsg, ControlTableDetailMsg]
+type ControlPlane_TableDetailExecClient = grpc.BidiStreamingClient[ProxyTableDetailMsg, CpTableDetailMsg]
 
 func (c *controlPlaneClient) ReportCompletion(ctx context.Context, in *CompletionReport, opts ...grpc.CallOption) (*emptypb.Empty, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
@@ -227,15 +227,15 @@ type ControlPlaneServer interface {
 	// Proxy-initiated connection close; the control-plane idle-sweep is the backstop.
 	CloseConnection(context.Context, *CloseConnectionRequest) (*CloseConnectionResponse, error)
 	// Proxy-initiated stream: liveness (stream open == alive) + refresh push.
-	Events(*EventsRequest, grpc.ServerStreamingServer[ControlEvent]) error
+	Events(*EventsRequest, grpc.ServerStreamingServer[CpEvent]) error
 	// The CP-driven execution channel. PROXY-DIALED bidi: the control-plane nudges the proxy over Events
-	// (OpenRunChannel) to open this, so data flows both ways without the control-plane ever dialing into the
+	// (OpenEditorSession) to open this, so data flows both ways without the control-plane ever dialing into the
 	// proxy. It serves web-editor and workflow execution through the same target DB + Decide path, streaming
 	// the decision and masked rows back.
-	RunExec(grpc.BidiStreamingServer[ProxyRunMsg, ControlRunMsg]) error
+	EditorExec(grpc.BidiStreamingServer[ProxyEditorMsg, CpEditorMsg]) error
 	// On-demand admin table-browser introspection. Also PROXY-DIALED: request selectors ride the Events
 	// nudge and the rich shared TableDetail response returns as JSON on this short-lived channel.
-	TableDetailExec(grpc.BidiStreamingServer[ProxyTableDetailMsg, ControlTableDetailMsg]) error
+	TableDetailExec(grpc.BidiStreamingServer[ProxyTableDetailMsg, CpTableDetailMsg]) error
 	// Post-execution result-volume report the proxy sends after it finishes relaying one statement's result
 	// to the client. Audit-only: it records a completion event chained onto the decision's audit row (never
 	// a re-decision), giving the audit monitor the rows/bytes signal the pre-execution decision could not
@@ -273,13 +273,13 @@ func (UnimplementedControlPlaneServer) PushSchemaFragment(context.Context, *Sche
 func (UnimplementedControlPlaneServer) CloseConnection(context.Context, *CloseConnectionRequest) (*CloseConnectionResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method CloseConnection not implemented")
 }
-func (UnimplementedControlPlaneServer) Events(*EventsRequest, grpc.ServerStreamingServer[ControlEvent]) error {
+func (UnimplementedControlPlaneServer) Events(*EventsRequest, grpc.ServerStreamingServer[CpEvent]) error {
 	return status.Errorf(codes.Unimplemented, "method Events not implemented")
 }
-func (UnimplementedControlPlaneServer) RunExec(grpc.BidiStreamingServer[ProxyRunMsg, ControlRunMsg]) error {
-	return status.Errorf(codes.Unimplemented, "method RunExec not implemented")
+func (UnimplementedControlPlaneServer) EditorExec(grpc.BidiStreamingServer[ProxyEditorMsg, CpEditorMsg]) error {
+	return status.Errorf(codes.Unimplemented, "method EditorExec not implemented")
 }
-func (UnimplementedControlPlaneServer) TableDetailExec(grpc.BidiStreamingServer[ProxyTableDetailMsg, ControlTableDetailMsg]) error {
+func (UnimplementedControlPlaneServer) TableDetailExec(grpc.BidiStreamingServer[ProxyTableDetailMsg, CpTableDetailMsg]) error {
 	return status.Errorf(codes.Unimplemented, "method TableDetailExec not implemented")
 }
 func (UnimplementedControlPlaneServer) ReportCompletion(context.Context, *CompletionReport) (*emptypb.Empty, error) {
@@ -437,25 +437,25 @@ func _ControlPlane_Events_Handler(srv interface{}, stream grpc.ServerStream) err
 	if err := stream.RecvMsg(m); err != nil {
 		return err
 	}
-	return srv.(ControlPlaneServer).Events(m, &grpc.GenericServerStream[EventsRequest, ControlEvent]{ServerStream: stream})
+	return srv.(ControlPlaneServer).Events(m, &grpc.GenericServerStream[EventsRequest, CpEvent]{ServerStream: stream})
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type ControlPlane_EventsServer = grpc.ServerStreamingServer[ControlEvent]
+type ControlPlane_EventsServer = grpc.ServerStreamingServer[CpEvent]
 
-func _ControlPlane_RunExec_Handler(srv interface{}, stream grpc.ServerStream) error {
-	return srv.(ControlPlaneServer).RunExec(&grpc.GenericServerStream[ProxyRunMsg, ControlRunMsg]{ServerStream: stream})
+func _ControlPlane_EditorExec_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(ControlPlaneServer).EditorExec(&grpc.GenericServerStream[ProxyEditorMsg, CpEditorMsg]{ServerStream: stream})
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type ControlPlane_RunExecServer = grpc.BidiStreamingServer[ProxyRunMsg, ControlRunMsg]
+type ControlPlane_EditorExecServer = grpc.BidiStreamingServer[ProxyEditorMsg, CpEditorMsg]
 
 func _ControlPlane_TableDetailExec_Handler(srv interface{}, stream grpc.ServerStream) error {
-	return srv.(ControlPlaneServer).TableDetailExec(&grpc.GenericServerStream[ProxyTableDetailMsg, ControlTableDetailMsg]{ServerStream: stream})
+	return srv.(ControlPlaneServer).TableDetailExec(&grpc.GenericServerStream[ProxyTableDetailMsg, CpTableDetailMsg]{ServerStream: stream})
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type ControlPlane_TableDetailExecServer = grpc.BidiStreamingServer[ProxyTableDetailMsg, ControlTableDetailMsg]
+type ControlPlane_TableDetailExecServer = grpc.BidiStreamingServer[ProxyTableDetailMsg, CpTableDetailMsg]
 
 func _ControlPlane_ReportCompletion_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(CompletionReport)
@@ -522,8 +522,8 @@ var ControlPlane_ServiceDesc = grpc.ServiceDesc{
 			ServerStreams: true,
 		},
 		{
-			StreamName:    "RunExec",
-			Handler:       _ControlPlane_RunExec_Handler,
+			StreamName:    "EditorExec",
+			Handler:       _ControlPlane_EditorExec_Handler,
 			ServerStreams: true,
 			ClientStreams: true,
 		},

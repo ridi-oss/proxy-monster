@@ -17,14 +17,14 @@ import com.ridi.oss.proxymonster.controlplane.support.str
 import com.ridi.oss.proxymonster.controlplane.support.withFakeProxy
 import com.ridi.oss.proxymonster.grpc.ControlPlaneGrpcKt
 import com.ridi.oss.proxymonster.grpc.EnfAction
-import com.ridi.oss.proxymonster.grpc.ProxyRunMsg
-import com.ridi.oss.proxymonster.grpc.proxyRunMsg
+import com.ridi.oss.proxymonster.grpc.ProxyEditorMsg
+import com.ridi.oss.proxymonster.grpc.proxyEditorMsg
 import com.ridi.oss.proxymonster.grpc.proxyTableDetailMsg
-import com.ridi.oss.proxymonster.grpc.runDecision
-import com.ridi.oss.proxymonster.grpc.runDone
-import com.ridi.oss.proxymonster.grpc.runResultRows
-import com.ridi.oss.proxymonster.grpc.runRow
-import com.ridi.oss.proxymonster.grpc.runValue
+import com.ridi.oss.proxymonster.grpc.editorDecision
+import com.ridi.oss.proxymonster.grpc.editorDone
+import com.ridi.oss.proxymonster.grpc.editorResultRows
+import com.ridi.oss.proxymonster.grpc.editorRow
+import com.ridi.oss.proxymonster.grpc.editorValue
 import com.ridi.oss.proxymonster.grpc.tableDetailResult
 import com.ridi.oss.proxymonster.probe.TableDetail
 import com.ridi.oss.proxymonster.probe.TableDetailColumn
@@ -338,22 +338,22 @@ class McpToolCoverageDbTest {
         AuditEvent(principal = principal, datasource = fx.datasource.name, statement = sql, decision = Decision.MASK, channel = channel.contextValue),
     )
 
-    private fun masked(requirements: ResultRequirements, decisionId: Long): List<ProxyRunMsg> = listOf(
-        proxyRunMsg {
-            decision = runDecision {
+    private fun masked(requirements: ResultRequirements, decisionId: Long): List<ProxyEditorMsg> = listOf(
+        proxyEditorMsg {
+            decision = editorDecision {
                 decision = EnfAction.MASK
                 this.decisionId = decisionId
                 maskedColumns += "ssn"
                 resultRequirements = requirements
             }
         },
-        proxyRunMsg {
-            resultRows = runResultRows {
+        proxyEditorMsg {
+            resultRows = editorResultRows {
                 columns += listOf("id", "ssn")
-                rows += maskedRows.map { row -> runRow { values += row.map { v -> runValue { value = v } } } }
+                rows += maskedRows.map { row -> editorRow { values += row.map { v -> editorValue { value = v } } } }
             }
         },
-        proxyRunMsg { done = runDone { rowsAffected = -1 } },
+        proxyEditorMsg { done = editorDone { rowsAffected = -1 } },
     )
 
     private companion object {

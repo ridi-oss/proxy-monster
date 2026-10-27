@@ -35,9 +35,9 @@ service ControlPlane {
   rpc Decide(DecisionRequest) returns (WireDecision);                 // per-query enforcement decision
   rpc PushSchemaFragment(SchemaFragmentPush) returns (SchemaFragmentAck);  // per-connection catalog fragment
   rpc CloseConnection(CloseConnectionRequest) returns (CloseConnectionResponse);
-  rpc Events(EventsRequest) returns (stream ControlEvent);            // liveness + refresh/run/table-detail nudges
-  rpc RunExec(stream ProxyRunMsg) returns (stream ControlRunMsg);     // CP-driven editor/workflow execution
-  rpc TableDetailExec(stream ProxyTableDetailMsg) returns (stream ControlTableDetailMsg);  // admin table browser
+  rpc Events(EventsRequest) returns (stream CpEvent);            // liveness + refresh/run/table-detail nudges
+  rpc EditorExec(stream ProxyEditorMsg) returns (stream CpEditorMsg);     // CP-driven editor/workflow execution
+  rpc TableDetailExec(stream ProxyTableDetailMsg) returns (stream CpTableDetailMsg);  // admin table browser
   rpc ReportCompletion(CompletionReport) returns (google.protobuf.Empty);  // post-relay result-volume, audit-only
 }
 ```
@@ -236,14 +236,14 @@ reconnecting if it drops. The open stream is itself the liveness signal — the
 control-plane sees the stream close and knows the proxy is down, with no polling
 interval to wait out. Down the same stream the control-plane pushes nudges:
 `RefreshCatalog` (re-introspect now — an admin asked, or a connection's DDL just
-changed structure on the target), plus the `OpenRunChannel` and
+changed structure on the target), plus the `OpenEditorSession` and
 `OpenTableDetailChannel` nudges below.
 
 ```protobuf
-message ControlEvent {
+message CpEvent {
   oneof kind {
     RefreshCatalog refresh_catalog = 1;
-    OpenRunChannel open_run_channel = 2;
+    OpenEditorSession open_editor_session = 2;
     OpenTableDetailChannel open_table_detail_channel = 3;
   }
 }
@@ -292,30 +292,30 @@ immutability, rejecting an `engine` change with
 `409 datasource.engine_immutable`; the web edit form seeds `engine` from the
 current value and disables it.
 
-## The run channel — editor and workflow execution
+## The editor session — editor and workflow execution
 
 The SQL editor and the approval-workflow executor run their queries through the
 proxy, over the same `Decide` and result-relay path a native-wire client uses —
 not a separate in-control-plane enforcement path. Since the control-plane never
 dials into a proxy, execution rides a proxy-dialed bidirectional stream: the
-control-plane nudges the proxy over `Events` (`OpenRunChannel`, carrying a
+control-plane nudges the proxy over `Events` (`OpenEditorSession`, carrying a
 short-lived ephemeral token minted for the requester), and the proxy dials back
-with `RunExec`. Data then flows both ways over a connection the control-plane
+with `EditorExec`. Data then flows both ways over a connection the control-plane
 never opened.
 
-One stream serves one session (session ↔ `RunExec` stream ↔ its own target-DB
+One stream serves one session (session ↔ `EditorExec` stream ↔ its own target-DB
 connection), so a slow query in one session cannot head-of-line-block another,
 the stream's lifecycle is the session's lifecycle, and each session gets a
 dedicated target-DB connection where transactions, `SET`, and temp tables behave
 like a real session.
 
 ```protobuf
-// ProxyRunMsg (proxy -> cp):
-//   RunReady        — correlates this stream to its OpenRunChannel
-//   RunDecision     — the enforcement verdict + UX metadata, before any rows
-//   RunResultRows   — masked rows (ALLOW/MASK only)
-//   RunDone | RunError
-// ControlRunMsg (cp -> proxy): RunQuery{sql, max_rows} | RunClose
+// ProxyEditorMsg (proxy -> cp):
+//   EditorReady        — correlates this stream to its OpenEditorSession
+//   EditorDecision     — the enforcement verdict + UX metadata, before any rows
+//   EditorResultRows   — masked rows (ALLOW/MASK only)
+//   EditorDone | EditorError
+// CpEditorMsg (cp -> proxy): EditorQuery{sql, max_rows} | EditorClose
 ```
 
 The proxy runs the query on the session's connection, decides it through its

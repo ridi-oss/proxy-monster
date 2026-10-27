@@ -1,7 +1,7 @@
 // Package drain is the protocol-agnostic core of a graceful shutdown drain, shared by the wire brokers and
-// the run subsystem. A Tracker holds the draining signal and counts in-flight work so shutdown can wait it
+// the editor server. A Tracker holds the draining signal and counts in-flight work so shutdown can wait it
 // out; the transport-specific parts — how idle work is unblocked (a forced read deadline on a socket, a
-// channel select in the run loop) and how a straggler is force-closed — stay with each caller.
+// channel select in the editor server) and how a straggler is force-closed — stay with each caller.
 package drain
 
 import (
@@ -14,7 +14,7 @@ import (
 // pollInterval is how often Wait rechecks whether every in-flight unit has finished.
 const pollInterval = 20 * time.Millisecond
 
-// Tracker is safe for concurrent use. Construct with New; the zero value is not usable (its signal channel
+// Tracker is safe for concurrent use. Construct with NewTracker; the zero value is not usable (its signal channel
 // would be nil, so Signal would block forever and Begin would never close it).
 type Tracker struct {
 	signal   chan struct{}
@@ -24,7 +24,7 @@ type Tracker struct {
 	active   int
 }
 
-func New() *Tracker { return &Tracker{signal: make(chan struct{})} }
+func NewTracker() *Tracker { return &Tracker{signal: make(chan struct{})} }
 
 // Add registers one in-flight unit; Done releases it. Callers balance the two (typically Done deferred).
 func (t *Tracker) Add() { t.mu.Lock(); t.active++; t.mu.Unlock() }

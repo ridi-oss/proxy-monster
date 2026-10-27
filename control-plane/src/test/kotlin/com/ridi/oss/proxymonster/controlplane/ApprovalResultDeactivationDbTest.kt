@@ -37,7 +37,7 @@ import kotlin.test.assertEquals
 class ApprovalResultDeactivationDbTest {
     private lateinit var fx: EnforcementFixture
     private lateinit var resultStore: QueryResultStore
-    private lateinit var runExecService: RunExecService
+    private lateinit var editorExecService: EditorExecService
     private lateinit var sessionStore: PrincipalSessionStore
     private lateinit var config: Config
     private val viewer = "dev@example.com"
@@ -47,9 +47,9 @@ class ApprovalResultDeactivationDbTest {
         requireDockerOrSkip()
         fx = EnforcementFixture.postgres()
         resultStore = QueryResultStore(fx.dataSource, ResultCrypto(ByteArray(32) { it.toByte() }))
-        // runExecService is only reached by /execute, never by the /result path under test — but
+        // editorExecService is only reached by /execute, never by the /result path under test — but
         // approvalRoutes requires it. A core over the same DB is sufficient (it is never invoked here).
-        runExecService = RunExecService(ControlPlaneCore(fx.dataSource))
+        editorExecService = EditorExecService(ControlPlaneCore(fx.dataSource))
         sessionStore = PrincipalSessionStore(fx.dataSource, null)
         config = Config(
             httpPort = 0, dbUrl = "", dbUser = "", dbPassword = "", authDebug = false, secretToken = null,
@@ -70,7 +70,7 @@ class ApprovalResultDeactivationDbTest {
                 testLoginRoute(sessionStore, config)
                 approvalRoutes(
                     config, fx.accessStore, fx.auditStore, fx.datasourceStore, fx.policyStore,
-                    fx.userGroupStore, resultStore, fx.roleResolver, fx.authz, runExecService,
+                    fx.userGroupStore, resultStore, fx.roleResolver, fx.authz, editorExecService,
                 )
             }
         }

@@ -268,7 +268,7 @@ type fakeControlPlane struct {
 	lastFragmentMeta string
 	lastClose        *pb.CloseConnectionRequest
 	lastCloseMeta    string
-	events           []*pb.ControlEvent
+	events           []*pb.CpEvent
 	lastEventsReq    *pb.EventsRequest
 	lastEventsMeta   string
 }
@@ -354,11 +354,11 @@ func (f *fakeControlPlane) CloseConnection(ctx context.Context, req *pb.CloseCon
 	return &pb.CloseConnectionResponse{}, nil
 }
 
-func (f *fakeControlPlane) Events(req *pb.EventsRequest, stream grpc.ServerStreamingServer[pb.ControlEvent]) error {
+func (f *fakeControlPlane) Events(req *pb.EventsRequest, stream grpc.ServerStreamingServer[pb.CpEvent]) error {
 	f.mu.Lock()
 	f.lastEventsReq = proto.Clone(req).(*pb.EventsRequest)
 	f.lastEventsMeta = metaValue(stream.Context())
-	events := append([]*pb.ControlEvent(nil), f.events...)
+	events := append([]*pb.CpEvent(nil), f.events...)
 	f.mu.Unlock()
 	for _, event := range events {
 		if err := stream.Send(event); err != nil {
@@ -727,29 +727,29 @@ func TestPushSchemaFragmentAndCloseConnection(t *testing.T) {
 	}
 }
 
-func TestStreamEventsDispatchesOpenRunChannel(t *testing.T) {
-	open := &pb.OpenRunChannel{
+func TestStreamEventsDispatchesOpenEditorSession(t *testing.T) {
+	open := &pb.OpenEditorSession{
 		SessionId: "sess-1", EphemeralToken: "eph-9", ConnectionId: []byte("0123456789abcdef"), OnOpen: []*pb.ProxyCommand{refetch("app", nil)},
 		DefaultSchema: "orders",
 	}
-	fake := &fakeControlPlane{events: []*pb.ControlEvent{
-		{Kind: &pb.ControlEvent_RefreshCatalog{RefreshCatalog: &pb.RefreshCatalog{}}},
-		{Kind: &pb.ControlEvent_OpenRunChannel{OpenRunChannel: open}},
-		{Kind: &pb.ControlEvent_OpenTableDetailChannel{OpenTableDetailChannel: &pb.OpenTableDetailChannel{SessionId: "sess-2", Catalog: "db", Schema: "public", Table: "users"}}},
+	fake := &fakeControlPlane{events: []*pb.CpEvent{
+		{Kind: &pb.CpEvent_RefreshCatalog{RefreshCatalog: &pb.RefreshCatalog{}}},
+		{Kind: &pb.CpEvent_OpenEditorSession{OpenEditorSession: open}},
+		{Kind: &pb.CpEvent_OpenTableDetailChannel{OpenTableDetailChannel: &pb.OpenTableDetailChannel{SessionId: "sess-2", Catalog: "db", Schema: "public", Table: "users"}}},
 	}}
 	c := startFakeControlPlane(t, fake)
 	var refreshes int
-	var openedRun *pb.OpenRunChannel
+	var openedSession *pb.OpenEditorSession
 	var openedErr error
 	var table []string
-	err := c.StreamEvents(func() { refreshes++ }, func(req *pb.OpenRunChannel, mapErr error) { openedRun, openedErr = req, mapErr }, func(sessionID string, ref *enginepb.ObjectRef) {
+	err := c.StreamEvents(func() { refreshes++ }, func(req *pb.OpenEditorSession, mapErr error) { openedSession, openedErr = req, mapErr }, func(sessionID string, ref *enginepb.ObjectRef) {
 		table = []string{sessionID, ref.GetCatalog(), ref.GetSchema(), ref.GetTable()}
 	})
 	if err == nil {
 		t.Fatal("StreamEvents returned nil, want EOF")
 	}
-	if refreshes != 1 || openedErr != nil || !proto.Equal(openedRun, open) || !reflect.DeepEqual(table, []string{"sess-2", "db", "public", "users"}) {
-		t.Fatalf("dispatch refresh/run/table = %d/%v %v/%v", refreshes, openedRun, openedErr, table)
+	if refreshes != 1 || openedErr != nil || !proto.Equal(openedSession, open) || !reflect.DeepEqual(table, []string{"sess-2", "db", "public", "users"}) {
+		t.Fatalf("dispatch refresh/session/table = %d/%v %v/%v", refreshes, openedSession, openedErr, table)
 	}
 	fake.mu.Lock()
 	req, meta := fake.lastEventsReq, fake.lastEventsMeta
@@ -759,27 +759,27 @@ func TestStreamEventsDispatchesOpenRunChannel(t *testing.T) {
 	}
 }
 
-func TestStreamEventsDispatchesMalformedOpenRunChannel(t *testing.T) {
-	fake := &fakeControlPlane{events: []*pb.ControlEvent{{Kind: &pb.ControlEvent_OpenRunChannel{OpenRunChannel: &pb.OpenRunChannel{
+func TestStreamEventsDispatchesMalformedOpenEditorSession(t *testing.T) {
+	fake := &fakeControlPlane{events: []*pb.CpEvent{{Kind: &pb.CpEvent_OpenEditorSession{OpenEditorSession: &pb.OpenEditorSession{
 		SessionId: "bad", OnOpen: []*pb.ProxyCommand{refetch("", nil)},
 	}}}}}
 	c := startFakeControlPlane(t, fake)
-	var openedRun *pb.OpenRunChannel
+	var openedSession *pb.OpenEditorSession
 	var openedErr error
-	_ = c.StreamEvents(func() {}, func(req *pb.OpenRunChannel, mapErr error) { openedRun, openedErr = req, mapErr }, func(string, *enginepb.ObjectRef) {})
-	if openedRun.GetSessionId() != "bad" || openedErr == nil {
-		t.Fatalf("malformed run open was not dispatched with its mapping error: %v %v", openedRun, openedErr)
+	_ = c.StreamEvents(func() {}, func(req *pb.OpenEditorSession, mapErr error) { openedSession, openedErr = req, mapErr }, func(string, *enginepb.ObjectRef) {})
+	if openedSession.GetSessionId() != "bad" || openedErr == nil {
+		t.Fatalf("malformed run open was not dispatched with its mapping error: %v %v", openedSession, openedErr)
 	}
 }
 
 func TestStreamEventsReturnsErrDrainingOnDrainSignal(t *testing.T) {
 	// A drain is neither an error nor a max-age expiry: streamEvents must surface it as errDraining so the
 	// loop reconnects at once instead of waiting out the backoff.
-	fake := &fakeControlPlane{events: []*pb.ControlEvent{
-		{Kind: &pb.ControlEvent_Draining{Draining: &pb.Draining{}}},
+	fake := &fakeControlPlane{events: []*pb.CpEvent{
+		{Kind: &pb.CpEvent_Draining{Draining: &pb.Draining{}}},
 	}}
 	c := startFakeControlPlane(t, fake)
-	err := c.StreamEvents(func() {}, func(*pb.OpenRunChannel, error) {}, func(string, *enginepb.ObjectRef) {})
+	err := c.StreamEvents(func() {}, func(*pb.OpenEditorSession, error) {}, func(string, *enginepb.ObjectRef) {})
 	if !errors.Is(err, errDraining) {
 		t.Fatalf("StreamEvents err = %v, want errDraining", err)
 	}
@@ -793,11 +793,11 @@ type drainingControlPlane struct {
 	opens int
 }
 
-func (f *drainingControlPlane) Events(_ *pb.EventsRequest, stream grpc.ServerStreamingServer[pb.ControlEvent]) error {
+func (f *drainingControlPlane) Events(_ *pb.EventsRequest, stream grpc.ServerStreamingServer[pb.CpEvent]) error {
 	f.mu.Lock()
 	f.opens++
 	f.mu.Unlock()
-	return stream.Send(&pb.ControlEvent{Kind: &pb.ControlEvent_Draining{Draining: &pb.Draining{}}})
+	return stream.Send(&pb.CpEvent{Kind: &pb.CpEvent_Draining{Draining: &pb.Draining{}}})
 }
 
 func (f *drainingControlPlane) openCount() int {
@@ -837,7 +837,7 @@ func TestEventsLoopReconnectsFastOnDrain(t *testing.T) {
 			streamMaxAge:      time.Minute, // long enough that only the drain path paces this test
 			reconnect:         backoff,
 			rotationReconnect: eventsRotationReconnect,
-		}, func() {}, func() {}, func(*pb.OpenRunChannel, error) {}, func(string, *enginepb.ObjectRef) {})
+		}, func() {}, func() {}, func(*pb.OpenEditorSession, error) {}, func(string, *enginepb.ObjectRef) {})
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -866,7 +866,7 @@ type holdOpenControlPlane struct {
 	done  chan struct{}
 }
 
-func (f *holdOpenControlPlane) Events(_ *pb.EventsRequest, stream grpc.ServerStreamingServer[pb.ControlEvent]) error {
+func (f *holdOpenControlPlane) Events(_ *pb.EventsRequest, stream grpc.ServerStreamingServer[pb.CpEvent]) error {
 	f.mu.Lock()
 	f.opens++
 	if f.opens == 1 && f.done != nil {
@@ -928,7 +928,7 @@ type versionRejectingControlPlane struct {
 	opens int
 }
 
-func (f *versionRejectingControlPlane) Events(_ *pb.EventsRequest, _ grpc.ServerStreamingServer[pb.ControlEvent]) error {
+func (f *versionRejectingControlPlane) Events(_ *pb.EventsRequest, _ grpc.ServerStreamingServer[pb.CpEvent]) error {
 	f.mu.Lock()
 	f.opens++
 	f.mu.Unlock()
@@ -970,7 +970,7 @@ func TestRunEventsLoopExitsOnEventsVersionRejection(t *testing.T) {
 			streamMaxAge:      time.Minute,
 			reconnect:         10 * time.Millisecond,
 			rotationReconnect: eventsRotationReconnect,
-		}, func() {}, func() {}, func(*pb.OpenRunChannel, error) {}, func(string, *enginepb.ObjectRef) {})
+		}, func() {}, func() {}, func(*pb.OpenEditorSession, error) {}, func(string, *enginepb.ObjectRef) {})
 	}()
 	select {
 	case err := <-errCh:
@@ -995,7 +995,7 @@ func TestStreamEventsEndsAtItsMaxAge(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	start := time.Now()
-	err := c.streamEvents(ctx, 300*time.Millisecond, func() {}, func(*pb.OpenRunChannel, error) {}, func(string, *enginepb.ObjectRef) {})
+	err := c.streamEvents(ctx, 300*time.Millisecond, func() {}, func(*pb.OpenEditorSession, error) {}, func(string, *enginepb.ObjectRef) {})
 	elapsed := time.Since(start)
 
 	if err == nil {
@@ -1025,7 +1025,7 @@ func TestEventsLoopReopensAfterMaxAge(t *testing.T) {
 			streamMaxAge:      150 * time.Millisecond,
 			reconnect:         10 * time.Millisecond,
 			rotationReconnect: 10 * time.Millisecond,
-		}, func() {}, func() {}, func(*pb.OpenRunChannel, error) {}, func(string, *enginepb.ObjectRef) {})
+		}, func() {}, func() {}, func(*pb.OpenEditorSession, error) {}, func(string, *enginepb.ObjectRef) {})
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -1064,7 +1064,7 @@ func TestEventsLoopRotationGapStaysBoundedAcrossPeriods(t *testing.T) {
 		loopDone := make(chan struct{})
 		go func() {
 			defer close(loopDone)
-			c.runEventsLoop(ctx, timings, func() {}, func() {}, func(*pb.OpenRunChannel, error) {}, func(string, *enginepb.ObjectRef) {})
+			c.runEventsLoop(ctx, timings, func() {}, func() {}, func(*pb.OpenEditorSession, error) {}, func(string, *enginepb.ObjectRef) {})
 		}()
 		defer func() {
 			cancel()
@@ -1142,7 +1142,7 @@ func TestEventsLoopBacksOffOnServerDeadlineExceeded(t *testing.T) {
 			streamMaxAge:      time.Minute, // long, so only the server's status ends the stream
 			reconnect:         backoff,
 			rotationReconnect: 10 * time.Millisecond,
-		}, func() {}, func() {}, func(*pb.OpenRunChannel, error) {}, func(string, *enginepb.ObjectRef) {})
+		}, func() {}, func() {}, func(*pb.OpenEditorSession, error) {}, func(string, *enginepb.ObjectRef) {})
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -1175,7 +1175,7 @@ func TestEventsLoopReopensWithoutWaitingForResync(t *testing.T) {
 			streamMaxAge:      150 * time.Millisecond,
 			reconnect:         10 * time.Millisecond,
 			rotationReconnect: 10 * time.Millisecond,
-		}, resync, func() {}, func(*pb.OpenRunChannel, error) {}, func(string, *enginepb.ObjectRef) {})
+		}, resync, func() {}, func(*pb.OpenEditorSession, error) {}, func(string, *enginepb.ObjectRef) {})
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -1204,7 +1204,7 @@ type refusingControlPlane struct {
 	opens []time.Time
 }
 
-func (f *refusingControlPlane) Events(_ *pb.EventsRequest, _ grpc.ServerStreamingServer[pb.ControlEvent]) error {
+func (f *refusingControlPlane) Events(_ *pb.EventsRequest, _ grpc.ServerStreamingServer[pb.CpEvent]) error {
 	f.mu.Lock()
 	f.opens = append(f.opens, time.Now())
 	f.mu.Unlock()
@@ -1248,7 +1248,7 @@ func TestEventsLoopWaitsTheBackoffBetweenReopens(t *testing.T) {
 			streamMaxAge:      time.Minute, // long enough that only the backoff paces this test
 			reconnect:         backoff,
 			rotationReconnect: eventsRotationReconnect,
-		}, func() {}, func() {}, func(*pb.OpenRunChannel, error) {}, func(string, *enginepb.ObjectRef) {})
+		}, func() {}, func() {}, func(*pb.OpenEditorSession, error) {}, func(string, *enginepb.ObjectRef) {})
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -1282,7 +1282,7 @@ type deadlineControlPlane struct {
 	opens int
 }
 
-func (f *deadlineControlPlane) Events(_ *pb.EventsRequest, _ grpc.ServerStreamingServer[pb.ControlEvent]) error {
+func (f *deadlineControlPlane) Events(_ *pb.EventsRequest, _ grpc.ServerStreamingServer[pb.CpEvent]) error {
 	f.mu.Lock()
 	f.opens++
 	f.mu.Unlock()

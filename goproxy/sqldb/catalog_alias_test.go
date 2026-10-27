@@ -181,7 +181,7 @@ func TestPostgresCatalogThroughDatabaseAlias(t *testing.T) {
 		}
 	})
 
-	t.Run("run connection", func(t *testing.T) {
+	t.Run("editor connection", func(t *testing.T) {
 		connection, err := target.OpenConnection(ctx, spi.NewAuthorizer(client, "test-token", []byte("alias-run-000001")), nil, 10*time.Second, "")
 		if err != nil {
 			t.Fatal(err)

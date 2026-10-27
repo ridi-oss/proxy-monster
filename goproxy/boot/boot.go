@@ -16,9 +16,9 @@ import (
 	"github.com/ridi-oss/proxy-monster/goproxy/config"
 	"github.com/ridi-oss/proxy-monster/goproxy/cp"
 	"github.com/ridi-oss/proxy-monster/goproxy/drain"
+	"github.com/ridi-oss/proxy-monster/goproxy/editor"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/proxytls"
-	"github.com/ridi-oss/proxy-monster/goproxy/run"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
@@ -28,9 +28,9 @@ const ambientRefreshInterval = 12 * time.Minute
 // protocol-level shutdown notice, then any connection still live is force-closed and the process exits.
 const drainTimeout = 10 * time.Second
 
-// runDrainTimeout bounds how long shutdown waits for an in-flight editor/approval query to finish before
-// closing the control-plane client its runExec stream rides — the run-stream analogue of drainTimeout.
-const runDrainTimeout = 10 * time.Second
+// sessionDrainTimeout bounds how long shutdown waits for an in-flight editor/approval query to finish before
+// closing the control-plane client its editorExec stream rides — the editor-stream analogue of drainTimeout.
+const sessionDrainTimeout = 10 * time.Second
 
 // Run is the dialect-neutral boot consumer. The executable composition root injects the provider registry;
 // this package imports only the SPI, never the concrete dialect wiring package.
@@ -131,19 +131,19 @@ func Run(registry spi.Registry) error {
 		slog.Info("proxy TLS disabled — plaintext (trusted tailnet only); set PM_TLS_CERT + PM_TLS_KEY to enable")
 	}
 
-	runner := run.NewRunner(client, target, cfg.QueryTimeout)
-	// Track in-flight run executions with the same drain primitive the wire server uses, so shutdown lets an
+	editorServer := editor.NewServer(client, target, cfg.QueryTimeout)
+	// Track in-flight editor session executions with the same drain primitive the wire server uses, so shutdown lets an
 	// executing editor/approval query finish and idle sessions return. Every open still dials back (spawns
-	// Run): a refusal would strand the control-plane, which has already committed this proxy for the request
+	// Serve): a refusal would strand the control-plane, which has already committed this proxy for the request
 	// and would otherwise wait out its full dial timeout.
-	runs := drain.New()
-	// eventsCtx lets shutdown stop the Events loop — the source of new run dispatches — and wait for it to
-	// return before draining the in-flight runs, so no dispatch can register a run after that wait sees zero.
+	editorSessions := drain.NewTracker()
+	// eventsCtx lets shutdown stop the Events loop — the source of new editor-session dispatches — and wait for it to
+	// return before draining the in-flight editor sessions, so no dispatch can register an editor session after that wait sees zero.
 	eventsCtx, eventsCancel := context.WithCancel(context.Background())
 	defer eventsCancel() // covers the early serve-error return; the drain path cancels explicitly (idempotent)
 	eventsDone := make(chan struct{})
-	// A wire-protocol version skew is fatal: refuse to start rather than attach and stall the run channel.
-	if err := runner.RegisterAndPushCatalog(cfg, provider.Engine(), certChain); err != nil {
+	// A wire-protocol version skew is fatal: refuse to start rather than attach and stall the editor session.
+	if err := editorServer.RegisterAndPushCatalog(cfg, provider.Engine(), certChain); err != nil {
 		slog.Error("refusing to start — deploy the proxy and control-plane from the same server-v* release", "error", err)
 		return err
 	}
@@ -154,21 +154,21 @@ func Run(registry spi.Registry) error {
 			func() {
 				// A re-register (reconnect) that finds a now-incompatible control-plane is equally fatal:
 				// exit so the supervisor replaces this proxy rather than run against a version it cannot speak.
-				if err := runner.TryRegisterAndPushCatalog(cfg, provider.Engine(), certChain); err != nil {
+				if err := editorServer.TryRegisterAndPushCatalog(cfg, provider.Engine(), certChain); err != nil {
 					slog.Error("control-plane became version-incompatible on reconnect — exiting", "error", err)
 					os.Exit(1)
 				}
 			},
-			func() { runner.RefreshCatalog() },
-			func(req *pb.OpenRunChannel, mapErr error) {
-				runs.Add()
+			func() { editorServer.RefreshCatalog() },
+			func(req *pb.OpenEditorSession, mapErr error) {
+				editorSessions.Add()
 				go func() {
-					defer runs.Done()
-					runner.Run(req, mapErr, runs.Signal())
+					defer editorSessions.Done()
+					editorServer.Serve(req, mapErr, editorSessions.Signal())
 				}()
 			},
 			func(sessionID string, table *enginepb.ObjectRef) {
-				go runner.RunTableDetail(sessionID, table)
+				go editorServer.ServeTableDetail(sessionID, table)
 			},
 		)
 		// A version rejection on the events stream is fatal even when a resync Register races to a still-
@@ -185,7 +185,7 @@ func Run(registry spi.Registry) error {
 			case <-eventsCtx.Done():
 				return
 			case <-time.After(ambientRefreshInterval):
-				runner.RefreshCatalog()
+				editorServer.RefreshCatalog()
 			}
 		}
 	}()
@@ -207,7 +207,7 @@ func Run(registry spi.Registry) error {
 	// send idle clients a protocol-level shutdown notice, then close the control-plane client and exit.
 	// The replacement task is already fronted by the NLB, so reconnects land there.
 	slog.Info("shutting down, draining client connections", "timeout", drainTimeout)
-	gracefulDrain(runs, eventsCancel, eventsDone, server.Drain)
+	gracefulDrain(editorSessions, eventsCancel, eventsDone, server.Drain)
 	// Serve returns nil once Drain closes the listener. A non-nil error is a genuine serve failure (e.g. a bind
 	// error that raced the signal, which select may pick over the serveErr case); surface it AND exit non-zero
 	// so a supervisor keying on exit code sees it. A clean signalled shutdown (nil) stays exit 0.
@@ -224,32 +224,32 @@ func Run(registry spi.Registry) error {
 }
 
 // gracefulDrain performs the ordered shutdown so a rolling redeploy loses no in-flight work. It signals the
-// run streams (idle editor sessions return so the editor re-homes; an executing query finishes) and stops the
+// editor streams (idle editor sessions return so the editor re-homes; an executing query finishes) and stops the
 // Events loop, then drains the wire IMMEDIATELY: the wire is independent of that loop, so it must not wait
 // behind a loop that may still be inside a synchronous catalog refresh (introspection bounded only by its own
-// query timeouts) — closing the listener now stops new connections at once. Only the RUN drain waits
-// UNCONDITIONALLY for the Events loop to return: that loop is the only source of new run dispatches, so
-// runs.Wait must not run until it is gone — otherwise a late dispatch could register a run the wait already
+// query timeouts) — closing the listener now stops new connections at once. Only the editor-session drain waits
+// UNCONDITIONALLY for the Events loop to return: that loop is the only source of new editor-session dispatches, so
+// editorSessions.Wait must not run until it is gone — otherwise a late dispatch could register an editor session the wait already
 // counted out, and the client close would then strand it on the control-plane's dial timeout. That wait is
 // unbounded on purpose: a loop that never returns after its context is cancelled is a wedged process, left to
 // the stop timeout's SIGKILL like any other. Both drains are bounded, so the caller can close the
-// control-plane client those run streams ride without cutting one. Split from Run so this ordering is
+// control-plane client those editor streams ride without cutting one. Split from Run so this ordering is
 // unit-testable.
 func gracefulDrain(
-	runs *drain.Tracker,
+	editorSessions *drain.Tracker,
 	eventsCancel context.CancelFunc,
 	eventsDone <-chan struct{},
 	drainWire func(context.Context),
 ) {
-	runs.Begin()
+	editorSessions.Begin()
 	eventsCancel()
 	wireCtx, cancel := context.WithTimeout(context.Background(), drainTimeout)
 	defer cancel()
 	drainWire(wireCtx)
 	<-eventsDone
-	runCtx, runCancel := context.WithTimeout(context.Background(), runDrainTimeout)
-	defer runCancel()
-	if !runs.Wait(runCtx) {
-		slog.Warn("in-flight run drain timed out; proceeding", "timeout", runDrainTimeout)
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), sessionDrainTimeout)
+	defer drainCancel()
+	if !editorSessions.Wait(drainCtx) {
+		slog.Warn("in-flight editor session drain timed out; proceeding", "timeout", sessionDrainTimeout)
 	}
 }

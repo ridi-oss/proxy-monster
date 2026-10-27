@@ -1179,7 +1179,7 @@ fun Route.queryRoutes(
     config: Config,
     datasourceStore: DatasourceStore,
     historyStore: QueryHistoryStore,
-    runExecService: RunExecService,
+    editorExecService: EditorExecService,
 ) {
     post("/api/datasources/{id}/query") {
         val principal = call.requireApi() ?: return@post
@@ -1190,7 +1190,7 @@ fun Route.queryRoutes(
         runCatching { historyStore.add(principal, id, req.sql) }
         try {
             call.respond(
-                runExecService.run(
+                editorExecService.run(
                     principal, ds, req.sql, req.maxRows,
                     requesterIp = call.httpRequesterIp(config),
                     exchangeTimeoutMs = config.queryExchangeTimeoutMs,
@@ -1270,7 +1270,7 @@ fun Route.editorSessionRoutes(
     userGroupStore: UserGroupStore,
     roleResolver: RoleResolver,
     authz: Authz,
-    runExecService: RunExecService,
+    editorExecService: EditorExecService,
     appScope: CoroutineScope,
     systemClassification: SystemClassificationService? = null,
     // Pushes a task's terminal transition to the owner's SSE stream so the tab updates without waiting for
@@ -1280,7 +1280,7 @@ fun Route.editorSessionRoutes(
     auditStore: AuditStore? = null,
     service: EditorTaskService = EditorTaskService(
         config, datasourceStore, accessStore, queryResultStore, policyStore, userGroupStore, roleResolver, authz,
-        runExecService, appScope, systemClassification, taskCompletionHub, auditStore,
+        editorExecService, appScope, systemClassification, taskCompletionHub, auditStore,
     ),
 ) {
     post("/api/editor/sessions") {
@@ -1289,7 +1289,7 @@ fun Route.editorSessionRoutes(
         val ds = datasourceStore.get(input.datasourceId)
             ?: return@post call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "datasource")))
         try {
-            call.respond(EditorSessionOpened(runExecService.openSession(principal, ds, call.httpRequesterIp(config))))
+            call.respond(EditorSessionOpened(editorExecService.openSession(principal, ds, call.httpRequesterIp(config))))
         } catch (_: NoProxyAttachedException) {
             call.respond(HttpStatusCode.ServiceUnavailable, ApiError("query.no_proxy_attached"))
         } catch (_: ProxyStreamWedgedException) {
@@ -1369,10 +1369,10 @@ fun Route.editorSessionRoutes(
     // The session's datasource when [principal] owns the session and may connect to it; the response is sent
     // otherwise. A missing session and someone else's get the same 404, so a guessed id reveals nothing. The
     // session's path names the target's schemas, so reading it needs datasource.connect, as the catalog does.
-    suspend fun ApplicationCall.ownedConnectableSession(principal: String): Pair<OpenEditorSession, Datasource>? {
+    suspend fun ApplicationCall.ownedConnectableSession(principal: String): Pair<EditorSession, Datasource>? {
         val sessionId = parameters["sessionId"]
             ?: return null.also { respond(HttpStatusCode.BadRequest, ApiError("common.bad_id")) }
-        val session = runExecService.sessionOwnedBy(sessionId, principal)
+        val session = editorExecService.sessionOwnedBy(sessionId, principal)
             ?: return null.also { respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "editor_session"))) }
         val ds = datasourceStore.getByName(session.datasourceName)
         if (ds == null || userGroupStore.isDeactivated(principal) ||
@@ -1421,7 +1421,7 @@ fun Route.editorSessionRoutes(
         // Close only if the caller owns the session (mirrors runOnSession) — a leaked sessionId must not let
         // another principal tear down this connection. Idempotent NoContent regardless, so it's not an
         // existence oracle for someone else's session id.
-        runExecService.closeSessionOwnedBy(sessionId, principal)
+        editorExecService.closeSessionOwnedBy(sessionId, principal)
         call.respond(HttpStatusCode.NoContent)
     }
 }

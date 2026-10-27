@@ -7,7 +7,7 @@ import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
 import com.ridi.oss.proxymonster.controlplane.management.ManagementException
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
-import com.ridi.oss.proxymonster.grpc.ControlEvent
+import com.ridi.oss.proxymonster.grpc.CpEvent
 import com.ridi.oss.proxymonster.grpc.Engine
 import com.ridi.oss.proxymonster.analyzer.pb.column
 import com.ridi.oss.proxymonster.grpc.schemaFragmentPush
@@ -133,7 +133,7 @@ class DatasourceSoftDeleteDbTest {
     fun `delete is refused while a proxy is attached`() {
         val name = "soft-del-attached-${System.nanoTime()}"
         val ds = datasources.createDatasource(DatasourceInput(name, "mysql"), actor)
-        val channel = Channel<ControlEvent>(capacity = 1)
+        val channel = Channel<CpEvent>(capacity = 1)
         core.proxyEventsHub.register(name, channel)
 
         val e = assertFailsWith<ManagementException> { datasources.deleteDatasource(ds.id, actor) }

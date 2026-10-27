@@ -38,11 +38,11 @@ import com.ridi.oss.proxymonster.controlplane.support.webSessionCookie
 import com.ridi.oss.proxymonster.controlplane.support.withFakeProxy
 import com.ridi.oss.proxymonster.grpc.ControlPlaneGrpcKt
 import com.ridi.oss.proxymonster.grpc.EnfAction
-import com.ridi.oss.proxymonster.grpc.ProxyRunMsg
-import com.ridi.oss.proxymonster.grpc.proxyRunMsg
-import com.ridi.oss.proxymonster.grpc.runDecision
-import com.ridi.oss.proxymonster.grpc.runDone
-import com.ridi.oss.proxymonster.grpc.runError
+import com.ridi.oss.proxymonster.grpc.ProxyEditorMsg
+import com.ridi.oss.proxymonster.grpc.proxyEditorMsg
+import com.ridi.oss.proxymonster.grpc.editorDecision
+import com.ridi.oss.proxymonster.grpc.editorDone
+import com.ridi.oss.proxymonster.grpc.editorError
 import io.grpc.ManagedChannel
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder
 import io.ktor.client.HttpClient
@@ -167,7 +167,7 @@ class GitHubSourceFlowDbTest {
         )
         approvals = ApprovalService(
             config, core.accessStore, core.auditStore, core.datasourceStore, core.policyStore, core.userGroupStore,
-            resultStore, core.roleResolver, core.authz, RunExecService(core), appScope, notifications = notifications,
+            resultStore, core.roleResolver, core.authz, EditorExecService(core), appScope, notifications = notifications,
         )
         flow = GitHubSourceFlow(
             adapter, approvals, core.accessStore, core.datasourceStore, core.policyStore, core.authz, notifications,
@@ -257,19 +257,19 @@ class GitHubSourceFlowDbTest {
     private fun recheck(n: Int) = runBlocking { evaluate(n) }
 
     /** The proxy's answer to one statement: ALLOW and done, or a target error when the SQL contains [fail]. */
-    private fun answer(sql: String, fail: String?): List<ProxyRunMsg> {
+    private fun answer(sql: String, fail: String?): List<ProxyEditorMsg> {
         val id = core.auditStore.insert(
             AuditEvent(principal = carol, datasource = datasource.name, statement = "ddl", decision = Decision.ALLOW, channel = "workflow-executor"),
         )
-        val decided = proxyRunMsg { decision = runDecision { decision = EnfAction.ALLOW; decisionId = id } }
+        val decided = proxyEditorMsg { decision = editorDecision { decision = EnfAction.ALLOW; decisionId = id } }
         return if (fail != null && fail in sql) {
-            listOf(decided, proxyRunMsg { error = runError { message = "ER_PARSE_ERROR"; rawMessage = "syntax error"; targetDbError = true } })
+            listOf(decided, proxyEditorMsg { error = editorError { message = "ER_PARSE_ERROR"; rawMessage = "syntax error"; targetDbError = true } })
         } else {
-            listOf(decided, proxyRunMsg { done = runDone { rowsAffected = 0 } })
+            listOf(decided, proxyEditorMsg { done = editorDone { rowsAffected = 0 } })
         }
     }
 
-    /** The default schema of every run channel the fake proxy was asked to open. */
+    /** The default schema of every editor session the fake proxy was asked to open. */
     private val openedSchemas = Collections.synchronizedList(mutableListOf<String>())
 
     private fun withProxy(fail: String? = null, body: suspend () -> Unit) = runBlocking {
@@ -315,7 +315,7 @@ class GitHubSourceFlowDbTest {
                 githubSourceRoutes(config, core.tokenStore, flow)
                 approvalRoutes(
                     config, core.accessStore, core.auditStore, core.datasourceStore, core.policyStore,
-                    core.userGroupStore, resultStore, core.roleResolver, core.authz, RunExecService(core),
+                    core.userGroupStore, resultStore, core.roleResolver, core.authz, EditorExecService(core),
                     service = approvals,
                 )
             }
@@ -1469,7 +1469,7 @@ class GitHubSourceFlowDbTest {
         )
         val threadedApprovals = ApprovalService(
             config, core.accessStore, core.auditStore, core.datasourceStore, core.policyStore, core.userGroupStore,
-            resultStore, core.roleResolver, core.authz, RunExecService(core), appScope, notifications = service,
+            resultStore, core.roleResolver, core.authz, EditorExecService(core), appScope, notifications = service,
         )
         val threadedFlow = GitHubSourceFlow(
             adapter, threadedApprovals, core.accessStore, core.datasourceStore, core.policyStore, core.authz, service,

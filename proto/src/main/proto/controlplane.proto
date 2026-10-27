@@ -60,15 +60,15 @@ service ControlPlane {
   // Proxy-initiated connection close; the control-plane idle-sweep is the backstop.
   rpc CloseConnection(CloseConnectionRequest) returns (CloseConnectionResponse);
   // Proxy-initiated stream: liveness (stream open == alive) + refresh push.
-  rpc Events(EventsRequest) returns (stream ControlEvent);
+  rpc Events(EventsRequest) returns (stream CpEvent);
   // The CP-driven execution channel. PROXY-DIALED bidi: the control-plane nudges the proxy over Events
-  // (OpenRunChannel) to open this, so data flows both ways without the control-plane ever dialing into the
+  // (OpenEditorSession) to open this, so data flows both ways without the control-plane ever dialing into the
   // proxy. It serves web-editor and workflow execution through the same target DB + Decide path, streaming
   // the decision and masked rows back.
-  rpc RunExec(stream ProxyRunMsg) returns (stream ControlRunMsg);
+  rpc EditorExec(stream ProxyEditorMsg) returns (stream CpEditorMsg);
   // On-demand admin table-browser introspection. Also PROXY-DIALED: request selectors ride the Events
   // nudge and the rich shared TableDetail response returns as JSON on this short-lived channel.
-  rpc TableDetailExec(stream ProxyTableDetailMsg) returns (stream ControlTableDetailMsg);
+  rpc TableDetailExec(stream ProxyTableDetailMsg) returns (stream CpTableDetailMsg);
   // Post-execution result-volume report the proxy sends after it finishes relaying one statement's result
   // to the client. Audit-only: it records a completion event chained onto the decision's audit row (never
   // a re-decision), giving the audit monitor the rows/bytes signal the pre-execution decision could not
@@ -125,7 +125,7 @@ message RegisterRequest {
   // The proxy's wire-protocol version. A server-v* release ships the proxy and control-plane at the same
   // version, so the control-plane rejects a mismatch at Register (the proxy's first call) and the proxy makes
   // the mirror check against RegisterResponse.protocol_version below — a half-finished rollout fails fast with
-  // a clear error rather than a stalled run channel. A proxy that predates this field sends 0.
+  // a clear error rather than a stalled editor session. A proxy that predates this field sends 0.
   int32 protocol_version = 12;
   // Absent retains the stored value; an empty message clears it. Nonsecret client-facing metadata only.
   ConnectionInfo connection_info = 13;
@@ -345,7 +345,7 @@ message Verdict {
   bool forward_target_error = 15;
   // A stable code for the deny_reason the caller can branch on: "rate_spent", or empty.
   string deny_code = 16;
-  // Set on a non-wire verdict; the proxy echoes it on RunDecision without reading it.
+  // Set on a non-wire verdict; the proxy echoes it on EditorDecision without reading it.
   ResultRequirements result_requirements = 17;
 }
 
@@ -368,10 +368,10 @@ message EventsRequest {
   // mismatch here too. A proxy that predates this field sends 0, which fails the check like an old Register.
   int32 protocol_version = 2;
 }
-message ControlEvent {
+message CpEvent {
   oneof kind {
     RefreshCatalog refresh_catalog = 1;
-    OpenRunChannel open_run_channel = 2;   // nudge the proxy to dial RunExec for a session
+    OpenEditorSession open_editor_session = 2;   // nudge the proxy to dial EditorExec for a session
     OpenTableDetailChannel open_table_detail_channel = 3;
     Draining draining = 4;   // this control-plane is shutting down; close and reconnect so the stream re-homes
     // room for more (tag/config change, revocation hint, ...) without a shape change
@@ -382,14 +382,14 @@ message RefreshCatalog {}
 // the stream is closed. The proxy reconnects without the error backoff, so its liveness re-homes to the
 // replacement instance in one reconnect instead of waiting out a max-age rotation or a dropped connection.
 message Draining {}
-// The control-plane asks the proxy to open a RunExec stream for a CP-driven session. The proxy dials back
-// with RunExec tagging this session_id. The ephemeral_token is a short-lived wire token minted for the
+// The control-plane asks the proxy to open a EditorExec stream for a CP-driven session. The proxy dials back
+// with EditorExec tagging this session_id. The ephemeral_token is a short-lived wire token minted for the
 // requester — the proxy re-presents it to its normal Decide path, so editor and workflow queries share
 // the exact same enforcement and result-relay channel.
-message OpenRunChannel {
+message OpenEditorSession {
   string session_id = 1;
   string ephemeral_token = 2;
-  bytes connection_id = 3;             // control-plane-minted for the run session
+  bytes connection_id = 3;             // control-plane-minted for the editor session
   repeated ProxyCommand on_open = 4;
   string default_schema = 5;           // the connection opens in this schema; empty keeps the target's default
 }
@@ -402,52 +402,52 @@ message OpenTableDetailChannel {
   string catalog = 4;            // the datasource's catalog; a blank or foreign value is refused
 }
 
-// ---- CP-driven run channel ----
-// The proxy dials RunExec and sends ProxyRunMsg; the control-plane replies with ControlRunMsg.
-message ProxyRunMsg {
+// ---- Editor session: the web editor, MCP queries and approval executions ----
+// The proxy dials EditorExec and sends ProxyEditorMsg; the control-plane replies with CpEditorMsg.
+message ProxyEditorMsg {
   oneof kind {
-    RunReady session_ready = 1;       // first message, sent the instant the stream opens: tells the control-
-                                      // plane which pending run this stream serves (the OpenRunChannel it
+    EditorReady session_ready = 1;       // first message, sent the instant the stream opens: tells the control-
+                                      // plane which pending run this stream serves (the OpenEditorSession it
                                       // dispatched) — BEFORE the target-DB open begins
-    RunDecision decision = 2;         // the enforcement verdict + UX metadata (before any rows)
-    RunResultRows result_rows = 3;    // masked rows (ALLOW/MASK only)
-    RunDone done = 4;                 // terminal success (rows_affected for a write)
-    RunError error = 5;               // terminal failure (target-DB error, unsupported, ...)
-    RunProgress progress = 6;         // liveness heartbeat during the target-DB open; resets the CP's no-progress bound
-    RunServing serving = 7;           // the target DB is connected and its on-open catalog work is done —
+    EditorDecision decision = 2;         // the enforcement verdict + UX metadata (before any rows)
+    EditorResultRows result_rows = 3;    // masked rows (ALLOW/MASK only)
+    EditorDone done = 4;                 // terminal success (rows_affected for a write)
+    EditorError error = 5;               // terminal failure (target-DB error, unsupported, ...)
+    EditorProgress progress = 6;         // liveness heartbeat during the target-DB open; resets the CP's no-progress bound
+    EditorServing serving = 7;           // the target DB is connected and its on-open catalog work is done —
                                       // the control-plane may now send the query
   }
 }
-message ControlRunMsg {
+message CpEditorMsg {
   oneof kind {
-    RunQuery query = 1;
-    RunClose close = 2;   // drop the session's target-DB connection; the proxy closes the stream
-    RunCancel cancel = 3; // cancel the in-flight statement out-of-band; a no-op when none is running
+    EditorQuery query = 1;
+    EditorClose close = 2;   // drop the session's target-DB connection; the proxy closes the stream
+    EditorCancel cancel = 3; // cancel the in-flight statement out-of-band; a no-op when none is running
   }
 }
-message RunReady { string session_id = 1; }
+message EditorReady { string session_id = 1; }
 // A target-DB open liveness heartbeat: the proxy emits these while dialing + authenticating the target DB and
 // running its on-open catalog commands, so the control-plane can bound the open by lack of progress rather
-// than by a blind dial budget. It carries no payload — the control-plane treats every RunProgress purely as
+// than by a blind dial budget. It carries no payload — the control-plane treats every EditorProgress purely as
 // "the proxy is still alive".
-message RunProgress {}
+message EditorProgress {}
 // The target-DB open finished and the proxy is ready to accept the query. Sent once, after the last
-// RunProgress and before any RunDecision.
-message RunServing {
+// EditorProgress and before any EditorDecision.
+message EditorServing {
   // The held session's effective namespace (PostgreSQL current_schemas(true), MySQL [DATABASE()] or empty).
   // Absent when the proxy could not read it.
   proxymonster.analyzer.v1.Namespace namespace = 1;
 }
-message RunQuery {
+message EditorQuery {
   string sql = 1;
   int32 max_rows = 2;   // 0 = the proxy's default cap
 }
-message RunClose {}
-message RunCancel {}
+message EditorClose {}
+message EditorCancel {}
 // The decision the proxy produced for the query — carries metadata rendered around results or persisted by
 // workflows: decision_id identifies the audit decision, masked_columns names masked outputs, deny_reason
 // explains a denial, and effective_roles records the role set used by Decide.
-message RunDecision {
+message EditorDecision {
   EnfAction decision = 1;
   int64 decision_id = 2;   // 0 == none
   repeated string masked_columns = 3;
@@ -466,30 +466,30 @@ message RunDecision {
   // Verdict.result_requirements echoed back.
   ResultRequirements result_requirements = 11;
 }
-message RunResultRows {
+message EditorResultRows {
   repeated string columns = 1;
-  repeated RunRow rows = 2;
+  repeated EditorRow rows = 2;
 }
-message RunRow {
+message EditorRow {
   // Per-column rendered value; is_null distinguishes a real SQL NULL from an empty string.
-  repeated RunValue values = 1;
+  repeated EditorValue values = 1;
 }
-message RunValue {
+message EditorValue {
   string value = 1;
   bool is_null = 2;
 }
-message RunDone {
+message EditorDone {
   int32 rows_affected = 1;   // -1 when not applicable (a SELECT)
   // The verdict's result cap, not the client's page size, ended this result.
   bool truncated_by_cap = 2;
-  // Same as RunServing.namespace, but read after the statement, so it reflects a SET search_path / USE the
+  // Same as EditorServing.namespace, but read after the statement, so it reflects a SET search_path / USE the
   // statement ran.
   proxymonster.analyzer.v1.Namespace namespace = 3;
 }
 // A run's terminal error. Also the at-rest form of a failed run's diagnostic: for a target-DB failure the
 // control-plane serializes this whole message (protobuf) and AES-GCM encrypts it into
 // query_result.error_detail, re-gated per viewer at view time — same field semantics on the wire and at rest.
-message RunError {
+message EditorError {
   // For a target-DB statement ERR (target_db_error) this is the REDACTED, value-free message (essno +
   // SQLSTATE + symbol, no echoed value); for every other failure it is the plain error text. The safe
   // default the control-plane surfaces — the raw form is opt-in via raw_message.
@@ -513,7 +513,7 @@ message ProxyTableDetailMsg {
     TableDetailError error = 3;           // terminal target/introspection failure
   }
 }
-message ControlTableDetailMsg {
+message CpTableDetailMsg {
   oneof kind {
     TableDetailClose close = 1;
   }

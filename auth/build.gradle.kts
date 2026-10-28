@@ -5,12 +5,12 @@ plugins {
     kotlin("plugin.serialization")
 }
 
-val ktorVersion = "3.5.2"
+val ktorVersion = "3.6.0"
 val testcontainersVersion = "1.21.4"
 
 dependencies {
     implementation("io.ktor:ktor-serialization-kotlinx-json:$ktorVersion")
-    implementation("org.postgresql:postgresql:42.7.13")
+    implementation("org.postgresql:postgresql:42.7.14")
 
     testImplementation(kotlin("test"))
     testImplementation("com.zaxxer:HikariCP:7.1.0")

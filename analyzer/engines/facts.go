@@ -253,6 +253,21 @@ func emitLineageFacts(root exp.Expression, session *Session, qualifySchema schem
 		}
 		facts.ResultReads = append(facts.ResultReads, columnGrant(column, pb.MaskedDisposition_MASKED_DISPOSITION_DENY_STATEMENT))
 	}
+	// Columns used in a WHERE only as `col = literal` / `col IN (literals)`. FilterLiterals is already sorted.
+	// An unparseable identity fails the statement closed, like a reference does. An EXPLAIN keeps the plain
+	// DENY_STATEMENT reference: its result is the plan, whose row estimates reflect the filter's selectivity,
+	// so a filter on a masked column is never released through it.
+	filterDisposition := pb.MaskedDisposition_MASKED_DISPOSITION_ALLOW_LITERAL_FILTER
+	if explain {
+		filterDisposition = pb.MaskedDisposition_MASKED_DISPOSITION_DENY_STATEMENT
+	}
+	for _, key := range report.FilterLiterals {
+		column, ok := columnRefFromKey(key)
+		if !ok {
+			return unanalyzableFacts("LINEAGE", "invalid column identity emitted by analyzer")
+		}
+		facts.ResultReads = append(facts.ResultReads, columnGrant(column, filterDisposition))
+	}
 	// Advisory, never authorization: this decides only whether the statement TEXT may be shown outside the
 	// console. An unparseable identity is skipped rather than failing the statement — a fact that can only
 	// hide text must not be able to deny a query.
@@ -332,6 +347,9 @@ func referencedColumnKeys(report ProbeResult) map[string]bool {
 		for _, key := range refs {
 			keys[key] = true
 		}
+	}
+	for _, key := range report.FilterLiterals {
+		keys[key] = true
 	}
 	return keys
 }

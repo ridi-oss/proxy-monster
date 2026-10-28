@@ -9,6 +9,7 @@ import com.ridi.oss.proxymonster.controlplane.authz.AuthzContext
 import com.ridi.oss.proxymonster.controlplane.authz.AuthzDecision
 import com.ridi.oss.proxymonster.controlplane.authz.ColumnRef
 import com.ridi.oss.proxymonster.controlplane.authz.ColumnVerdict
+import com.ridi.oss.proxymonster.controlplane.authz.FilterVerdict
 import com.ridi.oss.proxymonster.controlplane.authz.FunctionRef
 import com.ridi.oss.proxymonster.controlplane.authz.FunctionVerdict
 import com.ridi.oss.proxymonster.controlplane.authz.TableRef
@@ -16,6 +17,7 @@ import com.ridi.oss.proxymonster.controlplane.authz.TableVerdict
 import com.ridi.oss.proxymonster.controlplane.authz.UtilityRef
 import com.ridi.oss.proxymonster.controlplane.authz.UserParents
 import com.ridi.oss.proxymonster.controlplane.authz.UtilityVerdict
+import com.ridi.oss.proxymonster.controlplane.authz.authorizeColumnFilters
 import com.ridi.oss.proxymonster.controlplane.authz.authorizeColumns
 import com.ridi.oss.proxymonster.controlplane.authz.authorizeFunctions
 import com.ridi.oss.proxymonster.controlplane.authz.authorizeTables
@@ -825,6 +827,19 @@ internal fun decideFacts(
 
     val columnVerdicts = if (columnRefs.isEmpty()) emptyMap() else
         authz.authorizeColumns(principal, parents, ds.name, columnRefs, context, columnSystemTags, ds.tags)
+    // A column the analyzer marked ALLOW_LITERAL_FILTER (only ever a bare `col = literal` / `col IN (literals)`
+    // in a read's WHERE) that is MASKED for this principal may be filtered on only under an explicit
+    // `result.filter.literal` permit. Asked once for the whole statement, and only when something needs it.
+    // A system-redacted column is never filterable: that redaction is mandatory, not a policy choice.
+    val filterNeeded = columnGrants
+        .filter { it.maskedDisposition == MaskedDisposition.MASKED_DISPOSITION_ALLOW_LITERAL_FILTER }
+        .map { it.column.key }
+        .filter { columnVerdicts[it] == ColumnVerdict.MASKED && it !in systemRedactedColumns }
+        .toSet()
+    val filterVerdicts: Map<String, FilterVerdict> = if (filterNeeded.isEmpty()) emptyMap() else
+        authz.authorizeColumnFilters(
+            principal, parents, ds.name, columnRefs.filter { it.key in filterNeeded }, context, columnSystemTags, ds.tags,
+        )
     val masks = ArrayList<ColumnMask>()
     var hasMandatoryRedaction = false
     for (grant in columnGrants) {
@@ -850,6 +865,16 @@ internal fun decideFacts(
                 MaskedDisposition.UNRECOGNIZED -> return deny(
                     "protected column $key appears in a position that cannot be masked (a write payload or a subquery/reference)",
                 )
+                MaskedDisposition.MASKED_DISPOSITION_ALLOW_LITERAL_FILTER -> {
+                    // Filter only: the column has no output ordinal here, so there is nothing to mask. A column
+                    // that is also SELECTed carries its own MASK_OUTPUT grant and is masked there. Without the
+                    // permit this is the same deny, with the same reason, as any other predicate on a masked column.
+                    if (systemRedacted || filterVerdicts[key] != FilterVerdict.ALLOWED) {
+                        return deny(
+                            "protected column $key appears in a position that cannot be masked (a write payload or a subquery/reference)",
+                        )
+                    }
+                }
                 MaskedDisposition.MASKED_DISPOSITION_MASK_OUTPUT,
                 MaskedDisposition.MASKED_DISPOSITION_REDACT_OUTPUT_NULL -> {
                     // Ordinals were bounds-checked up front (fail-closed contract validation), so each is a

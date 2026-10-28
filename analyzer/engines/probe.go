@@ -66,6 +66,10 @@ type ProbeResult struct {
 	// Base columns a literal is compared against in a predicate, keyed by clause. Deliberately NOT folded
 	// into References: the parity oracle diffs that map field-by-field and produces no such fact.
 	PredicateLiterals []PredicateLiteralRef `json:"predicateLiterals,omitempty"`
+	// Base columns used in a WHERE only as the bare operand of `col = literal` or `col IN (literals)`, on a
+	// physical table column (never through a subquery or expression). Unlike PredicateLiterals this is an
+	// authorization fact: each is emitted as an ALLOW_LITERAL_FILTER grant, and is absent from References.
+	FilterLiterals []string `json:"filterLiterals,omitempty"`
 	// Base columns whose value reaches the client through the result set (docs/facts-emission.md).
 	Returned []ReturnedColumnInfo `json:"returned,omitempty"`
 }
@@ -125,7 +129,14 @@ type prober struct {
 	references map[string]map[string]bool // clause (SELECT, WHERE, SUBQUERY, …) -> base columns it reads
 	// column key -> clause, for every base column a literal is compared against in a predicate.
 	predicateLiterals map[string]string
-	opaqueSelects     map[exp.Expression]bool // subqueries used as a value (`WHERE x IN (SELECT …)`); their columns count as SUBQUERY reads
+	// base columns that appear in a WHERE only as the bare operand of `col = literal` / `col IN (literals)`.
+	// They are NOT in references: the control plane authorizes them under their own ALLOW_LITERAL_FILTER
+	// disposition instead of the blanket DENY_STATEMENT a reference gets.
+	filterLiterals map[string]bool
+	// the exact column NODES behind filterLiterals, so the OTHER catch-all skips those occurrences and only
+	// those: any other occurrence of the same column elsewhere in the statement still gets caught.
+	filterNodes   map[exp.Expression]bool
+	opaqueSelects map[exp.Expression]bool // subqueries used as a value (`WHERE x IN (SELECT …)`); their columns count as SUBQUERY reads
 
 	qualifySchema     schema.Schema
 	dialect           *dialects.Dialect          // the engine's resolved Dialect — parse, qualify, and generate all share this one instance
@@ -1317,7 +1328,28 @@ func (p *prober) lineage() ProbeResult {
 			continue
 		}
 		if w := asExpression(sel.Arg("where")); w != nil {
-			addClause([]exp.Expression{w.This()}, PREDICATE)
+			// A read's WHERE: every column is a PREDICATE reference except the bare operands of
+			// `col = literal` / `col IN (literals)` conjuncts, which are recorded as filterLiterals instead.
+			// A write has no such carve-out (it takes the isWrite path below), so it stays a plain reference.
+			safe := map[exp.Expression]string{}
+			if !p.isWrite {
+				safe = p.literalFilterColumns(w.This())
+			}
+			if len(safe) == 0 {
+				addClause([]exp.Expression{w.This()}, PREDICATE)
+			} else if p.enclosingOpaque(w.This()) == nil {
+				for _, col := range w.This().FindAll(exp.KindColumn) {
+					if base, ok := safe[col]; ok {
+						p.addFilterLiteral(base)
+						if p.filterNodes == nil {
+							p.filterNodes = map[exp.Expression]bool{}
+						}
+						p.filterNodes[col] = true
+						continue
+					}
+					p.addRef(PREDICATE, p.resolve(col, map[resolveKey]bool{}))
+				}
+			}
 			p.addPredicateLiterals(w.This(), "WHERE")
 		}
 		if h := asExpression(sel.Arg("having")); h != nil {
@@ -1688,7 +1720,7 @@ func (p *prober) lineage() ProbeResult {
 			}
 			for _, sub := range expressionsFromAny(node) {
 				for _, c := range sub.FindAll(exp.KindColumn) {
-					if p.enclosingOpaque(c) == nil {
+					if p.enclosingOpaque(c) == nil && !p.filterNodes[c] {
 						p.addRef(OTHER, subtractSet(p.resolve(c, map[resolveKey]bool{}), accounted))
 					}
 				}
@@ -1990,13 +2022,14 @@ func (p *prober) lineage() ProbeResult {
 		TracedColumns:     traced,
 		Origins:           origins,
 		References:        refsOut,
-		Sources:           p.scannedSources(origins, refsOut),
+		Sources:           p.scannedSources(origins, withFilterCoverage(refsOut, p.filterLiteralKeys())),
 		Functions:         p.builtinCalls,
 		UDFCalls:          p.udfCalls,
 		IsWrite:           p.isWrite,
 		WriteTarget:       writeTarget,
 		RewrittenSQL:      rewrittenSQL,
 		PredicateLiterals: p.predicateLiteralRefs(),
+		FilterLiterals:    p.filterLiteralKeys(),
 		Returned:          returned.sorted(),
 	}
 }
@@ -2052,6 +2085,139 @@ func (p *prober) predicateLiteralRefs() []PredicateLiteralRef {
 	for _, k := range keys {
 		out = append(out, PredicateLiteralRef{Column: k, Clause: p.predicateLiterals[k]})
 	}
+	return out
+}
+
+// directBase resolves col to its base column key ONLY when the name binds straight to a column of a
+// physical table in scope. A column that arrives through a subquery, CTE or derived table is refused even if
+// lineage could trace it, because that source may be an expression over the base column (`SELECT
+// LOWER(email) e …`), and a filter on such a value is not a filter on the column itself.
+func (p *prober) directBase(col exp.Expression) (string, bool) {
+	scope := p.col2scope[col]
+	if scope == nil {
+		return "", false
+	}
+	name, alias := col.Name(), col.TableName()
+	for current := scope; current != nil; current = current.Parent {
+		if alias != "" {
+			src, ok := current.Sources[alias]
+			if !ok {
+				continue
+			}
+			tbl, ok := src.(exp.Expression)
+			if !ok || tbl == nil || tbl.Kind() != exp.KindTable {
+				return "", false
+			}
+			return p.columnKey(tbl, name)
+		}
+		found, matches := "", 0
+		for _, src := range current.Sources {
+			if tbl, ok := src.(exp.Expression); ok && tbl != nil && tbl.Kind() == exp.KindTable {
+				if key, ok := p.columnKey(tbl, name); ok {
+					found = key
+					matches++
+				}
+			} else if derived, ok := src.(*optimizer.Scope); ok {
+				if len(p.resolveScopeOutput(derived, name, map[resolveKey]bool{})) > 0 {
+					return "", false
+				}
+			}
+		}
+		if matches == 1 {
+			return found, true
+		}
+		if matches > 1 {
+			return "", false
+		}
+	}
+	return "", false
+}
+
+// literalFilterColumns finds, in one SELECT's WHERE, the column nodes whose ONLY use is as the bare
+// operand of a top-level `col = literal`, `literal = col` or `col IN (literal, …)` conjunct, resolved to a
+// physical table column. Anything else — a function or cast around the column, LIKE, a range, OR, NOT, a
+// subquery, a column on both sides — is not returned and so stays an ordinary reference. The map value is
+// the base column key.
+func (p *prober) literalFilterColumns(where exp.Expression) map[exp.Expression]string {
+	out := map[exp.Expression]string{}
+	isLiteral := func(e exp.Expression) bool { return e != nil && e.Kind() == exp.KindLiteral }
+	record := func(col exp.Expression) {
+		if col == nil || col.Kind() != exp.KindColumn {
+			return
+		}
+		if base, ok := p.directBase(col); ok {
+			out[col] = base
+		}
+	}
+	var walk func(n exp.Expression)
+	walk = func(n exp.Expression) {
+		for n != nil && n.Kind() == exp.KindParen {
+			n = n.This()
+		}
+		if n == nil {
+			return
+		}
+		switch n.Kind() {
+		case exp.KindAnd:
+			walk(n.Left())
+			walk(n.Right())
+		case exp.KindEQ:
+			switch {
+			case isLiteral(n.Right()):
+				record(n.Left())
+			case isLiteral(n.Left()):
+				record(n.Right())
+			}
+		case exp.KindIn:
+			if n.Arg("query") != nil || n.Arg("unnest") != nil || n.Arg("field") != nil {
+				return
+			}
+			values := n.Expressions()
+			if len(values) == 0 {
+				return
+			}
+			for _, v := range values {
+				if !isLiteral(v) {
+					return
+				}
+			}
+			record(n.This())
+		}
+	}
+	walk(where)
+	return out
+}
+
+func (p *prober) addFilterLiteral(base string) {
+	if base == "" {
+		return
+	}
+	if p.filterLiterals == nil {
+		p.filterLiterals = map[string]bool{}
+	}
+	p.filterLiterals[base] = true
+}
+
+// filterLiteralKeys renders filterLiterals in a stable order.
+func (p *prober) filterLiteralKeys() []string {
+	if len(p.filterLiterals) == 0 {
+		return nil
+	}
+	return sortedSet(p.filterLiterals)
+}
+
+// withFilterCoverage returns refs plus the filter-literal columns under their own key, for the table-coverage
+// check only (a filtered column gets a column grant, so its table is not an uncovered scan). refs itself is
+// left untouched: FilterLiterals is deliberately not part of the References output.
+func withFilterCoverage(refs map[string][]string, filters []string) map[string][]string {
+	if len(filters) == 0 {
+		return refs
+	}
+	out := make(map[string][]string, len(refs)+1)
+	for k, v := range refs {
+		out[k] = v
+	}
+	out["FILTER_LITERAL"] = filters
 	return out
 }
 

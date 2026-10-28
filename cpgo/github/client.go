@@ -1,6 +1,7 @@
 package github
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -43,6 +44,14 @@ type Client struct {
 	installations  map[int64]*installation
 	branchRules    map[string]cachedRules
 	rateLimit      *RateLimit
+	graphqlErrors  []graphqlError
+}
+
+// graphqlError is one entry of a GraphQL answer's errors list; the query library keeps only the message.
+type graphqlError struct {
+	Type    string `json:"type"`
+	Path    []any  `json:"path"`
+	Message string `json:"message"`
 }
 
 // installation is one installation's clients, sharing a token ghinstallation keeps fresh.
@@ -194,6 +203,9 @@ type statusTransport struct {
 
 func (t statusTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	resp, err := t.next.RoundTrip(req)
+	if err == nil && resp.StatusCode < 400 && req.URL.String() == t.c.graphqlURL {
+		t.c.graphqlErrors, err = keepGraphQLErrors(resp)
+	}
 	if err != nil || resp.StatusCode < 400 {
 		return resp, err
 	}
@@ -259,8 +271,35 @@ func (c *Client) graphqlFailure(err error) error {
 	if e, ok := errors.AsType[*Error](err); ok {
 		return e
 	}
+	detail := err.Error()
+	if len(c.graphqlErrors) > 0 {
+		parts := make([]string, len(c.graphqlErrors))
+		for i, e := range c.graphqlErrors {
+			path := make([]string, len(e.Path))
+			for j, p := range e.Path {
+				path[j] = fmt.Sprint(p)
+			}
+			parts[i] = fmt.Sprintf("%s at %s: %s", e.Type, strings.Join(path, "."), e.Message)
+		}
+		detail = strings.Join(parts, "; ")
+	}
 	u, _ := url.Parse(c.graphqlURL)
-	return &Error{Kind: GraphQL, Message: fmt.Sprintf("POST %s -> GraphQL errors: %s", u.EscapedPath(), truncate(err.Error()))}
+	return &Error{Kind: GraphQL, Message: fmt.Sprintf("POST %s -> GraphQL errors: %s", u.EscapedPath(), truncate(detail))}
+}
+
+// keepGraphQLErrors reads a GraphQL answer's errors and leaves the body for the query library to decode.
+func keepGraphQLErrors(resp *http.Response) ([]graphqlError, error) {
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		return nil, err
+	}
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+	var answer struct {
+		Errors []graphqlError `json:"errors"`
+	}
+	_ = json.Unmarshal(body, &answer)
+	return answer.Errors, nil
 }
 
 func truncate(s string) string {

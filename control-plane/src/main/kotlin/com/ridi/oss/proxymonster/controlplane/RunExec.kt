@@ -708,6 +708,7 @@ class RunExecService(
         val session = openSessions.remove(sessionId) ?: return
         try {
             session.attached.outbound.trySend(controlRunMsg { close = runClose {} })
+            session.attached.inbound.close()
         } finally {
             runCatching { core.tokenStore.revoke(session.tokenId, session.principal) }
             closeConnectionCatalog(session.connectionId, session.datasourceName)

@@ -31,4 +31,14 @@ class SlackMarkupTest {
         val s = "a <b> & <@U1> &amp;"
         assertEquals(s, SlackMarkup.plainText(SlackMarkup.escape(s)))
     }
+
+    @Test
+    fun `every bold param in the catalog is bounded so Slack renders it bold`() {
+        // Slack reads *x* as bold only when a space or punctuation sits outside each asterisk.
+        val unbounded = Regex("""\}\*[\p{L}\p{N}]|[\p{L}\p{N}]\*\{""")
+        for (locale in listOf("en", "ko")) {
+            val text = javaClass.getResource("/messages/$locale/notifications.json")!!.readText()
+            assertEquals(emptyList(), unbounded.findAll(text).map { it.value }.toList(), locale)
+        }
+    }
 }

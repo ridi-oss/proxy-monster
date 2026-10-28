@@ -8,8 +8,8 @@ plugins {
     application
 }
 
-val ktorVersion = "3.5.2"
-val flywayVersion = "13.4.0"
+val ktorVersion = "3.6.0"
+val flywayVersion = "13.11.1"
 val testcontainersVersion = "1.21.4"
 // 0.10.0 is the last official kotlin-sdk line built on Ktor 3.2.x (3.2.3); newer releases require
 // Ktor 3.3/3.4. It provides the official stateless Streamable HTTP server/client and structured tools.
@@ -29,7 +29,7 @@ dependencies {
     implementation(project(":proto"))
     // The gRPC server transport for the control-plane's ControlPlane service (netty, shaded to
     // avoid clashing with Ktor's own Netty on the classpath).
-    implementation("io.grpc:grpc-netty-shaded:1.83.1")
+    implementation("io.grpc:grpc-netty-shaded:1.85.1")
 
     // Ktor server
     implementation("io.ktor:ktor-server-core:$ktorVersion")
@@ -50,12 +50,12 @@ dependencies {
 
     // JOSE/JWT (id_token signature + JWKS validation, docs/auth-model.md) — no JOSE lib existed
     // in this module before; the prior Okta.kt flow trusted userinfo instead of validating id_token.
-    implementation("com.nimbusds:nimbus-jose-jwt:10.9.1")
+    implementation("com.nimbusds:nimbus-jose-jwt:10.10")
 
     // Control-plane store: PostgreSQL only (plain JDBC + Hikari pooling + Flyway migrations).
     // Db.kt hardcodes org.postgresql.Driver; there is no MySQL store variant.
     implementation("com.zaxxer:HikariCP:7.1.0")
-    implementation("org.postgresql:postgresql:42.7.13")
+    implementation("org.postgresql:postgresql:42.7.14")
     // Target databases (what the proxy protects) are a separate axis from the store above.
     // MySQL is the primary target engine. Connector/J drives the MySQL-target DB-backed tests;
     // the control plane itself opens no JDBC connection to a target (the Go proxy introspects).
@@ -63,7 +63,7 @@ dependencies {
     implementation("org.flywaydb:flyway-core:$flywayVersion")
     implementation("org.flywaydb:flyway-database-postgresql:$flywayVersion")
 
-    implementation("ch.qos.logback:logback-classic:1.6.3")
+    implementation("ch.qos.logback:logback-classic:1.6.5")
 
     // Cedar policy engine (authz decision service, docs/authz-model.md). `uber` classifier bundles
     // the per-platform JNI native libs (jne/<os>/<arch>/libcedar_java_ffi.*) that the plain jar lacks.
@@ -72,10 +72,10 @@ dependencies {
     // verified empirically (`cedar-java:4.3.1` resolves as a leaf with no children otherwise). Add
     // them explicitly, pinned to the versions cedar-java 4.3.1's POM declares.
     implementation("com.cedarpolicy:cedar-java:$cedarVersion:uber")
-    implementation("com.fasterxml.jackson.core:jackson-databind:2.22.2")
-    implementation("com.fasterxml.jackson.datatype:jackson-datatype-jdk8:2.22.2")
+    implementation("com.fasterxml.jackson.core:jackson-databind:2.22.4")
+    implementation("com.fasterxml.jackson.datatype:jackson-datatype-jdk8:2.22.4")
     implementation("com.fizzed:jne:4.11.0")
-    implementation("com.google.guava:guava:33.7.1-jre")
+    implementation("com.google.guava:guava:33.7.2-jre")
 
     testImplementation(kotlin("test"))
     // Route-level gate tests (requireAdmin wired into cedarPolicyRoutes) exercise real Ktor routing.

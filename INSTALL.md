@@ -319,8 +319,10 @@ An edge reads only these variables; the datasource variables above (and
   proxy. Any other value refuses to start.
 - `PM_EDGE_LISTEN` — _required in edge mode_. Comma-separated `kind:port`
   entries; the kind is `mysql`, `postgres`, or `https` (an Athena datasource
-  proxy, which clients reach over HTTPS). Use each engine's default port so
-  clients need no port setting. Example: `mysql:3306,postgres:5432,https:443`
+  proxy, which clients reach over HTTPS). Use the default MySQL and PostgreSQL
+  ports so clients need no port setting; keep HTTPS off 443 when a console
+  shares the address (Athena's proxy default is 6443). Example:
+  `mysql:3306,postgres:5432,https:6443`
 - `PM_WIRE_ROUTES` — _required in edge mode_. Comma-separated
   `<host>=<backend>:<port>` entries. `<host>` is the name clients connect to and
   must match the SNI exactly (case-insensitive; no wildcards); a host listed

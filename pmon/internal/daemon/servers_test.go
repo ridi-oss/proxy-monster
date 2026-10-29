@@ -333,7 +333,7 @@ func TestRenameServerRefusesATakenName(t *testing.T) {
 	}
 }
 
-// The daemon reads a new server's version from /api/instance and reports it in its status.
+// The daemon reads a new server's version and description from /api/instance and reports them in its status.
 func TestStatusReportsTheServerVersion(t *testing.T) {
 	isolate(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -341,7 +341,7 @@ func TestStatusReportsTheServerVersion(t *testing.T) {
 			http.NotFound(w, r)
 			return
 		}
-		_, _ = w.Write([]byte(`{"name":"hr-pmon","version":"0.1.31"}`))
+		_, _ = w.Write([]byte(`{"name":"hr-pmon","version":"0.1.31","description":"HR databases"}`))
 	}))
 	defer srv.Close()
 	d := New("test", providers.Builtins())
@@ -350,7 +350,7 @@ func TestStatusReportsTheServerVersion(t *testing.T) {
 	}
 	waitFor(t, "the server version", func() bool {
 		s := d.Status().Server("hr-pmon")
-		return s != nil && s.ServerVersion == "0.1.31"
+		return s != nil && s.ServerVersion == "0.1.31" && s.InstanceDescription == "HR databases"
 	})
 }
 

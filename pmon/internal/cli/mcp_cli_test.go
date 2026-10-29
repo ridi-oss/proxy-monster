@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -58,7 +59,7 @@ func mcpFakeCP(t *testing.T) *httptest.Server {
 				w.WriteHeader(http.StatusAccepted)
 			}
 		case "/api/instance":
-			http.NotFound(w, r)
+			_ = json.NewEncoder(w).Encode(map[string]any{"name": "hr", "description": "HR databases"})
 		default:
 			t.Errorf("unexpected control-plane path %q", r.URL.Path)
 		}
@@ -84,8 +85,26 @@ func TestMCPBridgeRelaysOverThePmonLogin(t *testing.T) {
 	e.mustRun(t, "server", "set", "hr", "--url", cp.URL)
 
 	out, errOut, err := e.runMCP(t, `{"jsonrpc":"2.0","id":1,"method":"initialize"}`+"\n", "hr")
-	if err == nil || !strings.Contains(errOut, "not logged in to \"hr\" — run `pmon login hr`") || out != "" {
-		t.Fatalf("pmon mcp before login: err=%v stdout=%q stderr=%q; want a clear login hint and an empty stdout", err, out, errOut)
+	if err != nil || !strings.Contains(out, "not logged in to \\\"hr\\\" — run `pmon login hr`") {
+		t.Fatalf("pmon mcp before login: err=%v stdout=%q stderr=%q; want it to start and name the login", err, out, errOut)
+	}
+
+	out, errOut, err = e.runMCP(t, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`+"\n"+
+		`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`+"\n"+
+		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_servers"}}`+"\n", "hr")
+	if err != nil {
+		t.Fatalf("pmon mcp before login: %v\nstderr: %s", err, errOut)
+	}
+	for _, want := range []string{`HR databases\n\nnot logged in`, `"name":"login"`, `"name":"list_servers"`, `\"description\": \"HR databases\"`, `\"signedIn\": false`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("pmon mcp before login: stdout lacks %s:\n%s", want, out)
+		}
+	}
+
+	out, errOut, err = e.runMCP(t, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`+"\n"+
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"login"}}`+"\n", "hr")
+	if err != nil || !strings.Contains(out, "https://idp.example/activate") || !strings.Contains(out, "ABCD-EFGH") {
+		t.Fatalf("login tool: err=%v stdout=%q stderr=%q; want the sign-in page and code", err, out, errOut)
 	}
 
 	e.mustRun(t, "login", "hr")
@@ -110,4 +129,46 @@ func TestMCPBridgeRelaysOverThePmonLogin(t *testing.T) {
 	if len(lines) != 2 || !ids["1"] || !ids["2"] {
 		t.Errorf("stdout = %q, want exactly the initialize and tools/call answers", out)
 	}
+}
+
+// One relay started logged out signs in through its own login tool and then relays the server's tools.
+func TestMCPLoginToolBringsTheServerTools(t *testing.T) {
+	e := newEnv(t)
+	cp := mcpFakeCP(t)
+	e.mustRun(t, "server", "set", "hr", "--url", cp.URL)
+
+	cmd := exec.Command(e.bin, "mcp", "hr")
+	cmd.Env = e.environ()
+	in, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = in.Close(); _ = cmd.Wait() })
+	lines := bufio.NewScanner(out)
+	await := func(want string) {
+		t.Helper()
+		deadline := time.AfterFunc(20*time.Second, func() { _ = cmd.Process.Kill() })
+		defer deadline.Stop()
+		for lines.Scan() {
+			if strings.Contains(lines.Text(), want) {
+				return
+			}
+		}
+		t.Fatalf("pmon mcp never wrote %s", want)
+	}
+
+	fmt.Fprintln(in, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
+	await(`"id":1`)
+	fmt.Fprintln(in, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"login"}}`)
+	await("ABCD-EFGH")
+	await("notifications/tools/list_changed")
+	fmt.Fprintln(in, `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"get_my_permissions"}}`)
+	await(`"id":3,"result"`)
 }

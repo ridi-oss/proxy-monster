@@ -171,7 +171,7 @@ startupComplete:
 		_ = sendError(client, "FATAL", "28000", "proxy-monster: invalid or expired token", false, 0)
 		return
 	}
-	defer func() { _ = authz.Close() }()
+	defer authz.Close()
 	slog.Info("authenticated postgres client", "client", rawClientConn.RemoteAddr().String(), "principal", identity.Principal, "roles", identity.Roles)
 
 	targetDbConn, parameters, keyData, txStatus, catalog, err := dialTargetDbAuth(context.Background(), s.target.config)

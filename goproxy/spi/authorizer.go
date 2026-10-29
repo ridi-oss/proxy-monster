@@ -1,6 +1,8 @@
 package spi
 
 import (
+	"encoding/hex"
+	"log/slog"
 	"time"
 
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
@@ -66,8 +68,12 @@ func Authenticate(client ControlPlane, token, clientAddr string) (*Authorizer, I
 	return authz, identity, nil
 }
 
-// Close ends the connection on the control plane.
-func (a *Authorizer) Close() error { return a.client.CloseConnection(a.connectionID) }
+// Close ends the connection on the control plane; a failure is logged, as no caller can act on it.
+func (a *Authorizer) Close() {
+	if err := a.client.CloseConnection(a.connectionID); err != nil {
+		slog.Warn("control-plane connection close failed", "connection_id", hex.EncodeToString(a.connectionID), "error", err)
+	}
+}
 
 func (a *Authorizer) ConnectionID() []byte { return a.connectionID }
 

@@ -149,11 +149,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 		))
 		return
 	}
-	defer func() {
-		if err := authz.Close(); err != nil {
-			slog.Warn("failed to close mysql control-plane connection", "error", err)
-		}
-	}()
+	defer authz.Close()
 	slog.Info("authenticated mysql client", "client", clientConn.RemoteAddr().String(), "principal", identity.Principal, "roles", identity.Roles)
 
 	targetDbConn, targetGreeting, err := dialTargetDbAuthID(context.Background(), s.target.config, deprecateEOF)

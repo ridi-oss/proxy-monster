@@ -41,7 +41,6 @@ CATALOGS = {"mysql": ("def", "acme"), "postgres": ("acme", "public"), "athena": 
 
 # Names leg per matrix row; one classified column per spelling. Read: (mask|deny|clear:<value prefix>, sql[, pending]).
 # A pending check runs and reports SKIP while it fails, UNEXPECTED PASS once it passes.
-GLUE_CASE = "pending-name-fix: a mixed-case Glue table is allowed, but its read fails on the target"
 NAMES = {
     "mysql": {
         "classify": [("Customers", "Email"), ("Customers", "phone"), ("Customers", "SSN")],
@@ -120,8 +119,8 @@ NAMES = {
             ("mask", "SELECT id, SSN FROM Accounts ORDER BY id"),
             ("deny", "SELECT id, secret FROM accounts ORDER BY id"),
             ("deny", "SELECT id, SECRET FROM Accounts ORDER BY id"),
-            ("mask", "SELECT id, email FROM customers ORDER BY id", GLUE_CASE),
-            ("mask", "SELECT id, Email FROM Customers ORDER BY id", GLUE_CASE),
+            ("mask", "SELECT id, email FROM customers ORDER BY id"),
+            ("mask", "SELECT id, Email FROM Customers ORDER BY id"),
         ],
     },
 }

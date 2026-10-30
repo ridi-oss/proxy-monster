@@ -499,3 +499,11 @@ Fixes for gaps documented in
   serve the JVM side. Medium priority.
 - Structural de-duplication: shared route-CRUD helpers, web CRUD tabs, JDBC
   helpers, relative-time formatting, and reject dialogs.
+- goproxy's MySQL and PostgreSQL connections are driven by the same steps
+  written twice. Each engine's `openConnection` (`connection.go`) allocates the
+  backend generation, marks a failed dial with `errTargetDbUnavailable`, and
+  builds the session and the `ProxyCommandRunner`; `OnOpen`, `Close` and the
+  read-timeout `OpenConnection` match too. Each `wire_client.go` `handleConn`
+  repeats the admission, the deferred closes, the on-open run and the drain
+  point around its own protocol. Move the shared steps into shared code and
+  leave each engine its dial, framing and protocol loop.

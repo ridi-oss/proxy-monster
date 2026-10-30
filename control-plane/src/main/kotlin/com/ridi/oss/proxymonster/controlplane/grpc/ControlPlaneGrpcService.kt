@@ -207,8 +207,8 @@ class ControlPlaneGrpcService(
         // gates (EDITOR-channel-only + temp-schema filter) live in [editorTempOverlay] so they're unit-testable.
         val tempColumns = editorTempOverlay(channel, ds.engine, request.tempColumnsList)
         val httpIp = resolved.httpRequesterIp
-        if (request.connectionId.size() != 16) {
-            throw StatusException(Status.INVALID_ARGUMENT.withDescription("connection_id must be exactly 16 bytes"))
+        if (request.connectionId.isEmpty) {
+            throw StatusException(Status.INVALID_ARGUMENT.withDescription("connection_id is required"))
         }
         val binding = Binding(ds.name, id.principal, id.kind, ds.effectiveCatalog, ds.engine)
         val connection = core.connectionCatalog.find(request.connectionId)

@@ -1,11 +1,15 @@
 package com.ridi.oss.proxymonster.controlplane
 
 import com.ridi.oss.proxymonster.grpc.EnfAction
+import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
 import com.ridi.oss.proxymonster.controlplane.support.EnforcementFixture
+import com.ridi.oss.proxymonster.controlplane.support.SharedMySql
+import com.ridi.oss.proxymonster.controlplane.support.pushTestCatalog
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
+import java.sql.DriverManager
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
@@ -209,6 +213,72 @@ class BaselineDangerousFunctionEnforcementDbTest {
         // system:development datasource (it DENIES on the floor). That is the accepted `exception.unanalyzable ⊇ exec`
         // posture an operator opts into with system:development — pre-existing, unclosable via function facts,
         // and the multi-statement route into it is already shut (admission rejects >1-statement batches).
+    }
+
+    private fun grantFunction(fx: EnforcementFixture, identity: String) = fx.cedarPolicyStore.create(CedarPolicyInput(
+        name = "udf-read-${identity.replace('.', '-')}",
+        cedarSrc = """permit(principal in Role::"analyst", action == Action::"result.read.unmasked", resource == Function::"${fx.datasource.name}/$identity");""",
+    ), updatedBy = "test")
+
+    @Test
+    fun `a user function named like a PostgreSQL builtin is gated only when qualified with its own schema`() {
+        val fx = EnforcementFixture.postgres()
+        DriverManager.getConnection(fx.targetJdbcUrl, fx.targetUser, fx.targetPassword).use { c ->
+            c.createStatement().use { it.execute("CREATE FUNCTION public.pg_read_file(t text) RETURNS text LANGUAGE sql IMMUTABLE AS 'SELECT t'") }
+        }
+        fx.datasourceStore.pushTestCatalog(fx.datasource, fx.targetJdbcUrl, fx.targetUser, fx.targetPassword)
+        grantFunction(fx, "public.pg_read_file")
+        for (version in listOf(pg17, null)) {
+            configure(fx, version, listOf("system:production"))
+            val label = version ?: "no-manifest"
+            val user = decide(fx, "select public.pg_read_file(region) from users")
+            assertEquals(EnfAction.ALLOW, user.action, "[$label] granted user public.pg_read_file is not the builtin: ${user.detail}")
+            val builtin = decide(fx, "select pg_catalog.pg_read_file('/etc/passwd') from users")
+            assertEquals(EnfAction.DENY, builtin.action, "[$label] pg_catalog.pg_read_file must DENY")
+            assertTrue(builtin.detail?.contains("dangerous system function") == true, "[$label] DENY names the function gate: ${builtin.detail}")
+            val ambiguous = decide(fx, "select pg_read_file('/etc/passwd') from users")
+            assertEquals(EnfAction.DENY, ambiguous.action, "[$label] unqualified pg_read_file must DENY")
+            // Two candidates leave the call unresolved; its bare recovered name still hits the function gate.
+            assertTrue(ambiguous.detail?.contains("dangerous system function is not allowed: 'pg_read_file'") == true, "[$label] ${ambiguous.detail}")
+        }
+    }
+
+    @Test
+    fun `a qualified PostgreSQL extension function stays gated in a user schema`() {
+        val fx = EnforcementFixture.postgres()
+        DriverManager.getConnection(fx.targetJdbcUrl, fx.targetUser, fx.targetPassword).use { c ->
+            c.createStatement().use { it.execute("CREATE EXTENSION dblink SCHEMA public") }
+        }
+        fx.datasourceStore.pushTestCatalog(fx.datasource, fx.targetJdbcUrl, fx.targetUser, fx.targetPassword)
+        grantFunction(fx, "public.dblink")
+        for (version in listOf(pg17, null)) {
+            configure(fx, version, listOf("system:production"))
+            val label = version ?: "no-manifest"
+            val ctx = decide(fx, "select public.dblink('h', 'SELECT 1') from users")
+            assertEquals(EnfAction.DENY, ctx.action, "[$label] public.dblink is the extension, not a user function")
+            assertTrue(ctx.detail?.contains("dangerous system function is not allowed: 'public.dblink'") == true, "[$label] DENY names the function gate: ${ctx.detail}")
+        }
+    }
+
+    @Test
+    fun `a MySQL stored function named load_file is not the builtin`() {
+        val fx = EnforcementFixture.mysql()
+        val db = fx.datasource.dbName
+        SharedMySql.executeAdmin("CREATE FUNCTION `$db`.load_file(p VARCHAR(64)) RETURNS VARCHAR(64) DETERMINISTIC RETURN p")
+        try {
+            fx.datasourceStore.pushTestCatalog(fx.datasource, fx.targetJdbcUrl, fx.targetUser, fx.targetPassword)
+            grantFunction(fx, "$db.load_file")
+            for (version in listOf(mysql80, "5.7.44")) {
+                configure(fx, version, listOf("system:production"))
+                val user = decide(fx, "select `$db`.load_file(region) from users")
+                assertEquals(EnfAction.ALLOW, user.action, "[$version] granted stored $db.load_file is not the builtin: ${user.detail}")
+                val builtin = decide(fx, "select load_file('/etc/passwd') from users")
+                assertEquals(EnfAction.DENY, builtin.action, "[$version] native load_file must DENY")
+                assertTrue(builtin.detail?.contains("dangerous system function") == true, "[$version] DENY names the function gate: ${builtin.detail}")
+            }
+        } finally {
+            SharedMySql.executeAdmin("DROP FUNCTION `$db`.load_file")
+        }
     }
 
     @Test

@@ -398,8 +398,8 @@ Functions/families:
   `pg_ls_logdir`, …) plus exact `pg_stat_file`;
 - large objects: `lo_get`, `lo_import`, `loread`;
 - XML table/database/schema readers: the `query_to_xml`, `table_to_xml`,
-  `database_to_xml`, `schema_to_xml`, and `cursor_to_xml` families, plus exact
-  `xpath_table`;
+  `database_to_xml`, `schema_to_xml`, and `cursor_to_xml` families, plus the
+  cross-schema `xpath_table` (the `xml2` extension);
 - logical decoding output: `pg_logical_slot_get_changes`,
   `pg_logical_slot_peek_changes`, and their binary variants; and
 - raw-page inspection when the standard `pageinspect` extension is present:
@@ -842,9 +842,12 @@ from the inventory routes through `exception.unanalyzable`.
    denies — and writing one takes the same `admin.datasources` authority as the
    rest of classification.
 7. Same name in two schemas: relations and functions resolve qualified
-   identities. The dangerous-function floor also checks the bare name against
-   shipped manifests, which can over-classify a same-named user function (a
-   deny).
+   identities. A `schema.name` call matches the cross-schema rules, plus the
+   in-schema rules and the baseline floor only when that schema holds builtins,
+   so a user `public.pg_read_file` is not the builtin. A bare name (a MySQL
+   native, or a call recovered from an unanalyzable statement) is checked
+   against every builtin schema, which can over-classify a same-named user
+   function (a deny).
 8. Rule overlap: overlapping families with different tags fail boot; an exact
    rule weaker than a family it matches fails boot. A surviving overlap resolves
    to the strongest tag.

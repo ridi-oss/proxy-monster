@@ -673,8 +673,7 @@ internal fun decideFacts(
         }
         if (facts.functionsList.isNotEmpty()) {
             val functionTags = facts.functionsList.mapNotNull { name ->
-                (systemClassification?.tagForFunction(ds.engine, ds.engineVersion, name)
-                    ?: BaselineDangerousFunctions.classify(name.substringAfterLast('.'))?.id)?.let { name to it }
+                functionTag(systemClassification, ds, name)?.let { name to it }
             }.toMap()
             if (functionTags.isNotEmpty()) {
                 val refs = functionTags.keys.map(::FunctionRef)
@@ -799,8 +798,7 @@ internal fun decideFacts(
     if (functionGrants.isNotEmpty() || facts.functionsList.isNotEmpty()) {
         val names = (functionGrants.map { it.function.name } + facts.functionsList).distinct()
         val functionTags = names.mapNotNull { name ->
-            (systemClassification?.tagForFunction(ds.engine, ds.engineVersion, name)
-                ?: BaselineDangerousFunctions.classify(name.substringAfterLast('.'))?.id)?.let { name to it }
+            functionTag(systemClassification, ds, name)?.let { name to it }
         }.toMap()
         // now() relays; pg_read_file and every user function need a grant. functionsList (calls seen in an
         // unanalyzable statement) has no builtin flag, so only its dangerous names are gated.
@@ -1446,3 +1444,7 @@ private fun StatementFacts.beforeDecideCommands(): List<ProxyCommand> {
     val need = athenaPreparedDefinitionNeed
     return listOf(proxyCommand { fetchAthenaPreparedDefinition = fetchAthenaPreparedDefinition { workgroup = need.workgroup; name = need.name } })
 }
+
+private fun functionTag(systemClassification: SystemClassificationService?, ds: Datasource, name: String): String? =
+    if (systemClassification != null) systemClassification.tagForFunction(ds.engine, ds.engineVersion, name)
+    else BaselineDangerousFunctions.classify(name.substringAfterLast('.'))?.id

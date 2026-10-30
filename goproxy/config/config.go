@@ -4,7 +4,6 @@
 package config
 
 import (
-	"crypto/tls"
 	"fmt"
 	"net"
 	"net/netip"
@@ -16,25 +15,17 @@ import (
 	"github.com/alecthomas/kong"
 	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
-	"github.com/ridi-oss/proxy-monster/goproxy/targettls"
 )
 
-// rawFlags is the kong grammar: every field is bound to its PM_* environment variable. This struct is
-// intentionally unexported — Load() normalizes it into the public Config the rest of the proxy consumes.
+// Flags is the kong grammar: every field is bound to its PM_* environment variable. Load() normalizes it
+// into the Config the rest of the proxy consumes. An engine's target settings are its own Flags.
 //
 // The port fields are strings (not ints) on purpose: Load() parses them with parsePort so a blank or
 // non-numeric value falls back to the engine default. Binding them as kong ints would instead hard-fail
 // on a blank/garbage value.
-type rawFlags struct {
+type Flags struct {
 	Engine                 string `env:"PM_ENGINE" default:"mysql"`
 	ProxyPort              string `env:"PM_PROXY_PORT"`
-	TargetHost             string `env:"PM_TARGET_HOST" default:"localhost"`
-	TargetPort             string `env:"PM_TARGET_PORT"`
-	TargetDb               string `env:"PM_TARGET_DB" default:"acme"`
-	TargetUser             string `env:"PM_TARGET_USER" default:"acme"`
-	TargetPassword         string `env:"PM_TARGET_PASSWORD" default:"acme"`
-	TargetTLS              string `env:"PM_TARGET_TLS"`
-	TargetCA               string `env:"PM_TARGET_CA"`
 	ControlPlaneGrpcTarget string `env:"PM_CONTROL_PLANE_GRPC" default:"localhost:9090"`
 	DatasourceName         string `env:"PM_DATASOURCE_NAME"`
 	DatasourceTags         string `env:"PM_DATASOURCE_TAGS"`
@@ -83,17 +74,10 @@ const MaxDatasourceDescription = 500
 type Config struct {
 	// EngineName is the raw, lowercased PM_ENGINE value, kept for error messages and the boot log. Engine is
 	// what every downstream consumer uses; the string is parsed to it exactly once, here at the config boundary.
-	EngineName     string
-	Engine         *engines.Engine
-	Provider       spi.Provider
-	ProxyPort      int
-	TargetHost     string
-	TargetPort     int
-	TargetDb       string
-	TargetUser     string
-	TargetPassword string
-	// TargetTLS is the proxy's TLS config toward the target DB (PM_TARGET_TLS, PM_TARGET_CA); nil is plaintext.
-	TargetTLS              *tls.Config
+	EngineName             string
+	Engine                 *engines.Engine
+	Provider               spi.Provider
+	ProxyPort              int
 	ControlPlaneGrpcTarget string
 	DatasourceName         string
 	DatasourceTags         []string
@@ -101,7 +85,7 @@ type Config struct {
 	// Register, so unsetting it clears the stored value.
 	DatasourceDescription string
 	// AdvertiseAddr is the client-facing host:port a wire client (pmon) dials to reach THIS proxy — distinct
-	// from Target* (the upstream db). Registered with the control plane so GET /api/datasources can hand a
+	// from the target DB. Registered with the control plane so GET /api/datasources can hand a
 	// client the per-datasource connect address. NO default: empty unless PM_ADVERTISE_ADDR is set (the proxy
 	// can't guess a client-reachable address; a local/demo run sets 127.0.0.1:<port>, a real deployment the
 	// node's MagicDNS name). Empty => the datasource is not brokerable by pmon until an address is configured.
@@ -120,21 +104,28 @@ type Config struct {
 	TrustedProxies    []netip.Prefix
 }
 
-// Load reads the proxy configuration from the environment, applying the engine-dependent port defaults
-// and normalization. It parses no command-line arguments (this is a daemon; kong is used purely for its
-// env-tag binding), so it is safe to call repeatedly (e.g. from tests using t.Setenv) without touching
-// os.Args.
-func Load(registry spi.Registry) (*Config, error) {
-	if registry == nil {
-		return nil, fmt.Errorf("config: provider registry is required")
+// Parse reads Flags, and each of embeds (an engine's own kong grammar), from the environment in one kong
+// pass. It parses no command-line arguments: this is a daemon, and kong is used for its env-tag binding.
+func Parse(embeds ...any) (Flags, error) {
+	var raw Flags
+	options := make([]kong.Option, 0, len(embeds))
+	for _, embed := range embeds {
+		options = append(options, kong.Embed(embed))
 	}
-	var raw rawFlags
-	parser, err := kong.New(&raw)
+	parser, err := kong.New(&raw, options...)
 	if err != nil {
-		return nil, fmt.Errorf("config: building parser: %w", err)
+		return Flags{}, fmt.Errorf("config: building parser: %w", err)
 	}
 	if _, err := parser.Parse(nil); err != nil {
-		return nil, fmt.Errorf("config: parsing environment: %w", err)
+		return Flags{}, fmt.Errorf("config: parsing environment: %w", err)
+	}
+	return raw, nil
+}
+
+// Load normalizes parsed Flags, applying the engine-dependent port defaults.
+func Load(raw Flags, registry spi.Registry) (*Config, error) {
+	if registry == nil {
+		return nil, fmt.Errorf("config: provider registry is required")
 	}
 
 	engineName := strings.ToLower(raw.Engine)
@@ -147,11 +138,6 @@ func Load(registry spi.Registry) (*Config, error) {
 	proxyPort := parsePort(raw.ProxyPort)
 	if proxyPort == 0 && provider != nil {
 		proxyPort = e.DefaultProxyPort
-	}
-
-	targetPort := parsePort(raw.TargetPort)
-	if targetPort == 0 && provider != nil {
-		targetPort = e.DefaultTargetPort
 	}
 
 	queryTimeout := 600 * time.Second
@@ -176,15 +162,6 @@ func Load(registry spi.Registry) (*Config, error) {
 		return nil, err
 	}
 
-	targetTLSMode, err := targettls.ParseMode(raw.TargetTLS)
-	if err != nil {
-		return nil, err
-	}
-	targetTLS, err := targettls.Config(targetTLSMode, raw.TargetCA, raw.TargetHost)
-	if err != nil {
-		return nil, err
-	}
-
 	var tags []string
 	for _, tag := range strings.Split(raw.DatasourceTags, ",") {
 		tag = strings.TrimSpace(tag)
@@ -205,12 +182,6 @@ func Load(registry spi.Registry) (*Config, error) {
 		Engine:                 e,
 		Provider:               provider,
 		ProxyPort:              proxyPort,
-		TargetHost:             raw.TargetHost,
-		TargetPort:             targetPort,
-		TargetDb:               raw.TargetDb,
-		TargetUser:             raw.TargetUser,
-		TargetPassword:         raw.TargetPassword,
-		TargetTLS:              targetTLS,
 		ControlPlaneGrpcTarget: raw.ControlPlaneGrpcTarget,
 		// A whitespace-only value is absent, so Validate()/TLSEnabled() treat it as unset rather than a
 		// usable name/path.

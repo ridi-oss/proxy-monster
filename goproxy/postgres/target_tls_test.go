@@ -10,14 +10,14 @@ import (
 	"github.com/jackc/pgx/v5/pgproto3"
 
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
-	"github.com/ridi-oss/proxy-monster/goproxy/spi"
+	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
 	"github.com/ridi-oss/proxy-monster/goproxy/targettls"
 )
 
-func tlsOnlyConfig(t *testing.T, config *tls.Config) spi.TargetConfig {
+func tlsOnlyConfig(t *testing.T, config *tls.Config) sqldb.Settings {
 	t.Helper()
 	db := dbtest.PostgresTLS(t)
-	return spi.TargetConfig{Host: db.Host, Port: db.Port, Db: db.DB, User: db.User, Password: db.Password, TLS: config}
+	return sqldb.Settings{Host: db.Host, Port: db.Port, Db: db.DB, User: db.User, Password: db.Password, TLS: config}
 }
 
 func TestTargetDbTLSVerifyFull(t *testing.T) {
@@ -112,7 +112,7 @@ func TestTargetDbTLSRejectsUntrustedCertificate(t *testing.T) {
 
 func TestTargetDbTLSRefusedByPlaintextServer(t *testing.T) {
 	db := dbtest.Postgres(t)
-	config := spi.TargetConfig{Host: db.Host, Port: db.Port, Db: db.DB, User: db.User, Password: db.Password, TLS: dbtest.VerifyFullTLS(t, db.Host)}
+	config := sqldb.Settings{Host: db.Host, Port: db.Port, Db: db.DB, User: db.User, Password: db.Password, TLS: dbtest.VerifyFullTLS(t, db.Host)}
 	_, _, _, _, _, err := dialTargetDbAuth(context.Background(), config)
 	if err == nil || !strings.Contains(err.Error(), "refused TLS") {
 		t.Fatalf("TLS dial to a server without ssl = %v, want a refusal", err)

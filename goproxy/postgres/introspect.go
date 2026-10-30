@@ -13,12 +13,11 @@ import (
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
-	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
 )
 
 // OpenPool opens a database/sql handle to a Postgres target.
-func OpenPool(config spi.TargetConfig) (*sql.DB, error) {
+func OpenPool(config sqldb.Settings) (*sql.DB, error) {
 	// pgx has no socket-timeout DSN param; the per-query 30s context below carries that intent.
 	u := url.URL{
 		Scheme:   "postgres",

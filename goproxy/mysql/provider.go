@@ -15,28 +15,41 @@ import (
 )
 
 // Provider is MySQL's spi.Provider.
-type Provider struct{}
+type Provider struct {
+	Flags sqldb.Flags
+	// AdvertiseAddr is the host:port clients reach this proxy's wire port at.
+	AdvertiseAddr string
+}
 
 func (Provider) Engine() *engines.Engine { return engines.MySQL }
 
-func (Provider) OpenTarget(config spi.TargetConfig) (spi.Target, error) {
-	pool, info, err := sqldb.OpenPool(OpenPool, config)
+func (p Provider) OpenTarget() (spi.Target, error) {
+	settings, err := sqldb.NewSettings(p.Flags, engines.MySQL)
 	if err != nil {
 		return nil, err
 	}
-	return &target{config: config, pool: pool, info: info}, nil
+	return OpenTarget(settings, p.AdvertiseAddr)
+}
+
+// OpenTarget opens the MySQL target at settings, advertising advertise to clients.
+func OpenTarget(settings sqldb.Settings, advertise string) (spi.Target, error) {
+	pool, info, err := sqldb.OpenPool(OpenPool, settings, advertise)
+	if err != nil {
+		return nil, err
+	}
+	return &target{config: settings, pool: pool, info: info}, nil
 }
 
 // target is one open MySQL target; its pool serves introspection and table detail.
 type target struct {
-	config spi.TargetConfig
+	config sqldb.Settings
 	pool   *sql.DB
 	info   *pb.ConnectionInfo
 }
 
-func (t *target) Config() spi.TargetConfig { return t.config }
-
-func (t *target) TargetInfo() string { return net.JoinHostPort(t.config.Host, strconv.Itoa(t.config.Port)) }
+func (t *target) TargetInfo() string {
+	return net.JoinHostPort(t.config.Host, strconv.Itoa(t.config.Port))
+}
 
 func (t *target) ConnectionInfo() *pb.ConnectionInfo { return t.info }
 

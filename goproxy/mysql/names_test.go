@@ -11,6 +11,7 @@ import (
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/mysql"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
+	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
 )
 
 const namesSchema = "PmNamesMixed"
@@ -30,7 +31,7 @@ func startNamesBroker(t *testing.T, targetConfig dbtest.TargetDb, seed *sql.DB, 
 		}
 	}
 	fake, cpClient := startFakeCP(t)
-	config := spi.TargetConfig{Host: targetConfig.Host, Port: targetConfig.Port, Db: targetConfig.DB, User: targetConfig.User, Password: targetConfig.Password}
+	config := sqldb.Settings{Host: targetConfig.Host, Port: targetConfig.Port, Db: targetConfig.DB, User: targetConfig.User, Password: targetConfig.Password}
 	server := mysql.New(spi.Listen{}, config, cpClient, nil)
 	if err := server.Listen(); err != nil {
 		t.Fatalf("mysql.Listen: %v", err)

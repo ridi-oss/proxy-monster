@@ -13,15 +13,12 @@ import (
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
+	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
 )
 
 func namesDetailTarget(t *testing.T, e *engines.Engine, targetConfig dbtest.TargetDb) spi.Target {
 	t.Helper()
-	provider, err := registry.For(e)
-	if err != nil {
-		t.Fatal(err)
-	}
-	target, err := provider.OpenTarget(spi.TargetConfig{Host: targetConfig.Host, Port: targetConfig.Port, Db: targetConfig.DB, User: targetConfig.User, Password: targetConfig.Password})
+	target, err := openers[e](sqldb.Settings{Host: targetConfig.Host, Port: targetConfig.Port, Db: targetConfig.DB, User: targetConfig.User, Password: targetConfig.Password}, "")
 	if err != nil {
 		t.Fatal(err)
 	}

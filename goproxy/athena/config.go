@@ -19,7 +19,6 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	awsa "github.com/aws/aws-sdk-go-v2/service/athena"
 	smithyendpoints "github.com/aws/smithy-go/endpoints"
-	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
 const (
@@ -40,8 +39,8 @@ type targetConfig struct {
 }
 
 // configure reads PM_ATHENA_* (region also from AWS_REGION / AWS_DEFAULT_REGION, profile from AWS_PROFILE)
-// and takes the database from config.Db; credentials come from the SDK's default chain, never from PM_*.
-func configure(lookup func(string) (string, bool), config spi.TargetConfig) (targetConfig, error) {
+// and the database from PM_TARGET_DB; credentials come from the SDK's default chain, never from PM_*.
+func configure(lookup func(string) (string, bool)) (targetConfig, error) {
 	get := func(key, fallback string) string {
 		value, ok := lookup(key)
 		if !ok {
@@ -54,7 +53,7 @@ func configure(lookup func(string) (string, bool), config spi.TargetConfig) (tar
 		profile:     get("AWS_PROFILE", ""),
 		workgroup:   get("PM_ATHENA_WORKGROUP", "primary"),
 		catalog:     get("PM_ATHENA_DEFAULT_CATALOG", "AwsDataCatalog"),
-		database:    strings.TrimSpace(config.Db),
+		database:    get("PM_TARGET_DB", "acme"),
 		advertise:   get("PM_ADVERTISE_ADDR", ""),
 		contextPath: get("PM_ATHENA_CONTEXT_PATH", ":memory:"),
 	}

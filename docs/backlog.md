@@ -415,6 +415,11 @@ Fixes for gaps documented in
   decoding the binary row format per column type, applying the mask, and
   re-encoding — including the length-encoding and null-bitmap changes that
   follow from a changed value.
+- Make the editor session's 5,000-row ceiling configurable. It is hard-coded in
+  goproxy's editor server (`maxMaxRows`), `EditorExec`, the approval run, the
+  MCP `run_query` schema and the web workbench, so it caps a result even under
+  an uncapped verdict (KNOWN_LIMITATIONS.md, Result caps and rates). Read it
+  from one setting and hand it to each of them.
 
 ## Management over MCP
 

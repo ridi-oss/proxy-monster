@@ -223,6 +223,14 @@ forward work. MySQL leads PostgreSQL in priority.
 Fixes for gaps documented in
 [`../KNOWN_LIMITATIONS.md`](../KNOWN_LIMITATIONS.md):
 
+- Delete the table-detail channel (high priority). goproxy reads a table's
+  detail (columns, indexes, foreign keys, defaults, comments) over its own
+  `TableDetailExec` stream, authorized only by `datasource.connect`, so a user
+  sees the detail of a table they cannot select from. Read it on the user's
+  editor session through `Decide` instead, and delete `OpenTableDetailChannel`,
+  `TableDetailExec` and goproxy's `ServeTableDetail`. Its queries are
+  system-catalog reads, which are readable at the floor, so they also need
+  filtering to the tables the user may select from.
 - Bind a saved result's view to the execution's namespace and physical lineage
   (saved lineage), so an output-name match can no longer release stored
   cleartext under a mask plan computed for a different physical column. High

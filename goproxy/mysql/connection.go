@@ -27,7 +27,7 @@ type connection struct {
 	targetConnectionID uint32
 	config             sqldb.Settings
 	authz              *spi.Authorizer
-	commandRunner      *sqldb.ProxyCommandRunner
+	commandRunner      *relay.ProxyCommandRunner
 	guard              spi.ExecGuard
 	// deprecateEOF is the result framing the connection negotiated: the wire client's choice, always on for an editor session.
 	deprecateEOF bool

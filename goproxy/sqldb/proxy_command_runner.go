@@ -10,80 +10,61 @@ import (
 	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
-// ProxyCommandRunner executes connection-local catalog commands through callback-injected held-target DB I/O.
-type ProxyCommandRunner struct {
-	Catalog           string
-	Queries           Queries
-	Session           *engines.Session
-	ConnectionID      []byte
-	BackendGeneration uint64
-	Probe             func(sql string, expectedColumns int) ([][]*string, error)
-	Push              func(*pb.SchemaFragmentPush) (uint64, error)
+// Inspector inspects a schema over the held target connection through probe.
+type Inspector struct {
+	Queries Queries
+	Session *engines.Session
+	Probe   func(sql string, expectedColumns int) ([][]*string, error)
 }
 
-func NewProxyCommandRunner(queries Queries, session *engines.Session, connectionID []byte, generation uint64, probe func(string, int) ([][]*string, error), push func(*pb.SchemaFragmentPush) (uint64, error)) *ProxyCommandRunner {
-	return &ProxyCommandRunner{Queries: queries, Session: session, ConnectionID: connectionID, BackendGeneration: generation, Probe: probe, Push: push}
+func NewProxyCommandRunner(queries Queries, session *engines.Session, connectionID []byte, generation uint64, probe func(string, int) ([][]*string, error), push func(*pb.SchemaFragmentPush) (uint64, error)) *relay.ProxyCommandRunner {
+	return &relay.ProxyCommandRunner{
+		ConnectionID:      connectionID,
+		BackendGeneration: generation,
+		Inspector:         &Inspector{Queries: queries, Session: session, Probe: probe},
+		Push:              push,
+	}
 }
 
-// Refetch executes one refetch. A failed hash probe degrades to a full fetch; a failed read, a failed push,
-// or a schema that changed under the read is an error, and the schema stays pending until it is re-asked.
-func (r *ProxyCommandRunner) Refetch(cmd *pb.Refetch) error {
-	if cmd.GetSchema() == "" {
-		return errors.New("refetch command has blank schema")
+// InspectSchema reads one schema. A failed hash probe degrades to a full fetch; a failed read, or a schema
+// that changed under the read, is an error.
+func (m *Inspector) InspectSchema(schema string, ifHashDiffers []byte) (*pb.SchemaFragmentPush, error) {
+	if m.Queries.SchemaColumns == nil {
+		return nil, errors.New("command runner has no queries")
 	}
-	if r.Queries.SchemaColumns == nil {
-		return errors.New("command runner has no queries")
-	}
-	if r.Probe == nil {
-		return errors.New("command runner has no probe callback")
-	}
-	if r.Push == nil {
-		return errors.New("command runner has no push callback")
-	}
-
-	if r.Catalog == "" {
-		return errors.New("command runner has no catalog")
-	}
-	if cmd.GetCatalog() != r.Catalog {
-		return fmt.Errorf("refetch catalog %q does not match target catalog %q", cmd.GetCatalog(), r.Catalog)
+	if m.Probe == nil {
+		return nil, errors.New("command runner has no probe callback")
 	}
 
 	var setupRows [][]*string
-	if setupSQL := r.Queries.HashSetupProbe; setupSQL != "" {
-		rows, err := r.Probe(setupSQL, r.Queries.HashSetupColumns)
+	if setupSQL := m.Queries.HashSetupProbe; setupSQL != "" {
+		rows, err := m.Probe(setupSQL, m.Queries.HashSetupColumns)
 		if err == nil {
 			setupRows = rows
 		}
 	}
 
-	hashSQL, hashColumns, hashSQLErr := r.Queries.SchemaHash(cmd.GetSchema(), setupRows)
-	h1, trusted1 := r.inspectHash(hashSQL, hashColumns, hashSQLErr)
-	if trusted1 && len(cmd.GetIfHashDiffers()) > 0 && bytes.Equal(h1, cmd.GetIfHashDiffers()) {
-		_, err := r.Push(&pb.SchemaFragmentPush{
-			ConnectionId:      append([]byte(nil), r.ConnectionID...),
-			Schema:            cmd.GetSchema(),
-			Catalog:           r.Catalog,
-			ContentHash:       append([]byte(nil), h1...),
-			Unchanged:         true,
-			BackendGeneration: r.BackendGeneration,
-		})
-		return err
+	hashSQL, hashColumns, hashSQLErr := m.Queries.SchemaHash(schema, setupRows)
+	h1, trusted1 := m.inspectHash(hashSQL, hashColumns, hashSQLErr)
+	if trusted1 && len(ifHashDiffers) > 0 && bytes.Equal(h1, ifHashDiffers) {
+		return &pb.SchemaFragmentPush{ContentHash: append([]byte(nil), h1...), Unchanged: true}, nil
 	}
 
-	rows, err := r.Probe(r.Queries.SchemaColumns(cmd.GetSchema()), 7)
+	rows, err := m.Probe(m.Queries.SchemaColumns(schema), 7)
 	if err != nil {
-		return fmt.Errorf("introspecting schema %q: %w", cmd.GetSchema(), err)
+		return nil, fmt.Errorf("introspecting schema %q: %w", schema, err)
 	}
-	columns, err := FragmentColumnsFromRows(r.Session, cmd.GetSchema(), rows)
+	columns, err := FragmentColumnsFromRows(m.Session, schema, rows)
 	if err != nil {
-		return fmt.Errorf("mapping schema %q fragment: %w", cmd.GetSchema(), err)
+		return nil, fmt.Errorf("mapping schema %q fragment: %w", schema, err)
 	}
-	routineRows, err := r.Probe(r.Queries.SchemaRoutines(cmd.GetSchema()), 1)
+	routineRows, err := m.Probe(m.Queries.SchemaRoutines(schema), 1)
 	if err != nil {
-		return fmt.Errorf("introspecting schema %q routines: %w", cmd.GetSchema(), err)
+		return nil, fmt.Errorf("introspecting schema %q routines: %w", schema, err)
 	}
 	routines := make([]string, 0, len(routineRows))
 	for _, row := range routineRows {
@@ -93,64 +74,43 @@ func (r *ProxyCommandRunner) Refetch(cmd *pb.Refetch) error {
 	}
 
 	// h1 != h2: DDL landed between the two probes, so columns and routines may not belong together.
-	h2, trusted2 := r.inspectHash(hashSQL, hashColumns, hashSQLErr)
+	h2, trusted2 := m.inspectHash(hashSQL, hashColumns, hashSQLErr)
 	if trusted1 && trusted2 && !bytes.Equal(h1, h2) {
-		return fmt.Errorf("schema %q changed during introspection", cmd.GetSchema())
+		return nil, fmt.Errorf("schema %q changed during introspection", schema)
 	}
 	contentHash := make([]byte, 32)
 	if _, err := rand.Read(contentHash); err != nil {
-		return fmt.Errorf("generating untrusted fragment nonce: %w", err)
+		return nil, fmt.Errorf("generating untrusted fragment nonce: %w", err)
 	}
 	if trusted1 && trusted2 {
 		contentHash = append(contentHash[:0], h2...)
 	}
 
 	var routineNames []string
-	for _, functionName := range r.Session.FunctionNames(routines) {
+	for _, functionName := range m.Session.FunctionNames(routines) {
 		routineNames = append(routineNames, functionName.String())
 	}
-	_, err = r.Push(&pb.SchemaFragmentPush{
-		ConnectionId:      append([]byte(nil), r.ConnectionID...),
-		Schema:            cmd.GetSchema(),
-		Catalog:           r.Catalog,
-		ContentHash:       contentHash,
-		Columns:           columns,
-		Routines:          routineNames,
-		BackendGeneration: r.BackendGeneration,
-	})
-	return err
+	return &pb.SchemaFragmentPush{ContentHash: contentHash, Columns: columns, Routines: routineNames}, nil
 }
 
-func (r *ProxyCommandRunner) inspectHash(sql string, expectedColumns int, sqlErr error) ([]byte, bool) {
+func (m *Inspector) inspectHash(sql string, expectedColumns int, sqlErr error) ([]byte, bool) {
 	if sqlErr != nil {
 		return nil, false
 	}
-	rows, err := r.Probe(sql, expectedColumns)
+	rows, err := m.Probe(sql, expectedColumns)
 	if err != nil {
 		return nil, false
 	}
-	hash, trusted, err := r.Queries.SchemaHashFromRows(rows)
+	hash, trusted, err := m.Queries.SchemaHashFromRows(rows)
 	if err != nil {
 		return nil, false
 	}
 	return hash, trusted
 }
 
-// RunAll executes commands in order and stops at the first failure.
-// RunAll executes a command list on the held connection. The SQL engines answer only the Refetch arm; any
-// other command is unknown here and fails closed. session is unused: nothing a refetch fetches changes the
-// per-statement session facts.
-func (r *ProxyCommandRunner) RunAll(cmds []*pb.ProxyCommand, _ *spi.SessionSnapshot) error {
-	for i, cmd := range cmds {
-		refetch := cmd.GetRefetch()
-		if refetch == nil {
-			return fmt.Errorf("command %d is not a refetch", i)
-		}
-		if err := r.Refetch(refetch); err != nil {
-			return fmt.Errorf("refetch command %d: %w", i, err)
-		}
-	}
-	return nil
+// RunCommand refuses every arm but Refetch, which the runner handles.
+func (*Inspector) RunCommand(*pb.ProxyCommand, *spi.SessionSnapshot) error {
+	return relay.ErrUnknownCommand
 }
 
 // FragmentColumnsFromRows strictly maps information_schema rows into a fragment of the requested canonical schema.

@@ -108,7 +108,7 @@ type nativeRequest struct {
 	requestBody []byte
 	// SQL submission state, set only for StartQueryExecution.
 	authz         *spi.Authorizer
-	commandRunner *proxyCommandRunner
+	commandRunner *relay.ProxyCommandRunner
 	decision      *spi.Decision
 	submitted     []byte
 	tokened       bool

@@ -14,84 +14,56 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/athena/types"
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
 const metadataTimeout = 60 * time.Second
 
-// proxyCommandRunner answers the control plane's per-connection catalog commands from Glue table metadata. The
-// listing is the inspection, so its hash is always trusted.
-type proxyCommandRunner struct {
-	target       *target
-	connectionID []byte
-	generation   uint64
-	push         func(*pb.SchemaFragmentPush) (uint64, error)
-}
-
-func (t *target) newProxyCommandRunner(authz *spi.Authorizer) (*proxyCommandRunner, error) {
+// newProxyCommandRunner answers the control plane's per-connection catalog commands from Glue table metadata.
+func (t *target) newProxyCommandRunner(authz *spi.Authorizer) (*relay.ProxyCommandRunner, error) {
 	generation, ok := t.generations.Next()
 	if !ok {
 		return nil, errors.New("athena: backend generation out of range")
 	}
-	return &proxyCommandRunner{target: t, connectionID: authz.ConnectionID(), generation: generation, push: authz.Client().PushSchemaFragment}, nil
+	return &relay.ProxyCommandRunner{
+		Catalog:           t.catalogIdentity(),
+		ConnectionID:      authz.ConnectionID(),
+		BackendGeneration: generation,
+		Inspector:         t,
+		Push:              authz.Client().PushSchemaFragment,
+	}, nil
 }
 
 // maxPreparedDefinitions bounds the definitions one decision may accumulate across its before-decide rounds.
 const maxPreparedDefinitions = 8
 
-// RunAll executes a command list: a Refetch re-inspects a database from Glue; a FetchAthenaPreparedDefinition
-// reads the named prepared statement from the workgroup and appends it to session's Athena scope, so the
-// re-sent decision carries it. Any other arm fails closed.
-func (r *proxyCommandRunner) RunAll(commands []*pb.ProxyCommand, snapshot *spi.SessionSnapshot) error {
-	for i, command := range commands {
-		switch {
-		case command.GetRefetch() != nil:
-			if err := r.run(command.GetRefetch()); err != nil {
-				return fmt.Errorf("refetch command %d: %w", i, err)
-			}
-		case command.GetFetchAthenaPreparedDefinition() != nil:
-			if err := r.target.fetchPreparedDefinitionInto(command.GetFetchAthenaPreparedDefinition(), snapshot); err != nil {
-				return fmt.Errorf("prepared definition command %d: %w", i, err)
-			}
-		default:
-			return fmt.Errorf("command %d is not one this engine runs", i)
-		}
-	}
-	return nil
-}
-
-func (r *proxyCommandRunner) run(command *pb.Refetch) error {
-	if command.GetSchema() == "" {
-		return errors.New("refetch command has blank schema")
-	}
-	catalog := r.target.catalogIdentity()
-	if command.GetCatalog() != catalog {
-		return fmt.Errorf("refetch catalog %q does not match target catalog %q", command.GetCatalog(), catalog)
-	}
+// InspectSchema lists a database from Glue. The listing is the inspection, so its hash is always trusted.
+func (t *target) InspectSchema(schema string, ifHashDiffers []byte) (*pb.SchemaFragmentPush, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), metadataTimeout)
 	defer cancel()
-	columns, err := r.target.fragmentColumns(ctx, r.target.settings.catalog, command.GetSchema())
+	columns, err := t.fragmentColumns(ctx, t.settings.catalog, schema)
 	if err != nil {
-		return fmt.Errorf("introspecting schema %q: %w", command.GetSchema(), err)
+		return nil, fmt.Errorf("introspecting schema %q: %w", schema, err)
 	}
 	hash, err := fragmentHash(columns)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	push := &pb.SchemaFragmentPush{
-		ConnectionId:      append([]byte(nil), r.connectionID...),
-		Schema:            command.GetSchema(),
-		Catalog:           catalog,
-		ContentHash:       hash,
-		BackendGeneration: r.generation,
+	if len(ifHashDiffers) > 0 && string(ifHashDiffers) == string(hash) {
+		return &pb.SchemaFragmentPush{ContentHash: hash, Unchanged: true}, nil
 	}
-	if len(command.GetIfHashDiffers()) > 0 && string(command.GetIfHashDiffers()) == string(hash) {
-		push.Unchanged = true
-	} else {
-		push.Columns = columns
+	return &pb.SchemaFragmentPush{ContentHash: hash, Columns: columns}, nil
+}
+
+// RunCommand reads a FetchAthenaPreparedDefinition's prepared statement from the workgroup and appends it to
+// snapshot's Athena scope, so the re-sent decision carries it. Any other arm fails closed.
+func (t *target) RunCommand(command *pb.ProxyCommand, snapshot *spi.SessionSnapshot) error {
+	fetch := command.GetFetchAthenaPreparedDefinition()
+	if fetch == nil {
+		return relay.ErrUnknownCommand
 	}
-	_, err = r.push(push)
-	return err
+	return t.fetchPreparedDefinitionInto(fetch, snapshot)
 }
 
 // fragmentColumns lists one database's columns; a database Glue does not know is an empty fragment, so a

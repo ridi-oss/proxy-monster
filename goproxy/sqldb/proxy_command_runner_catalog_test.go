@@ -20,16 +20,14 @@ func TestRefetchCatalogIdentity(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			probes := 0
 			var pushed *pb.SchemaFragmentPush
-			commandRunner := ProxyCommandRunner{Catalog: "def", Queries: refetchQueries, Session: testSession, BackendGeneration: 7,
-				Probe: func(sql string, _ int) ([][]*string, error) {
-					probes++
-					if sql == "columns:schema" {
-						return fragmentRows("schema"), nil
-					}
-					return [][]*string{{ptr("hash")}}, nil
-				},
-				Push: func(push *pb.SchemaFragmentPush) (uint64, error) { pushed = push; return 8, nil },
-			}
+			commandRunner := testRunner(func(sql string, _ int) ([][]*string, error) {
+				probes++
+				if sql == "columns:schema" {
+					return fragmentRows("schema"), nil
+				}
+				return [][]*string{{ptr("hash")}}, nil
+			}, func(push *pb.SchemaFragmentPush) (uint64, error) { pushed = push; return 8, nil })
+			commandRunner.BackendGeneration = 7
 			command := &pb.Refetch{Schema: "schema", Catalog: test.catalog}
 			if test.unchanged {
 				command.IfHashDiffers = []byte("hash")

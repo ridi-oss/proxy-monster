@@ -18,7 +18,6 @@ import com.ridi.oss.proxymonster.controlplane.TargetDbRunException
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
-import com.ridi.oss.proxymonster.controlplane.tokenHash
 import com.ridi.oss.proxymonster.grpc.ControlPlaneGrpcKt
 import com.ridi.oss.proxymonster.grpc.EditorQuery
 import com.ridi.oss.proxymonster.grpc.EnfAction as WireEnfAction
@@ -137,18 +136,15 @@ class GrpcEditorExecDbTest {
             core.tokenStore.list("editor-user").none { it.kind == "EDITOR" },
             "transient editor tokens stay off the user-visible token list",
         )
-        // The requester IP observed at mint time is carried on ControlPlaneCore, keyed by
-        // this ephemeral token's hash, for the life of the token.
-        assertEquals(
-            requesterIp, core.editorRequesterIps.get(tokenHash(open.ephemeralToken)),
-            "the requester-IP carrier must hold exactly the requesterIp run() was called with",
-        )
 
         val proxyRequests = Channel<ProxyEditorMsg>(Channel.UNLIMITED)
         val proxy = async {
             stub.editorExec(proxyRequests.receiveAsFlow()).collect { control ->
                 when {
-                    control.hasQuery() -> playProxy(control.query, proxyRequests)
+                    control.hasQuery() -> {
+                        assertEquals(requesterIp.orEmpty(), control.query.requesterIp, "the query carries the requester's IP")
+                        playProxy(control.query, proxyRequests)
+                    }
                     control.hasClose() -> proxyRequests.close()
                     else -> fail("control plane sent an empty editor control message")
                 }
@@ -166,20 +162,14 @@ class GrpcEditorExecDbTest {
         val outcome = withTimeout(5_000) { result.await() }
         withTimeout(5_000) { proxy.await() }
         assertNull(core.tokenStore.resolve(open.ephemeralToken), "the ephemeral token is revoked after the exchange")
-        assertNull(
-            core.editorRequesterIps.get(tokenHash(open.ephemeralToken)),
-            "the requester-IP registry entry must be removed alongside the token revoke — entry lifetime == token lifetime",
-        )
         awaitUntil("Events stream detached") { datasource.name !in core.proxyEventsHub.attached() }
         outcome
     }
 
     @Test
-    fun `run's requesterIp is carried on ControlPlaneCore for the life of the ephemeral token`() = runBlocking {
-        // exchange() itself asserts the registry holds exactly the requesterIp passed in, both while the
-        // token is live and (as null/absent) after the exchange completes — this pins the explicit,
-        // non-default case end to end (every other exchange()-based test in this file implicitly pins the
-        // null/no-op case, since they call exchange without a requesterIp).
+    fun `an editor session's requesterIp rides its EditorQuery`() = runBlocking {
+        // exchange() asserts each query carries the requesterIp passed in; the other exchange()-based tests pin
+        // the empty case.
         exchange("select 1", requesterIp = "203.0.113.99") { _, requests ->
             requests.send(proxyEditorMsg { decision = editorDecision { decision = WireEnfAction.ALLOW } })
             requests.send(proxyEditorMsg { done = editorDone { rowsAffected = -1 } })
@@ -816,22 +806,21 @@ class GrpcEditorExecDbTest {
 
             // openSession completes once the fake proxy attaches its editorExec stream (attach completes the
             // pending session's ready). Run it async so the fake proxy below can service the dial.
-            val sessionIdDeferred = async { service.openSession("session-user", datasource, requesterIp = "203.0.113.42") }
+            val sessionIdDeferred = async { service.openSession("session-user", datasource) }
             val open = withTimeout(5_000) { event.await() }.openEditorSession
             val ephemeralToken = open.ephemeralToken
-            // openSession's requesterIp is carried on ControlPlaneCore, keyed by the session
-            // token's hash, for the life of the session — every query decided on this session sees it.
-            assertEquals("203.0.113.42", core.editorRequesterIps.get(tokenHash(ephemeralToken)))
 
             // ONE fake-proxy stream that services N queries then a close — the proof the CP reuses one stream
             // (one target-DB connection) across queries rather than dialing fresh per statement.
             val proxyRequests = Channel<ProxyEditorMsg>(Channel.UNLIMITED)
             val queriesSeen = java.util.Collections.synchronizedList(ArrayList<String>())
+            val requesterIps = java.util.Collections.synchronizedList(ArrayList<String>())
             val proxy = async {
                 stub.editorExec(proxyRequests.receiveAsFlow()).collect { control ->
                     when {
                         control.hasQuery() -> {
                             queriesSeen += control.query.sql
+                            requesterIps += control.query.requesterIp
                             proxyRequests.send(proxyEditorMsg { decision = editorDecision { decision = WireEnfAction.ALLOW } })
                             proxyRequests.send(rowsChunk(listOf("echo"), listOf(listOf(control.query.sql))))
                             proxyRequests.send(proxyEditorMsg { done = editorDone { rowsAffected = -1 } })
@@ -850,32 +839,16 @@ class GrpcEditorExecDbTest {
                 "the per-session token stays valid across the session (not revoked per query)",
             )
 
-            // Each query REFRESHES the carried requester_ip to THIS request's IP (resolved
-            // fresh per decision), never the stale open-time one. A query whose IP can't be resolved (null)
-            // CLEARS the entry fail-closed — a session opened from a trusted network then queried from an
-            // untrusted one must NOT inherit the open-time (trusted) IP.
+            // Each query carries its own request's IP; one whose IP can't be resolved (null) carries none.
             val r1 = withTimeout(5_000) { service.runOnSession(sessionId, "session-user", "select 1", 500, requesterIp = "203.0.113.50") }
-            assertEquals(
-                "203.0.113.50", core.editorRequesterIps.get(tokenHash(ephemeralToken)),
-                "runOnSession refreshes the carried requester_ip to the current request's IP, not the open-time 203.0.113.42",
-            )
             val r2 = withTimeout(5_000) { service.runOnSession(sessionId, "session-user", "select 2", 500, requesterIp = null) }
-            assertNull(
-                core.editorRequesterIps.get(tokenHash(ephemeralToken)),
-                "a session query from an unresolvable IP clears the stale open-time IP — the anti-staleness invariant",
-            )
             assertEquals(EnfAction.ALLOW, r1.decision)
             assertEquals(listOf(listOf("select 1")), r1.rows)
             assertEquals(listOf(listOf("select 2")), r2.rows)
 
-            // A different principal cannot use someone else's session — the ownership check throws before the
-            // registry is touched, so it neither runs nor perturbs the carried IP.
+            // A different principal cannot use someone else's session.
             assertIs<ProxyRunException>(
                 runCatching { service.runOnSession(sessionId, "other-user", "select 3", 500, requesterIp = "203.0.113.60") }.exceptionOrNull(),
-            )
-            assertNull(
-                core.editorRequesterIps.get(tokenHash(ephemeralToken)),
-                "a rejected non-owner query must not plant a requester_ip on the owner's session",
             )
 
             // ...nor CLOSE it: a leaked sessionId must not let another principal tear down the connection or
@@ -888,20 +861,13 @@ class GrpcEditorExecDbTest {
             )
             val r3 = withTimeout(5_000) { service.runOnSession(sessionId, "session-user", "select 4", 500, requesterIp = "203.0.113.51") }
             assertEquals(listOf(listOf("select 4")), r3.rows, "the session still runs after a rejected non-owner close")
-            assertEquals(
-                "203.0.113.51", core.editorRequesterIps.get(tokenHash(ephemeralToken)),
-                "the latest query's requester_ip is the one carried for the session's next decision",
-            )
 
             assertTrue(service.closeSessionOwnedBy(sessionId, "session-user"), "the owner closes their own session")
             withTimeout(5_000) { proxy.await() }
 
             assertEquals(listOf("select 1", "select 2", "select 4"), queriesSeen.toList(), "all queries ran on the SAME held stream")
+            assertEquals(listOf("203.0.113.50", "", "203.0.113.51"), requesterIps.toList(), "each query carried its own requester's IP")
             assertNull(core.tokenStore.resolve(ephemeralToken), "the session token is revoked on close")
-            assertNull(
-                core.editorRequesterIps.get(tokenHash(ephemeralToken)),
-                "the requester-IP registry entry is removed alongside the session token on close",
-            )
             awaitUntil("Events stream detached") { datasource.name !in core.proxyEventsHub.attached() }
         }
     }
@@ -1024,15 +990,13 @@ class GrpcEditorExecDbTest {
     }
 
     @Test
-    fun `a run-minted APPROVER_EXEC token's requester_ip reaches a real gRPC decide (approverExec=true, the ONLY APPROVER_EXEC minter)`() = runBlocking {
-        // An ip-gated connect permit proves the run-supplied IP actually reaches Cedar at decide time — not
-        // just that the registry map holds it. APPROVER_EXEC tokens are minted ONLY by run(approverExec=true),
-        // so this exercises the production mint path the manual-insert decide tests can't.
+    fun `an approval run's requester_ip reaches a real gRPC decide on the workflow-executor channel`() = runBlocking {
+        // APPROVER_EXEC tokens are minted only by run(approverExec = true), so this covers that path end to end.
         core.cedarPolicyStore.create(
             CedarPolicyInput(
                 name = "editor-run-approver-exec-ip-gate",
                 cedarSrc = """permit(principal, action == Action::"datasource.connect", resource == Datasource::"${datasource.name}")
-                    when { context has requester_ip && context.requester_ip.isInRange(ip("203.0.113.0/24")) };""",
+                    when { context has channel && context.channel == "workflow-executor" && context has requester_ip && context.requester_ip.isInRange(ip("203.0.113.0/24")) };""",
             ),
             updatedBy = null,
         )
@@ -1040,41 +1004,32 @@ class GrpcEditorExecDbTest {
             val event = async { stub.events(eventsRequest { datasourceName = datasource.name; protocolVersion = CONTROL_PROTOCOL_VERSION }).first() }
             awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }
 
-            // run(approverExec = true) mints an APPROVER_EXEC token and records the requester IP under its hash.
             val runResult = async {
                 runCatching {
-                    service.run("approver-exec-user", datasource, "select 1 from t", 500, approverExec = true, requesterIp = "203.0.113.55")
+                    service.run("approver-exec-user", datasource, "select 1 from t", 500, approverExec = true, assumeRoles = setOf("ip-approver"), requesterIp = "203.0.113.55")
                 }
             }
             val open = withTimeout(5_000) { event.await() }.openEditorSession
-            val ephemeralToken = open.ephemeralToken
-
-            // The minted token carries the run-supplied IP under its hash...
-            assertEquals("approver-exec-user", core.tokenStore.resolve(ephemeralToken)?.principal)
-            assertEquals("203.0.113.55", core.editorRequesterIps.get(tokenHash(ephemeralToken)))
-
-            // ...and a REAL gRPC decide against that live token sees it: the ip-gated connect permit fires, so
-            // the deny moves off the connect gate to the statement-kind gate. An impl that registered IPs only
-            // for EDITOR would leave connect denied here — the exact regression a manual-insert test can't catch.
             val connectionId = stub.openEditorConnection(open, datasource.name)
-            val decideResponse = stub.decide(
-                decisionRequest {
-                    token = ephemeralToken
-                    datasourceName = datasource.name
-                    currentCatalog = datasource.effectiveCatalog
-                    currentCatalog = datasource.effectiveCatalog
-                    this.connectionId = connectionId
-                    sql = "select 1 from t"
-                },
-            )
-            assertTrue("statement kind 'select' is not permitted" in decideResponse.verdict.denyReason, "the run-minted APPROVER_EXEC IP must reach Cedar: ${decideResponse.verdict.denyReason}")
 
-            // Service the dial so run() completes cleanly and the registry entry is removed on token revoke.
+            // The fake proxy decides with the EditorQuery's requester_ip as client_addr, as goproxy does. The ip-gated
+            // connect permit fires, so the deny moves off the connect gate to the statement-kind gate.
+            var denyReason = ""
             val proxyRequests = Channel<ProxyEditorMsg>(Channel.UNLIMITED)
             val proxy = async {
                 stub.editorExec(proxyRequests.receiveAsFlow()).collect { control ->
                     when {
                         control.hasQuery() -> {
+                            denyReason = stub.decide(
+                                decisionRequest {
+                                    token = open.ephemeralToken
+                                    datasourceName = datasource.name
+                                    currentCatalog = datasource.effectiveCatalog
+                                    this.connectionId = connectionId
+                                    sql = control.query.sql
+                                    clientAddr = control.query.requesterIp
+                                },
+                            ).verdict.denyReason
                             proxyRequests.send(proxyEditorMsg { decision = editorDecision { decision = WireEnfAction.ALLOW } })
                             proxyRequests.send(proxyEditorMsg { done = editorDone { rowsAffected = -1 } })
                         }
@@ -1087,10 +1042,7 @@ class GrpcEditorExecDbTest {
             proxyRequests.send(proxyEditorMsg { serving = editorServing {} })
             withTimeout(5_000) { runResult.await() }.getOrThrow()
             withTimeout(5_000) { proxy.await() }
-            assertNull(
-                core.editorRequesterIps.get(tokenHash(ephemeralToken)),
-                "the APPROVER_EXEC registry entry is removed alongside the token revoke",
-            )
+            assertTrue("statement kind 'select' is not permitted" in denyReason, "the run's APPROVER_EXEC requester IP must reach Cedar: $denyReason")
             awaitUntil("Events stream detached") { datasource.name !in core.proxyEventsHub.attached() }
         }
     }

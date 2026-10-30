@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane.support
 
+import com.ridi.oss.proxymonster.grpc.EditorQuery
 import com.ridi.oss.proxymonster.grpc.openConnectionRequest
 import com.ridi.oss.proxymonster.grpc.ConnectionDoor
 import com.google.protobuf.ByteString
@@ -199,7 +200,7 @@ suspend fun withFakeProxy(
     core: ControlPlaneCore,
     stub: ControlPlaneGrpcKt.ControlPlaneCoroutineStub,
     datasourceName: String,
-    respond: suspend (WireIdentity?, String, OpenEditorSession) -> List<ProxyEditorMsg>,
+    respond: suspend (WireIdentity?, EditorQuery, OpenEditorSession) -> List<ProxyEditorMsg>,
     tableDetail: ((OpenTableDetailChannel) -> ProxyTableDetailMsg)? = null,
     body: suspend () -> Unit,
 ) = supervisorScope {
@@ -227,7 +228,7 @@ suspend fun withFakeProxy(
                     out.send(proxyEditorMsg { serving = editorServing {} })
                     stub.editorExec(out.receiveAsFlow()).collect { control ->
                         when {
-                            control.hasQuery() -> respond(identity, control.query.sql, open).forEach { out.send(it) }
+                            control.hasQuery() -> respond(identity, control.query, open).forEach { out.send(it) }
                             control.hasClose() -> out.close()
                         }
                     }

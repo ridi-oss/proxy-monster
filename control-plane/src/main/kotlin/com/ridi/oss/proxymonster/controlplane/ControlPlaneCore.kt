@@ -64,11 +64,4 @@ class ControlPlaneCore(
     val connectionCatalog = ConnectionCatalogRegistry(requestConfigCatalogRefresh = configCatalogRefresh::request)
     val editorSessions = EditorSessionRegistry()
     val tableDetailChannels = TableDetailChannelRegistry()
-
-    // The HTTP requester IP observed when an ephemeral EDITOR/
-    // APPROVER_EXEC token was minted (docs/authz-context.md), keyed by token hash — the async decide-time carrier the gRPC decide
-    // handler reads (EditorExec.kt's [RequesterIpRegistry] doc has the full rationale). Lives here for the
-    // SAME reason [editorSessions] does: [com.ridi.oss.proxymonster.controlplane.grpc.ControlPlaneGrpcService]
-    // is constructed independently in Main.kt, before Application.module's EditorExecService exists.
-    val editorRequesterIps = RequesterIpRegistry()
 }

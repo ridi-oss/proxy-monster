@@ -9,7 +9,6 @@ import com.ridi.oss.proxymonster.controlplane.EditorExecService
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
-import com.ridi.oss.proxymonster.controlplane.tokenHash
 import com.ridi.oss.proxymonster.grpc.ControlPlaneGrpcKt
 import com.ridi.oss.proxymonster.grpc.EnfAction as WireEnfAction
 import com.ridi.oss.proxymonster.grpc.ProxyEditorMsg
@@ -40,7 +39,6 @@ import java.util.concurrent.TimeUnit
 import javax.sql.DataSource
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertNull
 import kotlin.test.fail
 
 /**
@@ -109,20 +107,18 @@ class EditorSessionDecideTimingDbTest {
     }
 
     @Test
-    fun `each session query's real gRPC Decide sees THAT query's refreshed requester_ip, proving refresh-before-send`() = runBlocking {
+    fun `each session query's real gRPC Decide sees that query's own requester_ip`() = runBlocking {
         supervisorScope {
             val event = async { stub.events(eventsRequest { datasourceName = datasource.name; protocolVersion = CONTROL_PROTOCOL_VERSION }).first() }
             awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }
 
-            // Open from an ALLOWED IP; the open-time entry is in-range, so a stale read would ALLOW — the trap
-            // the second (null-IP) query must not fall into.
-            val sessionIdDeferred = async { service.openSession("timing-user", datasource, requesterIp = "203.0.113.42") }
+            val sessionIdDeferred = async { service.openSession("timing-user", datasource) }
             val open = withTimeout(5_000) { event.await() }.openEditorSession
             val ephemeralToken = open.ephemeralToken
             val connectionId = stub.openEditorConnection(open, datasource.name)
 
-            // The fake proxy invokes the REAL Decide (session token) WHILE servicing each query, then fabricates
-            // an ALLOW so runOnSession returns normally. The Decide verdict is what pins the refresh timing.
+            // The fake proxy invokes the REAL Decide with the query's requester_ip as client_addr, as goproxy does,
+            // then fabricates an ALLOW so runOnSession returns normally.
             val decideByQuery = Collections.synchronizedMap(LinkedHashMap<String, WireEnfAction>())
             val proxyRequests = Channel<ProxyEditorMsg>(Channel.UNLIMITED)
             val proxy = async {
@@ -137,6 +133,7 @@ class EditorSessionDecideTimingDbTest {
                                     currentCatalog = datasource.effectiveCatalog
                                     this.connectionId = connectionId
                                     sql = control.query.sql
+                                    clientAddr = control.query.requesterIp
                                 },
                             )
                             decideByQuery[control.query.sql] = response.verdict.decision
@@ -153,23 +150,18 @@ class EditorSessionDecideTimingDbTest {
             proxyRequests.send(proxyEditorMsg { serving = editorServing {} })
             val sessionId = withTimeout(5_000) { sessionIdDeferred.await() }
 
-            // Query 1 from an ALLOWED IP → the refreshed IP reaches the decide → ALLOW.
+            // Query 1 from an allowed IP → ALLOW. Query 2 from a null (unresolvable) IP must not inherit it: its
+            // decide sees no requester_ip, so the ip-gated connect permit can't fire → DENY.
             withTimeout(5_000) { service.runOnSession(sessionId, "timing-user", "select 1", 500, requesterIp = "203.0.113.50") }
-            // Query 2 from a null (unresolvable) IP → the refresh CLEARS the stale allowed IP before the send, so
-            // this query's decide sees no requester_ip → the ip-gated connect permit can't fire → DENY.
             withTimeout(5_000) { service.runOnSession(sessionId, "timing-user", "select 2", 500, requesterIp = null) }
 
             assertEquals(
                 WireEnfAction.ALLOW, decideByQuery["select 1"],
-                "the first query's Decide must see the refreshed allowed IP 203.0.113.50",
+                "the first query's Decide must see its allowed IP 203.0.113.50",
             )
             assertEquals(
                 WireEnfAction.DENY, decideByQuery["select 2"],
-                "the second query's Decide must see the CURRENT null IP, not the stale allowed one — refresh happens BEFORE the send",
-            )
-            assertNull(
-                core.editorRequesterIps.get(tokenHash(ephemeralToken)),
-                "a null-IP session query clears the stale allowed IP fail-closed",
+                "the second query's Decide must see its own null IP, not the first query's",
             )
 
             service.closeSessionOwnedBy(sessionId, "timing-user")

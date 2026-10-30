@@ -448,6 +448,8 @@ message EditorServing {
 message EditorQuery {
   string sql = 1;
   int32 max_rows = 2;   // 0 = the proxy's default cap
+  // The requester's IP for this statement's Cedar context; goproxy sends it as the decision's client_addr.
+  string requester_ip = 3;
 }
 message EditorClose {}
 message EditorCancel {}

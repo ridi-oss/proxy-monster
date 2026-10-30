@@ -91,17 +91,6 @@ fun clampTtlSeconds(ttlSeconds: Long): Long = ttlSeconds.coerceIn(TOKEN_MIN_TTL_
 
 // ---- Store ------------------------------------------------------------------
 
-/**
- * SHA-256 hex digest of a wire/ephemeral token — the ONE hashing definition shared by [TokenStore] (the
- * `proxy_token.token_hash` column) and [RequesterIpRegistry] (EditorExec.kt): the
- * CP-only decide-time carrier keys off this SAME hash so it never stores a raw token at rest in a second
- * map, and its key always matches the token row's own `token_hash`.
- */
-internal fun tokenHash(token: String): String {
-    val md = MessageDigest.getInstance("SHA-256")
-    return md.digest(token.toByteArray()).joinToString("") { "%02x".format(it) }
-}
-
 class TokenStore(internal val dataSource: DataSource) {
     private val json = Json
     private val stringList = ListSerializer(String.serializer())
@@ -111,7 +100,11 @@ class TokenStore(internal val dataSource: DataSource) {
     val sessionTtlSeconds = SESSION_TTL_SECONDS
     val defaultUserTtlSeconds = DEFAULT_USER_TTL_SECONDS
 
-    private fun hash(token: String): String = tokenHash(token)
+    /** SHA-256 hex digest of a token, as `proxy_token.token_hash` stores it. */
+    private fun hash(token: String): String {
+        val md = MessageDigest.getInstance("SHA-256")
+        return md.digest(token.toByteArray()).joinToString("") { "%02x".format(it) }
+    }
 
     private fun randomToken(prefix: String): String {
         val raw = ByteArray(32).also { rng.nextBytes(it) }

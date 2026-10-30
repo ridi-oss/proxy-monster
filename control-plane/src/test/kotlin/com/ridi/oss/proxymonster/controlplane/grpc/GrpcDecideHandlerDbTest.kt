@@ -16,7 +16,6 @@ import com.ridi.oss.proxymonster.controlplane.RoleInput
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
-import com.ridi.oss.proxymonster.controlplane.tokenHash
 import com.ridi.oss.proxymonster.grpc.ConnectionDoor
 import com.ridi.oss.proxymonster.grpc.ControlPlaneGrpcKt
 import com.ridi.oss.proxymonster.grpc.EnfAction
@@ -322,10 +321,10 @@ class GrpcDecideHandlerDbTest {
         assertNotNull(core.tokenStore.validate(user), "a USER token opens a wire session")
     }
 
-    // ---- The ControlPlaneCore.editorRequesterIps carrier reaches the Cedar context ----
+    // ---- A decision's requester_ip is the client_addr goproxy reports, for every channel ----
 
     @Test
-    fun `an EDITOR token's registered requester_ip reaches Cedar and satisfies an ip-gated permit`() = runBlocking {
+    fun `an EDITOR decision's client_addr reaches Cedar and satisfies an ip-gated permit`() = runBlocking {
         core.cedarPolicyStore.create(
             CedarPolicyInput(
                 name = "ipgate-editor-ip-gate",
@@ -335,9 +334,8 @@ class GrpcDecideHandlerDbTest {
             updatedBy = null,
         )
         val issued = core.tokenStore.issue(TokenKind.EDITOR, "ipgate-editor-user", emptyList(), null, 3600)
-        core.editorRequesterIps.put(tokenHash(issued.token), "203.0.113.10")
 
-        val decision = stub.decide(decisionRequest { token = issued.token; datasourceName = ds.name; currentCatalog = ds.effectiveCatalog; connectionId = open(issued.token); sql = "select 1 from t" })
+        val decision = stub.decide(decisionRequest { token = issued.token; datasourceName = ds.name; currentCatalog = ds.effectiveCatalog; connectionId = open(issued.token); sql = "select 1 from t"; clientAddr = "203.0.113.10" })
         assertEquals(
             EnfAction.DENY, decision.verdict.decision,
             "connect now passes via the ip-gated permit; the deny should have moved off connect to the kind gate: ${decision.verdict.denyReason}",
@@ -346,7 +344,7 @@ class GrpcDecideHandlerDbTest {
     }
 
     @Test
-    fun `an APPROVER_EXEC token's registered requester_ip also reaches Cedar (run-minted, not just openSession-minted)`() = runBlocking {
+    fun `an APPROVER_EXEC decision's client_addr also reaches Cedar`() = runBlocking {
         core.cedarPolicyStore.create(
             CedarPolicyInput(
                 name = "ipgate-approver-exec-ip-gate",
@@ -355,64 +353,28 @@ class GrpcDecideHandlerDbTest {
             ),
             updatedBy = null,
         )
-        // APPROVER_EXEC tokens are ONLY minted by EditorExecService.run() — openSession() mints EDITOR only —
-        // so covering the registry write here is what makes this token kind's requester_ip real.
         val issued = core.tokenStore.issue(TokenKind.APPROVER_EXEC, "ipgate-approver-exec-user", emptyList(), null, 3600)
-        core.editorRequesterIps.put(tokenHash(issued.token), "203.0.113.20")
 
-        val decision = stub.decide(decisionRequest { token = issued.token; datasourceName = ds.name; currentCatalog = ds.effectiveCatalog; connectionId = open(issued.token); sql = "select 1 from t" })
+        val decision = stub.decide(decisionRequest { token = issued.token; datasourceName = ds.name; currentCatalog = ds.effectiveCatalog; connectionId = open(issued.token); sql = "select 1 from t"; clientAddr = "203.0.113.20" })
         assertTrue("statement kind 'select' is not permitted" in decision.verdict.denyReason, "expected the connect gate to pass: ${decision.verdict.denyReason}")
     }
 
     @Test
-    fun `a registry entry is ignored for a native-wire (USER) token — gated strictly on kind, never merely 'an entry exists'`() = runBlocking {
+    fun `an EDITOR decision with no client_addr decides with requester_ip absent`() = runBlocking {
         core.cedarPolicyStore.create(
             CedarPolicyInput(
-                name = "ipgate-kind-gate",
+                name = "ipgate-editor-no-addr-ip-gate",
                 cedarSrc = """permit(principal, action == Action::"datasource.connect", resource == Datasource::"${ds.name}")
                     when { context has requester_ip && context.requester_ip.isInRange(ip("203.0.113.0/24")) };""",
             ),
             updatedBy = null,
         )
-        val issued = core.tokenStore.issue(TokenKind.USER, "ipgate-wire-user", emptyList(), null, 3600)
-        // Plant an entry under this USER token's hash directly — a WIRE token must never pick it up even if
-        // (by whatever means) the registry happened to carry a matching entry.
-        core.editorRequesterIps.put(tokenHash(issued.token), "203.0.113.30")
-
-        val decision = stub.decide(decisionRequest { token = issued.token; datasourceName = ds.name; currentCatalog = ds.effectiveCatalog; connectionId = open(issued.token); sql = "select 1 from t" })
-        assertEquals(EnfAction.DENY, decision.verdict.decision)
-        assertTrue(
-            "no access to datasource" in decision.verdict.denyReason,
-            "a WIRE token must never read the editor/approver-exec requester_ip registry: ${decision.verdict.denyReason}",
-        )
-    }
-
-    @Test
-    fun `an EDITOR token with no registry entry does NOT fall back to the proxy client_addr — requester_ip stays absent`() = runBlocking {
-        core.cedarPolicyStore.create(
-            CedarPolicyInput(
-                name = "ipgate-editor-no-entry-ip-gate",
-                cedarSrc = """permit(principal, action == Action::"datasource.connect", resource == Datasource::"${ds.name}")
-                    when { context has requester_ip && context.requester_ip.isInRange(ip("203.0.113.0/24")) };""",
-            ),
-            updatedBy = null,
-        )
-        // EDITOR token, but NOTHING put into editorRequesterIps. The proxy sends a client_addr that IS in range;
-        // on the native-wire channel that would satisfy the ip-gated permit, but an editor decision must NOT
-        // borrow the proxy-supplied client_addr — requester_ip stays ABSENT (fail-closed), so the permit never
-        // fires and connect is denied. This is the channel-selected-source contract (not a nullable fallback).
-        val issued = core.tokenStore.issue(TokenKind.EDITOR, "ipgate-editor-no-entry", emptyList(), null, 3600)
+        val issued = core.tokenStore.issue(TokenKind.EDITOR, "ipgate-editor-no-addr", emptyList(), null, 3600)
         val decision = stub.decide(
-            decisionRequest {
-                token = issued.token; datasourceName = ds.name; currentCatalog = ds.effectiveCatalog; connectionId = open(issued.token)
-                sql = "select 1 from t"; clientAddr = "/203.0.113.10:1234"
-            },
+            decisionRequest { token = issued.token; datasourceName = ds.name; currentCatalog = ds.effectiveCatalog; connectionId = open(issued.token); sql = "select 1 from t" },
         )
         assertEquals(EnfAction.DENY, decision.verdict.decision)
-        assertTrue(
-            "no access to datasource" in decision.verdict.denyReason,
-            "an EDITOR decision must not fall back to client_addr — requester_ip must be absent: ${decision.verdict.denyReason}",
-        )
+        assertTrue("no access to datasource" in decision.verdict.denyReason, decision.verdict.denyReason)
     }
 
     @Test
@@ -425,10 +387,6 @@ class GrpcDecideHandlerDbTest {
             ),
             updatedBy = null,
         )
-        // The complement of the EDITOR-no-entry case: on the WIRE channel the proxy observed the DB client's
-        // socket peer directly, so client_addr IS the attested requester_ip — the ip-gated permit fires and the
-        // deny moves off the connect gate. Together the two tests prove the source is CHANNEL-selected, not a
-        // "editor ignores client_addr, wire always trusts it" nullable fallback.
         val issued = core.tokenStore.issue(TokenKind.USER, "ipgate-wire-clientaddr", emptyList(), null, 3600)
         val decision = stub.decide(
             decisionRequest {

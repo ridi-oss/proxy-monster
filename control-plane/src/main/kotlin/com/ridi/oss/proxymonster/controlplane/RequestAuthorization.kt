@@ -20,7 +20,6 @@ internal class ResolvedRequestIdentity(
     val kind: TokenKind,
     val channel: Channel,
     val providedRoles: Set<String>?,
-    val httpRequesterIp: String?,
     val context: AuthzContext,
     resolveParents: () -> UserParents,
 ) {
@@ -32,9 +31,10 @@ internal fun resolveActiveToken(tokenStore: TokenStore, users: UserGroupStore, t
     tokenStore.resolve(token, allowRetired)?.takeUnless { users.isDeactivated(it.principal) }
 
 /**
- * The one place a wire token becomes a caller. Native tokens (SESSION, USER) are channel "wire" with the
- * proxy-reported client address; ephemeral tokens (EDITOR, APPROVER_EXEC) carry the HTTP requester IP
- * recorded at mint time and, when they hold a role set, run as exactly those roles. Fails UNAUTHENTICATED.
+ * The one place a wire token becomes a caller. Native tokens (SESSION, USER) are channel "wire"; ephemeral
+ * tokens (EDITOR, APPROVER_EXEC), when they hold a role set, run as exactly those roles. The requester IP is
+ * the client address goproxy reports for every channel: a wire client's socket, or the requester an
+ * EditorQuery carried. Fails UNAUTHENTICATED.
  */
 internal fun ControlPlaneCore.resolveRequestIdentity(token: String, clientAddr: String?): ResolvedRequestIdentity {
     val identity = resolveActiveToken(tokenStore, userGroupStore, token)
@@ -49,10 +49,9 @@ internal fun ControlPlaneCore.resolveRequestIdentity(token: String, clientAddr: 
         TokenKind.APPROVER_EXEC -> if (providedRoles == null) Channel.EDITOR else Channel.WORKFLOW_EXECUTOR
         TokenKind.WORKLOAD -> throw StatusException(Status.UNAUTHENTICATED.withDescription("unsupported token kind"))
     }
-    val httpIp = if (ephemeral) editorRequesterIps.get(tokenHash(token)) else null
     return ResolvedRequestIdentity(
-        identity, kind, channel, providedRoles, httpIp,
-        AuthzContext(channel = channel.contextValue, requesterIp = if (channel == Channel.WIRE) parseRequesterIp(clientAddr) else httpIp),
+        identity, kind, channel, providedRoles,
+        AuthzContext(channel = channel.contextValue, requesterIp = parseRequesterIp(clientAddr)),
     ) {
         providedRoles?.let { UserParents(policyStore.liveRoleNames(it)) }
             ?: roleResolver.resolveParents(identity.principal)

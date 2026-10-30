@@ -1289,7 +1289,7 @@ fun Route.editorSessionRoutes(
         val ds = datasourceStore.get(input.datasourceId)
             ?: return@post call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "datasource")))
         try {
-            call.respond(EditorSessionOpened(editorExecService.openSession(principal, ds, call.httpRequesterIp(config))))
+            call.respond(EditorSessionOpened(editorExecService.openSession(principal, ds)))
         } catch (_: NoProxyAttachedException) {
             call.respond(HttpStatusCode.ServiceUnavailable, ApiError("query.no_proxy_attached"))
         } catch (_: ProxyStreamWedgedException) {

@@ -273,7 +273,8 @@ class GitHubSourceFlowDbTest {
     private val openedSchemas = Collections.synchronizedList(mutableListOf<String>())
 
     private fun withProxy(fail: String? = null, body: suspend () -> Unit) = runBlocking {
-        withFakeProxy(core, stub, datasource.name, respond = { _, sql, open ->
+        withFakeProxy(core, stub, datasource.name, respond = { _, query, open ->
+            val sql = query.sql
             openedSchemas += open.defaultSchema
             answer(sql, fail)
         }) { body() }

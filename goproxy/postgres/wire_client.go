@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"log/slog"
 	"net"
 	"sort"
@@ -12,7 +13,6 @@ import (
 	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
-	"github.com/ridi-oss/proxy-monster/goproxy/wire"
 )
 
 const (
@@ -174,51 +174,35 @@ startupComplete:
 	defer authz.Close()
 	slog.Info("authenticated postgres client", "client", rawClientConn.RemoteAddr().String(), "principal", identity.Principal, "roles", identity.Roles)
 
-	targetDbConn, parameters, keyData, txStatus, catalog, err := dialTargetDbAuth(context.Background(), s.target.config)
-	if err != nil {
+	c, parameters, err := s.target.openConnection(context.Background(), authz, nil, nil, s.WrapTargetDbConn)
+	if errors.Is(err, errTargetDbUnavailable) {
 		slog.Warn("postgres target DB unavailable", "host", s.target.config.Host, "port", s.target.config.Port, "error", err)
 		_ = sendError(client, "FATAL", "08004", "proxy-monster: target DB unavailable", false, 0)
 		return
 	}
-	defer targetDbConn.Close()
+	if err != nil {
+		slog.Warn("postgres target DB settings unavailable", "error", err)
+		_ = sendError(client, "FATAL", "08004", "proxy-monster: connection catalog unavailable", false, 0)
+		return
+	}
+	defer c.Close()
+	// The ReadyForQuery the client gets is the target's at connect, before the on-open reads.
+	txStatus := c.lastTxStatus
 
 	client.SetMaxBodyLen(maxFrontendFrameBody)
 	clientIO.Conn = s.WrapClientConn(clientConn)
 	clientIO.strictReads = false
-	targetDbConn = s.WrapTargetDbConn(targetDbConn)
-	targetDb := pgproto3.NewFrontend(targetDbConn, targetDbConn)
-
-	generation, ok := wire.NextBackendGeneration()
-	if !ok {
-		_ = sendError(client, "FATAL", "08004", "proxy-monster: backend generation unavailable", false, 0)
-		return
-	}
 	wireState := &clientWireState{
-		connection: &connection{
-			target:         s.target,
-			targetDbConn:   targetDbConn,
-			targetDb:       targetDb,
-			keyData:        keyData,
-			generation:     generation,
-			currentCatalog: catalog,
-			authz:          authz,
-			lastTxStatus:   txStatus,
-		},
+		connection: c,
 		client:     client,
 		clientConn: clientIO,
 		statements: make(map[string]preparedStatement),
 		portals:    make(map[string]boundPortal),
 	}
-	if wireState.session, err = wireState.newSession(); err != nil {
-		slog.Warn("postgres target DB settings unavailable", "error", err)
-		_ = sendError(client, "FATAL", "08004", "proxy-monster: connection catalog unavailable", false, 0)
-		return
-	}
-	wireState.commandRunner = wireState.newCommandRunner(wireState.runProbe)
 	wireState.extendedCommandRunner = wireState.newCommandRunner(func(sql string, expectedColumns int) ([][]*string, error) {
 		return s.runExtendedProbe(wireState, sql, expectedColumns)
 	})
-	if err := wireState.commandRunner.RunAll(identity.OnOpen, nil); err != nil {
+	if err := wireState.OnOpen(context.Background(), identity.OnOpen); err != nil {
 		slog.Warn("postgres on-open catalog fetch failed", "error", err)
 		_ = sendError(client, "FATAL", "08004", "proxy-monster: connection catalog unavailable", false, 0)
 		return
@@ -231,7 +215,7 @@ startupComplete:
 		parameter := parameters[i]
 		client.Send(&parameter)
 	}
-	client.Send(&keyData)
+	client.Send(&c.keyData)
 	client.Send(&pgproto3.ReadyForQuery{TxStatus: txStatus})
 	if err := client.Flush(); err != nil {
 		return

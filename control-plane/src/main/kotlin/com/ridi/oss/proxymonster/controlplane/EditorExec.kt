@@ -406,9 +406,8 @@ class EditorExecService(
         dialTimeoutMs: Long = EDITOR_DIALBACK_TIMEOUT_MS,
         noProgressMs: Long = EDITOR_NO_PROGRESS_TIMEOUT_MS,
         openTimeoutMs: Long = EDITOR_OPEN_TIMEOUT_MS,
-        // The connection's default namespaces; null keeps the datasource's.
-        namespaces: Collection<String>? = null,
-        // The schema the target connection opens in; null keeps the datasource's.
+        // The schema the target connection opens in, like a wire client's connect-time database; null keeps the
+        // datasource's. The first decision on it refetches that schema's catalog.
         defaultSchema: String? = null,
     ) {
         val issued = core.dataSource.mintForActivePrincipalLocked(principal, core.userGroupStore) { c ->
@@ -429,7 +428,7 @@ class EditorExecService(
         val kind = (if (approverExec) TokenKind.APPROVER_EXEC else TokenKind.EDITOR).name
         val opened = core.connectionCatalog.open(
             Binding(ds.name, principal, kind, ds.effectiveCatalog, ds.engine),
-            ds.namespaces((namespaces ?: ds.defaultSchemas) + ds.engine.systemSchemas),
+            ds.namespaces(ds.defaultSchemas + ds.engine.systemSchemas),
             adoptHeldContent = ds.engine.catalogIsConnectionIndependent,
         )
         val sessionId = UUID.randomUUID().toString()

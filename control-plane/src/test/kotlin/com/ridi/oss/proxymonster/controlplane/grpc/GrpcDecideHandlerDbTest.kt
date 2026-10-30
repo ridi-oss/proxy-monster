@@ -135,6 +135,19 @@ class GrpcDecideHandlerDbTest {
     }
 
     @Test
+    fun `a decision in a schema the connection did not open with first asks for that schema`() = runBlocking {
+        val connectionId = open(validToken)
+        val response = stub.decide(
+            decisionRequest {
+                token = validToken; datasourceName = ds.name; currentCatalog = ds.effectiveCatalog
+                this.connectionId = connectionId; sql = "select 1"; searchPath.add("pr_schema")
+            },
+        )
+        assertTrue(response.hasBeforeDecide(), "a schema outside the open catalog must be fetched before deciding")
+        assertTrue("pr_schema" in response.beforeDecide.commandsList.map { it.refetch.schema }, response.toString())
+    }
+
+    @Test
     fun `decide re-validates the token per query - a token revoked mid-session is rejected`() {
         val t = core.tokenStore.issue(TokenKind.USER, "session-user", emptyList(), null, 3600)
         // Works while valid (handshake succeeds and mints the connection state).

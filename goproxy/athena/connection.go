@@ -27,7 +27,7 @@ const (
 type connection struct {
 	target        *target
 	authz         *spi.Authorizer
-	commandRunner *proxyCommandRunner
+	commandRunner *relay.ProxyCommandRunner
 	guard         spi.ExecGuard
 	timeout       time.Duration
 	mu            sync.Mutex

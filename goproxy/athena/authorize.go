@@ -12,7 +12,7 @@ import (
 )
 
 // authorize obtains the control plane's verdict for one statement in the target's fixed scope.
-func (t *target) authorize(authz *spi.Authorizer, commandRunner *proxyCommandRunner, sql string, parameters []string, maxRows int) spi.Verdict {
+func (t *target) authorize(authz *spi.Authorizer, commandRunner *relay.ProxyCommandRunner, sql string, parameters []string, maxRows int) spi.Verdict {
 	// The snapshot carries this request's parameters and row cap, so a cached one would be stale.
 	authz.MarkNamespaceDirty()
 	return authz.Authorize(spi.AuthzInput{

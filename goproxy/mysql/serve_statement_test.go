@@ -9,10 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
+	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
-	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 	"github.com/ridi-oss/proxy-monster/mysqlwire"
 )
@@ -31,7 +30,7 @@ func scriptedConnection(t *testing.T, decider spi.ControlPlane, maxRows int, res
 	_ = server.SetDeadline(time.Now().Add(5 * time.Second))
 	authz := spi.NewAuthorizer(decider, "", nil)
 	authz.SetSnapshot(spi.SessionSnapshot{Namespace: []string{"test"}})
-	c := &connection{targetDbConn: client, deprecateEOF: true, authz: authz, commandRunner: &sqldb.ProxyCommandRunner{Catalog: "def"}}
+	c := &connection{targetDbConn: client, deprecateEOF: true, authz: authz, commandRunner: &relay.ProxyCommandRunner{Catalog: "def"}}
 	writes := make(chan string, 3)
 	go func() {
 		defer close(writes)

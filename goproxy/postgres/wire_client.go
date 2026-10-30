@@ -12,8 +12,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgproto3"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
-	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
 )
 
 const (
@@ -51,7 +51,7 @@ type clientWireState struct {
 	// A refusal in this extended sequence fails the target's open transaction once Sync completes.
 	abortAtSync bool
 	// extendedCommandRunner probes inside an extended-protocol sequence.
-	extendedCommandRunner *sqldb.ProxyCommandRunner
+	extendedCommandRunner *relay.ProxyCommandRunner
 }
 
 func (s *Server) handleConn(rawClientConn net.Conn) {

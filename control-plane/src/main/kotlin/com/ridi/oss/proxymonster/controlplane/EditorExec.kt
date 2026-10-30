@@ -41,14 +41,14 @@ private const val EDITOR_SESSION_TTL_SECONDS = 8 * 3600L
 // revalidation buffer. The open being HARD-capped (not merely liveness-bounded) keeps that sum finite;
 // ConfigGuardTest pins the arithmetic so a change to any of those bounds cannot silently under-budget this.
 private const val TOKEN_TTL_GRACE_SECONDS = 300L
-// The control-plane dispatched this run earlier and is waiting for the proxy to open a stream for it. When the
-// proxy opens that stream it sends the run's session id as the first frame, so the control-plane can tell WHICH
-// pending run the new stream is for. This bounds only that — the proxy opening the stream and sending the id —
+// The control-plane dispatched this editor session earlier and is waiting for the proxy to open a stream for it.
+// When the proxy opens that stream it sends the session id as the first frame, so the control-plane can tell WHICH
+// pending session the new stream is for. This bounds only that — the proxy opening the stream and sending the id —
 // which is near-instant when the proxy is alive. A proxy that got the dispatch but cannot open the stream
 // (dead/wedged, or drained between dispatch and dial) fails here rather than hanging; the target-DB open that
 // follows is bounded by EDITOR_NO_PROGRESS_TIMEOUT_MS + EDITOR_OPEN_TIMEOUT_MS.
 internal const val EDITOR_DIALBACK_TIMEOUT_MS = 15_000L
-// Once the control-plane knows which run the stream is for, the proxy heartbeats EditorProgress while it dials +
+// Once the control-plane knows which session the stream is for, the proxy heartbeats EditorProgress while it dials +
 // authenticates the target DB and runs its on-open catalog commands, then sends EditorServing. The CP waits for
 // EditorServing under TWO bounds: this no-progress gap — a dead or cut proxy stops heartbeating and fails fast —
 // AND the absolute ceiling below. A heartbeat proves the PROXY is alive, NOT that the target DB is advancing, so
@@ -136,26 +136,26 @@ class NoProxyAttachedException : EditorExecException("no proxy is attached to th
  */
 class ProxyStreamWedgedException : EditorExecException("the proxy's event stream would not accept the request")
 
-class ProxyRunTimeoutException(cause: Throwable? = null) :
+class ProxyEditorTimeoutException(cause: Throwable? = null) :
     EditorExecException("the proxy editor session timed out", cause)
 
-open class ProxyRunException(message: String, cause: Throwable? = null) : EditorExecException(message, cause)
+open class ProxyEditorException(message: String, cause: Throwable? = null) : EditorExecException(message, cause)
 
 // The target DB's own ERR for the executed statement. [message] is the RAW backend text (e.g.
 // `duplicate key value (ssn)=(123-45-6789)`) — never log or return it as-is; release [decidedMessage],
 // [redactedMessage], or toDiagnostic().
-class TargetDbRunException(
+class TargetDbEditorException(
     message: String,
     val redactedMessage: String,
     val sanitized: Boolean,
     cause: Throwable? = null,
-) : ProxyRunException(message, cause) {
+) : ProxyEditorException(message, cause) {
     /** The form the run's own decision dictated: redacted when it sanitized diagnostics, raw otherwise. */
     val decidedMessage: String get() = if (sanitized) redactedMessage else message.orEmpty()
 
     fun toDiagnostic(): EditorError = editorError {
         message = redactedMessage
-        rawMessage = this@TargetDbRunException.message.orEmpty()
+        rawMessage = this@TargetDbEditorException.message.orEmpty()
         targetDbError = true
     }
 }
@@ -165,7 +165,7 @@ class RunCanceledBeforeStartException : EditorExecException("the run was cancele
 /** Runs one CP-driven query over a proxy-dialed `EditorExec` stream. */
 class EditorExecService(
     private val core: ControlPlaneCore,
-    // The configured PM_QUERY_TIMEOUT ceiling a single statement may run for. The run/session token must
+    // The configured PM_QUERY_TIMEOUT ceiling a single statement may run for. The editor-door token must
     // outlive the whole exchange it backs (dial + this window + revalidation), else a genuine long query
     // fails UNAUTHENTICATED when the proxy revalidates the token mid-run. Defaulted so the many
     // Config-free test constructions compile unchanged.
@@ -210,7 +210,7 @@ class EditorExecService(
      * send with [RunCanceledBeforeStartException]; otherwise mark it sent and send UNDER the gate so a
      * racing cancel is ordered strictly after. [preflight] (a DB status re-check) runs inside the gate too.
      */
-    private suspend fun sendRunQuery(
+    private suspend fun sendEditorQuery(
         run: ActiveRun?,
         outbound: SendChannel<CpEditorMsg>,
         preflight: (() -> Boolean)?,
@@ -311,7 +311,7 @@ class EditorExecService(
             try {
                 // Sends under the run gate (preflight + cancel re-check), so a concurrent cancel either
                 // vetoes this send or is ordered strictly after it — never a dropped-then-run query.
-                sendRunQuery(activeRun, outbound, preflight, statement, maxRows, requesterIp)
+                sendEditorQuery(activeRun, outbound, preflight, statement, maxRows, requesterIp)
             } catch (e: RunCanceledBeforeStartException) {
                 // Only ordinal 0 propagates, so the caller tells "nothing ran" from "stopped partway"; the
                 // statements already run keep their stored results.
@@ -320,14 +320,14 @@ class EditorExecService(
             } catch (e: Exception) {
                 currentCoroutineContext().ensureActive()
                 onStreamFailure()
-                throw ProxyRunException("proxy editor stream closed before the query was sent", e)
+                throw ProxyEditorException("proxy editor stream closed before the query was sent", e)
             }
             val response = try {
                 withTimeout(exchangeTimeoutMs) { collectResponse(inbound, started, onNamespace, onDecision) }
             } catch (e: TimeoutCancellationException) {
                 onStreamFailure()
-                throw ProxyRunTimeoutException(e)
-            } catch (e: ProxyRunException) {
+                throw ProxyEditorTimeoutException(e)
+            } catch (e: ProxyEditorException) {
                 onStreamFailure()
                 throw e
             }
@@ -375,7 +375,7 @@ class EditorExecService(
                 ttlSeconds = tokenTtlSeconds(queryTimeoutSeconds, statementCount),
                 c = c,
             )
-        } ?: throw ProxyRunException("principal is deprovisioned")
+        } ?: throw ProxyEditorException("principal is deprovisioned")
 
         val sessionId = UUID.randomUUID().toString()
         val pending = PendingSession(sessionId, principal, issued.id, CompletableDeferred())
@@ -395,12 +395,12 @@ class EditorExecService(
             attached = try {
                 withTimeout(dialTimeoutMs) { pending.ready.await() }
             } catch (e: TimeoutCancellationException) {
-                throw ProxyRunTimeoutException(e)
+                throw ProxyEditorTimeoutException(e)
             }
 
             val channel = attached
-            // The stream is matched to this run the moment the proxy opens it (its first frame carries the
-            // run's id); the target-DB open is still in flight. Wait for EditorServing, bounding the wait by
+            // The stream is matched to this session the moment the proxy opens it (its first frame carries the
+            // session id); the target-DB open is still in flight. Wait for EditorServing, bounding the wait by
             // lack of progress (each EditorProgress heartbeat resets it) so a stalled or broken open fails fast
             // instead of riding a blind dial budget.
             awaitServing(channel.inbound, noProgressMs, openTimeoutMs)
@@ -466,7 +466,7 @@ class EditorExecService(
     suspend fun openSession(principal: String, ds: Datasource): String {
         val issued = core.dataSource.mintForActivePrincipalLocked(principal, core.userGroupStore) { c ->
             core.tokenStore.issue(TokenKind.EDITOR, principal, emptyList(), null, editorSessionTtlSeconds, c)
-        } ?: throw ProxyRunException("principal is deprovisioned")
+        } ?: throw ProxyEditorException("principal is deprovisioned")
         val sessionId = UUID.randomUUID().toString()
         val pending = PendingSession(sessionId, principal, issued.id, CompletableDeferred())
         var attached: Attached? = null
@@ -480,7 +480,7 @@ class EditorExecService(
             attached = try {
                 withTimeout(EDITOR_DIALBACK_TIMEOUT_MS) { pending.ready.await() }
             } catch (e: TimeoutCancellationException) {
-                throw ProxyRunTimeoutException(e)
+                throw ProxyEditorTimeoutException(e)
             }
             // Wait for the target-DB open to finish (EditorServing), bounded by lack of progress — see run().
             val serving = awaitServing(attached.inbound, EDITOR_NO_PROGRESS_TIMEOUT_MS, EDITOR_OPEN_TIMEOUT_MS)
@@ -556,13 +556,13 @@ class EditorExecService(
         exchangeTimeoutMs: Long = EXCHANGE_TIMEOUT_MS,
     ) {
         val session = openSessions[sessionId]?.takeIf { it.principal == principal }
-            ?: throw ProxyRunException("no such editor session")
+            ?: throw ProxyEditorException("no such editor session")
         session.mutex.withLock {
             // Re-check under the mutex: a concurrent [closeSession] (DELETE / idle sweep) — which is lock-free
             // — may have removed + revoked this session while we queued for the lock. If so, bail fail-closed
             // rather than run a query on a since-revoked token. `!==` is a safe identity check: sessionId is a
             // fresh UUID, so a re-open can never resurrect the same object.
-            if (openSessions[sessionId] !== session) throw ProxyRunException("no such editor session")
+            if (openSessions[sessionId] !== session) throw ProxyEditorException("no such editor session")
             val run = taskId?.let { id -> ActiveRun(session.attached.outbound).also { activeRuns[id] = it } }
             try {
                 // The session outlives this call, so any stream failure must drop it here: the run loop
@@ -651,24 +651,24 @@ class EditorExecService(
         val deadlineNanos = System.nanoTime() + openTimeoutMs * 1_000_000
         while (true) {
             val remainingMs = (deadlineNanos - System.nanoTime()) / 1_000_000
-            if (remainingMs <= 0) throw ProxyRunTimeoutException()
+            if (remainingMs <= 0) throw ProxyEditorTimeoutException()
             val result = try {
                 withTimeout(minOf(noProgressMs, remainingMs)) { inbound.receiveCatching() }
             } catch (e: TimeoutCancellationException) {
-                throw ProxyRunTimeoutException(e)
+                throw ProxyEditorTimeoutException(e)
             }
             val message = result.getOrNull()
-                ?: throw ProxyRunException("proxy editor stream closed before it was ready to serve")
+                ?: throw ProxyEditorException("proxy editor stream closed before it was ready to serve")
             when {
                 message.hasProgress() -> continue
                 message.hasServing() -> return message.serving
                 message.hasError() -> {
-                    if (message.error.message == QUERY_TIMEOUT_MESSAGE) throw ProxyRunTimeoutException()
+                    if (message.error.message == QUERY_TIMEOUT_MESSAGE) throw ProxyEditorTimeoutException()
                     // An open failure's text can echo the target host (`dial tcp 10.0.3.7:5432: …`) — routes
                     // must log it, never surface it.
-                    throw ProxyRunException(message.error.message.ifBlank { "proxy run open failed" })
+                    throw ProxyEditorException(message.error.message.ifBlank { "proxy editor session open failed" })
                 }
-                else -> throw ProxyRunException("proxy sent a run response before it was ready to serve")
+                else -> throw ProxyEditorException("proxy sent a response before it was ready to serve")
             }
         }
     }
@@ -687,14 +687,14 @@ class EditorExecService(
         for (message in inbound) {
             when {
                 message.hasDecision() -> {
-                    if (decision != null) throw ProxyRunException("proxy sent more than one run decision")
+                    if (decision != null) throw ProxyEditorException("proxy sent more than one run decision")
                     val received = message.decision
                     val mapped = received.decision.knownOrDeny()
                     decision = received
                     action = mapped
                     // Mid-stream: a failure must go through the stream-failure path, or a held session keeps unread frames.
                     runCatching { onDecision(received.resultRequirements) }
-                        .onFailure { throw ProxyRunException("could not record the run's result requirements", it) }
+                        .onFailure { throw ProxyEditorException("could not record the run's result requirements", it) }
                     if (mapped == EnfAction.DENY) {
                         return response(received, mapped, emptyList(), emptyList(), null, started)
                     }
@@ -702,10 +702,10 @@ class EditorExecService(
 
                 message.hasResultRows() -> {
                     if (decision == null) {
-                        throw ProxyRunException("proxy sent run rows before a decision")
+                        throw ProxyEditorException("proxy sent run rows before a decision")
                     }
                     if (action == EnfAction.DENY) {
-                        throw ProxyRunException("proxy sent run rows after a deny decision")
+                        throw ProxyEditorException("proxy sent run rows after a deny decision")
                     }
                     val chunk = message.resultRows
                     val firstColumns = columns
@@ -715,7 +715,7 @@ class EditorExecService(
                     val expectedWidth = (columns ?: emptyList()).size
                     rows += chunk.rowsList.map { row ->
                         if (row.valuesCount != expectedWidth) {
-                            throw ProxyRunException("proxy sent a run row with the wrong column count")
+                            throw ProxyEditorException("proxy sent a row with the wrong column count")
                         }
                         row.valuesList.map { value -> if (value.isNull) null else value.value }
                     }
@@ -723,11 +723,11 @@ class EditorExecService(
 
                 message.hasDone() -> {
                     val received = decision
-                        ?: throw ProxyRunException("proxy completed a run query before a decision")
+                        ?: throw ProxyEditorException("proxy completed a query before a decision")
                     val receivedAction = action
-                        ?: throw ProxyRunException("proxy completed a run query without a verdict")
+                        ?: throw ProxyEditorException("proxy completed a query without a verdict")
                     if (receivedAction == EnfAction.DENY) {
-                        throw ProxyRunException("proxy sent EditorDone after a deny decision")
+                        throw ProxyEditorException("proxy sent EditorDone after a deny decision")
                     }
                     val rowsAffected = message.done.rowsAffected.let { if (it == -1) null else it }
                     // An absent namespace means the proxy could not read it: it becomes unknown, not unchanged.
@@ -741,33 +741,33 @@ class EditorExecService(
                 message.hasError() -> {
                     // A statement the proxy aborted at PM_QUERY_TIMEOUT carries an exact sentinel — attribute it
                     // as a timeout (→ query.proxy_timeout, task FAILED), never a generic failure or a success.
-                    if (message.error.message == QUERY_TIMEOUT_MESSAGE) throw ProxyRunTimeoutException()
+                    if (message.error.message == QUERY_TIMEOUT_MESSAGE) throw ProxyEditorTimeoutException()
                     // A target ERR implies the statement executed, so a decision must exist; a tagged error
                     // with none (or after a DENY) is anomalous and falls through to the generic form.
                     if (message.error.targetDbError && decision != null && action != EnfAction.DENY) {
-                        throw TargetDbRunException(
+                        throw TargetDbEditorException(
                             message.error.rawMessage,
                             message.error.message,
                             sanitized = decision.sanitizeDiagnostics,
                         )
                     }
-                    throw ProxyRunException(message.error.message.ifBlank { "proxy run execution failed" })
+                    throw ProxyEditorException(message.error.message.ifBlank { "proxy run execution failed" })
                 }
 
-                message.hasSessionReady() -> throw ProxyRunException(
+                message.hasSessionReady() -> throw ProxyEditorException(
                     "proxy sent EditorReady more than once",
                 )
 
-                message.hasServing() -> throw ProxyRunException("proxy sent EditorServing more than once")
+                message.hasServing() -> throw ProxyEditorException("proxy sent EditorServing more than once")
 
                 // A heartbeat after serving carries no result — ignore it rather than fail the run.
                 message.hasProgress() -> Unit
 
-                else -> throw ProxyRunException("proxy sent an empty run message")
+                else -> throw ProxyEditorException("proxy sent an empty run message")
             }
         }
 
-        throw ProxyRunException("proxy editor stream closed before a terminal response")
+        throw ProxyEditorException("proxy editor stream closed before a terminal response")
     }
 
     private fun response(

@@ -51,8 +51,8 @@ class ControlPlaneCore(
     // keyed off datasource.engine_version. Fallback off by default (an uncertified major → deny-by-default).
     val systemClassification = SystemClassificationService()
 
-    // Open proxy Events streams (docs/datasource-registration.md) — liveness + refresh/run push.
-    // Shared so the gRPC handlers and the HTTP routes agree on attached proxies and pending run dials.
+    // Open proxy Events streams (docs/datasource-registration.md) — liveness + refresh/editor-session push.
+    // Shared so the gRPC handlers and the HTTP routes agree on attached proxies and pending editor-session dials.
     val proxyEventsHub = ProxyEventsHub()
 
     // Per-principal fan-out of task terminal transitions to the console's SSE streams. Constructed here

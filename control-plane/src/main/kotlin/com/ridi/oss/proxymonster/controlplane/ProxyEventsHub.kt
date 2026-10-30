@@ -31,7 +31,7 @@ class ProxyEventsHub {
     // Serializes the drain transition (beginDraining + broadcastDraining) against the doors new work enters
     // by (register, dispatch, requestRefresh), so that a read of shuttingDown and the channel mutation that
     // follows it are ONE atomic step. Without it the check-then-act races the drain: a stream could be
-    // admitted — or a run dispatched as SENT — in the window after the flag is read but before it is set,
+    // admitted — or a session dispatched as SENT — in the window after the flag is read but before it is set,
     // landing behind the broadcast and never told to leave. Cheap and uncontended (these are infrequent
     // control-plane calls, never the query hot path). deregister stays outside it: its per-key
     // ConcurrentHashMap.compute is already atomic and it never reads shuttingDown.
@@ -105,7 +105,7 @@ class ProxyEventsHub {
      */
     private fun dispatch(name: String, what: String, event: CpEvent): Dispatch = synchronized(lock) {
         // Draining (checked under the lock, so it cannot flip between here and the trySend below): stop
-        // returning SENT for work we are about to abandon. A run/table-detail request queued now would sit
+        // returning SENT for work we are about to abandon. An editor-session/table-detail request queued now would sit
         // behind the Draining signal the proxy bails on, so the caller would be told SENT for a query that is
         // then silently dropped. NOT_ATTACHED fails it closed — the caller retries and re-homes.
         if (shuttingDown) return@synchronized Dispatch.NOT_ATTACHED

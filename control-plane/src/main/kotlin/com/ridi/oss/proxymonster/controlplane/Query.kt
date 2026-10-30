@@ -1200,12 +1200,12 @@ fun Route.queryRoutes(
             call.respond(HttpStatusCode.ServiceUnavailable, ApiError("query.no_proxy_attached"))
         } catch (_: ProxyStreamWedgedException) {
             call.respond(HttpStatusCode.ServiceUnavailable, ApiError("query.proxy_stream_wedged"))
-        } catch (_: ProxyRunTimeoutException) {
+        } catch (_: ProxyEditorTimeoutException) {
             call.respond(HttpStatusCode.GatewayTimeout, ApiError("query.proxy_timeout"))
-        } catch (e: TargetDbRunException) {
+        } catch (e: TargetDbEditorException) {
             // The run's decision already chose the form (raw for a full reader, redacted for a masked one).
             call.respond(HttpStatusCode.BadGateway, ApiError("query.failed", mapOf("detail" to e.decidedMessage)))
-        } catch (e: ProxyRunException) {
+        } catch (e: ProxyEditorException) {
             // A generic failure's text can echo the target host (`dial tcp 10.0.3.7:5432: …`) — log only.
             call.application.environment.log.warn("query run failed", e)
             call.respond(HttpStatusCode.BadGateway, ApiError("query.failed"))
@@ -1294,9 +1294,9 @@ fun Route.editorSessionRoutes(
             call.respond(HttpStatusCode.ServiceUnavailable, ApiError("query.no_proxy_attached"))
         } catch (_: ProxyStreamWedgedException) {
             call.respond(HttpStatusCode.ServiceUnavailable, ApiError("query.proxy_stream_wedged"))
-        } catch (_: ProxyRunTimeoutException) {
+        } catch (_: ProxyEditorTimeoutException) {
             call.respond(HttpStatusCode.GatewayTimeout, ApiError("query.proxy_timeout"))
-        } catch (e: ProxyRunException) {
+        } catch (e: ProxyEditorException) {
             // An open failure's text can echo the target host (`dial tcp 10.0.3.7:5432: …`) — log only.
             call.application.environment.log.warn("editor session open failed", e)
             call.respond(HttpStatusCode.BadGateway, ApiError("query.failed"))

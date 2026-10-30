@@ -100,14 +100,12 @@ class RequestAuthorizationDbTest {
         core.policyStore.createAssignment(RoleAssignmentInput(principal, liveRole.id))
         for (kind in listOf(TokenKind.USER, TokenKind.SESSION)) {
             val token = issue(kind, principal, listOf("system:admin")).token
-            core.editorRequesterIps.put(tokenHash(token), "10.0.0.1")
             val resolved = core.resolveRequestIdentity(token, "198.51.100.7:45100")
             assertEquals(setOf(liveRole.name), resolved.effectiveParents.roles)
             assertNull(resolved.providedRoles)
             assertEquals(Channel.WIRE, resolved.channel)
             assertEquals("wire", resolved.context.channel)
             assertEquals("198.51.100.7", resolved.context.requesterIp)
-            assertNull(resolved.httpRequesterIp)
         }
     }
 
@@ -130,8 +128,7 @@ class RequestAuthorizationDbTest {
         core.policyStore.createAssignment(RoleAssignmentInput(principal, own.id))
         for (kind in listOf(TokenKind.EDITOR, TokenKind.APPROVER_EXEC)) {
             val token = issue(kind, principal, listOf(assumed.name, "missing-role")).token
-            core.editorRequesterIps.put(tokenHash(token), "203.0.113.8")
-            val resolved = core.resolveRequestIdentity(token, "10.0.0.1:49152")
+            val resolved = core.resolveRequestIdentity(token, "203.0.113.8")
             assertEquals(setOf(assumed.name), resolved.effectiveParents.roles)
             assertEquals(setOf(assumed.name, "missing-role"), resolved.providedRoles)
             assertEquals(if (kind == TokenKind.EDITOR) Channel.EDITOR else Channel.WORKFLOW_EXECUTOR, resolved.channel)
@@ -164,17 +161,14 @@ class RequestAuthorizationDbTest {
             assertEquals(setOf(own.name), resolved.effectiveParents.roles)
             assertEquals(Channel.EDITOR, resolved.channel)
             assertNull(resolved.providedRoles)
-            assertNull(resolved.context.requesterIp)
+            assertEquals("10.0.0.1", resolved.context.requesterIp)
         }
     }
 
     @Test
-    fun `task requester IP clearing never falls back to the proxy socket`() {
+    fun `a task with no requester address decides with requester_ip absent`() {
         val token = issue(TokenKind.EDITOR, principal()).token
-        core.editorRequesterIps.put(tokenHash(token), "203.0.113.8")
-        assertEquals("203.0.113.8", core.resolveRequestIdentity(token, "10.0.0.1:49152").context.requesterIp)
-        core.editorRequesterIps.set(tokenHash(token), null)
-        assertNull(core.resolveRequestIdentity(token, "10.0.0.1:49152").context.requesterIp)
+        assertNull(core.resolveRequestIdentity(token, null).context.requesterIp)
     }
 
     @Test

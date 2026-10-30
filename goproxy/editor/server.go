@@ -158,6 +158,7 @@ func (s *Server) Serve(req *pb.OpenEditorSession, draining <-chan struct{}) {
 		default:
 		}
 
+		authz.SetClientAddr(query.GetRequesterIp())
 		queryDone := make(chan bool, 1)
 		go func() { queryDone <- s.handleQuery(connection, stream, query, guard) }()
 	queryInFlight:

@@ -16,6 +16,7 @@ import com.ridi.oss.proxymonster.controlplane.support.EnforcementFixture
 import com.ridi.oss.proxymonster.controlplane.support.PerConnectionCatalogFixture
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.controlplane.support.withFakeProxy
+import com.ridi.oss.proxymonster.grpc.EditorQuery
 import com.ridi.oss.proxymonster.grpc.ControlPlaneGrpcKt
 import com.ridi.oss.proxymonster.grpc.OpenEditorSession
 import com.ridi.oss.proxymonster.grpc.decisionRequest
@@ -193,7 +194,8 @@ class McpQueryToolsDbTest {
         val requesterToken = token(requester, setOf("mcp:query"))
         val approverToken = token(approver, setOf("mcp:query", "mcp:approvals:write"))
         try {
-            withFakeProxy({ identity, statement, _ ->
+            withFakeProxy({ identity, query, _ ->
+                    val statement = query.sql
                     if (identity?.kind == TokenKind.APPROVER_EXEC.name) {
                         maskedResult(executeRequirements, executionDecision(approver))
                     } else {
@@ -449,7 +451,8 @@ class McpQueryToolsDbTest {
         val maskedRequirements = fx.decide(sql, principal, Channel.EDITOR).resultRequirements!!
         val emptyRequirements = fx.decide(empty, principal, Channel.EDITOR).resultRequirements!!
         val token = token(principal, setOf("mcp:query"))
-        withFakeProxy({ _, statement, _ ->
+        withFakeProxy({ _, query, _ ->
+            val statement = query.sql
             if (statement.contains("id < 0")) {
                 listOf(
                     proxyEditorMsg {
@@ -679,7 +682,8 @@ class McpQueryToolsDbTest {
         try {
             DriverManager.getConnection(fx.targetJdbcUrl, fx.targetUser, fx.targetPassword).use { target ->
                 val connections = java.util.concurrent.ConcurrentHashMap<String, com.google.protobuf.ByteString>()
-                withFakeProxy({ _, statement, open ->
+                withFakeProxy({ _, query, open ->
+                    val statement = query.sql
                     val connectionId = connections.getOrPut(open.sessionId) { stub.openEditorConnection(open, fx.datasource.name) }
                     var response = stub.decide(decisionRequest {
                         this.token = open.ephemeralToken
@@ -688,6 +692,7 @@ class McpQueryToolsDbTest {
                         this.connectionId = connectionId
                         this.sql = statement
                         searchPath.add(schema)
+                        clientAddr = query.requesterIp
                     })
                     repeat(3) {
                         if (response.hasBeforeDecide()) {
@@ -699,6 +704,7 @@ class McpQueryToolsDbTest {
                                 this.connectionId = connectionId
                                 this.sql = statement
                                 searchPath.add(schema)
+                                clientAddr = query.requesterIp
                             })
                         }
                     }
@@ -806,7 +812,7 @@ class McpQueryToolsDbTest {
     }
 
     private suspend fun withFakeProxy(
-        respond: suspend (WireIdentity?, String, OpenEditorSession) -> List<ProxyEditorMsg>,
+        respond: suspend (WireIdentity?, EditorQuery, OpenEditorSession) -> List<ProxyEditorMsg>,
         body: suspend () -> Unit,
     ) = withFakeProxy(core, stub, fx.datasource.name, respond, body = body)
 

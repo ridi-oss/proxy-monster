@@ -93,11 +93,6 @@ data class EditorSession(
     val attached: Attached,
     @Volatile var lastUsedNanos: Long = System.nanoTime(),
     val mutex: Mutex = Mutex(),
-    // The HTTP requester IP observed at open, and the session token's hash — so [closeSession]
-    // can remove this session's [ControlPlaneCore.editorRequesterIps] entry alongside its token revoke.
-    // Defaulted (null) so existing constructions (incl. test fixtures) compile unchanged.
-    val requesterIp: String? = null,
-    val tokenHash: String? = null,
     // The held connection's namespace as the proxy last read it (at open, then after each statement). Null
     // until the first reading, or when the proxy could not read it.
     @Volatile var namespace: List<String>? = null,
@@ -126,51 +121,6 @@ class EditorSessionRegistry {
     }
 
     fun remove(sessionId: String): PendingSession? = pending.remove(sessionId)
-}
-
-/**
- * A CP-only carrier for the HTTP requester IP (docs/authz-context.md) observed when an
- * ephemeral EDITOR/APPROVER_EXEC token was minted ([EditorExecService.openSession] / [EditorExecService.run]),
- * keyed by the token's SHA-256 hash ([tokenHash] — never the raw token, mirroring `proxy_token.token_hash`).
- * Consumed by the gRPC `decide` handler (ControlPlaneGrpcService), which sees only the resolved token — not
- * the HTTP request that minted it — so this is how the requester_ip attested at mint time reaches the async
- * decide-time Cedar context. Entry lifetime == token lifetime: [put] at issuance, [remove] on revoke (both the
- * success and failure/cleanup paths) so a stale entry never outlives its token. An absent entry (never minted
- * with an IP, or already removed) means [get] returns null — requester_ip is then simply absent on that
- * decision, fail-closed (a tag/policy conditioned on it doesn't fire), never a stale/wrong IP resurrected from
- * a since-revoked token. Lives on [ControlPlaneCore] (`editorRequesterIps`) for the SAME reason `editorSessions`
- * does: [com.ridi.oss.proxymonster.controlplane.grpc.ControlPlaneGrpcService] is constructed independently in
- * Main.kt, before `Application.module`'s [EditorExecService] exists — only `core`-held state reaches both.
- *
- * For a ONE-SHOT token ([EditorExecService.run]) the entry is a constant of the token's short life. For a
- * PERSISTENT session ([EditorExecService.openSession]) the token outlives many queries, so [runOnSession]
- * REFRESHES the entry ([set]) to each query's own requester_ip before the decision — requester_ip is resolved
- * fresh per decision (authz-context.md), never frozen at open time, so a session opened from one network but
- * queried from another decides against the CURRENT request's IP, not the stale one.
- */
-class RequesterIpRegistry {
-    private val ips = ConcurrentHashMap<String, String>()
-
-    /** A null [ip] is a no-op — nothing to carry, and it must not clobber (or plant) an absent-key sentinel.
-     *  This is the MINT-time write ([run]/[openSession]): the key doesn't exist yet, so there is nothing to
-     *  refresh — [set] is the per-decision refresh that must also be able to CLEAR a since-changed IP. */
-    fun put(tokenHash: String, ip: String?) {
-        if (ip != null) ips[tokenHash] = ip
-    }
-
-    /** Per-decision REFRESH ([runOnSession]): set [tokenHash]'s carried IP to exactly [ip], INCLUDING clearing
-     *  it when [ip] is null. Unlike [put], a null here is NOT a no-op — a persistent session queried from a
-     *  network whose requester_ip can't be resolved must not inherit the (possibly trusted) open-time IP; the
-     *  attribute goes absent → fail-closed, never stale. */
-    fun set(tokenHash: String, ip: String?) {
-        if (ip == null) ips.remove(tokenHash) else ips[tokenHash] = ip
-    }
-
-    fun get(tokenHash: String): String? = ips[tokenHash]
-
-    fun remove(tokenHash: String) {
-        ips.remove(tokenHash)
-    }
 }
 
 sealed class EditorExecException(message: String, cause: Throwable? = null) : Exception(message, cause)
@@ -266,8 +216,15 @@ class EditorExecService(
         preflight: (() -> Boolean)?,
         sql: String,
         maxRows: Int,
+        requesterIp: String?,
     ) {
-        val msg = cpEditorMsg { query = editorQuery { this.sql = sql; this.maxRows = maxRows.coerceIn(0, 5000) } }
+        val msg = cpEditorMsg {
+            query = editorQuery {
+                this.sql = sql
+                this.maxRows = maxRows.coerceIn(0, 5000)
+                requesterIp?.let { this.requesterIp = it }
+            }
+        }
         if (run == null) {
             outbound.send(msg)
             return
@@ -293,10 +250,7 @@ class EditorExecService(
      * Decide handler forwards it as decideQuery's providedRoles (which REPLACES server role resolution).
      * Empty (the editor / no-R approver-exec) => decide under [principal]'s own server-resolved roles.
      *
-     * [requesterIp] is the requester-IP carrier: the HTTP caller's requester IP, recorded into
-     * [ControlPlaneCore.editorRequesterIps] under this token's hash so the gRPC decide handler can attach it
-     * to the Cedar context at decide time. This is the ONLY minter of APPROVER_EXEC tokens — [openSession]
-     * mints EDITOR only — so covering it is what makes APPROVER_EXEC's requester_ip real, not just EDITOR's.
+     * [requesterIp] is the HTTP caller's requester IP; each statement carries it to its decision.
      */
     suspend fun run(
         principal: String,
@@ -343,6 +297,7 @@ class EditorExecService(
         preflight: (() -> Boolean)?,
         statementAt: suspend (Int) -> String?,
         onStatement: suspend (Int, QueryResponse) -> Boolean,
+        requesterIp: String?,
         beforeSend: (Int) -> Unit = {},
         onStreamFailure: () -> Unit = {},
         onNamespace: (List<String>?) -> Unit = {},
@@ -356,7 +311,7 @@ class EditorExecService(
             try {
                 // Sends under the run gate (preflight + cancel re-check), so a concurrent cancel either
                 // vetoes this send or is ordered strictly after it — never a dropped-then-run query.
-                sendRunQuery(activeRun, outbound, preflight, statement, maxRows)
+                sendRunQuery(activeRun, outbound, preflight, statement, maxRows, requesterIp)
             } catch (e: RunCanceledBeforeStartException) {
                 // Only ordinal 0 propagates, so the caller tells "nothing ran" from "stopped partway"; the
                 // statements already run keep their stored results.
@@ -421,8 +376,6 @@ class EditorExecService(
                 c = c,
             )
         } ?: throw ProxyRunException("principal is deprovisioned")
-        val issuedTokenHash = tokenHash(issued.token)
-        core.editorRequesterIps.put(issuedTokenHash, requesterIp)
 
         val sessionId = UUID.randomUUID().toString()
         val pending = PendingSession(sessionId, principal, issued.id, CompletableDeferred())
@@ -465,6 +418,7 @@ class EditorExecService(
                 preflight = preflight,
                 statementAt = statementAt,
                 onStatement = onStatement,
+                requesterIp = requesterIp,
                 onDecision = onDecision,
             )
         } finally {
@@ -487,7 +441,6 @@ class EditorExecService(
                 try {
                     core.tokenStore.revoke(issued.id, principal)
                 } finally {
-                    core.editorRequesterIps.remove(issuedTokenHash)
                     if (registered) core.editorSessions.remove(sessionId)
                 }
             }
@@ -509,15 +462,11 @@ class EditorExecService(
      * The proxy keeps its dedicated target-DB connection alive for the life of the session. On any failure to
      * establish, the pending registration, token, and any half-open stream are cleaned up before throwing.
      *
-     * [requesterIp] is the requester-IP carrier (see [run]'s doc) — recorded under the session token's hash
-     * so every query decided on this session sees the requester IP that opened it.
      */
-    suspend fun openSession(principal: String, ds: Datasource, requesterIp: String? = null): String {
+    suspend fun openSession(principal: String, ds: Datasource): String {
         val issued = core.dataSource.mintForActivePrincipalLocked(principal, core.userGroupStore) { c ->
             core.tokenStore.issue(TokenKind.EDITOR, principal, emptyList(), null, editorSessionTtlSeconds, c)
         } ?: throw ProxyRunException("principal is deprovisioned")
-        val issuedTokenHash = tokenHash(issued.token)
-        core.editorRequesterIps.put(issuedTokenHash, requesterIp)
         val sessionId = UUID.randomUUID().toString()
         val pending = PendingSession(sessionId, principal, issued.id, CompletableDeferred())
         var attached: Attached? = null
@@ -537,7 +486,6 @@ class EditorExecService(
             val serving = awaitServing(attached.inbound, EDITOR_NO_PROGRESS_TIMEOUT_MS, EDITOR_OPEN_TIMEOUT_MS)
             openSessions[sessionId] = EditorSession(
                 sessionId, principal, issued.id, ds.name, attached,
-                requesterIp = requesterIp, tokenHash = issuedTokenHash,
                 namespace = serving.namespaceOrNull(),
             )
             return sessionId
@@ -553,7 +501,6 @@ class EditorExecService(
             // proxy's stream close to propagate. On success the held session keeps the stream.
             attached?.inbound?.close()
             runCatching { core.tokenStore.revoke(issued.id, principal) }
-            core.editorRequesterIps.remove(issuedTokenHash)
             core.editorSessions.remove(sessionId)
             throw e
         }
@@ -610,50 +557,35 @@ class EditorExecService(
     ) {
         val session = openSessions[sessionId]?.takeIf { it.principal == principal }
             ?: throw ProxyRunException("no such editor session")
-        try {
-            session.mutex.withLock {
-                // Re-check under the mutex: a concurrent [closeSession] (DELETE / idle sweep) — which is lock-free
-                // — may have removed + revoked this session while we queued for the lock. If so, bail fail-closed
-                // rather than run a query on (and refresh the registry entry of) a since-revoked token. `!==` is a
-                // safe identity check: sessionId is a fresh UUID, so a re-open can never resurrect the same object.
-                if (openSessions[sessionId] !== session) throw ProxyRunException("no such editor session")
-                val run = taskId?.let { id -> ActiveRun(session.attached.outbound).also { activeRuns[id] = it } }
-                try {
-                    // The session outlives this call, so any stream failure must drop it here: the run loop
-                    // returns on a query error, and the next submit should reopen rather than fail on a dead
-                    // stream.
-                    runStatements(
-                        outbound = session.attached.outbound,
-                        inbound = session.attached.inbound,
-                        activeRun = run,
-                        statementCount = statementCount,
-                        maxRows = maxRows,
-                        exchangeTimeoutMs = exchangeTimeoutMs,
-                        preflight = preflight,
-                        statementAt = statementAt,
-                        onStatement = onStatement,
-                        onNamespace = { session.namespace = it },
-                        onDecision = onDecision,
-                        beforeSend = {
-                            session.lastUsedNanos = System.nanoTime()
-                            // Refresh the requester_ip this statement's decision will see to the CURRENT
-                            // request's IP, under the mutex + before the query is sent, so the proxy's decide
-                            // never reads a stale open-time one.
-                            session.tokenHash?.let { core.editorRequesterIps.set(it, requesterIp) }
-                        },
-                        onStreamFailure = { closeSession(sessionId) },
-                    )
-                } finally {
-                    if (taskId != null && run != null) activeRuns.remove(taskId, run)
-                }
-            }
-        } finally {
-            // If a lock-free [closeSession] raced this query and won (the session is no longer the live one), the
-            // registry `set` above may have RE-CREATED an entry the close already swept — after the token was
-            // revoked. Sweep it back out so a stale entry can never outlive its token (idempotent with
-            // closeSession's own remove). On the normal path the session is still live, so this is a no-op.
-            if (openSessions[sessionId] !== session) {
-                session.tokenHash?.let(core.editorRequesterIps::remove)
+        session.mutex.withLock {
+            // Re-check under the mutex: a concurrent [closeSession] (DELETE / idle sweep) — which is lock-free
+            // — may have removed + revoked this session while we queued for the lock. If so, bail fail-closed
+            // rather than run a query on a since-revoked token. `!==` is a safe identity check: sessionId is a
+            // fresh UUID, so a re-open can never resurrect the same object.
+            if (openSessions[sessionId] !== session) throw ProxyRunException("no such editor session")
+            val run = taskId?.let { id -> ActiveRun(session.attached.outbound).also { activeRuns[id] = it } }
+            try {
+                // The session outlives this call, so any stream failure must drop it here: the run loop
+                // returns on a query error, and the next submit should reopen rather than fail on a dead
+                // stream.
+                runStatements(
+                    outbound = session.attached.outbound,
+                    inbound = session.attached.inbound,
+                    activeRun = run,
+                    statementCount = statementCount,
+                    maxRows = maxRows,
+                    exchangeTimeoutMs = exchangeTimeoutMs,
+                    preflight = preflight,
+                    statementAt = statementAt,
+                    onStatement = onStatement,
+                    onNamespace = { session.namespace = it },
+                    requesterIp = requesterIp,
+                    onDecision = onDecision,
+                    beforeSend = { session.lastUsedNanos = System.nanoTime() },
+                    onStreamFailure = { closeSession(sessionId) },
+                )
+            } finally {
+                if (taskId != null && run != null) activeRuns.remove(taskId, run)
             }
         }
     }
@@ -695,7 +627,6 @@ class EditorExecService(
             session.attached.outbound.trySend(cpEditorMsg { close = editorClose {} })
         } finally {
             runCatching { core.tokenStore.revoke(session.tokenId, session.principal) }
-            session.tokenHash?.let(core.editorRequesterIps::remove)
             core.editorSessions.remove(sessionId)
         }
     }

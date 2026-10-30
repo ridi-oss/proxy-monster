@@ -39,8 +39,8 @@ class TargetQueryException(message: String) : Exception(message)
  * strictly in test scope, where SchemaThreadingDbTest uses it to prove live-search-path → audit
  * `effectiveNamespace` threading. It must never be wired back onto the enforcing path (the whole point of
  * the per-connection catalog is that the enforcing path can never read the global catalog). Resolves roles server-side,
- * selects `requester_ip` by channel (WIRE = the proxy-attested socket; editor/workflow = the HTTP carrier),
- * runs the decision under [principal] + the live [searchPath], audits, and returns the verdict + audit id.
+ * takes `requester_ip` from [clientAddr] as Decide does for every channel, runs the decision under [principal] + the
+ * live [searchPath], audits, and returns the verdict + audit id.
  */
 fun decideAndAudit(
     core: ControlPlaneCore,
@@ -52,13 +52,9 @@ fun decideAndAudit(
     channel: Channel = Channel.WIRE,
     providedRoles: Set<String>? = null,
     tempColumns: List<CatalogColumn> = emptyList(),
-    httpRequesterIp: String? = null,
 ): Pair<DecisionContext, Long> {
     val t0 = System.nanoTime()
-    val requesterIp = when (channel) {
-        Channel.WIRE -> parseRequesterIp(clientAddr)
-        else -> httpRequesterIp
-    }
+    val requesterIp = parseRequesterIp(clientAddr)
     val ctx = decideQuery(
         principal, ds, sql, channel,
         core.datasourceStore.catalog(ds.id), core.policyStore, core.accessStore, core.userGroupStore, core.roleResolver, core.authz,

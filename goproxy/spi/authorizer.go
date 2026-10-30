@@ -77,6 +77,10 @@ func (a *Authorizer) Close() {
 
 func (a *Authorizer) ConnectionID() []byte { return a.connectionID }
 
+// SetClientAddr sets the client_addr the next decisions report. An editor session sets it per statement, to that
+// statement's requester.
+func (a *Authorizer) SetClientAddr(addr string) { a.clientAddr = addr }
+
 func (a *Authorizer) Client() ControlPlane { return a.client }
 
 // MarkNamespaceDirty invalidates the cached namespace. The protocol calls this when an authoritative

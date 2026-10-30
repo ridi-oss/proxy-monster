@@ -403,6 +403,24 @@ func TestServerAdmissionFailure(t *testing.T) {
 	}
 }
 
+func TestServerReportsEachQueryRequesterAsClientAddr(t *testing.T) {
+	fixture := editorSeedMySQL(t)
+	fake, client := editorStartFakeCP(t, editorSessionID)
+	done := editorLaunch(t, fake, client, fixture)
+	for _, requester := range []string{"203.0.113.7", ""} {
+		fake.editorCommands <- &pb.CpEditorMsg{Kind: &pb.CpEditorMsg_Query{Query: &pb.EditorQuery{Sql: "SELECT 1", MaxRows: 20, RequesterIp: requester}}}
+		editorExpectDecision(t, editorRecv(t, fake), pb.EnfAction_ALLOW, nil, "")
+		editorExpectRows(t, editorRecv(t, fake), []string{"1"})
+		editorExpectDone(t, editorRecv(t, fake), -1)
+		requests := fake.editorRecordedRequests()
+		if got := requests[len(requests)-1].GetClientAddr(); got != requester {
+			t.Fatalf("Decide client_addr = %q, want the query's requester %q", got, requester)
+		}
+	}
+	editorSendClose(fake)
+	done()
+}
+
 func TestServerReleasesWhenTheStreamDiesBeforeTheOpen(t *testing.T) {
 	fixture := editorSeedMySQL(t)
 	fake, client := editorStartFakeCP(t, editorSessionID)

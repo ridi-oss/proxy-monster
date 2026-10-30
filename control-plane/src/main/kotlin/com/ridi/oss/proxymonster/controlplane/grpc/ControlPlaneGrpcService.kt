@@ -209,7 +209,6 @@ class ControlPlaneGrpcService(
         // The connection's session/temp columns, overlaid onto the base catalog. Both trust
         // gates (EDITOR-channel-only + temp-schema filter) live in [editorTempOverlay] so they're unit-testable.
         val tempColumns = editorTempOverlay(channel, ds.engine, request.tempColumnsList)
-        val httpIp = resolved.httpRequesterIp
         if (request.connectionId.isEmpty) {
             throw StatusException(Status.INVALID_ARGUMENT.withDescription("connection_id is required"))
         }
@@ -230,7 +229,7 @@ class ControlPlaneGrpcService(
         return when (
             val outcome = decideConnection(
                 core, request.connectionId, id.principal, ds, request.sql, request.searchPathList,
-                clientAddr, request.session, channel, assumeRoles, tempColumns, httpRequesterIp = httpIp,
+                clientAddr, request.session, channel, assumeRoles, tempColumns,
                 targetCheck = if (request.hasTargetCheck()) request.targetCheck else null,
             ) ?: throw StatusException(Status.NOT_FOUND.withDescription("connection disappeared during Decide"))
         ) {

@@ -1,16 +1,21 @@
 package com.ridi.oss.proxymonster.controlplane
 
 import com.ridi.oss.proxymonster.auth.sha256Hex
-import com.ridi.oss.proxymonster.probe.Dialect
-import com.ridi.oss.proxymonster.probe.sqlGrantHash
+import com.ridi.oss.proxymonster.grpc.Engine
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class ChangeKeyTest {
-    private fun key(sql: String, fileKey: String = "0042") = changeKey(fileKey, contentHash(sql, Dialect.MYSQL))
+    private val mysql = Datasource(
+        id = 1, name = "app", engine = Engine.MYSQL, host = "db", port = 3306, dbName = "app",
+        mysqlLowerCaseTableNames = 0, engineVersion = "8.0.36",
+    )
+
+    private fun key(sql: String, fileKey: String = "0042") = changeKey(fileKey, contentHash(sql, mysql), rawSqlHash(sql))
 
     @Test
     fun the_same_name_and_sql_get_the_same_key() {
@@ -24,11 +29,22 @@ class ChangeKeyTest {
     }
 
     @Test
-    fun the_change_key_hashes_the_file_key_and_the_content_hash() {
-        val hash = contentHash("UPDATE t SET a = 1", Dialect.MYSQL)
-        assertTrue(hash.startsWith("n:"))
-        assertTrue(contentHash("SELECT /*!50000 * */ FROM users", Dialect.MYSQL).startsWith("r:"))
-        assertEquals(sha256Hex("0042\n$hash"), changeKey("0042", hash))
+    fun the_change_key_hashes_the_file_key_and_the_content_hash_or_else_the_raw_hash() {
+        val hash = contentHash("UPDATE t SET a = 1", mysql)!!
+        assertEquals(sha256Hex("0042\n$hash"), changeKey("0042", hash, "raw"))
+        assertEquals(sha256Hex("0042\nraw"), changeKey("0042", null, "raw"))
+    }
+
+    @Test
+    fun a_request_keeps_its_sql_when_its_normalized_hash_changes() {
+        val sql = "SELECT id FROM users"
+        val filed = AccessRequest(
+            id = 1, principal = "a", requestedDurationSec = 60, status = "APPROVED", createdAt = "", revision = 1,
+            contentHash = "stale", rawHash = rawSqlHash(sql),
+        )
+        assertTrue(filed.hasSql(sql, mysql))
+        assertFalse(filed.hasSql("SELECT id FROM users WHERE id = 1", mysql))
+        assertFalse(filed.copy(rawHash = null).hasSql(sql, mysql))
     }
 
     @Test
@@ -44,8 +60,8 @@ class ChangeKeyTest {
 
     @Test
     fun executable_comments_and_hints_are_not_normalized() {
-        assertNull(sqlGrantHash("SELECT /*+ MAX_EXECUTION_TIME(5000) */ * FROM users", Dialect.MYSQL))
-        assertNull(sqlGrantHash("SELECT /*!50000 * */ FROM users", Dialect.MYSQL))
+        assertNull(contentHash("SELECT /*+ MAX_EXECUTION_TIME(5000) */ * FROM users", mysql))
+        assertNull(contentHash("SELECT /*!50000 * */ FROM users", mysql))
     }
 
     @Test

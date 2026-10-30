@@ -143,7 +143,8 @@ class ApprovalService(
                     // Nothing re-analyzes the copied statement, so it is unknown and delivery withholds the text.
                     carriesProtectedLiteral = null,
                     source = source,
-                    contentHash = contentHash(denied.statement, ds.engine.dialect),
+                    contentHash = contentHash(denied.statement, ds),
+                    rawHash = rawSqlHash(denied.statement),
                     onCreated = { c, taskId, roleName -> notifications?.emitRequested(c, taskId, principal, ds, roleName) },
                 )
             } catch (_: DuplicatePendingQueryRequestException) {
@@ -179,7 +180,8 @@ class ApprovalService(
             carriesProtectedLiteral = analysis.carriesProtectedLiteral,
             onCreated = { c, taskId, roleName -> notifications?.emitRequested(c, taskId, principal, ds, roleName) },
             source = source,
-            contentHash = contentHash(sql, ds.engine.dialect),
+            contentHash = contentHash(sql, ds),
+            rawHash = rawSqlHash(sql),
         )
         notifications?.wake()
         return CreateQueryRequestResponse(request, wouldAllow = analysis.decision == EnfAction.ALLOW)
@@ -572,14 +574,14 @@ class ApprovalService(
         origin: RequestOrigin? = null,
         notify: Boolean = true,
     ): AccessRequest? {
-        val hash = contentHash(sql, ds.engine.dialect)
-        if (hash == req.contentHash) {
+        if (req.hasSql(sql, ds)) {
             return accessStore.editQueryRequestDetails(req.id, title, reason, actor, recorder, origin?.pullRequest)
         }
+        val hash = contentHash(sql, ds)
         val analysis = analyze(req.principal, ds, statements, requesterIp, origin?.pullRequest?.defaultSchema?.let(::listOf))
         val edited = accessStore.editQueryRequest(
             req.id, statements,
-            RequestEdit(hash, analysis.denyReason, analysis.decision.name, analysis.carriesProtectedLiteral, title, reason, origin),
+            RequestEdit(hash, rawSqlHash(sql), analysis.denyReason, analysis.decision.name, analysis.carriesProtectedLiteral, title, reason, origin),
             actor, recorder,
             onEdited = if (notify) { c, r -> notifications?.emit(c, NotificationEvent.TASK_EDITED, r) } else null,
         ) ?: return null

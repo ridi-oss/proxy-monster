@@ -34,15 +34,13 @@ var Athena = &Engine{
 			}, nil
 		},
 		// Athena has no search path, so a bare call never resolves in a system schema.
-		bareCallIsBuiltin:   noBuiltinBareCall,
-		showUtilityCommand:  athenaShowUtilityCommand,
-		isSafeTypeReference: noSafeTypeReference,
-		systemSchemaFirst:   noSystemSchemaFirst,
-		nativeOutputLabel:   athenaNativeOutputLabel,
-		diagnosticLeakKeys:  referencedColumnLeakKeys,
-		normalizeRules: func() normalizeRules {
-			return normalizeRules{dialect: dialects.Athena(), foldIdentifiers: true}
-		},
+		bareCallIsBuiltin:         noBuiltinBareCall,
+		showUtilityCommand:        athenaShowUtilityCommand,
+		isSafeTypeReference:       noSafeTypeReference,
+		systemSchemaFirst:         noSystemSchemaFirst,
+		nativeOutputLabel:         athenaNativeOutputLabel,
+		diagnosticLeakKeys:        referencedColumnLeakKeys,
+		normalizeRules:            normalizeRules{foldIdentifiers: true},
 		foldColumn:                athenaName,
 		normalizeCatalogOnBuild:   true,
 		allowsCrossCatalog:        true,

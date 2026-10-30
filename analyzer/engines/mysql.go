@@ -33,10 +33,8 @@ var MySQL = &Engine{
 		nativeOutputLabel: mysqlNativeOutputLabel,
 		// MySQL diagnostics echo only the operated value (`Truncated incorrect INTEGER value: '010-…'`) —
 		// always an already-referenced column — and never dump unreferenced ones, so the template is the whole set.
-		diagnosticLeakKeys: referencedColumnLeakKeys,
-		normalizeRules: func() normalizeRules {
-			return normalizeRules{dialect: dialects.MySQL(), rejectExecutableComments: true}
-		},
+		diagnosticLeakKeys:                  referencedColumnLeakKeys,
+		normalizeRules:                      normalizeRules{rejectExecutableComments: true},
 		foldColumn:                          mysqlColumn,
 		normalizeCatalogOnBuild:             true,
 		rejectsDuplicateDerivedOutputLabels: true,

@@ -80,6 +80,7 @@ object GoBinding {
                 // The native library supports 64-bit Darwin/Linux targets, where C size_t matches JAVA_LONG.
                 ValueLayout.JAVA_LONG,
                 ValueLayout.ADDRESS,
+                ValueLayout.JAVA_LONG,
             ),
         )
         freeHandle = linker.downcallHandle(
@@ -139,10 +140,11 @@ object GoBinding {
     }
 
     /**
-     * Canonicalize one SQL statement for byte-exact query-grant matching, or return null when the
-     * dialect or SQL cannot be normalized safely.
+     * Canonicalize one SQL statement for byte-exact query-grant matching in the dialect of
+     * [engineConfig] (a marshaled `analyzerv1.EngineConfig`), or return null when it cannot be
+     * normalized safely.
      */
-    fun sqlNormalize(sql: String, dialect: String): String? {
+    fun sqlNormalize(sql: String, engineConfig: ByteArray): String? {
         if (!hasWellFormedUtf16(sql)) return null
 
         val sqlBytes = sql.toByteArray(Charsets.UTF_8)
@@ -151,10 +153,15 @@ object GoBinding {
             if (sqlBytes.isNotEmpty()) {
                 sqlSeg.asSlice(0, sqlBytes.size.toLong()).copyFrom(MemorySegment.ofArray(sqlBytes))
             }
-            val dialectSeg = arena.allocateFrom(dialect)
+            val configSeg = arena.allocate(engineConfig.size.toLong().coerceAtLeast(1L))
+            if (engineConfig.isNotEmpty()) {
+                configSeg.asSlice(0, engineConfig.size.toLong()).copyFrom(MemorySegment.ofArray(engineConfig))
+            }
             // The C ABI length is the exact UTF-8 byte count, not Kotlin's UTF-16 code-unit count.
             // This is a security requirement: no encoding or embedded-NUL boundary may change the SQL.
-            val resultPtr = sqlNormalizeHandle.invoke(sqlSeg, sqlBytes.size.toLong(), dialectSeg) as MemorySegment
+            val resultPtr = sqlNormalizeHandle.invoke(
+                sqlSeg, sqlBytes.size.toLong(), configSeg, engineConfig.size.toLong(),
+            ) as MemorySegment
             try {
                 if (resultPtr.address() == 0L) {
                     throw IllegalStateException("SqlNormalize returned a null pointer")

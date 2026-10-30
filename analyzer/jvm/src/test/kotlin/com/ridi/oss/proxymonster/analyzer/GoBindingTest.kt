@@ -115,32 +115,40 @@ class GoBindingTest {
         assertTrue(xidFacts(listOf("public", "pg_catalog")).resultReadsList.any { it.utility.command == "USER_TYPE_CAST" })
     }
 
+    private fun sqlNormalize(sql: String, engine: Engine): String? = GoBinding.sqlNormalize(
+        sql,
+        engineConfig {
+            this.engine = engine
+            if (engine == Engine.MYSQL) target = targetSettings { engineVersion = "8.0.36"; mysqlLowerCaseTableNames = 0 }
+        }.toByteArray(),
+    )
+
     @Test
     fun sqlNormalizeReturnsCanonicalSqlAndFailsClosed() {
-        assertEquals("select id from users", GoBinding.sqlNormalize("SELECT id FROM users", "postgres"))
-        assertNull(GoBinding.sqlNormalize("SELECT 'unterminated", "postgres"))
-        assertNull(GoBinding.sqlNormalize("SELECT 1", "sqlite"))
-        assertNull(GoBinding.sqlNormalize("SELECT id /*!50000 , secret */ FROM users", "mysql"))
-        assertNull(GoBinding.sqlNormalize("SELECT /*+ MAX_EXECUTION_TIME(1000) */ id FROM users", "mysql"))
+        assertEquals("select id from users", sqlNormalize("SELECT id FROM users", Engine.POSTGRES))
+        assertNull(sqlNormalize("SELECT 'unterminated", Engine.POSTGRES))
+        assertNull(sqlNormalize("SELECT 1", Engine.ENGINE_UNSPECIFIED))
+        assertNull(sqlNormalize("SELECT id /*!50000 , secret */ FROM users", Engine.MYSQL))
+        assertNull(sqlNormalize("SELECT /*+ MAX_EXECUTION_TIME(1000) */ id FROM users", Engine.MYSQL))
     }
 
     @Test
     fun sqlNormalizePreservesTheByteExactNativeBoundary() {
-        assertEquals("select '한글'", GoBinding.sqlNormalize("SELECT '한글'", "postgres"))
-        val prefix = assertNotNull(GoBinding.sqlNormalize("SELECT 1", "postgres"))
-        val embeddedNul = GoBinding.sqlNormalize("SELECT 1\u0000 UNION SELECT 2", "postgres")
+        assertEquals("select '한글'", sqlNormalize("SELECT '한글'", Engine.POSTGRES))
+        val prefix = assertNotNull(sqlNormalize("SELECT 1", Engine.POSTGRES))
+        val embeddedNul = sqlNormalize("SELECT 1\u0000 UNION SELECT 2", Engine.POSTGRES)
         assertNull(embeddedNul)
         assertNotEquals<String?>(prefix, embeddedNul)
         assertNotEquals(
-            assertNotNull(GoBinding.sqlNormalize("SELECT id FROM \"Users\"", "postgres")),
-            assertNotNull(GoBinding.sqlNormalize("SELECT id FROM \"users\"", "postgres")),
+            assertNotNull(sqlNormalize("SELECT id FROM \"Users\"", Engine.POSTGRES)),
+            assertNotNull(sqlNormalize("SELECT id FROM \"users\"", Engine.POSTGRES)),
         )
     }
 
     @Test
     fun sqlNormalizeRejectsUnpairedUtf16Surrogates() {
-        assertNull(GoBinding.sqlNormalize(String(charArrayOf(0xD800.toChar())), "postgres"))
-        assertNull(GoBinding.sqlNormalize(String(charArrayOf(0xDC00.toChar())), "mysql"))
+        assertNull(sqlNormalize(String(charArrayOf(0xD800.toChar())), Engine.POSTGRES))
+        assertNull(sqlNormalize(String(charArrayOf(0xDC00.toChar())), Engine.MYSQL))
     }
 
     @Test

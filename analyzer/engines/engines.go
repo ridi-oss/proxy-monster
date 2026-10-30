@@ -101,7 +101,7 @@ type EngineTraits struct {
 	// referencedColumnKeys (the shared template) and add engine channels on top.
 	diagnosticLeakKeys func(session *Session, report ProbeResult, qualifySchema schema.Schema) map[string]bool
 	// normalizeRules are the lexer rules SqlNormalize applies: MySQL refuses `/*! */`, Postgres folds identifiers.
-	normalizeRules func() normalizeRules
+	normalizeRules normalizeRules
 	// foldColumn is a column name as the engine compares it: MySQL and Athena fold, Postgres keeps it exact.
 	foldColumn func(name string) string
 	// normalizeCatalogOnBuild folds the introspected catalog when the analyzer builds its schema; Postgres keeps

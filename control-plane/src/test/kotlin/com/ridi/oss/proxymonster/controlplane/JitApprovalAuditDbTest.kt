@@ -123,7 +123,7 @@ class JitApprovalAuditDbTest {
         core.accessStore.decideQueryRequest(request.id, approved = true, rejectionReason = null, decidedBy = "approver@example.com", actor = actor, recorder = recorder, revision = 1)
 
         val edited = core.accessStore.editQueryRequest(
-            request.id, listOf("select 2"), RequestEdit(contentHash = "h", denyReason = null, evaluatedDecision = "ALLOW", carriesProtectedLiteral = false),
+            request.id, listOf("select 2"), RequestEdit(contentHash = "h", rawHash = "r", denyReason = null, evaluatedDecision = "ALLOW", carriesProtectedLiteral = false),
             actor, recorder,
         )
         assertEquals("PENDING", edited?.status)

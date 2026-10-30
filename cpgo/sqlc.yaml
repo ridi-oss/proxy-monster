@@ -53,6 +53,7 @@ sql:
       - ../control-plane/src/main/resources/db/migration/V48__rate_boost_roles.sql
       - ../control-plane/src/main/resources/db/migration/V49__query_result_requirements.sql
       - ../control-plane/src/main/resources/db/migration/V50__code_reviews.sql
+      - ../control-plane/src/main/resources/db/migration/V51__request_raw_hash.sql
     queries: store/queries
     gen:
       go:

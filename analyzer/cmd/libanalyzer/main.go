@@ -14,7 +14,10 @@ import "C"
 import (
 	"unsafe"
 
+	"google.golang.org/protobuf/proto"
+
 	"github.com/ridi-oss/proxy-monster/analyzer/engines"
+	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 )
 
 // AnalyzeStatement analyzes one SQL statement. reqBytes/reqLen is a marshaled analyzerv1.AnalyzeRequest
@@ -93,21 +96,22 @@ func analyzeRequestBytesFromC(p *C.char, n C.size_t) []byte {
 	return C.GoBytes(unsafe.Pointer(p), C.int(n))
 }
 
-// SqlNormalize canonicalizes one SQL statement for byte-exact query-grant matching. SQL is passed as
-// a pointer plus its UTF-8 byte length so an embedded NUL reaches engines.SqlNormalize and is denied there
-// instead of being truncated at this boundary. The returned char* is malloc'd by Go and MUST be released
-// by the caller via FreeCString; an allocated empty string means deny.
+// SqlNormalize canonicalizes one SQL statement for byte-exact query-grant matching, in the dialect of a
+// marshaled analyzerv1.EngineConfig's engine and target. SQL is passed as a pointer plus its UTF-8 byte
+// length so an embedded NUL reaches engines.SqlNormalize and is denied there instead of being truncated at
+// this boundary. The returned char* is malloc'd by Go and MUST be released by the caller via FreeCString;
+// an allocated empty string means deny.
 //
 //export SqlNormalize
-func SqlNormalize(sql *C.char, sqlLen C.size_t, dialect *C.char) *C.char {
-	out, ok := sqlNormalizeFromC(sql, sqlLen, dialect)
+func SqlNormalize(sql *C.char, sqlLen C.size_t, configBytes *C.char, configLen C.size_t) *C.char {
+	out, ok := sqlNormalizeFromC(sql, sqlLen, configBytes, configLen)
 	if !ok || out == "" {
 		return C.CString("")
 	}
 	return C.CString(out)
 }
 
-func sqlNormalizeFromC(sql *C.char, sqlLen C.size_t, dialect *C.char) (out string, ok bool) {
+func sqlNormalizeFromC(sql *C.char, sqlLen C.size_t, configBytes *C.char, configLen C.size_t) (out string, ok bool) {
 	defer func() {
 		if recover() != nil {
 			out, ok = "", false
@@ -117,11 +121,15 @@ func sqlNormalizeFromC(sql *C.char, sqlLen C.size_t, dialect *C.char) (out strin
 	// C.GoBytes takes a C.int length. Reject anything that cannot be represented exactly rather than
 	// narrowing it and reading a different byte sequence.
 	const maxCInt = uint64(^uint32(0) >> 1)
-	if sql == nil || dialect == nil || sqlLen == 0 || uint64(sqlLen) > maxCInt {
+	if sql == nil || sqlLen == 0 || uint64(sqlLen) > maxCInt {
+		return "", false
+	}
+	config := &pb.EngineConfig{}
+	if err := proto.Unmarshal(analyzeRequestBytesFromC(configBytes, configLen), config); err != nil {
 		return "", false
 	}
 	bytes := C.GoBytes(unsafe.Pointer(sql), C.int(sqlLen))
-	return engines.SqlNormalize(string(bytes), C.GoString(dialect))
+	return engines.SqlNormalize(string(bytes), config)
 }
 
 // FreeCString releases a char*/byte buffer previously returned by AnalyzeStatement or SqlNormalize.

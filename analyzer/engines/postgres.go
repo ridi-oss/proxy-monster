@@ -38,10 +38,8 @@ var Postgres = &Engine{
 		systemSchemaFirst:   postgresCatalogFirstAfterTempSchemas,
 		nativeOutputLabel:   postgresNativeOutputLabel,
 		diagnosticLeakKeys:  postgresDiagnosticLeakKeys,
-		normalizeRules: func() normalizeRules {
-			return normalizeRules{dialect: dialects.Postgres(), foldIdentifiers: true}
-		},
-		foldColumn: func(name string) string { return name },
+		normalizeRules:      normalizeRules{foldIdentifiers: true},
+		foldColumn:          func(name string) string { return name },
 		builtinFunctionRows: map[string][]string{
 			"pg_available_extension_versions": {"name", "version", "superuser", "trusted", "relocatable", "schema", "requires", "comment"},
 			"unnest":                          {"unnest"},

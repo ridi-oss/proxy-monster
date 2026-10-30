@@ -113,7 +113,7 @@ class SlackDecisionHandlerDbTest {
     fun `an approve from a message older than the request's last edit is refused`() = runBlocking {
         val id = pendingRequest()
         fx.accessStore.editQueryRequest(
-            id, listOf("SELECT id FROM users WHERE id = 1"), RequestEdit("h", null, "ALLOW", false),
+            id, listOf("SELECT id FROM users WHERE id = 1"), RequestEdit("h", "r", null, "ALLOW", false),
             AuditActor(requester, clientAddr = null, channel = "console"), ManagementAuditRecorder(fx.auditStore),
         )
         val reply = handler.handle(click(id, approver, SlackTransport.ACTION_APPROVE, revision = 1))

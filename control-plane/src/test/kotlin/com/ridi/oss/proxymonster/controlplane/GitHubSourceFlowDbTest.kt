@@ -352,9 +352,9 @@ class GitHubSourceFlowDbTest {
         assertEquals("${datasource.name}/$schema", filed.scope)
         assertEquals("https://github.com/acme/shop/pull/$n", filed.pullRequest!!.prUrl)
         assertEquals("001", filed.fileKey)
-        assertEquals(contentHash("create table t (id int)", datasource.engine.dialect), filed.contentHash)
-        assertTrue(filed.contentHash!!.startsWith("n:"))
-        assertEquals(changeKey("001", filed.contentHash!!), filed.changeKey)
+        assertEquals(contentHash("create table t (id int)", datasource)!!, filed.contentHash)
+        assertEquals(rawSqlHash("create table t (id int)"), filed.rawHash)
+        assertEquals(changeKey("001", filed.contentHash, filed.rawHash!!), filed.changeKey)
         assertEquals("string", filed.pullRequest!!.keyOrder)
         assertEquals("acme/shop", filed.pullRequest!!.repository)
         assertEquals(n, filed.pullRequest!!.pr)
@@ -412,6 +412,32 @@ class GitHubSourceFlowDbTest {
         val kept = file(n, schema, listOf("db/a.sql" to "CREATE TABLE a (id bigint) -- reformatted")).single()
         assertEquals(second.id, kept.id)
         assertEquals("APPROVED", kept.status)
+    }
+
+    @Test
+    fun `a file whose normalized hash changes keeps its request and approval`() {
+        val n = number()
+        val schema = schema()
+        open(n)
+        val sql = "create table a (id int)"
+        val first = file(n, schema, listOf("db/a.sql" to sql)).single()
+        update(n) { it.copy(reviews = listOf(approval(bobUser))) }
+        recheck(n)
+        assertEquals("APPROVED", status(first.id))
+        dataSource.connection.use { c ->
+            c.prepareStatement("UPDATE access_request SET content_hash = 'stale', change_key = 'stale' WHERE id = ?").use { ps ->
+                ps.setLong(1, first.id)
+                ps.executeUpdate()
+            }
+        }
+
+        update(n) { it.copy(headSha = "sha$n-2") }
+        val again = file(n, schema, listOf("db/a.sql" to sql)).single()
+        assertEquals(first.id, again.id)
+        assertEquals(first.contentHash, again.contentHash)
+        assertEquals(first.changeKey, again.changeKey)
+        assertEquals("APPROVED", again.status)
+        assertTrue(adapter.dismissals.none { it.pr == n })
     }
 
     @Test

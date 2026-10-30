@@ -126,7 +126,7 @@ func stableAWSPrincipal(identity *sts.GetCallerIdentityOutput) (string, string, 
 	return parsed.AccountID, parsed.String() + "\x00" + userID, nil
 }
 
-func (i *credentialIdentity) targetBinding(cfg targetConfig, endpoint string) []byte {
+func (i *credentialIdentity) targetBinding(cfg settings, endpoint string) []byte {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	data, _ := json.Marshal([]string{i.account, i.principal, cfg.region, endpoint, cfg.workgroup, cfg.catalog, cfg.database})

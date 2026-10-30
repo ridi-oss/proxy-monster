@@ -282,7 +282,7 @@ func referencedExecutions(envelope *Envelope) ([]string, error) {
 
 // admitSubmission decides the actual SQL and parameters, then replaces them with the admitted submission.
 func (c *nativeRequest) admitSubmission(envelope *Envelope) (*Envelope, error) {
-	scope, err := readSubmission(envelope, c.server.target.config)
+	scope, err := readSubmission(envelope, c.server.target.settings)
 	if err != nil {
 		return nil, err
 	}
@@ -322,7 +322,7 @@ func (c *nativeRequest) admitSubmission(envelope *Envelope) (*Envelope, error) {
 	if err != nil {
 		return nil, err
 	}
-	if admitted, err = pinScope(admitted, c.server.target.config); err != nil {
+	if admitted, err = pinScope(admitted, c.server.target.settings); err != nil {
 		return nil, err
 	}
 	c.tokened = scope.token != ""
@@ -680,7 +680,7 @@ func (c *nativeRequest) release() {
 }
 
 func (s *nativeServer) authorize(ctx context.Context, token, clientAddr string, descriptor *enginepb.AthenaNativeDescriptor) (*pb.RequestAuthorizationResult, *enginepb.AthenaNativeInstructions, error) {
-	descriptor.Target = &enginepb.AthenaTarget{Region: s.target.config.region, DefaultWorkgroup: s.target.config.workgroup, DefaultCatalog: s.target.config.catalog, DefaultDatabase: s.target.config.database, Endpoint: s.target.endpoint, TargetBinding: s.target.binding}
+	descriptor.Target = &enginepb.AthenaTarget{Region: s.target.settings.region, DefaultWorkgroup: s.target.settings.workgroup, DefaultCatalog: s.target.settings.catalog, DefaultDatabase: s.target.settings.database, Endpoint: s.target.endpoint, TargetBinding: s.target.binding}
 	if proto.Size(descriptor) > 1<<20 {
 		return nil, nil, ErrBodyTooLarge
 	}

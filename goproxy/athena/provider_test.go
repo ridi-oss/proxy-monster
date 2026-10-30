@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ import (
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
+	"github.com/ridi-oss/proxy-monster/goproxy/config"
 )
 
 type endpointTransport struct {
@@ -52,7 +54,7 @@ func testTargetIn(t *testing.T, database string, handler http.HandlerFunc) *targ
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := targetConfig{region: "us-east-1", workgroup: "primary", catalog: "AwsDataCatalog", database: database, contextPath: ":memory:"}
+	cfg := settings{region: "us-east-1", workgroup: "primary", catalog: "AwsDataCatalog", database: database, contextPath: ":memory:"}
 	result, err := newTarget(context.Background(), cfg, aws.Config{
 		Region: cfg.region, Credentials: credentials.NewStaticCredentialsProvider("test-key", "test-secret", "test-session"),
 	}, endpointTransport{endpoint: endpoint, transport: server.Client().Transport})
@@ -64,26 +66,61 @@ func testTargetIn(t *testing.T, database string, handler http.HandlerFunc) *targ
 }
 
 func TestProviderConfiguration(t *testing.T) {
+	defaults := func(region string) Flags {
+		return Flags{Region: region, Workgroup: "primary", Catalog: "AwsDataCatalog", ContextPath: ":memory:", Database: "example"}
+	}
+	emptyWorkgroup := defaults("us-east-1")
+	emptyWorkgroup.Workgroup = ""
 	for _, tc := range []struct {
-		name  string
-		env   map[string]string
-		valid bool
+		name      string
+		flags     Flags
+		advertise string
+		valid     bool
 	}{
-		{"region from shared profile", nil, true},
-		{"defaults", map[string]string{"AWS_REGION": "us-east-1"}, true},
-		{"custom region", map[string]string{"PM_ATHENA_REGION": "cn-north-1"}, true},
-		{"endpoint injection", map[string]string{"AWS_REGION": "us-east-1.attacker.example"}, false},
-		{"empty scope", map[string]string{"AWS_REGION": "us-east-1", "PM_ATHENA_WORKGROUP": ""}, false},
-		{"http advertised", map[string]string{"AWS_REGION": "us-east-1", "PM_ADVERTISE_ADDR": "http://proxy.example"}, false},
-		{"https advertised is not host port", map[string]string{"AWS_REGION": "us-east-1", "PM_ADVERTISE_ADDR": "https://proxy.example:6443"}, false},
-		{"host port advertised", map[string]string{"AWS_REGION": "us-east-1", "PM_ADVERTISE_ADDR": "proxy.example:6443"}, true},
+		{"region from shared profile", defaults(""), "", true},
+		{"defaults", defaults("us-east-1"), "", true},
+		{"custom region", defaults("cn-north-1"), "", true},
+		{"endpoint injection", defaults("us-east-1.attacker.example"), "", false},
+		{"empty scope", emptyWorkgroup, "", false},
+		{"http advertised", defaults("us-east-1"), "http://proxy.example", false},
+		{"https advertised is not host port", defaults("us-east-1"), "https://proxy.example:6443", false},
+		{"host port advertised", defaults("us-east-1"), "proxy.example:6443", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := configure(func(key string) (string, bool) { value, ok := tc.env[key]; return value, ok })
+			_, err := newSettings(tc.flags, tc.advertise)
 			if (err == nil) != tc.valid {
-				t.Fatalf("configure error = %v; valid = %v", err, tc.valid)
+				t.Fatalf("newSettings error = %v; valid = %v", err, tc.valid)
 			}
 		})
+	}
+}
+
+func TestFlagsFromEnvironment(t *testing.T) {
+	parse := func(env map[string]string) Flags {
+		t.Helper()
+		for _, key := range []string{"PM_ATHENA_REGION", "AWS_REGION", "AWS_DEFAULT_REGION", "AWS_PROFILE", "PM_ATHENA_WORKGROUP",
+			"PM_ATHENA_DEFAULT_CATALOG", "PM_ATHENA_CONTEXT_PATH", "PM_TARGET_DB"} {
+			t.Setenv(key, "")
+			os.Unsetenv(key)
+		}
+		for key, value := range env {
+			t.Setenv(key, value)
+		}
+		var flags Flags
+		if _, err := config.Parse(&flags); err != nil {
+			t.Fatal(err)
+		}
+		return flags
+	}
+	if got, want := parse(nil), (Flags{Workgroup: "primary", Catalog: "AwsDataCatalog", ContextPath: ":memory:", Database: "acme"}); got != want {
+		t.Errorf("defaults = %+v, want %+v", got, want)
+	}
+	if got := parse(map[string]string{"AWS_DEFAULT_REGION": "ap-northeast-2"}); got.Region != "ap-northeast-2" {
+		t.Errorf("region from AWS_DEFAULT_REGION = %q", got.Region)
+	}
+	got := parse(map[string]string{"PM_ATHENA_REGION": "eu-west-1", "AWS_REGION": "us-east-1", "PM_ATHENA_WORKGROUP": "analysts"})
+	if got.Region != "eu-west-1" || got.Workgroup != "analysts" {
+		t.Errorf("flags = %+v", got)
 	}
 }
 

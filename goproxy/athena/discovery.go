@@ -10,7 +10,7 @@ import (
 )
 
 func (t *target) catalogs(ctx context.Context) ([]string, error) {
-	pages := awsa.NewListDataCatalogsPaginator(t.api, &awsa.ListDataCatalogsInput{WorkGroup: aws.String(t.config.workgroup)})
+	pages := awsa.NewListDataCatalogsPaginator(t.api, &awsa.ListDataCatalogsInput{WorkGroup: aws.String(t.settings.workgroup)})
 	seen := make(map[string]bool)
 	tokens := make(map[string]bool)
 	var names []string
@@ -36,7 +36,7 @@ func (t *target) catalogs(ctx context.Context) ([]string, error) {
 }
 
 func (t *target) databases(ctx context.Context, catalog string) ([]string, error) {
-	pages := awsa.NewListDatabasesPaginator(t.api, &awsa.ListDatabasesInput{CatalogName: aws.String(catalog), WorkGroup: aws.String(t.config.workgroup)})
+	pages := awsa.NewListDatabasesPaginator(t.api, &awsa.ListDatabasesInput{CatalogName: aws.String(catalog), WorkGroup: aws.String(t.settings.workgroup)})
 	seen := make(map[string]bool)
 	tokens := make(map[string]bool)
 	var names []string

@@ -9,23 +9,25 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsa "github.com/aws/aws-sdk-go-v2/service/athena"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
+	"github.com/ridi-oss/proxy-monster/goproxy/wire"
 )
 
 // target is one configured Athena datasource: the SDK client bound to the regional endpoint, the signer and
 // transport the forwarder uses, the STS-verified credential identity, the binding that ties cached contexts
 // to this exact target, and the context cache itself. Every AWS call the provider makes goes through it.
 type target struct {
-	config    targetConfig
-	api       *awsa.Client
-	endpoint  string
-	sign      SignRequest
-	transport http.RoundTripper
-	identity  *credentialIdentity
-	binding   []byte
-	contexts  *EnforcementContextCache
+	settings    settings
+	api         *awsa.Client
+	endpoint    string
+	sign        SignRequest
+	transport   http.RoundTripper
+	identity    *credentialIdentity
+	binding     []byte
+	generations wire.BackendGenerations
+	contexts    *EnforcementContextCache
 }
 
-func newTarget(ctx context.Context, cfg targetConfig, awsCfg aws.Config, transport http.RoundTripper) (*target, error) {
+func newTarget(ctx context.Context, cfg settings, awsCfg aws.Config, transport http.RoundTripper) (*target, error) {
 	endpoint, err := athenaEndpoint(ctx, cfg.region, awsCfg.BaseEndpoint)
 	if err != nil {
 		return nil, err
@@ -48,23 +50,23 @@ func newTarget(ctx context.Context, cfg targetConfig, awsCfg aws.Config, transpo
 	if err != nil {
 		return nil, err
 	}
-	return &target{config: cfg, api: api, endpoint: endpoint, sign: signAWS(identity, cfg.region), transport: transport, identity: identity, binding: identity.targetBinding(cfg, endpoint), contexts: contexts}, nil
+	return &target{settings: cfg, api: api, endpoint: endpoint, sign: signAWS(identity, cfg.region), transport: transport, identity: identity, binding: identity.targetBinding(cfg, endpoint), contexts: contexts}, nil
 }
 
 func (t *target) TargetInfo() string {
 	u, _ := url.Parse(t.endpoint)
-	return fmt.Sprintf("%s workgroup %s, catalog %s", u.Host, t.config.workgroup, t.config.catalog)
+	return fmt.Sprintf("%s workgroup %s, catalog %s", u.Host, t.settings.workgroup, t.settings.catalog)
 }
 
 // ConnectionInfo publishes what a client needs to reach this datasource: the HTTPS endpoint and the scope
 // (region, workgroup, catalog, database). The AWS profile never leaves the proxy.
 func (t *target) ConnectionInfo() *pb.ConnectionInfo {
 	endpoint := ""
-	if t.config.advertise != "" {
-		endpoint = "https://" + t.config.advertise
+	if t.settings.advertise != "" {
+		endpoint = "https://" + t.settings.advertise
 	}
 	return &pb.ConnectionInfo{Endpoint: endpoint, Properties: map[string]string{
-		"region": t.config.region, "workgroup": t.config.workgroup, "catalog": t.config.catalog, "database": t.config.database,
+		"region": t.settings.region, "workgroup": t.settings.workgroup, "catalog": t.settings.catalog, "database": t.settings.database,
 	}}
 }
 

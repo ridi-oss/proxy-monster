@@ -32,15 +32,15 @@ const (
 	serveExitWait = 1 * time.Second
 )
 
-// backendGeneration is a monotonic counter shared across every target-DB connection, wire or editor session; each
-// connection's command runner keys on its value to invalidate a stale schema fetch.
-var backendGeneration atomic.Uint64
+// BackendGenerations numbers a target's connections, wire or editor session, in opening order; the control
+// plane refuses a schema push whose generation is below the last one it accepted for that connection.
+type BackendGenerations struct{ last atomic.Uint64 }
 
-// NextBackendGeneration returns the next backend generation and whether it is within range. Out of range is
-// unreachable in practice (2^63 connections) and reported so the caller can fail closed rather than reuse 0.
-func NextBackendGeneration() (uint64, bool) {
-	g := backendGeneration.Add(1)
-	return g, g != 0 && g <= maxBackendGeneration
+// Next returns the next backend generation and whether it is within range. Out of range is unreachable in
+// practice (2^63 connections) and reported so the caller can fail closed rather than reuse 0.
+func (g *BackendGenerations) Next() (uint64, bool) {
+	n := g.last.Add(1)
+	return n, n != 0 && n <= maxBackendGeneration
 }
 
 // Server is a blocking goroutine-per-connection wire broker. It owns the connection lifecycle and the drain;

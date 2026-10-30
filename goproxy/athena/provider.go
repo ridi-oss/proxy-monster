@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"errors"
 	"net/http"
-	"os"
 	"time"
 
 	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
@@ -13,15 +12,19 @@ import (
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
-// Provider registers the Athena engine under PM_ENGINE=athena. OpenTarget reads the target scope from the
-// environment (PM_TARGET_DB is the default database) and pins the AWS identity; the target then serves the
-// Athena JSON API to clients and editor sessions.
-type Provider struct{}
+// Provider registers the Athena engine under PM_ENGINE=athena. OpenTarget scopes the target to Flags
+// (PM_TARGET_DB is the default database) and pins the AWS identity; the target then serves the Athena JSON
+// API to clients and editor sessions.
+type Provider struct {
+	Flags Flags
+	// AdvertiseAddr is the host:port clients reach this proxy's HTTPS endpoint at.
+	AdvertiseAddr string
+}
 
 func (Provider) Engine() *engines.Engine { return engines.Athena }
 
-func (Provider) OpenTarget() (spi.Target, error) {
-	cfg, err := configure(os.LookupEnv)
+func (p Provider) OpenTarget() (spi.Target, error) {
+	cfg, err := newSettings(p.Flags, p.AdvertiseAddr)
 	if err != nil {
 		return nil, err
 	}

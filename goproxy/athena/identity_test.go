@@ -35,7 +35,7 @@ func TestSTSIdentityVerifiedAtStartupAndCredentialRefresh(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := targetConfig{region: "us-east-1", workgroup: "primary", catalog: "AwsDataCatalog", database: "example"}
+	cfg := settings{region: "us-east-1", workgroup: "primary", catalog: "AwsDataCatalog", database: "example"}
 	binding := identity.targetBinding(cfg, "https://athena.us-east-1.amazonaws.com/")
 	for range 5 {
 		if _, err := identity.Retrieve(context.Background()); err != nil {

@@ -20,7 +20,7 @@ func (t *target) authorize(authz *spi.Authorizer, commandRunner *proxyCommandRun
 		ProbeSession: func() (spi.SessionSnapshot, error) {
 			return spi.SessionSnapshot{
 				CurrentCatalog: t.catalogIdentity(), Namespace: []string{t.databaseIdentity()},
-				SessionObservation: &enginepb.SessionObservation{Engine: &enginepb.SessionObservation_Athena{Athena: &enginepb.AthenaSqlContext{Workgroup: t.config.workgroup, ExecutionParameters: parameters, MaxRows: uint32(max(maxRows, 0))}}},
+				SessionObservation: &enginepb.SessionObservation{Engine: &enginepb.SessionObservation_Athena{Athena: &enginepb.AthenaSqlContext{Workgroup: t.settings.workgroup, ExecutionParameters: parameters, MaxRows: uint32(max(maxRows, 0))}}},
 			}, nil
 		},
 		Commands: commandRunner,

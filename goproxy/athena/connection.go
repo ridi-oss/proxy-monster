@@ -39,7 +39,7 @@ type connection struct {
 func (t *target) OpenConnection(_ context.Context, authz *spi.Authorizer, guard spi.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.Connection, error) {
 	// Every Athena query names the configured database, so an editor session cannot open anywhere else.
 	if defaultSchema != "" && defaultSchema != t.databaseIdentity() {
-		return nil, fmt.Errorf("athena editor session cannot open in database %q: the target is configured for %q", defaultSchema, t.config.database)
+		return nil, fmt.Errorf("athena editor session cannot open in database %q: the target is configured for %q", defaultSchema, t.settings.database)
 	}
 	commandRunner, err := t.newProxyCommandRunner(authz)
 	if err != nil {
@@ -112,8 +112,8 @@ func (c *connection) execute(query string, parameters []string, budget *relay.Ro
 		cancel()
 	}()
 	input := &awsa.StartQueryExecutionInput{
-		QueryString: aws.String(query), WorkGroup: aws.String(c.target.config.workgroup),
-		QueryExecutionContext: &types.QueryExecutionContext{Catalog: aws.String(c.target.config.catalog), Database: aws.String(c.target.config.database)},
+		QueryString: aws.String(query), WorkGroup: aws.String(c.target.settings.workgroup),
+		QueryExecutionContext: &types.QueryExecutionContext{Catalog: aws.String(c.target.settings.catalog), Database: aws.String(c.target.settings.database)},
 	}
 	if len(parameters) > 0 {
 		input.ExecutionParameters = parameters

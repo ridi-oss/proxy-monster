@@ -20,8 +20,8 @@ func TestServerCatalogIdentity(t *testing.T) {
 				catalog = fixture.editorConfig.Db
 			}
 			fake, client := editorStartFakeCP(t, editorSessionID)
-			open := editorOpen(fixture)
-			for _, command := range open.OnOpen {
+			open := editorOpenOn(fake, fixture)
+			for _, command := range fake.identity.OnOpen {
 				command.GetRefetch().Catalog = catalog
 			}
 			done := editorLaunchOpen(t, fake, client, fixture, open)

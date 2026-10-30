@@ -138,16 +138,12 @@ class ProxyEventsHub {
         name: String,
         sessionId: String,
         ephemeralToken: String,
-        connectionId: com.google.protobuf.ByteString,
-        onOpen: List<Refetch>,
         defaultSchema: String? = null,
     ): Dispatch {
         val event = cpEvent {
             openEditorSession = openEditorSession {
                 this.sessionId = sessionId
                 this.ephemeralToken = ephemeralToken
-                this.connectionId = connectionId
-                this.onOpen.addAll(onOpen.map { proxyCommand { refetch = it } })
                 if (defaultSchema != null) this.defaultSchema = defaultSchema
             }
         }

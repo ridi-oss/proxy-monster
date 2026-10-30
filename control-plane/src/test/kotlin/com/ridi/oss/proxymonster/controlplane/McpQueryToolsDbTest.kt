@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.controlplane.support.openEditorConnection
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
 import com.ridi.oss.proxymonster.controlplane.grpc.ControlPlaneGrpcService
 import com.ridi.oss.proxymonster.controlplane.grpc.GrpcServer
@@ -677,23 +678,25 @@ class McpQueryToolsDbTest {
         val token = token(principal, setOf("mcp:query"))
         try {
             DriverManager.getConnection(fx.targetJdbcUrl, fx.targetUser, fx.targetPassword).use { target ->
+                val connections = java.util.concurrent.ConcurrentHashMap<String, com.google.protobuf.ByteString>()
                 withFakeProxy({ _, statement, open ->
+                    val connectionId = connections.getOrPut(open.sessionId) { stub.openEditorConnection(open, fx.datasource.name) }
                     var response = stub.decide(decisionRequest {
                         this.token = open.ephemeralToken
                         datasourceName = fx.datasource.name
                         currentCatalog = fx.datasource.effectiveCatalog
-                        connectionId = open.connectionId
+                        this.connectionId = connectionId
                         this.sql = statement
                         searchPath.add(schema)
                     })
                     repeat(3) {
                         if (response.hasBeforeDecide()) {
-                            response.beforeDecide.commandsList.forEach { pcf.pushFromTarget(target, open.connectionId, it.refetch.schema) }
+                            response.beforeDecide.commandsList.forEach { pcf.pushFromTarget(target, connectionId, it.refetch.schema) }
                             response = stub.decide(decisionRequest {
                                 this.token = open.ephemeralToken
                                 datasourceName = fx.datasource.name
                                 currentCatalog = fx.datasource.effectiveCatalog
-                                connectionId = open.connectionId
+                                this.connectionId = connectionId
                                 this.sql = statement
                                 searchPath.add(schema)
                             })

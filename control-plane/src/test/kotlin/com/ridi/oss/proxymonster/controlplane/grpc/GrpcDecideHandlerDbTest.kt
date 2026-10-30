@@ -17,6 +17,7 @@ import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.controlplane.tokenHash
+import com.ridi.oss.proxymonster.grpc.ConnectionDoor
 import com.ridi.oss.proxymonster.grpc.ControlPlaneGrpcKt
 import com.ridi.oss.proxymonster.grpc.EnfAction
 import com.ridi.oss.proxymonster.grpc.decisionRequest
@@ -116,6 +117,21 @@ class GrpcDecideHandlerDbTest {
     @Test
     fun `openConnection rejects an unknown token UNAUTHENTICATED`() {
         assertEquals(Status.Code.UNAUTHENTICATED, statusOf { stub.openConnection(openConnectionRequest { token = "nope"; datasourceName = ds.name }) })
+    }
+
+    @Test
+    fun `an editor-door token opens only through the editor door, a login token only through the wire door`() = runBlocking {
+        val run = core.tokenStore.issue(TokenKind.APPROVER_EXEC, "grpc-user", listOf("analyst"), null, 600)
+        fun open(token: String, door: ConnectionDoor) = openConnectionRequest { this.token = token; datasourceName = ds.name; this.door = door }
+        val editor = core.tokenStore.issue(TokenKind.EDITOR, "grpc-user", emptyList(), null, 600)
+        val session = core.tokenStore.issue(TokenKind.SESSION, "grpc-user", emptyList(), null, 600)
+        for (wrongDoor in listOf(run.token to ConnectionDoor.CONNECTION_DOOR_WIRE, editor.token to ConnectionDoor.CONNECTION_DOOR_WIRE,
+            validToken to ConnectionDoor.CONNECTION_DOOR_EDITOR, session.token to ConnectionDoor.CONNECTION_DOOR_EDITOR)) {
+            assertEquals(Status.Code.UNAUTHENTICATED, statusOf { stub.openConnection(open(wrongDoor.first, wrongDoor.second)) }, wrongDoor.second.name)
+        }
+        val opened = stub.openConnection(open(run.token, ConnectionDoor.CONNECTION_DOOR_EDITOR))
+        assertEquals("grpc-user", opened.principal)
+        assertEquals(16, opened.connectionId.size())
     }
 
     @Test

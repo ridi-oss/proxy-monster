@@ -211,11 +211,11 @@ func identityFromWire(id *pb.WireIdentity) (spi.Identity, error) {
 
 // OpenConnection authenticates the session-open token through the control plane. ANY failure, including an
 // UNAUTHENTICATED status or an empty response, returns an error so the wire broker fails closed.
-func (c *Client) OpenConnection(token, clientAddr string) (spi.Identity, error) {
+func (c *Client) OpenConnection(token, clientAddr string, door pb.ConnectionDoor) (spi.Identity, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), rpcDeadline)
 	defer cancel()
 
-	resp, err := c.stub.OpenConnection(c.outCtx(ctx), &pb.OpenConnectionRequest{Token: token, DatasourceName: c.datasourceName, ClientAddr: clientAddr})
+	resp, err := c.stub.OpenConnection(c.outCtx(ctx), &pb.OpenConnectionRequest{Token: token, DatasourceName: c.datasourceName, ClientAddr: clientAddr, Door: door})
 	if err != nil {
 		if st, ok := status.FromError(err); ok {
 			msg := st.Message()
@@ -528,7 +528,7 @@ func (c *Client) CloseConnection(connectionID []byte) error {
 // plane sees a detach immediately followed by an attach.
 func (c *Client) StreamEvents(
 	onRefresh func(),
-	onOpenEditor func(*pb.OpenEditorSession, error),
+	onOpenEditor func(*pb.OpenEditorSession),
 	onOpenTableDetail func(sessionID string, table *enginepb.ObjectRef),
 ) error {
 	timings := defaultEventLoopTimings()
@@ -550,7 +550,7 @@ func (c *Client) streamEvents(
 	parent context.Context,
 	maxAge time.Duration,
 	onRefresh func(),
-	onOpenEditor func(*pb.OpenEditorSession, error),
+	onOpenEditor func(*pb.OpenEditorSession),
 	onOpenTableDetail func(sessionID string, table *enginepb.ObjectRef),
 ) error {
 	ctx, cancel := context.WithTimeout(c.outCtx(parent), maxAge)
@@ -584,9 +584,7 @@ func (c *Client) streamEvents(
 		case ev.GetRefreshCatalog() != nil:
 			onRefresh()
 		case ev.GetOpenEditorSession() != nil:
-			e := ev.GetOpenEditorSession()
-			_, mapErr := commandsFromWire(e.GetOnOpen())
-			onOpenEditor(e, mapErr)
+			onOpenEditor(ev.GetOpenEditorSession())
 		case ev.GetOpenTableDetailChannel() != nil:
 			t := ev.GetOpenTableDetailChannel()
 			onOpenTableDetail(t.GetSessionId(), &enginepb.ObjectRef{Catalog: t.GetCatalog(), Schema: t.GetSchema(), Table: t.GetTable()})
@@ -611,7 +609,7 @@ func (c *Client) RunEventsLoop(
 	ctx context.Context,
 	resync func(),
 	onRefresh func(),
-	onOpenEditor func(*pb.OpenEditorSession, error),
+	onOpenEditor func(*pb.OpenEditorSession),
 	onOpenTableDetail func(sessionID string, table *enginepb.ObjectRef),
 ) error {
 	return c.runEventsLoop(ctx, defaultEventLoopTimings(), resync, onRefresh, onOpenEditor, onOpenTableDetail)
@@ -622,7 +620,7 @@ func (c *Client) runEventsLoop(
 	timings eventLoopTimings,
 	resync func(),
 	onRefresh func(),
-	onOpenEditor func(*pb.OpenEditorSession, error),
+	onOpenEditor func(*pb.OpenEditorSession),
 	onOpenTableDetail func(sessionID string, table *enginepb.ObjectRef),
 ) error {
 	for {

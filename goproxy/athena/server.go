@@ -287,7 +287,7 @@ func (c *nativeRequest) admitSubmission(envelope *Envelope) (*Envelope, error) {
 		return nil, err
 	}
 	// The control plane pinned the scope: any other workgroup or database was already a scope violation.
-	authz, identity, err := spi.Authenticate(c.server.client, c.token, c.clientAddr)
+	authz, identity, err := spi.Authenticate(c.server.client, c.token, c.clientAddr, pb.ConnectionDoor_CONNECTION_DOOR_WIRE)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrUnauthorized, err)
 	}

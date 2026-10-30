@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgproto3"
+	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
 )
@@ -166,7 +167,7 @@ startupComplete:
 		return
 	}
 
-	authz, identity, err := spi.Authenticate(s.client, password.Password, rawClientConn.RemoteAddr().String())
+	authz, identity, err := spi.Authenticate(s.client, password.Password, rawClientConn.RemoteAddr().String(), pb.ConnectionDoor_CONNECTION_DOOR_WIRE)
 	if err != nil {
 		_ = sendError(client, "FATAL", "28000", "proxy-monster: invalid or expired token", false, 0)
 		return

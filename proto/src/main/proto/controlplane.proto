@@ -214,6 +214,14 @@ message OpenConnectionRequest {
   string token = 1;
   string datasource_name = 2;
   string client_addr = 3;   // end-client address, for the audit record
+  ConnectionDoor door = 4;
+}
+
+// How a connection reached goproxy, which decides the token kinds the control plane accepts for it: a native
+// client may open only with a login token, so an editor-door token leaked out of the proxy cannot open a psql session.
+enum ConnectionDoor {
+  CONNECTION_DOOR_WIRE = 0;
+  CONNECTION_DOOR_EDITOR = 1;
 }
 message WireIdentity {
   string principal = 1;
@@ -389,8 +397,7 @@ message Draining {}
 message OpenEditorSession {
   string session_id = 1;
   string ephemeral_token = 2;
-  bytes connection_id = 3;             // control-plane-minted for the editor session
-  repeated ProxyCommand on_open = 4;
+  reserved 3, 4; // were connection_id and on_open; goproxy opens the connection with OpenConnection
   string default_schema = 5;           // the connection opens in this schema; empty keeps the target's default
 }
 // The request selectors ride the control-plane's Events response; the proxy then dials TableDetailExec

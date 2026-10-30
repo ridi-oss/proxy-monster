@@ -4,7 +4,6 @@ package editor
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"sync/atomic"
 	"time"
@@ -59,7 +58,7 @@ func NewServer(client spi.ControlPlane, target spi.Target, queryTimeout time.Dur
 // statement is in flight, Serve returns so the control-plane session closes and the editor re-homes to the
 // replacement — mirroring how the wire server lets an idle connection go on drain. A statement already
 // executing is never interrupted; the drain is only observed between statements. A nil channel never fires.
-func (s *Server) Serve(req *pb.OpenEditorSession, mapErr error, draining <-chan struct{}) {
+func (s *Server) Serve(req *pb.OpenEditorSession, draining <-chan struct{}) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	stream, err := s.client.OpenEditorStream(ctx)
@@ -69,7 +68,7 @@ func (s *Server) Serve(req *pb.OpenEditorSession, mapErr error, draining <-chan 
 	}
 	var messages <-chan *pb.CpEditorMsg
 	defer func() { gracefulCloseStream(ctx, stream, messages) }()
-	// Tell the control-plane which session this stream serves immediately — before validating the open or the
+	// Tell the control-plane which session this stream serves immediately — before admitting the connection or the
 	// (~26s) target-DB open. The session id is the stream's first frame, so the control-plane attaches at
 	// once and EVERY failure below is attributable to this editor session rather than an unmatched stream it must wait
 	// out. EditorProgress heartbeats keep its no-progress bound alive through the open; EditorServing (below) then
@@ -79,16 +78,12 @@ func (s *Server) Serve(req *pb.OpenEditorSession, mapErr error, draining <-chan 
 		return
 	}
 
-	if mapErr != nil || len(req.GetConnectionId()) != 16 {
-		if mapErr == nil {
-			mapErr = fmt.Errorf("connection_id is %d bytes, want 16", len(req.GetConnectionId()))
-		}
-		_ = sendError(stream, "invalid editor-session open: "+mapErr.Error())
-		if len(req.GetConnectionId()) == 16 {
-			s.closeConnection(req.GetSessionId(), req.GetConnectionId())
-		}
+	authz, identity, err := spi.Authenticate(s.client, req.GetEphemeralToken(), "", pb.ConnectionDoor_CONNECTION_DOOR_EDITOR)
+	if err != nil {
+		_ = sendError(stream, "editor session admission failed: "+err.Error())
 		return
 	}
+	defer authz.Close()
 
 	var connection spi.Connection
 	guard := func(exec func() error) error {
@@ -118,15 +113,12 @@ func (s *Server) Serve(req *pb.OpenEditorSession, mapErr error, draining <-chan 
 	// an editor session nobody is waiting for.
 	messages = receiveEditorMessages(ctx, stream)
 	var namespace *enginepb.Namespace
-	connection, namespace = s.openTargetDb(ctx, stream, messages, draining, req, guard)
+	connection, namespace = s.openTargetDb(ctx, stream, messages, draining, req, authz, identity.OnOpen, guard)
 	if connection == nil {
-		// The open failed (EditorError already sent) or was aborted by an early EditorClose / drain. openTargetDb owns
-		// the cleanup: a failure releases the connection before returning, while an abort reaps the cancelled
-		// open and releases the connection in the background (see abort) so the drain/close returns at once.
+		// The open failed (EditorError already sent) or was aborted by an early EditorClose / drain.
 		return
 	}
 	defer connection.Close()
-	defer s.closeConnection(req.GetSessionId(), req.GetConnectionId())
 	if stream.Send(&pb.ProxyEditorMsg{Kind: &pb.ProxyEditorMsg_Serving{Serving: &pb.EditorServing{Namespace: namespace}}}) != nil {
 		return
 	}
@@ -199,8 +191,8 @@ func (s *Server) Serve(req *pb.OpenEditorSession, mapErr error, draining <-chan 
 
 // openTargetDb dials + authenticates the target DB and runs the on-open catalog fetch, while keeping the editor stream
 // alive with EditorProgress heartbeats and concurrently watching the inbound and the drain. It returns the ready
-// session, or nil if the open failed or was aborted; on every nil return it has already released the reserved
-// connection (and, for a genuine target-DB failure, sent the EditorError), so the caller only sends EditorServing.
+// session, or nil if the open failed or was aborted (for a genuine target-DB failure, after sending the
+// EditorError), so the caller only sends EditorServing.
 //
 // The open runs in its own goroutine under a cancellable child context — the ONLY writer to that context —
 // while this loop is the ONLY sender on the stream (the heartbeat), so neither the gRPC stream nor the open
@@ -210,7 +202,7 @@ func (s *Server) Serve(req *pb.OpenEditorSession, mapErr error, draining <-chan 
 // the open is reaped in the background (see abort). A close or drain that lands just as the open completes
 // still fails the open (the post-completion re-check) so a live session is never installed on an abandoned
 // editor session or a departing proxy — the editor re-homes to the replacement rather than onto a stream about to die.
-func (s *Server) openTargetDb(ctx context.Context, stream editorStream, messages <-chan *pb.CpEditorMsg, draining <-chan struct{}, req *pb.OpenEditorSession, guard spi.ExecGuard) (spi.Connection, *enginepb.Namespace) {
+func (s *Server) openTargetDb(ctx context.Context, stream editorStream, messages <-chan *pb.CpEditorMsg, draining <-chan struct{}, req *pb.OpenEditorSession, authz *spi.Authorizer, onOpen []*pb.ProxyCommand, guard spi.ExecGuard) (spi.Connection, *enginepb.Namespace) {
 	openCtx, cancelOpen := context.WithCancel(ctx)
 	defer cancelOpen()
 
@@ -222,12 +214,12 @@ func (s *Server) openTargetDb(ctx context.Context, stream editorStream, messages
 	}
 	done := make(chan openResult, 1)
 	go func() {
-		connection, err := s.target.OpenConnection(openCtx, spi.NewAuthorizer(s.client, req.GetEphemeralToken(), req.GetConnectionId()), guard, s.readTimeout, req.GetDefaultSchema())
+		connection, err := s.target.OpenConnection(openCtx, authz, guard, s.readTimeout, req.GetDefaultSchema())
 		if err != nil {
 			done <- openResult{err: err, errWhat: "target-DB connection failed: "}
 			return
 		}
-		if err := connection.OnOpen(openCtx, req.GetOnOpen()); err != nil {
+		if err := connection.OnOpen(openCtx, onOpen); err != nil {
 			done <- openResult{connection: connection, err: err, errWhat: "editor session catalog initialization failed: "}
 			return
 		}
@@ -235,18 +227,15 @@ func (s *Server) openTargetDb(ctx context.Context, stream editorStream, messages
 		done <- openResult{connection: connection, namespace: connectionNamespace(connection, nil)}
 	}()
 
-	// abort cancels the in-flight open and, in the background, reaps it and releases the reserved connection.
-	// The cancel unwinds the target DB dial/auth/catalog reads at once; a catalog push RPC to the control-plane
-	// is not cancellable here and runs to its own deadline, so the reap runs off the hot path rather than
-	// making the drain/close wait out that deadline (and the follow-on connection-release RPC).
+	// abort cancels the in-flight open and reaps it in the background. The cancel unwinds the target DB
+	// dial/auth/catalog reads at once; a catalog push RPC to the control-plane is not cancellable here and runs
+	// to its own deadline, so the reap runs off the hot path rather than making the drain/close wait it out.
 	abort := func() (spi.Connection, *enginepb.Namespace) {
 		cancelOpen()
 		go func() {
-			res := <-done
-			if res.connection != nil {
+			if res := <-done; res.connection != nil {
 				_ = res.connection.Close()
 			}
-			s.closeConnection(req.GetSessionId(), req.GetConnectionId())
 		}()
 		return nil, nil
 	}
@@ -261,7 +250,6 @@ func (s *Server) openTargetDb(ctx context.Context, stream editorStream, messages
 				if res.connection != nil {
 					_ = res.connection.Close()
 				}
-				s.closeConnection(req.GetSessionId(), req.GetConnectionId())
 				return nil, nil
 			}
 			// The open finished, but a close or drain that landed during it must not put a live session on an
@@ -269,7 +257,6 @@ func (s *Server) openTargetDb(ctx context.Context, stream editorStream, messages
 			// push in flight), so this cleanup is synchronous.
 			if abandonedDuringOpen(messages, draining) {
 				_ = res.connection.Close()
-				s.closeConnection(req.GetSessionId(), req.GetConnectionId())
 				return nil, nil
 			}
 			return res.connection, res.namespace
@@ -339,12 +326,6 @@ func receiveEditorMessages(ctx context.Context, stream editorStream) <-chan *pb.
 func (s *Server) cancelConnection(connection spi.Connection) {
 	if err := connection.Cancel(); err != nil {
 		slog.Warn("editor query cancellation failed", "error", err)
-	}
-}
-
-func (s *Server) closeConnection(sessionID string, connectionID []byte) {
-	if err := s.client.CloseConnection(connectionID); err != nil {
-		slog.Warn("editor connection close failed", "session_id", sessionID, "error", err)
 	}
 }
 

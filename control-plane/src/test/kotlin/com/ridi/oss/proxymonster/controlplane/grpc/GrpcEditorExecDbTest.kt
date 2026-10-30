@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane.grpc
 
+import com.ridi.oss.proxymonster.controlplane.support.openEditorConnection
 import com.ridi.oss.proxymonster.controlplane.ControlPlaneCore
 import com.ridi.oss.proxymonster.controlplane.effectiveCatalog
 import com.ridi.oss.proxymonster.controlplane.Datasource
@@ -1055,14 +1056,14 @@ class GrpcEditorExecDbTest {
             // ...and a REAL gRPC decide against that live token sees it: the ip-gated connect permit fires, so
             // the deny moves off the connect gate to the statement-kind gate. An impl that registered IPs only
             // for EDITOR would leave connect denied here — the exact regression a manual-insert test can't catch.
-            // The OpenEditorSession carries the editor connection identity minted by the CP.
+            val connectionId = stub.openEditorConnection(open, datasource.name)
             val decideResponse = stub.decide(
                 decisionRequest {
                     token = ephemeralToken
                     datasourceName = datasource.name
                     currentCatalog = datasource.effectiveCatalog
                     currentCatalog = datasource.effectiveCatalog
-                    connectionId = open.connectionId
+                    this.connectionId = connectionId
                     sql = "select 1 from t"
                 },
             )

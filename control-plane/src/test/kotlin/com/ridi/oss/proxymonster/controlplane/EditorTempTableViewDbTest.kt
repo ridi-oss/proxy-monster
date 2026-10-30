@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.controlplane.support.openEditorConnection
 import com.ridi.oss.proxymonster.controlplane.grpc.CONTROL_PROTOCOL_VERSION
 import com.ridi.oss.proxymonster.controlplane.grpc.ControlPlaneGrpcService
 import com.ridi.oss.proxymonster.controlplane.grpc.GrpcServer
@@ -177,12 +178,13 @@ class EditorTempTableViewDbTest {
                 withTimeout(10_000) { while (ds.name !in core.proxyEventsHub.attached()) delay(20) }
                 val sessionId = async { editorExecService.openSession(principal, ds) }
                 val open = withTimeout(10_000) { event.await() }.openEditorSession
+                val connectionId = stub.openEditorConnection(open, ds.name)
                 val verdicts = CopyOnWriteArrayList<WireEnfAction>()
                 val out = KChannel<ProxyEditorMsg>(KChannel.UNLIMITED)
                 val proxy = async {
                     stub.editorExec(out.receiveAsFlow()).collect { control ->
                         when {
-                            control.hasQuery() -> serve(held, open.ephemeralToken, open.connectionId, control.query.sql, out, verdicts)
+                            control.hasQuery() -> serve(held, open.ephemeralToken, connectionId, control.query.sql, out, verdicts)
                             control.hasClose() -> out.close()
                         }
                     }

@@ -56,10 +56,10 @@ func NewAuthorizer(client ControlPlane, token string, connectionID []byte) *Auth
 	return &Authorizer{client: client, token: token, connectionID: append([]byte(nil), connectionID...), nsDirty: true}
 }
 
-// Authenticate validates a wire client's token and opens the Authorizer for the connection it opened. The
+// Authenticate opens a connection on the control plane with a client's token and returns its Authorizer. The
 // caller closes the connection with Close.
-func Authenticate(client ControlPlane, token, clientAddr string) (*Authorizer, Identity, error) {
-	identity, err := client.OpenConnection(token, clientAddr)
+func Authenticate(client ControlPlane, token, clientAddr string, door pb.ConnectionDoor) (*Authorizer, Identity, error) {
+	identity, err := client.OpenConnection(token, clientAddr, door)
 	if err != nil {
 		return nil, Identity{}, err
 	}

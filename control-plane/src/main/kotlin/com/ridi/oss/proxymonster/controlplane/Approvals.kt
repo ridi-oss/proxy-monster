@@ -552,7 +552,6 @@ internal suspend fun runApprovedTask(
             taskId = id,
             preflight = { store.meta(id)?.status == "RUNNING" },
             exchangeTimeoutMs = config.queryExchangeTimeoutMs,
-            namespaces = defaultSchema?.let { listOf(it) },
             defaultSchema = defaultSchema,
             statementAt = { ordinal ->
                 if (ordinal == 0) statements[0].sql else store.startNextRun(id, executor)?.sql

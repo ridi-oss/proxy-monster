@@ -168,13 +168,13 @@ class EditorTaskService(
                 "query.no_proxy_attached"
             } catch (_: ProxyStreamWedgedException) {
                 "query.proxy_stream_wedged"
-            } catch (_: ProxyRunTimeoutException) {
+            } catch (_: ProxyEditorTimeoutException) {
                 "query.proxy_timeout"
-            } catch (e: TargetDbRunException) {
+            } catch (e: TargetDbEditorException) {
                 // The target DB's own error for the failed statement, stored encrypted and re-gated per viewer.
                 diagnostic = e.toDiagnostic()
                 "approval.query_failed"
-            } catch (_: ProxyRunException) {
+            } catch (_: ProxyEditorException) {
                 "approval.query_failed"
             } catch (t: Throwable) {
                 log.error("editor task execution failed task=${task.id}", t)

@@ -11,10 +11,10 @@ import com.ridi.oss.proxymonster.controlplane.EditorExecService
 import com.ridi.oss.proxymonster.grpc.EnfAction
 import com.ridi.oss.proxymonster.controlplane.NoProxyAttachedException
 import com.ridi.oss.proxymonster.controlplane.PendingSession
-import com.ridi.oss.proxymonster.controlplane.ProxyRunException
-import com.ridi.oss.proxymonster.controlplane.ProxyRunTimeoutException
+import com.ridi.oss.proxymonster.controlplane.ProxyEditorException
+import com.ridi.oss.proxymonster.controlplane.ProxyEditorTimeoutException
 import com.ridi.oss.proxymonster.controlplane.QueryResponse
-import com.ridi.oss.proxymonster.controlplane.TargetDbRunException
+import com.ridi.oss.proxymonster.controlplane.TargetDbEditorException
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
@@ -336,12 +336,12 @@ class GrpcEditorExecDbTest {
             requests.send(proxyEditorMsg { error = editorError { message = "target DB disconnected" } })
         }.exceptionOrNull()
 
-        assertIs<ProxyRunException>(failure)
+        assertIs<ProxyEditorException>(failure)
         assertEquals("target DB disconnected", failure.message)
     }
 
     @Test
-    fun `a post-serving EditorError tagged target_db_error becomes a surfaceable TargetDbRunException`() = runBlocking {
+    fun `a post-serving EditorError tagged target_db_error becomes a surfaceable TargetDbEditorException`() = runBlocking {
         val failure = exchange("select from a missing table") { _, requests ->
             requests.send(proxyEditorMsg { decision = editorDecision { decision = WireEnfAction.ALLOW } })
             requests.send(
@@ -358,7 +358,7 @@ class GrpcEditorExecDbTest {
         // A tagged target-DB statement ERR that ran under a recorded ALLOW decision is the one provenance the
         // CP may carry into error_detail — its raw form (raw_message) for a full reader, the redacted `message`
         // for a masked viewer.
-        val tdbErr = assertIs<TargetDbRunException>(failure)
+        val tdbErr = assertIs<TargetDbEditorException>(failure)
         assertEquals("ERROR: relation \"nope\" does not exist", tdbErr.message, "raw text rides on the exception message")
         assertEquals("ERROR: 42P01 undefined_table", tdbErr.redactedMessage, "the value-free form is the redacted field")
         assertEquals(tdbErr.message, tdbErr.decidedMessage, "a decision that did not sanitize releases the raw form")
@@ -392,7 +392,7 @@ class GrpcEditorExecDbTest {
             )
         }.exceptionOrNull()
 
-        val tdbErr = assertIs<TargetDbRunException>(failure)
+        val tdbErr = assertIs<TargetDbEditorException>(failure)
         assertEquals(tdbErr.redactedMessage, tdbErr.decidedMessage, "a sanitizing decision releases the redacted form")
     }
 
@@ -413,23 +413,23 @@ class GrpcEditorExecDbTest {
             )
         }.exceptionOrNull()
 
-        assertIs<ProxyRunException>(failure)
-        assertFalse(failure is TargetDbRunException, "a target ERR with no decision must not become surfaceable")
+        assertIs<ProxyEditorException>(failure)
+        assertFalse(failure is TargetDbEditorException, "a target ERR with no decision must not become surfaceable")
         assertFalse(failure.message!!.contains("nope"), "the raw backend text must not surface without a decision")
         assertEquals("ERROR: 42P01 undefined_table", failure.message, "only the proxy's redacted form")
     }
 
     @Test
-    fun `a post-serving EditorError without target_db_error stays a generic ProxyRunException`() = runBlocking {
+    fun `a post-serving EditorError without target_db_error stays a generic ProxyEditorException`() = runBlocking {
         // A decode/decision/mask-binding failure the proxy also reports post-serving — no flag set.
         val failure = exchange("select 1") { _, requests ->
             requests.send(proxyEditorMsg { error = editorError { message = "decision failed: analyzer unavailable" } })
         }.exceptionOrNull()
 
-        assertIs<ProxyRunException>(failure)
+        assertIs<ProxyEditorException>(failure)
         assertFalse(
-            failure is TargetDbRunException,
-            "a non-target post-serving failure must never be promoted to a TargetDbRunException",
+            failure is TargetDbEditorException,
+            "a non-target post-serving failure must never be promoted to a TargetDbEditorException",
         )
         assertEquals("decision failed: analyzer unavailable", failure.message)
     }
@@ -462,7 +462,7 @@ class GrpcEditorExecDbTest {
 
             assertEquals("timeout-user", core.tokenStore.resolve(open.ephemeralToken)?.principal)
             val failure = withTimeout(15_000) { result.await() }.exceptionOrNull()
-            assertIs<ProxyRunTimeoutException>(failure)
+            assertIs<ProxyEditorTimeoutException>(failure)
             assertNull(core.tokenStore.resolve(open.ephemeralToken), "dial timeout revokes the ephemeral token")
             assertEquals(0, activeEditorTokens("timeout-user"))
             awaitUntil("Events stream detached") { datasource.name !in core.proxyEventsHub.attached() }
@@ -486,7 +486,7 @@ class GrpcEditorExecDbTest {
             proxyRequests.close()
 
             val failure = withTimeout(5_000) { result.await() }.exceptionOrNull()
-            assertIs<ProxyRunException>(failure)
+            assertIs<ProxyEditorException>(failure)
             assertEquals(0, activeEditorTokens("cut-user"), "a target-DB open cut before serving must revoke its token")
             withTimeout(5_000) { proxy.await() }
         }
@@ -510,7 +510,7 @@ class GrpcEditorExecDbTest {
             proxyRequests.close()
 
             val failure = withTimeout(5_000) { opened.await() }.exceptionOrNull()
-            assertIs<ProxyRunException>(failure)
+            assertIs<ProxyEditorException>(failure)
             assertEquals(
                 0, activeEditorTokens("cut-session-user"),
                 "a cut openSession target-DB open must revoke its session token",
@@ -537,7 +537,7 @@ class GrpcEditorExecDbTest {
             proxyRequests.send(proxyEditorMsg { sessionReady = editorReady { sessionId = open.sessionId } })
 
             val failure = withTimeout(5_000) { result.await() }.exceptionOrNull()
-            assertIs<ProxyRunTimeoutException>(failure)
+            assertIs<ProxyEditorTimeoutException>(failure)
             assertEquals(0, activeEditorTokens("stall-user"), "a stalled target-DB open must revoke its token")
             proxyRequests.close()
             withTimeout(5_000) { proxy.await() }
@@ -598,10 +598,14 @@ class GrpcEditorExecDbTest {
             proxyRequests.send(proxyEditorMsg { error = editorError { message = "target-DB connection failed: connection refused" } })
 
             val failure = withTimeout(5_000) { result.await() }.exceptionOrNull()
-            assertIs<ProxyRunException>(failure)
+            assertIs<ProxyEditorException>(failure)
             // An open failure carries no target_db_error flag: its text can echo proxy-internal detail, so it
-            // must stay a generic ProxyRunException and never be promoted to a surfaceable TargetDbRunException.
-            assertFalse(failure is TargetDbRunException, "an open failure must never become a TargetDbRunException")
+            // must stay a generic ProxyEditorException and never be promoted to a surfaceable
+            // TargetDbEditorException.
+            assertFalse(
+                failure is TargetDbEditorException,
+                "an open failure must never become a TargetDbEditorException",
+            )
             assertEquals("target-DB connection failed: connection refused", failure.message)
             assertEquals(0, activeEditorTokens("open-err-user"), "a failed target-DB open must revoke its token")
             proxyRequests.close()
@@ -633,7 +637,7 @@ class GrpcEditorExecDbTest {
             }
 
             val failure = withTimeout(5_000) { result.await() }.exceptionOrNull()
-            assertIs<ProxyRunTimeoutException>(failure)
+            assertIs<ProxyEditorTimeoutException>(failure)
             assertEquals(0, activeEditorTokens("wedged-user"), "a ceiling-timed-out open must revoke its token")
             heartbeat.cancel()
             proxyRequests.close()
@@ -662,7 +666,7 @@ class GrpcEditorExecDbTest {
                 }
             }
 
-            assertIs<ProxyRunTimeoutException>(withTimeout(5_000) { result.await() }.exceptionOrNull())
+            assertIs<ProxyEditorTimeoutException>(withTimeout(5_000) { result.await() }.exceptionOrNull())
             // The handler must end on abandon (run() closes inbound), so the proxy's stream completes WITHOUT
             // the test closing proxyRequests. Without that teardown the handler keeps forwarding heartbeats and
             // this awaits forever.
@@ -847,7 +851,7 @@ class GrpcEditorExecDbTest {
             assertEquals(listOf(listOf("select 2")), r2.rows)
 
             // A different principal cannot use someone else's session.
-            assertIs<ProxyRunException>(
+            assertIs<ProxyEditorException>(
                 runCatching { service.runOnSession(sessionId, "other-user", "select 3", 500, requesterIp = "203.0.113.60") }.exceptionOrNull(),
             )
 

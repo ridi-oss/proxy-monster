@@ -74,11 +74,11 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 
-// The run handler bounds only the wait for the FIRST frame (the run's id): a proxy that opens a stream but
-// never identifies its run, or never closes, must not park the handler forever. Once a stream is attached to
-// its run there is no fixed overall cap — its lifetime is the run's or session's own (see editorExec). This
+// The editor handler bounds only the wait for the FIRST frame (the session id): a proxy that opens a stream but
+// never identifies its session, or never closes, must not park the handler forever. Once a stream is attached to
+// its session there is no fixed overall cap — its lifetime is the session's own (see editorExec). This
 // backstop sits above EDITOR_DIALBACK_TIMEOUT_MS so the caller's own dial-back timeout reports first on a live
-// run; it only reaps a handler the caller has already given up on.
+// session; it only reaps a handler the caller has already given up on.
 internal const val EDITOR_FIRST_FRAME_TIMEOUT_MS = 30_000L
 private const val TABLE_DETAIL_STREAM_TIMEOUT_MS = 60_000L
 // The proxy<->control-plane wire-protocol version this control-plane speaks, exchanged at Register so a
@@ -123,7 +123,7 @@ internal fun editorTempOverlay(channel: Channel, engine: Engine, temps: List<Tem
  * The hot path is [openConnection] (session handshake) and [decide] (per-query
  * enforcement, re-validating the raw token EVERY call so a revoked token or deprovisioned principal
  * loses access on the next query, not at session end). [register]/[pushCatalog] keep the datasource
- * catalog current and [events] carries the liveness + refresh/run push stream.
+ * catalog current and [events] carries the liveness + refresh/editor-session push stream.
  */
 class ControlPlaneGrpcService(
     private val core: ControlPlaneCore,
@@ -422,7 +422,7 @@ class ControlPlaneGrpcService(
         var sessionId: String? = null
         var attached: Attached? = null
         // Bound ONLY the wait for the first frame. There is deliberately no overall stream cap: once the
-        // stream is attached to its run, its lifetime is the run's or session's own — the caller's EditorClose
+        // stream is attached to its session, its lifetime is the session's own — the caller's EditorClose
         // for a one-shot run, and the idle sweep / closeSession / token expiry for a persistent editor session.
         // A fixed overall cap here would silently cut a live, actively-used session short.
         val firstFrameTimer = launch {
@@ -452,7 +452,7 @@ class ControlPlaneGrpcService(
                         ?: throw StatusException(
                             Status.NOT_FOUND.withDescription("unknown or already-claimed editor session '$id'"),
                         )
-                    // Attached — the run/session lifecycle governs the stream from here; drop the first-frame bound.
+                    // Attached — the session lifecycle governs the stream from here; drop the first-frame bound.
                     firstFrameTimer.cancel()
                 } else {
                     current.inbound.send(message)
@@ -466,7 +466,7 @@ class ControlPlaneGrpcService(
                 )
             }
         } catch (e: ClosedSendChannelException) {
-            // The run consumer closed its inbound while the proxy was still streaming: the run ended
+            // The session consumer closed its inbound while the proxy was still streaming: the session ended
             // (served-and-done or abandoned at the open ceiling) but this proxy has not closed its side.
             // That is a normal end of the stream, not a fault — complete it so the proxy sees a clean
             // close rather than an UNKNOWN status.

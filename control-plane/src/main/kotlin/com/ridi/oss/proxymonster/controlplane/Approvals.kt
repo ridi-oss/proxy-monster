@@ -593,13 +593,13 @@ internal suspend fun runApprovedTask(
         null
     } catch (_: NoProxyAttachedException) {
         "query.no_proxy_attached"
-    } catch (_: ProxyRunTimeoutException) {
+    } catch (_: ProxyEditorTimeoutException) {
         "query.proxy_timeout"
-    } catch (e: TargetDbRunException) {
+    } catch (e: TargetDbEditorException) {
         // Must survive the batch walk rather than collapsing into a bare failure code.
         diagnostic = e.toDiagnostic()
         "approval.query_failed"
-    } catch (_: ProxyRunException) {
+    } catch (_: ProxyEditorException) {
         "approval.query_failed"
     } catch (t: Throwable) {
         log.error("query approval execution failed request=$id", t)

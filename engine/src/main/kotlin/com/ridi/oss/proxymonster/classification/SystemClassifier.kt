@@ -94,20 +94,27 @@ class SystemClassifier(val manifest: SystemManifest) {
     }
 
     /**
-     * Classify an UNQUALIFIED function call (facts-emission.md). sqlglot drops a function's
-     * schema qualifier at parse time — `pg_catalog.pg_read_file`, `mysql.rds_kill`, and a bare
-     * `pg_read_file` are indistinguishable post-parse — so the analyzer can only emit the bare name. We
-     * resolve it against the cross-schema (`*`) rules AND every system/logical schema the manifest governs,
-     * taking the strongest tag. Unlike [classifyFunction] this never adds the CATALOG default: a bare name
+     * Classify an UNQUALIFIED function name (facts-emission.md): a MySQL/Athena builtin, or a call
+     * recovered from an unanalyzable statement with its qualifier lost. We resolve it against the
+     * cross-schema (`*`) rules AND every system/logical schema the manifest governs, taking the strongest
+     * tag. Unlike [classifyFunction] this never adds the CATALOG default: a bare name
      * that matches no dangerous rule is an ordinary safe builtin (now/count/lower) and stays UNCLASSIFIED
      * (null), so the control-plane marshals a Cedar Function only for the dangerous ones (never a forbid on
      * every projection). Over-classifying a same-named user function is safe (fail-closed).
      */
-    fun classifyBareFunction(n: String): SystemTag? {
+    fun classifyBareFunction(n: String): SystemTag? = classifyFunctionIn(systemSchemas + logicalSchemas, n)
+
+    /** A call qualified with schema [s]: the cross-schema rules, plus [s]'s own rules only when it holds builtins. */
+    fun classifyQualifiedFunction(s: String, n: String): SystemTag? =
+        classifyFunctionIn(if (holdsBuiltinFunctions(s)) setOf(s) else emptySet(), n)
+
+    fun holdsBuiltinFunctions(s: String): Boolean = s in systemSchemas || s in logicalSchemas
+
+    private fun classifyFunctionIn(schemas: Set<String>, n: String): SystemTag? {
         var tag: SystemTag? = null
         functionAnySchema[n]?.let { tag = combine(tag, it) }
         functionFamilies["*"]?.forEach { (prefix, t) -> if (n.startsWith(prefix)) tag = combine(tag, t) }
-        for (s in systemSchemas + logicalSchemas) {
+        for (s in schemas) {
             functionExact[s to n]?.let { tag = combine(tag, it) }
             functionFamilies[s]?.forEach { (prefix, t) -> if (n.startsWith(prefix)) tag = combine(tag, t) }
         }

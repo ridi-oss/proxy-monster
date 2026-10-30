@@ -3,6 +3,7 @@ package mysql
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"net"
 	"strconv"
@@ -32,14 +33,22 @@ type connection struct {
 	deprecateEOF bool
 }
 
-// newConnection is the connection on targetDbConn, which greeting opened.
-func newConnection(targetDbConn net.Conn, greeting mysqlwire.Greeting, config spi.TargetConfig, authz *spi.Authorizer, guard spi.ExecGuard, deprecateEOF bool) (*connection, error) {
+// errTargetDbUnavailable marks an open that never reached the target, so a wire client is told so.
+var errTargetDbUnavailable = errors.New("target DB unavailable")
+
+// openConnection dials the target as goproxy's own user, wraps the socket, and builds the connection on it,
+// for a wire client and an editor session alike.
+func openConnection(ctx context.Context, config spi.TargetConfig, authz *spi.Authorizer, guard spi.ExecGuard, deprecateEOF bool, wrap func(net.Conn) net.Conn) (*connection, error) {
 	generation, ok := wire.NextBackendGeneration()
 	if !ok {
 		return nil, errors.New("backend generation out of range")
 	}
+	targetDbConn, greeting, err := dialTargetDbAuthID(ctx, config, deprecateEOF)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", errTargetDbUnavailable, err)
+	}
 	c := &connection{
-		targetDbConn:       targetDbConn,
+		targetDbConn:       wrap(targetDbConn),
 		targetConnectionID: greeting.ConnectionID,
 		config:             config,
 		authz:              authz,
@@ -49,8 +58,8 @@ func newConnection(targetDbConn net.Conn, greeting mysqlwire.Greeting, config sp
 	probe := func(sql string, expectedColumns int) ([][]*string, error) {
 		return runInternalQuery(c.targetDbConn, c.deprecateEOF, sql, expectedColumns)
 	}
-	var err error
 	if c.session, err = sqldb.NewSession(Queries, probe); err != nil {
+		_ = c.targetDbConn.Close()
 		return nil, err
 	}
 	c.commandRunner = sqldb.NewProxyCommandRunner(Queries, c.session, authz.ConnectionID(), generation, probe, authz.Client().PushSchemaFragment)
@@ -71,17 +80,9 @@ func (t *target) OpenConnection(ctx context.Context, authz *spi.Authorizer, guar
 	if defaultSchema != "" {
 		config.Db = defaultSchema
 	}
-	conn, greeting, err := dialTargetDbAuthID(ctx, config, true)
-	if err != nil {
-		return nil, err
-	}
-	conn = wire.WithTargetDbReadTimeout(conn, readTimeout)
-	c, err := newConnection(conn, greeting, config, authz, guard, true)
-	if err != nil {
-		_ = conn.Close()
-		return nil, err
-	}
-	return c, nil
+	return openConnection(ctx, config, authz, guard, true, func(conn net.Conn) net.Conn {
+		return wire.WithTargetDbReadTimeout(conn, readTimeout)
+	})
 }
 
 // OnOpen runs the on-open catalog fetch over the target DB conn. A cancel of ctx (the control-plane closed the

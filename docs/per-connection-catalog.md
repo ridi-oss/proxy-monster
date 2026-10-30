@@ -73,7 +73,7 @@ held-connection refetch (`goproxy/sqldb/proxy_command_runner.go`,
 | Freshness | transactionally current for the issuing connection | ambient ~12 min, a few seconds after DDL, admin refresh |
 | Kept current by | control-plane `REFETCH` commands, DB-hash-gated | proxy timer + Events `RefreshCatalog` (after-DDL and admin) |
 | Introspected on | the connection's held target-DB connection | a dedicated short-lived connection (`introspect.Run`) |
-| Channel | enforcement (`ValidateToken`/`Decide`/`PushSchemaFragment`/`CloseConnection`/`EditorExec`/`ReportCompletion`) | config (`Register`/`PushCatalog`/`Events`/`TableDetailExec`) |
+| Channel | enforcement (`OpenConnection`/`Decide`/`PushSchemaFragment`/`CloseConnection`/`EditorExec`/`ReportCompletion`) | config (`Register`/`PushCatalog`/`Events`/`TableDetailExec`) |
 | Control-plane storage | in-memory content-addressed fragments + per-connection held-hash map | the `datasource` row and its `catalog` snapshot |
 | Read by | `decideConnection` → `decideQuery` (wire/editor/`EditorExec`) | catalog browser, classification writes/reads, MCP `browse_catalog`, table detail, approval dry-run previews, manifest logging, liveness UI |
 
@@ -127,7 +127,7 @@ so over-issuing `REFETCH` is cheap.
 
 All three positions carry this same conditional command:
 
-- `on_open` — returned in the `ValidateToken` admit response: one `REFETCH` per
+- `on_open` — returned in the `OpenConnection` admit response: one `REFETCH` per
   schema the connection will use (the datasource's default schemas + the system
   schemas), each with `H` = the currently-held hash. Base reuse is just the
   matching schemas no-op'ing; any other schema the connection later references
@@ -183,7 +183,7 @@ own statement:
 
 1. Connect. Client connects (MySQL handshake / PG startup + cleartext password).
 2. Admit, mint, command. The proxy calls
-   `ValidateToken(token, datasource_name, client_addr)`. The control plane
+   `OpenConnection(token, datasource_name, client_addr)`. The control plane
    decides admit/reject; on admit it mints a 128-bit CSPRNG `connection_id`,
    creates the per-connection state, and returns `connection_id` + `on_open`
    (`REFETCH`s for the default + system schemas).
@@ -255,7 +255,7 @@ proxy that forgot to refresh), not a defense against a dishonest proxy.
 ## Wire / proto contract
 
 `proto/src/main/proto/controlplane.proto` carries `Register`, `PushCatalog`,
-`ValidateToken`, `Decide`, `Events`, `EditorExec`, and `TableDetailExec`, plus:
+`OpenConnection`, `Decide`, `Events`, `EditorExec`, and `TableDetailExec`, plus:
 
 ```protobuf
 // Generic, extensible command. REFETCH is today's only value.
@@ -271,8 +271,8 @@ message Refetch {
   string catalog = 3;         // the connection's catalog; a proxy refuses any other value
 }
 
-// ---- Connection open: ValidateToken admits, mints, and commands ----
-message ValidateTokenRequest { string token = 1; string datasource_name = 2; string client_addr = 3; }
+// ---- Connection open: OpenConnection admits, mints, and commands ----
+message OpenConnectionRequest { string token = 1; string datasource_name = 2; string client_addr = 3; }
 message WireIdentity {
   string principal = 1;
   repeated string roles = 2;
@@ -425,7 +425,7 @@ catalog).
 
 ## Go proxy
 
-- `cp.Client`. `ValidateToken` gains `datasource_name` and returns
+- `cp.Client`. `OpenConnection` gains `datasource_name` and returns
   `connection_id` + `on_open`; new `PushSchemaFragment` + `CloseConnection`;
   `Decide` sends `connection_id` and its result mapper branches on the `outcome`
   oneof — `before_decide` first, else map the verdict (unknown/empty → DENY, the
@@ -534,7 +534,7 @@ endpoint, same `x-pm-secret-token`), owned by a config-side client in
   ambient ~12 min, after-DDL and admin `RefreshCatalog` via Events), the
   `Events` stream (liveness + editor/table-detail nudges), and
   `TableDetailExec`.
-- The enforcement channel carries `ValidateToken`, `Decide`,
+- The enforcement channel carries `OpenConnection`, `Decide`,
   `PushSchemaFragment`, `CloseConnection`, `EditorExec`, `ReportCompletion`.
 - Config reads never touch the per-connection enforcement path — separate store,
   channel, and failure domain. Ambient config refresh is a full

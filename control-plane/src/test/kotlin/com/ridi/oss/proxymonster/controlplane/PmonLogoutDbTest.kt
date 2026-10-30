@@ -14,7 +14,7 @@ import com.ridi.oss.proxymonster.controlplane.support.pmonLogin
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.controlplane.support.testLoginRoute
 import com.ridi.oss.proxymonster.grpc.ControlPlaneGrpcKt
-import com.ridi.oss.proxymonster.grpc.validateTokenRequest
+import com.ridi.oss.proxymonster.grpc.openConnectionRequest
 import io.grpc.ManagedChannel
 import io.grpc.Status
 import io.grpc.StatusException
@@ -78,7 +78,7 @@ class PmonLogoutDbTest {
     }
 
     private suspend fun validate(token: String) =
-        grpc.validateToken(validateTokenRequest { this.token = token; datasourceName = datasource.name; clientAddr = "127.0.0.1" })
+        grpc.openConnection(openConnectionRequest { this.token = token; datasourceName = datasource.name; clientAddr = "127.0.0.1" })
 
     private suspend fun wireValid(token: String): Boolean = try {
         validate(token)

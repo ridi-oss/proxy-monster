@@ -51,7 +51,7 @@ import com.ridi.oss.proxymonster.grpc.RegisterResponse
 import com.ridi.oss.proxymonster.grpc.SchemaFragmentAck
 import com.ridi.oss.proxymonster.grpc.SchemaFragmentPush
 import com.ridi.oss.proxymonster.grpc.TempColumn
-import com.ridi.oss.proxymonster.grpc.ValidateTokenRequest
+import com.ridi.oss.proxymonster.grpc.OpenConnectionRequest
 import com.ridi.oss.proxymonster.grpc.WireDecision
 import com.ridi.oss.proxymonster.grpc.WireIdentity
 import com.ridi.oss.proxymonster.grpc.catalogResponse
@@ -119,7 +119,7 @@ internal fun editorTempOverlay(channel: Channel, engine: Engine, temps: List<Tem
  * shared [ControlPlaneCore] — the SAME store/authz graph the HTTP surface uses, so policy edits made
  * through the web API are seen by these decisions (see ControlPlaneCore for why sharing is mandatory).
  *
- * The hot path is [validateToken] (session handshake) and [decide] (per-query
+ * The hot path is [openConnection] (session handshake) and [decide] (per-query
  * enforcement, re-validating the raw token EVERY call so a revoked token or deprovisioned principal
  * loses access on the next query, not at session end). [register]/[pushCatalog] keep the datasource
  * catalog current and [events] carries the liveness + refresh/run push stream.
@@ -133,13 +133,13 @@ class ControlPlaneGrpcService(
     private val log = org.slf4j.LoggerFactory.getLogger(ControlPlaneGrpcService::class.java)
 
     /**
-     * Record a rejected wire credential. The proxy carries the end-client address on [ValidateTokenRequest],
+     * Record a rejected wire credential. The proxy carries the end-client address on [OpenConnectionRequest],
      * stored raw (blank→null), exactly as the decide audit row stores it. The requested datasource is
      * caller-supplied and unvalidated at this point, so it is bounded and confined to `detail` rather than
      * naming the resource.
      */
-    private fun auditWireRejection(request: ValidateTokenRequest, principal: String?, reason: String) {
-        // Best-effort: this rejection changes no state, and validateToken is the hot wire path — an audit
+    private fun auditWireRejection(request: OpenConnectionRequest, principal: String?, reason: String) {
+        // Best-effort: this rejection changes no state, and openConnection is the hot wire path — an audit
         // insert that throws (the chain-head lock, a broken chain) must not replace UNAUTHENTICATED with
         // INTERNAL, which every bad token got before this trail existed.
         core.authAudit.failureBestEffort(
@@ -151,7 +151,7 @@ class ControlPlaneGrpcService(
         )
     }
 
-    override suspend fun validateToken(request: ValidateTokenRequest): WireIdentity {
+    override suspend fun openConnection(request: OpenConnectionRequest): WireIdentity {
         val id = core.tokenStore.validate(request.token)
         if (id == null) {
             // validate() collapses invalid/expired/revoked into one null, and none of them names a

@@ -50,10 +50,10 @@ type fakeControlPlane struct {
 	pb.UnimplementedControlPlaneServer
 
 	mu           sync.Mutex
-	validateResp *pb.WireIdentity
-	validateErr  error
-	validateFn   func(*pb.ValidateTokenRequest) (*pb.WireIdentity, error)
-	lastValidate *pb.ValidateTokenRequest
+	openResp     *pb.WireIdentity
+	openErr      error
+	openFn       func(*pb.OpenConnectionRequest) (*pb.WireIdentity, error)
+	lastOpen     *pb.OpenConnectionRequest
 	decideFn     func(*pb.DecisionRequest) (*pb.WireDecision, error)
 	decideReqs   []*pb.DecisionRequest
 	fragmentReqs []*pb.SchemaFragmentPush
@@ -64,27 +64,27 @@ type fakeControlPlane struct {
 	events       []string
 }
 
-func (f *fakeControlPlane) ValidateToken(_ context.Context, req *pb.ValidateTokenRequest) (*pb.WireIdentity, error) {
+func (f *fakeControlPlane) OpenConnection(_ context.Context, req *pb.OpenConnectionRequest) (*pb.WireIdentity, error) {
 	f.mu.Lock()
-	f.lastValidate = proto.Clone(req).(*pb.ValidateTokenRequest)
-	validateErr := f.validateErr
-	validateFn := f.validateFn
-	var validateResp *pb.WireIdentity
-	if f.validateResp != nil {
-		validateResp = proto.Clone(f.validateResp).(*pb.WireIdentity)
+	f.lastOpen = proto.Clone(req).(*pb.OpenConnectionRequest)
+	openErr := f.openErr
+	openFn := f.openFn
+	var openResp *pb.WireIdentity
+	if f.openResp != nil {
+		openResp = proto.Clone(f.openResp).(*pb.WireIdentity)
 	}
 	f.mu.Unlock()
-	if validateErr != nil {
-		return nil, validateErr
+	if openErr != nil {
+		return nil, openErr
 	}
 	if req.GetToken() != validToken {
 		return nil, status.Error(codes.Unauthenticated, "invalid token")
 	}
-	if validateFn != nil {
-		return validateFn(proto.Clone(req).(*pb.ValidateTokenRequest))
+	if openFn != nil {
+		return openFn(proto.Clone(req).(*pb.OpenConnectionRequest))
 	}
-	if validateResp != nil {
-		return validateResp, nil
+	if openResp != nil {
+		return openResp, nil
 	}
 	return &pb.WireIdentity{Principal: "mysql-it@example.com", Roles: []string{"analyst"}}, nil
 }
@@ -209,13 +209,13 @@ func (f *fakeControlPlane) setPushError(err error) {
 func (f *fakeControlPlane) setValidateResponse(resp *pb.WireIdentity) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.validateResp = proto.Clone(resp).(*pb.WireIdentity)
+	f.openResp = proto.Clone(resp).(*pb.WireIdentity)
 }
 
-func (f *fakeControlPlane) setValidateFunc(validate func(*pb.ValidateTokenRequest) (*pb.WireIdentity, error)) {
+func (f *fakeControlPlane) setOpenFunc(open func(*pb.OpenConnectionRequest) (*pb.WireIdentity, error)) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.validateFn = validate
+	f.openFn = open
 }
 
 func startFakeCP(t *testing.T) (*fakeControlPlane, *cp.Client) {
@@ -225,7 +225,7 @@ func startFakeCP(t *testing.T) (*fakeControlPlane, *cp.Client) {
 		t.Fatalf("listen fake control plane: %v", err)
 	}
 	fake := &fakeControlPlane{
-		validateResp: &pb.WireIdentity{
+		openResp: &pb.WireIdentity{
 			Principal:    "mysql-it@example.com",
 			Roles:        []string{"analyst"},
 			ConnectionId: []byte("0123456789abcdef"),
@@ -352,10 +352,10 @@ func (h *brokerHarness) openDBInDatabase(t *testing.T, token, database string) *
 	return conn
 }
 
-// The proxy must forward the client's real socket address on ValidateToken so a rejected wire credential
+// The proxy must forward the client's real socket address on OpenConnection so a rejected wire credential
 // is audited with its source. A blank field re-opens the audited-without-source gap; the token in that
 // field would leak the credential into the audit chain. (postgres plumbs the same value symmetrically.)
-func TestValidateTokenCarriesClientAddr(t *testing.T) {
+func TestOpenConnectionCarriesClientAddr(t *testing.T) {
 	h := startBroker(t)
 	h.fake.decideFn = func(*pb.DecisionRequest) (*pb.WireDecision, error) {
 		return wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW, DecisionId: 1}), nil
@@ -367,10 +367,10 @@ func TestValidateTokenCarriesClientAddr(t *testing.T) {
 	}
 	rows.Close()
 	h.fake.mu.Lock()
-	got := h.fake.lastValidate.GetClientAddr()
+	got := h.fake.lastOpen.GetClientAddr()
 	h.fake.mu.Unlock()
 	if got == "" || !strings.Contains(got, ":") || got == validToken {
-		t.Fatalf("ValidateToken client_addr = %q; want the client socket address (host:port), not blank or the token", got)
+		t.Fatalf("OpenConnection client_addr = %q; want the client socket address (host:port), not blank or the token", got)
 	}
 }
 
@@ -416,10 +416,10 @@ func TestProxyProtocolPortReportsTheHeaderSourceAsClientAddr(t *testing.T) {
 		t.Fatalf("Ping through the PROXY protocol port: %v", err)
 	}
 	h.fake.mu.Lock()
-	got := h.fake.lastValidate.GetClientAddr()
+	got := h.fake.lastOpen.GetClientAddr()
 	h.fake.mu.Unlock()
 	if got != tailnetClient.String() {
-		t.Fatalf("ValidateToken client_addr = %q, want the PROXY header source %s", got, tailnetClient)
+		t.Fatalf("OpenConnection client_addr = %q, want the PROXY header source %s", got, tailnetClient)
 	}
 }
 
@@ -1015,7 +1015,7 @@ func TestDisconnectAfterDDLDoesNotAffectSiblingConnection(t *testing.T) {
 	h := startBroker(t)
 	connectionIDs := [][]byte{[]byte("session-one-0001"), []byte("session-two-0002")}
 	var minted int
-	h.fake.setValidateFunc(func(*pb.ValidateTokenRequest) (*pb.WireIdentity, error) {
+	h.fake.setOpenFunc(func(*pb.OpenConnectionRequest) (*pb.WireIdentity, error) {
 		if minted >= len(connectionIDs) {
 			return nil, status.Error(codes.Internal, "too many sessions")
 		}
@@ -1532,7 +1532,7 @@ func TestOversizedUnauthenticatedHandshakeIsRejectedWithoutBody(t *testing.T) {
 func TestBadTokenFailsClosed(t *testing.T) {
 	h := startBroker(t)
 	h.fake.mu.Lock()
-	h.fake.validateErr = status.Error(codes.Unauthenticated, "rejected")
+	h.fake.openErr = status.Error(codes.Unauthenticated, "rejected")
 	h.fake.mu.Unlock()
 
 	bad := h.openDB(t, "it-token-bad")

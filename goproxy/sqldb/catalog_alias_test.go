@@ -33,7 +33,7 @@ func (c *aliasControlPlane) refetch() *pb.Refetch {
 	return &pb.Refetch{Catalog: c.catalog, Schema: c.schema}
 }
 
-func (c *aliasControlPlane) ValidateToken(context.Context, *pb.ValidateTokenRequest) (*pb.WireIdentity, error) {
+func (c *aliasControlPlane) OpenConnection(context.Context, *pb.OpenConnectionRequest) (*pb.WireIdentity, error) {
 	return &pb.WireIdentity{Principal: "reader", ConnectionId: []byte("alias-wire-00001"), OnOpen: []*pb.ProxyCommand{{Command: &pb.ProxyCommand_Refetch{Refetch: c.refetch()}}}}, nil
 }
 

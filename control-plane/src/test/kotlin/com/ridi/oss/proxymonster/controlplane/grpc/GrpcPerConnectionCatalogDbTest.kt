@@ -13,7 +13,7 @@ import com.ridi.oss.proxymonster.controlplane.support.requireDocker
 import com.ridi.oss.proxymonster.grpc.closeConnectionRequest
 import com.ridi.oss.proxymonster.grpc.decisionRequest
 import com.ridi.oss.proxymonster.grpc.schemaFragmentPush
-import com.ridi.oss.proxymonster.grpc.validateTokenRequest
+import com.ridi.oss.proxymonster.grpc.openConnectionRequest
 import io.grpc.Status
 import io.grpc.StatusException
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder
@@ -131,7 +131,7 @@ class GrpcPerConnectionCatalogDbTest {
 
     @Test
     fun `validate mints connection id and system on-open commands`() = runBlocking {
-        val identity = stub.validateToken(validateTokenRequest { token = this@GrpcPerConnectionCatalogDbTest.token; datasourceName = ds.name })
+        val identity = stub.openConnection(openConnectionRequest { token = this@GrpcPerConnectionCatalogDbTest.token; datasourceName = ds.name })
         assertEquals(16, identity.connectionId.size())
         assertEquals(setOf("pg_catalog", "information_schema"), identity.onOpenList.map { it.refetch.schema }.toSet())
     }
@@ -145,14 +145,14 @@ class GrpcPerConnectionCatalogDbTest {
             status { stub.closeConnection(closeConnectionRequest { connectionId = forged; datasourceName = ds.name }) },
         )
 
-        val identity = stub.validateToken(validateTokenRequest { token = this@GrpcPerConnectionCatalogDbTest.token; datasourceName = ds.name })
+        val identity = stub.openConnection(openConnectionRequest { token = this@GrpcPerConnectionCatalogDbTest.token; datasourceName = ds.name })
         val schema = identity.onOpenList.first().refetch.schema
         assertEquals(Status.Code.FAILED_PRECONDITION, status { push(identity.connectionId, schema, "h", datasourceName = "other-datasource") })
     }
 
     @Test
     fun `push rejects old backend generation and unchanged hash mismatch`() = runBlocking {
-        val identity = stub.validateToken(validateTokenRequest { token = this@GrpcPerConnectionCatalogDbTest.token; datasourceName = ds.name })
+        val identity = stub.openConnection(openConnectionRequest { token = this@GrpcPerConnectionCatalogDbTest.token; datasourceName = ds.name })
         satisfyOnOpen(identity)
         val schema = identity.onOpenList.first().refetch.schema
         val connection = core.connectionCatalog.find(identity.connectionId)!!
@@ -164,7 +164,7 @@ class GrpcPerConnectionCatalogDbTest {
     @Disabled("a replayed full push can satisfy a newer pending REFETCH because the command has no nonce")
     @Test
     fun `replayed full push cannot satisfy a newer pending refetch`() = runBlocking {
-        val identity = stub.validateToken(validateTokenRequest { token = this@GrpcPerConnectionCatalogDbTest.token; datasourceName = ds.name })
+        val identity = stub.openConnection(openConnectionRequest { token = this@GrpcPerConnectionCatalogDbTest.token; datasourceName = ds.name })
         satisfyOnOpen(identity)
         val schema = identity.onOpenList.first().refetch.schema
         val connection = core.connectionCatalog.find(identity.connectionId)!!
@@ -175,7 +175,7 @@ class GrpcPerConnectionCatalogDbTest {
     @Test
     fun `current replay behavior accepts an old full push for a newer pending command`() = runBlocking {
         // Defect characterization: this is intentionally loud and paired with the disabled expected-reject test.
-        val identity = stub.validateToken(validateTokenRequest { token = this@GrpcPerConnectionCatalogDbTest.token; datasourceName = ds.name })
+        val identity = stub.openConnection(openConnectionRequest { token = this@GrpcPerConnectionCatalogDbTest.token; datasourceName = ds.name })
         satisfyOnOpen(identity)
         val schema = identity.onOpenList.first().refetch.schema
         val connection = core.connectionCatalog.find(identity.connectionId)!!
@@ -186,7 +186,7 @@ class GrpcPerConnectionCatalogDbTest {
 
     @Test
     fun `cross-principal Decide on a live id rejects binding mismatch`() = runBlocking {
-        val identity = stub.validateToken(validateTokenRequest { token = this@GrpcPerConnectionCatalogDbTest.token; datasourceName = ds.name })
+        val identity = stub.openConnection(openConnectionRequest { token = this@GrpcPerConnectionCatalogDbTest.token; datasourceName = ds.name })
         val otherToken = core.tokenStore.issue(TokenKind.USER,"other@example.com", emptyList(), null, 3600).token
         assertEquals(
             Status.Code.FAILED_PRECONDITION,
@@ -206,7 +206,7 @@ class GrpcPerConnectionCatalogDbTest {
 
     @Test
     fun `post-close late push rejects not-found`() = runBlocking {
-        val identity = stub.validateToken(validateTokenRequest { token = this@GrpcPerConnectionCatalogDbTest.token; datasourceName = ds.name })
+        val identity = stub.openConnection(openConnectionRequest { token = this@GrpcPerConnectionCatalogDbTest.token; datasourceName = ds.name })
         val schema = identity.onOpenList.first().refetch.schema
         stub.closeConnection(closeConnectionRequest { connectionId = identity.connectionId; datasourceName = ds.name })
         assertEquals(Status.Code.NOT_FOUND, status { push(identity.connectionId, schema, "late") })
@@ -215,7 +215,7 @@ class GrpcPerConnectionCatalogDbTest {
     @Disabled("closed/forged connection_id is recovered by Decide — no tombstone/mint-evidence")
     @Test
     fun `post-close Decide reuse is rejected`() = runBlocking {
-        val identity = stub.validateToken(validateTokenRequest { token = this@GrpcPerConnectionCatalogDbTest.token; datasourceName = ds.name })
+        val identity = stub.openConnection(openConnectionRequest { token = this@GrpcPerConnectionCatalogDbTest.token; datasourceName = ds.name })
         stub.closeConnection(closeConnectionRequest { connectionId = identity.connectionId; datasourceName = ds.name })
         assertEquals(
             Status.Code.NOT_FOUND,
@@ -236,7 +236,7 @@ class GrpcPerConnectionCatalogDbTest {
     @Test
     fun `current post-close Decide behavior recovers the closed id`() = runBlocking {
         // Defect characterization: restart recovery and a closed/forged id are indistinguishable today.
-        val identity = stub.validateToken(validateTokenRequest { token = this@GrpcPerConnectionCatalogDbTest.token; datasourceName = ds.name })
+        val identity = stub.openConnection(openConnectionRequest { token = this@GrpcPerConnectionCatalogDbTest.token; datasourceName = ds.name })
         stub.closeConnection(closeConnectionRequest { connectionId = identity.connectionId; datasourceName = ds.name })
         val recovered = stub.decide(decisionRequest {
             token = this@GrpcPerConnectionCatalogDbTest.token
@@ -254,7 +254,7 @@ class GrpcPerConnectionCatalogDbTest {
 
     @Test
     fun `real restart recovers original id and token then anchors the principal`() = runBlocking {
-        val identity = stub.validateToken(validateTokenRequest { token = this@GrpcPerConnectionCatalogDbTest.token; datasourceName = ds.name })
+        val identity = stub.openConnection(openConnectionRequest { token = this@GrpcPerConnectionCatalogDbTest.token; datasourceName = ds.name })
         satisfyOnOpen(identity)
         stopServer()
         core = ControlPlaneCore(dataSource)

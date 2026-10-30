@@ -62,7 +62,7 @@ type ControlPlane interface {
 	AuthorizeRequest(context.Context, *pb.RequestAuthorization) (*pb.RequestAuthorizationResult, error)
 	Register(registrationEngine enginepb.Engine, host string, port int, dbName string, tags []string, advertiseAddr string, advertiseCertChain *string, wireTLS bool, connectionInfo *pb.ConnectionInfo, description *string) error
 	PushCatalog(*pb.CatalogRequest) error
-	ValidateToken(token, clientAddr string) (Identity, error)
+	OpenConnection(token, clientAddr string) (Identity, error)
 	CloseConnection(connectionID []byte) error
 	OpenEditorStream(context.Context) (EditorStream, error)
 	OpenTableDetailStream(context.Context) (TableDetailStream, error)

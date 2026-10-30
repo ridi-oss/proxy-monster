@@ -30,7 +30,7 @@ stream is the natural fit for liveness and refresh push.
 service ControlPlane {
   rpc Register(RegisterRequest) returns (RegisterResponse);            // boot: declare identity
   rpc PushCatalog(CatalogRequest) returns (CatalogResponse);          // push the introspected catalog
-  rpc ValidateToken(ValidateTokenRequest) returns (WireIdentity);     // wire-auth handshake, once per session
+  rpc OpenConnection(OpenConnectionRequest) returns (WireIdentity);     // wire-auth handshake, once per session
   rpc AuthorizeRequest(RequestAuthorization) returns (RequestAuthorizationResult); // metadata access, no SQL session
   rpc Decide(DecisionRequest) returns (WireDecision);                 // per-query enforcement decision
   rpc PushSchemaFragment(SchemaFragmentPush) returns (SchemaFragmentAck);  // per-connection catalog fragment
@@ -199,7 +199,7 @@ per-statement decision cache — the prepared-statement fast path is traded for
 the fail-closed guarantee. A cached `ALLOW` whose grant expired would otherwise
 relay cleartext.
 
-`ValidateToken` stays scoped to the wire-protocol auth handshake — MySQL and
+`OpenConnection` stays scoped to the wire-protocol auth handshake — MySQL and
 PostgreSQL need an accept/reject signal at the auth step before any query flows.
 Its job is "may this session open," not "cache something `Decide` will trust."
 

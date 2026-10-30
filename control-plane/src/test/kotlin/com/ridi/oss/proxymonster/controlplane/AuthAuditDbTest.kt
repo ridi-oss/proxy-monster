@@ -12,7 +12,7 @@ import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.auditChainHead
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.controlplane.support.verifyAuditChain
-import com.ridi.oss.proxymonster.grpc.validateTokenRequest
+import com.ridi.oss.proxymonster.grpc.openConnectionRequest
 import io.grpc.Status
 import io.grpc.StatusException
 import io.ktor.client.call.body
@@ -248,11 +248,11 @@ class AuthAuditDbTest {
     }
 
     @Test
-    fun `validateToken audits failures but not successful validation`() {
+    fun `openConnection audits failures but not successful validation`() {
         val before = countAuth()
         assertEquals(Status.Code.UNAUTHENTICATED, statusOf("not-a-token"))
         assertEquals(before + 1, countAuth())
-        // The wire caller address rides ValidateTokenRequest and lands on the row, raw as decide stores it.
+        // The wire caller address rides OpenConnectionRequest and lands on the row, raw as decide stores it.
         assertEvent(
             PRINCIPAL_UNATTRIBUTED, ACTION_WIRE_VALIDATE, auditEntity("Token", "unresolved"), "FAILURE", "DENY",
             expectedRows = 1,
@@ -296,7 +296,7 @@ class AuthAuditDbTest {
         val valid = core.tokenStore.issue(TokenKind.USER, "valid@example.com", emptyList(), null, 3600)
         val beforeSuccess = countAuth()
         val identity = runBlocking {
-            grpc.validateToken(validateTokenRequest { token = valid.token; datasourceName = this@AuthAuditDbTest.datasourceName; clientAddr = CALLER_ADDR })
+            grpc.openConnection(openConnectionRequest { token = valid.token; datasourceName = this@AuthAuditDbTest.datasourceName; clientAddr = CALLER_ADDR })
         }
         assertEquals("valid@example.com", identity.principal)
         assertEquals(beforeSuccess, countAuth(), "successful wire validation must not emit auth audit rows")
@@ -327,7 +327,7 @@ class AuthAuditDbTest {
 
     private fun statusOf(token: String): Status.Code =
         assertFailsWith<StatusException> {
-            runBlocking { grpc.validateToken(validateTokenRequest { this.token = token; datasourceName = this@AuthAuditDbTest.datasourceName; clientAddr = CALLER_ADDR }) }
+            runBlocking { grpc.openConnection(openConnectionRequest { this.token = token; datasourceName = this@AuthAuditDbTest.datasourceName; clientAddr = CALLER_ADDR }) }
         }.status.code
 
     /**

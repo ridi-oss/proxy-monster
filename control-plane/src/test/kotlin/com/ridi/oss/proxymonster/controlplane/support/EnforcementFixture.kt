@@ -488,6 +488,39 @@ class EnforcementFixture(
                 ),
                 updatedBy = "test-fixture",
             )
+            // `lookup` — the same reads as `analyst` PLUS the literal-filter opt-in: a pii column that is masked
+            // for this role may be used as `col = literal` / `col IN (literals)` in a WHERE, and still comes
+            // back masked when it is also selected. `analyst` has no such permit, so it is the control.
+            val lookupRole = s.policyStore.createRole(RoleInput("lookup"))
+            s.policyStore.createAssignment(RoleAssignmentInput("lookup@example.com", lookupRole.id))
+            s.cedarPolicyStore.create(
+                CedarPolicyInput(
+                    name = "lookup-connect-select",
+                    cedarSrc = """permit(principal in Role::"lookup", action in [Action::"datasource.connect", Action::"stmt.cat.read", Action::"stmt.cat.metadata", Action::"stmt.cat.session"], resource in Datasource::"${ds.name}");""",
+                ),
+                updatedBy = "test-fixture",
+            )
+            s.cedarPolicyStore.create(
+                CedarPolicyInput(
+                    name = "lookup-users-unmasked",
+                    cedarSrc = """permit(principal in Role::"lookup", action == Action::"result.read.unmasked", resource in Table::"$usersTableEuid") unless { resource in Tag::"pii" };""",
+                ),
+                updatedBy = "test-fixture",
+            )
+            s.cedarPolicyStore.create(
+                CedarPolicyInput(
+                    name = "lookup-users-masked-pii",
+                    cedarSrc = """permit(principal in Role::"lookup", action == Action::"result.read.masked", resource in Table::"$usersTableEuid") when { resource in Tag::"pii" };""",
+                ),
+                updatedBy = "test-fixture",
+            )
+            s.cedarPolicyStore.create(
+                CedarPolicyInput(
+                    name = "lookup-users-filter-literal-pii",
+                    cedarSrc = """permit(principal in Role::"lookup", action == Action::"result.filter.literal", resource in Table::"$usersTableEuid") when { resource in Tag::"pii" };""",
+                ),
+                updatedBy = "test-fixture",
+            )
             // pushTestCatalog() captures static namespace/case metadata on the datasource row. Always hand
             // decideQuery the refreshed row rather than the pre-catalog create() result.
             return s.datasourceStore.get(ds.id)!!

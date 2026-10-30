@@ -84,6 +84,7 @@ const ACTION_REFERENCE: { resource: string; actions: { name: string; noteKey: st
     actions: [
       { name: 'result.read.unmasked', noteKey: 'resultReadUnmasked' },
       { name: 'result.read.masked', noteKey: 'resultReadMasked' },
+      { name: 'result.filter.literal', noteKey: 'resultFilterLiteral' },
     ],
   },
   {

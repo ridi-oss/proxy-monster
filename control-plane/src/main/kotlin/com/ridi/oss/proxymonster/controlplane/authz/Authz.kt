@@ -55,6 +55,9 @@ enum class AuthzAction(val cedarId: String) {
     AUDIT_READ("audit.read"),
     RESULT_READ_UNMASKED("result.read.unmasked"),
     RESULT_READ_MASKED("result.read.masked"),
+    // Opt-in: may a MASKED column be used as `col = literal` / `col IN (literals)` in a WHERE, without ever
+    // being returned in the clear. Asked only for a column the analyzer marks ALLOW_LITERAL_FILTER.
+    RESULT_FILTER_LITERAL("result.filter.literal"),
     // Never consulted for access — its policies carry the result-cap annotations (docs/result-caps.md).
     RESULT_CAP("result.cap"),
     DATASOURCE_CONNECT("datasource.connect"),
@@ -371,6 +374,11 @@ private fun <V> Authz.authorizeReadResources(
     context: AuthzContext,
     keys: List<String>,
     denied: V,
+    // The two actions asked, in order. Default: result.read.unmasked then result.read.masked. A caller that
+    // asks a different pair (the literal-filter opt-in) names it here; `verdict` still receives them as
+    // its (first, second) lambdas.
+    firstAction: AuthzAction = AuthzAction.RESULT_READ_UNMASKED,
+    secondAction: AuthzAction = AuthzAction.RESULT_READ_MASKED,
     build: (dsEuid: EntityUID, tag: (String) -> EntityUID) -> Pair<Map<String, Entity>, List<Entity>>,
     verdict: (unmasked: () -> Boolean, masked: () -> Boolean) -> V,
 ): Map<String, V> {
@@ -380,8 +388,8 @@ private fun <V> Authz.authorizeReadResources(
     val (focalByKey, auxEntities) = build(dsEuid) { tag -> tagEuids.getOrPut(tag) { TAG_TYPE.of(tag) } }
     val request = marshal(AuthzPrincipal.User(principal, parents), listOf(dsEntity) + auxEntities + tagEuids.values.map { Entity(it) })
     val contextMap = context.toCedarMap()
-    val unmasked = ACTION_TYPE.of(AuthzAction.RESULT_READ_UNMASKED.cedarId)
-    val masked = ACTION_TYPE.of(AuthzAction.RESULT_READ_MASKED.cedarId)
+    val unmasked = ACTION_TYPE.of(firstAction.cedarId)
+    val masked = ACTION_TYPE.of(secondAction.cedarId)
     fun allows(resource: Entity, action: EntityUID) =
         engine.isAuthorized(request, action, resource, contextMap).success.orElse(null)?.isAllowed == true
     return keys.associateWith { key ->
@@ -618,27 +626,7 @@ fun Authz.authorizeColumns(
     datasourceTags: List<String> = emptyList(),
 ): Map<String, ColumnVerdict> = authorizeReadResources(
     principal, parents, datasource, datasourceTags, context, columns.map { it.key }, ColumnVerdict.DENIED,
-    build = { dsEuid, tag ->
-        fun hasDelim(s: String) = '/' in s || '.' in s
-        val tableEuids = HashMap<Triple<String, String, String>, EntityUID>()
-        val columnEntities = LinkedHashMap<String, Entity>()
-        for (col in columns) {
-            if (hasDelim(datasource) || hasDelim(col.catalog) || hasDelim(col.schema) ||
-                hasDelim(col.table) || hasDelim(col.column)
-            ) {
-                continue // delimiter in the identity → no entity → denied
-            }
-            val tblEuid = tableEuids.getOrPut(Triple(col.catalog, col.schema, col.table)) {
-                tableEuid(datasource, col.catalog, col.schema, col.table)
-            }
-            val colEuid = columnEuid(datasource, col.catalog, col.schema, col.table, col.column)
-            val parents = (setOf(tblEuid, dsEuid) + col.tags.map(tag)).toMutableSet()
-            systemTags[col.key]?.let { parents += tag(it) }
-            columnEntities[col.key] = Entity(colEuid, columnAttrs(col), parents)
-        }
-        val tableEntities = tableEuids.values.map { euid -> Entity(euid, emptyMap(), setOf(dsEuid)) }
-        columnEntities to tableEntities
-    },
+    build = columnEntityBuilder(datasource, columns, systemTags),
     verdict = { unmasked, masked ->
         when {
             unmasked() -> ColumnVerdict.UNMASKED
@@ -647,6 +635,59 @@ fun Authz.authorizeColumns(
         }
     },
 )
+
+/**
+ * Per-column verdict for the `result.filter.literal` opt-in. Asked ONLY for a column the analyzer marked
+ * ALLOW_LITERAL_FILTER (a bare `col = literal` / `col IN (literals)` in a read's WHERE) whose read verdict is
+ * MASKED: the caller may filter on it when — and only when — a Cedar permit covers this action on the
+ * column. Same entity graph, tags and system tags as [authorizeColumns], so a permit scoped to a Tag, a
+ * Table or the Datasource reaches the column exactly the way a read permit does. Deny-by-default.
+ */
+enum class FilterVerdict { ALLOWED, DENIED }
+
+fun Authz.authorizeColumnFilters(
+    principal: String,
+    parents: UserParents,
+    datasource: String,
+    columns: List<ColumnRef>,
+    context: AuthzContext = AuthzContext(),
+    systemTags: Map<String, String> = emptyMap(),
+    datasourceTags: List<String> = emptyList(),
+): Map<String, FilterVerdict> = authorizeReadResources(
+    principal, parents, datasource, datasourceTags, context, columns.map { it.key }, FilterVerdict.DENIED,
+    firstAction = AuthzAction.RESULT_FILTER_LITERAL,
+    build = columnEntityBuilder(datasource, columns, systemTags),
+    verdict = { filter, _ -> if (filter()) FilterVerdict.ALLOWED else FilterVerdict.DENIED },
+)
+
+/** The Cedar entities for a batch of columns: one Column entity per key (with its table, datasource, tag and
+ *  system-tag parents), table entities deduped. A component with a `/` or `.` builds no entity, so its
+ *  key is absent and the caller treats it as denied. */
+private fun columnEntityBuilder(
+    datasource: String,
+    columns: List<ColumnRef>,
+    systemTags: Map<String, String>,
+): (dsEuid: EntityUID, tag: (String) -> EntityUID) -> Pair<Map<String, Entity>, List<Entity>> = { dsEuid, tag ->
+    fun hasDelim(s: String) = '/' in s || '.' in s
+    val tableEuids = HashMap<Triple<String, String, String>, EntityUID>()
+    val columnEntities = LinkedHashMap<String, Entity>()
+    for (col in columns) {
+        if (hasDelim(datasource) || hasDelim(col.catalog) || hasDelim(col.schema) ||
+            hasDelim(col.table) || hasDelim(col.column)
+        ) {
+            continue // delimiter in the identity → no entity → denied
+        }
+        val tblEuid = tableEuids.getOrPut(Triple(col.catalog, col.schema, col.table)) {
+            tableEuid(datasource, col.catalog, col.schema, col.table)
+        }
+        val colEuid = columnEuid(datasource, col.catalog, col.schema, col.table, col.column)
+        val parents = (setOf(tblEuid, dsEuid) + col.tags.map(tag)).toMutableSet()
+        systemTags[col.key]?.let { parents += tag(it) }
+        columnEntities[col.key] = Entity(colEuid, columnAttrs(col), parents)
+    }
+    val tableEntities = tableEuids.values.map { euid -> Entity(euid, emptyMap(), setOf(dsEuid)) }
+    columnEntities to tableEntities
+}
 
 /**
  * Table-scan authz (docs/facts-emission.md). An UNCOVERED scanned table — read with zero traced

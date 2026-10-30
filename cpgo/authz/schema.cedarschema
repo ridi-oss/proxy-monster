@@ -270,6 +270,21 @@ action "result.read.unmasked", "result.read.masked"
     context: RequestContext,
   };
 
+// `result.filter.literal` — an opt-in to FILTER on a masked column. Without it, a column that is masked for
+// the principal cannot appear in a WHERE at all (it would be an oracle on the hidden value). With it, the
+// column may be used as the bare operand of `col = literal` or `col IN (literals)` in a top-level WHERE
+// conjunct of a read — the caller already holds the value they are asking about — while every output
+// position still comes back masked. Anything else (a function around the column, LIKE, a range, OR, NOT, a
+// subquery, a join, GROUP/ORDER BY, a write) is NOT covered and stays denied. Asked only for a column the
+// analyzer marks ALLOW_LITERAL_FILTER (Authz.authorizeColumnFilters); an unmasked reader needs no permit.
+// Scope it like a read permit: a Tag, a Table, a Datasource, or a Column, and a role.
+action "result.filter.literal"
+  appliesTo {
+    principal: [User, Role],
+    resource: [Column, Table, Tag, Datasource],
+    context: RequestContext,
+  };
+
 // `result.cap` is never consulted for access: no enforcement path asks it, so permitting it grants
 // nothing. Its permits exist to carry the `@cap` annotation (result-caps.md) the control plane folds after a
 // statement's reads are authorized — it asks this action on the Datasource and on every returned column

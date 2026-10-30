@@ -252,6 +252,58 @@ Worked walk-throughs — policies + column config from
 | `CREATE TABLE t (id INT)` | `create_table` (plain, no data flow) | `stmt.kind.create_table` (∈ ddl) is the whole gate (no lineage) | DENY if ungranted (audited) |
 | `CREATE TABLE leaked AS SELECT ssn FROM users` | `create_table` + write; payload reads `users.ssn` | `stmt.kind.create_table` ungranted → deny; even granted, `ssn` copied into a persisted table is a non-maskable write payload | DENY (exfiltration — write-payload) |
 
+### Opting in to literal filters (`result.filter.literal`)
+
+By default a masked column cannot appear in a `WHERE` (row 2 above): the filter
+would answer yes/no questions about a value the reader may not see. When the
+reader already holds the value — "show me the orders for alice@example.com" —
+that protection gets in the way, and the value is not secret from them. The
+`result.filter.literal` action lets a deployment accept that trade for one
+narrow shape.
+
+The analyzer marks a column `ALLOW_LITERAL_FILTER` (instead of `DENY_STATEMENT`)
+only when **every** occurrence of it in the statement is the bare operand of a
+top-level `WHERE` conjunct of a read:
+
+- `col = literal`, `literal = col`, or `col IN (literal, …)` (all members
+  literals);
+- `col` resolves straight to a column of a physical table — not through a
+  subquery, CTE or derived table, which may hide an expression such as
+  `LOWER(col)`.
+
+Everything else keeps its `DENY_STATEMENT` reference: a function or cast around
+the column, `LIKE`, `<`/`>`/`BETWEEN`, `<>`, `NOT`, `OR`, `NOT IN`, an
+`IN (subquery)`, a column compared to another column, a join,
+`GROUP BY`/`ORDER BY` (also when the same column is merely _also_ filtered),
+every write, and an `EXPLAIN` (its plan's row estimates reflect the filter's
+selectivity). A column that is both selected and filtered carries both grants
+and is still masked in the output.
+
+For a column whose read verdict is MASKED, the control plane then asks
+`result.filter.literal`; with no permit it denies, exactly as before. An
+UNMASKED reader needs nothing, and a system-redacted column is never filterable.
+The default is therefore unchanged, and the opt-in is an ordinary Cedar permit —
+scoped to a role and a tag, and switched on or off by enabling or disabling the
+policy:
+
+```
+permit(principal in Role::"analyst", action == Action::"result.filter.literal", resource in Datasource::"acme-mysql")
+    when { resource in Tag::"pii" };
+```
+
+| query                                                           | outcome with the permit                        |
+| --------------------------------------------------------------- | ---------------------------------------------- |
+| `SELECT id FROM users WHERE email = 'alice@example.com'`        | ALLOW; `id` unmasked, no masked value returned |
+| `SELECT id, email FROM users WHERE email = 'alice@example.com'` | MASK `{email}`                                 |
+| `SELECT id FROM users WHERE email LIKE 'a%'`                    | DENY (not a literal equality)                  |
+| `SELECT id FROM users WHERE LOWER(email) = 'alice@example.com'` | DENY (function around the column)              |
+| `SELECT id FROM users WHERE email = 'a' ORDER BY email`         | DENY (`email` also in `ORDER BY`)              |
+
+The cost is the oracle itself: a reader with this permit can confirm whether a
+value they already have exists in the column, and can iterate guesses. Grant it
+where that is acceptable (the value is already known to the reader), and pair it
+with `result.cap` rate limits.
+
 ## Statement kinds
 
 Every statement carries exactly one kind (`stmt.kind.<k>`); the control-plane

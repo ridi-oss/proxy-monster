@@ -145,7 +145,7 @@ SELECT ar.id, ar.principal, ar.role_id, r.name AS role_name, ar.datasource_id, d
        ar.deny_reason, ar.source_decision_id, ar.title, ar.evaluated_decision,
        ar.approved_at, ar.executing_at, ar.executed_at, ar.execute_as, ar.creator_kind,
        ar.statement_carries_protected_literal, ar.source, ar.scope, ar.change_key, ar.merged_at,
-       ar.revision, ar.revised_at, ar.content_hash,
+       ar.revision, ar.revised_at, ar.content_hash, ar.raw_hash,
        ar.file_key, ar.path, ar.pr_url, ar.repository, ar.pr, ar.default_schema, ar.pr_auto_merge,
        ar.head_sha, ar.merge_sha, ar.approved_review_id, ar.filed_head, ar.key_order, ar.force_run, ar.force_run_by,
        (SELECT coalesce(array_agg(p.principal ORDER BY p.principal), '{}') FROM request_participant p
@@ -191,6 +191,7 @@ type AccessRequestRow struct {
 	Revision                         int32
 	RevisedAt                        *time.Time
 	ContentHash                      *string
+	RawHash                          *string
 	FileKey                          *string
 	Path                             *string
 	PrUrl                            *string
@@ -247,6 +248,7 @@ func (q *Queries) AccessRequest(ctx context.Context, id int64) (AccessRequestRow
 		&i.Revision,
 		&i.RevisedAt,
 		&i.ContentHash,
+		&i.RawHash,
 		&i.FileKey,
 		&i.Path,
 		&i.PrUrl,
@@ -277,7 +279,7 @@ SELECT ar.id, ar.principal, ar.role_id, r.name AS role_name, ar.datasource_id, d
        ar.deny_reason, ar.source_decision_id, ar.title, ar.evaluated_decision,
        ar.approved_at, ar.executing_at, ar.executed_at, ar.execute_as, ar.creator_kind,
        ar.statement_carries_protected_literal, ar.source, ar.scope, ar.change_key, ar.merged_at,
-       ar.revision, ar.revised_at, ar.content_hash,
+       ar.revision, ar.revised_at, ar.content_hash, ar.raw_hash,
        ar.file_key, ar.path, ar.pr_url, ar.repository, ar.pr, ar.default_schema, ar.pr_auto_merge,
        ar.head_sha, ar.merge_sha, ar.approved_review_id, ar.filed_head, ar.key_order, ar.force_run, ar.force_run_by,
        (SELECT coalesce(array_agg(p.principal ORDER BY p.principal), '{}') FROM request_participant p
@@ -323,6 +325,7 @@ type AccessRequestsRow struct {
 	Revision                         int32
 	RevisedAt                        *time.Time
 	ContentHash                      *string
+	RawHash                          *string
 	FileKey                          *string
 	Path                             *string
 	PrUrl                            *string
@@ -385,6 +388,7 @@ func (q *Queries) AccessRequests(ctx context.Context) ([]AccessRequestsRow, erro
 			&i.Revision,
 			&i.RevisedAt,
 			&i.ContentHash,
+			&i.RawHash,
 			&i.FileKey,
 			&i.Path,
 			&i.PrUrl,
@@ -422,7 +426,7 @@ SELECT ar.id, ar.principal, ar.role_id, r.name AS role_name, ar.datasource_id, d
        ar.deny_reason, ar.source_decision_id, ar.title, ar.evaluated_decision,
        ar.approved_at, ar.executing_at, ar.executed_at, ar.execute_as, ar.creator_kind,
        ar.statement_carries_protected_literal, ar.source, ar.scope, ar.change_key, ar.merged_at,
-       ar.revision, ar.revised_at, ar.content_hash,
+       ar.revision, ar.revised_at, ar.content_hash, ar.raw_hash,
        ar.file_key, ar.path, ar.pr_url, ar.repository, ar.pr, ar.default_schema, ar.pr_auto_merge,
        ar.head_sha, ar.merge_sha, ar.approved_review_id, ar.filed_head, ar.key_order, ar.force_run, ar.force_run_by,
        (SELECT coalesce(array_agg(p.principal ORDER BY p.principal), '{}') FROM request_participant p
@@ -468,6 +472,7 @@ type AccessRequestsByStatusRow struct {
 	Revision                         int32
 	RevisedAt                        *time.Time
 	ContentHash                      *string
+	RawHash                          *string
 	FileKey                          *string
 	Path                             *string
 	PrUrl                            *string
@@ -530,6 +535,7 @@ func (q *Queries) AccessRequestsByStatus(ctx context.Context, status string) ([]
 			&i.Revision,
 			&i.RevisedAt,
 			&i.ContentHash,
+			&i.RawHash,
 			&i.FileKey,
 			&i.Path,
 			&i.PrUrl,
@@ -672,7 +678,7 @@ SELECT ar.id, ar.principal, ar.role_id, r.name AS role_name, ar.datasource_id, d
        ar.deny_reason, ar.source_decision_id, ar.title, ar.evaluated_decision,
        ar.approved_at, ar.executing_at, ar.executed_at, ar.execute_as, ar.creator_kind,
        ar.statement_carries_protected_literal, ar.source, ar.scope, ar.change_key, ar.merged_at,
-       ar.revision, ar.revised_at, ar.content_hash,
+       ar.revision, ar.revised_at, ar.content_hash, ar.raw_hash,
        ar.file_key, ar.path, ar.pr_url, ar.repository, ar.pr, ar.default_schema, ar.pr_auto_merge,
        ar.head_sha, ar.merge_sha, ar.approved_review_id, ar.filed_head, ar.key_order, ar.force_run, ar.force_run_by,
        (SELECT coalesce(array_agg(p.principal ORDER BY p.principal), '{}') FROM request_participant p
@@ -721,6 +727,7 @@ type InvolvedRequestsRow struct {
 	Revision                         int32
 	RevisedAt                        *time.Time
 	ContentHash                      *string
+	RawHash                          *string
 	FileKey                          *string
 	Path                             *string
 	PrUrl                            *string
@@ -783,6 +790,7 @@ func (q *Queries) InvolvedRequests(ctx context.Context, principal string) ([]Inv
 			&i.Revision,
 			&i.RevisedAt,
 			&i.ContentHash,
+			&i.RawHash,
 			&i.FileKey,
 			&i.Path,
 			&i.PrUrl,
@@ -912,7 +920,7 @@ SELECT ar.id, ar.principal, ar.role_id, r.name AS role_name, ar.datasource_id, d
        ar.deny_reason, ar.source_decision_id, ar.title, ar.evaluated_decision,
        ar.approved_at, ar.executing_at, ar.executed_at, ar.execute_as, ar.creator_kind,
        ar.statement_carries_protected_literal, ar.source, ar.scope, ar.change_key, ar.merged_at,
-       ar.revision, ar.revised_at, ar.content_hash,
+       ar.revision, ar.revised_at, ar.content_hash, ar.raw_hash,
        ar.file_key, ar.path, ar.pr_url, ar.repository, ar.pr, ar.default_schema, ar.pr_auto_merge,
        ar.head_sha, ar.merge_sha, ar.approved_review_id, ar.filed_head, ar.key_order, ar.force_run, ar.force_run_by,
        (SELECT coalesce(array_agg(p.principal ORDER BY p.principal), '{}') FROM request_participant p
@@ -958,6 +966,7 @@ type OwnApprovalsRow struct {
 	Revision                         int32
 	RevisedAt                        *time.Time
 	ContentHash                      *string
+	RawHash                          *string
 	FileKey                          *string
 	Path                             *string
 	PrUrl                            *string
@@ -1020,6 +1029,7 @@ func (q *Queries) OwnApprovals(ctx context.Context, principal string) ([]OwnAppr
 			&i.Revision,
 			&i.RevisedAt,
 			&i.ContentHash,
+			&i.RawHash,
 			&i.FileKey,
 			&i.Path,
 			&i.PrUrl,
@@ -1057,7 +1067,7 @@ SELECT ar.id, ar.principal, ar.role_id, r.name AS role_name, ar.datasource_id, d
        ar.deny_reason, ar.source_decision_id, ar.title, ar.evaluated_decision,
        ar.approved_at, ar.executing_at, ar.executed_at, ar.execute_as, ar.creator_kind,
        ar.statement_carries_protected_literal, ar.source, ar.scope, ar.change_key, ar.merged_at,
-       ar.revision, ar.revised_at, ar.content_hash,
+       ar.revision, ar.revised_at, ar.content_hash, ar.raw_hash,
        ar.file_key, ar.path, ar.pr_url, ar.repository, ar.pr, ar.default_schema, ar.pr_auto_merge,
        ar.head_sha, ar.merge_sha, ar.approved_review_id, ar.filed_head, ar.key_order, ar.force_run, ar.force_run_by,
        (SELECT coalesce(array_agg(p.principal ORDER BY p.principal), '{}') FROM request_participant p
@@ -1108,6 +1118,7 @@ type OwnApprovalsByStatusRow struct {
 	Revision                         int32
 	RevisedAt                        *time.Time
 	ContentHash                      *string
+	RawHash                          *string
 	FileKey                          *string
 	Path                             *string
 	PrUrl                            *string
@@ -1170,6 +1181,7 @@ func (q *Queries) OwnApprovalsByStatus(ctx context.Context, arg OwnApprovalsBySt
 			&i.Revision,
 			&i.RevisedAt,
 			&i.ContentHash,
+			&i.RawHash,
 			&i.FileKey,
 			&i.Path,
 			&i.PrUrl,

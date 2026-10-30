@@ -46,7 +46,6 @@ import com.ridi.oss.proxymonster.analyzer.pb.column
 import com.ridi.oss.proxymonster.grpc.resultRequirements
 import com.ridi.oss.proxymonster.analyzer.pb.namespace as pbNamespace
 import com.ridi.oss.proxymonster.probe.Analyzer
-import com.ridi.oss.proxymonster.probe.Dialect
 import com.ridi.oss.proxymonster.probe.Masking
 import com.ridi.oss.proxymonster.probe.analyzerFor
 import com.ridi.oss.proxymonster.probe.bindMasks
@@ -457,7 +456,6 @@ fun decideQuery(
     factsOverride: StatementFacts? = null,
 ): DecisionContext {
     val id = ds.id
-    val dialect = ds.engine.dialect
     if (liveSearchPath != null && liveSearchPath.isEmpty() && catalog.columns.isNotEmpty()) {
         return structuralDeny(CATALOG_CONFIGURATION_DENY, emptyList(), failedStage = "catalog").copy(catalogMiss = true)
     }

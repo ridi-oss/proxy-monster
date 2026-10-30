@@ -1,7 +1,6 @@
 package config
 
 import (
-	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	"net/netip"
 	"os"
 	"slices"
@@ -9,23 +8,31 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
 // clearPMEnv resets every PM_* var this package reads, so a developer's ambient environment can never
 // leak into a test's expectations.
 //
-// Vars with a kong `default:` tag (Engine, TargetHost, TargetDb, TargetUser, TargetPassword,
-// ControlPlaneGrpcTarget) must be genuinely UNSET, not set-to-"": kong only applies the default when the
-// var is absent — a var explicitly set to "" is treated as present with an empty value. Vars with no
-// default (blank == absent either way, including the string-typed ports which Load(testRegistry()) parses
-// via parsePort) are set to "" via t.Setenv.
+// Vars with a kong `default:` tag (Engine, ControlPlaneGrpcTarget) must be genuinely UNSET, not set-to-"":
+// kong only applies the default when the var is absent — a var explicitly set to "" is treated as present
+// with an empty value. Vars with no default (blank == absent either way, including the string-typed ports
+// which Load parses via parsePort) are set to "" via t.Setenv.
 type configTestProvider struct {
 	engine *engines.Engine
 }
 
-func (p configTestProvider) Engine() *engines.Engine                       { return p.engine }
-func (configTestProvider) OpenTarget(spi.TargetConfig) (spi.Target, error) { return nil, nil }
+func (p configTestProvider) Engine() *engines.Engine       { return p.engine }
+func (configTestProvider) OpenTarget() (spi.Target, error) { return nil, nil }
+
+func load() (*Config, error) {
+	flags, err := Parse()
+	if err != nil {
+		return nil, err
+	}
+	return Load(flags, testRegistry())
+}
 
 func testRegistry() spi.Registry {
 	return spi.MustRegistry(
@@ -38,16 +45,15 @@ func testRegistry() spi.Registry {
 func clearPMEnv(t *testing.T) {
 	t.Helper()
 	for _, v := range []string{
-		"PM_PROXY_PORT", "PM_TARGET_PORT",
+		"PM_PROXY_PORT",
 		"PM_DATASOURCE_NAME", "PM_DATASOURCE_TAGS", "PM_SECRET_TOKEN",
-		"PM_TLS_CERT", "PM_TLS_KEY", "PM_ADVERTISE_ADDR", "PM_QUERY_TIMEOUT", "PM_TARGET_TLS", "PM_TARGET_CA",
+		"PM_TLS_CERT", "PM_TLS_KEY", "PM_ADVERTISE_ADDR", "PM_QUERY_TIMEOUT",
 		"PM_DATASOURCE_DESCRIPTION", "PM_PROXY_PROTOCOL_PORT", "PM_TRUSTED_PROXIES",
 	} {
 		t.Setenv(v, "")
 	}
 	for _, v := range []string{
-		"PM_ENGINE", "PM_TARGET_HOST",
-		"PM_TARGET_DB", "PM_TARGET_USER", "PM_TARGET_PASSWORD", "PM_CONTROL_PLANE_GRPC",
+		"PM_ENGINE", "PM_CONTROL_PLANE_GRPC",
 	} {
 		unsetEnv(t, v)
 	}
@@ -73,7 +79,7 @@ func unsetEnv(t *testing.T, key string) {
 func TestLoadDefaults(t *testing.T) {
 	clearPMEnv(t)
 
-	cfg, err := Load(testRegistry())
+	cfg, err := load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -82,15 +88,6 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.ProxyPort != 6033 {
 		t.Errorf("ProxyPort = %d, want 6033 (mysql default)", cfg.ProxyPort)
-	}
-	if cfg.TargetPort != 3307 {
-		t.Errorf("TargetPort = %d, want 3307 (mysql default)", cfg.TargetPort)
-	}
-	if cfg.TargetHost != "localhost" {
-		t.Errorf("TargetHost = %q, want localhost", cfg.TargetHost)
-	}
-	if cfg.TargetDb != "acme" || cfg.TargetUser != "acme" || cfg.TargetPassword != "acme" {
-		t.Errorf("target creds = %q/%q/%q, want acme/acme/acme", cfg.TargetDb, cfg.TargetUser, cfg.TargetPassword)
 	}
 	if cfg.ControlPlaneGrpcTarget != "localhost:9090" {
 		t.Errorf("ControlPlaneGrpcTarget = %q, want localhost:9090", cfg.ControlPlaneGrpcTarget)
@@ -117,7 +114,7 @@ func TestLoadAdvertiseAddr(t *testing.T) {
 	t.Setenv("PM_DATASOURCE_NAME", "ds") // required so Validate() only exercises the advertise check
 
 	// Unset => empty (NO loopback guess), and an empty advertise validates fine.
-	cfg, err := Load(testRegistry())
+	cfg, err := load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -130,7 +127,7 @@ func TestLoadAdvertiseAddr(t *testing.T) {
 
 	// An explicit value is carried verbatim and validates.
 	t.Setenv("PM_ADVERTISE_ADDR", "proxy.example.ts.net:6033")
-	cfg, _ = Load(testRegistry())
+	cfg, _ = load()
 	if cfg.AdvertiseAddr != "proxy.example.ts.net:6033" {
 		t.Errorf("AdvertiseAddr = %q, want the explicit value", cfg.AdvertiseAddr)
 	}
@@ -141,7 +138,7 @@ func TestLoadAdvertiseAddr(t *testing.T) {
 	// Malformed (no port) and out-of-range ports fail Validate rather than register a dead address.
 	for _, bad := range []string{"not-a-host-port", "host:99999", "host:0"} {
 		t.Setenv("PM_ADVERTISE_ADDR", bad)
-		cfg, _ = Load(testRegistry())
+		cfg, _ = load()
 		if err := cfg.Validate(); err == nil {
 			t.Errorf("PM_ADVERTISE_ADDR=%q should fail Validate", bad)
 		}
@@ -152,7 +149,7 @@ func TestLoadQueryTimeoutOverride(t *testing.T) {
 	clearPMEnv(t)
 	t.Setenv("PM_QUERY_TIMEOUT", "42")
 
-	cfg, err := Load(testRegistry())
+	cfg, err := load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -168,7 +165,7 @@ func TestLoadRejectsInvalidQueryTimeout(t *testing.T) {
 		t.Run(value, func(t *testing.T) {
 			clearPMEnv(t)
 			t.Setenv("PM_QUERY_TIMEOUT", value)
-			if _, err := Load(testRegistry()); err == nil || !strings.Contains(err.Error(), "PM_QUERY_TIMEOUT") {
+			if _, err := load(); err == nil || !strings.Contains(err.Error(), "PM_QUERY_TIMEOUT") {
 				t.Fatalf("Load with PM_QUERY_TIMEOUT=%q error = %v, want PM_QUERY_TIMEOUT error", value, err)
 			}
 		})
@@ -181,7 +178,7 @@ func TestLoadAcceptsMaxQueryTimeout(t *testing.T) {
 	clearPMEnv(t)
 	t.Setenv("PM_QUERY_TIMEOUT", "9223372006")
 
-	cfg, err := Load(testRegistry())
+	cfg, err := load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -194,7 +191,7 @@ func TestLoadPostgresDefaults(t *testing.T) {
 	clearPMEnv(t)
 	t.Setenv("PM_ENGINE", "POSTGRES") // exercise the lowercase normalization
 
-	cfg, err := Load(testRegistry())
+	cfg, err := load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -204,44 +201,33 @@ func TestLoadPostgresDefaults(t *testing.T) {
 	if cfg.ProxyPort != 6432 {
 		t.Errorf("ProxyPort = %d, want 6432 (postgres default)", cfg.ProxyPort)
 	}
-	if cfg.TargetPort != 5433 {
-		t.Errorf("TargetPort = %d, want 5433 (postgres default)", cfg.TargetPort)
-	}
 }
 
-func TestLoadExplicitPortsAreNotOverridden(t *testing.T) {
+func TestLoadExplicitProxyPortIsNotOverridden(t *testing.T) {
 	clearPMEnv(t)
 	t.Setenv("PM_PROXY_PORT", "1234")
-	t.Setenv("PM_TARGET_PORT", "5678")
 
-	cfg, err := Load(testRegistry())
+	cfg, err := load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 	if cfg.ProxyPort != 1234 {
 		t.Errorf("ProxyPort = %d, want 1234", cfg.ProxyPort)
 	}
-	if cfg.TargetPort != 5678 {
-		t.Errorf("TargetPort = %d, want 5678", cfg.TargetPort)
-	}
 }
 
-func TestLoadBlankPortsFallBackToEngineDefaults(t *testing.T) {
+func TestLoadBlankProxyPortFallsBackToEngineDefault(t *testing.T) {
 	// A deploy that leaves an optional port var explicitly blank must still boot on the engine default,
 	// not crash on a parse error.
 	clearPMEnv(t)
-	t.Setenv("PM_PROXY_PORT", "")
-	t.Setenv("PM_TARGET_PORT", "   ")
+	t.Setenv("PM_PROXY_PORT", "   ")
 
-	cfg, err := Load(testRegistry())
+	cfg, err := load()
 	if err != nil {
 		t.Fatalf("Load with blank ports: %v", err)
 	}
 	if cfg.ProxyPort != 6033 {
-		t.Errorf("ProxyPort = %d, want 6033 (mysql default for a blank var)", cfg.ProxyPort)
-	}
-	if cfg.TargetPort != 3307 {
-		t.Errorf("TargetPort = %d, want 3307 (mysql default for a whitespace-only var)", cfg.TargetPort)
+		t.Errorf("ProxyPort = %d, want 6033 (mysql default for a whitespace-only var)", cfg.ProxyPort)
 	}
 }
 
@@ -251,7 +237,7 @@ func TestLoadNonNumericPortsFallBackToEngineDefaults(t *testing.T) {
 	t.Setenv("PM_ENGINE", "postgres")
 	t.Setenv("PM_PROXY_PORT", "not-a-port")
 
-	cfg, err := Load(testRegistry())
+	cfg, err := load()
 	if err != nil {
 		t.Fatalf("Load with non-numeric port: %v", err)
 	}
@@ -260,21 +246,14 @@ func TestLoadNonNumericPortsFallBackToEngineDefaults(t *testing.T) {
 	}
 }
 
-func TestLoadOutOfInt32PortFallsBackToEngineDefault(t *testing.T) {
-	// The port bound is 32-bit: a value outside int32 is "absent" and falls back to the engine default. A
-	// 64-bit parse would instead accept 4294967297 and let cp.Register silently truncate it to int32(1) —
-	// registering the control plane with a bogus but valid-looking target port. Assert the 32-bit bound: an
-	// over-range value is absent, not truncated.
+func TestLoadOutOfInt32ProxyPortFallsBackToEngineDefault(t *testing.T) {
+	// The port bound is 32-bit: a value outside int32 is "absent" and falls back to the engine default.
 	clearPMEnv(t)
-	t.Setenv("PM_TARGET_PORT", "4294967297") // 2^32 + 1: truncates to 1 under a naive int32 cast
-	t.Setenv("PM_PROXY_PORT", "2147483648")  // int32 max + 1
+	t.Setenv("PM_PROXY_PORT", "2147483648") // int32 max + 1
 
-	cfg, err := Load(testRegistry())
+	cfg, err := load()
 	if err != nil {
 		t.Fatalf("Load with out-of-int32 ports: %v", err)
-	}
-	if cfg.TargetPort != 3307 {
-		t.Errorf("TargetPort = %d, want 3307 (out-of-int32 value must fall back to the mysql default, not truncate)", cfg.TargetPort)
 	}
 	if cfg.ProxyPort != 6033 {
 		t.Errorf("ProxyPort = %d, want 6033 (out-of-int32 value must fall back to the mysql default)", cfg.ProxyPort)
@@ -287,7 +266,7 @@ func TestLoadWhitespaceOnlyDatasourceNameIsAbsent(t *testing.T) {
 	clearPMEnv(t)
 	t.Setenv("PM_DATASOURCE_NAME", "   ")
 
-	cfg, err := Load(testRegistry())
+	cfg, err := load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -306,7 +285,7 @@ func TestLoadWhitespaceOnlyTLSPathsAreAbsent(t *testing.T) {
 	t.Setenv("PM_TLS_CERT", "   ")
 	t.Setenv("PM_TLS_KEY", "\t")
 
-	cfg, err := Load(testRegistry())
+	cfg, err := load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -326,7 +305,7 @@ func TestLoadDatasourceTagsSplitTrimAndDropEmpty(t *testing.T) {
 	clearPMEnv(t)
 	t.Setenv("PM_DATASOURCE_TAGS", " preset:production , , preset:pii ,")
 
-	cfg, err := Load(testRegistry())
+	cfg, err := load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -345,7 +324,7 @@ func TestLoadSecretToken(t *testing.T) {
 	clearPMEnv(t)
 	t.Setenv("PM_SECRET_TOKEN", "the-secret")
 
-	cfg, err := Load(testRegistry())
+	cfg, err := load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -359,7 +338,7 @@ func TestTLSEnabled(t *testing.T) {
 	t.Setenv("PM_TLS_CERT", "/cert.pem")
 	t.Setenv("PM_TLS_KEY", "/key.pem")
 
-	cfg, err := Load(testRegistry())
+	cfg, err := load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -441,31 +420,11 @@ func TestValidateOrderDatasourceNameCheckedBeforeEngine(t *testing.T) {
 	}
 }
 
-func TestLoadTargetTLS(t *testing.T) {
-	clearPMEnv(t)
-	cfg, err := Load(testRegistry())
-	if err != nil || cfg.TargetTLS != nil {
-		t.Fatalf("unset PM_TARGET_TLS = %v, %v; want plaintext", cfg.TargetTLS, err)
-	}
-
-	t.Setenv("PM_TARGET_HOST", "db.cluster.example")
-	t.Setenv("PM_TARGET_TLS", "verify-full")
-	cfg, err = Load(testRegistry())
-	if err != nil || cfg.TargetTLS == nil || cfg.TargetTLS.ServerName != "db.cluster.example" || cfg.TargetTLS.InsecureSkipVerify {
-		t.Fatalf("verify-full = %+v, %v; want a verifying config for PM_TARGET_HOST", cfg.TargetTLS, err)
-	}
-
-	t.Setenv("PM_TARGET_TLS", "prefer")
-	if _, err := Load(testRegistry()); err == nil || !strings.Contains(err.Error(), "PM_TARGET_TLS") {
-		t.Fatalf("PM_TARGET_TLS=prefer = %v, want a rejection", err)
-	}
-}
-
 func TestLoadDatasourceDescription(t *testing.T) {
 	clearPMEnv(t)
 	t.Setenv("PM_DATASOURCE_DESCRIPTION", "  Orders and payments  ")
 	t.Setenv("PM_DATASOURCE_NAME", "ds")
-	cfg, err := Load(testRegistry())
+	cfg, err := load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -489,7 +448,7 @@ func TestLoadProxyProtocolPortAndTrustedProxies(t *testing.T) {
 	t.Setenv("PM_PROXY_PROTOCOL_PORT", "16033")
 	t.Setenv("PM_TRUSTED_PROXIES", " 10.20.0.0/16 , 10.30.1.7,, 10.40.1.9/16 ")
 
-	cfg, err := Load(testRegistry())
+	cfg, err := load()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -513,7 +472,7 @@ func TestLoadProxyProtocolPortAndTrustedProxies(t *testing.T) {
 func TestLoadRejectsAnUnparsableTrustedProxy(t *testing.T) {
 	clearPMEnv(t)
 	t.Setenv("PM_TRUSTED_PROXIES", "10.20.0.0/16,edge.internal")
-	if _, err := Load(testRegistry()); err == nil {
+	if _, err := load(); err == nil {
 		t.Fatal("Load accepted a trusted proxy that is not an address")
 	}
 }
@@ -521,7 +480,7 @@ func TestLoadRejectsAnUnparsableTrustedProxy(t *testing.T) {
 func TestLoadRejectsAGarbledProxyProtocolPort(t *testing.T) {
 	clearPMEnv(t)
 	t.Setenv("PM_PROXY_PROTOCOL_PORT", "16o33")
-	if _, err := Load(testRegistry()); err == nil {
+	if _, err := load(); err == nil {
 		t.Fatal("Load silently dropped a garbled PROXY protocol port")
 	}
 }
@@ -530,7 +489,7 @@ func TestValidateRequiresATrustedSenderForTheProxyProtocolPort(t *testing.T) {
 	clearPMEnv(t)
 	t.Setenv("PM_DATASOURCE_NAME", "ds")
 	t.Setenv("PM_PROXY_PROTOCOL_PORT", "16033")
-	cfg, err := Load(testRegistry())
+	cfg, err := load()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -544,7 +503,7 @@ func TestValidateRejectsAProxyProtocolPortEqualToTheWirePort(t *testing.T) {
 	t.Setenv("PM_DATASOURCE_NAME", "ds")
 	t.Setenv("PM_PROXY_PROTOCOL_PORT", "6033")
 	t.Setenv("PM_TRUSTED_PROXIES", "10.20.0.0/16")
-	cfg, err := Load(testRegistry())
+	cfg, err := load()
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -14,14 +14,14 @@ import (
 )
 
 // Provider registers the Athena engine under PM_ENGINE=athena. OpenTarget reads the target scope from the
-// environment (PM_TARGET_DB is the default database) and pins the AWS identity; the Db then serves the
+// environment (PM_TARGET_DB is the default database) and pins the AWS identity; the target then serves the
 // Athena JSON API to clients and editor sessions.
 type Provider struct{}
 
 func (Provider) Engine() *engines.Engine { return engines.Athena }
 
-func (Provider) OpenTarget(config spi.TargetConfig) (spi.Target, error) {
-	cfg, err := configure(os.LookupEnv, config)
+func (Provider) OpenTarget() (spi.Target, error) {
+	cfg, err := configure(os.LookupEnv)
 	if err != nil {
 		return nil, err
 	}

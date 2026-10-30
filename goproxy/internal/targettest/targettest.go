@@ -17,7 +17,6 @@ import (
 	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
-	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
 	"google.golang.org/protobuf/proto"
 )
@@ -94,9 +93,9 @@ func QueryStrings(conn *sql.Conn, statement string, expectedColumns int) ([][]*s
 	return result, nil
 }
 
-func IntrospectTarget(t *testing.T, open func(spi.TargetConfig) (*sql.DB, error), queries sqldb.Queries, probe sqldb.NamespaceProbe, targetConfig dbtest.TargetDb, database string) *pb.CatalogRequest {
+func IntrospectTarget(t *testing.T, open func(sqldb.Settings) (*sql.DB, error), queries sqldb.Queries, probe sqldb.NamespaceProbe, targetConfig dbtest.TargetDb, database string) *pb.CatalogRequest {
 	t.Helper()
-	pool, err := open(spi.TargetConfig{Host: targetConfig.Host, Port: targetConfig.Port, Db: database, User: targetConfig.User, Password: targetConfig.Password})
+	pool, err := open(sqldb.Settings{Host: targetConfig.Host, Port: targetConfig.Port, Db: database, User: targetConfig.User, Password: targetConfig.Password})
 	if err != nil {
 		t.Fatalf("open target: %v", err)
 	}

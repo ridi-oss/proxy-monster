@@ -26,6 +26,7 @@ import (
 	"github.com/ridi-oss/proxy-monster/goproxy/postgres"
 	"github.com/ridi-oss/proxy-monster/goproxy/proxytls"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
+	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
 )
 
 const (
@@ -274,7 +275,7 @@ func startBrokerForDBSetup(t *testing.T, targetConfig dbtest.TargetDb, database 
 	if setup != nil {
 		setup(fake)
 	}
-	config := spi.TargetConfig{
+	config := sqldb.Settings{
 		Host:     targetConfig.Host,
 		Port:     targetConfig.Port,
 		Db:       database,
@@ -290,7 +291,7 @@ func startBrokerTLS(t *testing.T) *brokerHarness {
 	targetConfig := seedTargetDb(t)
 	fake, cpClient := startFakeCP(t)
 	tlsProvider := proxytls.NewReloading("../proxytls/testdata/ec.crt", "../proxytls/testdata/ec-sec1.key")
-	config := spi.TargetConfig{
+	config := sqldb.Settings{
 		Host:     targetConfig.Host,
 		Port:     targetConfig.Port,
 		Db:       "app",

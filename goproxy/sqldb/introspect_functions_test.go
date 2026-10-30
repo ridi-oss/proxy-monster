@@ -9,7 +9,6 @@ import (
 	analyzerpb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
-	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -19,7 +18,7 @@ func routinesQueries(query string) sqldb.Queries {
 	return queries
 }
 
-func runRoutinesQuery(query string, config spi.TargetConfig) (*pb.CatalogRequest, error) {
+func runRoutinesQuery(query string, config sqldb.Settings) (*pb.CatalogRequest, error) {
 	return runWith(mysql.OpenPool, routinesQueries(query), mysql.ProbeNamespace, config)
 }
 
@@ -35,7 +34,7 @@ func TestRoutinesObservation(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	config := spi.TargetConfig{Host: targetConfig.Host, Port: targetConfig.Port, Db: schema, User: targetConfig.User, Password: targetConfig.Password}
+	config := sqldb.Settings{Host: targetConfig.Host, Port: targetConfig.Port, Db: schema, User: targetConfig.User, Password: targetConfig.Password}
 	t.Run("routines fold and group by schema", func(t *testing.T) {
 		catalog, err := runRoutinesQuery("SELECT 'app', 'LOOKUP' UNION ALL SELECT 'app', 'lookup' UNION ALL SELECT 'mysql', 'PLUGIN_FN'", config)
 		if err != nil {

@@ -16,7 +16,7 @@ import (
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/relay"
-	"github.com/ridi-oss/proxy-monster/goproxy/spi"
+	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
 	"github.com/ridi-oss/proxy-monster/mysqlwire"
 )
 
@@ -183,7 +183,7 @@ func TestDialTargetDbCachingSHA2FullAuth(t *testing.T) {
 	}
 	t.Cleanup(func() { testHookCachingSHA2FullAuth = nil })
 
-	config := spi.TargetConfig{
+	config := sqldb.Settings{
 		Host:     targetConfig.Host,
 		Port:     targetConfig.Port,
 		Db:       targetConfig.DB,

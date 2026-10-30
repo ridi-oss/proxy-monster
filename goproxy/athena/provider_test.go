@@ -16,7 +16,6 @@ import (
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
-	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
 type endpointTransport struct {
@@ -80,7 +79,7 @@ func TestProviderConfiguration(t *testing.T) {
 		{"host port advertised", map[string]string{"AWS_REGION": "us-east-1", "PM_ADVERTISE_ADDR": "proxy.example:6443"}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := configure(func(key string) (string, bool) { value, ok := tc.env[key]; return value, ok }, spi.TargetConfig{Db: "example"})
+			_, err := configure(func(key string) (string, bool) { value, ok := tc.env[key]; return value, ok })
 			if (err == nil) != tc.valid {
 				t.Fatalf("configure error = %v; valid = %v", err, tc.valid)
 			}

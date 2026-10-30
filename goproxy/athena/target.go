@@ -9,7 +9,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsa "github.com/aws/aws-sdk-go-v2/service/athena"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
-	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
 // target is one configured Athena datasource: the SDK client bound to the regional endpoint, the signer and
@@ -50,11 +49,6 @@ func newTarget(ctx context.Context, cfg targetConfig, awsCfg aws.Config, transpo
 		return nil, err
 	}
 	return &target{config: cfg, api: api, endpoint: endpoint, sign: signAWS(identity, cfg.region), transport: transport, identity: identity, binding: identity.targetBinding(cfg, endpoint), contexts: contexts}, nil
-}
-
-func (t *target) Config() spi.TargetConfig {
-	u, _ := url.Parse(t.endpoint)
-	return spi.TargetConfig{Host: u.Hostname(), Port: 443, Db: t.config.database}
 }
 
 func (t *target) TargetInfo() string {

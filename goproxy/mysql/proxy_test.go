@@ -31,6 +31,7 @@ import (
 	"github.com/ridi-oss/proxy-monster/goproxy/mysql"
 	"github.com/ridi-oss/proxy-monster/goproxy/proxytls"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
+	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
 	"github.com/ridi-oss/proxy-monster/mysqlwire"
 )
 
@@ -306,14 +307,14 @@ func startBrokerWithTLS(t *testing.T, tlsProvider func() (*tls.Config, error)) *
 
 func startBrokerListening(t *testing.T, listen spi.Listen, tlsProvider func() (*tls.Config, error)) *brokerHarness {
 	t.Helper()
-	return startBrokerRouted(t, listen, tlsProvider, func(config spi.TargetConfig) spi.TargetConfig { return config })
+	return startBrokerRouted(t, listen, tlsProvider, func(config sqldb.Settings) sqldb.Settings { return config })
 }
 
-func startBrokerRouted(t *testing.T, listen spi.Listen, tlsProvider func() (*tls.Config, error), route func(spi.TargetConfig) spi.TargetConfig) *brokerHarness {
+func startBrokerRouted(t *testing.T, listen spi.Listen, tlsProvider func() (*tls.Config, error), route func(sqldb.Settings) sqldb.Settings) *brokerHarness {
 	t.Helper()
 	targetConfig := seedTargetDb(t)
 	fake, cpClient := startFakeCP(t)
-	config := spi.TargetConfig{
+	config := sqldb.Settings{
 		Host:     targetConfig.Host,
 		Port:     targetConfig.Port,
 		Db:       primarySchema,
@@ -482,11 +483,11 @@ func TestOnOpenEqualHashPushesUnchangedWithoutColumns(t *testing.T) {
 func TestOnOpenFailureRefusesConnectionAndClosesCPState(t *testing.T) {
 	for _, test := range []struct {
 		name  string
-		route func(spi.TargetConfig) spi.TargetConfig
+		route func(sqldb.Settings) sqldb.Settings
 		setup func(*fakeControlPlane)
 	}{
 		{"introspection", dropOnSend(t, "information_schema.COLUMNS"), func(*fakeControlPlane) {}},
-		{"push", func(config spi.TargetConfig) spi.TargetConfig { return config }, func(fake *fakeControlPlane) {
+		{"push", func(config sqldb.Settings) sqldb.Settings { return config }, func(fake *fakeControlPlane) {
 			fake.setPushError(status.Error(codes.Unavailable, "catalog unavailable"))
 		}},
 	} {
@@ -514,8 +515,8 @@ func TestOnOpenFailureRefusesConnectionAndClosesCPState(t *testing.T) {
 }
 
 // dropOnSend relays to the target DB and closes both sides once the broker sends bytes containing marker.
-func dropOnSend(t *testing.T, marker string) func(spi.TargetConfig) spi.TargetConfig {
-	return func(config spi.TargetConfig) spi.TargetConfig {
+func dropOnSend(t *testing.T, marker string) func(sqldb.Settings) sqldb.Settings {
+	return func(config sqldb.Settings) sqldb.Settings {
 		ln, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
 			t.Fatal(err)
@@ -1495,7 +1496,7 @@ func TestLegacyEOFRelayRewriteAndPing(t *testing.T) {
 }
 
 func TestOversizedUnauthenticatedHandshakeIsRejectedWithoutBody(t *testing.T) {
-	server := mysql.New(spi.Listen{}, spi.TargetConfig{}, nil, nil)
+	server := mysql.New(spi.Listen{}, sqldb.Settings{}, nil, nil)
 	if err := server.Listen(); err != nil {
 		t.Fatalf("Listen: %v", err)
 	}

@@ -25,7 +25,7 @@ type connection struct {
 	session      *engines.Session
 	// targetConnectionID is the target's id for this connection, which KILL QUERY names.
 	targetConnectionID uint32
-	config             spi.TargetConfig
+	config             sqldb.Settings
 	authz              *spi.Authorizer
 	commandRunner      *sqldb.ProxyCommandRunner
 	guard              spi.ExecGuard
@@ -38,7 +38,7 @@ var errTargetDbUnavailable = errors.New("target DB unavailable")
 
 // openConnection dials the target as goproxy's own user, wraps the socket, and builds the connection on it,
 // for a wire client and an editor session alike.
-func openConnection(ctx context.Context, config spi.TargetConfig, authz *spi.Authorizer, guard spi.ExecGuard, deprecateEOF bool, wrap func(net.Conn) net.Conn) (*connection, error) {
+func openConnection(ctx context.Context, config sqldb.Settings, authz *spi.Authorizer, guard spi.ExecGuard, deprecateEOF bool, wrap func(net.Conn) net.Conn) (*connection, error) {
 	generation, ok := wire.NextBackendGeneration()
 	if !ok {
 		return nil, errors.New("backend generation out of range")

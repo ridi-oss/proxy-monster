@@ -200,7 +200,7 @@ func TestIdentityFromWire(t *testing.T) {
 		name string
 		wire *pb.WireIdentity
 	}{
-		{"short id", &pb.WireIdentity{ConnectionId: []byte("short")}},
+		{"missing id", &pb.WireIdentity{}},
 		{"blank on-open schema", &pb.WireIdentity{ConnectionId: []byte("0123456789abcdef"), OnOpen: []*pb.ProxyCommand{refetch("", nil)}}},
 		{"unknown on-open command", &pb.WireIdentity{ConnectionId: []byte("0123456789abcdef"), OnOpen: []*pb.ProxyCommand{{}}}},
 	} {
@@ -413,17 +413,17 @@ func TestValidateTokenMapsRequestAndIdentity(t *testing.T) {
 	}
 }
 
-func TestValidateTokenRejectedAndMalformed(t *testing.T) {
+func TestValidateTokenRejectedAndMissingID(t *testing.T) {
 	t.Run("rejected", func(t *testing.T) {
 		c := startFakeControlPlane(t, &fakeControlPlane{validateErr: status.Error(codes.Unauthenticated, "invalid token")})
 		if _, err := c.ValidateToken("bad", ""); err == nil || !strings.Contains(err.Error(), "invalid token") {
 			t.Fatalf("ValidateToken error = %v", err)
 		}
 	})
-	t.Run("malformed id", func(t *testing.T) {
-		c := startFakeControlPlane(t, &fakeControlPlane{validateResp: &pb.WireIdentity{ConnectionId: []byte("bad")}})
+	t.Run("missing id", func(t *testing.T) {
+		c := startFakeControlPlane(t, &fakeControlPlane{validateResp: &pb.WireIdentity{}})
 		if _, err := c.ValidateToken("token", ""); err == nil {
-			t.Fatal("ValidateToken accepted malformed connection id")
+			t.Fatal("ValidateToken accepted a missing connection id")
 		}
 	})
 }

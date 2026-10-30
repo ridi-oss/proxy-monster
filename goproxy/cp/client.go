@@ -194,8 +194,8 @@ func (c *Client) AuthorizeRequest(parent context.Context, request *pb.RequestAut
 // identityFromWire maps the control plane's WireIdentity into the proxy's session identity. PURE function
 // (no I/O) so it is directly unit-testable.
 func identityFromWire(id *pb.WireIdentity) (spi.Identity, error) {
-	if len(id.GetConnectionId()) != 16 {
-		return spi.Identity{}, fmt.Errorf("control plane returned connection_id with %d bytes, want 16", len(id.GetConnectionId()))
+	if len(id.GetConnectionId()) == 0 {
+		return spi.Identity{}, errors.New("control plane returned no connection_id")
 	}
 	onOpen, err := commandsFromWire(id.GetOnOpen())
 	if err != nil {

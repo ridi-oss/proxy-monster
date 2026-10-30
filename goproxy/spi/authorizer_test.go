@@ -19,7 +19,9 @@ type fakeDecider struct {
 	identity Identity
 }
 
-func (f *fakeDecider) OpenConnection(string, string) (Identity, error) { return f.identity, nil }
+func (f *fakeDecider) OpenConnection(string, string, pb.ConnectionDoor) (Identity, error) {
+	return f.identity, nil
+}
 
 func (f *fakeDecider) Decide(req DecideRequest) DecisionOutcome {
 	f.calls++
@@ -103,7 +105,7 @@ func TestAuthorizePassesConnectionCatalogCallbacks(t *testing.T) {
 	connectionID := []byte("0123456789abcdef")
 	commandRunner := &fakeCommandRunner{}
 	dec.identity = Identity{ConnectionID: connectionID}
-	authz, _, err := Authenticate(dec, "token", "127.0.0.1:1234")
+	authz, _, err := Authenticate(dec, "token", "127.0.0.1:1234", pb.ConnectionDoor_CONNECTION_DOOR_WIRE)
 	if err != nil {
 		t.Fatal(err)
 	}

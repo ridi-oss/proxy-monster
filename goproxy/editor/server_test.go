@@ -21,6 +21,8 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/ridi-oss/proxy-monster/goproxy/cp"
@@ -54,6 +56,10 @@ type editorFakeCP struct {
 	closeRequests    []*pb.CloseConnectionRequest
 	events           []string
 	fragmentPushErr  error
+	rejectRun        bool
+	identity         *pb.WireIdentity
+	openErr          error
+	openRequests     []*pb.OpenConnectionRequest
 	editorCommands   chan *pb.CpEditorMsg
 	editorTranscript chan *pb.ProxyEditorMsg
 	editorReady      chan struct{}
@@ -98,6 +104,19 @@ func (f *editorFakeCP) PushSchemaFragment(_ context.Context, req *pb.SchemaFragm
 	return &pb.SchemaFragmentAck{Generation: uint64(len(f.fragmentPushes))}, nil
 }
 
+func (f *editorFakeCP) OpenConnection(_ context.Context, req *pb.OpenConnectionRequest) (*pb.WireIdentity, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.openRequests = append(f.openRequests, proto.Clone(req).(*pb.OpenConnectionRequest))
+	if f.openErr != nil {
+		return nil, f.openErr
+	}
+	if f.identity == nil {
+		return &pb.WireIdentity{Principal: "run-user", ConnectionId: []byte(editorConnectionID)}, nil
+	}
+	return proto.Clone(f.identity).(*pb.WireIdentity), nil
+}
+
 func (f *editorFakeCP) CloseConnection(_ context.Context, req *pb.CloseConnectionRequest) (*pb.CloseConnectionResponse, error) {
 	cloned := proto.Clone(req).(*pb.CloseConnectionRequest)
 	f.mu.Lock()
@@ -108,6 +127,12 @@ func (f *editorFakeCP) CloseConnection(_ context.Context, req *pb.CloseConnectio
 }
 
 func (f *editorFakeCP) EditorExec(stream grpc.BidiStreamingServer[pb.ProxyEditorMsg, pb.CpEditorMsg]) error {
+	f.mu.Lock()
+	reject := f.rejectRun
+	f.mu.Unlock()
+	if reject {
+		return status.Error(codes.Unavailable, "editor stream rejected")
+	}
 	first, err := stream.Recv()
 	if err != nil {
 		return err
@@ -285,19 +310,17 @@ func TestServerPostgresTempTablesAreSessionIsolated(t *testing.T) {
 	readSQL := "SELECT id FROM " + tempTable
 
 	fake1, client1 := editorStartFakeCP(t, editorSessionID+"-temp-1")
-	editorLaunchOpen(t, fake1, client1, fixture, &pb.OpenEditorSession{
-		SessionId:      editorSessionID + "-temp-1",
-		EphemeralToken: editorToken,
-		ConnectionId:   []byte("temp-session-001"),
-		OnOpen:         []*pb.ProxyCommand{&pb.ProxyCommand{Command: &pb.ProxyCommand_Refetch{Refetch: &pb.Refetch{Catalog: fixture.editorConfig.Db, Schema: editorPGSchema}}}},
-	})
+	fake1.identity = &pb.WireIdentity{
+		ConnectionId: []byte("temp-session-001"),
+		OnOpen:       []*pb.ProxyCommand{{Command: &pb.ProxyCommand_Refetch{Refetch: &pb.Refetch{Catalog: fixture.editorConfig.Db, Schema: editorPGSchema}}}},
+	}
+	editorLaunchOpen(t, fake1, client1, fixture, &pb.OpenEditorSession{SessionId: editorSessionID + "-temp-1", EphemeralToken: editorToken})
 	fake2, client2 := editorStartFakeCP(t, editorSessionID+"-temp-2")
-	editorLaunchOpen(t, fake2, client2, fixture, &pb.OpenEditorSession{
-		SessionId:      editorSessionID + "-temp-2",
-		EphemeralToken: editorToken,
-		ConnectionId:   []byte("temp-session-002"),
-		OnOpen:         []*pb.ProxyCommand{&pb.ProxyCommand{Command: &pb.ProxyCommand_Refetch{Refetch: &pb.Refetch{Catalog: fixture.editorConfig.Db, Schema: editorPGSchema}}}},
-	})
+	fake2.identity = &pb.WireIdentity{
+		ConnectionId: []byte("temp-session-002"),
+		OnOpen:       []*pb.ProxyCommand{{Command: &pb.ProxyCommand_Refetch{Refetch: &pb.Refetch{Catalog: fixture.editorConfig.Db, Schema: editorPGSchema}}}},
+	}
+	editorLaunchOpen(t, fake2, client2, fixture, &pb.OpenEditorSession{SessionId: editorSessionID + "-temp-2", EphemeralToken: editorToken})
 
 	editorSendQuery(fake1, createSQL, 20)
 	editorExpectSuccess(t, fake1, 0)
@@ -342,58 +365,64 @@ func editorRequestHasTempTable(request *pb.DecisionRequest, table, column string
 	return false
 }
 
-func TestServerMalformedOpen(t *testing.T) {
+func TestServerAdmissionFailure(t *testing.T) {
 	fixture := editorSeedMySQL(t)
 	tests := []struct {
-		name   string
-		open   *pb.OpenEditorSession
-		mapErr error
+		name  string
+		setup func(*editorFakeCP)
 	}{
-		{
-			name: "mapping error closes valid connection",
-			open: &pb.OpenEditorSession{
-				SessionId:      editorSessionID,
-				EphemeralToken: editorToken,
-				ConnectionId:   []byte(editorConnectionID),
-			},
-			mapErr: errors.New("unsupported editor-session open command"),
-		},
-		{
-			name: "bad connection id fails without close",
-			open: &pb.OpenEditorSession{
-				SessionId:      editorSessionID + "-bad-id",
-				EphemeralToken: editorToken,
-				ConnectionId:   []byte("short"),
-			},
-		},
+		{"rejected token", func(f *editorFakeCP) { f.openErr = status.Error(codes.Unauthenticated, "invalid token") }},
+		{"missing connection id", func(f *editorFakeCP) { f.identity = &pb.WireIdentity{} }},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			fake, client := editorStartFakeCP(t, test.open.GetSessionId())
+			fake, client := editorStartFakeCP(t, editorSessionID)
+			test.setup(fake)
 			done := make(chan struct{})
 			go func() {
-				editor.NewServer(client, fixture.editorTarget, 0).Serve(test.open, test.mapErr, nil)
+				editor.NewServer(client, fixture.editorTarget, 0).Serve(&pb.OpenEditorSession{SessionId: editorSessionID, EphemeralToken: editorToken}, nil)
 				close(done)
 			}()
-			// The stream sends its session id (EditorReady) the instant it opens, before the open is validated, so even
-			// a malformed open is attributable to its pending session; the EditorError follows.
+			// The stream sends its session id (EditorReady) the instant it opens, before the connection is admitted, so
+			// a refused admission is attributable to its pending session; the EditorError follows.
 			if first := editorRecv(t, fake); first.GetSessionReady() == nil {
-				t.Fatalf("first frame = %v, want SessionReady before the malformed-open error", first)
+				t.Fatalf("first frame = %v, want SessionReady before the admission error", first)
 			}
 			if message := editorRecv(t, fake); message.GetError() == nil {
-				t.Fatalf("malformed open message = %v, want EditorError after SessionReady", message)
+				t.Fatalf("admission failure message = %v, want EditorError after SessionReady", message)
 			}
 			select {
 			case <-done:
 			case <-time.After(10 * time.Second):
-				t.Fatal("server did not terminate after malformed open")
+				t.Fatal("server did not terminate after a refused admission")
 			}
-			if len(test.open.GetConnectionId()) == 16 {
-				editorExpectSingleClose(t, fake)
-			} else if closes := fake.editorRecordedCloses(); len(closes) != 0 {
-				t.Fatalf("CloseConnection requests = %v, want none for malformed id", closes)
+			if closes := fake.editorRecordedCloses(); len(closes) != 0 {
+				t.Fatalf("CloseConnection requests = %v, want none for a connection never admitted", closes)
 			}
 		})
+	}
+}
+
+func TestServerReleasesWhenTheStreamDiesBeforeTheOpen(t *testing.T) {
+	fixture := editorSeedMySQL(t)
+	fake, client := editorStartFakeCP(t, editorSessionID)
+	fake.rejectRun = true
+	done := make(chan struct{})
+	go func() {
+		editor.NewServer(client, fixture.editorTarget, 0).Serve(editorOpenOn(fake, fixture), nil)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("server did not terminate after the editor stream was rejected")
+	}
+	// The stream may die before admission, when there is nothing to release; whatever was admitted is released once.
+	fake.mu.Lock()
+	opens := len(fake.openRequests)
+	fake.mu.Unlock()
+	if closes := fake.editorRecordedCloses(); len(closes) != opens {
+		t.Fatalf("CloseConnection requests = %d, want one per admitted connection (%d)", len(closes), opens)
 	}
 }
 
@@ -1037,7 +1066,7 @@ func TestServerMySQLOpensInDefaultSchema(t *testing.T) {
 		}
 	}
 	fake, client := editorStartFakeCP(t, editorSessionID)
-	open := editorOpen(fixture)
+	open := editorOpenOn(fake, fixture)
 	open.DefaultSchema = altSchema
 	editorLaunchOpen(t, fake, client, fixture, open)
 	editorExpectServingNamespace(t, fake, []string{altSchema})
@@ -1046,7 +1075,7 @@ func TestServerMySQLOpensInDefaultSchema(t *testing.T) {
 func TestServerPostgresOpensInDefaultSchema(t *testing.T) {
 	fixture := editorSeedPostgres(t)
 	fake, client := editorStartFakeCP(t, editorSessionID)
-	open := editorOpen(fixture)
+	open := editorOpenOn(fake, fixture)
 	open.DefaultSchema = editorPGSchema
 	editorLaunchOpen(t, fake, client, fixture, open)
 	editorExpectServingNamespace(t, fake, []string{"pg_catalog", editorPGSchema})
@@ -1335,7 +1364,7 @@ func TestServerDrainReturnsWhenIdle(t *testing.T) {
 	draining := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
-		editor.NewServer(client, fixture.editorTarget, 0).Serve(editorOpen(fixture), nil, draining)
+		editor.NewServer(client, fixture.editorTarget, 0).Serve(editorOpenOn(fake, fixture), draining)
 		close(done)
 	}()
 
@@ -1357,7 +1386,7 @@ func TestServerDrainLetsInFlightStatementFinish(t *testing.T) {
 	draining := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
-		editor.NewServer(client, fixture.editorTarget, 0).Serve(editorOpen(fixture), nil, draining)
+		editor.NewServer(client, fixture.editorTarget, 0).Serve(editorOpenOn(fake, fixture), draining)
 		close(done)
 	}()
 
@@ -1389,7 +1418,7 @@ func TestServerDrainDoesNotStartAQueuedQuery(t *testing.T) {
 	draining := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
-		editor.NewServer(client, fixture.editorTarget, 0).Serve(editorOpen(fixture), nil, draining)
+		editor.NewServer(client, fixture.editorTarget, 0).Serve(editorOpenOn(fake, fixture), draining)
 		close(done)
 	}()
 
@@ -1423,7 +1452,7 @@ func TestServerSendsEditorReadyBeforeTargetDbOpenAndHeartbeats(t *testing.T) {
 	fake, client := editorStartFakeCP(t, editorSessionID)
 	done := make(chan struct{})
 	go func() {
-		editor.NewServer(client, fixture.editorTarget, 0).Serve(editorOpen(fixture), nil, nil)
+		editor.NewServer(client, fixture.editorTarget, 0).Serve(editorOpenOn(fake, fixture), nil)
 		close(done)
 	}()
 
@@ -1479,7 +1508,7 @@ func TestServerCloseDuringTargetDbOpenAbortsTargetDb(t *testing.T) {
 	fake, client := editorStartFakeCP(t, editorSessionID)
 	done := make(chan struct{})
 	go func() {
-		editor.NewServer(client, fixture.editorTarget, 0).Serve(editorOpen(fixture), nil, nil)
+		editor.NewServer(client, fixture.editorTarget, 0).Serve(editorOpenOn(fake, fixture), nil)
 		close(done)
 	}()
 
@@ -1507,7 +1536,7 @@ func TestServerDrainDuringTargetDbOpenAbortsTargetDb(t *testing.T) {
 	draining := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
-		editor.NewServer(client, fixture.editorTarget, 0).Serve(editorOpen(fixture), nil, draining)
+		editor.NewServer(client, fixture.editorTarget, 0).Serve(editorOpenOn(fake, fixture), draining)
 		close(done)
 	}()
 
@@ -1543,7 +1572,7 @@ func TestServerDrainAsTargetDbOpenCompletesInstallsNoSession(t *testing.T) {
 	fake, client := editorStartFakeCP(t, editorSessionID)
 	done := make(chan struct{})
 	go func() {
-		editor.NewServer(client, fixture.editorTarget, 0).Serve(editorOpen(fixture), nil, draining)
+		editor.NewServer(client, fixture.editorTarget, 0).Serve(editorOpenOn(fake, fixture), draining)
 		close(done)
 	}()
 
@@ -1580,7 +1609,7 @@ func TestServerCloseDuringRealDialAbortsIt(t *testing.T) {
 	fake, client := editorStartFakeCP(t, editorSessionID)
 	done := make(chan struct{})
 	go func() {
-		editor.NewServer(client, mustTarget(t, engines.MySQL, stall.config), 0).Serve(editorStallOpen(), nil, nil)
+		editor.NewServer(client, mustTarget(t, engines.MySQL, stall.config), 0).Serve(editorStallOpen(), nil)
 		close(done)
 	}()
 
@@ -1607,7 +1636,7 @@ func TestServerDrainDuringRealDialAbortsIt(t *testing.T) {
 	draining := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
-		editor.NewServer(client, mustTarget(t, engines.MySQL, stall.config), 0).Serve(editorStallOpen(), nil, draining)
+		editor.NewServer(client, mustTarget(t, engines.MySQL, stall.config), 0).Serve(editorStallOpen(), draining)
 		close(done)
 	}()
 
@@ -1670,14 +1699,14 @@ func editorLaunch(t *testing.T, fake *editorFakeCP, client *cp.Client, fixture e
 
 func editorLaunchWithTimeout(t *testing.T, fake *editorFakeCP, client *cp.Client, fixture editorEngineFixture, queryTimeout time.Duration) func() {
 	t.Helper()
-	return editorLaunchOpenConfigured(t, fake, client, fixture, editorOpen(fixture), queryTimeout, nil)
+	return editorLaunchOpenConfigured(t, fake, client, fixture, editorOpenOn(fake, fixture), queryTimeout, nil)
 }
 
 // editorLaunchConfigured is editorLaunch with a hook to tweak the server (e.g. inject a short watchdog
 // timeout) before Run. It returns a function that blocks until the server goroutine exits.
 func editorLaunchConfigured(t *testing.T, fake *editorFakeCP, client *cp.Client, fixture editorEngineFixture, configure func(*editor.Server)) func() {
 	t.Helper()
-	return editorLaunchOpenConfigured(t, fake, client, fixture, editorOpen(fixture), 0, configure)
+	return editorLaunchOpenConfigured(t, fake, client, fixture, editorOpenOn(fake, fixture), 0, configure)
 }
 
 func editorLaunchOpen(t *testing.T, fake *editorFakeCP, client *cp.Client, fixture editorEngineFixture, open *pb.OpenEditorSession) func() {
@@ -1693,7 +1722,7 @@ func editorLaunchOpenConfigured(t *testing.T, fake *editorFakeCP, client *cp.Cli
 	}
 	done := make(chan struct{})
 	go func() {
-		server.Serve(open, nil, nil)
+		server.Serve(open, nil)
 		close(done)
 	}()
 	select {
@@ -1709,13 +1738,19 @@ func editorLaunchOpenConfigured(t *testing.T, fake *editorFakeCP, client *cp.Cli
 	if ready.GetSessionId() != open.GetSessionId() {
 		t.Fatalf("SessionReady = %v, want session %q", ready, open.GetSessionId())
 	}
-	// SessionReady tells the CP which session the stream is for immediately; the target-DB open (and its on-open
-	// catalog push) runs after it and completes at EditorServing. Wait for serving, then assert the push landed first.
 	select {
 	case <-fake.editorServing:
 	case <-time.After(15 * time.Second):
 		t.Fatal("timed out waiting for EditorServing after the target-DB open")
 	}
+	fake.mu.Lock()
+	opens := append([]*pb.OpenConnectionRequest(nil), fake.openRequests...)
+	fake.mu.Unlock()
+	if len(opens) != 1 || opens[0].GetDoor() != pb.ConnectionDoor_CONNECTION_DOOR_EDITOR || opens[0].GetToken() != open.GetEphemeralToken() {
+		t.Fatalf("OpenConnection requests = %v, want one on the editor door with the editor-door token", opens)
+	}
+	// SessionReady tells the CP which session the stream is for immediately; the target-DB open (and its on-open
+	// catalog push) runs after it and completes at EditorServing, so the push lands first.
 	fragments := fake.editorRecordedFragments()
 	if len(fragments) != 1 || fragments[0].GetSchema() != fixture.editorNamespaceForTable() {
 		t.Fatalf("on-open fragments = %v, want schema %q before EditorServing", fragments, fixture.editorNamespaceForTable())
@@ -1732,16 +1767,19 @@ func editorLaunchOpenConfigured(t *testing.T, fake *editorFakeCP, client *cp.Cli
 	}
 }
 
-func editorOpen(fixture editorEngineFixture) *pb.OpenEditorSession {
-	return &pb.OpenEditorSession{
-		SessionId:      editorSessionID,
-		EphemeralToken: editorToken,
-		ConnectionId:   []byte(editorConnectionID),
+// editorOpenOn is the editor-session open for fixture; fake admits its connection with the fixture's on-open refetch.
+func editorOpenOn(fake *editorFakeCP, fixture editorEngineFixture) *pb.OpenEditorSession {
+	fake.mu.Lock()
+	fake.identity = &pb.WireIdentity{
+		Principal:    "run-user",
+		ConnectionId: []byte(editorConnectionID),
 		OnOpen: []*pb.ProxyCommand{{Command: &pb.ProxyCommand_Refetch{Refetch: &pb.Refetch{
 			Catalog: fixture.editorCatalog(),
 			Schema:  fixture.editorNamespaceForTable(),
 		}}}},
 	}
+	fake.mu.Unlock()
+	return &pb.OpenEditorSession{SessionId: editorSessionID, EphemeralToken: editorToken}
 }
 
 func editorStartFakeCP(t *testing.T, datasourceName string) (*editorFakeCP, *cp.Client) {
@@ -1970,15 +2008,10 @@ func editorStartStallingTarget(t *testing.T) editorStallingTarget {
 	}
 }
 
-// editorStallOpen is a valid editor-session open whose on-open catalog work is never reached (the dial to a stalling target
-// blocks first), so any schema will do.
+// editorStallOpen is a valid editor-session open whose on-open catalog work is never reached: the dial to a stalling target
+// blocks first.
 func editorStallOpen() *pb.OpenEditorSession {
-	return &pb.OpenEditorSession{
-		SessionId:      editorSessionID,
-		EphemeralToken: editorToken,
-		ConnectionId:   []byte(editorConnectionID),
-		OnOpen:         []*pb.ProxyCommand{&pb.ProxyCommand{Command: &pb.ProxyCommand_Refetch{Refetch: &pb.Refetch{Catalog: "def", Schema: editorMySQLSchema}}}},
-	}
+	return &pb.OpenEditorSession{SessionId: editorSessionID, EphemeralToken: editorToken}
 }
 
 // editorAwaitRealDialInFlight consumes SessionReady and then blocks until the real dial has connected to the

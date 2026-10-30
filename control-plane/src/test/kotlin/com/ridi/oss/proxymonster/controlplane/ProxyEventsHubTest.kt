@@ -18,7 +18,7 @@ import kotlin.test.assertTrue
  */
 class ProxyEventsHubTest {
     private fun requestEditorSession(hub: ProxyEventsHub, name: String) =
-        hub.requestOpenEditorSession(name, "session", "token", ByteString.copyFrom(ByteArray(16)), emptyList())
+        hub.requestOpenEditorSession(name, "session", "token")
 
     @Test
     fun `the open-editor-session event carries the default schema`() {
@@ -26,7 +26,7 @@ class ProxyEventsHubTest {
         val channel = Channel<CpEvent>(Channel.BUFFERED)
         hub.register("ds", channel)
 
-        hub.requestOpenEditorSession("ds", "session", "token", ByteString.copyFrom(ByteArray(16)), emptyList(), defaultSchema = "orders")
+        hub.requestOpenEditorSession("ds", "session", "token", defaultSchema = "orders")
         assertEquals("orders", channel.tryReceive().getOrThrow().openEditorSession.defaultSchema)
         requestEditorSession(hub, "ds")
         assertEquals("", channel.tryReceive().getOrThrow().openEditorSession.defaultSchema, "null keeps the target's default")

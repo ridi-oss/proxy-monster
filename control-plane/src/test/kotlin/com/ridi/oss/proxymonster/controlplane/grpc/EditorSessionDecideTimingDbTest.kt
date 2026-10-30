@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane.grpc
 
+import com.ridi.oss.proxymonster.controlplane.support.openEditorConnection
 import com.ridi.oss.proxymonster.controlplane.ControlPlaneCore
 import com.ridi.oss.proxymonster.controlplane.effectiveCatalog
 import com.ridi.oss.proxymonster.controlplane.Datasource
@@ -118,6 +119,7 @@ class EditorSessionDecideTimingDbTest {
             val sessionIdDeferred = async { service.openSession("timing-user", datasource, requesterIp = "203.0.113.42") }
             val open = withTimeout(5_000) { event.await() }.openEditorSession
             val ephemeralToken = open.ephemeralToken
+            val connectionId = stub.openEditorConnection(open, datasource.name)
 
             // The fake proxy invokes the REAL Decide (session token) WHILE servicing each query, then fabricates
             // an ALLOW so runOnSession returns normally. The Decide verdict is what pins the refresh timing.
@@ -133,7 +135,7 @@ class EditorSessionDecideTimingDbTest {
                                     datasourceName = datasource.name
                                     currentCatalog = datasource.effectiveCatalog
                                     currentCatalog = datasource.effectiveCatalog
-                                    connectionId = open.connectionId
+                                    this.connectionId = connectionId
                                     sql = control.query.sql
                                 },
                             )

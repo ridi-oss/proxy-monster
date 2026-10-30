@@ -1,5 +1,8 @@
 package com.ridi.oss.proxymonster.controlplane.support
 
+import com.ridi.oss.proxymonster.grpc.openConnectionRequest
+import com.ridi.oss.proxymonster.grpc.ConnectionDoor
+import com.google.protobuf.ByteString
 import com.ridi.oss.proxymonster.auth.sha256Hex
 import com.ridi.oss.proxymonster.controlplane.Config
 import com.ridi.oss.proxymonster.controlplane.ControlPlaneCore
@@ -176,6 +179,16 @@ fun JsonObject.errorParams(): JsonObject = getValue("structuredContent").jsonObj
 fun JsonObject.str(name: String): String? = (this[name] as? JsonPrimitive)?.content
 
 fun parseJson(body: String): JsonElement = MCP_TEST_JSON.parseToJsonElement(body)
+
+/** Opens a connection on the editor door, as goproxy does when it admits an editor session, and returns its ID. */
+suspend fun ControlPlaneGrpcKt.ControlPlaneCoroutineStub.openEditorConnection(open: OpenEditorSession, datasourceName: String): ByteString =
+    openConnection(
+        openConnectionRequest {
+            token = open.ephemeralToken
+            this.datasourceName = datasourceName
+            door = ConnectionDoor.CONNECTION_DOOR_EDITOR
+        },
+    ).connectionId
 
 /**
  * Attaches a fake proxy to [datasourceName] over the real gRPC Events stream while [body] runs. Each run the

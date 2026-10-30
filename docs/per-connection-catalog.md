@@ -324,12 +324,11 @@ message Verdict {
 }
 message BeforeDecide { repeated ProxyCommand commands = 1; }
 
-// OpenEditorSession carries on_open so an editor session is just another connection:
+// An editor connection is admitted like a wire client: goproxy opens its connection with OpenConnection on the editor door.
 message OpenEditorSession {
   string session_id = 1;
   string ephemeral_token = 2;
-  bytes  connection_id = 3;            // control-plane-minted for the session
-  repeated ProxyCommand on_open = 4;
+  string default_schema = 5;
 }
 ```
 
@@ -544,9 +543,10 @@ endpoint, same `x-pm-secret-token`), owned by a config-side client in
 
 - The editor session is just another connection. It already holds one target-DB
   connection per session (`EditorExecService.openSession` / one `EditorExec`
-  stream). `OpenEditorSession` carries `connection_id` + `on_open`; the proxy
-  fetches the session's schemas before the first `EditorQuery`; editor DDL/CALL
-  gets the same `after_statement`; `closeSession`/`sweepIdleSessions` evict.
+  stream). goproxy opens its connection with `OpenConnection` on the editor
+  door, gets `connection_id` + `on_open` back as a wire client does, and fetches
+  the session's schemas before the first `EditorQuery`; editor DDL/CALL gets the
+  same `after_statement`; `closeSession`/`sweepIdleSessions` evict.
 - The temp-column overlay is separate. Per-connection base fragments exclude
   `pg_temp*` (they carry no special trust); the per-query `temp_columns` overlay
   on `DecisionRequest` continues with its EDITOR-channel + `pg_temp*` gates

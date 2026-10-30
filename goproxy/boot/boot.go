@@ -160,11 +160,11 @@ func Run(registry spi.Registry) error {
 				}
 			},
 			func() { editorServer.RefreshCatalog() },
-			func(req *pb.OpenEditorSession, mapErr error) {
+			func(req *pb.OpenEditorSession) {
 				editorSessions.Add()
 				go func() {
 					defer editorSessions.Done()
-					editorServer.Serve(req, mapErr, editorSessions.Signal())
+					editorServer.Serve(req, editorSessions.Signal())
 				}()
 			},
 			func(sessionID string, table *enginepb.ObjectRef) {

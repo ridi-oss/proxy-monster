@@ -140,7 +140,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 	clientConn = s.WrapClientConn(clientConn)
 	token := mysqlwire.ParseClearPassword(tokenPayload)
 	clientAddr := clientConn.RemoteAddr().String()
-	authz, identity, err := spi.Authenticate(s.client, token, clientAddr)
+	authz, identity, err := spi.Authenticate(s.client, token, clientAddr, pb.ConnectionDoor_CONNECTION_DOOR_WIRE)
 	if err != nil {
 		_ = mysqlwire.WritePacket(clientConn, tokenSeq+1, mysqlwire.ErrPacketState(
 			1045,

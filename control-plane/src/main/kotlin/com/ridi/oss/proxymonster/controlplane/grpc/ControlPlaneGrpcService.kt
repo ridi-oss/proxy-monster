@@ -51,6 +51,7 @@ import com.ridi.oss.proxymonster.grpc.RegisterResponse
 import com.ridi.oss.proxymonster.grpc.SchemaFragmentAck
 import com.ridi.oss.proxymonster.grpc.SchemaFragmentPush
 import com.ridi.oss.proxymonster.grpc.TempColumn
+import com.ridi.oss.proxymonster.grpc.ConnectionDoor
 import com.ridi.oss.proxymonster.grpc.OpenConnectionRequest
 import com.ridi.oss.proxymonster.grpc.WireDecision
 import com.ridi.oss.proxymonster.grpc.WireIdentity
@@ -152,15 +153,17 @@ class ControlPlaneGrpcService(
     }
 
     override suspend fun openConnection(request: OpenConnectionRequest): WireIdentity {
-        val id = core.tokenStore.validate(request.token)
+        val editorDoor = request.door == ConnectionDoor.CONNECTION_DOOR_EDITOR
+        val id = core.tokenStore.validate(request.token, editorDoor)
+        // A refused editor-door token is the control plane's own, revoked when its editor session ended; only a client's login is audited.
         if (id == null) {
             // validate() collapses invalid/expired/revoked into one null, and none of them names a
             // principal — hence one reason covering the set, and no attribution.
-            auditWireRejection(request, principal = null, reason = "invalid_expired_or_revoked")
+            if (!editorDoor) auditWireRejection(request, principal = null, reason = "invalid_expired_or_revoked")
             throw StatusException(Status.UNAUTHENTICATED.withDescription("invalid, expired, or revoked wire token"))
         }
         if (core.userGroupStore.isDeactivated(id.principal)) {
-            auditWireRejection(request, id.principal, reason = "principal_deprovisioned")
+            if (!editorDoor) auditWireRejection(request, id.principal, reason = "principal_deprovisioned")
             throw StatusException(Status.UNAUTHENTICATED.withDescription("principal is deprovisioned"))
         }
         if (request.datasourceName.isBlank()) {

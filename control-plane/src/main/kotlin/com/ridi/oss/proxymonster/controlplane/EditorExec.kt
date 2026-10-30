@@ -91,7 +91,6 @@ data class EditorSession(
     val tokenId: Long,
     val datasourceName: String,
     val attached: Attached,
-    val connectionId: ByteString,
     @Volatile var lastUsedNanos: Long = System.nanoTime(),
     val mutex: Mutex = Mutex(),
     // The HTTP requester IP observed at open, and the session token's hash — so [closeSession]
@@ -425,12 +424,6 @@ class EditorExecService(
         val issuedTokenHash = tokenHash(issued.token)
         core.editorRequesterIps.put(issuedTokenHash, requesterIp)
 
-        val kind = (if (approverExec) TokenKind.APPROVER_EXEC else TokenKind.EDITOR).name
-        val opened = core.connectionCatalog.open(
-            Binding(ds.name, principal, kind, ds.effectiveCatalog, ds.engine),
-            ds.namespaces(ds.defaultSchemas + ds.engine.systemSchemas),
-            adoptHeldContent = ds.engine.catalogIsConnectionIndependent,
-        )
         val sessionId = UUID.randomUUID().toString()
         val pending = PendingSession(sessionId, principal, issued.id, CompletableDeferred())
         var registered = false
@@ -440,7 +433,7 @@ class EditorExecService(
         try {
             core.editorSessions.register(pending)
             registered = true
-            when (core.proxyEventsHub.requestOpenEditorSession(ds.name, sessionId, issued.token, opened.connectionId, opened.onOpen, defaultSchema)) {
+            when (core.proxyEventsHub.requestOpenEditorSession(ds.name, sessionId, issued.token, defaultSchema)) {
                 ProxyEventsHub.Dispatch.SENT -> Unit
                 ProxyEventsHub.Dispatch.NOT_ATTACHED -> throw NoProxyAttachedException()
                 ProxyEventsHub.Dispatch.WEDGED -> throw ProxyStreamWedgedException()
@@ -494,7 +487,6 @@ class EditorExecService(
                 try {
                     core.tokenStore.revoke(issued.id, principal)
                 } finally {
-                    closeConnectionCatalog(opened.connectionId, ds.name)
                     core.editorRequesterIps.remove(issuedTokenHash)
                     if (registered) core.editorSessions.remove(sessionId)
                 }
@@ -526,17 +518,12 @@ class EditorExecService(
         } ?: throw ProxyRunException("principal is deprovisioned")
         val issuedTokenHash = tokenHash(issued.token)
         core.editorRequesterIps.put(issuedTokenHash, requesterIp)
-        val opened = core.connectionCatalog.open(
-            Binding(ds.name, principal, TokenKind.EDITOR.name, ds.effectiveCatalog, ds.engine),
-            ds.namespaces(ds.defaultSchemas + ds.engine.systemSchemas),
-            adoptHeldContent = ds.engine.catalogIsConnectionIndependent,
-        )
         val sessionId = UUID.randomUUID().toString()
         val pending = PendingSession(sessionId, principal, issued.id, CompletableDeferred())
         var attached: Attached? = null
         try {
             core.editorSessions.register(pending)
-            when (core.proxyEventsHub.requestOpenEditorSession(ds.name, sessionId, issued.token, opened.connectionId, opened.onOpen)) {
+            when (core.proxyEventsHub.requestOpenEditorSession(ds.name, sessionId, issued.token)) {
                 ProxyEventsHub.Dispatch.SENT -> Unit
                 ProxyEventsHub.Dispatch.NOT_ATTACHED -> throw NoProxyAttachedException()
                 ProxyEventsHub.Dispatch.WEDGED -> throw ProxyStreamWedgedException()
@@ -549,7 +536,7 @@ class EditorExecService(
             // Wait for the target-DB open to finish (EditorServing), bounded by lack of progress — see run().
             val serving = awaitServing(attached.inbound, EDITOR_NO_PROGRESS_TIMEOUT_MS, EDITOR_OPEN_TIMEOUT_MS)
             openSessions[sessionId] = EditorSession(
-                sessionId, principal, issued.id, ds.name, attached, opened.connectionId,
+                sessionId, principal, issued.id, ds.name, attached,
                 requesterIp = requesterIp, tokenHash = issuedTokenHash,
                 namespace = serving.namespaceOrNull(),
             )
@@ -566,7 +553,6 @@ class EditorExecService(
             // proxy's stream close to propagate. On success the held session keeps the stream.
             attached?.inbound?.close()
             runCatching { core.tokenStore.revoke(issued.id, principal) }
-            closeConnectionCatalog(opened.connectionId, ds.name)
             core.editorRequesterIps.remove(issuedTokenHash)
             core.editorSessions.remove(sessionId)
             throw e
@@ -709,7 +695,6 @@ class EditorExecService(
             session.attached.outbound.trySend(cpEditorMsg { close = editorClose {} })
         } finally {
             runCatching { core.tokenStore.revoke(session.tokenId, session.principal) }
-            closeConnectionCatalog(session.connectionId, session.datasourceName)
             session.tokenHash?.let(core.editorRequesterIps::remove)
             core.editorSessions.remove(sessionId)
         }
@@ -719,13 +704,6 @@ class EditorExecService(
     fun sweepIdleSessions(maxIdleMs: Long) {
         val cutoffNanos = System.nanoTime() - maxIdleMs * 1_000_000
         openSessions.values.filter { it.lastUsedNanos < cutoffNanos }.forEach { closeSession(it.sessionId) }
-    }
-
-    /** Keep suspend cleanup out of run()'s already-large state machine (JDK verifier sensitivity). */
-    private fun closeConnectionCatalog(connectionId: ByteString, datasourceName: String) {
-        runCatching {
-            kotlinx.coroutines.runBlocking { core.connectionCatalog.close(connectionId, datasourceName) }
-        }
     }
 
     /**

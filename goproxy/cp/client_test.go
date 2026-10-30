@@ -218,7 +218,7 @@ func TestOpenConnectionAndDecideUnreachable(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	t.Cleanup(func() { _ = c.Close() })
-	if _, err := c.OpenConnection("token", ""); err == nil {
+	if _, err := c.OpenConnection("token", "", pb.ConnectionDoor_CONNECTION_DOOR_WIRE); err == nil {
 		t.Fatal("OpenConnection against unreachable control plane succeeded")
 	}
 	out := c.Decide(spi.DecideRequest{Token: "token", SQL: "SELECT 1"})
@@ -395,7 +395,7 @@ func TestOpenConnectionMapsRequestAndIdentity(t *testing.T) {
 		OnOpen:       []*pb.ProxyCommand{refetch("app", nil)},
 	}}
 	c := startFakeControlPlane(t, fake)
-	got, err := c.OpenConnection("raw-token", "198.51.100.7:5432")
+	got, err := c.OpenConnection("raw-token", "198.51.100.7:5432", pb.ConnectionDoor_CONNECTION_DOOR_EDITOR)
 	if err != nil {
 		t.Fatalf("OpenConnection: %v", err)
 	}
@@ -405,8 +405,8 @@ func TestOpenConnectionMapsRequestAndIdentity(t *testing.T) {
 	fake.mu.Lock()
 	req, meta := fake.lastOpenReq, fake.lastOpenMeta
 	fake.mu.Unlock()
-	if req.GetToken() != "raw-token" || req.GetDatasourceName() != "ds-1" || req.GetClientAddr() != "198.51.100.7:5432" {
-		t.Fatalf("OpenConnectionRequest = %+v, want token, datasource and client_addr", req)
+	if req.GetToken() != "raw-token" || req.GetDatasourceName() != "ds-1" || req.GetClientAddr() != "198.51.100.7:5432" || req.GetDoor() != pb.ConnectionDoor_CONNECTION_DOOR_EDITOR {
+		t.Fatalf("OpenConnectionRequest = %+v, want token, datasource, client_addr and door", req)
 	}
 	if meta != "secret-abc" {
 		t.Fatalf("metadata = %q, want secret-abc", meta)
@@ -416,13 +416,13 @@ func TestOpenConnectionMapsRequestAndIdentity(t *testing.T) {
 func TestOpenConnectionRejectedAndMissingID(t *testing.T) {
 	t.Run("rejected", func(t *testing.T) {
 		c := startFakeControlPlane(t, &fakeControlPlane{openErr: status.Error(codes.Unauthenticated, "invalid token")})
-		if _, err := c.OpenConnection("bad", ""); err == nil || !strings.Contains(err.Error(), "invalid token") {
+		if _, err := c.OpenConnection("bad", "", pb.ConnectionDoor_CONNECTION_DOOR_WIRE); err == nil || !strings.Contains(err.Error(), "invalid token") {
 			t.Fatalf("OpenConnection error = %v", err)
 		}
 	})
 	t.Run("missing id", func(t *testing.T) {
 		c := startFakeControlPlane(t, &fakeControlPlane{openResp: &pb.WireIdentity{}})
-		if _, err := c.OpenConnection("token", ""); err == nil {
+		if _, err := c.OpenConnection("token", "", pb.ConnectionDoor_CONNECTION_DOOR_WIRE); err == nil {
 			t.Fatal("OpenConnection accepted a missing connection id")
 		}
 	})
@@ -728,10 +728,7 @@ func TestPushSchemaFragmentAndCloseConnection(t *testing.T) {
 }
 
 func TestStreamEventsDispatchesOpenEditorSession(t *testing.T) {
-	open := &pb.OpenEditorSession{
-		SessionId: "sess-1", EphemeralToken: "eph-9", ConnectionId: []byte("0123456789abcdef"), OnOpen: []*pb.ProxyCommand{refetch("app", nil)},
-		DefaultSchema: "orders",
-	}
+	open := &pb.OpenEditorSession{SessionId: "sess-1", EphemeralToken: "eph-9", DefaultSchema: "orders"}
 	fake := &fakeControlPlane{events: []*pb.CpEvent{
 		{Kind: &pb.CpEvent_RefreshCatalog{RefreshCatalog: &pb.RefreshCatalog{}}},
 		{Kind: &pb.CpEvent_OpenEditorSession{OpenEditorSession: open}},
@@ -740,35 +737,21 @@ func TestStreamEventsDispatchesOpenEditorSession(t *testing.T) {
 	c := startFakeControlPlane(t, fake)
 	var refreshes int
 	var openedSession *pb.OpenEditorSession
-	var openedErr error
 	var table []string
-	err := c.StreamEvents(func() { refreshes++ }, func(req *pb.OpenEditorSession, mapErr error) { openedSession, openedErr = req, mapErr }, func(sessionID string, ref *enginepb.ObjectRef) {
+	err := c.StreamEvents(func() { refreshes++ }, func(req *pb.OpenEditorSession) { openedSession = req }, func(sessionID string, ref *enginepb.ObjectRef) {
 		table = []string{sessionID, ref.GetCatalog(), ref.GetSchema(), ref.GetTable()}
 	})
 	if err == nil {
 		t.Fatal("StreamEvents returned nil, want EOF")
 	}
-	if refreshes != 1 || openedErr != nil || !proto.Equal(openedSession, open) || !reflect.DeepEqual(table, []string{"sess-2", "db", "public", "users"}) {
-		t.Fatalf("dispatch refresh/session/table = %d/%v %v/%v", refreshes, openedSession, openedErr, table)
+	if refreshes != 1 || !proto.Equal(openedSession, open) || !reflect.DeepEqual(table, []string{"sess-2", "db", "public", "users"}) {
+		t.Fatalf("dispatch refresh/session/table = %d/%v/%v", refreshes, openedSession, table)
 	}
 	fake.mu.Lock()
 	req, meta := fake.lastEventsReq, fake.lastEventsMeta
 	fake.mu.Unlock()
 	if req.GetDatasourceName() != "ds-1" || req.GetProtocolVersion() != ProtocolVersion || meta != "secret-abc" {
 		t.Fatalf("Events request/meta = %+v/%q (want protocol version %d)", req, meta, ProtocolVersion)
-	}
-}
-
-func TestStreamEventsDispatchesMalformedOpenEditorSession(t *testing.T) {
-	fake := &fakeControlPlane{events: []*pb.CpEvent{{Kind: &pb.CpEvent_OpenEditorSession{OpenEditorSession: &pb.OpenEditorSession{
-		SessionId: "bad", OnOpen: []*pb.ProxyCommand{refetch("", nil)},
-	}}}}}
-	c := startFakeControlPlane(t, fake)
-	var openedSession *pb.OpenEditorSession
-	var openedErr error
-	_ = c.StreamEvents(func() {}, func(req *pb.OpenEditorSession, mapErr error) { openedSession, openedErr = req, mapErr }, func(string, *enginepb.ObjectRef) {})
-	if openedSession.GetSessionId() != "bad" || openedErr == nil {
-		t.Fatalf("malformed run open was not dispatched with its mapping error: %v %v", openedSession, openedErr)
 	}
 }
 
@@ -779,7 +762,7 @@ func TestStreamEventsReturnsErrDrainingOnDrainSignal(t *testing.T) {
 		{Kind: &pb.CpEvent_Draining{Draining: &pb.Draining{}}},
 	}}
 	c := startFakeControlPlane(t, fake)
-	err := c.StreamEvents(func() {}, func(*pb.OpenEditorSession, error) {}, func(string, *enginepb.ObjectRef) {})
+	err := c.StreamEvents(func() {}, func(*pb.OpenEditorSession) {}, func(string, *enginepb.ObjectRef) {})
 	if !errors.Is(err, errDraining) {
 		t.Fatalf("StreamEvents err = %v, want errDraining", err)
 	}
@@ -837,7 +820,7 @@ func TestEventsLoopReconnectsFastOnDrain(t *testing.T) {
 			streamMaxAge:      time.Minute, // long enough that only the drain path paces this test
 			reconnect:         backoff,
 			rotationReconnect: eventsRotationReconnect,
-		}, func() {}, func() {}, func(*pb.OpenEditorSession, error) {}, func(string, *enginepb.ObjectRef) {})
+		}, func() {}, func() {}, func(*pb.OpenEditorSession) {}, func(string, *enginepb.ObjectRef) {})
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -970,7 +953,7 @@ func TestRunEventsLoopExitsOnEventsVersionRejection(t *testing.T) {
 			streamMaxAge:      time.Minute,
 			reconnect:         10 * time.Millisecond,
 			rotationReconnect: eventsRotationReconnect,
-		}, func() {}, func() {}, func(*pb.OpenEditorSession, error) {}, func(string, *enginepb.ObjectRef) {})
+		}, func() {}, func() {}, func(*pb.OpenEditorSession) {}, func(string, *enginepb.ObjectRef) {})
 	}()
 	select {
 	case err := <-errCh:
@@ -995,7 +978,7 @@ func TestStreamEventsEndsAtItsMaxAge(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	start := time.Now()
-	err := c.streamEvents(ctx, 300*time.Millisecond, func() {}, func(*pb.OpenEditorSession, error) {}, func(string, *enginepb.ObjectRef) {})
+	err := c.streamEvents(ctx, 300*time.Millisecond, func() {}, func(*pb.OpenEditorSession) {}, func(string, *enginepb.ObjectRef) {})
 	elapsed := time.Since(start)
 
 	if err == nil {
@@ -1025,7 +1008,7 @@ func TestEventsLoopReopensAfterMaxAge(t *testing.T) {
 			streamMaxAge:      150 * time.Millisecond,
 			reconnect:         10 * time.Millisecond,
 			rotationReconnect: 10 * time.Millisecond,
-		}, func() {}, func() {}, func(*pb.OpenEditorSession, error) {}, func(string, *enginepb.ObjectRef) {})
+		}, func() {}, func() {}, func(*pb.OpenEditorSession) {}, func(string, *enginepb.ObjectRef) {})
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -1064,7 +1047,7 @@ func TestEventsLoopRotationGapStaysBoundedAcrossPeriods(t *testing.T) {
 		loopDone := make(chan struct{})
 		go func() {
 			defer close(loopDone)
-			c.runEventsLoop(ctx, timings, func() {}, func() {}, func(*pb.OpenEditorSession, error) {}, func(string, *enginepb.ObjectRef) {})
+			c.runEventsLoop(ctx, timings, func() {}, func() {}, func(*pb.OpenEditorSession) {}, func(string, *enginepb.ObjectRef) {})
 		}()
 		defer func() {
 			cancel()
@@ -1142,7 +1125,7 @@ func TestEventsLoopBacksOffOnServerDeadlineExceeded(t *testing.T) {
 			streamMaxAge:      time.Minute, // long, so only the server's status ends the stream
 			reconnect:         backoff,
 			rotationReconnect: 10 * time.Millisecond,
-		}, func() {}, func() {}, func(*pb.OpenEditorSession, error) {}, func(string, *enginepb.ObjectRef) {})
+		}, func() {}, func() {}, func(*pb.OpenEditorSession) {}, func(string, *enginepb.ObjectRef) {})
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -1175,7 +1158,7 @@ func TestEventsLoopReopensWithoutWaitingForResync(t *testing.T) {
 			streamMaxAge:      150 * time.Millisecond,
 			reconnect:         10 * time.Millisecond,
 			rotationReconnect: 10 * time.Millisecond,
-		}, resync, func() {}, func(*pb.OpenEditorSession, error) {}, func(string, *enginepb.ObjectRef) {})
+		}, resync, func() {}, func(*pb.OpenEditorSession) {}, func(string, *enginepb.ObjectRef) {})
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -1248,7 +1231,7 @@ func TestEventsLoopWaitsTheBackoffBetweenReopens(t *testing.T) {
 			streamMaxAge:      time.Minute, // long enough that only the backoff paces this test
 			reconnect:         backoff,
 			rotationReconnect: eventsRotationReconnect,
-		}, func() {}, func() {}, func(*pb.OpenEditorSession, error) {}, func(string, *enginepb.ObjectRef) {})
+		}, func() {}, func() {}, func(*pb.OpenEditorSession) {}, func(string, *enginepb.ObjectRef) {})
 	}()
 	t.Cleanup(func() {
 		cancel()

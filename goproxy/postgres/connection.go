@@ -57,7 +57,7 @@ var errTargetDbUnavailable = errors.New("target DB unavailable")
 // builds the connection on it, for a wire client and an editor session alike. It also returns the target's startup
 // parameters, which a wire client is sent.
 func (t *target) openConnection(ctx context.Context, authz *spi.Authorizer, guard spi.ExecGuard, startup map[string]string, wrap func(net.Conn) net.Conn) (*connection, []pgproto3.ParameterStatus, error) {
-	generation, ok := wire.NextBackendGeneration()
+	generation, ok := t.generations.Next()
 	if !ok {
 		return nil, nil, errors.New("backend generation out of range")
 	}

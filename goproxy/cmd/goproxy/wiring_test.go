@@ -17,6 +17,9 @@ func TestRegistryOpensTargetsFromTheEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if perEngine.Athena.Database != "shop" {
+		t.Errorf("athena Database = %q, want PM_TARGET_DB", perEngine.Athena.Database)
+	}
 	for _, e := range []*engines.Engine{engines.MySQL, engines.Postgres} {
 		provider, err := perEngine.registry(flags.AdvertiseAddr).For(e)
 		if err != nil {

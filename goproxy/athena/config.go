@@ -26,9 +26,19 @@ const (
 	defaultResponseLimit = 16 << 20
 )
 
-// targetConfig is the datasource scope the operator fixes in the environment: every submission is pinned to
-// this workgroup, catalog, and database, and a request naming another is a scope violation.
-type targetConfig struct {
+// Flags is the Athena engine's kong grammar; credentials come from the SDK's default chain, never from PM_*.
+type Flags struct {
+	Region      string `env:"PM_ATHENA_REGION,AWS_REGION,AWS_DEFAULT_REGION"`
+	Profile     string `env:"AWS_PROFILE"`
+	Workgroup   string `env:"PM_ATHENA_WORKGROUP" default:"primary"`
+	Catalog     string `env:"PM_ATHENA_DEFAULT_CATALOG" default:"AwsDataCatalog"`
+	ContextPath string `env:"PM_ATHENA_CONTEXT_PATH" default:":memory:"`
+	Database    string `env:"PM_TARGET_DB" default:"acme"`
+}
+
+// settings is the datasource scope the operator fixes: every submission is pinned to this workgroup,
+// catalog, and database, and a request naming another is a scope violation.
+type settings struct {
 	region      string
 	profile     string
 	workgroup   string
@@ -38,42 +48,33 @@ type targetConfig struct {
 	contextPath string
 }
 
-// configure reads PM_ATHENA_* (region also from AWS_REGION / AWS_DEFAULT_REGION, profile from AWS_PROFILE)
-// and the database from PM_TARGET_DB; credentials come from the SDK's default chain, never from PM_*.
-func configure(lookup func(string) (string, bool)) (targetConfig, error) {
-	get := func(key, fallback string) string {
-		value, ok := lookup(key)
-		if !ok {
-			return fallback
-		}
-		return strings.TrimSpace(value)
-	}
-	cfg := targetConfig{
-		region:      get("PM_ATHENA_REGION", get("AWS_REGION", get("AWS_DEFAULT_REGION", ""))),
-		profile:     get("AWS_PROFILE", ""),
-		workgroup:   get("PM_ATHENA_WORKGROUP", "primary"),
-		catalog:     get("PM_ATHENA_DEFAULT_CATALOG", "AwsDataCatalog"),
-		database:    get("PM_TARGET_DB", "acme"),
-		advertise:   get("PM_ADVERTISE_ADDR", ""),
-		contextPath: get("PM_ATHENA_CONTEXT_PATH", ":memory:"),
+func newSettings(flags Flags, advertise string) (settings, error) {
+	cfg := settings{
+		region:      strings.TrimSpace(flags.Region),
+		profile:     strings.TrimSpace(flags.Profile),
+		workgroup:   strings.TrimSpace(flags.Workgroup),
+		catalog:     strings.TrimSpace(flags.Catalog),
+		database:    strings.TrimSpace(flags.Database),
+		advertise:   strings.TrimSpace(advertise),
+		contextPath: strings.TrimSpace(flags.ContextPath),
 	}
 	if cfg.region != "" && !regexp.MustCompile(`^[a-z]{2}(?:-[a-z0-9]+)+-[0-9]+$`).MatchString(cfg.region) {
-		return targetConfig{}, errors.New("athena: PM_ATHENA_REGION or AWS_REGION is required")
+		return settings{}, errors.New("athena: PM_ATHENA_REGION or AWS_REGION is required")
 	}
 	if cfg.workgroup == "" || cfg.catalog == "" || cfg.database == "" || cfg.contextPath == "" {
-		return targetConfig{}, errors.New("athena: workgroup, catalog, database, and context path must not be empty")
+		return settings{}, errors.New("athena: workgroup, catalog, database, and context path must not be empty")
 	}
 	if cfg.advertise != "" {
 		host, port, err := net.SplitHostPort(cfg.advertise)
 		number, parseErr := strconv.Atoi(port)
 		if err != nil || host == "" || strings.ContainsAny(host, "/?#@") || parseErr != nil || number < 1 || number > 65535 {
-			return targetConfig{}, errors.New("athena: PM_ADVERTISE_ADDR must be host:port")
+			return settings{}, errors.New("athena: PM_ADVERTISE_ADDR must be host:port")
 		}
 	}
 	return cfg, nil
 }
 
-func loadAWSConfig(ctx context.Context, cfg targetConfig) (aws.Config, error) {
+func loadAWSConfig(ctx context.Context, cfg settings) (aws.Config, error) {
 	options := []func(*awsconfig.LoadOptions) error{awsconfig.WithRegion(cfg.region)}
 	if cfg.profile != "" {
 		options = append(options, awsconfig.WithSharedConfigProfile(cfg.profile))

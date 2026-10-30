@@ -12,6 +12,7 @@ import (
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
+	"github.com/ridi-oss/proxy-monster/goproxy/wire"
 )
 
 // Provider is PostgreSQL's spi.Provider.
@@ -42,9 +43,10 @@ func OpenTarget(settings sqldb.Settings, advertise string) (spi.Target, error) {
 
 // target is one open PostgreSQL target; its pool serves introspection and table detail.
 type target struct {
-	config sqldb.Settings
-	pool   *sql.DB
-	info   *pb.ConnectionInfo
+	config      sqldb.Settings
+	pool        *sql.DB
+	info        *pb.ConnectionInfo
+	generations wire.BackendGenerations
 }
 
 func (t *target) TargetInfo() string {

@@ -38,8 +38,8 @@ var errTargetDbUnavailable = errors.New("target DB unavailable")
 
 // openConnection dials the target as goproxy's own user, wraps the socket, and builds the connection on it,
 // for a wire client and an editor session alike.
-func openConnection(ctx context.Context, config sqldb.Settings, authz *spi.Authorizer, guard spi.ExecGuard, deprecateEOF bool, wrap func(net.Conn) net.Conn) (*connection, error) {
-	generation, ok := wire.NextBackendGeneration()
+func (t *target) openConnection(ctx context.Context, config sqldb.Settings, authz *spi.Authorizer, guard spi.ExecGuard, deprecateEOF bool, wrap func(net.Conn) net.Conn) (*connection, error) {
+	generation, ok := t.generations.Next()
 	if !ok {
 		return nil, errors.New("backend generation out of range")
 	}
@@ -80,7 +80,7 @@ func (t *target) OpenConnection(ctx context.Context, authz *spi.Authorizer, guar
 	if defaultSchema != "" {
 		config.Db = defaultSchema
 	}
-	return openConnection(ctx, config, authz, guard, true, func(conn net.Conn) net.Conn {
+	return t.openConnection(ctx, config, authz, guard, true, func(conn net.Conn) net.Conn {
 		return wire.WithTargetDbReadTimeout(conn, readTimeout)
 	})
 }

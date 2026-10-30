@@ -32,7 +32,7 @@ type submissionScope struct {
 	token      string
 }
 
-func readSubmission(envelope *Envelope, defaults targetConfig) (*submissionScope, error) {
+func readSubmission(envelope *Envelope, defaults settings) (*submissionScope, error) {
 	query, present, err := envelope.QueryString()
 	if err != nil || !present {
 		return nil, errors.New("athena: QueryString is required")
@@ -84,7 +84,7 @@ func applySubmission(envelope *Envelope, query string, parameters []string) (*En
 
 // pinScope forwards the submission in exactly the scope it was admitted for; AWS would otherwise fill an
 // omitted workgroup or database with its own defaults.
-func pinScope(envelope *Envelope, cfg targetConfig) (*Envelope, error) {
+func pinScope(envelope *Envelope, cfg settings) (*Envelope, error) {
 	pinned, err := envelope.WithField("WorkGroup", cfg.workgroup)
 	if err != nil {
 		return nil, err

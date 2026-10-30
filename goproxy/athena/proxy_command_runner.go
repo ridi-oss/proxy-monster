@@ -15,7 +15,6 @@ import (
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
-	"github.com/ridi-oss/proxy-monster/goproxy/wire"
 )
 
 const metadataTimeout = 60 * time.Second
@@ -30,7 +29,7 @@ type proxyCommandRunner struct {
 }
 
 func (t *target) newProxyCommandRunner(authz *spi.Authorizer) (*proxyCommandRunner, error) {
-	generation, ok := wire.NextBackendGeneration()
+	generation, ok := t.generations.Next()
 	if !ok {
 		return nil, errors.New("athena: backend generation out of range")
 	}
@@ -71,7 +70,7 @@ func (r *proxyCommandRunner) run(command *pb.Refetch) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), metadataTimeout)
 	defer cancel()
-	columns, err := r.target.fragmentColumns(ctx, r.target.config.catalog, command.GetSchema())
+	columns, err := r.target.fragmentColumns(ctx, r.target.settings.catalog, command.GetSchema())
 	if err != nil {
 		return fmt.Errorf("introspecting schema %q: %w", command.GetSchema(), err)
 	}

@@ -19,7 +19,7 @@ type fakeDecider struct {
 	identity Identity
 }
 
-func (f *fakeDecider) ValidateToken(string, string) (Identity, error) { return f.identity, nil }
+func (f *fakeDecider) OpenConnection(string, string) (Identity, error) { return f.identity, nil }
 
 func (f *fakeDecider) Decide(req DecideRequest) DecisionOutcome {
 	f.calls++

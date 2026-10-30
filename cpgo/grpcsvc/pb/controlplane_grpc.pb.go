@@ -26,7 +26,7 @@ const _ = grpc.SupportPackageIsVersion9
 const (
 	ControlPlane_Register_FullMethodName           = "/proxymonster.v1.ControlPlane/Register"
 	ControlPlane_PushCatalog_FullMethodName        = "/proxymonster.v1.ControlPlane/PushCatalog"
-	ControlPlane_ValidateToken_FullMethodName      = "/proxymonster.v1.ControlPlane/ValidateToken"
+	ControlPlane_OpenConnection_FullMethodName     = "/proxymonster.v1.ControlPlane/OpenConnection"
 	ControlPlane_Decide_FullMethodName             = "/proxymonster.v1.ControlPlane/Decide"
 	ControlPlane_AuthorizeRequest_FullMethodName   = "/proxymonster.v1.ControlPlane/AuthorizeRequest"
 	ControlPlane_PushSchemaFragment_FullMethodName = "/proxymonster.v1.ControlPlane/PushSchemaFragment"
@@ -46,7 +46,7 @@ type ControlPlaneClient interface {
 	// The proxy pushes the catalog it introspected itself.
 	PushCatalog(ctx context.Context, in *CatalogRequest, opts ...grpc.CallOption) (*CatalogResponse, error)
 	// Wire-protocol auth handshake — once per session. "May this session open?"
-	ValidateToken(ctx context.Context, in *ValidateTokenRequest, opts ...grpc.CallOption) (*WireIdentity, error)
+	OpenConnection(ctx context.Context, in *OpenConnectionRequest, opts ...grpc.CallOption) (*WireIdentity, error)
 	// Per-query enforcement decision. Takes the RAW token, re-validated +
 	// re-resolved server-side every call — never a client-cached principal.
 	Decide(ctx context.Context, in *DecisionRequest, opts ...grpc.CallOption) (*WireDecision, error)
@@ -102,10 +102,10 @@ func (c *controlPlaneClient) PushCatalog(ctx context.Context, in *CatalogRequest
 	return out, nil
 }
 
-func (c *controlPlaneClient) ValidateToken(ctx context.Context, in *ValidateTokenRequest, opts ...grpc.CallOption) (*WireIdentity, error) {
+func (c *controlPlaneClient) OpenConnection(ctx context.Context, in *OpenConnectionRequest, opts ...grpc.CallOption) (*WireIdentity, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(WireIdentity)
-	err := c.cc.Invoke(ctx, ControlPlane_ValidateToken_FullMethodName, in, out, cOpts...)
+	err := c.cc.Invoke(ctx, ControlPlane_OpenConnection_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -216,7 +216,7 @@ type ControlPlaneServer interface {
 	// The proxy pushes the catalog it introspected itself.
 	PushCatalog(context.Context, *CatalogRequest) (*CatalogResponse, error)
 	// Wire-protocol auth handshake — once per session. "May this session open?"
-	ValidateToken(context.Context, *ValidateTokenRequest) (*WireIdentity, error)
+	OpenConnection(context.Context, *OpenConnectionRequest) (*WireIdentity, error)
 	// Per-query enforcement decision. Takes the RAW token, re-validated +
 	// re-resolved server-side every call — never a client-cached principal.
 	Decide(context.Context, *DecisionRequest) (*WireDecision, error)
@@ -258,8 +258,8 @@ func (UnimplementedControlPlaneServer) Register(context.Context, *RegisterReques
 func (UnimplementedControlPlaneServer) PushCatalog(context.Context, *CatalogRequest) (*CatalogResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method PushCatalog not implemented")
 }
-func (UnimplementedControlPlaneServer) ValidateToken(context.Context, *ValidateTokenRequest) (*WireIdentity, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method ValidateToken not implemented")
+func (UnimplementedControlPlaneServer) OpenConnection(context.Context, *OpenConnectionRequest) (*WireIdentity, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method OpenConnection not implemented")
 }
 func (UnimplementedControlPlaneServer) Decide(context.Context, *DecisionRequest) (*WireDecision, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Decide not implemented")
@@ -342,20 +342,20 @@ func _ControlPlane_PushCatalog_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
-func _ControlPlane_ValidateToken_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(ValidateTokenRequest)
+func _ControlPlane_OpenConnection_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(OpenConnectionRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(ControlPlaneServer).ValidateToken(ctx, in)
+		return srv.(ControlPlaneServer).OpenConnection(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: ControlPlane_ValidateToken_FullMethodName,
+		FullMethod: ControlPlane_OpenConnection_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(ControlPlaneServer).ValidateToken(ctx, req.(*ValidateTokenRequest))
+		return srv.(ControlPlaneServer).OpenConnection(ctx, req.(*OpenConnectionRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -491,8 +491,8 @@ var ControlPlane_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _ControlPlane_PushCatalog_Handler,
 		},
 		{
-			MethodName: "ValidateToken",
-			Handler:    _ControlPlane_ValidateToken_Handler,
+			MethodName: "OpenConnection",
+			Handler:    _ControlPlane_OpenConnection_Handler,
 		},
 		{
 			MethodName: "Decide",

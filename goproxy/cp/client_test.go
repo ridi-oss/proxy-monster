@@ -212,14 +212,14 @@ func TestIdentityFromWire(t *testing.T) {
 	}
 }
 
-func TestValidateTokenAndDecideUnreachable(t *testing.T) {
+func TestOpenConnectionAndDecideUnreachable(t *testing.T) {
 	c, err := New("127.0.0.1:1", "", "ds")
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	t.Cleanup(func() { _ = c.Close() })
-	if _, err := c.ValidateToken("token", ""); err == nil {
-		t.Fatal("ValidateToken against unreachable control plane succeeded")
+	if _, err := c.OpenConnection("token", ""); err == nil {
+		t.Fatal("OpenConnection against unreachable control plane succeeded")
 	}
 	out := c.Decide(spi.DecideRequest{Token: "token", SQL: "SELECT 1"})
 	if !out.IsErr() || out.Err == "" {
@@ -246,14 +246,14 @@ type fakeControlPlane struct {
 
 	mu sync.Mutex
 
-	validateResp *pb.WireIdentity
-	validateErr  error
-	decideResp   *pb.WireDecision
-	decideQueue  []*pb.WireDecision
-	pushGen      uint64
+	openResp    *pb.WireIdentity
+	openErr     error
+	decideResp  *pb.WireDecision
+	decideQueue []*pb.WireDecision
+	pushGen     uint64
 
-	lastValidateReq  *pb.ValidateTokenRequest
-	lastValidateMeta string
+	lastOpenReq      *pb.OpenConnectionRequest
+	lastOpenMeta     string
 	decideReqs       []*pb.DecisionRequest
 	lastDecideMeta   string
 	lastRegisterReq  *pb.RegisterRequest
@@ -285,16 +285,16 @@ func metaValue(ctx context.Context) string {
 	return values[0]
 }
 
-func (f *fakeControlPlane) ValidateToken(ctx context.Context, req *pb.ValidateTokenRequest) (*pb.WireIdentity, error) {
+func (f *fakeControlPlane) OpenConnection(ctx context.Context, req *pb.OpenConnectionRequest) (*pb.WireIdentity, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.lastValidateReq = proto.Clone(req).(*pb.ValidateTokenRequest)
-	f.lastValidateMeta = metaValue(ctx)
-	if f.validateErr != nil {
-		return nil, f.validateErr
+	f.lastOpenReq = proto.Clone(req).(*pb.OpenConnectionRequest)
+	f.lastOpenMeta = metaValue(ctx)
+	if f.openErr != nil {
+		return nil, f.openErr
 	}
-	if f.validateResp != nil {
-		return f.validateResp, nil
+	if f.openResp != nil {
+		return f.openResp, nil
 	}
 	return &pb.WireIdentity{Principal: "default@example.com", ConnectionId: []byte("0123456789abcdef")}, nil
 }
@@ -387,43 +387,43 @@ func startFakeControlPlane(t *testing.T, fake *fakeControlPlane) *Client {
 	return client
 }
 
-func TestValidateTokenMapsRequestAndIdentity(t *testing.T) {
-	fake := &fakeControlPlane{validateResp: &pb.WireIdentity{
+func TestOpenConnectionMapsRequestAndIdentity(t *testing.T) {
+	fake := &fakeControlPlane{openResp: &pb.WireIdentity{
 		Principal:    "alice@example.com",
 		Roles:        []string{"analyst"},
 		ConnectionId: []byte("0123456789abcdef"),
 		OnOpen:       []*pb.ProxyCommand{refetch("app", nil)},
 	}}
 	c := startFakeControlPlane(t, fake)
-	got, err := c.ValidateToken("raw-token", "198.51.100.7:5432")
+	got, err := c.OpenConnection("raw-token", "198.51.100.7:5432")
 	if err != nil {
-		t.Fatalf("ValidateToken: %v", err)
+		t.Fatalf("OpenConnection: %v", err)
 	}
 	if got.Principal != "alice@example.com" || !proto.Equal(got.OnOpen[0], refetch("app", nil)) {
 		t.Fatalf("identity = %+v", got)
 	}
 	fake.mu.Lock()
-	req, meta := fake.lastValidateReq, fake.lastValidateMeta
+	req, meta := fake.lastOpenReq, fake.lastOpenMeta
 	fake.mu.Unlock()
 	if req.GetToken() != "raw-token" || req.GetDatasourceName() != "ds-1" || req.GetClientAddr() != "198.51.100.7:5432" {
-		t.Fatalf("ValidateTokenRequest = %+v, want token, datasource and client_addr", req)
+		t.Fatalf("OpenConnectionRequest = %+v, want token, datasource and client_addr", req)
 	}
 	if meta != "secret-abc" {
 		t.Fatalf("metadata = %q, want secret-abc", meta)
 	}
 }
 
-func TestValidateTokenRejectedAndMissingID(t *testing.T) {
+func TestOpenConnectionRejectedAndMissingID(t *testing.T) {
 	t.Run("rejected", func(t *testing.T) {
-		c := startFakeControlPlane(t, &fakeControlPlane{validateErr: status.Error(codes.Unauthenticated, "invalid token")})
-		if _, err := c.ValidateToken("bad", ""); err == nil || !strings.Contains(err.Error(), "invalid token") {
-			t.Fatalf("ValidateToken error = %v", err)
+		c := startFakeControlPlane(t, &fakeControlPlane{openErr: status.Error(codes.Unauthenticated, "invalid token")})
+		if _, err := c.OpenConnection("bad", ""); err == nil || !strings.Contains(err.Error(), "invalid token") {
+			t.Fatalf("OpenConnection error = %v", err)
 		}
 	})
 	t.Run("missing id", func(t *testing.T) {
-		c := startFakeControlPlane(t, &fakeControlPlane{validateResp: &pb.WireIdentity{}})
-		if _, err := c.ValidateToken("token", ""); err == nil {
-			t.Fatal("ValidateToken accepted a missing connection id")
+		c := startFakeControlPlane(t, &fakeControlPlane{openResp: &pb.WireIdentity{}})
+		if _, err := c.OpenConnection("token", ""); err == nil {
+			t.Fatal("OpenConnection accepted a missing connection id")
 		}
 	})
 }

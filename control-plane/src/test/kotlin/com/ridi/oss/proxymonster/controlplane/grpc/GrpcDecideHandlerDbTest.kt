@@ -21,7 +21,7 @@ import com.ridi.oss.proxymonster.grpc.ControlPlaneGrpcKt
 import com.ridi.oss.proxymonster.grpc.EnfAction
 import com.ridi.oss.proxymonster.grpc.decisionRequest
 import com.ridi.oss.proxymonster.grpc.schemaFragmentPush
-import com.ridi.oss.proxymonster.grpc.validateTokenRequest
+import com.ridi.oss.proxymonster.grpc.openConnectionRequest
 import com.ridi.oss.proxymonster.controlplane.namespaces
 import com.google.protobuf.ByteString
 import io.grpc.Status
@@ -108,30 +108,30 @@ class GrpcDecideHandlerDbTest {
         assertFailsWith<StatusException> { runBlocking { block() } }.status.code
 
     @Test
-    fun `validateToken returns the identity for a valid token`() = runBlocking {
-        val id = stub.validateToken(validateTokenRequest { token = validToken; datasourceName = ds.name })
+    fun `openConnection returns the identity for a valid token`() = runBlocking {
+        val id = stub.openConnection(openConnectionRequest { token = validToken; datasourceName = ds.name })
         assertEquals("grpc-user", id.principal)
     }
 
     @Test
-    fun `validateToken rejects an unknown token UNAUTHENTICATED`() {
-        assertEquals(Status.Code.UNAUTHENTICATED, statusOf { stub.validateToken(validateTokenRequest { token = "nope"; datasourceName = ds.name }) })
+    fun `openConnection rejects an unknown token UNAUTHENTICATED`() {
+        assertEquals(Status.Code.UNAUTHENTICATED, statusOf { stub.openConnection(openConnectionRequest { token = "nope"; datasourceName = ds.name }) })
     }
 
     @Test
-    fun `validateToken rejects a revoked token UNAUTHENTICATED`() {
+    fun `openConnection rejects a revoked token UNAUTHENTICATED`() {
         val t = core.tokenStore.issue(TokenKind.USER, "revoke-user", emptyList(), null, 3600)
         assertTrue(core.tokenStore.revoke(t.id, "revoke-user"))
-        assertEquals(Status.Code.UNAUTHENTICATED, statusOf { stub.validateToken(validateTokenRequest { token = t.token; datasourceName = ds.name }) })
+        assertEquals(Status.Code.UNAUTHENTICATED, statusOf { stub.openConnection(openConnectionRequest { token = t.token; datasourceName = ds.name }) })
     }
 
     @Test
-    fun `validateToken rejects a deactivated principal UNAUTHENTICATED`() {
+    fun `openConnection rejects a deactivated principal UNAUTHENTICATED`() {
         val daemon = PrincipalSessionStore(dataSource, null)
         core.userGroupStore.createUser(AppUserInput(principal = "gone-user"), core.tokenStore, core.accessStore, daemon)
         val t = core.tokenStore.issue(TokenKind.USER, "gone-user", emptyList(), null, 3600)
         core.userGroupStore.setUserActive("gone-user", false)
-        assertEquals(Status.Code.UNAUTHENTICATED, statusOf { stub.validateToken(validateTokenRequest { token = t.token; datasourceName = ds.name }) })
+        assertEquals(Status.Code.UNAUTHENTICATED, statusOf { stub.openConnection(openConnectionRequest { token = t.token; datasourceName = ds.name }) })
     }
 
     @Test
@@ -152,7 +152,7 @@ class GrpcDecideHandlerDbTest {
         val t = core.tokenStore.issue(TokenKind.USER, "session-user", emptyList(), null, 3600)
         // Works while valid (handshake succeeds and mints the connection state).
         val connectionId = runBlocking {
-            val id = stub.validateToken(validateTokenRequest { token = t.token; datasourceName = ds.name })
+            val id = stub.openConnection(openConnectionRequest { token = t.token; datasourceName = ds.name })
             id.connectionId
         }
         // Revoke mid-session; the NEXT decide must re-validate and reject — this is the revocation-gap fix.

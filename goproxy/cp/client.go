@@ -209,13 +209,13 @@ func identityFromWire(id *pb.WireIdentity) (spi.Identity, error) {
 	}, nil
 }
 
-// ValidateToken authenticates the session-open token through the control plane. ANY failure, including an
+// OpenConnection authenticates the session-open token through the control plane. ANY failure, including an
 // UNAUTHENTICATED status or an empty response, returns an error so the wire broker fails closed.
-func (c *Client) ValidateToken(token, clientAddr string) (spi.Identity, error) {
+func (c *Client) OpenConnection(token, clientAddr string) (spi.Identity, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), rpcDeadline)
 	defer cancel()
 
-	resp, err := c.stub.ValidateToken(c.outCtx(ctx), &pb.ValidateTokenRequest{Token: token, DatasourceName: c.datasourceName, ClientAddr: clientAddr})
+	resp, err := c.stub.OpenConnection(c.outCtx(ctx), &pb.OpenConnectionRequest{Token: token, DatasourceName: c.datasourceName, ClientAddr: clientAddr})
 	if err != nil {
 		if st, ok := status.FromError(err); ok {
 			msg := st.Message()

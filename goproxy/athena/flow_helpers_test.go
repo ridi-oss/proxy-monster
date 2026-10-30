@@ -107,7 +107,7 @@ func (c *flowClient) AuthorizeRequest(_ context.Context, request *pb.RequestAuth
 	return &pb.RequestAuthorizationResult{Allowed: true, Principal: c.principal, Instructions: &pb.RequestAuthorizationResult_Athena{Athena: instructions}}, nil
 }
 
-func (c *flowClient) ValidateToken(token, _ string) (spi.Identity, error) {
+func (c *flowClient) OpenConnection(token, _ string) (spi.Identity, error) {
 	if token != "login-"+c.principal {
 		return spi.Identity{}, ErrUnauthorized
 	}

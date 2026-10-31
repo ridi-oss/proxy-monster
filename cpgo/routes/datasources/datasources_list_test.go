@@ -17,18 +17,18 @@ func TestDatasourceList(t *testing.T) {
 	e := routetest.Setup(t)
 	ctx := context.Background()
 	var open, closed int64
-	if err := e.St.Pool.QueryRow(ctx, `INSERT INTO datasource (name, engine, db_name, target_info, tags, advertise_addr, advertise_cert_chain, connection_info, description)
-		VALUES ('acme', 'mysql', 'acme', 'db:3306', '["pii"]', 'proxy:6033', 'BEGIN CERTIFICATE acme', '{"properties": {"tls": "on", "aa": "b", "z": "c"}, "endpoint": "proxy:6033"}', 'orders')
+	if err := e.St.Pool.QueryRow(ctx, `INSERT INTO datasource (name, engine, target_info, tags, advertise_addr, advertise_cert_chain, connection_info, description)
+		VALUES ('acme', 'mysql', 'db:3306', '["pii"]', 'proxy:6033', 'BEGIN CERTIFICATE acme', '{"properties": {"tls": "on", "aa": "b", "z": "c", "database": "acme"}, "endpoint": "proxy:6033"}', 'orders')
 		RETURNING id`).Scan(&open); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.St.Pool.QueryRow(ctx, `INSERT INTO datasource (name, engine, db_name, target_info, description,
+	if err := e.St.Pool.QueryRow(ctx, `INSERT INTO datasource (name, engine, target_info, description,
 		advertise_addr, advertise_cert_chain, current_catalog_name, connection_info)
-		VALUES ('lake', 'athena', 'lake', 'athena.example:443', 'secret lake', 'lake-proxy:443', 'BEGIN CERTIFICATE lake', 'AwsDataCatalog',
+		VALUES ('lake', 'athena', 'athena.example:443', 'secret lake', 'lake-proxy:443', 'BEGIN CERTIFICATE lake', 'AwsDataCatalog',
 		'{"endpoint": "lake-proxy:443", "properties": {}}') RETURNING id`).Scan(&closed); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.St.Pool.Exec(ctx, `INSERT INTO datasource (name, db_name, deleted_at) VALUES ('gone', 'd', now())`); err != nil {
+	if _, err := e.St.Pool.Exec(ctx, `INSERT INTO datasource (name, deleted_at) VALUES ('gone', now())`); err != nil {
 		t.Fatal(err)
 	}
 	alice := e.St.WebSession(t, "alice@example.com", "k-a", "dev-a")
@@ -36,7 +36,7 @@ func TestDatasourceList(t *testing.T) {
 
 	status, body := e.Do(t, http.MethodGet, "/api/datasources", "", alice)
 	want := fmt.Sprintf(`[{"id":%d,"name":"acme","engine":"mysql","dbName":"acme","targetInfo":"db:3306","tags":["pii"],"defaultSchemas":[],`+
-		`"advertiseAddr":"proxy:6033","advertiseCertChain":"BEGIN CERTIFICATE acme","advertiseWireTls":false,"connectionInfo":{"endpoint":"proxy:6033","properties":{"z":"c","aa":"b","tls":"on"}},"description":"orders","defaultSchemaSettable":true,"identifierQuote":"`+"`"+`"},`+
+		`"advertiseAddr":"proxy:6033","advertiseCertChain":"BEGIN CERTIFICATE acme","advertiseWireTls":false,"connectionInfo":{"endpoint":"proxy:6033","properties":{"z":"c","aa":"b","tls":"on","database":"acme"}},"description":"orders","defaultSchemaSettable":true,"identifierQuote":"`+"`"+`"},`+
 		`{"id":%d,"name":"lake","engine":"athena","dbName":"","targetInfo":"","tags":[],"defaultSchemas":[],"advertiseWireTls":false,"description":"","defaultSchemaSettable":false,"identifierQuote":"\""}]`, open, closed)
 	if status != http.StatusOK || body != want {
 		t.Fatalf("list:\n got %s\nwant %s", body, want)

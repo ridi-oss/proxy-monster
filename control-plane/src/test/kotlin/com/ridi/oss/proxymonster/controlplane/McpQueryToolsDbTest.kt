@@ -756,7 +756,7 @@ class McpQueryToolsDbTest {
         val token = token(principal, setOf("mcp:query"))
         val hidden = core.datasourceStore.registerOnly("mcp-hidden-${seq.incrementAndGet()}", "mysql")
         val shown = fx.datasource
-        core.datasourceStore.register(shown.name, shown.engine, shown.targetInfo, shown.dbName, emptyList(), "", null, false, description = "Orders and payments")
+        core.datasourceStore.register(shown.name, shown.engine, shown.targetInfo, emptyList(), "", null, false, description = "Orders and payments")
 
         val listed = client.call(token, "list_connectable_datasources").ok().getValue("result").jsonArray.map { it.jsonObject }
         assertContains(listed.map { it.str("name") }, fx.datasource.name)

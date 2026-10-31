@@ -86,7 +86,7 @@ private const val TABLE_DETAIL_STREAM_TIMEOUT_MS = 60_000L
 // error instead of a stalled editor session. Bump it on any incompatible wire change. It MUST match the proxy's
 // goproxy cp.ProtocolVersion; the two are separate constants in separate languages kept in lockstep by hand —
 // a server-v* release always ships both at the same value.
-internal const val CONTROL_PROTOCOL_VERSION = 7
+internal const val CONTROL_PROTOCOL_VERSION = 8
 
 /**
  * Build the session-temp overlay from a decide request's proxy-supplied [temps], applying BOTH
@@ -325,7 +325,6 @@ class ControlPlaneGrpcService(
                 name = request.name,
                 engine = engine,
                 targetInfo = request.targetInfo,
-                dbName = request.dbName,
                 tags = request.tagsList,
                 advertiseAddr = request.advertiseAddr,
                 advertiseCertChain = certChain,

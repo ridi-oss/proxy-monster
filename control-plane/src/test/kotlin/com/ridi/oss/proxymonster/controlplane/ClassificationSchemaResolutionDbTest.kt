@@ -61,8 +61,8 @@ class ClassificationSchemaResolutionDbTest {
 
     private fun datasource(name: String): Long = dataSource.connection.use { connection ->
         connection.prepareStatement(
-            """INSERT INTO datasource(name, engine, db_name, default_schemas, current_catalog_name)
-               VALUES (?, 'postgres', 'pm', '["public"]'::jsonb, 'pm') RETURNING id""",
+            """INSERT INTO datasource(name, engine, default_schemas, current_catalog_name)
+               VALUES (?, 'postgres', '["public"]'::jsonb, 'pm') RETURNING id""",
         ).use { statement ->
             statement.setString(1, name)
             statement.executeQuery().use { result -> result.next(); result.getLong(1) }

@@ -85,7 +85,7 @@ func TestOwnApprovals(t *testing.T) {
 	e := routetest.Setup(t)
 	ctx := context.Background()
 	var ds int64
-	if err := e.St.Pool.QueryRow(ctx, `INSERT INTO datasource (name, db_name) VALUES ('acme', 'acme') RETURNING id`).Scan(&ds); err != nil {
+	if err := e.St.Pool.QueryRow(ctx, `INSERT INTO datasource (name) VALUES ('acme') RETURNING id`).Scan(&ds); err != nil {
 		t.Fatal(err)
 	}
 	var mine int64
@@ -121,7 +121,7 @@ func TestOwnApprovalsPullRequest(t *testing.T) {
 	e := routetest.Setup(t)
 	ctx := context.Background()
 	var ds, id int64
-	if err := e.St.Pool.QueryRow(ctx, `INSERT INTO datasource (name, db_name) VALUES ('acme', 'acme') RETURNING id`).Scan(&ds); err != nil {
+	if err := e.St.Pool.QueryRow(ctx, `INSERT INTO datasource (name) VALUES ('acme') RETURNING id`).Scan(&ds); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.St.Pool.QueryRow(ctx, `INSERT INTO access_request (principal, kind, creator_kind, status, requested_duration_sec, datasource_id, source,
@@ -148,7 +148,7 @@ func TestAccessListFilters(t *testing.T) {
 	var roleID, goneRole, ds int64
 	_ = e.St.Pool.QueryRow(ctx, `INSERT INTO app_role (name) VALUES ('zz-live') RETURNING id`).Scan(&roleID)
 	_ = e.St.Pool.QueryRow(ctx, `INSERT INTO app_role (name, deleted_at) VALUES ('zz-gone', now()) RETURNING id`).Scan(&goneRole)
-	_ = e.St.Pool.QueryRow(ctx, `INSERT INTO datasource (name, db_name) VALUES ('prod', 'd') RETURNING id`).Scan(&ds)
+	_ = e.St.Pool.QueryRow(ctx, `INSERT INTO datasource (name) VALUES ('prod') RETURNING id`).Scan(&ds)
 	exec := func(sql string, args ...any) {
 		t.Helper()
 		if _, err := e.St.Pool.Exec(ctx, sql, args...); err != nil {

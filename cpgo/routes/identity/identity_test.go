@@ -67,7 +67,7 @@ func TestIdentityWrites(t *testing.T) {
 		}
 	}
 	exec(`INSERT INTO app_role (name) VALUES ('analyst')`)
-	exec(`INSERT INTO datasource (name, db_name) VALUES ('orders', 'd')`)
+	exec(`INSERT INTO datasource (name) VALUES ('orders')`)
 
 	do(http.MethodGet, "/api/users", "", plain, http.StatusForbidden)
 	do(http.MethodPost, "/api/users", `{"principal":"x@example.com"}`, plain, http.StatusForbidden)

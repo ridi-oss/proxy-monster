@@ -26,7 +26,7 @@ func TestDatasourceDelete(t *testing.T) {
 	}
 
 	var id int64
-	if err := e.St.Pool.QueryRow(ctx, `INSERT INTO datasource (name, engine, target_info, db_name) VALUES ('orders', 'mysql', 'db:3306', 'app') RETURNING id`).Scan(&id); err != nil {
+	if err := e.St.Pool.QueryRow(ctx, `INSERT INTO datasource (name, engine, target_info) VALUES ('orders', 'mysql', 'db:3306') RETURNING id`).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
 	row := func() string {

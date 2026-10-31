@@ -14,6 +14,6 @@ fun DatasourceStore.seed(name: String, engine: String, catalog: String = engineF
 
 /** A datasource whose proxy has registered but not yet pushed a catalog. */
 fun DatasourceStore.registerOnly(name: String, engine: String): Datasource = register(
-    name = name, engine = engineFromWire(engine), targetInfo = "", dbName = "",
+    name = name, engine = engineFromWire(engine), targetInfo = "",
     tags = emptyList(), advertiseAddr = "", advertiseCertChain = null, advertiseWireTls = false,
 )

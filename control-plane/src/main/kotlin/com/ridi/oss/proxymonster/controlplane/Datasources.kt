@@ -45,6 +45,7 @@ data class Datasource(
     @Serializable(with = EngineWireSerializer::class) val engine: Engine,
     // Only the proxy's Register sets these. The control-plane holds NO target credential — it never dials a
     // target (the proxy executes everything), so there is literally zero target secret at rest here.
+    /** The database clients connect to, as the proxy publishes it in [connectionInfo]. */
     val dbName: String,
     /** Where the proxy connects, as its engine describes it (MySQL `host:port`); shown in the console only. */
     val targetInfo: String = "",
@@ -176,9 +177,13 @@ class DatasourceStore(internal val dataSource: DataSource) {
     private val stringList = ListSerializer(String.serializer())
 
     companion object {
-        /** Every column [toDatasource] reads. One list, so a new column cannot reach some reads and not others. */
+        /**
+         * Every column [toDatasource] reads. One list, so a new column cannot reach some reads and not others.
+         * db_name is the database the proxy publishes in connection_info.
+         */
         const val DATASOURCE_COLUMNS =
-            "id, name, engine, db_name, target_info, tags, default_schemas, mysql_lower_case_table_names, " +
+            "id, name, engine, COALESCE(connection_info->'properties'->>'database', '') AS db_name, target_info, " +
+                "tags, default_schemas, mysql_lower_case_table_names, " +
                 "catalog_synced_at, last_seen_at, engine_version, advertise_addr, advertise_cert_chain, " +
                 "advertise_wire_tls, current_catalog_name, connection_info, description"
 
@@ -296,13 +301,12 @@ class DatasourceStore(internal val dataSource: DataSource) {
      * redeploy / scaled replica re-registering converges.
      * ENGINE IS IMMUTABLE: re-registering an existing [name] with a different [engine] than its
      * stored value throws [DatasourceEngineConflictException] instead of upserting — see that class's
-     * kdoc for why. db_name and target_info stay mutable.
+     * kdoc for why. target_info stays mutable.
      */
     fun register(
         name: String,
         engine: Engine,
         targetInfo: String,
-        dbName: String,
         tags: List<String>,
         advertiseAddr: String,
         // NULL = "no opinion, keep the stored chain" (a transient cert read on the proxy); a PRESENT blank
@@ -351,13 +355,12 @@ class DatasourceStore(internal val dataSource: DataSource) {
                 // comes back null (a fresh insert and a same-engine update both RETURN the id), so it
                 // unambiguously means "engine conflict" and we reject fail-closed below.
                 val upsertedId = c.prepareStatement(
-                    """INSERT INTO datasource (name, engine, target_info, db_name, tags, advertise_addr, advertise_cert_chain, advertise_wire_tls, connection_info, description)
-                       VALUES (?, ?, ?, ?, ?::jsonb, ?, ?, ?, ?::jsonb, COALESCE(?, ''))
+                    """INSERT INTO datasource (name, engine, target_info, tags, advertise_addr, advertise_cert_chain, advertise_wire_tls, connection_info, description)
+                       VALUES (?, ?, ?, ?::jsonb, ?, ?, ?, ?::jsonb, COALESCE(?, ''))
                        ON CONFLICT (name) WHERE deleted_at IS NULL DO UPDATE SET
                            engine  = EXCLUDED.engine,
                            -- A proxy that predates target_info sends none; keep what V52 or a later register stored.
                            target_info = COALESCE(NULLIF(EXCLUDED.target_info, ''), datasource.target_info),
-                           db_name = EXCLUDED.db_name,
                            tags    = CASE WHEN EXCLUDED.tags = '[]'::jsonb THEN datasource.tags ELSE EXCLUDED.tags END,
                            advertise_addr = COALESCE(EXCLUDED.advertise_addr, datasource.advertise_addr),
                            -- Blank preserves the prior chain (a transient cert read sends none), EXCEPT when the
@@ -378,20 +381,19 @@ class DatasourceStore(internal val dataSource: DataSource) {
                     ps.setString(1, name)
                     ps.setString(2, engine.wireName)
                     ps.setString(3, targetInfo)
-                    ps.setString(4, dbName)
-                    ps.setString(5, json.encodeToString(stringList, tags))
+                    ps.setString(4, json.encodeToString(stringList, tags))
                     // Blank → NULL so the COALESCE upsert preserves any previously-advertised address rather
                     // than wiping it.
-                    ps.setString(6, advertiseAddr.ifBlank { null })
+                    ps.setString(5, advertiseAddr.ifBlank { null })
                     // Distinct from advertiseAddr above: this is a NULLABLE parameter carrying presence, so an
                     // ABSENT chain (null) preserves the stored one via COALESCE, while a PRESENT blank becomes
                     // the empty string and overwrites it. Do not collapse blank to null here — that would make
                     // "stop publishing" unexpressible.
-                    ps.setString(7, advertiseCertChain)
-                    ps.setBoolean(8, advertiseWireTls)
-                    ps.setString(9, connectionInfo?.let { json.encodeToString(ConnectionInfoSerializer, it) })
+                    ps.setString(6, advertiseCertChain)
+                    ps.setBoolean(7, advertiseWireTls)
+                    ps.setString(8, connectionInfo?.let { json.encodeToString(ConnectionInfoSerializer, it) })
+                    ps.setString(9, description)
                     ps.setString(10, description)
-                    ps.setString(11, description)
                     ps.executeQuery().use { rs -> if (rs.next()) rs.getLong(1) else null }
                 }
                 if (upsertedId == null) {

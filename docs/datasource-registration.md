@@ -64,8 +64,7 @@ or redeploy upserts the same row.
 message RegisterRequest {
   string name = 1;              // stable identity; Cedar's Datasource::"<name>"; upsert key
   Engine engine = 2;            // POSTGRES | MYSQL
-  reserved 3, 4;                // the target's host and port
-  string db_name = 5;           // advisory only
+  reserved 3, 4, 5;             // the target's host, port and database
   repeated string tags = 6;     // posture tags; empty => production floor
   string advertise_addr = 7;                    // client-facing host:port a wire client dials to reach THIS proxy
   reserved 8, 9;                                // a leaf SHA-256 clients pinned against, and the leaf alone
@@ -82,10 +81,10 @@ message ConnectionInfo {
 }
 ```
 
-`target_info` and `db_name` are descriptive: nothing in enforcement reads them
-(Cedar keys on `name`; lineage reads the pushed catalog). Each engine writes
-`target_info` as where it connects (MySQL and PostgreSQL `host:port`, Athena its
-endpoint, workgroup and catalog), and the console shows it.
+`target_info` is descriptive: nothing in enforcement reads it (Cedar keys on
+`name`; lineage reads the pushed catalog). Each engine writes `target_info` as
+where it connects (MySQL and PostgreSQL `host:port`, Athena its endpoint,
+workgroup and catalog), and the console shows it.
 
 The three `advertise_*` fields are the opposite — client-facing and consumed.
 `advertise_addr` is the `host:port` a wire client dials to reach this
@@ -116,8 +115,10 @@ that never had TLS.
 enough to open a local broker port for that datasource.
 
 `connection_info` is what a client needs beyond the address: an endpoint plus
-engine-defined properties, nonsecret by contract. An absent message keeps the
-stored value; an explicit empty message clears it. The engine definition
+engine-defined properties, nonsecret by contract: MySQL and PostgreSQL publish
+`database` (`PM_TARGET_DB`), which `/api/datasources` also serves as `dbName`,
+and Athena its region, workgroup, catalog and database. An absent message keeps
+the stored value; an explicit empty message clears it. The engine definition
 validates the accepted fields, and a non-connectable listing omits it along with
 the other connection material.
 
@@ -288,9 +289,10 @@ guarded, not warned.
 The guard is atomic in the conflict arm:
 `ON CONFLICT (name) DO UPDATE SET … WHERE datasource.engine = EXCLUDED.engine` —
 a row raced in under a different engine matches 0 rows and `register` rejects,
-regardless of who else writes the row. `target_info` and `db_name` change with
-each `Register`. A proxy pointed at another database pushes that database's
-catalog before it serves, and the push drops the held schemas it disagrees with.
+regardless of who else writes the row. `target_info` and `connection_info`
+change with each `Register`. A proxy pointed at another database pushes that
+database's catalog before it serves, and the push drops the held schemas it
+disagrees with.
 
 ## The editor session — editor and workflow execution
 

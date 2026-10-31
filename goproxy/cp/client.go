@@ -42,7 +42,7 @@ import (
 // error instead of a stalled editor session. Bump it on any incompatible wire change. It MUST match the
 // control-plane's CONTROL_PROTOCOL_VERSION; the two are separate constants in separate languages kept in
 // lockstep by hand — a server-v* release always ships both at the same value.
-const ProtocolVersion int32 = 7
+const ProtocolVersion int32 = 8
 
 // ErrIncompatibleControlPlane means the control-plane speaks a different wire-protocol version than this
 // proxy — a PERMANENT deploy-skew condition, not a transient failure. boot treats it as fatal (refuse to
@@ -427,7 +427,7 @@ func (c *Client) ReportCompletion(report spi.CompletionReport) {
 // advertiseCertChain is a pointer for explicit presence. nil means "no opinion" and preserves whatever the
 // control plane stores (a transient read at re-register); a non-nil empty string is authoritative and CLEARS
 // the stored chain, so an operator who stops publishing does not leave clients on dead roots.
-func (c *Client) Register(registrationEngine enginepb.Engine, targetInfo string, dbName string, tags []string, advertiseAddr string, advertiseCertChain *string, wireTLS bool, connectionInfo *pb.ConnectionInfo, description *string) error {
+func (c *Client) Register(registrationEngine enginepb.Engine, targetInfo string, tags []string, advertiseAddr string, advertiseCertChain *string, wireTLS bool, connectionInfo *pb.ConnectionInfo, description *string) error {
 	// Fail-closed defense-in-depth — never send an unspecified engine (boot already validated the provider).
 	if registrationEngine == enginepb.Engine_ENGINE_UNSPECIFIED {
 		return fmt.Errorf("cp: refusing to register datasource %q with an unspecified engine", c.datasourceName)
@@ -440,7 +440,6 @@ func (c *Client) Register(registrationEngine enginepb.Engine, targetInfo string,
 		Name:               c.datasourceName,
 		Engine:             registrationEngine,
 		TargetInfo:         targetInfo,
-		DbName:             dbName,
 		Tags:               tags,
 		AdvertiseAddr:      advertiseAddr,
 		AdvertiseCertChain: advertiseCertChain,

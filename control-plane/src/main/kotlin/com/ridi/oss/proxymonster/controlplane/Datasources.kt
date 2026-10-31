@@ -460,7 +460,7 @@ class DatasourceStore(internal val dataSource: DataSource) {
      * pushed — the control-plane never connects to the target itself. The snapshot is one blob on the
      * datasource row, replaced whole together with the connection's live `default_schemas` /
      * `mysql_lower_case_table_names` / `catalog_synced_at` / `current_catalog_name`. Every column names
-     * the measured catalog or none. Returns the number of columns stored.
+     * the reported catalog or none. Returns the number of columns stored.
      */
     fun storePushedCatalog(
         id: Long,
@@ -475,8 +475,8 @@ class DatasourceStore(internal val dataSource: DataSource) {
         require(duplicate == null) { "duplicate catalog column ${duplicate!!.key}" }
         dataSource.connection.use { c ->
             val ds = checkNotNull(get(id, c)) { "datasource $id disappeared before catalog push" }
-            val measuredCatalog = ds.measuredCatalog(currentCatalog)
-            catalog.columnsList.forEach { require(it.catalog == measuredCatalog) { "column ${it.schema}.${it.table}.${it.column} names catalog '${it.catalog}', not the measured '$measuredCatalog'" } }
+            val reportedCatalog = ds.reportedCatalog(currentCatalog)
+            catalog.columnsList.forEach { require(it.catalog == reportedCatalog) { "column ${it.schema}.${it.table}.${it.column} names catalog '${it.catalog}', not the reported '$reportedCatalog'" } }
             c.prepareStatement(
                 """UPDATE datasource
                    SET catalog = ?, default_schemas = ?::jsonb, mysql_lower_case_table_names = ?, engine_version = ?,
@@ -487,7 +487,7 @@ class DatasourceStore(internal val dataSource: DataSource) {
                 ps.setString(2, json.encodeToString(stringList, defaultSchemas))
                 setNullableInt(ps, 3, mysqlLowerCaseTableNames)
                 ps.setString(4, engineVersion.ifBlank { null })
-                ps.setString(5, measuredCatalog)
+                ps.setString(5, reportedCatalog)
                 ps.setLong(6, id)
                 check(ps.executeUpdate() == 1) { "datasource $id disappeared before catalog push" }
             }

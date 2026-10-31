@@ -16,12 +16,12 @@ import java.util.concurrent.atomic.AtomicLong
 private const val CONNECTION_ID_BYTES = 16
 
 /**
- * How long a connection may hold a schema fragment before re-measuring it. This is the backstop for drift the
+ * How long a connection may hold a schema fragment before re-inspecting it. This is the backstop for drift the
  * control plane never learned about — DDL run straight against the target DB, which no push reports — so it
  * bounds how long such a change can go unnoticed.
  *
- * Set above the proxy's ambient refresh interval, which re-reads the whole target-DB catalog and, through
- * [ConnectionCatalogRegistry.recordAmbientMeasurement], re-measures the pooled fragments it still agrees
+ * Set above the proxy's periodic catalog refresh interval, which re-reads the whole target-DB catalog and, through
+ * [ConnectionCatalogRegistry.applyCatalogPush], confirms the pooled fragments it still agrees
  * with. That cycle is what detects out-of-band DDL; this bound is the ceiling for a connection whose
  * schemas the refresh did not confirm, so it only has to sit far enough above the interval that an ordinary
  * slow or skipped cycle does not put a full fetch in front of a user's query.
@@ -57,7 +57,7 @@ data class PooledFragment(val fragment: SchemaFragment, val refCount: Int)
 val SchemaFragment.content: Pair<List<FragmentColumn>, List<String>> get() = columns to routines
 
 /**
- * [measuredNanos] is when THIS datasource's target DB was last read and found to hold this content — the
+ * [lastInspectedNanos] is when THIS datasource's target DB was last inspected and found to hold this content — the
  * evidence a connection inherits when it adopts. It lives here rather than on [PooledFragment] because
  * identical content is pooled once and shared across datasources, while a reading only ever speaks for the
  * target DB it came from.
@@ -66,7 +66,7 @@ data class Authoritative(
     val hash: ContentHash,
     val pooledRef: PoolKey,
     val epoch: Long,
-    val measuredNanos: Long,
+    val lastInspectedNanos: Long,
 )
 
 data class Binding(val datasourceName: String, val principal: String, val tokenKind: String, val catalog: String, val engine: Engine)
@@ -138,7 +138,7 @@ class ConnectionCatalogRegistry(
      * [adoptHeldContent] lets a connection start from catalog content the control plane already holds instead
      * of fetching it, for an engine whose scan cannot vary by connection
      * ([Engine.catalogIsConnectionIndependent]). A schema with nothing held still gets its fetch, so this only
-     * removes redundant work — never the first measurement.
+     * removes redundant work — never the first inspection.
      */
     fun open(
         binding: Binding,
@@ -177,9 +177,9 @@ class ConnectionCatalogRegistry(
             schemas.asSequence().filter { it.schema.isNotBlank() && it.catalog.isNotBlank() }.distinct().mapNotNull { schema ->
                 val auth = authoritative[connection.binding.datasourceName to schema]
                 val pooled = auth?.let { pool[it.pooledRef] }
-                // Where a scan cannot vary by connection, content another connection already measured is
+                // Where a scan cannot vary by connection, content another connection already inspected is
                 // this connection's answer too, so it starts from that instead of putting a target-DB fetch in
-                // front of the first query. lastVerifiedNanos carries the original measurement time rather
+                // front of the first query. lastVerifiedNanos carries the original inspection time rather
                 // than now: the staleness gate must keep counting from when the target DB was actually read, or
                 // a stream of new connections would refresh the clock forever and the bound would never fire.
                 if (adoptHeldContent && auth != null && pooled != null) {
@@ -187,8 +187,8 @@ class ConnectionCatalogRegistry(
                     connection.held[schema] = HeldSchema(
                         pooledRef = auth.pooledRef,
                         hash = auth.hash,
-                        lastFetchNanos = auth.measuredNanos,
-                        lastVerifiedNanos = auth.measuredNanos,
+                        lastFetchNanos = auth.lastInspectedNanos,
+                        lastVerifiedNanos = auth.lastInspectedNanos,
                         revalidatedAgainstAuthoritativeHash = null,
                     )
                     return@mapNotNull null
@@ -414,7 +414,7 @@ class ConnectionCatalogRegistry(
         markPending(connection, schemas, { copy(afterStatement = true) }) { schema -> heldOrAuthoritative(connection, schema) }
 
     /**
-     * Must be called while holding [EnforcementConnection.mutex]. Re-measures the schemas this connection's DDL
+     * Must be called while holding [EnforcementConnection.mutex]. Re-inspects the schemas this connection's DDL
      * changed since its last COMMIT, so the push answering the executed COMMIT refreshes the config catalog.
      */
     fun markAfterCommit(connection: EnforcementConnection): List<Refetch> {
@@ -468,13 +468,13 @@ class ConnectionCatalogRegistry(
         connection.held.keys.filterTo(LinkedHashSet()) { freshnessGate(connection, listOf(it)).isEmpty() }
 
     /**
-     * Fold a whole-catalog measurement from the proxy's ambient refresh into this datasource's authoritative
+     * Fold a whole-catalog inspection from the proxy's periodic catalog refresh into this datasource's authoritative
      * entries.
      *
      * The refresh reads every schema from the target DB with the same columns and routines a fragment holds,
-     * so for a schema whose content is identical it is a genuine re-measurement of exactly that content — the
+     * so for a schema whose content is identical it is a genuine re-inspection of exactly that content — the
      * same evidence a connection's own hash probe produces. Recording it advances the authoritative entry's
-     * measurement time, so the staleness gate counts from this reading rather than from the first time the
+     * inspection time, so the staleness gate counts from this inspection rather than from the first time the
      * content happened to be pooled.
      *
      * Recorded on the authoritative entry, NOT on the pooled fragment: identical system-schema content is
@@ -488,7 +488,7 @@ class ConnectionCatalogRegistry(
      *
      * Returns the schemas confirmed, for logging.
      */
-    fun recordAmbientMeasurement(
+    fun applyCatalogPush(
         datasourceName: String,
         columnsBySchema: Map<ObjectRef, List<FragmentColumn>>,
         routinesBySchema: Map<ObjectRef, List<String>> = emptyMap(),
@@ -505,7 +505,7 @@ class ConnectionCatalogRegistry(
             // anything the moment the two orderings diverged, and nothing would report it.
             if (pooled.fragment.columns.toSet() != columnsBySchema[schema].orEmpty().toSet()) continue
             if (pooled.fragment.routines.toSet() != routinesBySchema[schema].orEmpty().toSet()) continue
-            authoritative[authKey] = auth.copy(measuredNanos = now)
+            authoritative[authKey] = auth.copy(lastInspectedNanos = now)
             confirmed += schema
         }
         confirmed
@@ -517,16 +517,16 @@ class ConnectionCatalogRegistry(
      *
      * The persisted catalog is already cleared on a retarget, because keeping it would authorize the new
      * target against the old schema. This state is the same hazard: a connection opening afterwards would
-     * otherwise adopt structure measured from the database that is no longer there, and decide against a
-     * catalog its target DB never had. Dropping the entries makes the next connection measure for itself.
+     * otherwise adopt structure inspected from the database that is no longer there, and decide against a
+     * catalog its target DB never had. Dropping the entries makes the next connection inspect for itself.
      *
      * Live connections are left alone — each already holds its own reference and re-verifies on its own
      * clock, and tearing their content out mid-session would empty structuralRows under an in-flight
      * statement. Returns the schemas invalidated, for logging.
      */
     /** When this datasource's [schema] was last read and found to hold the content held for it. */
-    internal fun measuredNanosFor(datasourceName: String, schema: ObjectRef): Long? =
-        authoritative[datasourceName to schema]?.measuredNanos
+    internal fun lastInspectedNanosFor(datasourceName: String, schema: ObjectRef): Long? =
+        authoritative[datasourceName to schema]?.lastInspectedNanos
 
     fun invalidateDatasource(datasourceName: String): Set<ObjectRef> = synchronized(stateLock) {
         val dropped = LinkedHashSet<ObjectRef>()

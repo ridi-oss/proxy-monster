@@ -643,9 +643,9 @@ internal fun decideFacts(
     }
 
     // A resolved statement that touches no column/table/function, changes no catalog, and calls no function
-    // has nothing to mask, re-measure, or authorize beyond the kind gate it already passed: relay it verbatim
+    // has nothing to mask, re-inspect, or authorize beyond the kind gate it already passed: relay it verbatim
     // (SHOW/SET/const-SELECT). A catalog-changing (DDL) or function-bearing no-column statement falls through
-    // so its re-measure and function authorization still run. A session statement on a non-persistent channel
+    // so its re-inspection and function authorization still run. A session statement on a non-persistent channel
     // (MCP/workflow) is denied earlier at the kind gate by the seeded `stmt.cat.session` Cedar forbid.
     if (facts.resolved &&
         !facts.catalogChanging &&

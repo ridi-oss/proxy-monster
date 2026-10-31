@@ -60,7 +60,7 @@ func (r *ProxyCommandRunner) Refetch(cmd *pb.Refetch) error {
 	}
 
 	hashSQL, hashColumns, hashSQLErr := r.Queries.SchemaHash(cmd.GetSchema(), setupRows)
-	h1, trusted1 := r.measureHash(hashSQL, hashColumns, hashSQLErr)
+	h1, trusted1 := r.inspectHash(hashSQL, hashColumns, hashSQLErr)
 	if trusted1 && len(cmd.GetIfHashDiffers()) > 0 && bytes.Equal(h1, cmd.GetIfHashDiffers()) {
 		_, err := r.Push(&pb.SchemaFragmentPush{
 			ConnectionId:      append([]byte(nil), r.ConnectionID...),
@@ -93,7 +93,7 @@ func (r *ProxyCommandRunner) Refetch(cmd *pb.Refetch) error {
 	}
 
 	// h1 != h2: DDL landed between the two probes, so columns and routines may not belong together.
-	h2, trusted2 := r.measureHash(hashSQL, hashColumns, hashSQLErr)
+	h2, trusted2 := r.inspectHash(hashSQL, hashColumns, hashSQLErr)
 	if trusted1 && trusted2 && !bytes.Equal(h1, h2) {
 		return fmt.Errorf("schema %q changed during introspection", cmd.GetSchema())
 	}
@@ -121,7 +121,7 @@ func (r *ProxyCommandRunner) Refetch(cmd *pb.Refetch) error {
 	return err
 }
 
-func (r *ProxyCommandRunner) measureHash(sql string, expectedColumns int, sqlErr error) ([]byte, bool) {
+func (r *ProxyCommandRunner) inspectHash(sql string, expectedColumns int, sqlErr error) ([]byte, bool) {
 	if sqlErr != nil {
 		return nil, false
 	}

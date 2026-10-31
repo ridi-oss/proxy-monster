@@ -21,7 +21,7 @@ import com.ridi.oss.proxymonster.controlplane.management.auditEntity
 import com.ridi.oss.proxymonster.controlplane.catalogIsConnectionIndependent
 import com.ridi.oss.proxymonster.controlplane.effectiveCatalog
 import com.ridi.oss.proxymonster.controlplane.requireCatalog
-import com.ridi.oss.proxymonster.controlplane.measuredCatalog
+import com.ridi.oss.proxymonster.controlplane.reportedCatalog
 import com.ridi.oss.proxymonster.controlplane.namespaces
 import com.ridi.oss.proxymonster.controlplane.namespace
 import com.ridi.oss.proxymonster.controlplane.definition
@@ -368,7 +368,7 @@ class ControlPlaneGrpcService(
                 Status.NOT_FOUND.withDescription("unknown datasource '${request.datasourceName}' — Register first"),
             )
         val currentCatalog = try {
-            ds.measuredCatalog(request.currentCatalog)
+            ds.reportedCatalog(request.currentCatalog)
         } catch (e: ManagementException) {
             throw StatusException(Status.INVALID_ARGUMENT.withDescription(e.error.code))
         }
@@ -388,11 +388,11 @@ class ControlPlaneGrpcService(
         } catch (e: ManagementException) {
             throw StatusException(Status.INVALID_ARGUMENT.withDescription(e.error.code))
         }
-        // This push is a fresh whole-catalog read of the target DB, so where it agrees with content the
-        // enforcement pool already holds it re-measures that content — the ambient refresh keeps held
+        // This push is a fresh whole-catalog inspection of the target DB, so where it agrees with content the
+        // enforcement pool already holds it re-inspects that content — the ambient refresh keeps held
         // fragments verified instead of only feeding the config catalog, and a connection is not made to
         // re-probe a schema the proxy just confirmed.
-        val confirmed = core.connectionCatalog.recordAmbientMeasurement(
+        val confirmed = core.connectionCatalog.applyCatalogPush(
             ds.name,
             request.catalog.columnsList.groupBy({ namespace(it.catalog, it.schema) }) {
                 FragmentColumn(it.catalog, it.schema, it.table, it.column, it.dataType, it.ordinal, it.nullable)
@@ -400,7 +400,7 @@ class ControlPlaneGrpcService(
             request.catalog.routinesList.associate { namespace(currentCatalog, it.schema) to it.namesList },
         )
         if (confirmed.isNotEmpty()) {
-            log.debug("datasource '{}': ambient refresh re-verified {} pooled schema(s)", ds.name, confirmed.size)
+            log.debug("datasource '{}': catalog push re-verified {} pooled schema(s)", ds.name, confirmed.size)
         }
         // Which shipped system-classification manifest governs THIS datasource, resolved from the version the
         // proxy just pushed — so an operator sees at connect time whether its system schemas are classified,

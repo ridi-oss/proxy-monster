@@ -170,7 +170,7 @@ abstract class ConfigCatalogRefreshDbContract {
                     delay(SETTLE_MILLIS)
                     val commit = decide(opened, "COMMIT")
                     assertEquals(EnfAction.ALLOW, commit.ctx.action, commit.ctx.denyReason)
-                    assertEquals(listOf(schema()), commit.afterStatement.map { it.schema }, "COMMIT re-measures the DDL's schema")
+                    assertEquals(listOf(schema()), commit.afterStatement.map { it.schema }, "COMMIT re-inspects the DDL's schema")
                     held.commit()
                     fixture.pushFromTarget(held, opened.connectionId, schema(), unchanged = true)
                 }

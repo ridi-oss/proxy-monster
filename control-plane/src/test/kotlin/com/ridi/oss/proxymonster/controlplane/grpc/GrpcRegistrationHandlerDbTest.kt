@@ -539,27 +539,27 @@ class GrpcRegistrationHandlerDbTest {
     }
 
     @Test
-    fun `pushCatalog uses measured catalog and rejects contradictory row catalogs`() = runBlocking {
+    fun `pushCatalog uses the reported catalog and rejects contradictory row catalogs`() = runBlocking {
         stub.register(regReq { name = "reg-qualified"; engine = Engine.POSTGRES; dbName = "advisory" })
         stub.pushCatalog(catalogRequest {
             datasourceName = "reg-qualified"
-            currentCatalog = "measured"
+            currentCatalog = "reported"
             defaultSchemas.add("schema.with.dot")
             catalog = catalogSnapshot {
                 columns.add(column {
-                    catalog = "measured"; schema = "schema.with.dot"; table = "users"; this.column = "id"
+                    catalog = "reported"; schema = "schema.with.dot"; table = "users"; this.column = "id"
                     dataType = "bigint"; ordinal = 1
                 })
             }
         })
         val ds = core.datasourceStore.getByName("reg-qualified")!!
-        assertEquals("measured", ds.currentCatalog)
-        assertEquals("measured", core.datasourceStore.catalog(ds.id).columns.single().catalog)
-        // An empty column catalog means the measured one; any other name contradicts the measurement.
+        assertEquals("reported", ds.currentCatalog)
+        assertEquals("reported", core.datasourceStore.catalog(ds.id).columns.single().catalog)
+        // An empty column catalog means the reported one; any other name contradicts it.
         assertEquals(Status.Code.INVALID_ARGUMENT, statusOf {
             stub.pushCatalog(catalogRequest {
                 datasourceName = ds.name
-                currentCatalog = "measured"
+                currentCatalog = "reported"
                 catalog = catalogSnapshot {
                     columns.add(column {
                         catalog = "other"; schema = "schema.with.dot"; table = "users"; this.column = "id"
@@ -572,7 +572,7 @@ class GrpcRegistrationHandlerDbTest {
             stub.pushCatalog(catalogRequest { datasourceName = ds.name; currentCatalog = "" })
         })
         assertEquals(1, core.datasourceStore.catalog(ds.id).columns.size)
-        assertEquals("measured", core.datasourceStore.get(ds.id)!!.currentCatalog)
+        assertEquals("reported", core.datasourceStore.get(ds.id)!!.currentCatalog)
     }
 
     @Test
@@ -602,15 +602,15 @@ class GrpcRegistrationHandlerDbTest {
     }
 
     @Test
-    fun `pushCatalog re-measures the enforcement catalog, not only the stored one`() = runBlocking {
-        // The staleness ceiling is set above the ambient refresh interval on the premise that the refresh
+    fun `pushCatalog confirms the enforcement catalog, not only the stored one`() = runBlocking {
+        // The staleness ceiling is set above the periodic catalog refresh interval on the premise that the refresh
         // keeps enforcement content verified. That premise is a single call in this handler: exercise it
         // through the RPC, because a registry-level test would stay green if the wiring were removed and
         // the refresh went back to feeding only the stored catalog.
-        stub.register(regReq { name = "reg-ambient"; engine = Engine.MYSQL; host = "h"; port = 1; dbName = "app" })
-        val ds = core.datasourceStore.getByName("reg-ambient")!!
+        stub.register(regReq { name = "reg-refresh"; engine = Engine.MYSQL; host = "h"; port = 1; dbName = "app" })
+        val ds = core.datasourceStore.getByName("reg-refresh")!!
 
-        // A connection measures `app` itself, so the control plane holds enforcement content for it.
+        // A connection inspects `app` itself, so the control plane holds enforcement content for it.
         val opened = core.connectionCatalog.open(Binding(ds.name, "p", "USER", ds.effectiveCatalog, ds.engine), ds.namespaces(listOf("app")))
         val applied = core.connectionCatalog.applyPush(
             schemaFragmentPush {
@@ -627,9 +627,9 @@ class GrpcRegistrationHandlerDbTest {
             ds,
         )
         assertIs<CatalogMutationResult.Applied>(applied)
-        val measuredBefore = core.connectionCatalog.measuredNanosFor(ds.name, namespace(ds.effectiveCatalog, "app"))!!
+        val inspectedBefore = core.connectionCatalog.lastInspectedNanosFor(ds.name, namespace(ds.effectiveCatalog, "app"))!!
 
-        // The ambient refresh reports the same content for that schema.
+        // The catalog push reports the same content for that schema.
         stub.pushCatalog(
             catalogRequest {
                 datasourceName = ds.name
@@ -643,22 +643,22 @@ class GrpcRegistrationHandlerDbTest {
             },
         )
 
-        // The recorded measurement time must have MOVED. Asserting that instead of "the adopter looks
-        // fresh" is deliberate: the adopter would look fresh anyway from the original measurement seconds
+        // The recorded inspection time must have MOVED. Asserting that instead of "the adopter looks
+        // fresh" is deliberate: the adopter would look fresh anyway from the original inspection seconds
         // earlier, so a freshness assertion holds even with this handler unwired and proves nothing.
-        val afterAmbient = core.connectionCatalog.measuredNanosFor(ds.name, namespace(ds.effectiveCatalog, "app"))
-        assertNotNull(afterAmbient, "the enforcement entry must survive the push")
+        val inspectedAfter = core.connectionCatalog.lastInspectedNanosFor(ds.name, namespace(ds.effectiveCatalog, "app"))
+        assertNotNull(inspectedAfter, "the enforcement entry must survive the push")
         assertTrue(
-            afterAmbient > measuredBefore,
+            inspectedAfter > inspectedBefore,
             "pushCatalog must record its read against the enforcement catalog " +
-                "(before=$measuredBefore after=$afterAmbient)",
+                "(before=$inspectedBefore after=$inspectedAfter)",
         )
 
         // The push confirms content; it never installs it.
         val adopter = core.connectionCatalog.open(
             Binding(ds.name, "later", "USER", ds.effectiveCatalog, ds.engine), ds.namespaces(listOf("app")), adoptHeldContent = true,
         )
-        assertTrue(adopter.onOpen.isEmpty(), "the ambient push must leave the adopter with nothing to fetch")
+        assertTrue(adopter.onOpen.isEmpty(), "the catalog push must leave the adopter with nothing to fetch")
         assertEquals(
             listOf("id"),
             core.connectionCatalog.structuralRows(

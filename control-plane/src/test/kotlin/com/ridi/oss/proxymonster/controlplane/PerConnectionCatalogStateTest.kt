@@ -15,7 +15,7 @@ import kotlin.test.assertTrue
 
 class PerConnectionCatalogStateTest {
     private val ds = Datasource(
-        1, "ds", Engine.MYSQL, "", 0, "app", defaultSchemas = listOf("app"),
+        1, "ds", Engine.MYSQL, "app", defaultSchemas = listOf("app"),
         mysqlLowerCaseTableNames = 0, engineVersion = "8.4.0", currentCatalog = "def",
     )
 

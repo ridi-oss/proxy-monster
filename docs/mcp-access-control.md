@@ -273,7 +273,7 @@ MCP tools name datasources by stable name and call the same management services
 as REST. Every listed tool below is gated by its registry Cedar action (not
 REST's session-only `requireApi` on some list routes).
 
-- `list_datasources` (`admin.datasources`) — name, engine, host/port, dbName,
+- `list_datasources` (`admin.datasources`) — name, engine, dbName, targetInfo,
   tags, defaultSchemas, `catalogSyncedAt`, `lastSeenAt`, engineVersion.
 - `get_datasource_liveness` (`admin.datasources`) — mirrors
   `GET /api/datasources/live` for one named datasource.

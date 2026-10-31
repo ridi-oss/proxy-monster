@@ -2,6 +2,7 @@ package athena
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/url"
 
@@ -54,6 +55,11 @@ func newTarget(ctx context.Context, cfg targetConfig, awsCfg aws.Config, transpo
 func (t *target) Config() spi.TargetConfig {
 	u, _ := url.Parse(t.endpoint)
 	return spi.TargetConfig{Host: u.Hostname(), Port: 443, Db: t.config.database}
+}
+
+func (t *target) TargetInfo() string {
+	u, _ := url.Parse(t.endpoint)
+	return fmt.Sprintf("%s workgroup %s, catalog %s", u.Host, t.config.workgroup, t.config.catalog)
 }
 
 // ConnectionInfo publishes what a client needs to reach this datasource: the HTTPS endpoint and the scope

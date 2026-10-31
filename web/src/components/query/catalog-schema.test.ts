@@ -10,9 +10,8 @@ const mysql: Datasource = {
   id: 1,
   name: 'test',
   engine: 'mysql',
-  host: 'db.example.test',
-  port: 3306,
   dbName: 'app',
+  targetInfo: 'db.example.test:3306',
   tags: [],
   defaultSchemas: ['app'],
   identifierQuote: '`',
@@ -20,7 +19,6 @@ const mysql: Datasource = {
 const postgres: Datasource = {
   ...mysql,
   engine: 'postgres',
-  port: 5432,
   defaultSchemas: ['public'],
   identifierQuote: '"',
 };
@@ -108,7 +106,6 @@ describe('query catalog tree', () => {
     const athena = {
       ...postgres,
       engine: 'athena',
-      port: 443,
       dbName: 'acme',
       defaultSchemas: ['acme'],
       currentCatalog: 'awsdatacatalog',

@@ -94,15 +94,15 @@ export interface ConnectionInfo {
 /**
  * A registered target database. Carries NO credential: the control-plane never dials a target (the proxy
  * executes every query), so there is zero target secret at rest. Only the proxy's registration sets
- * host/port/dbName.
+ * dbName and targetInfo.
  */
 export interface Datasource {
   id: number;
   name: string;
   engine: string;
-  host: string;
-  port: number;
   dbName: string;
+  /** Where the proxy connects, as its engine describes it (MySQL `host:port`); empty until a proxy registers. */
+  targetInfo: string;
   currentCatalog?: string | null;
   connectionInfo?: ConnectionInfo | null;
   description?: string;
@@ -117,7 +117,7 @@ export interface Datasource {
   lastSeenAt?: string | null;
   engineVersion?: string | null;
   /** The client-facing `host:port` a wire client dials to reach this datasource's proxy — set by the proxy
-   *  at registration, distinct from the advisory `host`/`port` above. Null until a proxy advertises one. */
+   *  at registration, distinct from `targetInfo` above. Null until a proxy advertises one. */
   advertiseAddr?: string | null;
   /** PEM certificate chain to trust for this datasource's proxy, leaf first, as advertised at registration.
    *  pmon uses it as its root pool; the console offers the same bytes for download. Null when the proxy

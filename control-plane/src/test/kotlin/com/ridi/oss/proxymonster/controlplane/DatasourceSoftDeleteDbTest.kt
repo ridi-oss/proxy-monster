@@ -108,7 +108,7 @@ class DatasourceSoftDeleteDbTest {
         // Register with a posture tag so the retained-tags property is observable — a task's lifecycle Cedar
         // check must still see `system:production` after the datasource is gone, not empty tags.
         val ds = store.register(
-            name = name, engine = Engine.MYSQL, host = "db", port = 3306, dbName = "app",
+            name = name, engine = Engine.MYSQL, targetInfo = "db:3306", dbName = "app",
             tags = listOf("system:production"), advertiseAddr = "", advertiseCertChain = null, advertiseWireTls = false,
         )
         assertTrue(datasources.deleteDatasource(ds.id, actor).deleted)

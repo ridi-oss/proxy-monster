@@ -19,7 +19,7 @@ class ConnectionInfoDbTest {
         try {
             val store = DatasourceStore(dataSource)
             fun register(info: ConnectionInfo?) =
-                store.register("native", Engine.MYSQL, "target", 3306, "shop", emptyList(), "proxy.example:3307", null, false, info)
+                store.register("native", Engine.MYSQL, "target:3306", "shop", emptyList(), "proxy.example:3307", null, false, info)
             val published = connectionInfo { endpoint = "proxy.example:3307" }
             assertEquals(published, register(published).connectionInfo)
             assertEquals(published, register(null).connectionInfo)

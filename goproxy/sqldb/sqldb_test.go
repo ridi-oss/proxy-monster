@@ -47,6 +47,9 @@ func TestRegistryProviderContracts(t *testing.T) {
 			if target.Config() != config {
 				t.Fatalf("Config() = %+v, want %+v", target.Config(), config)
 			}
+			if target.TargetInfo() != "target:1234" {
+				t.Errorf("TargetInfo() = %q, want target:1234", target.TargetInfo())
+			}
 			server := target.NewWireServer(spi.Listen{}, nil, nil)
 			if reflect.TypeOf(server).String() != test.server {
 				t.Errorf("NewWireServer() type = %T, want %s", server, test.server)

@@ -94,8 +94,8 @@ message CompletionReport {
 message RegisterRequest {
   string name = 1;              // stable identity; Cedar's Datasource::"<name>"; upsert key
   Engine engine = 2;
-  string host = 3;              // advisory only (admin UI / triage)
-  int32 port = 4;               // advisory only
+  // Reserved: the target's host and port, which only MySQL and PostgreSQL have. target_info replaces them.
+  reserved 3, 4;
   string db_name = 5;           // advisory only
   repeated string tags = 6;     // optional free-form; posture tags system:development/system:production; empty => production floor via deny-by-default (policy-store.md)
   string advertise_addr = 7;    // client-facing host:port a wire client dials to reach THIS datasource's proxy (not the upstream host/port above); empty when the proxy isn't told its reachable address. Surfaced by GET /api/datasources so a client (pmon) can open a local broker per datasource.
@@ -131,6 +131,8 @@ message RegisterRequest {
   ConnectionInfo connection_info = 13;
   // One line telling people and agents what this datasource holds. Absent retains the stored value; empty clears it.
   optional string description = 14;
+  // Where the proxy connects, in its engine's words (MySQL `host:port`, Athena its endpoint and workgroup); shown in the console.
+  string target_info = 15;
 }
 message RegisterResponse {
   string name = 1;

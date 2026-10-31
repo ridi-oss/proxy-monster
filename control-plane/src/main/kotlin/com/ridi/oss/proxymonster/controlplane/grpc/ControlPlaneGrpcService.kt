@@ -324,8 +324,7 @@ class ControlPlaneGrpcService(
             core.datasourceStore.register(
                 name = request.name,
                 engine = engine,
-                host = request.host,
-                port = request.port,
+                targetInfo = request.targetInfo,
                 dbName = request.dbName,
                 tags = request.tagsList,
                 advertiseAddr = request.advertiseAddr,

@@ -64,8 +64,7 @@ or redeploy upserts the same row.
 message RegisterRequest {
   string name = 1;              // stable identity; Cedar's Datasource::"<name>"; upsert key
   Engine engine = 2;            // POSTGRES | MYSQL
-  string host = 3;              // advisory only — admin UI / triage
-  int32 port = 4;               // advisory only
+  reserved 3, 4;                // the target's host and port
   string db_name = 5;           // advisory only
   repeated string tags = 6;     // posture tags; empty => production floor
   string advertise_addr = 7;                    // client-facing host:port a wire client dials to reach THIS proxy
@@ -75,6 +74,7 @@ message RegisterRequest {
   int32 protocol_version = 12;
   ConnectionInfo connection_info = 13;          // nonsecret endpoint + properties for clients; absent = keep stored
   optional string description = 14;            // PM_DATASOURCE_DESCRIPTION; absent = keep stored, empty = clear
+  string target_info = 15;                      // where the proxy connects, in its engine's words
 }
 message ConnectionInfo {
   string endpoint = 1;
@@ -82,14 +82,15 @@ message ConnectionInfo {
 }
 ```
 
-`host`/`port`/`db_name` are descriptive: nothing in enforcement reads them
-(Cedar keys on `name`; lineage reads the pushed catalog). They exist for the
-admin UI and incident triage — which physical instance a datasource points at.
+`target_info` and `db_name` are descriptive: nothing in enforcement reads them
+(Cedar keys on `name`; lineage reads the pushed catalog). Each engine writes
+`target_info` as where it connects (MySQL and PostgreSQL `host:port`, Athena its
+endpoint, workgroup and catalog), and the console shows it.
 
 The three `advertise_*` fields are the opposite — client-facing and consumed.
 `advertise_addr` is the `host:port` a wire client dials to reach this
 datasource's proxy (`PM_ADVERTISE_ADDR`, [`../INSTALL.md`](../INSTALL.md)), not
-the upstream target DB `host`/`port` above.
+the target DB in `target_info` above.
 
 `advertise_cert_chain` is the certificate chain a client should trust to reach
 this proxy: PEM, leaf first, then any intermediates and the root. A self-signed
@@ -216,7 +217,7 @@ extended — not a new one.
 
 It is one system-wide secret, and `Register` takes a caller-asserted name: any
 holder can register under, or overwrite, any datasource name. A wrong catalog or
-wrong tags on a name is detectable — an admin sees a `host`/`port` that does not
+wrong tags on a name is detectable — an admin sees a `target_info` that does not
 match what they expect. The `advertise_*` fields are not: whoever holds the
 secret can repoint a datasource at their own address, advertise a chain that
 matches the certificate they serve there, and collect the wire tokens `pmon`
@@ -287,9 +288,9 @@ guarded, not warned.
 The guard is atomic in the conflict arm:
 `ON CONFLICT (name) DO UPDATE SET … WHERE datasource.engine = EXCLUDED.engine` —
 a row raced in under a different engine matches 0 rows and `register` rejects,
-regardless of who else writes the row. `host`/`port`/`db_name` change with each
-`Register`. A proxy pointed at another database pushes that database's catalog
-before it serves, and the push drops the held schemas it disagrees with.
+regardless of who else writes the row. `target_info` and `db_name` change with
+each `Register`. A proxy pointed at another database pushes that database's
+catalog before it serves, and the push drops the held schemas it disagrees with.
 
 ## The editor session — editor and workflow execution
 

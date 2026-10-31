@@ -59,7 +59,7 @@ class GrpcEventsHandlerDbTest {
 
     @Test
     fun `an open events stream marks attached, stamps last_seen_at, and relays a RefreshCatalog`() = runBlocking {
-        stub.register(registerRequest { protocolVersion = CONTROL_PROTOCOL_VERSION; name = "evt-ds"; engine = Engine.POSTGRES; host = "h"; port = 1; dbName = "d" })
+        stub.register(registerRequest { protocolVersion = CONTROL_PROTOCOL_VERSION; name = "evt-ds"; engine = Engine.POSTGRES; targetInfo = "h:1"; dbName = "d" })
         // `.first()` collects exactly one event then cancels the stream (→ server awaitClose → deregister).
         val firstEvent = async { stub.events(eventsRequest { datasourceName = "evt-ds"; protocolVersion = CONTROL_PROTOCOL_VERSION }).first() }
 
@@ -87,7 +87,7 @@ class GrpcEventsHandlerDbTest {
         // The registered datasource row outlives a rejected Register, so an old proxy (predates the field →
         // sends 0) or a skewed one can open the liveness stream against the persisted row. events() must reject
         // it the same way Register does, so the incompatible proxy never counts as attached — the gap #158 closes.
-        stub.register(registerRequest { protocolVersion = CONTROL_PROTOCOL_VERSION; name = "ver-ds"; engine = Engine.POSTGRES; host = "h"; port = 1; dbName = "d" })
+        stub.register(registerRequest { protocolVersion = CONTROL_PROTOCOL_VERSION; name = "ver-ds"; engine = Engine.POSTGRES; targetInfo = "h:1"; dbName = "d" })
         val lastSeenBefore = core.datasourceStore.getByName("ver-ds")!!.lastSeenAt
 
         val failure = assertFailsWith<StatusException> {

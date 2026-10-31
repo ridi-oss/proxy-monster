@@ -76,7 +76,7 @@ class WireCertRouteDbTest {
         // Registered through the STORE's register(), the same path the proxy's gRPC Register drives, so the
         // presence/clear semantics of the chain are exercised rather than bypassed by a direct INSERT.
         core.datasourceStore.register(
-            name = "cert-ds", engine = Engine.MYSQL, host = "db", port = 3306, dbName = "app",
+            name = "cert-ds", engine = Engine.MYSQL, targetInfo = "db:3306", dbName = "app",
             tags = emptyList(), advertiseAddr = "proxy.example.com:6033",
             advertiseCertChain = chainPem, advertiseWireTls = true,
         )
@@ -84,7 +84,7 @@ class WireCertRouteDbTest {
         // A proxy serving TLS that publishes NOTHING (PM_TLS_NO_ADVERTISE): there is no file to hand out, but
         // this is emphatically not "no TLS" and not "no such datasource".
         core.datasourceStore.register(
-            name = "public-ds", engine = Engine.MYSQL, host = "db2", port = 3306, dbName = "app",
+            name = "public-ds", engine = Engine.MYSQL, targetInfo = "db2:3306", dbName = "app",
             tags = emptyList(), advertiseAddr = "public.example.com:6033",
             advertiseCertChain = null, advertiseWireTls = true,
         )

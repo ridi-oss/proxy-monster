@@ -3,6 +3,7 @@ package editor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync/atomic"
 	"time"
@@ -30,8 +31,7 @@ func (s *Server) TryRegisterAndPushCatalog(cfg *config.Config, engine *engines.E
 }
 
 // RegisterAndPushCatalog registers the datasource and pushes its catalog, retrying transient failures. A
-// control-plane protocol-version mismatch is permanent, so it is the only error returned to make boot or a
-// reconnect exit; all other failures leave the proxy running fail-closed until the next resync can recover.
+// control-plane protocol-version mismatch is permanent and returns at once.
 func (s *Server) RegisterAndPushCatalog(cfg *config.Config, engine *engines.Engine, certChain func() *string) error {
 	for attempt := 0; attempt < bootRegisterAttempts; attempt++ {
 		targetConfig := s.target.Config()
@@ -51,8 +51,7 @@ func (s *Server) RegisterAndPushCatalog(cfg *config.Config, engine *engines.Engi
 			time.Sleep(backoff)
 		}
 	}
-	slog.Error("could not register + push catalog after all attempts — starting anyway; decisions fail closed until the control plane has this datasource's catalog", "attempts", bootRegisterAttempts)
-	return nil
+	return fmt.Errorf("could not register + push catalog after %d attempts", bootRegisterAttempts)
 }
 
 // RefreshCatalog introspects the target and pushes the catalog; concurrent callers share one refresh.

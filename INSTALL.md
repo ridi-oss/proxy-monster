@@ -789,11 +789,10 @@ per statement.
 
 ### Troubleshooting
 
-- A proxy logs "could not register + catalog push after N attempts" —
+- A proxy exits with "could not register + push catalog after N attempts" —
   control-plane isn't reachable at `PM_CONTROL_PLANE_GRPC` (default
   `localhost:9090`), or its gRPC port differs from what you passed. The proxy
-  still starts and serves, but every query fails closed (`NOT_FOUND`) until a
-  push succeeds — it keeps retrying in the background.
+  refuses to serve without its catalog.
 - Two proxies registering under the same `PM_DATASOURCE_NAME` silently merge
   into one datasource row (whichever pushed last "wins" the catalog) — a known,
   bounded residual of the shared-secret trust model

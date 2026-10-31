@@ -4,6 +4,7 @@ package boot
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -142,9 +143,9 @@ func Run(registry spi.Registry) error {
 	eventsCtx, eventsCancel := context.WithCancel(context.Background())
 	defer eventsCancel() // covers the early serve-error return; the drain path cancels explicitly (idempotent)
 	eventsDone := make(chan struct{})
-	// A wire-protocol version skew is fatal: refuse to start rather than attach and stall the editor session.
+	// Without its catalog every decision fails closed, so a proxy that cannot push one refuses to start.
 	if err := editorServer.RegisterAndPushCatalog(cfg, provider.Engine(), certChain); err != nil {
-		slog.Error("refusing to start — deploy the proxy and control-plane from the same server-v* release", "error", err)
+		slog.Error("refusing to start", "error", err)
 		return err
 	}
 	go func() {
@@ -152,9 +153,9 @@ func Run(registry spi.Registry) error {
 		err := client.RunEventsLoop(
 			eventsCtx,
 			func() {
-				// A re-register (reconnect) that finds a now-incompatible control-plane is equally fatal:
-				// exit so the supervisor replaces this proxy rather than run against a version it cannot speak.
-				if err := editorServer.TryRegisterAndPushCatalog(cfg, provider.Engine(), certChain); err != nil {
+				// Only a now-incompatible control plane is fatal here: a failed push leaves the catalog it already
+				// holds, and the next resync retries.
+				if err := editorServer.TryRegisterAndPushCatalog(cfg, provider.Engine(), certChain); errors.Is(err, cp.ErrIncompatibleControlPlane) {
 					slog.Error("control-plane became version-incompatible on reconnect — exiting", "error", err)
 					os.Exit(1)
 				}

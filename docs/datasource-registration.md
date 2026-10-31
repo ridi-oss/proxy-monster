@@ -55,8 +55,9 @@ explicitly and must name the datasource's current catalog.
 ## Registration
 
 `goproxy/boot/boot.go` calls `Register` then `PushCatalog` on boot, retrying
-with backoff. Registration is idempotent, upserted by `name`: a restart or
-redeploy upserts the same row.
+with backoff, and exits when both have not succeeded: without its catalog every
+decision fails closed. Registration is idempotent, upserted by `name`: a restart
+or redeploy upserts the same row.
 
 ```protobuf
 message RegisterRequest {

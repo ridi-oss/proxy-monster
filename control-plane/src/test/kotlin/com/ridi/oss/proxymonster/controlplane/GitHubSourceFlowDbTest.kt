@@ -129,9 +129,7 @@ class GitHubSourceFlowDbTest {
         core = ControlPlaneCore(dataSource)
         resultStore = QueryResultStore(dataSource, ResultCrypto(ByteArray(32) { it.toByte() }))
         sessionStore = PrincipalSessionStore(dataSource, null)
-        datasource = core.datasourceStore.create(
-            DatasourceInput(name = "shop-pg", engine = "postgres", host = "localhost", port = 5432, dbName = "app"),
-        )
+        datasource = core.datasourceStore.registerOnly("shop-pg", "postgres")
         role = core.policyStore.createRole(RoleInput("schema-migrator"))
         for (p in listOf(alice, bob, carol, dave)) {
             core.userGroupStore.createUser(AppUserInput(principal = p), core.tokenStore, core.accessStore, sessionStore)

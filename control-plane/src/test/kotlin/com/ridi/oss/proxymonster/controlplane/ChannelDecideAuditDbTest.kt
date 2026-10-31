@@ -139,7 +139,7 @@ class ChannelDecideAuditDbTest {
         // the temp (what the target DB binds). A temp is unclassified + owned by the user → read UNMASKED.
         val tempSchema = "pg_temp_9"
         val tempCol = CatalogColumn(
-            catalog = fx.datasource.dbName, schema = tempSchema, table = "scratch", column = "secret",
+            catalog = fx.datasource.effectiveCatalog, schema = tempSchema, table = "scratch", column = "secret",
             dataType = "text", sqlType = "text", ordinal = 1, nullable = true, isTemp = true,
         )
         val sql = "select secret from scratch"
@@ -167,7 +167,7 @@ class ChannelDecideAuditDbTest {
         val tempSchema = "pg_temp_9"
         // A session temp the attacker already holds (in the overlay), as the INSERT sink — the strongest form.
         val scratch = CatalogColumn(
-            catalog = fx.datasource.dbName, schema = tempSchema, table = "scratch", column = "ssn",
+            catalog = fx.datasource.effectiveCatalog, schema = tempSchema, table = "scratch", column = "ssn",
             dataType = "text", sqlType = "text", ordinal = 1, nullable = true, isTemp = true,
         )
         fun decideWrite(principal: String, sql: String) = decideQuery(
@@ -192,7 +192,7 @@ class ChannelDecideAuditDbTest {
         // overlay the same scan is unresolvable → DENY, so the exclusion is what ALLOWs it, not a hole.
         val tempSchema = "pg_temp_9"
         val tempCol = CatalogColumn(
-            catalog = fx.datasource.dbName, schema = tempSchema, table = "scratch", column = "secret",
+            catalog = fx.datasource.effectiveCatalog, schema = tempSchema, table = "scratch", column = "secret",
             dataType = "text", sqlType = "text", ordinal = 1, nullable = true, isTemp = true,
         )
         fun decideCount(temps: List<CatalogColumn>) = decideQuery(

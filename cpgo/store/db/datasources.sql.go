@@ -10,31 +10,6 @@ import (
 	"time"
 )
 
-const createDatasource = `-- name: CreateDatasource :one
-INSERT INTO datasource (name, engine, host, port, db_name) VALUES ($1, $2, $3, $4, $5) RETURNING id
-`
-
-type CreateDatasourceParams struct {
-	Name   string
-	Engine string
-	Host   string
-	Port   int32
-	DbName string
-}
-
-func (q *Queries) CreateDatasource(ctx context.Context, arg CreateDatasourceParams) (int64, error) {
-	row := q.db.QueryRow(ctx, createDatasource,
-		arg.Name,
-		arg.Engine,
-		arg.Host,
-		arg.Port,
-		arg.DbName,
-	)
-	var id int64
-	err := row.Scan(&id)
-	return id, err
-}
-
 const datasource = `-- name: Datasource :one
 SELECT id, name, engine, host, port, db_name, tags, default_schemas, mysql_lower_case_table_names,
        catalog_synced_at, last_seen_at, engine_version, advertise_addr, advertise_cert_chain,
@@ -178,56 +153,4 @@ func (q *Queries) DeleteDatasource(ctx context.Context, id int64) (int64, error)
 		return 0, err
 	}
 	return result.RowsAffected(), nil
-}
-
-const lockDatasource = `-- name: LockDatasource :one
-SELECT engine, db_name FROM datasource WHERE id = $1 AND deleted_at IS NULL FOR UPDATE
-`
-
-type LockDatasourceRow struct {
-	Engine string
-	DbName string
-}
-
-func (q *Queries) LockDatasource(ctx context.Context, id int64) (LockDatasourceRow, error) {
-	row := q.db.QueryRow(ctx, lockDatasource, id)
-	var i LockDatasourceRow
-	err := row.Scan(&i.Engine, &i.DbName)
-	return i, err
-}
-
-const resetDatasourceCatalog = `-- name: ResetDatasourceCatalog :exec
-UPDATE datasource SET catalog = NULL, current_catalog_name = NULL, catalog_synced_at = NULL,
-default_schemas = '[]'::jsonb, mysql_lower_case_table_names = NULL WHERE id = $1
-`
-
-func (q *Queries) ResetDatasourceCatalog(ctx context.Context, id int64) error {
-	_, err := q.db.Exec(ctx, resetDatasourceCatalog, id)
-	return err
-}
-
-const updateDatasource = `-- name: UpdateDatasource :exec
-UPDATE datasource SET name = $1, engine = $2, host = $3, port = $4, db_name = $5
-WHERE id = $6 AND deleted_at IS NULL
-`
-
-type UpdateDatasourceParams struct {
-	Name   string
-	Engine string
-	Host   string
-	Port   int32
-	DbName string
-	ID     int64
-}
-
-func (q *Queries) UpdateDatasource(ctx context.Context, arg UpdateDatasourceParams) error {
-	_, err := q.db.Exec(ctx, updateDatasource,
-		arg.Name,
-		arg.Engine,
-		arg.Host,
-		arg.Port,
-		arg.DbName,
-		arg.ID,
-	)
-	return err
 }

@@ -7,9 +7,10 @@ broker service account — and pushes the resulting catalog. The control-plane's
 only database dependency is its own metadata Postgres: zero target-datasource
 credentials live in the control-plane, ever.
 
-Point a proxy at a new target and it appears in the control-plane on its own.
-The admin "Add Datasource" form is optional pre-provisioning (reserve a name,
-set up policy ahead of time), not a required gate.
+A datasource appears in the control-plane when its proxy registers. The
+control-plane cannot create or rename one: the name, engine, and target are the
+proxy's settings, and `Register` (an upsert by name) is the only write that
+creates a datasource. An admin can delete one.
 
 A proxy needs only `PM_DATASOURCE_NAME` — already what Cedar policies key on
 (`Datasource::"<name>"`, `authz/Authz.kt`) — plus `PM_TARGET_*` for its own
@@ -286,13 +287,9 @@ guarded, not warned.
 The guard is atomic in the conflict arm:
 `ON CONFLICT (name) DO UPDATE SET … WHERE datasource.engine = EXCLUDED.engine` —
 a row raced in under a different engine matches 0 rows and `register` rejects,
-regardless of who else writes the row. `host`/`port`/`db_name` stay
-advisory-mutable. A proxy pointed at another database pushes that database's
-catalog before it serves, and the push drops the held schemas it disagrees with.
-The admin edit path (`PUT /api/datasources/{id}`) enforces the same
-immutability, rejecting an `engine` change with
-`409 datasource.engine_immutable`; the web edit form seeds `engine` from the
-current value and disables it.
+regardless of who else writes the row. `host`/`port`/`db_name` change with each
+`Register`. A proxy pointed at another database pushes that database's catalog
+before it serves, and the push drops the held schemas it disagrees with.
 
 ## The editor session — editor and workflow execution
 

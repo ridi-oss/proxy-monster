@@ -1,6 +1,6 @@
 'use client';
 
-// /admin/datasources — register and manage target databases
+// /admin/datasources — target databases, each added when its proxy registers
 // (docs/datasource-registration.md). The list is the primary surface; each row lets the user test the
 // connection, nudge a connected proxy to refresh its catalog, and open the
 // full catalog browser with inline classification.
@@ -8,7 +8,7 @@
 import { useCallback, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useTranslations } from 'next-intl';
-import { Database, FlaskConical, MoreHorizontal, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-react';
+import { Database, FlaskConical, MoreHorizontal, RefreshCw, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { mutate } from 'swr';
 import { refreshDatasource, testDatasource } from '@/lib/api/client';
@@ -21,13 +21,11 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { PageHeader, PageContainer, LoadingState, ErrorState, EmptyState } from '@/components/page-scaffold';
-import { DatasourceFormDialog } from '@/components/datasources/datasource-form-dialog';
 import { DeleteConfirmDialog } from '@/components/datasources/delete-confirm-dialog';
 import { cn } from '@/lib/utils';
 
@@ -91,10 +89,6 @@ export default function DatasourcesPage() {
     }
   };
 
-  // Form dialog state.
-  const [formOpen, setFormOpen] = useState(false);
-  const [editing, setEditing] = useState<Datasource | null>(null);
-
   // Delete confirm state.
   const [deleting, setDeleting] = useState<Datasource | null>(null);
 
@@ -146,27 +140,9 @@ export default function DatasourcesPage() {
     }
   };
 
-  const openCreate = () => {
-    setEditing(null);
-    setFormOpen(true);
-  };
-  const openEdit = (ds: Datasource) => {
-    setEditing(ds);
-    setFormOpen(true);
-  };
-
   return (
     <>
-      <PageHeader
-        title={t('list.title')}
-        subtitle={t('list.subtitle')}
-        actions={
-          <Button size="sm" onClick={openCreate}>
-            <Plus className="size-3.5" />
-            {t('list.addDatasource')}
-          </Button>
-        }
-      />
+      <PageHeader title={t('list.title')} subtitle={t('list.subtitle')} />
 
       <PageContainer>
         {isLoading && !datasources ? (
@@ -174,17 +150,7 @@ export default function DatasourcesPage() {
         ) : error ? (
           <ErrorState error={error} />
         ) : !datasources || datasources.length === 0 ? (
-          <EmptyState
-            title={t('list.emptyTitle')}
-            hint={t('list.emptyHint')}
-            icon={<Database className="size-8" />}
-            action={
-              <Button size="sm" onClick={openCreate}>
-                <Plus className="size-3.5" />
-                {t('list.addDatasource')}
-              </Button>
-            }
-          />
+          <EmptyState title={t('list.emptyTitle')} hint={t('list.emptyHint')} icon={<Database className="size-8" />} />
         ) : (
           <div className="rounded-lg border">
             <Table>
@@ -302,11 +268,6 @@ export default function DatasourcesPage() {
                               <MoreHorizontal className="size-3.5" />
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="end" side="bottom">
-                              <DropdownMenuItem onClick={() => openEdit(ds)}>
-                                <Pencil className="size-3.5" />
-                                {t('list.edit')}
-                              </DropdownMenuItem>
-                              <DropdownMenuSeparator />
                               <DropdownMenuItem variant="destructive" onClick={() => setDeleting(ds)}>
                                 <Trash2 className="size-3.5" />
                                 {t('list.delete')}
@@ -323,9 +284,6 @@ export default function DatasourcesPage() {
           </div>
         )}
       </PageContainer>
-
-      {/* Add / edit dialog */}
-      <DatasourceFormDialog open={formOpen} onOpenChange={setFormOpen} editing={editing} />
 
       {/* Delete confirm dialog */}
       <DeleteConfirmDialog datasource={deleting} onClose={() => setDeleting(null)} />

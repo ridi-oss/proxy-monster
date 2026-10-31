@@ -88,7 +88,7 @@ class ApprovalDiscoverPickSubmitRouteDbTest {
     private fun seedRolesForUnionVsAloneTeeth() {
         val ds = fx.datasource
         // Postgres EUID shape used by EnforcementFixture.seedPolicy: "<ds>/<catalog>/<schema>/users".
-        val usersEuid = "${ds.name}/${ds.dbName}/public/users"
+        val usersEuid = "${ds.name}/${ds.effectiveCatalog}/public/users"
 
         fun grant(name: String, src: String) =
             fx.cedarPolicyStore.create(CedarPolicyInput(name = name, cedarSrc = src), updatedBy = "discover-pick-submit-test")

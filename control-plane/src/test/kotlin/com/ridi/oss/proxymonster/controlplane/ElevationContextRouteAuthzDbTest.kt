@@ -99,9 +99,7 @@ class ElevationContextRouteAuthzDbTest {
         editorExecService = EditorExecService(core) // required by approvalRoutes; /execute reaches it (test b below)
         resultStore = QueryResultStore(dataSource, ResultCrypto(ByteArray(32) { it.toByte() }))
 
-        datasource = core.datasourceStore.create(
-            DatasourceInput(name = "elev-ds", engine = "postgres", host = "localhost", port = 5432, dbName = "app"),
-        )
+        datasource = core.datasourceStore.registerOnly("elev-ds", "postgres")
         // The approver earns Role::"reviewer" server-side (a direct assignment RoleResolver resolves) and is an
         // ACTIVE app_user, so the tag-gated workflow.approve policy on that role decides the elevation.
         val reviewerRole = core.policyStore.createRole(RoleInput("reviewer"))

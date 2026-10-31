@@ -115,7 +115,7 @@ class ApprovalResultViewContextDbTest {
         fx.policyStore.createAssignment(RoleAssignmentInput(auditor, auditorRole.id))
         val adminRole = fx.policyStore.listRoles().first { it.name == "system:admin" }
         fx.policyStore.createAssignment(RoleAssignmentInput(admin, adminRole.id))
-        val usersTableEuid = "${fx.datasource.name}/${fx.datasource.dbName}/public/users"
+        val usersTableEuid = "${fx.datasource.name}/${fx.datasource.effectiveCatalog}/public/users"
         fx.cedarPolicyStore.create(
             CedarPolicyInput(
                 name = "approval-view-segregated-tag",
@@ -570,7 +570,7 @@ class ApprovalResultViewContextDbTest {
                 name = "approval-view-ledger",
                 cedarSrc = """permit(
                     principal in Role::"$roleName", action == Action::"result.read.unmasked",
-                    resource in Table::"${fx.datasource.name}/${fx.datasource.dbName}/sales/ledger"
+                    resource in Table::"${fx.datasource.name}/${fx.datasource.effectiveCatalog}/sales/ledger"
                 );""",
             ),
             updatedBy = "test-fixture",
@@ -775,12 +775,12 @@ class ApprovalResultViewContextDbTest {
     fun `a result over a table dropped after execution stays viewable and masked`() = testApplication {
         resetMutableAuthzState()
         val sql = "SELECT id, secret FROM archive"
-        val tableEuid = "${fx.datasource.name}/${fx.datasource.dbName}/public/archive"
+        val tableEuid = "${fx.datasource.name}/${fx.datasource.effectiveCatalog}/public/archive"
         fx.execOnTarget("CREATE TABLE archive (id BIGINT, secret VARCHAR(32))")
         fx.datasourceStore.pushTestCatalog(fx.datasource, fx.targetJdbcUrl, fx.targetUser, fx.targetPassword)
         fx.datasourceStore.upsertClassification(
             fx.datasource.id,
-            ClassificationInput(schema = "public", table = "archive", column = "secret", tags = listOf("pii"), catalog = fx.datasource.dbName),
+            ClassificationInput(schema = "public", table = "archive", column = "secret", tags = listOf("pii"), catalog = fx.datasource.effectiveCatalog),
         )
         val policy = fx.cedarPolicyStore.create(
             CedarPolicyInput(
@@ -837,12 +837,12 @@ class ApprovalResultViewContextDbTest {
 
         fx.datasourceStore.upsertClassification(
             fx.datasource.id,
-            ClassificationInput(schema = "public", table = "users", column = "region", tags = listOf("pii"), catalog = fx.datasource.dbName),
+            ClassificationInput(schema = "public", table = "users", column = "region", tags = listOf("pii"), catalog = fx.datasource.effectiveCatalog),
         )
         try {
             assertEquals(HttpStatusCode.Forbidden, client.get("/api/approvals/$id/result").status)
         } finally {
-            fx.datasourceStore.deleteClassification(fx.datasource.id, "public", "users", "region", fx.datasource.dbName)
+            fx.datasourceStore.deleteClassification(fx.datasource.id, "public", "users", "region", fx.datasource.effectiveCatalog)
         }
     }
 
@@ -852,7 +852,7 @@ class ApprovalResultViewContextDbTest {
         resetMutableAuthzState()
         val maskedOnly = "pii-masked-reader"
         val maskedOnlyId = fx.policyStore.listRoles().firstOrNull { it.name == maskedOnly }?.id ?: fx.policyStore.createRole(RoleInput(maskedOnly)).id
-        val usersTableEuid = "${fx.datasource.name}/${fx.datasource.dbName}/public/users"
+        val usersTableEuid = "${fx.datasource.name}/${fx.datasource.effectiveCatalog}/public/users"
         val policies = listOf(
             """permit(principal in Role::"$maskedOnly", action in [Action::"datasource.connect", Action::"stmt.cat.read"], resource in Datasource::"${fx.datasource.name}");""",
             """permit(principal in Role::"$maskedOnly", action == Action::"result.read.masked", resource in Table::"$usersTableEuid");""",

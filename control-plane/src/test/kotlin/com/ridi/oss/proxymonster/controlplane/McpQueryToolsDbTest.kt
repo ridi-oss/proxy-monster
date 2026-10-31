@@ -334,8 +334,8 @@ class McpQueryToolsDbTest {
         application { installTestMcp() }
         val client = createClient { expectSuccess = false }
         val n = seq.incrementAndGet()
-        val dsA = core.datasourceStore.create(DatasourceInput("mcp-scope-a-$n", "mysql", "localhost", 3306, "app"))
-        val dsB = core.datasourceStore.create(DatasourceInput("mcp-scope-b-$n", "mysql", "localhost", 3306, "app"))
+        val dsA = core.datasourceStore.registerOnly("mcp-scope-a-$n", "mysql")
+        val dsB = core.datasourceStore.registerOnly("mcp-scope-b-$n", "mysql")
         val requester = analyst("scoped-requester")
         val approver = "mcp-scoped-approver-$n@example.com"
         val policy = core.cedarPolicyStore.create(
@@ -672,7 +672,7 @@ class McpQueryToolsDbTest {
         val principal = "mcp-ip-$n@example.com"
         fx.policyStore.createAssignment(RoleAssignmentInput(principal, role.id))
         val schema = fx.datasource.defaultSchemas.first()
-        val usersTable = "${fx.datasource.name}/${fx.datasource.engine.catalogName(fx.datasource.dbName)}/$schema/users"
+        val usersTable = "${fx.datasource.name}/${fx.datasource.effectiveCatalog}/$schema/users"
         val policies = listOf(
             """permit(principal in Role::"${role.name}", action in [Action::"datasource.connect", Action::"stmt.cat.read"], resource in Datasource::"${fx.datasource.name}") when { context has channel && context.channel == "editor" && context has requester_ip && context.requester_ip.isInRange(ip("203.0.113.0/24")) };""",
             """permit(principal in Role::"${role.name}", action == Action::"result.read.unmasked", resource in Table::"$usersTable") unless { resource in Tag::"pii" };""",
@@ -754,7 +754,7 @@ class McpQueryToolsDbTest {
         val client = createClient { expectSuccess = false }
         val principal = analyst("smoke")
         val token = token(principal, setOf("mcp:query"))
-        val hidden = core.datasourceStore.create(DatasourceInput("mcp-hidden-${seq.incrementAndGet()}", "mysql", "localhost", 3306, "app"))
+        val hidden = core.datasourceStore.registerOnly("mcp-hidden-${seq.incrementAndGet()}", "mysql")
         val shown = fx.datasource
         core.datasourceStore.register(shown.name, shown.engine, shown.host, shown.port, shown.dbName, emptyList(), "", null, false, description = "Orders and payments")
 

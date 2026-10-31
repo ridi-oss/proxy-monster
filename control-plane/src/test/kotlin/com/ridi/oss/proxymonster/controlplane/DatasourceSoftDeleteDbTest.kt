@@ -62,7 +62,7 @@ class DatasourceSoftDeleteDbTest {
     @Test
     fun `deleting a datasource with access-request history soft-deletes it and keeps the rows`() {
         val name = "soft-del-history-${System.nanoTime()}"
-        val ds = datasources.createDatasource(DatasourceInput(name, "mysql"), actor)
+        val ds = store.registerOnly(name, "mysql")
         // A QUERY task pins the access_request -> datasource foreign key; a hard delete cannot satisfy it.
         insertQueryRequest(ds.id, principal = "requester@example.com")
 
@@ -93,22 +93,13 @@ class DatasourceSoftDeleteDbTest {
     @Test
     fun `a soft-deleted name is free for a new datasource to reuse`() {
         val name = "soft-del-reuse-${System.nanoTime()}"
-        val first = datasources.createDatasource(DatasourceInput(name, "mysql"), actor)
+        val first = store.registerOnly(name, "mysql")
         assertTrue(datasources.deleteDatasource(first.id, actor).deleted)
 
-        // The admin create surface reuses the freed name as a fresh datasource.
-        val second = datasources.createDatasource(DatasourceInput(name, "mysql"), actor)
+        // A proxy registering the freed name gets a fresh datasource (the ON CONFLICT arbiter is live-only).
+        val second = store.registerOnly(name, "mysql")
         assertNotEquals(first.id, second.id)
         assertEquals(second.id, store.getByName(name)?.id, "the live name resolves to the new datasource")
-
-        // ...and so does a proxy self-registering the same name (the ON CONFLICT arbiter is live-only).
-        assertTrue(datasources.deleteDatasource(second.id, actor).deleted)
-        val third = store.register(
-            name = name, engine = Engine.MYSQL, host = "db.internal", port = 3306, dbName = "app",
-            tags = emptyList(), advertiseAddr = "", advertiseCertChain = null, advertiseWireTls = false,
-        )
-        assertNotEquals(second.id, third.id)
-        assertEquals(third.id, store.getByName(name)?.id)
     }
 
     @Test
@@ -132,7 +123,7 @@ class DatasourceSoftDeleteDbTest {
     @Test
     fun `delete is refused while a proxy is attached`() {
         val name = "soft-del-attached-${System.nanoTime()}"
-        val ds = datasources.createDatasource(DatasourceInput(name, "mysql"), actor)
+        val ds = store.registerOnly(name, "mysql")
         val channel = Channel<CpEvent>(capacity = 1)
         core.proxyEventsHub.register(name, channel)
 
@@ -149,7 +140,7 @@ class DatasourceSoftDeleteDbTest {
     fun `the in-flight guard blocks non-terminal query work but not approved or terminal work`() {
         // Non-terminal work still bound to the datasource blocks the delete.
         for (status in listOf("PENDING", "EXECUTING")) {
-            val ds = datasources.createDatasource(DatasourceInput("guard-block-$status-${System.nanoTime()}", "mysql"), actor)
+            val ds = store.registerOnly("guard-block-$status-${System.nanoTime()}", "mysql")
             insertQueryRequest(ds.id, principal = "r@example.com", status = status)
             val e = assertFailsWith<ManagementException> { datasources.deleteDatasource(ds.id, actor) }
             assertEquals("datasource.in_use_active_requests", e.error.code, "$status must block")
@@ -159,7 +150,7 @@ class DatasourceSoftDeleteDbTest {
         // permanently undeletable — it must NOT block (deleting strands it fail-closed). Terminal history
         // never blocks — it is exactly what the soft delete retains.
         for (status in listOf("APPROVED", "EXECUTED", "CANCELLED")) {
-            val ds = datasources.createDatasource(DatasourceInput("guard-pass-$status-${System.nanoTime()}", "mysql"), actor)
+            val ds = store.registerOnly("guard-pass-$status-${System.nanoTime()}", "mysql")
             insertQueryRequest(ds.id, principal = "r@example.com", status = status)
             assertTrue(datasources.deleteDatasource(ds.id, actor).deleted, "$status must not block")
         }

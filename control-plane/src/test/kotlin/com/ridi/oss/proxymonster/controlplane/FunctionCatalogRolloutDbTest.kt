@@ -41,7 +41,7 @@ class FunctionCatalogRolloutDbTest {
         requireDockerOrSkip()
         val fx = EnforcementFixture.mysql()
         val ds = fx.datasource
-        SharedMySql.executeAdmin("CREATE FUNCTION `${ds.dbName}`.rollout_identity(v BIGINT) RETURNS BIGINT DETERMINISTIC RETURN v")
+        SharedMySql.executeAdmin("CREATE FUNCTION `${fx.database}`.rollout_identity(v BIGINT) RETURNS BIGINT DETERMINISTIC RETURN v")
         try {
             fx.datasourceStore.pushTestCatalog(ds, fx.targetJdbcUrl, fx.targetUser, fx.targetPassword)
             val sql = "SELECT rollout_identity(1)"
@@ -49,7 +49,7 @@ class FunctionCatalogRolloutDbTest {
             assertEquals(EnfAction.DENY, denied.action, denied.detail)
             fx.cedarPolicyStore.create(CedarPolicyInput(
                 name = "rollout-function-read",
-                cedarSrc = """permit(principal in Role::"analyst", action == Action::"result.read.unmasked", resource == Function::"${ds.name}/${ds.dbName}.rollout_identity");""",
+                cedarSrc = """permit(principal in Role::"analyst", action == Action::"result.read.unmasked", resource == Function::"${ds.name}/${fx.database}.rollout_identity");""",
             ), updatedBy = "test")
             val allowed = fx.decide(sql)
             assertEquals(EnfAction.ALLOW, allowed.action, allowed.detail)
@@ -57,7 +57,7 @@ class FunctionCatalogRolloutDbTest {
             val absent = fx.decide(sql)
             assertEquals(EnfAction.DENY, absent.action, absent.detail)
         } finally {
-            SharedMySql.executeAdmin("DROP FUNCTION `${ds.dbName}`.rollout_identity")
+            SharedMySql.executeAdmin("DROP FUNCTION `${fx.database}`.rollout_identity")
         }
     }
 

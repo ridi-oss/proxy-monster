@@ -81,7 +81,7 @@ abstract class WireTaskDecideDbContract {
     private fun preChangeWireDecision(sql: String): WireDecision {
         val connection = fixture.core.connectionCatalog.find(lastOpened.connectionId)
             ?: fail("connection disappeared before baseline decision")
-        val catalogName = fixture.datasource.engine.catalogName(fixture.datasource.dbName)
+        val catalogName = fixture.datasource.effectiveCatalog
         val classifications = fixture.core.datasourceStore.classificationsFor(fixture.datasource.id)
         val catalog = fixture.core.connectionCatalog.structuralRows(connection).map { row ->
             CatalogColumn(

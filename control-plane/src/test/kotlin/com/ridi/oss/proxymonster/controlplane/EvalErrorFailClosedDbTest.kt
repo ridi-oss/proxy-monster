@@ -28,7 +28,7 @@ class EvalErrorFailClosedDbTest {
 
     private val ds get() = fx.datasource.name
     private val usersEuid
-        get() = "$ds/${fx.datasource.engine.catalogName(fx.datasource.dbName)}/${fx.datasource.engine.defaultSchema(fx.datasource.dbName)}/users"
+        get() = "$ds/${fx.datasource.effectiveCatalog}/${fx.datasource.engine.defaultSchema(fx.database)}/users"
 
     private fun decide(sql: String, principal: String) = decideQuery(
         principal = principal, ds = fx.datasourceStore.get(fx.datasource.id)!!, sql = sql, channel = Channel.WIRE,

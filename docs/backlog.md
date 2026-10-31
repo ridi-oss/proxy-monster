@@ -249,9 +249,6 @@ Fixes for gaps documented in
   behind an admin assertion, auto-clearing declared-pure functions (low
   priority).
 - Surface computed `system:` tags in the catalog browser (display only).
-- Clear the config catalog and re-introspect when a datasource's identity
-  changes through the admin API. A retarget of the target database invalidates
-  it; other updates leave a stale catalog behind the config surfaces.
 - Tombstone a closed `connection_id` and require mint evidence. A closed or
   forged connection id is indistinguishable from a genuine post-restart id, so
   the decide path re-establishes it as restart recovery. No cross-principal

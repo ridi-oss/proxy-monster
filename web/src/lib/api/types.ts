@@ -85,9 +85,6 @@ export interface AuthConfig {
 
 // ---- Datasources (control-plane/.../Datasources.kt) -------------------------
 
-/** Supported target engines. */
-export type Engine = 'postgres' | 'mysql';
-
 /** Nonsecret endpoint and properties a proxy publishes for clients; never a credential. */
 export interface ConnectionInfo {
   endpoint: string;
@@ -96,8 +93,8 @@ export interface ConnectionInfo {
 
 /**
  * A registered target database. Carries NO credential: the control-plane never dials a target (the proxy
- * executes every query), so there is zero target secret at rest. host/port/dbName are advisory — the proxy
- * is authoritative and overwrites them on registration.
+ * executes every query), so there is zero target secret at rest. Only the proxy's registration sets
+ * host/port/dbName.
  */
 export interface Datasource {
   id: number;
@@ -133,19 +130,6 @@ export interface Datasource {
   defaultSchemaSettable?: boolean;
   /** The engine's identifier quote. Classification names are SQL identifier text, so a browsed name is sent quoted. */
   identifierQuote: string;
-}
-
-/**
- * Create/update body for a datasource. Optional pre-provisioning only — a way to seed a row (name +
- * advisory connection fields) before its proxy first attaches; the proxy's registration is authoritative.
- * Only `name` is required; there are no credential fields.
- */
-export interface DatasourceInput {
-  name: string;
-  engine: Engine;
-  host?: string;
-  port?: number;
-  dbName?: string;
 }
 
 /** Result of POST .../refresh — how many connected proxy streams were nudged to re-introspect. */

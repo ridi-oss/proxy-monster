@@ -36,9 +36,7 @@ class ApprovalLifecycleDbTest {
         requireDockerOrSkip()
         dataSource = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_approval_lifecycle"))
         core = ControlPlaneCore(dataSource)
-        datasource = core.datasourceStore.create(
-            DatasourceInput(name = "lifecycle-ds", engine = "postgres", host = "localhost", port = 5432, dbName = "app"),
-        )
+        datasource = core.datasourceStore.registerOnly("lifecycle-ds", "postgres")
         val admin = core.policyStore.getRoleByName("system:admin")!!.id
         for (p in listOf(adminA, adminB)) core.policyStore.createAssignment(RoleAssignmentInput(p, admin))
         val config = Config(

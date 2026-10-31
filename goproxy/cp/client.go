@@ -490,7 +490,7 @@ func (c *Client) PushCatalog(catalog *pb.CatalogRequest) error {
 	return nil
 }
 
-// PushSchemaFragment applies one measured connection-local schema fragment and returns its generation.
+// PushSchemaFragment applies one inspected connection-local schema fragment and returns its generation.
 // The fragment is the proto message the command runner built; it stamps DatasourceName before sending (the
 // command runner does not know it), mirroring PushCatalog.
 func (c *Client) PushSchemaFragment(push *pb.SchemaFragmentPush) (uint64, error) {

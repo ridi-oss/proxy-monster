@@ -22,7 +22,7 @@ import (
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
-const ambientRefreshInterval = 12 * time.Minute
+const catalogRefreshInterval = 12 * time.Minute
 
 // drainTimeout bounds the graceful shutdown: in-flight statements finish and idle connections get a
 // protocol-level shutdown notice, then any connection still live is force-closed and the process exits.
@@ -184,7 +184,7 @@ func Run(registry spi.Registry) error {
 			select {
 			case <-eventsCtx.Done():
 				return
-			case <-time.After(ambientRefreshInterval):
+			case <-time.After(catalogRefreshInterval):
 				editorServer.RefreshCatalog()
 			}
 		}

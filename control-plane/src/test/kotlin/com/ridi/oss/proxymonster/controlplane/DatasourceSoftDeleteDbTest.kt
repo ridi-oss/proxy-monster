@@ -166,7 +166,7 @@ class DatasourceSoftDeleteDbTest {
     }
 
     @Test
-    fun `deleting a datasource drops its name-keyed enforcement catalog so a reused name re-measures`() = runBlocking {
+    fun `deleting a datasource drops its name-keyed enforcement catalog so a reused name re-inspects`() = runBlocking {
         val name = "soft-del-catalog-${System.nanoTime()}"
         val ds = datasources.createDatasource(DatasourceInput(name, "mysql"), actor)
         // Seed the in-memory authoritative catalog for this datasource's name, as a proxy push would.
@@ -195,7 +195,7 @@ class DatasourceSoftDeleteDbTest {
             core.connectionCatalog.authoritativeFor(name, namespace(ds.effectiveCatalog, "app")),
             "delete drops the name-keyed authoritative catalog",
         )
-        // A new connection on the freed name must therefore re-measure its own target DB, not adopt the drop.
+        // A new connection on the freed name must therefore re-inspect its own target DB, not adopt the drop.
         val reused = core.connectionCatalog.open(Binding(name, "after", "USER", ds.effectiveCatalog, ds.engine), ds.namespaces(listOf("app")), adoptHeldContent = true)
         assertEquals(
             listOf("app"),

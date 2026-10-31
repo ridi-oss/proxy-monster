@@ -30,7 +30,7 @@ class EngineDefinition internal constructor(val engine: Engine) {
     val connectionProperties: Set<String> = facts.connectionPropertiesList.toSet()
     /** The fixed, enumerable system schemas whose content is identical across every datasource of one version. */
     val systemSchemas: Set<String> = facts.systemSchemasList.toSet()
-    /** True when one connection's catalog measurement answers for every connection of the datasource. */
+    /** True when one connection's catalog inspection answers for every connection of the datasource. */
     val catalogIsConnectionIndependent: Boolean = facts.catalogIsConnectionIndependent
     /** True when the proxy can prepare a statement on the target without running it (`check_target_error`). */
     val checksTargetErrors: Boolean = facts.checksTargetErrors

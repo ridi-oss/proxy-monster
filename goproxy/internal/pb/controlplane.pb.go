@@ -1010,7 +1010,7 @@ type CatalogRequest struct {
 	// connection, supplies it. Raw string; the control-plane owns parsing the major + Aurora marker.
 	EngineVersion string              `protobuf:"bytes,5,opt,name=engine_version,json=engineVersion,proto3" json:"engine_version,omitempty"`
 	Catalog       *pb.CatalogSnapshot `protobuf:"bytes,6,opt,name=catalog,proto3" json:"catalog,omitempty"` // proxy fills columns + routines; the control plane fills functions
-	// The catalog identity the target measured (MySQL `def`, PostgreSQL current_database(), Athena the
+	// The catalog identity the target reported (MySQL `def`, PostgreSQL current_database(), Athena the
 	// configured data catalog); every snapshot column names it.
 	CurrentCatalog string `protobuf:"bytes,7,opt,name=current_catalog,json=currentCatalog,proto3" json:"current_catalog,omitempty"`
 }
@@ -1280,13 +1280,13 @@ type SchemaFragmentPush struct {
 	ConnectionId   []byte       `protobuf:"bytes,1,opt,name=connection_id,json=connectionId,proto3" json:"connection_id,omitempty"`
 	DatasourceName string       `protobuf:"bytes,2,opt,name=datasource_name,json=datasourceName,proto3" json:"datasource_name,omitempty"`
 	Schema         string       `protobuf:"bytes,3,opt,name=schema,proto3" json:"schema,omitempty"`
-	ContentHash    []byte       `protobuf:"bytes,4,opt,name=content_hash,json=contentHash,proto3" json:"content_hash,omitempty"` // the live DB-side hash the proxy just measured for this schema
+	ContentHash    []byte       `protobuf:"bytes,4,opt,name=content_hash,json=contentHash,proto3" json:"content_hash,omitempty"` // the live DB-side hash the proxy just inspected for this schema
 	Unchanged      bool         `protobuf:"varint,5,opt,name=unchanged,proto3" json:"unchanged,omitempty"`                       // true = live hash matched the REFETCH hash; columns omitted (no-op ack)
 	Columns        []*pb.Column `protobuf:"bytes,6,rep,name=columns,proto3" json:"columns,omitempty"`                            // the same Column as PushCatalog
-	// The catalog the fragment was measured in; every column names it, and a column naming another
+	// The catalog the fragment was inspected in; every column names it, and a column naming another
 	// catalog is refused.
 	Catalog           string `protobuf:"bytes,9,opt,name=catalog,proto3" json:"catalog,omitempty"`
-	BackendGeneration uint64 `protobuf:"varint,7,opt,name=backend_generation,json=backendGeneration,proto3" json:"backend_generation,omitempty"` // target-DB-connection instance that measured this fragment
+	BackendGeneration uint64 `protobuf:"varint,7,opt,name=backend_generation,json=backendGeneration,proto3" json:"backend_generation,omitempty"` // target-DB-connection instance that inspected this fragment
 	// Routine names (see CatalogSnapshot.routines); in the content hash, so CREATE FUNCTION triggers REFETCH.
 	Routines []string `protobuf:"bytes,8,rep,name=routines,proto3" json:"routines,omitempty"`
 }
@@ -1535,7 +1535,7 @@ type DecisionRequest struct {
 	// of a shadowed real table. Editor-session only; empty for one-shot/wire paths.
 	TempColumns  []*TempColumn `protobuf:"bytes,6,rep,name=temp_columns,json=tempColumns,proto3" json:"temp_columns,omitempty"`
 	ConnectionId []byte        `protobuf:"bytes,7,opt,name=connection_id,json=connectionId,proto3" json:"connection_id,omitempty"`
-	// The catalog the proxy measured on this connection (MySQL `def`, PostgreSQL current_database());
+	// The catalog the proxy inspected on this connection (MySQL `def`, PostgreSQL current_database());
 	// a blank or foreign value is refused.
 	CurrentCatalog string `protobuf:"bytes,12,opt,name=current_catalog,json=currentCatalog,proto3" json:"current_catalog,omitempty"`
 	// What the proxy observed on the held target session before this statement; the control plane

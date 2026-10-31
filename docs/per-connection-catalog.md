@@ -8,8 +8,8 @@ channels:
   against catalog fragments the proxy introspected on that connection's own held
   target-DB connection, so they reflect uncommitted in-transaction DDL. The
   control plane resolves columns against that connection's view.
-- The **config catalog** is datasource-global and refreshed on the proxy's
-  ambient interval (~12 min) and a few seconds after DDL on a proxied
+- The **config catalog** is datasource-global and refreshed by the proxy's
+  periodic refresh (~12 min) and a few seconds after DDL on a proxied
   connection, on its own channel. It feeds the config/admin surfaces — catalog
   browsing, tagging/classification, table detail, the system-classification
   manifest, the liveness UI, and HTTP approval dry-run previews — and is never
@@ -70,7 +70,7 @@ held-connection refetch (`goproxy/sqldb/proxy_command_runner.go`,
 |  | Enforcement catalog | Config catalog |
 | --- | --- | --- |
 | Scope | one wire/editor connection (per-schema fragments) | the datasource |
-| Freshness | transactionally current for the issuing connection | ambient ~12 min, a few seconds after DDL, admin refresh |
+| Freshness | transactionally current for the issuing connection | every ~12 min, a few seconds after DDL, admin refresh |
 | Kept current by | control-plane `REFETCH` commands, DB-hash-gated | proxy timer + Events `RefreshCatalog` (after-DDL and admin) |
 | Introspected on | the connection's held target-DB connection | a dedicated short-lived connection (`introspect.Run`) |
 | Channel | enforcement (`OpenConnection`/`Decide`/`PushSchemaFragment`/`CloseConnection`/`EditorExec`/`ReportCompletion`) | config (`Register`/`PushCatalog`/`Events`/`TableDetailExec`) |
@@ -286,12 +286,12 @@ message SchemaFragmentPush {
   bytes  connection_id      = 1;
   string datasource_name    = 2;
   string schema             = 3;
-  bytes  content_hash       = 4;  // the live DB-side hash the proxy just measured for this schema
+  bytes  content_hash       = 4;  // the live DB-side hash the proxy just inspected for this schema
   bool   unchanged          = 5;  // true = live hash matched H; columns omitted (no-op ack)
   repeated Column columns   = 6;  // the analyzer's Column message, the same one PushCatalog carries
-  uint64 backend_generation = 7;  // which target-DB-connection instance measured this
+  uint64 backend_generation = 7;  // which target-DB-connection instance inspected this
   repeated string routines  = 8;  // the schema's routine names, part of the content hash
-  string catalog            = 9;  // the catalog the fragment was measured in; every column names it
+  string catalog            = 9;  // the catalog the fragment was inspected in; every column names it
 }
 message SchemaFragmentAck { uint64 generation = 1; }  // per-connection generation after applying
 
@@ -411,15 +411,15 @@ catalog).
   of many DDLs costs one introspection. Temporary DDL, a plain `SELECT`, and an
   `unchanged` reply trigger nothing. The request is best-effort and off the
   statement path: with no proxy attached it is logged and dropped, and the
-  ambient refresh remains the backstop. An uncommitted PG DDL is visible only on
-  its own connection, so the connection records the schemas its DDL changed
+  periodic refresh remains the backstop. An uncommitted PG DDL is visible only
+  on its own connection, so the connection records the schemas its DDL changed
   (`ddlSinceLastCommit`); an allowed `COMMIT` (or `END`) carries an
   `after_statement` `REFETCH` of those schemas, and the push that answers it,
   after the COMMIT executed, requests another refresh. `ROLLBACK` clears the
   record without a refresh. On MySQL, DDL commits implicitly, so the first
   refresh already sees it and the COMMIT one is a redundant introspection.
   `COMMIT PREPARED` is classified as an unknown statement and triggers nothing;
-  the ambient refresh covers it. This adds no decision path; it only makes the
+  the periodic refresh covers it. This adds no decision path; it only makes the
   config catalog fresher.
 
 ## Go proxy
@@ -530,13 +530,12 @@ endpoint, same `x-pm-secret-token`), owned by a config-side client in
 `goproxy/boot/boot.go`:
 
 - Carries `Register` (boot + Events-reconnect resync), `PushCatalog` (boot,
-  ambient ~12 min, after-DDL and admin `RefreshCatalog` via Events), the
-  `Events` stream (liveness + editor/table-detail nudges), and
-  `TableDetailExec`.
+  every ~12 min, after DDL and admin `RefreshCatalog` via Events), the `Events`
+  stream (liveness + editor/table-detail nudges), and `TableDetailExec`.
 - The enforcement channel carries `OpenConnection`, `Decide`,
   `PushSchemaFragment`, `CloseConnection`, `EditorExec`, `ReportCompletion`.
 - Config reads never touch the per-connection enforcement path — separate store,
-  channel, and failure domain. Ambient config refresh is a full
+  channel, and failure domain. The periodic config refresh is a full
   `introspect.Run` + `PushCatalog` (not the enforcement per-schema hash gate).
 
 ## Editor, table-detail, temp overlay
@@ -606,7 +605,7 @@ endpoint, same `x-pm-secret-token`), owned by a config-side client in
   catalog → wrong-ALLOW. Install `pgcrypto` (or use a PG build exposing a core
   SHA) to restore collision-resistance.
 - Refetch hash/columns coherence (ABA revert window, bounded). The Go proxy's
-  content hash is measured before and after the per-schema introspection
+  content hash is inspected before and after the per-schema introspection
   (`sqldb.ProxyCommandRunner`) and trusted only if both match; this catches a
   single concurrent change but not an external `A→B→A` byte-identical revert
   landing between the back-to-back probe queries (a ~microsecond window). It

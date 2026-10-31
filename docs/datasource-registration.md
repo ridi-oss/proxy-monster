@@ -50,7 +50,7 @@ shared secret as call metadata (see [Trust model](#trust-model)).
 session behind it. It checks the token, the live roles, the requester context,
 and the datasource connect gate without allocating a connection catalog. A
 missing or unrecognized operation denies. Selectors carry the catalog and schema
-explicitly and must name the datasource's measured catalog.
+explicitly and must name the datasource's current catalog.
 
 ## Registration
 
@@ -250,9 +250,9 @@ message CpEvent {
 ```
 
 The proxy re-introspects on boot, on a `RefreshCatalog` nudge, and on a longer
-ambient cadence as a safety net against silent schema drift — a new unclassified
-PII column with zero policy coverage is exactly the gap this tool exists to
-close.
+periodic cadence as a safety net against silent schema drift — a new
+unclassified PII column with zero policy coverage is exactly the gap this tool
+exists to close.
 
 The REST projection of that signal is three routes, none of which dials a
 target:

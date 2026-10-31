@@ -127,7 +127,7 @@ func TestCatalogChangingDdlResolves(t *testing.T) {
 				t.Errorf("kind %v is not a write/DDL kind, want a schema-mutating kind", factsKind(f))
 			}
 			if !f.CatalogChanging {
-				t.Errorf("catalog_changing = false, want true — a connection must re-measure rather than " +
+				t.Errorf("catalog_changing = false, want true — a connection must re-inspect rather than " +
 					"keep serving the pre-change schema")
 			}
 		})
@@ -180,7 +180,7 @@ func TestAlterTableDropIndexProductionShape(t *testing.T) {
 }
 
 // A temp-scoped target is session-local: it changes no shared catalog, so other connections must not
-// be forced to re-measure.
+// be forced to re-inspect.
 func TestTemporaryDdlIsNotCatalogChanging(t *testing.T) {
 	f := mysqlFacts(t, "DROP TEMPORARY TABLE tmp_users")
 
@@ -193,7 +193,7 @@ func TestTemporaryDdlIsNotCatalogChanging(t *testing.T) {
 }
 
 // Account-object DDL (CREATE/ALTER/DROP USER|ROLE) changes accounts/roles, not the column catalog the
-// proxy re-measures — so it must resolve non-catalog-changing and relay as a no-column passthrough. If it
+// proxy re-inspects — so it must resolve non-catalog-changing and relay as a no-column passthrough. If it
 // were catalog-changing it would fall out of the passthrough, and a result-bearing form (CREATE USER …
 // IDENTIFIED BY RANDOM PASSWORD returns the generated password) would be dropped for a column mismatch on
 // view.

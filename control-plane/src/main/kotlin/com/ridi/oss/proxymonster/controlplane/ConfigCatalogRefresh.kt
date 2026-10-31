@@ -9,7 +9,7 @@ const val CONFIG_CATALOG_REFRESH_WINDOW_MILLIS = 3_000L
 
 /**
  * Sends one `RefreshCatalog` per datasource when a [windowMillis] window opened by the first request closes,
- * so a migration of many DDLs costs one introspection. Best-effort: the ambient refresh is the backstop.
+ * so a migration of many DDLs costs one introspection. Best-effort: the periodic catalog refresh is the backstop.
  */
 class ConfigCatalogRefresh(
     private val hub: ProxyEventsHub,

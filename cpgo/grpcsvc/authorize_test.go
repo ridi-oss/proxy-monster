@@ -348,15 +348,15 @@ func TestPostgresSelectorsStayInDatabase(t *testing.T) {
 	f.want("table in another database", on(tableOp(ref("other", "public", "users")), alice, "reports", ""), notConnectable)
 }
 
-func TestMeasuredCatalogNamesTheDatabase(t *testing.T) {
+func TestReportedCatalogNamesTheDatabase(t *testing.T) {
 	f := newFixture(t)
-	f.datasource("measured", "postgres", "app")
-	f.exec(`UPDATE datasource SET current_catalog_name = 'App' WHERE name = 'measured'`)
+	f.datasource("reported", "postgres", "app")
+	f.exec(`UPDATE datasource SET current_catalog_name = 'App' WHERE name = 'reported'`)
 	f.grant("alice", "reader")
 	f.policies(connectAll)
 	alice := f.token("USER", "alice")
-	f.want("measured catalog", on(catalogOp(ref("App", "public", "")), alice, "measured", ""), "")
-	f.want("registered db_name", on(catalogOp(ref("app", "public", "")), alice, "measured", ""), notConnectable)
+	f.want("reported catalog", on(catalogOp(ref("App", "public", "")), alice, "reported", ""), "")
+	f.want("registered db_name", on(catalogOp(ref("app", "public", "")), alice, "reported", ""), notConnectable)
 }
 
 // MySQL and PostgreSQL reject native envelopes even with broad metadata access.

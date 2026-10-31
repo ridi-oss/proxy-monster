@@ -9,7 +9,7 @@ import com.ridi.oss.proxymonster.probe.parseColumn
 import com.ridi.oss.proxymonster.grpc.ObjectRef
 import com.ridi.oss.proxymonster.grpc.objectRef
 
-/** The catalog the proxy measured on its connection, or the engine's default until the first catalog push. */
+/** The catalog the proxy inspected on its connection, or the engine's default until the first catalog push. */
 internal val Datasource.effectiveCatalog: String
     get() = currentCatalog ?: engine.catalogName(dbName)
 
@@ -47,7 +47,7 @@ internal fun Datasource.columnKey(catalog: String, schema: String, table: String
 }
 
 /** The catalog a catalog push reports; it must be one the engine could actually produce (MySQL: "def"). */
-internal fun Datasource.measuredCatalog(catalog: String): String {
+internal fun Datasource.reportedCatalog(catalog: String): String {
     if (catalog.isBlank() || engine.catalogName(catalog) != catalog) throw ManagementException(ApiError("datasource.invalid_catalog"))
     return catalog
 }

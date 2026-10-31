@@ -39,11 +39,11 @@ func (c *aliasControlPlane) OpenConnection(context.Context, *pb.OpenConnectionRe
 
 func (c *aliasControlPlane) Decide(_ context.Context, request *pb.DecisionRequest) (*pb.WireDecision, error) {
 	if request.GetCurrentCatalog() != c.catalog {
-		return nil, status.Errorf(codes.FailedPrecondition, "catalog %q, want measured %q", request.GetCurrentCatalog(), c.catalog)
+		return nil, status.Errorf(codes.FailedPrecondition, "catalog %q, want actual %q", request.GetCurrentCatalog(), c.catalog)
 	}
 	for _, column := range request.TempColumns {
 		if column.GetCatalog() != c.catalog {
-			return nil, status.Error(codes.FailedPrecondition, "temp catalog is not measured")
+			return nil, status.Error(codes.FailedPrecondition, "temp catalog is not the actual catalog")
 		}
 	}
 	c.mu.Lock()
@@ -54,11 +54,11 @@ func (c *aliasControlPlane) Decide(_ context.Context, request *pb.DecisionReques
 
 func (c *aliasControlPlane) PushSchemaFragment(_ context.Context, fragment *pb.SchemaFragmentPush) (*pb.SchemaFragmentAck, error) {
 	if fragment.GetCatalog() != c.catalog || fragment.GetSchema() != c.schema || len(fragment.Columns) == 0 {
-		return nil, status.Error(codes.FailedPrecondition, "fragment does not match measured catalog")
+		return nil, status.Error(codes.FailedPrecondition, "fragment does not match actual catalog")
 	}
 	for _, column := range fragment.Columns {
 		if column.GetCatalog() != c.catalog {
-			return nil, status.Error(codes.FailedPrecondition, "fragment column catalog is not measured")
+			return nil, status.Error(codes.FailedPrecondition, "fragment column catalog is not the actual catalog")
 		}
 	}
 	c.mu.Lock()
@@ -105,13 +105,13 @@ func TestPostgresCatalogThroughDatabaseAlias(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	measured := catalog.GetCurrentCatalog()
-	if measured != database.DB || measured == target.Config().Db {
-		t.Fatalf("measured/advisory catalog = %q/%q, want %q/advisory", measured, target.Config().Db, database.DB)
+	actual := catalog.GetCurrentCatalog()
+	if actual != database.DB || actual == target.Config().Db {
+		t.Fatalf("actual/advisory catalog = %q/%q, want %q/advisory", actual, target.Config().Db, database.DB)
 	}
 	for _, column := range catalog.GetCatalog().GetColumns() {
-		if column.GetCatalog() != measured {
-			t.Fatalf("ambient column = %v", column)
+		if column.GetCatalog() != actual {
+			t.Fatalf("column = %v", column)
 		}
 	}
 
@@ -119,7 +119,7 @@ func TestPostgresCatalogThroughDatabaseAlias(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	control := &aliasControlPlane{catalog: measured, schema: schema}
+	control := &aliasControlPlane{catalog: actual, schema: schema}
 	grpcServer := grpc.NewServer()
 	pb.RegisterControlPlaneServer(grpcServer, control)
 	go func() { _ = grpcServer.Serve(listener) }()
@@ -131,19 +131,19 @@ func TestPostgresCatalogThroughDatabaseAlias(t *testing.T) {
 	t.Cleanup(func() { _ = client.Close() })
 
 	t.Run("table detail", func(t *testing.T) {
-		detail, err := target.ReadTableDetail(ctx, &enginepb.ObjectRef{Catalog: measured, Schema: schema, Table: "child"})
+		detail, err := target.ReadTableDetail(ctx, &enginepb.ObjectRef{Catalog: actual, Schema: schema, Table: "child"})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if detail == nil || detail.Catalog != measured || len(detail.ForeignKeys) != 1 {
+		if detail == nil || detail.Catalog != actual || len(detail.ForeignKeys) != 1 {
 			t.Fatalf("detail = %+v", detail)
 		}
 		relation := detail.ForeignKeys[0]
-		if relation.SourceCatalog != measured || relation.TargetCatalog != measured {
+		if relation.SourceCatalog != actual || relation.TargetCatalog != actual {
 			t.Fatalf("relation = %+v", relation)
 		}
 		if _, err := target.ReadTableDetail(ctx, &enginepb.ObjectRef{Catalog: "advisory", Schema: schema, Table: "child"}); err == nil {
-			t.Fatal("advisory alias was accepted as a measured table catalog")
+			t.Fatal("advisory alias was accepted as the actual table catalog")
 		}
 	})
 
@@ -175,8 +175,8 @@ func TestPostgresCatalogThroughDatabaseAlias(t *testing.T) {
 			if err := connection.QueryRow(ctx, "SELECT current_database()", mode).Scan(&current); err != nil {
 				t.Fatal(err)
 			}
-			if current != measured {
-				t.Fatalf("native catalog = %q, want %q", current, measured)
+			if current != actual {
+				t.Fatalf("native catalog = %q, want %q", current, actual)
 			}
 		}
 	})
@@ -194,7 +194,7 @@ func TestPostgresCatalogThroughDatabaseAlias(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if result.Denied || len(result.Rows) != 1 || len(result.Rows[0]) != 1 || result.Rows[0][0] == nil || *result.Rows[0][0] != measured {
+		if result.Denied || len(result.Rows) != 1 || len(result.Rows[0]) != 1 || result.Rows[0][0] == nil || *result.Rows[0][0] != actual {
 			t.Fatalf("run result = %+v", result)
 		}
 	})
@@ -204,5 +204,5 @@ func TestPostgresCatalogThroughDatabaseAlias(t *testing.T) {
 	if decisions == 0 || fragments == 0 || rewritten.Load() == 0 {
 		t.Fatalf("alias coverage: decisions=%d fragments=%d startups=%d", decisions, fragments, rewritten.Load())
 	}
-	t.Logf("measured=%s advisory=%s decisions=%d fragments=%d rewritten_startups=%d", measured, gateway.DB, decisions, fragments, rewritten.Load())
+	t.Logf("actual=%s advisory=%s decisions=%d fragments=%d rewritten_startups=%d", actual, gateway.DB, decisions, fragments, rewritten.Load())
 }

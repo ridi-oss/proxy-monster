@@ -183,30 +183,30 @@ class PerConnectionCatalogStateTest {
     }
 
     @Test
-    fun `adoption inherits the original measurement time so staleness still fires`() = runBlocking {
+    fun `adoption inherits the original inspection time so staleness still fires`() = runBlocking {
         // Adopting must not restart the staleness clock. If it did, a stream of new connections would keep
         // content alive indefinitely without anyone re-reading the target DB, and the bound could never fire.
         var now = 0L
         val registry = ConnectionCatalogRegistry(clockNanos = { now }, stalenessNanos = 10)
         val first = registry.open(Binding(ds.name, "first", "USER", ds.effectiveCatalog, ds.engine), listOf(namespace("def", "app")))
-        registry.applyPush(push(first, "app", "h1"), ds) // measured at now = 0
+        registry.applyPush(push(first, "app", "h1"), ds) // inspected at now = 0
 
         now = 9
         val second = registry.open(Binding(ds.name, "second", "USER", ds.effectiveCatalog, ds.engine), listOf(namespace("def", "app")), adoptHeldContent = true)
         val connection = registry.find(second.connectionId)!!
         assertTrue(registry.freshnessGate(connection, listOf(namespace("def", "app"))).isEmpty(), "still inside the window")
 
-        now = 11 // past staleness measured from the ORIGINAL read, not from adoption
+        now = 11 // past staleness counted from the ORIGINAL inspection, not from adoption
         assertEquals(
             setOf(namespace("def", "app")),
             registry.freshnessGate(connection, listOf(namespace("def", "app"))),
-            "adopted content must go stale on the original measurement's clock",
+            "adopted content must go stale on the original inspection's clock",
         )
     }
 
     @Test
-    fun `an ambient refresh re-measures pooled content so adopters stay fresh`() = runBlocking {
-        // The staleness ceiling sits above the ambient refresh interval on the premise that the refresh
+    fun `a catalog push confirms pooled content so adopters stay fresh`() = runBlocking {
+        // The staleness ceiling sits above the periodic catalog refresh interval on the premise that the refresh
         // itself keeps pooled content verified. Without that, content pooled once would age out no matter
         // how recently the target DB was read, and every new session would refetch.
         var now = 0L
@@ -215,23 +215,23 @@ class PerConnectionCatalogStateTest {
         registry.applyPush(push(first, "app", "h1"), ds)
 
         now = 8
-        val confirmed = registry.recordAmbientMeasurement(
+        val confirmed = registry.applyCatalogPush(
             ds.name,
             mapOf(namespace("def", "app") to listOf(FragmentColumn("def", "app", "users", "id", "bigint", 1, false))),
         )
         assertEquals(setOf(namespace("def", "app")), confirmed)
 
-        now = 15 // past the original measurement, inside the window from the ambient one
+        now = 15 // past the original inspection, inside the window from the push
         val second = registry.open(Binding(ds.name, "second", "USER", ds.effectiveCatalog, ds.engine), listOf(namespace("def", "app")), adoptHeldContent = true)
         assertTrue(second.onOpen.isEmpty())
         assertTrue(
             registry.freshnessGate(registry.find(second.connectionId)!!, listOf(namespace("def", "app"))).isEmpty(),
-            "the ambient re-measurement must reset the staleness clock for later adopters",
+            "the push must reset the staleness clock for later adopters",
         )
     }
 
     @Test
-    fun `an ambient refresh whose routines differ does not confirm the pooled content`() = runBlocking {
+    fun `a catalog push whose routines differ does not confirm the pooled content`() = runBlocking {
         var now = 0L
         val registry = ConnectionCatalogRegistry(clockNanos = { now }, stalenessNanos = 10)
         val first = registry.open(Binding(ds.name, "first", "USER", ds.effectiveCatalog, ds.engine), listOf(namespace("def", "app")))
@@ -240,28 +240,28 @@ class PerConnectionCatalogStateTest {
         now = 8
         val columns = mapOf(namespace("def", "app") to listOf(FragmentColumn("def", "app", "users", "id", "bigint", 1, false)))
         assertTrue(
-            registry.recordAmbientMeasurement(ds.name, columns, mapOf(namespace("def", "app") to listOf("add_tax"))).isEmpty(),
-            "a routine created out of band must not re-measure the fragment that lacks it",
+            registry.applyCatalogPush(ds.name, columns, mapOf(namespace("def", "app") to listOf("add_tax"))).isEmpty(),
+            "a routine created out of band must not confirm the fragment that lacks it",
         )
-        assertEquals(setOf(namespace("def", "app")), registry.recordAmbientMeasurement(ds.name, columns))
+        assertEquals(setOf(namespace("def", "app")), registry.applyCatalogPush(ds.name, columns))
     }
 
     @Test
-    fun `an ambient refresh whose columns differ never overwrites pooled content`() = runBlocking {
+    fun `a catalog push whose columns differ never overwrites pooled content`() = runBlocking {
         // Confirmation only. Divergence belongs to the connection's own probe, which alone knows what that
-        // connection's target DB binds; installing a differing ambient read here would decide against a
-        // catalog no connection measured.
+        // connection's target DB binds; installing a differing catalog push here would decide against a
+        // catalog no connection inspected.
         var now = 0L
         val registry = ConnectionCatalogRegistry(clockNanos = { now }, stalenessNanos = 10)
         val first = registry.open(Binding(ds.name, "first", "USER", ds.effectiveCatalog, ds.engine), listOf(namespace("def", "app")))
         registry.applyPush(push(first, "app", "h1"), ds)
 
         now = 8
-        val confirmed = registry.recordAmbientMeasurement(
+        val confirmed = registry.applyCatalogPush(
             ds.name,
             mapOf(namespace("def", "app") to listOf(FragmentColumn("def", "app", "users", "DIFFERENT", "bigint", 1, false))),
         )
-        assertTrue(confirmed.isEmpty(), "a differing ambient read must not count as a re-measurement")
+        assertTrue(confirmed.isEmpty(), "a differing catalog push must not confirm the fragment")
 
         now = 15
         val second = registry.open(Binding(ds.name, "second", "USER", ds.effectiveCatalog, ds.engine), listOf(namespace("def", "app")), adoptHeldContent = true)
@@ -270,7 +270,7 @@ class PerConnectionCatalogStateTest {
             registry.freshnessGate(registry.find(second.connectionId)!!, listOf(namespace("def", "app"))),
             "unconfirmed content must still go stale on its original clock",
         )
-        // And the pooled structure is untouched: still the originally measured column.
+        // And the pooled structure is untouched: still the originally inspected column.
         assertEquals(
             listOf("id"),
             registry.structuralRows(registry.find(second.connectionId)!!).map { it.column },
@@ -280,21 +280,21 @@ class PerConnectionCatalogStateTest {
     @Test
     fun `adopting retains the pooled fragment so it survives the original holder closing`() = runBlocking {
         // Adoption takes a reference of its own. Without it the fragment would be released out from under
-        // the adopter when the measuring connection closes, and structuralRows would silently go empty.
+        // the adopter when the inspecting connection closes, and structuralRows would silently go empty.
         val registry = ConnectionCatalogRegistry()
         val first = registry.open(Binding(ds.name, "first", "USER", ds.effectiveCatalog, ds.engine), listOf(namespace("def", "app")))
         registry.applyPush(push(first, "app", "h1"), ds)
         val key = registry.find(first.connectionId)!!.held.getValue(namespace("def", "app")).pooledRef
 
         val second = registry.open(Binding(ds.name, "second", "USER", ds.effectiveCatalog, ds.engine), listOf(namespace("def", "app")), adoptHeldContent = true)
-        assertEquals(3, registry.pooledFor(key)!!.refCount) // authoritative + measurer + adopter
+        assertEquals(3, registry.pooledFor(key)!!.refCount) // authoritative + inspector + adopter
 
         registry.close(first.connectionId, ds.name)
         assertEquals(2, registry.pooledFor(key)!!.refCount)
         assertEquals(
             listOf("id"),
             registry.structuralRows(registry.find(second.connectionId)!!).map { it.column },
-            "the adopter must still resolve its structure after the measurer closed",
+            "the adopter must still resolve its structure after the inspector closed",
         )
 
         registry.close(second.connectionId, ds.name)
@@ -303,7 +303,7 @@ class PerConnectionCatalogStateTest {
 
     @Test
     fun `a schema with nothing held is still fetched when adopting`() = runBlocking {
-        // Adoption only skips work that is already done; it never skips the first measurement of a schema.
+        // Adoption only skips work that is already done; it never skips the first inspection of a schema.
         val registry = ConnectionCatalogRegistry()
         val first = registry.open(Binding(ds.name, "first", "USER", ds.effectiveCatalog, ds.engine), listOf(namespace("def", "app")))
         registry.applyPush(push(first, "app", "h1"), ds)
@@ -350,7 +350,7 @@ class PerConnectionCatalogStateTest {
     }
 
     @Test
-    fun `invalidating a datasource forces the next connection to measure for itself`() = runBlocking {
+    fun `invalidating a datasource forces the next connection to inspect for itself`() = runBlocking {
         // Repointing a datasource at another database makes held structure describe a database that is no
         // longer there. Adoption would otherwise hand that structure to the next connection, which would
         // decide against a catalog its target DB never had.
@@ -368,7 +368,7 @@ class PerConnectionCatalogStateTest {
         assertEquals(
             listOf("app"),
             afterRetarget.onOpen.map { it.schema },
-            "after a retarget the next connection must measure the new target itself",
+            "after a retarget the next connection must inspect the new target itself",
         )
         // The fetch is unconditional: there is no hash left to claim the new database matches the old.
         assertTrue(afterRetarget.onOpen.single().ifHashDiffers.isEmpty)
@@ -377,9 +377,9 @@ class PerConnectionCatalogStateTest {
     }
 
     @Test
-    fun `one datasource's ambient refresh cannot vouch for another's schema`() = runBlocking {
+    fun `one datasource's catalog push cannot vouch for another's schema`() = runBlocking {
         // System-schema content is pooled once per engine version and shared by every datasource on it, so a
-        // measurement recorded against the shared content would let a datasource nobody read look freshly
+        // timestamp recorded against the shared content would let a datasource nobody inspected look freshly
         // verified. Freshness is evidence about one target DB; only the content is shareable.
         var now = 0L
         val registry = ConnectionCatalogRegistry(clockNanos = { now }, stalenessNanos = 10)
@@ -390,7 +390,7 @@ class PerConnectionCatalogStateTest {
 
         now = 8
         // Only dsA is re-read. Its columns match, so dsA is confirmed — dsB must not be.
-        val confirmed = registry.recordAmbientMeasurement(
+        val confirmed = registry.applyCatalogPush(
             dsA.name,
             mapOf(
                 namespace("def", "information_schema") to

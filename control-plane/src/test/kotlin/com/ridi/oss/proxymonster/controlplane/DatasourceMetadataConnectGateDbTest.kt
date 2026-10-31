@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.analyzer.pb.CatalogSnapshot
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
@@ -89,6 +90,9 @@ class DatasourceMetadataConnectGateDbTest {
             name = "gated-ds", engine = Engine.MYSQL, host = "db", port = 3306, dbName = "app",
             tags = emptyList(), advertiseAddr = "proxy.example.com:6033",
             advertiseCertChain = chainPem, advertiseWireTls = true, description = "Gated orders DB",
+        )
+        core.datasourceStore.storePushedCatalog(
+            core.datasourceStore.getByName("gated-ds")!!.id, emptyList(), null, "", CatalogSnapshot.getDefaultInstance(), currentCatalog = "def",
         )
         datasource = core.datasourceStore.getByName("gated-ds")!!
 

@@ -1,6 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane.grpc
 
-import com.ridi.oss.proxymonster.controlplane.support.openEditorConnection
+import com.ridi.oss.proxymonster.controlplane.support.openEmptyEditorConnection
 import com.ridi.oss.proxymonster.controlplane.ControlPlaneCore
 import com.ridi.oss.proxymonster.controlplane.effectiveCatalog
 import com.ridi.oss.proxymonster.controlplane.Datasource
@@ -16,6 +16,7 @@ import com.ridi.oss.proxymonster.controlplane.ProxyEditorTimeoutException
 import com.ridi.oss.proxymonster.controlplane.QueryResponse
 import com.ridi.oss.proxymonster.controlplane.TargetDbEditorException
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
+import com.ridi.oss.proxymonster.controlplane.seed
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.grpc.ControlPlaneGrpcKt
@@ -81,15 +82,7 @@ class GrpcEditorExecDbTest {
         dataSource = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_grpc_editor"))
         core = ControlPlaneCore(dataSource)
         service = EditorExecService(core)
-        datasource = core.datasourceStore.create(
-            DatasourceInput(
-                name = "editor-ds",
-                engine = "postgres",
-                host = "localhost",
-                port = 5432,
-                dbName = "app",
-            ),
-        )
+        datasource = core.datasourceStore.seed(name = "editor-ds", engine = "postgres")
         server = GrpcServer(0, ControlPlaneGrpcService(core), secretToken = null).also { it.start() }
         rawChannel = NettyChannelBuilder.forAddress("localhost", server.boundPort).usePlaintext().build()
         stub = ControlPlaneGrpcKt.ControlPlaneCoroutineStub(rawChannel)
@@ -1014,7 +1007,7 @@ class GrpcEditorExecDbTest {
                 }
             }
             val open = withTimeout(5_000) { event.await() }.openEditorSession
-            val connectionId = stub.openEditorConnection(open, datasource.name)
+            val connectionId = stub.openEmptyEditorConnection(open, datasource.name, datasource.effectiveCatalog)
 
             // The fake proxy decides with the EditorQuery's requester_ip as client_addr, as goproxy does. The ip-gated
             // connect permit fires, so the deny moves off the connect gate to the statement-kind gate.
@@ -1029,6 +1022,7 @@ class GrpcEditorExecDbTest {
                                     token = open.ephemeralToken
                                     datasourceName = datasource.name
                                     currentCatalog = datasource.effectiveCatalog
+                                    searchPath.add("public")
                                     this.connectionId = connectionId
                                     sql = control.query.sql
                                     clientAddr = control.query.requesterIp

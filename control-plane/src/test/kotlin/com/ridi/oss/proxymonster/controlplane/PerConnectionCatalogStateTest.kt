@@ -16,7 +16,7 @@ import kotlin.test.assertTrue
 class PerConnectionCatalogStateTest {
     private val ds = Datasource(
         1, "ds", Engine.MYSQL, "", 0, "app", defaultSchemas = listOf("app"),
-        mysqlLowerCaseTableNames = 0, engineVersion = "8.4.0",
+        mysqlLowerCaseTableNames = 0, engineVersion = "8.4.0", currentCatalog = "def",
     )
 
     private fun push(
@@ -231,50 +231,61 @@ class PerConnectionCatalogStateTest {
     }
 
     @Test
-    fun `a catalog push whose routines differ does not confirm the pooled content`() = runBlocking {
-        var now = 0L
-        val registry = ConnectionCatalogRegistry(clockNanos = { now }, stalenessNanos = 10)
+    fun `a catalog push whose routines differ leaves the pooled content unverified`() = runBlocking {
+        val registry = ConnectionCatalogRegistry()
         val first = registry.open(Binding(ds.name, "first", "USER", ds.effectiveCatalog, ds.engine), listOf(namespace("def", "app")))
         registry.applyPush(push(first, "app", "h1"), ds)
 
-        now = 8
         val columns = mapOf(namespace("def", "app") to listOf(FragmentColumn("def", "app", "users", "id", "bigint", 1, false)))
         assertTrue(
             registry.applyCatalogPush(ds.name, columns, mapOf(namespace("def", "app") to listOf("add_tax"))).isEmpty(),
             "a routine created out of band must not confirm the fragment that lacks it",
         )
-        assertEquals(setOf(namespace("def", "app")), registry.applyCatalogPush(ds.name, columns))
+        val second = registry.open(Binding(ds.name, "second", "USER", ds.effectiveCatalog, ds.engine), listOf(namespace("def", "app")), adoptHeldContent = true)
+        assertEquals(setOf(namespace("def", "app")), registry.freshnessGate(registry.find(second.connectionId)!!, listOf(namespace("def", "app"))))
     }
 
     @Test
-    fun `a catalog push whose columns differ never overwrites pooled content`() = runBlocking {
-        // Confirmation only. Divergence belongs to the connection's own probe, which alone knows what that
-        // connection's target DB binds; installing a differing catalog push here would decide against a
-        // catalog no connection inspected.
-        var now = 0L
-        val registry = ConnectionCatalogRegistry(clockNanos = { now }, stalenessNanos = 10)
+    fun `a catalog push whose columns differ leaves the pooled content unverified`() = runBlocking {
+        // The push never installs what it inspected: a connection adopting the old content re-inspects it first.
+        val registry = ConnectionCatalogRegistry()
         val first = registry.open(Binding(ds.name, "first", "USER", ds.effectiveCatalog, ds.engine), listOf(namespace("def", "app")))
         registry.applyPush(push(first, "app", "h1"), ds)
 
-        now = 8
         val confirmed = registry.applyCatalogPush(
             ds.name,
             mapOf(namespace("def", "app") to listOf(FragmentColumn("def", "app", "users", "DIFFERENT", "bigint", 1, false))),
         )
         assertTrue(confirmed.isEmpty(), "a differing catalog push must not confirm the fragment")
 
-        now = 15
         val second = registry.open(Binding(ds.name, "second", "USER", ds.effectiveCatalog, ds.engine), listOf(namespace("def", "app")), adoptHeldContent = true)
-        assertEquals(
-            setOf(namespace("def", "app")),
-            registry.freshnessGate(registry.find(second.connectionId)!!, listOf(namespace("def", "app"))),
-            "unconfirmed content must still go stale on its original clock",
-        )
-        // And the pooled structure is untouched: still the originally inspected column.
-        assertEquals(
-            listOf("id"),
-            registry.structuralRows(registry.find(second.connectionId)!!).map { it.column },
-        )
+        assertEquals(setOf(namespace("def", "app")), registry.freshnessGate(registry.find(second.connectionId)!!, listOf(namespace("def", "app"))))
+        assertEquals(listOf("id"), registry.structuralRows(registry.find(first.connectionId)!!).map { it.column }, "the push installs nothing")
+    }
+
+    @Test
+    fun `a catalog push without a held schema leaves it unverified`() = runBlocking {
+        // A proxy pointed at another database pushes that database's catalog, which lacks the old schema.
+        val registry = ConnectionCatalogRegistry()
+        val first = registry.open(Binding(ds.name, "first", "USER", ds.effectiveCatalog, ds.engine), listOf(namespace("def", "app")))
+        registry.applyPush(push(first, "app", "h1"), ds)
+
+        assertTrue(registry.applyCatalogPush(ds.name, emptyMap()).isEmpty())
+        val second = registry.open(Binding(ds.name, "second", "USER", ds.effectiveCatalog, ds.engine), listOf(namespace("def", "app")), adoptHeldContent = true)
+        assertEquals(setOf(namespace("def", "app")), registry.freshnessGate(registry.find(second.connectionId)!!, listOf(namespace("def", "app"))))
+    }
+
+    @Test
+    fun `an unverified entry still sends a connection holding other content to re-inspect`() = runBlocking {
+        // A held h1 and B then pushed h2: A must re-check against h2 even after a push disagrees with both.
+        val registry = ConnectionCatalogRegistry()
+        val a = registry.open(Binding(ds.name, "a", "USER", ds.effectiveCatalog, ds.engine), listOf(namespace("def", "app")))
+        registry.applyPush(push(a, "app", "h1"), ds)
+        val b = registry.open(Binding(ds.name, "b", "USER", ds.effectiveCatalog, ds.engine), listOf(namespace("def", "app")))
+        registry.applyPush(push(b, "app", "h2", columnName = "other"), ds)
+
+        registry.applyCatalogPush(ds.name, emptyMap())
+        assertEquals(setOf(namespace("def", "app")), registry.freshnessGate(registry.find(a.connectionId)!!, listOf(namespace("def", "app"))))
     }
 
     @Test
@@ -351,9 +362,8 @@ class PerConnectionCatalogStateTest {
 
     @Test
     fun `invalidating a datasource forces the next connection to inspect for itself`() = runBlocking {
-        // Repointing a datasource at another database makes held structure describe a database that is no
-        // longer there. Adoption would otherwise hand that structure to the next connection, which would
-        // decide against a catalog its target DB never had.
+        // A deleted datasource's name may be reused for another database. Adoption would otherwise hand the
+        // old structure to the next connection, which would decide against a catalog its target DB never had.
         val registry = ConnectionCatalogRegistry()
         val first = registry.open(Binding(ds.name, "first", "USER", ds.effectiveCatalog, ds.engine), listOf(namespace("def", "app")))
         registry.applyPush(push(first, "app", "h1"), ds)
@@ -364,14 +374,14 @@ class PerConnectionCatalogStateTest {
 
         assertEquals(setOf(namespace("def", "app")), registry.invalidateDatasource(ds.name))
 
-        val afterRetarget = registry.open(Binding(ds.name, "after", "USER", ds.effectiveCatalog, ds.engine), listOf(namespace("def", "app")), adoptHeldContent = true)
+        val afterReuse = registry.open(Binding(ds.name, "after", "USER", ds.effectiveCatalog, ds.engine), listOf(namespace("def", "app")), adoptHeldContent = true)
         assertEquals(
             listOf("app"),
-            afterRetarget.onOpen.map { it.schema },
-            "after a retarget the next connection must inspect the new target itself",
+            afterReuse.onOpen.map { it.schema },
+            "after the name is reused the next connection must inspect the new target itself",
         )
         // The fetch is unconditional: there is no hash left to claim the new database matches the old.
-        assertTrue(afterRetarget.onOpen.single().ifHashDiffers.isEmpty)
+        assertTrue(afterReuse.onOpen.single().ifHashDiffers.isEmpty)
         // Connections that already hold the content keep it — their own reference is still counted.
         assertEquals(2, registry.pooledFor(key)!!.refCount)
     }

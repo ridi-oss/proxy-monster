@@ -186,7 +186,7 @@ class RequestAuthorizationDbTest {
         val principal = principal()
         val role = role()
         core.policyStore.createAssignment(RoleAssignmentInput(principal, role.id))
-        val datasource = core.datasourceStore.create(DatasourceInput("request-${UUID.randomUUID()}", engine = "mysql", dbName = "app"))
+        val datasource = core.datasourceStore.seed("request-${UUID.randomUUID()}", engine = "mysql")
         core.cedarPolicyStore.create(
             CedarPolicyInput(
                 name = "request-${UUID.randomUUID()}",
@@ -231,7 +231,7 @@ class RequestAuthorizationDbTest {
         val own = role()
         val assumed = role()
         core.policyStore.createAssignment(RoleAssignmentInput(principal, own.id))
-        val ds = core.datasourceStore.create(DatasourceInput("native-${UUID.randomUUID()}", engine = "mysql", dbName = "app"))
+        val ds = core.datasourceStore.seed("native-${UUID.randomUUID()}", engine = "mysql")
         val request = RequestAuthorization.newBuilder().setDatasourceName(ds.name)
             .setAthena(AthenaNativeDescriptor.newBuilder().setService("athena").setOperation("ListWorkGroups"))
         for (kind in listOf(TokenKind.EDITOR, TokenKind.APPROVER_EXEC)) {
@@ -257,7 +257,7 @@ class RequestAuthorizationDbTest {
         val principal = principal()
         val role = role()
         core.policyStore.createAssignment(RoleAssignmentInput(principal, role.id))
-        val ds = core.datasourceStore.create(DatasourceInput("lake-${UUID.randomUUID()}", "athena", dbName = "awsdatacatalog"))
+        val ds = core.datasourceStore.seed("lake-${UUID.randomUUID()}", "athena", catalog = "awsdatacatalog")
         val token = issue(TokenKind.USER, principal).token
         fun call(operation: String, body: String) = runBlocking {
             stub.authorizeRequest(

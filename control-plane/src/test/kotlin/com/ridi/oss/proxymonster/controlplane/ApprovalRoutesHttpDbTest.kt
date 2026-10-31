@@ -67,7 +67,7 @@ class ApprovalRoutesHttpDbTest {
         )
         core.datasourceStore.pushTestCatalog(mysql, SharedMySql.jdbcUrlFor(target), SharedMySql.username(), SharedMySql.password())
         mysql = core.datasourceStore.get(mysql.id)!!
-        pg = core.datasourceStore.create(DatasourceInput(name = "approvals-pg", engine = "postgres", host = "h", port = 5432, dbName = "app"))
+        pg = core.datasourceStore.seed(name = "approvals-pg", engine = "postgres")
         locked = core.datasourceStore.create(DatasourceInput(name = "approvals-locked", engine = "mysql", host = "h", port = 3306, dbName = "app"))
         gone = core.datasourceStore.create(DatasourceInput(name = "approvals-gone", engine = "mysql", host = "h", port = 3306, dbName = "app"))
 

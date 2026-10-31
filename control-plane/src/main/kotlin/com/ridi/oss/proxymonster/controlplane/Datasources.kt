@@ -349,34 +349,24 @@ class DatasourceStore(internal val dataSource: DataSource) {
                     ps.setString(1, "datasource:register:$name")
                     ps.executeQuery().use { it.next() }
                 }
-                // Lock the row (if it exists) so a concurrent register/push can't interleave with the
-                // identity-change → catalog-invalidate below, and capture the PRIOR load-bearing identity.
-                data class Prior(val id: Long, val engine: String, val dbName: String)
-                val prior = c.prepareStatement(
-                    "SELECT id, engine, db_name FROM datasource WHERE name = ? AND deleted_at IS NULL FOR UPDATE",
+                val priorEngine = c.prepareStatement(
+                    "SELECT engine FROM datasource WHERE name = ? AND deleted_at IS NULL FOR UPDATE",
                 ).use { ps ->
                     ps.setString(1, name)
-                    ps.executeQuery().use { rs ->
-                        if (rs.next()) Prior(rs.getLong(1), rs.getString(2), rs.getString(3)) else null
-                    }
+                    ps.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
                 }
                 // Fast path: engine is immutable at register — reject a mismatched re-register up front with
                 // a precise message (nothing is written yet). The atomic WHERE guard on the upsert below is the
-                // race-proof backstop for the case where `prior` read null but a row races into this name (via
+                // race-proof backstop for the case where `priorEngine` read null but a row races into this name (via
                 // create/rename) before the upsert lands.
-                if (prior != null && prior.engine != engine.wireName) {
-                    throw DatasourceEngineConflictException(name, prior.engine, engine.wireName)
+                if (priorEngine != null && priorEngine != engine.wireName) {
+                    throw DatasourceEngineConflictException(name, priorEngine, engine.wireName)
                 }
                 // Atomic upsert with the fail-closed engine guard IN the conflict arm. If a row for this name
                 // raced in after the prior read, `WHERE datasource.engine = EXCLUDED.engine` refuses to flip its
                 // engine: the update touches 0 rows and RETURNING is empty. That is the only way `upsertedId`
                 // comes back null (a fresh insert and a same-engine update both RETURN the id), so it
                 // unambiguously means "engine conflict" and we reject fail-closed below.
-                // The db_name-retarget catalog invalidation is folded INTO the conflict arm: comparing the OLD
-                // row (`datasource.db_name`) to the NEW (`EXCLUDED.db_name`) inside the atomic UPDATE removes the
-                // TOCTOU of deciding from the pre-read `prior` — correct regardless of the advisory lock's
-                // coverage (an admin create/rename that doesn't take it can't interleave a stale decision). The
-                // A fresh insert leaves catalog_synced_at NULL.
                 val upsertedId = c.prepareStatement(
                     """INSERT INTO datasource (name, engine, host, port, db_name, tags, advertise_addr, advertise_cert_chain, advertise_wire_tls, connection_info, description)
                        VALUES (?, ?, ?, ?, ?, ?::jsonb, ?, ?, ?, ?::jsonb, COALESCE(?, ''))
@@ -398,12 +388,7 @@ class DatasourceStore(internal val dataSource: DataSource) {
                            -- Authoritative every register, so TLS-on -> TLS-off is observable rather than sticky.
                            advertise_wire_tls = EXCLUDED.advertise_wire_tls,
                            connection_info = COALESCE(EXCLUDED.connection_info, datasource.connection_info),
-                           description = COALESCE(?, datasource.description),
-                           catalog           = CASE WHEN datasource.db_name IS DISTINCT FROM EXCLUDED.db_name THEN NULL ELSE datasource.catalog END,
-                           current_catalog_name = CASE WHEN datasource.db_name IS DISTINCT FROM EXCLUDED.db_name THEN NULL ELSE datasource.current_catalog_name END,
-                           catalog_synced_at = CASE WHEN datasource.db_name IS DISTINCT FROM EXCLUDED.db_name THEN NULL ELSE datasource.catalog_synced_at END,
-                           default_schemas   = CASE WHEN datasource.db_name IS DISTINCT FROM EXCLUDED.db_name THEN '[]'::jsonb ELSE datasource.default_schemas END,
-                           mysql_lower_case_table_names = CASE WHEN datasource.db_name IS DISTINCT FROM EXCLUDED.db_name THEN NULL ELSE datasource.mysql_lower_case_table_names END
+                           description = COALESCE(?, datasource.description)
                        WHERE datasource.engine = EXCLUDED.engine
                        RETURNING id""",
                 ).use { ps ->
@@ -513,8 +498,7 @@ class DatasourceStore(internal val dataSource: DataSource) {
     }
 
     /** Drop [id]'s stored catalog and clear its sync stamps so decisions fail closed until a fresh
-     *  PushCatalog lands. Shared by [register]'s db_name retarget and [update]'s admin db_name change —
-     *  both leave a catalog that now describes a DIFFERENT schema, a fail-OPEN unless invalidated. */
+     *  PushCatalog lands: an admin db_name change leaves a catalog that describes a DIFFERENT schema. */
     private fun invalidateCatalog(c: java.sql.Connection, id: Long) {
         c.prepareStatement(
             "UPDATE datasource SET catalog = NULL, current_catalog_name = NULL, catalog_synced_at = NULL, default_schemas = '[]'::jsonb, mysql_lower_case_table_names = NULL WHERE id = ?",
@@ -527,8 +511,8 @@ class DatasourceStore(internal val dataSource: DataSource) {
      * the proxy Register path enforces, so a stored catalog can never be reinterpreted under a different dialect
      * (repointing every `datasource_id` FK + the analyzer/system-classification manifest resolution). The admin
      * update surface is not a bypass: the web edit form seeds engine from the current value, so a normal edit
-     * carries the unchanged engine and never trips this. A db_name change invalidates the stale catalog exactly
-     * as a Register retarget does. Returns null if [id] doesn't exist.
+     * carries the unchanged engine and never trips this. A db_name change invalidates the stale catalog.
+     * Returns null if [id] doesn't exist.
      */
     fun update(id: Long, input: DatasourceInput): Datasource? = dataSource.inTx { update(id, input, it) }
 

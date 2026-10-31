@@ -2,6 +2,7 @@ package com.ridi.oss.proxymonster.controlplane.support
 
 import com.ridi.oss.proxymonster.grpc.EditorQuery
 import com.ridi.oss.proxymonster.grpc.openConnectionRequest
+import com.ridi.oss.proxymonster.grpc.schemaFragmentPush
 import com.ridi.oss.proxymonster.grpc.ConnectionDoor
 import com.google.protobuf.ByteString
 import com.ridi.oss.proxymonster.auth.sha256Hex
@@ -190,6 +191,34 @@ suspend fun ControlPlaneGrpcKt.ControlPlaneCoroutineStub.openEditorConnection(op
             door = ConnectionDoor.CONNECTION_DOOR_EDITOR
         },
     ).connectionId
+
+/** [openEditorConnection] on an empty target DB: answers each on-open refetch with an empty schema. */
+suspend fun ControlPlaneGrpcKt.ControlPlaneCoroutineStub.openEmptyEditorConnection(
+    open: OpenEditorSession,
+    datasourceName: String,
+    catalog: String,
+): ByteString {
+    val identity = openConnection(
+        openConnectionRequest {
+            token = open.ephemeralToken
+            this.datasourceName = datasourceName
+            door = ConnectionDoor.CONNECTION_DOOR_EDITOR
+        },
+    )
+    identity.onOpenList.forEachIndexed { i, command ->
+        pushSchemaFragment(
+            schemaFragmentPush {
+                connectionId = identity.connectionId
+                this.datasourceName = datasourceName
+                this.catalog = catalog
+                schema = command.refetch.schema
+                contentHash = ByteString.copyFromUtf8("empty:${command.refetch.schema}")
+                backendGeneration = i + 1L
+            },
+        )
+    }
+    return identity.connectionId
+}
 
 /**
  * Attaches a fake proxy to [datasourceName] over the real gRPC Events stream while [body] runs. Each run the

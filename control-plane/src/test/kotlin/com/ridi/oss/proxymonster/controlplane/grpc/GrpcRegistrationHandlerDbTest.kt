@@ -608,6 +608,7 @@ class GrpcRegistrationHandlerDbTest {
         // through the RPC, because a registry-level test would stay green if the wiring were removed and
         // the refresh went back to feeding only the stored catalog.
         stub.register(regReq { name = "reg-refresh"; engine = Engine.MYSQL; host = "h"; port = 1; dbName = "app" })
+        stub.pushCatalog(catalogRequest { datasourceName = "reg-refresh"; currentCatalog = "def"; defaultSchemas.add("app") })
         val ds = core.datasourceStore.getByName("reg-refresh")!!
 
         // A connection inspects `app` itself, so the control plane holds enforcement content for it.
@@ -684,8 +685,7 @@ class GrpcRegistrationHandlerDbTest {
                 }
             },
         )
-        // A proxy self-registers by the same name, same engine+db, host moved. The catalog survives because
-        // engine+db_name are unchanged (only advisory host moved); the advisory host is refreshed.
+        // A proxy self-registers by the same name with its host moved: Register refreshes the host and keeps the catalog.
         stub.register(regReq { name = "reg-preserve"; engine = Engine.POSTGRES; host = "h2"; port = 5432; dbName = "app" })
         val after = core.datasourceStore.getByName("reg-preserve")!!
         assertEquals("h2", after.host, "advisory host is still updated")
@@ -694,29 +694,27 @@ class GrpcRegistrationHandlerDbTest {
     }
 
     @Test
-    fun `re-register to a different schema invalidates the stale catalog (fail-closed)`() = runBlocking {
+    fun `a proxy pointed at another database replaces the catalog with its push`() = runBlocking {
+        fun push(catalog: String, table: String) = runBlocking {
+            stub.pushCatalog(
+                catalogRequest {
+                    datasourceName = "reg-retarget"
+                    currentCatalog = catalog
+                    defaultSchemas.add("public")
+                    this.catalog = catalogSnapshot {
+                        columns.add(column { this.catalog = catalog; schema = "public"; this.table = table; this.column = "c"; dataType = "text"; ordinal = 1; nullable = true })
+                    }
+                },
+            )
+        }
         stub.register(regReq { name = "reg-retarget"; engine = Engine.POSTGRES; host = "h"; port = 5432; dbName = "db_a" })
-        stub.pushCatalog(
-            catalogRequest {
-                datasourceName = "reg-retarget"
-                currentCatalog = "db_a"
-                defaultSchemas.add("public")
-                catalog = catalogSnapshot {
-                    columns.add(column { catalog = "db_a"; schema = "public"; table = "old_table"; this.column = "c"; dataType = "text"; ordinal = 1; nullable = true })
-                }
-            },
-        )
-        val ds = core.datasourceStore.getByName("reg-retarget")!!
-        assertTrue(core.datasourceStore.catalog(ds.id).columns.isNotEmpty())
-
-        // Reuse the name for a DIFFERENT database — the old catalog describes the wrong schema now, so it must
-        // be dropped and catalog_synced_at cleared until a fresh push lands (decisions fail closed meanwhile).
+        push("db_a", "old_table")
         stub.register(regReq { name = "reg-retarget"; engine = Engine.POSTGRES; host = "h"; port = 5432; dbName = "db_b" })
+        push("db_b", "new_table")
+
         val after = core.datasourceStore.getByName("reg-retarget")!!
-        assertEquals("db_b", after.dbName)
-        assertTrue(core.datasourceStore.catalog(ds.id).columns.isEmpty(), "a retarget must invalidate the stale catalog")
-        assertEquals(null, after.catalogSyncedAt, "catalog_synced_at is cleared on invalidation")
-        assertTrue(after.defaultSchemas.isEmpty(), "default_schemas is cleared on invalidation")
+        assertEquals("db_b", after.currentCatalog)
+        assertEquals(listOf("new_table"), core.datasourceStore.catalog(after.id).columns.map { it.table })
     }
 
     @Test
@@ -832,13 +830,13 @@ class GrpcRegistrationHandlerDbTest {
     private suspend fun pushRoutines(name: String, routines: List<SchemaFunctions>, table: String = "users", duplicate: Boolean = false) {
         stub.pushCatalog(catalogRequest {
             datasourceName = name
-            currentCatalog = core.datasourceStore.getByName(name)!!.effectiveCatalog
+            currentCatalog = "app"
             defaultSchemas.add("public")
             engineVersion = "PostgreSQL 16.4"
             catalog = catalogSnapshot {
                 this.routines.addAll(routines)
                 val row = column {
-                    catalog = core.datasourceStore.getByName(name)!!.effectiveCatalog
+                    catalog = "app"
                     schema = "public"
                     this.table = table
                     column = "id"
@@ -886,25 +884,6 @@ class GrpcRegistrationHandlerDbTest {
         assertFailsWith<StatusException> { pushRoutines(name, emptyList(), table = "replacement", duplicate = true) }
         assertEquals(before, core.datasourceStore.catalog(ds.id))
         assertEquals(routines, core.datasourceStore.storedSnapshot(ds.id).routinesList)
-    }
-
-    @Test
-    fun `both retarget paths clear persisted routines with the columns`() = runBlocking {
-        val name = "routines-retarget"
-        stub.register(regReq { this.name = name; engine = Engine.POSTGRES; dbName = "app" })
-        val ds = core.datasourceStore.getByName(name)!!
-        val routines = listOf(schemaFunctions { schema = "public"; names.add("normalize") })
-        pushRoutines(name, routines)
-        assertEquals(mapOf("public" to listOf("normalize")), udfs(core.datasourceStore.catalog(ds.id)))
-
-        stub.register(regReq { this.name = name; engine = Engine.POSTGRES; dbName = "other" })
-        assertTrue(core.datasourceStore.storedSnapshot(ds.id).routinesList.isEmpty())
-        assertTrue(core.datasourceStore.catalog(ds.id).columns.isEmpty())
-        assertTrue(udfs(core.datasourceStore.catalog(ds.id)).isEmpty())
-        pushRoutines(name, routines)
-        core.datasourceStore.update(ds.id, DatasourceInput(name = name, engine = "postgres", dbName = "third"))
-        assertTrue(core.datasourceStore.storedSnapshot(ds.id).routinesList.isEmpty())
-        assertTrue(udfs(core.datasourceStore.catalog(ds.id)).isEmpty())
     }
 
     @Test

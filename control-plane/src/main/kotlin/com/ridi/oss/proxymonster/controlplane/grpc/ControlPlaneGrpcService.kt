@@ -14,12 +14,12 @@ import com.ridi.oss.proxymonster.controlplane.Binding
 import com.ridi.oss.proxymonster.controlplane.CatalogMutationResult
 import com.ridi.oss.proxymonster.controlplane.Channel
 import com.ridi.oss.proxymonster.controlplane.ControlPlaneCore
+import com.ridi.oss.proxymonster.controlplane.Datasource
 import com.ridi.oss.proxymonster.controlplane.DatasourceEngineConflictException
 import com.ridi.oss.proxymonster.controlplane.management.AuditActor
 import com.ridi.oss.proxymonster.controlplane.management.ManagementException
 import com.ridi.oss.proxymonster.controlplane.management.auditEntity
 import com.ridi.oss.proxymonster.controlplane.catalogIsConnectionIndependent
-import com.ridi.oss.proxymonster.controlplane.effectiveCatalog
 import com.ridi.oss.proxymonster.controlplane.requireCatalog
 import com.ridi.oss.proxymonster.controlplane.reportedCatalog
 import com.ridi.oss.proxymonster.controlplane.namespaces
@@ -172,7 +172,7 @@ class ControlPlaneGrpcService(
         val ds = core.datasourceStore.getByName(request.datasourceName)
             ?: throw StatusException(Status.NOT_FOUND.withDescription("unknown datasource '${request.datasourceName}'"))
         val opened = core.connectionCatalog.open(
-            Binding(ds.name, id.principal, id.kind, ds.effectiveCatalog, ds.engine),
+            Binding(ds.name, id.principal, id.kind, ds.pushedCatalog(), ds.engine),
             ds.namespaces(ds.defaultSchemas + ds.engine.systemSchemas),
             adoptHeldContent = ds.engine.catalogIsConnectionIndependent,
         )
@@ -212,7 +212,7 @@ class ControlPlaneGrpcService(
         if (request.connectionId.isEmpty) {
             throw StatusException(Status.INVALID_ARGUMENT.withDescription("connection_id is required"))
         }
-        val binding = Binding(ds.name, id.principal, id.kind, ds.effectiveCatalog, ds.engine)
+        val binding = Binding(ds.name, id.principal, id.kind, ds.pushedCatalog(), ds.engine)
         val connection = core.connectionCatalog.find(request.connectionId)
         if (connection == null) {
             val recovered = core.connectionCatalog.recover(
@@ -320,7 +320,6 @@ class ControlPlaneGrpcService(
                 )
             }
         }
-        val priorDbName = core.datasourceStore.getByName(request.name)?.dbName
         val ds = try {
             core.datasourceStore.register(
                 name = request.name,
@@ -343,16 +342,6 @@ class ControlPlaneGrpcService(
             // A refused tag name (PM_DATASOURCE_TAGS naming a `system:` tag the product does not define) is
             // the proxy's own misconfiguration, so it must read as one rather than an opaque server error.
             throw StatusException(Status.INVALID_ARGUMENT.withDescription(e.error.code))
-        }
-        // The catalog push that follows registration cannot repair this: it only confirms content it agrees
-        // with, and a retarget is precisely the case where it disagrees. So the held structure would survive,
-        // describing a database that is no longer there, and the next connection would adopt it.
-        if (priorDbName != null && priorDbName != ds.dbName) {
-            val dropped = core.connectionCatalog.invalidateDatasource(ds.name)
-            log.info(
-                "datasource '{}' retargeted {} -> {}: dropped {} enforcement schema(s)",
-                ds.name, priorDbName, ds.dbName, dropped.size,
-            )
         }
         return registerResponse {
             name = ds.name
@@ -388,10 +377,9 @@ class ControlPlaneGrpcService(
         } catch (e: ManagementException) {
             throw StatusException(Status.INVALID_ARGUMENT.withDescription(e.error.code))
         }
-        // This push is a fresh whole-catalog inspection of the target DB, so where it agrees with content the
-        // enforcement pool already holds it re-inspects that content — the ambient refresh keeps held
-        // fragments verified instead of only feeding the config catalog, and a connection is not made to
-        // re-probe a schema the proxy just confirmed.
+        // This push is a fresh whole-catalog inspection of the target DB: it confirms the held content it agrees
+        // with and marks the rest unverified, so a new connection never decides on structure the target DB no
+        // longer has.
         val confirmed = core.connectionCatalog.applyCatalogPush(
             ds.name,
             request.catalog.columnsList.groupBy({ namespace(it.catalog, it.schema) }) {
@@ -611,3 +599,6 @@ internal fun inspectTrustChain(pem: String): String? {
     }
     return null
 }
+
+private fun Datasource.pushedCatalog(): String = currentCatalog
+    ?: throw StatusException(Status.FAILED_PRECONDITION.withDescription("datasource '$name' has no catalog yet"))

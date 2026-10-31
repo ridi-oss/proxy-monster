@@ -109,9 +109,7 @@ class EditorSubmitRouteDbTest {
         appScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
         sessionStore = PrincipalSessionStore(dataSource, null)
 
-        datasource = core.datasourceStore.create(
-            DatasourceInput(name = "editor-submit-ds", engine = "postgres", host = "localhost", port = 5432, dbName = "app"),
-        )
+        datasource = core.datasourceStore.seed(name = "editor-submit-ds", engine = "postgres")
         core.userGroupStore.createUser(
             AppUserInput(principal = caller), core.tokenStore, core.accessStore, sessionStore,
         )

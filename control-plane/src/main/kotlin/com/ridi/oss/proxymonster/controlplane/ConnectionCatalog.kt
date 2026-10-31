@@ -468,10 +468,9 @@ class ConnectionCatalogRegistry(
         connection.held.keys.filterTo(LinkedHashSet()) { freshnessGate(connection, listOf(it)).isEmpty() }
 
     /**
-     * Fold a whole-catalog inspection from the proxy's periodic catalog refresh into this datasource's authoritative
-     * entries.
+     * Fold a whole-catalog push into this datasource's authoritative entries.
      *
-     * The refresh reads every schema from the target DB with the same columns and routines a fragment holds,
+     * The push inspects every schema on the target DB with the same columns and routines a fragment holds,
      * so for a schema whose content is identical it is a genuine re-inspection of exactly that content — the
      * same evidence a connection's own hash probe produces. Recording it advances the authoritative entry's
      * inspection time, so the staleness gate counts from this inspection rather than from the first time the
@@ -479,12 +478,12 @@ class ConnectionCatalogRegistry(
      *
      * Recorded on the authoritative entry, NOT on the pooled fragment: identical system-schema content is
      * pooled once per engine version and shared by every datasource on it ([poolKey]), so writing the time
-     * there would let one datasource's refresh vouch for another's schema that nobody read. Freshness is
+     * there would let one datasource's push vouch for another's schema that nobody read. Freshness is
      * evidence about one target DB; only the content itself is shareable.
      *
-     * Deliberately narrow: a schema whose content differs is left untouched, so this can only ever confirm
-     * content, never install it. Divergence stays the job of the connection's own probe, which alone knows
-     * what that connection's target DB binds.
+     * An entry the push does not confirm, because its content differs or its schema is gone (a proxy now
+     * pointed at another database), is marked unverified: a connection that adopts it re-inspects before its
+     * first decision. The push never installs content.
      *
      * Returns the schemas confirmed, for logging.
      */
@@ -495,39 +494,33 @@ class ConnectionCatalogRegistry(
     ): Set<ObjectRef> = synchronized(stateLock) {
         val confirmed = LinkedHashSet<ObjectRef>()
         val now = clockNanos()
-        for (schema in columnsBySchema.keys + routinesBySchema.keys) {
-            val authKey = datasourceName to schema
-            val auth = authoritative[authKey] ?: continue
-            val pooled = pool[auth.pooledRef] ?: continue
+        for (authKey in authoritative.keys.filter { it.first == datasourceName }) {
+            val schema = authKey.second
+            val auth = authoritative.getValue(authKey)
+            val pooled = pool[auth.pooledRef]
             // Compared as sets: the whole-catalog read and the per-schema fragment read are separate
-            // statements whose ORDER BY need not agree, and row order is not part of what a fragment
-            // asserts — the decide path sorts for itself. Comparing lists would silently stop confirming
-            // anything the moment the two orderings diverged, and nothing would report it.
-            if (pooled.fragment.columns.toSet() != columnsBySchema[schema].orEmpty().toSet()) continue
-            if (pooled.fragment.routines.toSet() != routinesBySchema[schema].orEmpty().toSet()) continue
-            authoritative[authKey] = auth.copy(lastInspectedNanos = now)
-            confirmed += schema
+            // statements whose ORDER BY need not agree, and row order is not part of what a fragment asserts.
+            if (pooled != null &&
+                pooled.fragment.columns.toSet() == columnsBySchema[schema].orEmpty().toSet() &&
+                pooled.fragment.routines.toSet() == routinesBySchema[schema].orEmpty().toSet()
+            ) {
+                authoritative[authKey] = auth.copy(lastInspectedNanos = now)
+                confirmed += schema
+            } else {
+                authoritative[authKey] = auth.copy(lastInspectedNanos = now - stalenessNanos - 1)
+            }
         }
         confirmed
     }
 
-    /**
-     * Drop every authoritative entry for [datasourceName], for when the datasource is repointed at a
-     * different database.
-     *
-     * The persisted catalog is already cleared on a retarget, because keeping it would authorize the new
-     * target against the old schema. This state is the same hazard: a connection opening afterwards would
-     * otherwise adopt structure inspected from the database that is no longer there, and decide against a
-     * catalog its target DB never had. Dropping the entries makes the next connection inspect for itself.
-     *
-     * Live connections are left alone — each already holds its own reference and re-verifies on its own
-     * clock, and tearing their content out mid-session would empty structuralRows under an in-flight
-     * statement. Returns the schemas invalidated, for logging.
-     */
     /** When this datasource's [schema] was last read and found to hold the content held for it. */
     internal fun lastInspectedNanosFor(datasourceName: String, schema: ObjectRef): Long? =
         authoritative[datasourceName to schema]?.lastInspectedNanos
 
+    /**
+     * Drop every authoritative entry for [datasourceName], for when the datasource is deleted and its name may
+     * be reused. Live connections are left alone. Returns the schemas invalidated, for logging.
+     */
     fun invalidateDatasource(datasourceName: String): Set<ObjectRef> = synchronized(stateLock) {
         val dropped = LinkedHashSet<ObjectRef>()
         val keys = authoritative.keys.filter { it.first == datasourceName }

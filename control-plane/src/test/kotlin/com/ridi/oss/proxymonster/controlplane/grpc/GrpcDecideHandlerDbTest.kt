@@ -24,6 +24,7 @@ import com.ridi.oss.proxymonster.grpc.schemaFragmentPush
 import com.ridi.oss.proxymonster.grpc.openConnectionRequest
 import com.ridi.oss.proxymonster.controlplane.namespaces
 import com.google.protobuf.ByteString
+import com.ridi.oss.proxymonster.controlplane.seed
 import io.grpc.Status
 import io.grpc.StatusException
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder
@@ -63,9 +64,7 @@ class GrpcDecideHandlerDbTest {
         requireDockerOrSkip()
         dataSource = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_grpc_decide"))
         core = ControlPlaneCore(dataSource)
-        ds = core.datasourceStore.create(
-            DatasourceInput(name = "grpc-ds", engine = "postgres", host = "localhost", port = 5432, dbName = "app"),
-        )
+        ds = core.datasourceStore.seed(name = "grpc-ds", engine = "postgres")
         // A principal with no roles/grants — used for the "ungranted -> deny-by-default" path.
         validToken = core.tokenStore.issue(TokenKind.USER, "grpc-user", emptyList(), name = null, ttlSeconds = 3600).token
         server = GrpcServer(0, ControlPlaneGrpcService(core), secretToken = null).also { it.start() }
@@ -174,7 +173,7 @@ class GrpcDecideHandlerDbTest {
         assertTrue(core.tokenStore.revoke(t.id, "session-user"))
         assertEquals(
             Status.Code.UNAUTHENTICATED,
-            statusOf { stub.decide(decisionRequest { token = t.token; datasourceName = ds.name; currentCatalog = ds.effectiveCatalog; this.connectionId = connectionId; sql = "select 1" }) },
+            statusOf { stub.decide(decisionRequest { token = t.token; datasourceName = ds.name; currentCatalog = ds.effectiveCatalog; searchPath.add("public"); this.connectionId = connectionId; sql = "select 1" }) },
         )
     }
 
@@ -188,7 +187,7 @@ class GrpcDecideHandlerDbTest {
         // deactivation gate would otherwise produce — that split is the point of the explicit check.
         assertEquals(
             Status.Code.UNAUTHENTICATED,
-            statusOf { stub.decide(decisionRequest { token = t.token; datasourceName = ds.name; currentCatalog = ds.effectiveCatalog; connectionId = open(t.token); sql = "select 1" }) },
+            statusOf { stub.decide(decisionRequest { token = t.token; datasourceName = ds.name; currentCatalog = ds.effectiveCatalog; searchPath.add("public"); connectionId = open(t.token); sql = "select 1" }) },
         )
     }
 
@@ -202,7 +201,7 @@ class GrpcDecideHandlerDbTest {
 
     @Test
     fun `decide denies an ungranted principal by default and audits the decision`() = runBlocking {
-        val d = stub.decide(decisionRequest { token = validToken; datasourceName = ds.name; currentCatalog = ds.effectiveCatalog; connectionId = open(validToken); sql = "select 1 from foo" })
+        val d = stub.decide(decisionRequest { token = validToken; datasourceName = ds.name; currentCatalog = ds.effectiveCatalog; searchPath.add("public"); connectionId = open(validToken); sql = "select 1 from foo" })
         assertTrue(d.hasVerdict())
         assertEquals(EnfAction.DENY, d.verdict.decision)
         assertTrue(d.verdict.decisionId > 0, "a wire decision must be audited (decisionId > 0)")
@@ -222,7 +221,7 @@ class GrpcDecideHandlerDbTest {
         }
         assertEquals(
             Status.Code.UNAUTHENTICATED,
-            statusOf { stub.decide(decisionRequest { token = t.token; datasourceName = ds.name; currentCatalog = ds.effectiveCatalog; this.connectionId = connectionId; sql = "select 1" }) },
+            statusOf { stub.decide(decisionRequest { token = t.token; datasourceName = ds.name; currentCatalog = ds.effectiveCatalog; searchPath.add("public"); this.connectionId = connectionId; sql = "select 1" }) },
         )
     }
 
@@ -237,7 +236,7 @@ class GrpcDecideHandlerDbTest {
     fun `an HTTP-side policy edit is seen by the gRPC decision path`() = runBlocking {
         val tok = core.tokenStore.issue(TokenKind.USER, "cache-user", emptyList(), null, 3600).token
         // Warm the gRPC engine: ungranted -> deny at the datasource.connect gate.
-        val before = stub.decide(decisionRequest { token = tok; datasourceName = ds.name; currentCatalog = ds.effectiveCatalog; connectionId = open(tok); sql = "select 1 from t" })
+        val before = stub.decide(decisionRequest { token = tok; datasourceName = ds.name; currentCatalog = ds.effectiveCatalog; searchPath.add("public"); connectionId = open(tok); sql = "select 1 from t" })
         assertEquals(EnfAction.DENY, before.verdict.decision)
         assertTrue("no access to datasource" in before.verdict.denyReason, "before: ${before.verdict.denyReason}")
 
@@ -256,7 +255,7 @@ class GrpcDecideHandlerDbTest {
         // The next gRPC decision must reflect the edit: connect now passes, so the deny moves off the
         // connect gate to the statement-kind gate. A stale/separate cache would still report "no access to
         // datasource".
-        val after = stub.decide(decisionRequest { token = tok; datasourceName = ds.name; currentCatalog = ds.effectiveCatalog; connectionId = open(tok); sql = "select 1 from t" })
+        val after = stub.decide(decisionRequest { token = tok; datasourceName = ds.name; currentCatalog = ds.effectiveCatalog; searchPath.add("public"); connectionId = open(tok); sql = "select 1 from t" })
         assertEquals(EnfAction.DENY, after.verdict.decision)
         assertTrue("statement kind 'select' is not permitted" in after.verdict.denyReason, "after (expected kind-gate deny): ${after.verdict.denyReason}")
         assertTrue("no access to datasource" !in after.verdict.denyReason, "connect gate should now pass: ${after.verdict.denyReason}")
@@ -279,12 +278,12 @@ class GrpcDecideHandlerDbTest {
             updatedBy = null,
         )
         val userTok = core.tokenStore.issue(TokenKind.USER, "native-asserter", listOf("elevated"), null, 3600).token
-        val userDecision = stub.decide(decisionRequest { token = userTok; datasourceName = ds.name; currentCatalog = ds.effectiveCatalog; connectionId = open(userTok); sql = "select 1" })
+        val userDecision = stub.decide(decisionRequest { token = userTok; datasourceName = ds.name; currentCatalog = ds.effectiveCatalog; searchPath.add("public"); connectionId = open(userTok); sql = "select 1" })
         assertEquals(EnfAction.DENY, userDecision.verdict.decision, "a native-wire token's on-token roles must be IGNORED (server-resolved)")
         assertTrue("no access to datasource" in userDecision.verdict.denyReason, "native: ${userDecision.verdict.denyReason}")
 
         val execTok = core.tokenStore.issue(TokenKind.APPROVER_EXEC, "exec-asserter", listOf("elevated"), null, 3600).token
-        val execDecision = stub.decide(decisionRequest { token = execTok; datasourceName = ds.name; currentCatalog = ds.effectiveCatalog; connectionId = open(execTok); sql = "select 1" })
+        val execDecision = stub.decide(decisionRequest { token = execTok; datasourceName = ds.name; currentCatalog = ds.effectiveCatalog; searchPath.add("public"); connectionId = open(execTok); sql = "select 1" })
         assertEquals(EnfAction.ALLOW, execDecision.verdict.decision, "an approver-exec token's assume-role must decide AS that role: ${execDecision.verdict.denyReason}")
     }
 
@@ -302,11 +301,11 @@ class GrpcDecideHandlerDbTest {
             updatedBy = null,
         )
         val withR = core.tokenStore.issue(TokenKind.APPROVER_EXEC, "with-r", listOf("some-role"), null, 3600).token
-        val withRDecision = stub.decide(decisionRequest { token = withR; datasourceName = ds.name; currentCatalog = ds.effectiveCatalog; connectionId = open(withR); sql = "select 1" })
+        val withRDecision = stub.decide(decisionRequest { token = withR; datasourceName = ds.name; currentCatalog = ds.effectiveCatalog; searchPath.add("public"); connectionId = open(withR); sql = "select 1" })
         assertEquals(EnfAction.ALLOW, withRDecision.verdict.decision, "with-R approver-exec runs at workflow-executor → connect: ${withRDecision.verdict.denyReason}")
 
         val noR = core.tokenStore.issue(TokenKind.APPROVER_EXEC, "no-r", emptyList(), null, 3600).token
-        val noRDecision = stub.decide(decisionRequest { token = noR; datasourceName = ds.name; currentCatalog = ds.effectiveCatalog; connectionId = open(noR); sql = "select 1" })
+        val noRDecision = stub.decide(decisionRequest { token = noR; datasourceName = ds.name; currentCatalog = ds.effectiveCatalog; searchPath.add("public"); connectionId = open(noR); sql = "select 1" })
         assertEquals(EnfAction.DENY, noRDecision.verdict.decision, "no-R approver-exec must decide at EDITOR, not workflow-executor")
         assertTrue("no access to datasource" in noRDecision.verdict.denyReason, "no-R: ${noRDecision.verdict.denyReason}")
     }
@@ -335,7 +334,7 @@ class GrpcDecideHandlerDbTest {
         )
         val issued = core.tokenStore.issue(TokenKind.EDITOR, "ipgate-editor-user", emptyList(), null, 3600)
 
-        val decision = stub.decide(decisionRequest { token = issued.token; datasourceName = ds.name; currentCatalog = ds.effectiveCatalog; connectionId = open(issued.token); sql = "select 1 from t"; clientAddr = "203.0.113.10" })
+        val decision = stub.decide(decisionRequest { token = issued.token; datasourceName = ds.name; currentCatalog = ds.effectiveCatalog; searchPath.add("public"); connectionId = open(issued.token); sql = "select 1 from t"; clientAddr = "203.0.113.10" })
         assertEquals(
             EnfAction.DENY, decision.verdict.decision,
             "connect now passes via the ip-gated permit; the deny should have moved off connect to the kind gate: ${decision.verdict.denyReason}",
@@ -355,7 +354,7 @@ class GrpcDecideHandlerDbTest {
         )
         val issued = core.tokenStore.issue(TokenKind.APPROVER_EXEC, "ipgate-approver-exec-user", emptyList(), null, 3600)
 
-        val decision = stub.decide(decisionRequest { token = issued.token; datasourceName = ds.name; currentCatalog = ds.effectiveCatalog; connectionId = open(issued.token); sql = "select 1 from t"; clientAddr = "203.0.113.20" })
+        val decision = stub.decide(decisionRequest { token = issued.token; datasourceName = ds.name; currentCatalog = ds.effectiveCatalog; searchPath.add("public"); connectionId = open(issued.token); sql = "select 1 from t"; clientAddr = "203.0.113.20" })
         assertTrue("statement kind 'select' is not permitted" in decision.verdict.denyReason, "expected the connect gate to pass: ${decision.verdict.denyReason}")
     }
 
@@ -371,7 +370,7 @@ class GrpcDecideHandlerDbTest {
         )
         val issued = core.tokenStore.issue(TokenKind.EDITOR, "ipgate-editor-no-addr", emptyList(), null, 3600)
         val decision = stub.decide(
-            decisionRequest { token = issued.token; datasourceName = ds.name; currentCatalog = ds.effectiveCatalog; connectionId = open(issued.token); sql = "select 1 from t" },
+            decisionRequest { token = issued.token; datasourceName = ds.name; currentCatalog = ds.effectiveCatalog; searchPath.add("public"); connectionId = open(issued.token); sql = "select 1 from t" },
         )
         assertEquals(EnfAction.DENY, decision.verdict.decision)
         assertTrue("no access to datasource" in decision.verdict.denyReason, decision.verdict.denyReason)
@@ -390,7 +389,7 @@ class GrpcDecideHandlerDbTest {
         val issued = core.tokenStore.issue(TokenKind.USER, "ipgate-wire-clientaddr", emptyList(), null, 3600)
         val decision = stub.decide(
             decisionRequest {
-                token = issued.token; datasourceName = ds.name; currentCatalog = ds.effectiveCatalog; connectionId = open(issued.token)
+                token = issued.token; datasourceName = ds.name; currentCatalog = ds.effectiveCatalog; searchPath.add("public"); connectionId = open(issued.token)
                 sql = "select 1 from t"; clientAddr = "/203.0.113.40:5432"
             },
         )
@@ -402,9 +401,7 @@ class GrpcDecideHandlerDbTest {
 
     @Test
     fun `decide stamps the shipped default cap and denies a spent shipped rate`() = runBlocking {
-        val datasource = core.datasourceStore.create(
-            DatasourceInput("caps-grpc-ds", "postgres", dbName = "app"),
-        )
+        val datasource = core.datasourceStore.seed(name = "caps-grpc-ds", engine = "postgres")
         val principal = "caps-grpc-user"
         val tok = core.tokenStore.issue(TokenKind.USER, principal, emptyList(), null, 3600).token
         core.cedarPolicyStore.create(
@@ -418,7 +415,7 @@ class GrpcDecideHandlerDbTest {
         )
         val conn = open(tok, datasource)
         val verdict = stub.decide(
-            decisionRequest { token = tok; datasourceName = datasource.name; currentCatalog = datasource.effectiveCatalog; connectionId = conn; sql = "select 42" },
+            decisionRequest { token = tok; datasourceName = datasource.name; currentCatalog = datasource.effectiveCatalog; searchPath.add("public"); connectionId = conn; sql = "select 42" },
         ).verdict
         assertEquals(EnfAction.ALLOW, verdict.decision, verdict.denyReason)
         assertEquals(5_000L, verdict.maxRows)
@@ -431,7 +428,7 @@ class GrpcDecideHandlerDbTest {
             ),
         )
         val spent = stub.decide(
-            decisionRequest { token = tok; datasourceName = datasource.name; currentCatalog = datasource.effectiveCatalog; connectionId = conn; sql = "select 42" },
+            decisionRequest { token = tok; datasourceName = datasource.name; currentCatalog = datasource.effectiveCatalog; searchPath.add("public"); connectionId = conn; sql = "select 42" },
         ).verdict
         assertEquals(EnfAction.DENY, spent.decision)
         assertEquals("rate 100MB/1h spent", spent.denyReason)

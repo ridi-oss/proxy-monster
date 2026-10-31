@@ -197,7 +197,7 @@ class McpServerDbTest {
         application { installTestMcp() }
         val client = createClient { expectSuccess = false }
         core.datasourceStore.register(
-            "mcp-instr-orders", Engine.MYSQL, "db", 3306, "orders", emptyList(), "", null, false,
+            "mcp-instr-orders", Engine.MYSQL, "db:3306", "orders", emptyList(), "", null, false,
             description = "Orders and payments",
         )
         val role = core.policyStore.createRole(RoleInput("mcp-instr-connect"))
@@ -239,8 +239,8 @@ class McpServerDbTest {
     fun `get_pmon_guide gives this instance's pmon setup and only the caller's connectable datasources`() = testApplication {
         application { installTestMcp() }
         val client = createClient { expectSuccess = false }
-        core.datasourceStore.register("mcp-guide-orders", Engine.MYSQL, "db", 3306, "orders", emptyList(), "", null, false)
-        core.datasourceStore.register("mcp-guide-payroll", Engine.MYSQL, "db", 3306, "payroll", emptyList(), "", null, false)
+        core.datasourceStore.register("mcp-guide-orders", Engine.MYSQL, "db:3306", "orders", emptyList(), "", null, false)
+        core.datasourceStore.register("mcp-guide-payroll", Engine.MYSQL, "db:3306", "payroll", emptyList(), "", null, false)
         val role = core.policyStore.createRole(RoleInput("mcp-guide-connect"))
         core.cedarPolicyStore.create(
             CedarPolicyInput(
@@ -1362,8 +1362,8 @@ class McpServerDbTest {
     private fun seedDatasource(name: String, columns: List<String> = listOf("ssn"), systemColumns: List<String> = emptyList()) {
         dataSource.connection.use { connection ->
             val id = connection.prepareStatement(
-                """INSERT INTO datasource(name, engine, host, port, db_name, default_schemas)
-                   VALUES (?, 'postgres', '127.0.0.1', 5432, 'mcp', '["public"]'::jsonb) RETURNING id""",
+                """INSERT INTO datasource(name, engine, db_name, default_schemas)
+                   VALUES (?, 'postgres', 'mcp', '["public"]'::jsonb) RETURNING id""",
             ).use { statement ->
                 statement.setString(1, name)
                 statement.executeQuery().use { result -> result.next(); result.getLong(1) }

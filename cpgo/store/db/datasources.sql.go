@@ -11,7 +11,7 @@ import (
 )
 
 const datasource = `-- name: Datasource :one
-SELECT id, name, engine, host, port, db_name, tags, default_schemas, mysql_lower_case_table_names,
+SELECT id, name, engine, db_name, target_info, tags, default_schemas, mysql_lower_case_table_names,
        catalog_synced_at, last_seen_at, engine_version, advertise_addr, advertise_cert_chain,
        advertise_wire_tls, current_catalog_name, connection_info, description
 FROM datasource WHERE id = $1 AND deleted_at IS NULL
@@ -21,9 +21,8 @@ type DatasourceRow struct {
 	ID                       int64
 	Name                     string
 	Engine                   string
-	Host                     string
-	Port                     int32
 	DbName                   string
+	TargetInfo               string
 	Tags                     []string
 	DefaultSchemas           []string
 	MysqlLowerCaseTableNames *int32
@@ -45,9 +44,8 @@ func (q *Queries) Datasource(ctx context.Context, id int64) (DatasourceRow, erro
 		&i.ID,
 		&i.Name,
 		&i.Engine,
-		&i.Host,
-		&i.Port,
 		&i.DbName,
+		&i.TargetInfo,
 		&i.Tags,
 		&i.DefaultSchemas,
 		&i.MysqlLowerCaseTableNames,
@@ -77,7 +75,7 @@ func (q *Queries) DatasourceHasActiveRequests(ctx context.Context, datasourceID 
 }
 
 const datasources = `-- name: Datasources :many
-SELECT id, name, engine, host, port, db_name, tags, default_schemas, mysql_lower_case_table_names,
+SELECT id, name, engine, db_name, target_info, tags, default_schemas, mysql_lower_case_table_names,
        catalog_synced_at, last_seen_at, engine_version, advertise_addr, advertise_cert_chain,
        advertise_wire_tls, current_catalog_name, connection_info, description
 FROM datasource WHERE deleted_at IS NULL ORDER BY id
@@ -87,9 +85,8 @@ type DatasourcesRow struct {
 	ID                       int64
 	Name                     string
 	Engine                   string
-	Host                     string
-	Port                     int32
 	DbName                   string
+	TargetInfo               string
 	Tags                     []string
 	DefaultSchemas           []string
 	MysqlLowerCaseTableNames *int32
@@ -117,9 +114,8 @@ func (q *Queries) Datasources(ctx context.Context) ([]DatasourcesRow, error) {
 			&i.ID,
 			&i.Name,
 			&i.Engine,
-			&i.Host,
-			&i.Port,
 			&i.DbName,
+			&i.TargetInfo,
 			&i.Tags,
 			&i.DefaultSchemas,
 			&i.MysqlLowerCaseTableNames,

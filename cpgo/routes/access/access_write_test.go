@@ -41,7 +41,7 @@ func TestAccessWrites(t *testing.T) {
 	}
 	exec(`INSERT INTO app_role (name) VALUES ('analyst')`)
 	role := scalar(`SELECT id FROM app_role WHERE name = 'analyst'`)
-	exec(`INSERT INTO datasource (name, host, port, db_name, tags) VALUES ('orders', 'h', 1, 'd', '["prod"]'), ('gone', 'h', 1, 'd', '[]')`)
+	exec(`INSERT INTO datasource (name, db_name, tags) VALUES ('orders', 'd', '["prod"]'), ('gone', 'd', '[]')`)
 	orders := scalar(`SELECT id FROM datasource WHERE name = 'orders'`)
 	gone := scalar(`SELECT id FROM datasource WHERE name = 'gone'`)
 	exec(`UPDATE datasource SET deleted_at = now() WHERE id = $1`, gone)
@@ -180,7 +180,7 @@ func TestApprovalUnderShippedPolicies(t *testing.T) {
 	}
 	exec(`INSERT INTO principal_role (principal, role_id) SELECT 'boss@example.com', id FROM app_role WHERE name = 'system:admin'`)
 	exec(`INSERT INTO app_role (name) VALUES ('analyst')`)
-	exec(`INSERT INTO datasource (name, host, port, db_name) VALUES ('orders', 'h', 1, 'd')`)
+	exec(`INSERT INTO datasource (name, db_name) VALUES ('orders', 'd')`)
 	boss := e.St.WebSession(t, "boss@example.com", "k-boss", "dev-1")
 	alice := e.St.WebSession(t, "alice@example.com", "k-alice", "dev-2")
 	var role, ds int64
@@ -278,7 +278,7 @@ func TestApprovalThroughTrustedEdge(t *testing.T) {
 	e := routetest.SetupConfig(t, routetest.Config{Cedar: true, Edges: []string{"127.0.0.1"}})
 	e.Exec(t, `INSERT INTO app_role (name) VALUES ('reviewer'), ('target-role')`)
 	e.Exec(t, `INSERT INTO principal_role (principal, role_id) SELECT 'approver@example.com', id FROM app_role WHERE name = 'reviewer'`)
-	e.Exec(t, `INSERT INTO datasource (name, host, port, db_name) VALUES ('elev-ds', 'localhost', 5432, 'app')`)
+	e.Exec(t, `INSERT INTO datasource (name, db_name) VALUES ('elev-ds', 'app')`)
 	e.Exec(t, `INSERT INTO policy (name, cedar_src, enabled, origin) VALUES ('elev-tag', $1, true, 'USER'), ('elev-approve', $2, true, 'USER')`, trustedNetwork, tagGatedApprove)
 	approver := e.St.WebSession(t, "approver@example.com", "k-approver", "dev-1")
 	request := func() int {
@@ -302,7 +302,7 @@ func TestApprovalThroughTrustedEdge(t *testing.T) {
 
 	fake := routetest.SetupConfig(t, routetest.Config{Edges: []string{"127.0.0.1"}})
 	fake.Exec(t, `INSERT INTO app_role (name) VALUES ('target-role')`)
-	fake.Exec(t, `INSERT INTO datasource (name, host, port, db_name) VALUES ('elev-ds', 'localhost', 5432, 'app')`)
+	fake.Exec(t, `INSERT INTO datasource (name, db_name) VALUES ('elev-ds', 'app')`)
 	fake.Authz.Allow = map[string]bool{"approver@example.com task.approve ApprovalRequest:requester@example.com": true}
 	id := fake.Count(t, `INSERT INTO access_request (principal, role_id, datasource_id, requested_duration_sec, status, creator_kind)
 		SELECT 'requester@example.com', r.id, d.id, 3600, 'PENDING', 'WORKFLOW' FROM app_role r, datasource d RETURNING id`)

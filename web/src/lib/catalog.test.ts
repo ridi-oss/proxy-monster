@@ -14,9 +14,8 @@ const datasource: Datasource = {
   id: 1,
   name: 'test',
   engine: 'mysql',
-  host: 'db.example.test',
-  port: 3306,
   dbName: 'app',
+  targetInfo: 'db.example.test:3306',
   tags: [],
   defaultSchemas: ['app'],
   identifierQuote: '`',
@@ -89,8 +88,8 @@ describe('legacy datasource metadata', () => {
         },
       }),
     ).toBe('db.example.test:3306/app');
-    expect(connectionEndpoint(datasource)).toBe('db.example.test:3306/app');
-    expect(connectionEndpoint({ ...datasource, engine: 'other' })).toBeNull();
+    expect(connectionEndpoint(datasource)).toBe('db.example.test:3306');
+    expect(connectionEndpoint({ ...datasource, targetInfo: '' })).toBeNull();
     expect(connectionEndpoint({ ...datasource, connectionInfo: { endpoint: '', properties: {} } })).toBe('');
   });
 });

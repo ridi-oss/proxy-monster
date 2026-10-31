@@ -19,7 +19,7 @@ type registerCP struct {
 	registers   int
 }
 
-func (c *registerCP) Register(enginepb.Engine, string, int, string, []string, string, *string, bool, *pb.ConnectionInfo, *string) error {
+func (c *registerCP) Register(enginepb.Engine, string, string, []string, string, *string, bool, *pb.ConnectionInfo, *string) error {
 	c.registers++
 	return c.registerErr
 }
@@ -29,6 +29,7 @@ func (c *registerCP) PushCatalog(*pb.CatalogRequest) error { return nil }
 type unreadableTarget struct{ spi.Target }
 
 func (unreadableTarget) Config() spi.TargetConfig           { return spi.TargetConfig{} }
+func (unreadableTarget) TargetInfo() string                 { return "target:3306" }
 func (unreadableTarget) ConnectionInfo() *pb.ConnectionInfo { return nil }
 func (unreadableTarget) Introspect(context.Context) (*pb.CatalogRequest, error) {
 	return nil, errors.New("target unreachable")

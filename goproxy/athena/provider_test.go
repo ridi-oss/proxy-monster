@@ -207,3 +207,10 @@ func TestSDKMetadataPreservesCatalogAndPartitions(t *testing.T) {
 		t.Fatalf("wrong call counts: %v", calls)
 	}
 }
+
+func TestTargetInfo(t *testing.T) {
+	target := testTarget(t, func(http.ResponseWriter, *http.Request) {})
+	if got, want := target.TargetInfo(), "athena.us-east-1.amazonaws.com workgroup primary, catalog AwsDataCatalog"; got != want {
+		t.Fatalf("TargetInfo() = %q, want %q", got, want)
+	}
+}

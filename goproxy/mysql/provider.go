@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/tls"
 	"database/sql"
+	"net"
+	"strconv"
 
 	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
@@ -33,6 +35,8 @@ type target struct {
 }
 
 func (t *target) Config() spi.TargetConfig { return t.config }
+
+func (t *target) TargetInfo() string { return net.JoinHostPort(t.config.Host, strconv.Itoa(t.config.Port)) }
 
 func (t *target) ConnectionInfo() *pb.ConnectionInfo { return t.info }
 

@@ -45,9 +45,9 @@ data class Datasource(
     @Serializable(with = EngineWireSerializer::class) val engine: Engine,
     // Only the proxy's Register sets these. The control-plane holds NO target credential — it never dials a
     // target (the proxy executes everything), so there is literally zero target secret at rest here.
-    val host: String,
-    val port: Int,
     val dbName: String,
+    /** Where the proxy connects, as its engine describes it (MySQL `host:port`); shown in the console only. */
+    val targetInfo: String = "",
     val tags: List<String> = emptyList(),
     val defaultSchemas: List<String> = emptyList(),
     val mysqlLowerCaseTableNames: Int? = null,
@@ -58,7 +58,7 @@ data class Datasource(
     // manifest resolution. Null until a catalog is pushed.
     val engineVersion: String? = null,
     // The client-facing host:port a wire client (pmon) dials to reach this datasource's proxy — set by the
-    // proxy at Register (distinct from host/port, the advisory upstream). Null until a proxy advertises one.
+    // proxy at Register (distinct from targetInfo, the upstream). Null until a proxy advertises one.
     val advertiseAddr: String? = null,
     // The PEM certificate chain to trust for this datasource's proxy, leaf first, as the proxy advertised it
     // at registration. pmon uses it as the root pool for its upstream hop, with advertiseAddr checked against
@@ -84,11 +84,11 @@ data class Datasource(
 
     /**
      * The same row with everything a caller would need to reach the proxy removed — the advertised address
-     * and certificate chain, and the advisory upstream coordinates. What survives is identity (name, engine,
+     * and certificate chain, and the upstream it connects to. What survives is identity (name, engine,
      * tags): enough to name the datasource in a JIT access request, not enough to dial it.
      */
     fun withoutConnectionMaterial(): Datasource = copy(
-        host = "", port = 0, dbName = "", advertiseAddr = null, advertiseCertChain = null,
+        dbName = "", targetInfo = "", advertiseAddr = null, advertiseCertChain = null,
         currentCatalog = null, connectionInfo = null, description = "",
     )
 }
@@ -178,7 +178,7 @@ class DatasourceStore(internal val dataSource: DataSource) {
     companion object {
         /** Every column [toDatasource] reads. One list, so a new column cannot reach some reads and not others. */
         const val DATASOURCE_COLUMNS =
-            "id, name, engine, host, port, db_name, tags, default_schemas, mysql_lower_case_table_names, " +
+            "id, name, engine, db_name, target_info, tags, default_schemas, mysql_lower_case_table_names, " +
                 "catalog_synced_at, last_seen_at, engine_version, advertise_addr, advertise_cert_chain, " +
                 "advertise_wire_tls, current_catalog_name, connection_info, description"
 
@@ -288,7 +288,7 @@ class DatasourceStore(internal val dataSource: DataSource) {
      * gRPC Register (docs/datasource-registration.md): upsert a datasource by its stable [name].
      * The proxy is the source of truth for its own identity, so a brand-new name self-creates a row.
      * No target credential is ever stored — the control-plane never dials the target.
-     * host/port/db_name are advisory (admin UI / triage). [tags] are a free-form bag: every one reaches Cedar
+     * [targetInfo] is for display only. [tags] are a free-form bag: every one reaches Cedar
      * as itself and every Table/Column under the datasource inherits it, so a policy may match on any of them.
      * The posture names (`system:development` / `system:production`) are what the shipped presets key on.
      * An EMPTY list PRESERVES any admin-set tags on an
@@ -296,13 +296,12 @@ class DatasourceStore(internal val dataSource: DataSource) {
      * redeploy / scaled replica re-registering converges.
      * ENGINE IS IMMUTABLE: re-registering an existing [name] with a different [engine] than its
      * stored value throws [DatasourceEngineConflictException] instead of upserting — see that class's
-     * kdoc for why. host/port/db_name stay mutable.
+     * kdoc for why. db_name and target_info stay mutable.
      */
     fun register(
         name: String,
         engine: Engine,
-        host: String,
-        port: Int,
+        targetInfo: String,
         dbName: String,
         tags: List<String>,
         advertiseAddr: String,
@@ -352,12 +351,12 @@ class DatasourceStore(internal val dataSource: DataSource) {
                 // comes back null (a fresh insert and a same-engine update both RETURN the id), so it
                 // unambiguously means "engine conflict" and we reject fail-closed below.
                 val upsertedId = c.prepareStatement(
-                    """INSERT INTO datasource (name, engine, host, port, db_name, tags, advertise_addr, advertise_cert_chain, advertise_wire_tls, connection_info, description)
-                       VALUES (?, ?, ?, ?, ?, ?::jsonb, ?, ?, ?, ?::jsonb, COALESCE(?, ''))
+                    """INSERT INTO datasource (name, engine, target_info, db_name, tags, advertise_addr, advertise_cert_chain, advertise_wire_tls, connection_info, description)
+                       VALUES (?, ?, ?, ?, ?::jsonb, ?, ?, ?, ?::jsonb, COALESCE(?, ''))
                        ON CONFLICT (name) WHERE deleted_at IS NULL DO UPDATE SET
                            engine  = EXCLUDED.engine,
-                           host    = EXCLUDED.host,
-                           port    = EXCLUDED.port,
+                           -- A proxy that predates target_info sends none; keep what V52 or a later register stored.
+                           target_info = COALESCE(NULLIF(EXCLUDED.target_info, ''), datasource.target_info),
                            db_name = EXCLUDED.db_name,
                            tags    = CASE WHEN EXCLUDED.tags = '[]'::jsonb THEN datasource.tags ELSE EXCLUDED.tags END,
                            advertise_addr = COALESCE(EXCLUDED.advertise_addr, datasource.advertise_addr),
@@ -378,22 +377,21 @@ class DatasourceStore(internal val dataSource: DataSource) {
                 ).use { ps ->
                     ps.setString(1, name)
                     ps.setString(2, engine.wireName)
-                    ps.setString(3, host)
-                    ps.setInt(4, port)
-                    ps.setString(5, dbName)
-                    ps.setString(6, json.encodeToString(stringList, tags))
+                    ps.setString(3, targetInfo)
+                    ps.setString(4, dbName)
+                    ps.setString(5, json.encodeToString(stringList, tags))
                     // Blank → NULL so the COALESCE upsert preserves any previously-advertised address rather
                     // than wiping it.
-                    ps.setString(7, advertiseAddr.ifBlank { null })
+                    ps.setString(6, advertiseAddr.ifBlank { null })
                     // Distinct from advertiseAddr above: this is a NULLABLE parameter carrying presence, so an
                     // ABSENT chain (null) preserves the stored one via COALESCE, while a PRESENT blank becomes
                     // the empty string and overwrites it. Do not collapse blank to null here — that would make
                     // "stop publishing" unexpressible.
-                    ps.setString(8, advertiseCertChain)
-                    ps.setBoolean(9, advertiseWireTls)
-                    ps.setString(10, connectionInfo?.let { json.encodeToString(ConnectionInfoSerializer, it) })
+                    ps.setString(7, advertiseCertChain)
+                    ps.setBoolean(8, advertiseWireTls)
+                    ps.setString(9, connectionInfo?.let { json.encodeToString(ConnectionInfoSerializer, it) })
+                    ps.setString(10, description)
                     ps.setString(11, description)
-                    ps.setString(12, description)
                     ps.executeQuery().use { rs -> if (rs.next()) rs.getLong(1) else null }
                 }
                 if (upsertedId == null) {
@@ -659,9 +657,8 @@ class DatasourceStore(internal val dataSource: DataSource) {
         id = getLong("id"),
         name = getString("name"),
         engine = engineFromWire(getString("engine")),
-        host = getString("host"),
-        port = getInt("port"),
         dbName = getString("db_name"),
+        targetInfo = getString("target_info"),
         tags = json.decodeFromString(stringList, getString("tags")),
         defaultSchemas = json.decodeFromString(stringList, getString("default_schemas")),
         mysqlLowerCaseTableNames = getInt("mysql_lower_case_table_names").let { if (wasNull()) null else it },

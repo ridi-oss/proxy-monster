@@ -31,9 +31,8 @@ type datasource struct {
 	ID                       int64           `json:"id"`
 	Name                     string          `json:"name"`
 	Engine                   string          `json:"engine"`
-	Host                     string          `json:"host"`
-	Port                     int             `json:"port"`
 	DBName                   string          `json:"dbName"`
+	TargetInfo               string          `json:"targetInfo"`
 	Tags                     []string        `json:"tags"`
 	DefaultSchemas           []string        `json:"defaultSchemas"`
 	MySQLLowerCaseTableNames *int            `json:"mysqlLowerCaseTableNames,omitempty"`
@@ -52,14 +51,14 @@ type datasource struct {
 
 // withoutConnectionMaterial is the row a caller who may not datasource.connect sees.
 func (d datasource) withoutConnectionMaterial() datasource {
-	d.Host, d.Port, d.DBName = "", 0, ""
+	d.DBName, d.TargetInfo = "", ""
 	d.AdvertiseAddr, d.AdvertiseCertChain, d.CurrentCatalog, d.ConnectionInfo = nil, nil, nil, nil
 	d.Description = ""
 	return d
 }
 
 func toDatasource(r db.DatasourcesRow) (datasource, error) {
-	d := datasource{ID: r.ID, Name: r.Name, Engine: r.Engine, Host: r.Host, Port: int(r.Port), DBName: r.DbName,
+	d := datasource{ID: r.ID, Name: r.Name, Engine: r.Engine, DBName: r.DbName, TargetInfo: r.TargetInfo,
 		EngineVersion: r.EngineVersion, AdvertiseAddr: r.AdvertiseAddr, AdvertiseCertChain: r.AdvertiseCertChain,
 		AdvertiseWireTLS: r.AdvertiseWireTls, CurrentCatalog: r.CurrentCatalogName, Description: r.Description}
 	if r.MysqlLowerCaseTableNames != nil {

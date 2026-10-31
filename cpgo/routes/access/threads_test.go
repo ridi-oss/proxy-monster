@@ -82,7 +82,7 @@ func TestRequestThread(t *testing.T) {
 	e := setupThreads(t)
 	alice := e.St.WebSession(t, requester, "k-alice", "dev-1")
 	bob := e.St.WebSession(t, approver, "k-bob", "dev-2")
-	gone := e.id(`INSERT INTO datasource (name, host, port, db_name, tags) VALUES ('gone', 'h', 1, 'd', '["pii"]') RETURNING id`)
+	gone := e.id(`INSERT INTO datasource (name, db_name, tags) VALUES ('gone', 'd', '["pii"]') RETURNING id`)
 	e.Exec(t, `UPDATE datasource SET deleted_at = now() WHERE id = $1`, gone)
 	role := e.roleRequest("PENDING")
 	query := e.queryRequest(requester, "APPROVED", "WORKFLOW", "console", gone, nil)
@@ -266,7 +266,7 @@ func TestRequestClose(t *testing.T) {
 	e := setupThreads(t)
 	alice := e.St.WebSession(t, requester, "k-alice", "dev-1")
 	bob := e.St.WebSession(t, approver, "k-bob", "dev-2")
-	ds := e.id(`INSERT INTO datasource (name, host, port, db_name) VALUES ('orders', 'h', 1, 'd') RETURNING id`)
+	ds := e.id(`INSERT INTO datasource (name, db_name) VALUES ('orders', 'd') RETURNING id`)
 	pending := e.roleRequest("PENDING")
 	grantedRole := e.roleRequest("APPROVED")
 	approvedQuery := e.queryRequest(requester, "APPROVED", "WORKFLOW", "console", ds, nil)
@@ -312,7 +312,7 @@ func TestRequestClose(t *testing.T) {
 
 func TestRequestsInvolved(t *testing.T) {
 	e := setupThreads(t)
-	ds := e.id(`INSERT INTO datasource (name, host, port, db_name) VALUES ('orders', 'h', 1, 'd') RETURNING id`)
+	ds := e.id(`INSERT INTO datasource (name, db_name) VALUES ('orders', 'd') RETURNING id`)
 	yes, no := true, false
 	flagged := e.queryRequest(requester, "PENDING", "WORKFLOW", "console", ds, &yes)
 	cleared := e.queryRequest(requester, "PENDING", "WORKFLOW", "console", ds, &no)

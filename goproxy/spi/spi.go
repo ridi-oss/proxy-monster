@@ -60,7 +60,7 @@ type ControlPlane interface {
 	// AuthorizeRequest asks whether one operation with no SQL behind it (a catalog or table-metadata read,
 	// an Athena API call) is allowed.
 	AuthorizeRequest(context.Context, *pb.RequestAuthorization) (*pb.RequestAuthorizationResult, error)
-	Register(registrationEngine enginepb.Engine, host string, port int, dbName string, tags []string, advertiseAddr string, advertiseCertChain *string, wireTLS bool, connectionInfo *pb.ConnectionInfo, description *string) error
+	Register(registrationEngine enginepb.Engine, targetInfo string, dbName string, tags []string, advertiseAddr string, advertiseCertChain *string, wireTLS bool, connectionInfo *pb.ConnectionInfo, description *string) error
 	PushCatalog(*pb.CatalogRequest) error
 	OpenConnection(token, clientAddr string, door pb.ConnectionDoor) (Identity, error)
 	CloseConnection(connectionID []byte) error
@@ -193,6 +193,8 @@ type Provider interface {
 // Server hold a Target and never see a connection string or a *sql.DB.
 type Target interface {
 	Config() TargetConfig
+	// TargetInfo says where the proxy connects, in the engine's own terms; the control plane only shows it.
+	TargetInfo() string
 	// ConnectionInfo is the nonsecret client-facing metadata published at Register: an endpoint plus the
 	// properties the engine allows. A wire dialect publishes only the advertised address.
 	ConnectionInfo() *pb.ConnectionInfo

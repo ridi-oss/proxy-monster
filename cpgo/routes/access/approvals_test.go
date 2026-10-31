@@ -18,8 +18,8 @@ type approvalEnv struct {
 
 func setupApprovals(t *testing.T) approvalEnv {
 	e := approvalEnv{threadEnv: threadEnv{routetest.Setup(t), t}}
-	e.mysql = e.id(`INSERT INTO datasource (name, engine, host, port, db_name, engine_version, mysql_lower_case_table_names)
-		VALUES ('shop-mysql', 'mysql', 'h', 3306, 'shop', '8.0.36', 0) RETURNING id`)
+	e.mysql = e.id(`INSERT INTO datasource (name, engine, db_name, engine_version, mysql_lower_case_table_names)
+		VALUES ('shop-mysql', 'mysql', 'shop', '8.0.36', 0) RETURNING id`)
 	return e
 }
 

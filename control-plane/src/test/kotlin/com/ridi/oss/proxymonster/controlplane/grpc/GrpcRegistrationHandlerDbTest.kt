@@ -148,8 +148,7 @@ class GrpcRegistrationHandlerDbTest {
                     protocolVersion = CONTROL_PROTOCOL_VERSION + 1
                     name = "reg-ver-mismatch"
                     engine = Engine.POSTGRES
-                    host = "h"
-                    port = 1
+                    targetInfo = "h:1"
                     dbName = "d"
                 },
             )
@@ -165,7 +164,7 @@ class GrpcRegistrationHandlerDbTest {
     @Test
     fun `register stores the description, keeps it when absent, clears it when empty, and refuses bad text`() = runBlocking {
         fun req(description: String?) = regReq {
-            name = "reg-description"; engine = Engine.MYSQL; host = "h"; port = 3306; dbName = "d"
+            name = "reg-description"; engine = Engine.MYSQL; targetInfo = "h:3306"; dbName = "d"
             if (description != null) this.description = description
         }
         fun stored() = core.datasourceStore.getByName("reg-description")!!.description
@@ -185,7 +184,7 @@ class GrpcRegistrationHandlerDbTest {
     @Test
     fun `register echoes the control-plane's wire-protocol version so the proxy can mirror-check it`() = runBlocking {
         val response = stub.register(
-            regReq { name = "reg-ver-ok"; engine = Engine.POSTGRES; host = "h"; port = 1; dbName = "d" },
+            regReq { name = "reg-ver-ok"; engine = Engine.POSTGRES; targetInfo = "h:1"; dbName = "d" },
         )
         assertEquals(CONTROL_PROTOCOL_VERSION, response.protocolVersion)
     }
@@ -196,8 +195,7 @@ class GrpcRegistrationHandlerDbTest {
             regReq {
                 name = "reg-new"
                 engine = Engine.POSTGRES
-                host = "db.internal"
-                port = 5432
+                targetInfo = "db.internal:5432"
                 dbName = "app"
                 tags.add("system:development")
             },
@@ -205,8 +203,7 @@ class GrpcRegistrationHandlerDbTest {
         assertEquals("reg-new", resp.name)
         val ds = core.datasourceStore.getByName("reg-new")!!
         assertEquals(Engine.POSTGRES, ds.engine)
-        assertEquals("db.internal", ds.host)
-        assertEquals(5432, ds.port)
+        assertEquals("db.internal:5432", ds.targetInfo)
         assertEquals("app", ds.dbName)
         assertEquals(listOf("system:development"), ds.tags)
     }
@@ -217,8 +214,7 @@ class GrpcRegistrationHandlerDbTest {
             regReq {
                 name = "reg-adv"
                 engine = Engine.MYSQL
-                host = "db.internal"
-                port = 3306
+                targetInfo = "db.internal:3306"
                 dbName = "app"
                 advertiseAddr = "proxy.example.ts.net:6033"
                 advertiseCertChain = SELF_SIGNED_CHAIN
@@ -243,7 +239,7 @@ class GrpcRegistrationHandlerDbTest {
         // must not wipe what a proxy previously advertised — the COALESCE upsert keeps the prior values.
         stub.register(
             regReq {
-                name = "reg-adv"; engine = Engine.MYSQL; host = "db2"; port = 3307; dbName = "app"
+                name = "reg-adv"; engine = Engine.MYSQL; targetInfo = "db2:3307"; dbName = "app"
                 advertiseWireTls = true
             },
         )
@@ -261,7 +257,7 @@ class GrpcRegistrationHandlerDbTest {
         // roots and every connection would fail -- and the console would keep offering a stale download.
         stub.register(
             regReq {
-                name = "reg-tls-off"; engine = Engine.MYSQL; host = "h"; port = 3306; dbName = "d"
+                name = "reg-tls-off"; engine = Engine.MYSQL; targetInfo = "h:3306"; dbName = "d"
                 advertiseCertChain = SELF_SIGNED_CHAIN
                 advertiseWireTls = true
             },
@@ -270,7 +266,7 @@ class GrpcRegistrationHandlerDbTest {
 
         stub.register(
             regReq {
-                name = "reg-tls-off"; engine = Engine.MYSQL; host = "h"; port = 3306; dbName = "d"
+                name = "reg-tls-off"; engine = Engine.MYSQL; targetInfo = "h:3306"; dbName = "d"
                 advertiseWireTls = false
             },
         )
@@ -292,7 +288,7 @@ class GrpcRegistrationHandlerDbTest {
         // greeting without CLIENT_SSL collects a live session token.
         stub.register(
             regReq {
-                name = "reg-public-tls"; engine = Engine.MYSQL; host = "h"; port = 3306; dbName = "d"
+                name = "reg-public-tls"; engine = Engine.MYSQL; targetInfo = "h:3306"; dbName = "d"
                 advertiseAddr = "proxy.example.com:6033"
                 advertiseWireTls = true
             },
@@ -316,7 +312,7 @@ class GrpcRegistrationHandlerDbTest {
         // can. A warning is logged for the operator.
         stub.register(
             regReq {
-                name = "reg-odd-chain"; engine = Engine.MYSQL; host = "h"; port = 3306; dbName = "d"
+                name = "reg-odd-chain"; engine = Engine.MYSQL; targetInfo = "h:3306"; dbName = "d"
                 advertiseCertChain = CA_ISSUED_LEAF_ALONE
                 advertiseWireTls = true
             },
@@ -328,12 +324,11 @@ class GrpcRegistrationHandlerDbTest {
 
     @Test
     fun `register is idempotent by name and updates advisory fields`() = runBlocking {
-        stub.register(regReq { name = "reg-idem"; engine = Engine.POSTGRES; host = "old"; port = 1; dbName = "d" })
-        stub.register(regReq { name = "reg-idem"; engine = Engine.POSTGRES; host = "new"; port = 3306; dbName = "d2"; tags.add("system:production") })
+        stub.register(regReq { name = "reg-idem"; engine = Engine.POSTGRES; targetInfo = "old:1"; dbName = "d" })
+        stub.register(regReq { name = "reg-idem"; engine = Engine.POSTGRES; targetInfo = "new:3306"; dbName = "d2"; tags.add("system:production") })
         val ds = core.datasourceStore.getByName("reg-idem")!!
         assertEquals(Engine.POSTGRES, ds.engine, "engine is immutable at register — the same-engine re-register keeps it")
-        assertEquals("new", ds.host)
-        assertEquals(3306, ds.port)
+        assertEquals("new:3306", ds.targetInfo)
         assertEquals("d2", ds.dbName)
         assertEquals(listOf("system:production"), ds.tags)
         assertEquals(1, core.datasourceStore.list().count { it.name == "reg-idem" }, "upsert, not a second row")
@@ -341,7 +336,7 @@ class GrpcRegistrationHandlerDbTest {
 
     @Test
     fun `register refuses an engine change FAILED_PRECONDITION and leaves the row untouched`() = runBlocking {
-        stub.register(regReq { name = "reg-engine-lock"; engine = Engine.POSTGRES; host = "h"; port = 5432; dbName = "d" })
+        stub.register(regReq { name = "reg-engine-lock"; engine = Engine.POSTGRES; targetInfo = "h:5432"; dbName = "d" })
         stub.pushCatalog(
             catalogRequest {
                 datasourceName = "reg-engine-lock"
@@ -356,14 +351,13 @@ class GrpcRegistrationHandlerDbTest {
         assertTrue(before.catalogSyncedAt != null)
 
         val code = statusOf {
-            stub.register(regReq { name = "reg-engine-lock"; engine = Engine.MYSQL; host = "h2"; port = 3306; dbName = "d2" })
+            stub.register(regReq { name = "reg-engine-lock"; engine = Engine.MYSQL; targetInfo = "h2:3306"; dbName = "d2" })
         }
         assertEquals(Status.Code.FAILED_PRECONDITION, code)
 
         val after = core.datasourceStore.getByName("reg-engine-lock")!!
         assertEquals(Engine.POSTGRES, after.engine, "a rejected engine change must not mutate the row")
-        assertEquals("h", after.host, "no field is touched by a rejected register, not just engine")
-        assertEquals(5432, after.port)
+        assertEquals("h:5432", after.targetInfo, "no field is touched by a rejected register, not just engine")
         assertEquals("d", after.dbName)
         assertTrue(core.datasourceStore.catalog(before.id).columns.isNotEmpty(), "a rejected engine change must not invalidate the catalog")
         assertEquals(before.catalogSyncedAt, after.catalogSyncedAt, "catalog_synced_at is retained on a rejected register")
@@ -380,7 +374,7 @@ class GrpcRegistrationHandlerDbTest {
         // piling up on the UNIQUE index; the atomic WHERE is what makes the flip impossible.)
         val outcomes = listOf(Engine.POSTGRES, Engine.MYSQL).map { eng ->
             async(Dispatchers.IO) {
-                runCatching { stub.register(regReq { this.name = name; engine = eng; host = "h"; port = 1; dbName = "d" }) }
+                runCatching { stub.register(regReq { this.name = name; engine = eng; targetInfo = "h:1"; dbName = "d" }) }
             }
         }.awaitAll()
 
@@ -410,11 +404,11 @@ class GrpcRegistrationHandlerDbTest {
         try {
             writerConn.autoCommit = false
             writerConn.prepareStatement(
-                "INSERT INTO datasource (name, engine, host, port, db_name, tags) VALUES (?, 'postgres', 'h', 5432, 'app', '[]'::jsonb)",
+                "INSERT INTO datasource (name, engine, db_name, tags) VALUES (?, 'postgres', 'app', '[]'::jsonb)",
             ).use { ps -> ps.setString(1, name); ps.executeUpdate() } // staged, uncommitted
 
             val outcome = async(Dispatchers.IO) {
-                runCatching { core.datasourceStore.register(name, Engine.MYSQL, "h2", 3306, "app", emptyList(), "127.0.0.1:3306", null, false) }
+                runCatching { core.datasourceStore.register(name, Engine.MYSQL, "h2:3306", "app", emptyList(), "127.0.0.1:3306", null, false) }
             }
             awaitRegisterParkedOnUpsert()
 
@@ -462,8 +456,8 @@ class GrpcRegistrationHandlerDbTest {
 
     @Test
     fun `re-register with empty tags preserves the existing tags`() = runBlocking {
-        stub.register(regReq { name = "reg-tags"; engine = Engine.POSTGRES; host = "h"; port = 1; dbName = "d"; tags.add("system:development") })
-        stub.register(regReq { name = "reg-tags"; engine = Engine.POSTGRES; host = "h2"; port = 1; dbName = "d" }) // no tags
+        stub.register(regReq { name = "reg-tags"; engine = Engine.POSTGRES; targetInfo = "h:1"; dbName = "d"; tags.add("system:development") })
+        stub.register(regReq { name = "reg-tags"; engine = Engine.POSTGRES; targetInfo = "h2:1"; dbName = "d" }) // no tags
         assertEquals(listOf("system:development"), core.datasourceStore.getByName("reg-tags")!!.tags)
     }
 
@@ -473,7 +467,7 @@ class GrpcRegistrationHandlerDbTest {
         // stored verbatim (the marshaller later honors only the recognized posture tags; everything else is inert).
         stub.register(
             regReq {
-                name = "reg-freeform"; engine = Engine.POSTGRES; host = "h"; port = 1; dbName = "d"
+                name = "reg-freeform"; engine = Engine.POSTGRES; targetInfo = "h:1"; dbName = "d"
                 tags.addAll(listOf("system:development", "system:production", "team-x"))
             },
         )
@@ -486,13 +480,13 @@ class GrpcRegistrationHandlerDbTest {
 
     @Test
     fun `register rejects an unspecified engine INVALID_ARGUMENT`() {
-        assertEquals(Status.Code.INVALID_ARGUMENT, statusOf { stub.register(regReq { name = "reg-bad"; host = "h"; port = 1; dbName = "d" }) })
+        assertEquals(Status.Code.INVALID_ARGUMENT, statusOf { stub.register(regReq { name = "reg-bad"; targetInfo = "h:1"; dbName = "d" }) })
         assertNull(core.datasourceStore.getByName("reg-bad"), "a rejected register must not create a row")
     }
 
     @Test
     fun `register rejects a blank name INVALID_ARGUMENT`() {
-        assertEquals(Status.Code.INVALID_ARGUMENT, statusOf { stub.register(regReq { name = ""; engine = Engine.POSTGRES; host = "h"; port = 1; dbName = "d" }) })
+        assertEquals(Status.Code.INVALID_ARGUMENT, statusOf { stub.register(regReq { name = ""; engine = Engine.POSTGRES; targetInfo = "h:1"; dbName = "d" }) })
     }
 
     @Test
@@ -542,7 +536,7 @@ class GrpcRegistrationHandlerDbTest {
 
     @Test
     fun `pushCatalog stores the proxy-pushed columns and default schemas`() = runBlocking {
-        stub.register(regReq { name = "reg-cat"; engine = Engine.POSTGRES; host = "h"; port = 1; dbName = "d" })
+        stub.register(regReq { name = "reg-cat"; engine = Engine.POSTGRES; targetInfo = "h:1"; dbName = "d" })
         val ack = stub.pushCatalog(
             catalogRequest {
                 datasourceName = "reg-cat"
@@ -572,7 +566,7 @@ class GrpcRegistrationHandlerDbTest {
         // keeps enforcement content verified. That premise is a single call in this handler: exercise it
         // through the RPC, because a registry-level test would stay green if the wiring were removed and
         // the refresh went back to feeding only the stored catalog.
-        stub.register(regReq { name = "reg-refresh"; engine = Engine.MYSQL; host = "h"; port = 1; dbName = "app" })
+        stub.register(regReq { name = "reg-refresh"; engine = Engine.MYSQL; targetInfo = "h:1"; dbName = "app" })
         stub.pushCatalog(catalogRequest { datasourceName = "reg-refresh"; currentCatalog = "def"; defaultSchemas.add("app") })
         val ds = core.datasourceStore.getByName("reg-refresh")!!
 
@@ -647,10 +641,10 @@ class GrpcRegistrationHandlerDbTest {
                 }
             },
         )
-        // A proxy self-registers by the same name with its host moved: Register refreshes the host and keeps the catalog.
-        stub.register(regReq { name = "reg-preserve"; engine = Engine.POSTGRES; host = "h2"; port = 5432; dbName = "app" })
+        // A proxy self-registers by the same name with its host moved: Register refreshes target_info and keeps the catalog.
+        stub.register(regReq { name = "reg-preserve"; engine = Engine.POSTGRES; targetInfo = "h2:5432"; dbName = "app" })
         val after = core.datasourceStore.getByName("reg-preserve")!!
-        assertEquals("h2", after.host, "advisory host is still updated")
+        assertEquals("h2:5432", after.targetInfo, "target_info is still updated")
         assertTrue(core.datasourceStore.catalog(ds.id).columns.any { it.table == "keep" }, "same-target re-register must not wipe the catalog")
         assertTrue(after.catalogSyncedAt != null, "catalog_synced_at is retained on a same-target re-register")
     }
@@ -669,9 +663,9 @@ class GrpcRegistrationHandlerDbTest {
                 },
             )
         }
-        stub.register(regReq { name = "reg-retarget"; engine = Engine.POSTGRES; host = "h"; port = 5432; dbName = "db_a" })
+        stub.register(regReq { name = "reg-retarget"; engine = Engine.POSTGRES; targetInfo = "h:5432"; dbName = "db_a" })
         push("db_a", "old_table")
-        stub.register(regReq { name = "reg-retarget"; engine = Engine.POSTGRES; host = "h"; port = 5432; dbName = "db_b" })
+        stub.register(regReq { name = "reg-retarget"; engine = Engine.POSTGRES; targetInfo = "h:5432"; dbName = "db_b" })
         push("db_b", "new_table")
 
         val after = core.datasourceStore.getByName("reg-retarget")!!
@@ -681,7 +675,7 @@ class GrpcRegistrationHandlerDbTest {
 
     @Test
     fun `pushCatalog rolls back a mid-batch failure and keeps the prior catalog`() = runBlocking {
-        stub.register(regReq { name = "reg-rollback"; engine = Engine.POSTGRES; host = "h"; port = 1; dbName = "d" })
+        stub.register(regReq { name = "reg-rollback"; engine = Engine.POSTGRES; targetInfo = "h:1"; dbName = "d" })
         stub.pushCatalog(
             catalogRequest {
                 datasourceName = "reg-rollback"
@@ -716,7 +710,7 @@ class GrpcRegistrationHandlerDbTest {
 
     @Test
     fun `pushCatalog replaces the prior catalog (delete-then-insert)`() = runBlocking {
-        stub.register(regReq { name = "reg-replace"; engine = Engine.POSTGRES; host = "h"; port = 1; dbName = "d" })
+        stub.register(regReq { name = "reg-replace"; engine = Engine.POSTGRES; targetInfo = "h:1"; dbName = "d" })
         stub.pushCatalog(
             catalogRequest {
                 datasourceName = "reg-replace"
@@ -747,7 +741,7 @@ class GrpcRegistrationHandlerDbTest {
 
     @Test
     fun `pushCatalog replacement preserves classification for a surviving column identity`() = runBlocking {
-        stub.register(regReq { name = "reg-replace-classified"; engine = Engine.POSTGRES; host = "h"; port = 1; dbName = "d" })
+        stub.register(regReq { name = "reg-replace-classified"; engine = Engine.POSTGRES; targetInfo = "h:1"; dbName = "d" })
         stub.pushCatalog(
             catalogRequest {
                 datasourceName = "reg-replace-classified"

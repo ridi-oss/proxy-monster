@@ -26,15 +26,15 @@ class FunctionCatalogEnforcementDbTest {
     fun `mysql held connection uses its own routines and live classifications without global columns`() = runBlocking {
         requireDockerOrSkip()
         val fx = EnforcementFixture.mysql()
-        SharedMySql.executeAdmin("CREATE FUNCTION `${fx.datasource.dbName}`.catalog_identity(v BIGINT) RETURNS BIGINT DETERMINISTIC RETURN v")
+        SharedMySql.executeAdmin("CREATE FUNCTION `${fx.database}`.catalog_identity(v BIGINT) RETURNS BIGINT DETERMINISTIC RETURN v")
         val fixture = PerConnectionCatalogFixture(fx)
         val core = fixture.core
         val ds = fixture.datasource
         val opened = fixture.openAndPush()
-        assertTrue("catalog_identity" in core.datasourceStore.storedRoutines(ds.id).getValue(ds.dbName))
+        assertTrue("catalog_identity" in core.datasourceStore.storedRoutines(ds.id).getValue(fx.database))
         fx.cedarPolicyStore.create(CedarPolicyInput(
             name = "catalog-function-read",
-            cedarSrc = """permit(principal in Role::"analyst", action == Action::"result.read.unmasked", resource == Function::"${ds.name}/${ds.dbName}.catalog_identity");""",
+            cedarSrc = """permit(principal in Role::"analyst", action == Action::"result.read.unmasked", resource == Function::"${ds.name}/${fx.database}.catalog_identity");""",
         ), updatedBy = "test")
         // The held connection decides against its own fragments: the stored snapshot can go away entirely.
         core.datasourceStore.storePushedCatalog(
@@ -65,7 +65,7 @@ class FunctionCatalogEnforcementDbTest {
         val masked = decide(opened.connectionId, "SELECT catalog_identity(id), ssn FROM users")
         assertEquals(EnfAction.MASK, masked.action, masked.detail)
         assertEquals(listOf(1), masked.masks.map { it.ordinal })
-        core.datasourceStore.deleteClassification(ds.id, ds.dbName, "users", "ssn", ds.effectiveCatalog)
+        core.datasourceStore.deleteClassification(ds.id, fx.database, "users", "ssn", ds.effectiveCatalog)
         val clear = decide(opened.connectionId, "SELECT catalog_identity(id), ssn FROM users")
         assertEquals(EnfAction.ALLOW, clear.action, clear.detail)
         val udfCall = assertIs<EnforcementOutcome.Verdict>(decideConnection(
@@ -100,7 +100,7 @@ class FunctionCatalogEnforcementDbTest {
             ds.id, ds.defaultSchemas, ds.mysqlLowerCaseTableNames, ds.engineVersion!!,
             catalogSnapshot {
                 columns.addAll(fx.datasourceStore.storedSnapshot(ds.id).columnsList)
-                routines.add(schemaFunctions { schema = ds.dbName; names.add("invented_native") })
+                routines.add(schemaFunctions { schema = fx.database; names.add("invented_native") })
             },
             ds.effectiveCatalog,
         )
@@ -131,7 +131,7 @@ class FunctionCatalogEnforcementDbTest {
         assertEquals(emptyList(), protectedPredicateLiterals(
             fx.datasource, "SELECT LOWER(region) FROM users WHERE id = 1", catalog,
         ))
-        assertEquals(listOf("${fx.datasource.dbName}.public.users.ssn"), protectedPredicateLiterals(
+        assertEquals(listOf("${fx.datasource.effectiveCatalog}.public.users.ssn"), protectedPredicateLiterals(
             fx.datasource, "SELECT LOWER(region) FROM users WHERE ssn = 'secret'", catalog,
         ))
     }

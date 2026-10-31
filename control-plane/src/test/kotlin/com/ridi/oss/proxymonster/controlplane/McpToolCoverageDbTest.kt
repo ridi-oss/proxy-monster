@@ -142,15 +142,10 @@ class McpToolCoverageDbTest {
         }
 
         // Datasources and classifications, on a throwaway datasource.
+        val covDs = core.datasourceStore.registerOnly("cov-ds", "mysql")
+        // Classification needs lower_case_table_names, which introspection reports.
+        core.datasourceStore.storePushedCatalog(covDs.id, listOf("app"), 0, "8.0.36", catalogSnapshot {}, currentCatalog = "def")
         on("list_datasources") { client.ok(adm, "list_datasources") }
-        on("create_datasource") {
-            client.ok(adm, "create_datasource", args("name" to "cov-ds", "engine" to "mysql", "dbName" to "app")).also {
-                // Classification needs lower_case_table_names, which introspection reports.
-                val created = checkNotNull(core.datasourceStore.getByName("cov-ds"))
-                core.datasourceStore.storePushedCatalog(created.id, listOf("app"), 0, "8.0.36", catalogSnapshot {}, currentCatalog = "def")
-            }
-        }
-        on("update_datasource") { client.ok(adm, "update_datasource", args("datasource" to "cov-ds", "host" to "db.internal")) }
         on("get_datasource_liveness") { client.ok(adm, "get_datasource_liveness", args("datasource" to ds.name)) }
         on("browse_catalog") { client.ok(adm, "browse_catalog", args("datasource" to ds.name)) }
         on("get_table_detail") {

@@ -9,13 +9,13 @@ import com.ridi.oss.proxymonster.analyzer.pb.CatalogSnapshot
 import com.ridi.oss.proxymonster.controlplane.namespace
 import com.ridi.oss.proxymonster.controlplane.namespaces
 import com.ridi.oss.proxymonster.controlplane.effectiveCatalog
+import com.ridi.oss.proxymonster.controlplane.registerOnly
 import com.google.protobuf.ByteString
 import com.ridi.oss.proxymonster.controlplane.Binding
 import com.ridi.oss.proxymonster.controlplane.CatalogMutationResult
 import com.ridi.oss.proxymonster.controlplane.ControlPlaneCore
 import com.ridi.oss.proxymonster.controlplane.Datasource
 import com.ridi.oss.proxymonster.controlplane.DatasourceEngineConflictException
-import com.ridi.oss.proxymonster.controlplane.DatasourceInput
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.grpc.ControlPlaneGrpcKt
@@ -398,7 +398,7 @@ class GrpcRegistrationHandlerDbTest {
     fun `a row racing into an in-flight register cannot bypass the engine guard (cross-writer)`() = runBlocking {
         val name = "reg-cross-writer-race"
         // Deterministic interleaving of the REAL register() against a writer that does NOT enter register (a
-        // direct INSERT, modeling an admin create/rename that never takes register's name lock — the exact
+        // direct INSERT, a writer that never takes register's name lock — the exact
         // cross-writer bypass the async Register-vs-Register test above cannot reach). The barrier is a DB
         // lock, not a sleep: `writerConn` stages a POSTGRES row for `name` but leaves it UNCOMMITTED — invisible
         // to register's prior read (MVCC), yet its uncommitted UNIQUE row blocks register's ON CONFLICT upsert.
@@ -458,41 +458,6 @@ class GrpcRegistrationHandlerDbTest {
             Thread.sleep(20)
         }
         error("register never parked on its upsert INSERT — the deterministic interleaving barrier was not reached")
-    }
-
-    @Test
-    fun `admin update refuses an engine change and invalidates the catalog on a db_name retarget`() = runBlocking {
-        val ds = core.datasourceStore.create(
-            DatasourceInput(name = "upd-engine-lock", engine = "postgres", host = "h", port = 5432, dbName = "app"),
-        )
-        stub.pushCatalog(
-            catalogRequest {
-                datasourceName = "upd-engine-lock"
-                currentCatalog = "app"
-                defaultSchemas.add("public")
-                catalog = catalogSnapshot {
-                    columns.add(column { catalog = "app"; schema = "public"; table = "t"; this.column = "c"; dataType = "text"; ordinal = 1; nullable = true })
-                }
-            },
-        )
-        // A PUT that flips engine is rejected fail-closed (the admin surface is not a bypass of engine immutability) — the row
-        // and its catalog are left untouched, so a stored catalog can never be reinterpreted under a new dialect.
-        assertFailsWith<DatasourceEngineConflictException> {
-            core.datasourceStore.update(ds.id, DatasourceInput(name = "upd-engine-lock", engine = "mysql", host = "h", port = 5432, dbName = "app"))
-        }
-        val afterReject = core.datasourceStore.get(ds.id)!!
-        assertEquals(Engine.POSTGRES, afterReject.engine, "a rejected admin engine change must not mutate the row")
-        assertTrue(core.datasourceStore.catalog(ds.id).columns.isNotEmpty(), "a rejected engine change must not touch the catalog")
-
-        // A same-engine edit that retargets db_name invalidates the stale catalog (fail-closed), exactly as a
-        // Register retarget does — the retained catalog now describes a DIFFERENT schema.
-        val edited = core.datasourceStore.update(
-            ds.id, DatasourceInput(name = "upd-engine-lock", engine = "postgres", host = "h2", port = 5432, dbName = "app2"),
-        )!!
-        assertEquals("h2", edited.host)
-        assertEquals("app2", edited.dbName)
-        assertTrue(core.datasourceStore.catalog(ds.id).columns.isEmpty(), "a db_name retarget via admin PUT must invalidate the stale catalog")
-        assertEquals(null, edited.catalogSyncedAt, "catalog_synced_at is cleared on invalidation")
     }
 
     @Test
@@ -670,11 +635,8 @@ class GrpcRegistrationHandlerDbTest {
 
     @Test
     fun `re-register with the same target preserves the catalog and updates advisory fields`() = runBlocking {
-        // A row pre-provisioned via the admin form (name + advisory connection fields only — no creds
-        // exist anymore), plus a catalog.
-        val ds = core.datasourceStore.create(
-            DatasourceInput(name = "reg-preserve", engine = "postgres", host = "h", port = 5432, dbName = "app"),
-        )
+        // A registered row plus its catalog.
+        val ds = core.datasourceStore.registerOnly("reg-preserve", "postgres")
         stub.pushCatalog(
             catalogRequest {
                 datasourceName = "reg-preserve"

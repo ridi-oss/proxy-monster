@@ -43,8 +43,7 @@ data class Datasource(
     val id: Long,
     val name: String,
     @Serializable(with = EngineWireSerializer::class) val engine: Engine,
-    // host/port/db_name are advisory (admin UI / triage): the proxy is authoritative and overwrites them
-    // on Register. The control-plane holds NO target credential — it never dials a
+    // Only the proxy's Register sets these. The control-plane holds NO target credential — it never dials a
     // target (the proxy executes everything), so there is literally zero target secret at rest here.
     val host: String,
     val port: Int,
@@ -93,19 +92,6 @@ data class Datasource(
         currentCatalog = null, connectionInfo = null, description = "",
     )
 }
-
-// Admin create/update payload. This is OPTIONAL pre-provisioning only — a way to seed a row
-// (name + advisory connection fields) before its proxy first attaches; the proxy's Register is the
-// authoritative path and overwrites host/port/db_name. No credential fields exist: the control-plane never
-// dials a target. host/port/dbName default to empty/0 so the form can create a name-only placeholder.
-@Serializable
-data class DatasourceInput(
-    val name: String,
-    val engine: String = "postgres",
-    val host: String = "",
-    val port: Int = 0,
-    val dbName: String = "",
-)
 
 data class Catalog(
     val columns: List<CatalogColumn>,
@@ -340,11 +326,9 @@ class DatasourceStore(internal val dataSource: DataSource) {
             try {
                 // Serialize registrations for this NAME to keep two concurrent registers of the same name from
                 // piling up on the `name` UNIQUE index (the same tx-advisory-lock idiom Deprovision.kt uses
-                // per-principal, released at commit/rollback). This is ONLY a serialization nicety: it does NOT
-                // carry the engine-immutability guarantee, because the admin `create`/`update` (rename) surfaces do NOT take this
-                // lock. The fail-closed engine guard is the `WHERE datasource.engine = EXCLUDED.engine` clause on
-                // the upsert below — enforced atomically at row-conflict time, so a row that races into this name
-                // (via create/rename) after the prior read can never have its engine silently flipped.
+                // per-principal, released at commit/rollback). The fail-closed engine guard is the
+                // `WHERE datasource.engine = EXCLUDED.engine` clause on the upsert below, enforced atomically at
+                // row-conflict time.
                 c.prepareStatement("SELECT pg_advisory_xact_lock(hashtext(?))").use { ps ->
                     ps.setString(1, "datasource:register:$name")
                     ps.executeQuery().use { it.next() }
@@ -357,8 +341,8 @@ class DatasourceStore(internal val dataSource: DataSource) {
                 }
                 // Fast path: engine is immutable at register — reject a mismatched re-register up front with
                 // a precise message (nothing is written yet). The atomic WHERE guard on the upsert below is the
-                // race-proof backstop for the case where `priorEngine` read null but a row races into this name (via
-                // create/rename) before the upsert lands.
+                // race-proof backstop for the case where `priorEngine` read null but a row races into this name
+                // before the upsert lands.
                 if (priorEngine != null && priorEngine != engine.wireName) {
                     throw DatasourceEngineConflictException(name, priorEngine, engine.wireName)
                 }
@@ -399,7 +383,7 @@ class DatasourceStore(internal val dataSource: DataSource) {
                     ps.setString(5, dbName)
                     ps.setString(6, json.encodeToString(stringList, tags))
                     // Blank → NULL so the COALESCE upsert preserves any previously-advertised address rather
-                    // than wiping it (e.g. a bare admin pre-provision that carries no reachable address).
+                    // than wiping it.
                     ps.setString(7, advertiseAddr.ifBlank { null })
                     // Distinct from advertiseAddr above: this is a NULLABLE parameter carrying presence, so an
                     // ABSENT chain (null) preserves the stored one via COALESCE, while a PRESENT blank becomes
@@ -478,66 +462,6 @@ class DatasourceStore(internal val dataSource: DataSource) {
             }
         }
         return catalog.columnsCount
-    }
-
-    fun create(input: DatasourceInput): Datasource = dataSource.inTx { create(input, it) }
-
-    fun create(input: DatasourceInput, c: java.sql.Connection): Datasource {
-        val id = c.prepareStatement(
-            """INSERT INTO datasource (name, engine, host, port, db_name)
-               VALUES (?, ?, ?, ?, ?) RETURNING id""",
-        ).use { ps ->
-            ps.setString(1, input.name)
-            ps.setString(2, input.engine)
-            ps.setString(3, input.host)
-            ps.setInt(4, input.port)
-            ps.setString(5, input.dbName)
-            ps.executeQuery().use { rs -> rs.next(); rs.getLong(1) }
-        }
-        return get(id, c)!!
-    }
-
-    /** Drop [id]'s stored catalog and clear its sync stamps so decisions fail closed until a fresh
-     *  PushCatalog lands: an admin db_name change leaves a catalog that describes a DIFFERENT schema. */
-    private fun invalidateCatalog(c: java.sql.Connection, id: Long) {
-        c.prepareStatement(
-            "UPDATE datasource SET catalog = NULL, current_catalog_name = NULL, catalog_synced_at = NULL, default_schemas = '[]'::jsonb, mysql_lower_case_table_names = NULL WHERE id = ?",
-        ).use { ps -> ps.setLong(1, id); ps.executeUpdate() }
-    }
-
-    /**
-     * Admin edit of a datasource's advisory fields (name/host/port/db_name). ENGINE IS IMMUTABLE: a PUT
-     * that changes engine is rejected with [DatasourceEngineConflictException] — the SAME fail-closed invariant
-     * the proxy Register path enforces, so a stored catalog can never be reinterpreted under a different dialect
-     * (repointing every `datasource_id` FK + the analyzer/system-classification manifest resolution). The admin
-     * update surface is not a bypass: the web edit form seeds engine from the current value, so a normal edit
-     * carries the unchanged engine and never trips this. A db_name change invalidates the stale catalog.
-     * Returns null if [id] doesn't exist.
-     */
-    fun update(id: Long, input: DatasourceInput): Datasource? = dataSource.inTx { update(id, input, it) }
-
-    fun update(id: Long, input: DatasourceInput, c: java.sql.Connection): Datasource? {
-        data class Prior(val engine: String, val dbName: String)
-        val prior = c.prepareStatement("SELECT engine, db_name FROM datasource WHERE id = ? AND deleted_at IS NULL FOR UPDATE").use { ps ->
-            ps.setLong(1, id)
-            ps.executeQuery().use { rs -> if (rs.next()) Prior(rs.getString(1), rs.getString(2)) else null }
-        } ?: return null
-        if (prior.engine != input.engine) {
-            throw DatasourceEngineConflictException(input.name, prior.engine, input.engine)
-        }
-        c.prepareStatement(
-            "UPDATE datasource SET name=?, engine=?, host=?, port=?, db_name=? WHERE id=? AND deleted_at IS NULL",
-        ).use { ps ->
-            ps.setString(1, input.name)
-            ps.setString(2, input.engine)
-            ps.setString(3, input.host)
-            ps.setInt(4, input.port)
-            ps.setString(5, input.dbName)
-            ps.setLong(6, id)
-            ps.executeUpdate()
-        }
-        if (prior.dbName != input.dbName) invalidateCatalog(c, id)
-        return get(id, c)
     }
 
     fun delete(id: Long): Boolean = dataSource.inTx { delete(id, it) }
@@ -775,7 +699,7 @@ internal suspend fun ApplicationCall.respondManagementError(exception: Managemen
         "common.not_found" -> HttpStatusCode.NotFound
         "datasource.table_introspection_failed" -> HttpStatusCode.BadGateway
         "group.system_immutable", "role.system_immutable", "policy.system_immutable",
-        "datasource.in_use_proxy_attached", "datasource.in_use_active_requests", "datasource.engine_immutable",
+        "datasource.in_use_proxy_attached", "datasource.in_use_active_requests",
         -> HttpStatusCode.Conflict
         else -> HttpStatusCode.BadRequest
     }

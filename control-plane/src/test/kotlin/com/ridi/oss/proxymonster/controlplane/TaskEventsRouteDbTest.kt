@@ -32,9 +32,7 @@ class TaskEventsRouteDbTest {
         dataSource = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_task_events"))
         core = ControlPlaneCore(dataSource)
         sessionStore = PrincipalSessionStore(dataSource, null)
-        datasource = core.datasourceStore.create(
-            DatasourceInput(name = "task-events-ds", engine = "postgres", host = "h", port = 5432, dbName = "d"),
-        )
+        datasource = core.datasourceStore.registerOnly("task-events-ds", "postgres")
         core.userGroupStore.createUser(AppUserInput(principal = caller), core.tokenStore, core.accessStore, sessionStore)
         val roleId = core.policyStore.createRole(RoleInput("editor-analyst")).id
         core.policyStore.createAssignment(RoleAssignmentInput(caller, roleId))

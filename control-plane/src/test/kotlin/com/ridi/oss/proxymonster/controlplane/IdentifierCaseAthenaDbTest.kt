@@ -32,7 +32,7 @@ class IdentifierCaseAthenaDbTest {
     }
 
     private fun datasource(): Datasource {
-        val created = store.create(DatasourceInput("names-athena-${counter.incrementAndGet()}", "athena", "", 0, "AwsDataCatalog"))
+        val created = store.registerOnly("names-athena-${counter.incrementAndGet()}", "athena")
         store.storePushedCatalog(
             id = created.id,
             defaultSchemas = listOf(canonical.first().schema),

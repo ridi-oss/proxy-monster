@@ -177,6 +177,14 @@ captured on the connection's own held target-DB connection (design:
   (`;;`) runs nothing, where MySQL runs the statements before it. A MySQL stored
   procedure that returns result sets fails (1312): the proxy relays one result
   per statement.
+- 🟡 A datasource behind the edge router (`PM_MODE=edge`) requires wire TLS: the
+  edge picks the datasource from the TLS SNI, so a plaintext client is refused.
+  Plaintext wire is not recommended for routed datasources; reach a proxy
+  directly on its own port if it must stay plaintext.
+- 🟡 A plaintext PostgreSQL `CancelRequest` is not routed through the edge: it
+  carries no SNI, so the edge closes it, and the query runs to completion or to
+  its timeout. A cancel the client sends after an `SSLRequest` carries SNI and
+  is routed like any other connection.
 
 ## Athena
 

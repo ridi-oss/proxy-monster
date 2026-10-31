@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.3](https://github.com/ridi-oss/proxy-monster/compare/pm-ci-v0.1.2...pm-ci-v0.1.3) (2026-10-31)
+
+
+### Features
+
+* **control-plane:** file a pull request's SQL only once it is ready for review ([a8f7c2c](https://github.com/ridi-oss/proxy-monster/commit/a8f7c2cbe3f0065f74fc962d57b93baa6a2293b6))
+
 ## [0.1.2](https://github.com/ridi-oss/proxy-monster/compare/pm-ci-v0.1.1...pm-ci-v0.1.2) (2026-10-21)
 
 

@@ -202,9 +202,8 @@ class DatasourceManagementService(
             // Drop the name-keyed in-memory enforcement catalog for this datasource. A soft-deleted name is
             // free for a new datasource to reuse, and the authoritative catalog is keyed by name, not id — so
             // without this a connection to the reused name could adopt structure inspected from the deleted
-            // predecessor's target DB and mask the wrong result columns. Same hazard a retarget already
-            // invalidates; idempotent and fail-safe (an over-drop only forces the next connection to
-            // re-inspect).
+            // predecessor's target DB and mask the wrong result columns. Idempotent and fail-safe: an
+            // over-drop only forces the next connection to re-inspect.
             connectionCatalog.invalidateDatasource(current.name)
         }
         return result

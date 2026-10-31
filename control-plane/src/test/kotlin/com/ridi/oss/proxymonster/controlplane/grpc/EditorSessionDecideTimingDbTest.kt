@@ -1,12 +1,13 @@
 package com.ridi.oss.proxymonster.controlplane.grpc
 
-import com.ridi.oss.proxymonster.controlplane.support.openEditorConnection
+import com.ridi.oss.proxymonster.controlplane.support.openEmptyEditorConnection
 import com.ridi.oss.proxymonster.controlplane.ControlPlaneCore
 import com.ridi.oss.proxymonster.controlplane.effectiveCatalog
 import com.ridi.oss.proxymonster.controlplane.Datasource
 import com.ridi.oss.proxymonster.controlplane.DatasourceInput
 import com.ridi.oss.proxymonster.controlplane.EditorExecService
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
+import com.ridi.oss.proxymonster.controlplane.seed
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.grpc.ControlPlaneGrpcKt
@@ -73,9 +74,7 @@ class EditorSessionDecideTimingDbTest {
         dataSource = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_editor_decide_timing"))
         core = ControlPlaneCore(dataSource)
         service = EditorExecService(core)
-        datasource = core.datasourceStore.create(
-            DatasourceInput(name = "timing-ds", engine = "postgres", host = "localhost", port = 5432, dbName = "app"),
-        )
+        datasource = core.datasourceStore.seed(name = "timing-ds", engine = "postgres")
         // connect + sql.select granted to ANY principal ONLY when requester_ip is inside 203.0.113.0/24. A null
         // or out-of-range IP fails `context has requester_ip` / the range test → the permit never fires →
         // deny-by-default at the connect gate. So the Decide verdict is a pure function of the current IP.
@@ -115,7 +114,7 @@ class EditorSessionDecideTimingDbTest {
             val sessionIdDeferred = async { service.openSession("timing-user", datasource) }
             val open = withTimeout(5_000) { event.await() }.openEditorSession
             val ephemeralToken = open.ephemeralToken
-            val connectionId = stub.openEditorConnection(open, datasource.name)
+            val connectionId = stub.openEmptyEditorConnection(open, datasource.name, datasource.effectiveCatalog)
 
             // The fake proxy invokes the REAL Decide with the query's requester_ip as client_addr, as goproxy does,
             // then fabricates an ALLOW so runOnSession returns normally.
@@ -131,6 +130,7 @@ class EditorSessionDecideTimingDbTest {
                                     datasourceName = datasource.name
                                     currentCatalog = datasource.effectiveCatalog
                                     currentCatalog = datasource.effectiveCatalog
+                                    searchPath.add("public")
                                     this.connectionId = connectionId
                                     sql = control.query.sql
                                     clientAddr = control.query.requesterIp

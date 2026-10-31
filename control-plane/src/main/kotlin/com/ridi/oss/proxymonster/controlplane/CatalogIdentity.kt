@@ -9,9 +9,9 @@ import com.ridi.oss.proxymonster.probe.parseColumn
 import com.ridi.oss.proxymonster.grpc.ObjectRef
 import com.ridi.oss.proxymonster.grpc.objectRef
 
-/** The catalog the proxy inspected on its connection, or the engine's default until the first catalog push. */
+/** The catalog the proxy inspected on its connection; a datasource has none until its first catalog push. */
 internal val Datasource.effectiveCatalog: String
-    get() = currentCatalog ?: engine.catalogName(dbName)
+    get() = currentCatalog ?: throw ManagementException(ApiError("datasource.invalid_catalog"))
 
 /** [fold], refused while the analyzer rejects the datasource: MySQL before introspection reports lower_case_table_names. */
 private inline fun <T> foldOrRefuse(fold: () -> T): T = try {

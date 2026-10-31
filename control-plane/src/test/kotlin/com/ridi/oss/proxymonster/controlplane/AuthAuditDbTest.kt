@@ -74,7 +74,7 @@ class AuthAuditDbTest {
         // Everyone else holds no role, so their own token.mint still comes from the token.self seed.
         core.policyStore.createAssignment(RoleAssignmentInput("token-admin@example.com", core.policyStore.getRoleByName("system:admin")!!.id))
         sessionStore = PrincipalSessionStore(dataSource, null)
-        datasourceName = core.datasourceStore.create(DatasourceInput("auth-audit-ds", "postgres")).name
+        datasourceName = core.datasourceStore.seed(name = "auth-audit-ds", engine = "postgres").name
         val config = testConfig()
         cpGo = CpGoStack(config, core, database, extraEnv = mapOf("PM_TRUSTED_PROXIES" to "127.0.0.1")) {
             routing {

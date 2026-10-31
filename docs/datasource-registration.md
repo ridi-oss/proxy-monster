@@ -287,8 +287,9 @@ The guard is atomic in the conflict arm:
 `ON CONFLICT (name) DO UPDATE SET … WHERE datasource.engine = EXCLUDED.engine` —
 a row raced in under a different engine matches 0 rows and `register` rejects,
 regardless of who else writes the row. `host`/`port`/`db_name` stay
-advisory-mutable; a `db_name` change still invalidates the stale catalog
-fail-closed. The admin edit path (`PUT /api/datasources/{id}`) enforces the same
+advisory-mutable. A proxy pointed at another database pushes that database's
+catalog before it serves, and the push drops the held schemas it disagrees with.
+The admin edit path (`PUT /api/datasources/{id}`) enforces the same
 immutability, rejecting an `engine` change with
 `409 datasource.engine_immutable`; the web edit form seeds `engine` from the
 current value and disables it.

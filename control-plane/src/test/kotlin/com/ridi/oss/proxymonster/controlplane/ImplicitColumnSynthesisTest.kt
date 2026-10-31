@@ -14,6 +14,7 @@ class ImplicitColumnSynthesisTest {
         defaultSchemas = listOf("public"),
         mysqlLowerCaseTableNames = if (engine == Engine.MYSQL) 0 else null,
         engineVersion = if (engine == Engine.MYSQL) "8.0.44" else "PostgreSQL 16.4",
+        currentCatalog = engine.catalogName("acme"),
     )
 
     private fun col(schema: String, table: String, column: String, temp: Boolean = false) = CatalogColumn(

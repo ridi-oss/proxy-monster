@@ -147,7 +147,7 @@ class TableDetailDbTest {
     @Test
     fun `MySQL public is a literal database, not a default-schema selector`() = testApplication {
         val client = wireTableDetailApp()
-        val ds = datasourceStore.create(DatasourceInput("literal-mysql", "mysql", dbName = "app"))
+        val ds = datasourceStore.seed("literal-mysql", "mysql")
         val details = listOf("app", "public").associateWith { schema ->
             mysql.detail.copy(
                 catalog = "def", schema = schema, table = "users",
@@ -180,7 +180,7 @@ class TableDetailDbTest {
     @Test
     fun `a table-detail selector without a catalog is refused`() = testApplication {
         val client = wireTableDetailApp()
-        val ds = datasourceStore.create(DatasourceInput("literal-postgres", "postgres", dbName = "app"))
+        val ds = datasourceStore.seed("literal-postgres", "postgres")
         val detail = postgres.detail.copy(catalog = "app", schema = "public", table = "users")
         val proxy = FakeTableDetailProxy(core, ds.name) { schema, table ->
             if (schema == "public" && table == "users") ProxyReply.Detail(detail) else ProxyReply.NotFound
@@ -275,15 +275,7 @@ class TableDetailDbTest {
             assertEquals(HttpStatusCode.NotFound, attack.status, "identifier payload must be treated as an exact lookup")
         }
 
-        val failing = datasourceStore.create(
-            DatasourceInput(
-                name = "failing-proxy-target",
-                engine = "postgres",
-                host = "advisory.invalid",
-                port = 5432,
-                dbName = "unreachable",
-            ),
-        )
+        val failing = datasourceStore.seed(name = "failing-proxy-target", engine = "postgres")
         fakeProxies += FakeTableDetailProxy(core, failing.name) { _, _ -> ProxyReply.Error("target-DB connection failed") }
         val failedResponse = client.get("/api/datasources/${failing.id}/table-detail") {
             parameter("catalog", failing.effectiveCatalog)
@@ -293,15 +285,7 @@ class TableDetailDbTest {
         assertEquals(HttpStatusCode.BadGateway, failedResponse.status)
         assertContains(failedResponse.bodyAsText(), "target-DB connection failed")
 
-        val detached = datasourceStore.create(
-            DatasourceInput(
-                name = "detached-proxy",
-                engine = "postgres",
-                host = "advisory.invalid",
-                port = 5432,
-                dbName = "detached",
-            ),
-        )
+        val detached = datasourceStore.seed(name = "detached-proxy", engine = "postgres")
         val detachedResponse = client.get("/api/datasources/${detached.id}/table-detail") {
             parameter("catalog", detached.effectiveCatalog)
             parameter("schema", "public")
@@ -360,15 +344,7 @@ class TableDetailDbTest {
         val outboundFk = "${prefix}_middle_parent_fk"
         val inboundFk = "${prefix}_child_middle_fk"
         val maskName = "${prefix}_mask"
-        val datasource = datasourceStore.create(
-            DatasourceInput(
-                name = name,
-                engine = engine,
-                host = "proxy-owned.invalid",
-                port = if (engine == "mysql") 3306 else 5432,
-                dbName = schema,
-            ),
-        )
+        val datasource = datasourceStore.seed(name = name, engine = engine)
         datasourceStore.storePushedCatalog(
             id = datasource.id,
             currentCatalog = datasource.effectiveCatalog,

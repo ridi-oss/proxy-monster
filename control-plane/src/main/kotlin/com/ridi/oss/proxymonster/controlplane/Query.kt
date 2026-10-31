@@ -359,7 +359,7 @@ fun protectedPredicateLiterals(
     liveSearchPath: List<String>? = null,
     session: SessionObservation = SessionObservation.getDefaultInstance(),
 ): List<String>? {
-    val resolvedSearchPath = (liveSearchPath ?: ds.defaultSchemas).ifEmpty { listOf(ds.dbName.ifBlank { "public" }) }
+    val resolvedSearchPath = liveSearchPath ?: ds.defaultSchemas
     val (catalogIndex, facts) = try {
         val (index, analyzer) = analyzerAndCatalogIndex(ds, catalog, tempColumns, resolvedSearchPath, session)
         index to analyzer.analyze(sql)
@@ -459,7 +459,7 @@ fun decideQuery(
     if (liveSearchPath != null && liveSearchPath.isEmpty() && catalog.columns.isNotEmpty()) {
         return structuralDeny(CATALOG_CONFIGURATION_DENY, emptyList(), failedStage = "catalog").copy(catalogMiss = true)
     }
-    val resolvedSearchPath = (liveSearchPath ?: ds.defaultSchemas).ifEmpty { listOf(ds.dbName.ifBlank { "public" }) }
+    val resolvedSearchPath = liveSearchPath ?: ds.defaultSchemas
 
     val catalogAndFacts = try {
         val (index, analyzer) = analyzerAndCatalogIndex(ds, catalog, tempColumns, resolvedSearchPath, session)

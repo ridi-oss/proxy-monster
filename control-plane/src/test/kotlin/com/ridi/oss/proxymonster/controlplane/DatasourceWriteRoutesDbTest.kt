@@ -1,6 +1,7 @@
 package com.ridi.oss.proxymonster.controlplane
 
 import com.google.protobuf.ByteString
+import com.ridi.oss.proxymonster.analyzer.pb.CatalogSnapshot
 import com.ridi.oss.proxymonster.analyzer.pb.column
 import com.ridi.oss.proxymonster.controlplane.support.CpGoStack
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
@@ -96,9 +97,11 @@ class DatasourceWriteRoutesDbTest {
 
     private fun idOf(name: String): Long = rows("SELECT id FROM datasource WHERE name = '$name' AND deleted_at IS NULL").toLong()
 
-    /** Seeds the in-memory catalog a proxy push leaves for [name], so a delete has something to drop. */
+    /** Seeds the catalogs a proxy's pushes leave for [name], so a delete has something to drop. */
     private suspend fun seedConnectionCatalog(name: String) {
-        val ds = core.datasourceStore.getByName(name)!!
+        val id = core.datasourceStore.getByName(name)!!.id
+        core.datasourceStore.storePushedCatalog(id, listOf("app"), 0, "", CatalogSnapshot.getDefaultInstance(), currentCatalog = "def")
+        val ds = core.datasourceStore.get(id)!!
         val opened = core.connectionCatalog.open(Binding(name, "dw-principal", "USER", ds.effectiveCatalog, ds.engine), ds.namespaces(listOf("app")))
         core.connectionCatalog.applyPush(
             schemaFragmentPush {

@@ -59,7 +59,7 @@ class PmonLogoutDbTest {
         val database = SharedPostgres.migratedDatabase("pm_pmon_logout")
         dataSource = SharedPostgres.hikari(database)
         core = ControlPlaneCore(dataSource)
-        datasource = core.datasourceStore.create(DatasourceInput("pmon-logout-ds", "postgres"))
+        datasource = core.datasourceStore.seed(name = "pmon-logout-ds", engine = "postgres")
         stack = CpGoStack(config, core, database, withGrpc = true) { routing { testLoginRoute(PrincipalSessionStore(dataSource, null), config) } }
         channel = stack.channel()
         grpc = ControlPlaneGrpcKt.ControlPlaneCoroutineStub(channel)

@@ -51,6 +51,7 @@ internal fun DatasourceStore.pushTestCatalog(
     canonical: Boolean = false,
 ) {
     data class Namespace(
+        val catalog: String,
         val defaultSchemas: List<String>,
         val mysqlLowerCaseTableNames: Int?,
         val engineVersion: String,
@@ -77,27 +78,27 @@ internal fun DatasourceStore.pushTestCatalog(
                         "MySQL current database '$currentDb' does not match bound database '${datasource.dbName}'"
                     }
                     val engineVersion = rs.getString(4) ?: error("MySQL returned no server version")
-                    Namespace(listOf(currentDb), lowerCaseTableNames, engineVersion)
+                    Namespace(datasource.engine.catalogName(currentDb), listOf(currentDb), lowerCaseTableNames, engineVersion)
                 }
             }
         } else {
             val schemas = ArrayList<String>()
-            val engineVersion = target.prepareStatement("SELECT version()").use { ps ->
+            val (engineVersion, currentDb) = target.prepareStatement("SELECT version(), current_database()").use { ps ->
                 ps.executeQuery().use { rs ->
                     check(rs.next()) { "PostgreSQL version probe returned no row" }
-                    rs.getString(1) ?: error("PostgreSQL returned no server version")
+                    (rs.getString(1) ?: error("PostgreSQL returned no server version")) to rs.getString(2)
                 }
             }
             target.prepareStatement("SELECT unnest(current_schemas(true))").use { ps ->
                 ps.executeQuery().use { rs -> while (rs.next()) schemas += rs.getString(1) }
             }
-            Namespace(schemas, null, engineVersion)
+            Namespace(currentDb, schemas, null, engineVersion)
         }
         target.prepareStatement(columnSql).use { ps ->
             ps.executeQuery().use { rs ->
                 while (rs.next()) {
                     columns += pushedColumn(
-                        catalog = datasource.effectiveCatalog,
+                        catalog = captured.catalog,
                         schema = rs.getString(1),
                         table = rs.getString(2),
                         column = rs.getString(3),
@@ -113,7 +114,7 @@ internal fun DatasourceStore.pushTestCatalog(
     storePushedCatalog(
         id = datasource.id,
         defaultSchemas = namespace.defaultSchemas,
-        currentCatalog = datasource.effectiveCatalog,
+        currentCatalog = namespace.catalog,
         mysqlLowerCaseTableNames = namespace.mysqlLowerCaseTableNames,
         engineVersion = namespace.engineVersion,
         catalog = catalogSnapshot {

@@ -8,6 +8,7 @@ import com.ridi.oss.proxymonster.controlplane.ControlPlaneCore
 import com.ridi.oss.proxymonster.controlplane.Datasource
 import com.ridi.oss.proxymonster.controlplane.DatasourceInput
 import com.ridi.oss.proxymonster.controlplane.TokenKind
+import com.ridi.oss.proxymonster.controlplane.seed
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDocker
 import com.ridi.oss.proxymonster.grpc.closeConnectionRequest
@@ -45,7 +46,7 @@ class GrpcPerConnectionCatalogDbTest {
         requireDocker()
         dataSource = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_grpc_pccat"))
         core = ControlPlaneCore(dataSource)
-        ds = core.datasourceStore.create(DatasourceInput("pccat-ds", "postgres", "", 0, "app"))
+        ds = core.datasourceStore.seed(name = "pccat-ds", engine = "postgres")
         token = core.tokenStore.issue(TokenKind.USER,"pccat-user@example.com", emptyList(), null, 3600).token
         startServer()
     }
@@ -130,10 +131,10 @@ class GrpcPerConnectionCatalogDbTest {
     }
 
     @Test
-    fun `validate mints connection id and system on-open commands`() = runBlocking {
+    fun `validate mints connection id and default and system on-open commands`() = runBlocking {
         val identity = stub.openConnection(openConnectionRequest { token = this@GrpcPerConnectionCatalogDbTest.token; datasourceName = ds.name })
         assertEquals(16, identity.connectionId.size())
-        assertEquals(setOf("pg_catalog", "information_schema"), identity.onOpenList.map { it.refetch.schema }.toSet())
+        assertEquals(setOf("public", "pg_catalog", "information_schema"), identity.onOpenList.map { it.refetch.schema }.toSet())
     }
 
     @Test

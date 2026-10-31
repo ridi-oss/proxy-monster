@@ -75,7 +75,8 @@ func (f *fixture) datasource(name, eng, dbName string, tags ...string) {
 		tags = []string{}
 	}
 	j, _ := json.Marshal(tags)
-	f.exec(`INSERT INTO datasource (name, engine, host, port, db_name, tags) VALUES ($1, $2, 'h', 1, $3, $4::jsonb)`, name, eng, dbName, string(j))
+	f.exec(`INSERT INTO datasource (name, engine, host, port, db_name, tags, current_catalog_name) VALUES ($1, $2, 'h', 1, $3, $4::jsonb, $5)`,
+		name, eng, dbName, string(j), reqDS(name, eng, dbName).catalog)
 }
 
 func (f *fixture) grant(principal, role string) {
@@ -623,6 +624,9 @@ func TestAuthorizeRequestCredentials(t *testing.T) {
 	}
 	_, err := f.authorize(on(catalogOp(ref("def", "app", "")), f.token("USER", "alice"), "nope", ""))
 	wantStatus(t, "unknown datasource", err, codes.NotFound, "unknown datasource")
+	f.exec(`INSERT INTO datasource (name, host, port, db_name) VALUES ('unpushed', 'h', 1, 'app')`)
+	_, err = f.authorize(on(catalogOp(ref("def", "app", "")), f.token("USER", "alice"), "unpushed", ""))
+	wantStatus(t, "no catalog yet", err, codes.FailedPrecondition, "datasource has no catalog yet")
 }
 
 // Native credentials use live roles rather than token roles, and ordinary roles are refreshed after deletion.

@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.1.43](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.42...server-v0.1.43) (2026-10-31)
+
+
+### Bug Fixes
+
+* **control-plane:** tag a qualified function as a builtin only in a builtin schema ([edf0e58](https://github.com/ridi-oss/proxy-monster/commit/edf0e58a8934f7f1bde956ccd5e1640387dceae6))
+* **goproxy:** refuse to start until the catalog push lands ([615424e](https://github.com/ridi-oss/proxy-monster/commit/615424ee15c3434d29b0370be9836153c9ec2ee3))
+
+
+### Refactoring
+
+* an editor connection's requester IP rides its EditorQuery ([7adb4dc](https://github.com/ridi-oss/proxy-monster/commit/7adb4dc0640e78546e173eec14f317bfba9d2304))
+* call inspecting the target's catalog an inspection, not a measurement ([9ba804b](https://github.com/ridi-oss/proxy-monster/commit/9ba804b0c0d38b8cb532de0444be6222c12ac2d9))
+* check that a connection id is present, not its length ([6e9c4ba](https://github.com/ridi-oss/proxy-monster/commit/6e9c4bacb14d4e4e6c64bad2129daf692e17bf5e))
+* **control-plane:** a catalog push replaces what the control plane holds ([b85c018](https://github.com/ridi-oss/proxy-monster/commit/b85c0185d2590d1a7b8bda71614cf105ded23b1b))
+* **control-plane:** an editor connection's catalog opens with the datasource's schemas ([4e06aa4](https://github.com/ridi-oss/proxy-monster/commit/4e06aa455f1c485eb167ea18135346b56984f25a))
+* **control-plane:** name the editor session, not a run ([e656f94](https://github.com/ridi-oss/proxy-monster/commit/e656f94fd495639458ef3df8ab1282fb815b327a))
+* **control-plane:** normalize grant SQL by the datasource's target ([ef45fb4](https://github.com/ridi-oss/proxy-monster/commit/ef45fb40051133496e3894d9d5d971c054f976aa))
+* goproxy admits an editor connection like a wire client's ([e2ea44f](https://github.com/ridi-oss/proxy-monster/commit/e2ea44f695b74a9505670bfb53d4605618f2f9c5))
+* **goproxy:** Authorizer.Close logs its own failure ([e336212](https://github.com/ridi-oss/proxy-monster/commit/e33621264fbc9c4c26001bd641c16cb89bb97790))
+* **goproxy:** one MySQL open for wire and editor connections ([d151061](https://github.com/ridi-oss/proxy-monster/commit/d151061f86e0bca626afabba33a64d512ee4bc92))
+* **goproxy:** one Postgres open for wire and editor connections ([3c680f7](https://github.com/ridi-oss/proxy-monster/commit/3c680f742b022cb85654caf03f84f6bf654a419b))
+* rename the run channel to the editor session ([34ae13e](https://github.com/ridi-oss/proxy-monster/commit/34ae13e763ef9d3b6e9855333c1c844fbba2cfe0))
+* rename ValidateToken to OpenConnection ([8fa43de](https://github.com/ridi-oss/proxy-monster/commit/8fa43de22cf5a7169eaa6eabed624a06fae20e72))
+
+
+### Documentation
+
+* **backlog:** delete the table-detail channel ([ccc8513](https://github.com/ridi-oss/proxy-monster/commit/ccc8513bc4f9aba163aa1e04faf85de13215e863))
+* **backlog:** make the editor session's row ceiling configurable ([910bcf9](https://github.com/ridi-oss/proxy-monster/commit/910bcf9e74a93e5e1e1585e8a83bc8c3ce219823))
+* **backlog:** share the MySQL and PostgreSQL connection driving ([376b7f2](https://github.com/ridi-oss/proxy-monster/commit/376b7f234f67ef8de2f11f309f1a2f8e5e31d090))
+
 ## [0.1.42](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.41...server-v0.1.42) (2026-10-27)
 
 

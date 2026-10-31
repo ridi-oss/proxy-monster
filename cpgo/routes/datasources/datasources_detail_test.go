@@ -18,14 +18,14 @@ func TestDatasourceDetailAndWireCert(t *testing.T) {
 	ctx := context.Background()
 	const chain = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
 	var gated, bare, other int64
-	if err := e.St.Pool.QueryRow(ctx, `INSERT INTO datasource (name, db_name, advertise_addr, advertise_cert_chain)
-		VALUES ('gated', 'd', 'proxy:3306', $1) RETURNING id`, chain).Scan(&gated); err != nil {
+	if err := e.St.Pool.QueryRow(ctx, `INSERT INTO datasource (name, advertise_addr, advertise_cert_chain)
+		VALUES ('gated', 'proxy:3306', $1) RETURNING id`, chain).Scan(&gated); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.St.Pool.QueryRow(ctx, `INSERT INTO datasource (name, db_name) VALUES ('bare', 'd') RETURNING id`).Scan(&bare); err != nil {
+	if err := e.St.Pool.QueryRow(ctx, `INSERT INTO datasource (name) VALUES ('bare') RETURNING id`).Scan(&bare); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.St.Pool.QueryRow(ctx, `INSERT INTO datasource (name, db_name, advertise_cert_chain) VALUES ('other', 'd', $1) RETURNING id`, chain).Scan(&other); err != nil {
+	if err := e.St.Pool.QueryRow(ctx, `INSERT INTO datasource (name, advertise_cert_chain) VALUES ('other', $1) RETURNING id`, chain).Scan(&other); err != nil {
 		t.Fatal(err)
 	}
 	e.Authz.Allow = map[string]bool{

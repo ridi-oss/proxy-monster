@@ -230,7 +230,7 @@ func TestOpenConnectionAndDecideUnreachable(t *testing.T) {
 func TestRegisterUnspecifiedEngineRejectedBeforeRPC(t *testing.T) {
 	fake := &fakeControlPlane{}
 	c := startFakeControlPlane(t, fake)
-	if err := c.Register(enginepb.Engine_ENGINE_UNSPECIFIED, "localhost:1234", "db", nil, "", nil, false, nil, nil); err == nil || !strings.Contains(err.Error(), "unspecified engine") {
+	if err := c.Register(enginepb.Engine_ENGINE_UNSPECIFIED, "localhost:1234", nil, "", nil, false, nil, nil); err == nil || !strings.Contains(err.Error(), "unspecified engine") {
 		t.Fatalf("Register error = %v, want local unspecified-engine error", err)
 	}
 	fake.mu.Lock()
@@ -625,7 +625,7 @@ func TestRegisterAndPushCatalog(t *testing.T) {
 	fake := &fakeControlPlane{}
 	c := startFakeControlPlane(t, fake)
 	chain := "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
-	if err := c.Register(enginepb.Engine_MYSQL, "target DB:3306", "app", []string{"tag"}, "127.0.0.1:6033", &chain, true, nil, nil); err != nil {
+	if err := c.Register(enginepb.Engine_MYSQL, "target DB:3306", []string{"tag"}, "127.0.0.1:6033", &chain, true, nil, nil); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	catalog := &pb.CatalogRequest{Catalog: &enginepb.CatalogSnapshot{Columns: []*enginepb.Column{{Schema: "s", Table: "t", Column: "c"}}}}
@@ -635,7 +635,7 @@ func TestRegisterAndPushCatalog(t *testing.T) {
 	fake.mu.Lock()
 	register, catalogReq := fake.lastRegisterReq, fake.lastCatalog
 	fake.mu.Unlock()
-	if register.GetEngine() != enginepb.Engine_MYSQL || register.GetName() != "ds-1" || register.GetTargetInfo() != "target DB:3306" || register.GetDbName() != "app" {
+	if register.GetEngine() != enginepb.Engine_MYSQL || register.GetName() != "ds-1" || register.GetTargetInfo() != "target DB:3306" {
 		t.Fatalf("RegisterRequest = %+v", register)
 	}
 	// The proxy must announce its wire-protocol version so the control plane can turn away a skewed rollout.
@@ -670,7 +670,7 @@ func TestRegisterRejectsIncompatibleControlPlaneVersion(t *testing.T) {
 	bad := ProtocolVersion + 1
 	fake := &fakeControlPlane{registerRespVersion: &bad}
 	c := startFakeControlPlane(t, fake)
-	err := c.Register(enginepb.Engine_MYSQL, "target DB:3306", "app", nil, "", nil, false, nil, nil)
+	err := c.Register(enginepb.Engine_MYSQL, "target DB:3306", nil, "", nil, false, nil, nil)
 	if !errors.Is(err, ErrIncompatibleControlPlane) {
 		t.Fatalf("Register against a version-skewed control plane must return ErrIncompatibleControlPlane: %v", err)
 	}
@@ -687,7 +687,7 @@ func TestRegisterTreatsControlPlaneRejectionAsIncompatible(t *testing.T) {
 		"proxy wire-protocol version 1 is incompatible with this control-plane's version 2 — deploy the proxy and control-plane from the same server-v* release",
 	)}
 	c := startFakeControlPlane(t, fake)
-	err := c.Register(enginepb.Engine_MYSQL, "target DB:3306", "app", nil, "", nil, false, nil, nil)
+	err := c.Register(enginepb.Engine_MYSQL, "target DB:3306", nil, "", nil, false, nil, nil)
 	if !errors.Is(err, ErrIncompatibleControlPlane) {
 		t.Fatalf("a control-plane version rejection must surface as ErrIncompatibleControlPlane: %v", err)
 	}

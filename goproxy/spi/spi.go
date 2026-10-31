@@ -60,7 +60,7 @@ type ControlPlane interface {
 	// AuthorizeRequest asks whether one operation with no SQL behind it (a catalog or table-metadata read,
 	// an Athena API call) is allowed.
 	AuthorizeRequest(context.Context, *pb.RequestAuthorization) (*pb.RequestAuthorizationResult, error)
-	Register(registrationEngine enginepb.Engine, targetInfo string, dbName string, tags []string, advertiseAddr string, advertiseCertChain *string, wireTLS bool, connectionInfo *pb.ConnectionInfo, description *string) error
+	Register(registrationEngine enginepb.Engine, targetInfo string, tags []string, advertiseAddr string, advertiseCertChain *string, wireTLS bool, connectionInfo *pb.ConnectionInfo, description *string) error
 	PushCatalog(*pb.CatalogRequest) error
 	OpenConnection(token, clientAddr string, door pb.ConnectionDoor) (Identity, error)
 	CloseConnection(connectionID []byte) error

@@ -108,7 +108,7 @@ class RequestThreadRoutesHttpDbTest {
                ('twin-a', 'twin@example.com'), ('twin-b', 'twin@example.com')""",
         )
         exec("INSERT INTO principal_role (principal, role_id) SELECT '$admin', id FROM app_role WHERE name = 'system:admin'")
-        val ds = id("INSERT INTO datasource (name, db_name, tags) VALUES ('threads-ds', 'd', '[\"prod\"]') RETURNING id")
+        val ds = id("INSERT INTO datasource (name, tags) VALUES ('threads-ds', '[\"prod\"]') RETURNING id")
         val role = id("INSERT INTO app_role (name) VALUES ('threads-role') RETURNING id")
         val pending = core.accessStore.createRequest(requester, AccessRequestInput(roleId = role, reason = "need it")).id
         val granted = core.accessStore.createRequest(requester, AccessRequestInput(roleId = role, reason = "granted")).id

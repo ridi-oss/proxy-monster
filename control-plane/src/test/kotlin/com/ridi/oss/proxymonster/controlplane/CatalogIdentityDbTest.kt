@@ -35,7 +35,7 @@ class CatalogIdentityDbTest {
             assertEquals("def", store.catalog(1).columns.single().classification!!.catalog)
             assertEquals("old", store.catalog(2).columns.single().classification!!.catalog)
 
-            store.register("pg", Engine.POSTGRES, "h:5432", "new", emptyList(), "", null, false)
+            store.register("pg", Engine.POSTGRES, "h:5432", emptyList(), "", null, false)
             store.storePushedCatalog(2, listOf("public"), null, "16.3", snapshotOf(pushedColumn("public", "users", "ssn", "text", 1, true, catalog = "new")), currentCatalog = "new")
             val current = store.catalog(2).columns.single()
             assertEquals("new", current.catalog)

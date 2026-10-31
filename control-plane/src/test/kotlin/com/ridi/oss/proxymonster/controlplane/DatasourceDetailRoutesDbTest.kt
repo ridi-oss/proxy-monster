@@ -1,6 +1,7 @@
 package com.ridi.oss.proxymonster.controlplane
 
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
+import com.ridi.oss.proxymonster.grpc.connectionInfo
 import com.ridi.oss.proxymonster.controlplane.support.CpGoStack
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
@@ -46,9 +47,9 @@ class DatasourceDetailRoutesDbTest {
         core = ControlPlaneCore(dataSource)
         for ((name, cert) in listOf("dd-gated" to chain, "dd-bare" to null, "dd-other" to chain, "dd-gone" to chain)) {
             core.datasourceStore.register(
-                name = name, engine = Engine.MYSQL, targetInfo = "db:3306", dbName = "app", tags = listOf("team:dd"),
+                name = name, engine = Engine.MYSQL, targetInfo = "db:3306", tags = listOf("team:dd"),
                 advertiseAddr = "$name.example.com:6033", advertiseCertChain = cert, advertiseWireTls = true,
-                description = "$name description",
+                connectionInfo = connectionInfo { properties["database"] = "app" }, description = "$name description",
             )
             ids[core.datasourceStore.getByName(name)!!.id] = name
         }
@@ -156,9 +157,9 @@ former GET /api/datasources/999999/wire-cert -> 404 Content-Type: application/js
 former GET /api/datasources/x -> 400 Content-Type: application/json {"code":"common.bad_id","params":{}}
 former GET /api/datasources/x/wire-cert -> 400 Content-Type: application/json {"code":"common.bad_id","params":{}}
 former GET /api/datasources/live -> 200 Content-Type: application/json []
-connector GET /api/datasources/{dd-gated} -> 200 Content-Type: application/json {"id":{dd-gated},"name":"dd-gated","engine":"mysql","dbName":"app","targetInfo":"db:3306","tags":["team:dd"],"defaultSchemas":[],"advertiseAddr":"dd-gated.example.com:6033","advertiseCertChain":"-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n","advertiseWireTls":true,"description":"dd-gated description","defaultSchemaSettable":true,"identifierQuote":"`"}
+connector GET /api/datasources/{dd-gated} -> 200 Content-Type: application/json {"id":{dd-gated},"name":"dd-gated","engine":"mysql","dbName":"app","targetInfo":"db:3306","tags":["team:dd"],"defaultSchemas":[],"advertiseAddr":"dd-gated.example.com:6033","advertiseCertChain":"-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n","advertiseWireTls":true,"connectionInfo":{"endpoint":"","properties":{"database":"app"}},"description":"dd-gated description","defaultSchemaSettable":true,"identifierQuote":"`"}
 connector GET /api/datasources/{dd-gated}/wire-cert -> 200 Content-Type: application/x-pem-file | Content-Disposition: attachment; filename="datasource-{dd-gated}-wire-cert.pem" -----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n
-connector GET /api/datasources/{dd-bare} -> 200 Content-Type: application/json {"id":{dd-bare},"name":"dd-bare","engine":"mysql","dbName":"app","targetInfo":"db:3306","tags":["team:dd"],"defaultSchemas":[],"advertiseAddr":"dd-bare.example.com:6033","advertiseWireTls":true,"description":"dd-bare description","defaultSchemaSettable":true,"identifierQuote":"`"}
+connector GET /api/datasources/{dd-bare} -> 200 Content-Type: application/json {"id":{dd-bare},"name":"dd-bare","engine":"mysql","dbName":"app","targetInfo":"db:3306","tags":["team:dd"],"defaultSchemas":[],"advertiseAddr":"dd-bare.example.com:6033","advertiseWireTls":true,"connectionInfo":{"endpoint":"","properties":{"database":"app"}},"description":"dd-bare description","defaultSchemaSettable":true,"identifierQuote":"`"}
 connector GET /api/datasources/{dd-bare}/wire-cert -> 404 Content-Type: application/json {"code":"datasource.no_wire_cert","params":{}}
 connector GET /api/datasources/{dd-other} -> 403 Content-Type: application/json {"code":"datasource.not_connectable","params":{}}
 connector GET /api/datasources/{dd-other}/wire-cert -> 403 Content-Type: application/json {"code":"datasource.not_connectable","params":{}}
@@ -169,9 +170,9 @@ connector GET /api/datasources/999999/wire-cert -> 404 Content-Type: application
 connector GET /api/datasources/x -> 400 Content-Type: application/json {"code":"common.bad_id","params":{}}
 connector GET /api/datasources/x/wire-cert -> 400 Content-Type: application/json {"code":"common.bad_id","params":{}}
 connector GET /api/datasources/live -> 200 Content-Type: application/json []
-bearer GET /api/datasources/{dd-gated} -> 200 Content-Type: application/json {"id":{dd-gated},"name":"dd-gated","engine":"mysql","dbName":"app","targetInfo":"db:3306","tags":["team:dd"],"defaultSchemas":[],"advertiseAddr":"dd-gated.example.com:6033","advertiseCertChain":"-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n","advertiseWireTls":true,"description":"dd-gated description","defaultSchemaSettable":true,"identifierQuote":"`"}
+bearer GET /api/datasources/{dd-gated} -> 200 Content-Type: application/json {"id":{dd-gated},"name":"dd-gated","engine":"mysql","dbName":"app","targetInfo":"db:3306","tags":["team:dd"],"defaultSchemas":[],"advertiseAddr":"dd-gated.example.com:6033","advertiseCertChain":"-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n","advertiseWireTls":true,"connectionInfo":{"endpoint":"","properties":{"database":"app"}},"description":"dd-gated description","defaultSchemaSettable":true,"identifierQuote":"`"}
 bearer GET /api/datasources/{dd-gated}/wire-cert -> 200 Content-Type: application/x-pem-file | Content-Disposition: attachment; filename="datasource-{dd-gated}-wire-cert.pem" -----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n
-bearer GET /api/datasources/{dd-bare} -> 200 Content-Type: application/json {"id":{dd-bare},"name":"dd-bare","engine":"mysql","dbName":"app","targetInfo":"db:3306","tags":["team:dd"],"defaultSchemas":[],"advertiseAddr":"dd-bare.example.com:6033","advertiseWireTls":true,"description":"dd-bare description","defaultSchemaSettable":true,"identifierQuote":"`"}
+bearer GET /api/datasources/{dd-bare} -> 200 Content-Type: application/json {"id":{dd-bare},"name":"dd-bare","engine":"mysql","dbName":"app","targetInfo":"db:3306","tags":["team:dd"],"defaultSchemas":[],"advertiseAddr":"dd-bare.example.com:6033","advertiseWireTls":true,"connectionInfo":{"endpoint":"","properties":{"database":"app"}},"description":"dd-bare description","defaultSchemaSettable":true,"identifierQuote":"`"}
 bearer GET /api/datasources/{dd-bare}/wire-cert -> 404 Content-Type: application/json {"code":"datasource.no_wire_cert","params":{}}
 bearer GET /api/datasources/{dd-other} -> 403 Content-Type: application/json {"code":"datasource.not_connectable","params":{}}
 bearer GET /api/datasources/{dd-other}/wire-cert -> 403 Content-Type: application/json {"code":"datasource.not_connectable","params":{}}

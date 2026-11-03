@@ -134,7 +134,7 @@ func TestOnlyEnvSourcesAreOneShot(t *testing.T) {
 	if got, err := Absolute("file:jwt"); err != nil || got != "file:"+filepath.Join(wd, "jwt") {
 		t.Errorf("relative file = %q %v", got, err)
 	}
-	for _, spec := range []string{"file:/abs/jwt", "env:TOK", "aws"} {
+	for _, spec := range []string{"file:" + filepath.Join(wd, "abs", "jwt"), "env:TOK", "aws"} {
 		if got, err := Absolute(spec); err != nil || got != spec {
 			t.Errorf("Absolute(%q) = %q %v", spec, got, err)
 		}

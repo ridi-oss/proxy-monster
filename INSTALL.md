@@ -174,6 +174,21 @@ configured per proxy under `PM_TARGET_*`.
   to 60–86400). Default `3600`.
 - `PM_SCIM_TOKEN` — _optional_. SCIM provisioning bearer (OIDC just-in-time is
   the default).
+- `PM_CI_OIDC_ISSUERS` / `PM_CI_OIDC_AUDIENCE` / `PM_CI_OIDC_CA_FILE` —
+  _optional_. Trusted workload OIDC issuers, `<name>=<issuerUrl>,…`, for the CI
+  exchange and the workload identity exchange, and the audience their tokens
+  must carry (default the public origin of `PM_MCP_RESOURCE`). Unset turns both
+  exchanges off. An AWS account's issuer is the `IssuerIdentifier` from
+  `aws iam get-outbound-web-identity-federation-info` once
+  `aws iam enable-outbound-web-identity-federation` has run in that account,
+  e.g. `aws-prod=https://<id>.tokens.sts.global.api.aws`; GitHub Actions is
+  `https://token.actions.githubusercontent.com`; HCP Terraform is
+  `https://app.terraform.io`
+  ([docs/auth-model.md](./docs/auth-model.md#workload-identity-exchange-server-to-server)).
+- `PM_WORKLOAD_ISSUER_KINDS` — _optional_. `<name>=<kind>,…` for an issuer whose
+  host does not say what it is, such as Terraform Enterprise
+  (`tfe=hcp-terraform`). Kinds: `generic`, `github-actions`, `aws-sts`,
+  `hcp-terraform`, `kubernetes`.
 - `PM_SLACK_BOT_TOKEN` / `PM_SLACK_APP_TOKEN` — _optional_. Slack notifications
   for the approval workflow ([docs/notifications.md](./docs/notifications.md)).
   The bot token (`xoxb-`) authorizes the Web API and the app token (`xapp-`)

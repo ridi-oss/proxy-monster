@@ -46,6 +46,18 @@ control-plane store, which is PostgreSQL only and carries no portability caveat
   (`revokeActiveCredentialsTx`). Detail:
   [`docs/auth-model.md`](./docs/auth-model.md#security-invariants).
 
+## Workload identity
+
+- 🟡 A connection opened with a workload `SERVICE` token stops at that token's
+  expiry: `Decide` re-resolves the connection's token on every statement, and a
+  binding's TTL is 60-3600 s (default 900). Keep a client pool's maximum
+  connection lifetime below the binding TTL, or raise the TTL. `pmon` in
+  workload mode re-exchanges before expiry, so new connections get a fresh
+  token, but a connection already open keeps the token it opened with.
+- 🟡 An AWS token's `principal_tags` merges the role's IAM tags with session
+  tags, and whoever can tag a session of that role can set them. Bind on the
+  exact role ARN `sub` and use tags only as further conditions.
+
 ## Audit trail
 
 - 🟡 OIDC group reconciliation (`provisionFromOidc`) commits before, and

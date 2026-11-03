@@ -206,6 +206,40 @@ func (x exchange) bind(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
+const revokeAction = "auth.workload.revoke"
+
+func (x exchange) revoke(w http.ResponseWriter, r *http.Request) error {
+	header := r.Header.Get("Authorization")
+	if len(header) < 7 || !strings.EqualFold(header[:7], "Bearer ") || strings.TrimSpace(header[7:]) == "" {
+		return api.CodeUnauthenticated.Err()
+	}
+	ctx := r.Context()
+	err := pgx.BeginFunc(ctx, x.Pool, func(tx pgx.Tx) error {
+		row, err := db.New(tx).RevokeServiceToken(ctx, session.TokenHash(strings.TrimSpace(header[7:])))
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		actor := audit.Actor{Principal: row.Principal, ClientAddr: x.RequesterIP(r), Channel: "workload"}
+		return audit.Auth(ctx, tx, actor, revokeAction, audit.Entity("Token", strconv.FormatInt(row.ID, 10)),
+			"Revoked a SERVICE token minted from workload binding "+orDash(deref(row.Name)))
+	})
+	if err != nil {
+		return err
+	}
+	w.WriteHeader(http.StatusNoContent)
+	return nil
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
 func tokenID(raw map[string]any, jwt string) string {
 	if jti, ok := raw["jti"].(string); ok && jti != "" && len(jti) <= 256 {
 		return jti

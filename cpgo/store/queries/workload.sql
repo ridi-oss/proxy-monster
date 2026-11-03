@@ -58,3 +58,7 @@ INSERT INTO proxy_token
 VALUES (sqlc.arg(token_hash), 'MCP_ACCESS', sqlc.arg(principal), '[]'::jsonb, sqlc.arg(expires_at), sqlc.arg(resource), sqlc.arg(client_id),
         sqlc.arg(scope), sqlc.arg(refresh_family), sqlc.arg(consent_id), sqlc.arg(workload_binding_id))
 RETURNING id;
+
+-- name: RevokeServiceToken :one
+UPDATE proxy_token SET revoked_at = now() WHERE token_hash = $1 AND kind = 'SERVICE' AND revoked_at IS NULL
+RETURNING id, principal, name;

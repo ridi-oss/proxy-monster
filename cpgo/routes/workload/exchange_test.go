@@ -352,3 +352,30 @@ func TestAnExchangeRacingADisableMintsNothing(t *testing.T) {
 		t.Errorf("%d live tokens for a disabled binding", n)
 	}
 }
+
+func TestAServiceTokenRevokesItself(t *testing.T) {
+	ai := newAWSIssuer(t)
+	h := newHarness(t, ai.issuer())
+	h.bind(`{"name":"batch-settlement","issuer":"aws-prod","subject":"` + role + `","purposes":["wire"]}`)
+	var issued struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal([]byte(h.exchange(ai.token(t, role, nil), "wire", "", http.StatusOK)), &issued); err != nil {
+		t.Fatal(err)
+	}
+	if status, body := h.e.Do(t, http.MethodPost, "/api/workload/revoke", "", nil); status != http.StatusUnauthorized {
+		t.Errorf("no bearer: %d %s", status, body)
+	}
+	for range 2 {
+		if status, body := h.e.DoHeader(t, http.MethodPost, "/api/workload/revoke", "", nil, "Authorization", "Bearer "+issued.Token); status != http.StatusNoContent {
+			t.Fatalf("revoke: %d %s", status, body)
+		}
+	}
+	if n := h.e.Count(t, `SELECT count(*) FROM proxy_token WHERE kind = 'SERVICE' AND revoked_at IS NULL`); n != 0 {
+		t.Errorf("%d live SERVICE tokens", n)
+	}
+	if n := h.e.Count(t, `SELECT count(*) FROM audit_event WHERE action = 'auth.workload.revoke' AND principal = 'svc:batch-settlement'`); n != 1 {
+		t.Errorf("%d revoke audit rows", n)
+	}
+	routetest.VerifyChain(t, h.e)
+}

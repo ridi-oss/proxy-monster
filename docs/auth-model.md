@@ -278,6 +278,10 @@ stored anywhere: the platform signs the JWT, proxy-monster verifies it.
 - **Revocation.** Disabling a binding, deleting it, or changing anything but its
   description, TTL, or a widening of purposes or scopes revokes every token it
   minted and its MCP consents.
+  A `SERVICE` token also revokes itself: `POST /api/workload/revoke` with
+  `Authorization: Bearer pms_...` answers 204 whether or not the token was
+  live, and audits `auth.workload.revoke`. `pmon` calls it on logout and when a
+  new `pmon login --workload` replaces the token.
 - **Audit.** `auth.workload.bind` on the `workload` channel: SUCCESS names the
   service principal and the binding with the `sub` and the identifying claims;
   FAILURE is unattributed.

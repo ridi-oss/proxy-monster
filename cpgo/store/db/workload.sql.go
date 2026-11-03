@@ -268,6 +268,24 @@ func (q *Queries) PruneWorkloadTokenUse(ctx context.Context) error {
 	return err
 }
 
+const revokeServiceToken = `-- name: RevokeServiceToken :one
+UPDATE proxy_token SET revoked_at = now() WHERE token_hash = $1 AND kind = 'SERVICE' AND revoked_at IS NULL
+RETURNING id, principal, name
+`
+
+type RevokeServiceTokenRow struct {
+	ID        int64
+	Principal string
+	Name      *string
+}
+
+func (q *Queries) RevokeServiceToken(ctx context.Context, tokenHash string) (RevokeServiceTokenRow, error) {
+	row := q.db.QueryRow(ctx, revokeServiceToken, tokenHash)
+	var i RevokeServiceTokenRow
+	err := row.Scan(&i.ID, &i.Principal, &i.Name)
+	return i, err
+}
+
 const revokeWorkloadBindingConsents = `-- name: RevokeWorkloadBindingConsents :exec
 UPDATE oauth_consent SET revoked_at = now(), updated_at = now() WHERE client_id = $1 AND revoked_at IS NULL
 `

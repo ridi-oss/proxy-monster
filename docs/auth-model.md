@@ -267,21 +267,20 @@ stored anywhere: the platform signs the JWT, proxy-monster verifies it.
   (`AuthorizeRequest`), never on other HTTP routes or the editor door. It opens
   connections and authorizes Athena requests only until it expires, but a wire
   connection it already opened keeps deciding for up to 24 hours past the
-  expiry, so a client pool may outlive the TTL; revocation still stops it at
-  the next statement. `mcp`: an MCP access token for the `/mcp` resource, scopes within
-  the binding's (all of them when the request names none), lasting the shorter
-  of the binding TTL and `PM_OAUTH_ACCESS_TTL`, with no refresh token; its
-  consent's client is `workload:<binding>`.
+  expiry, so a client pool may outlive the TTL; revocation still stops it at the
+  next statement. `mcp`: an MCP access token for the `/mcp` resource, scopes
+  within the binding's (all of them when the request names none), lasting the
+  shorter of the binding TTL and `PM_OAUTH_ACCESS_TTL`, with no refresh token;
+  its consent's client is `workload:<binding>`.
 - **Principal.** The binding's `svc:` principal holds roles like any principal,
   through `principal_role` (and JIT grants); there is no directory row unless an
   admin adds one. Cedar sees it as a `User`.
 - **Revocation.** Disabling a binding, deleting it, or changing anything but its
   description, TTL, or a widening of purposes or scopes revokes every token it
-  minted and its MCP consents.
-  A `SERVICE` token also revokes itself: `POST /api/workload/revoke` with
-  `Authorization: Bearer pms_...` answers 204 whether or not the token was
-  live, and audits `auth.workload.revoke`. `pmon` calls it on logout and when a
-  new `pmon login --workload` replaces the token.
+  minted and its MCP consents. A `SERVICE` token also revokes itself:
+  `POST /api/workload/revoke` with `Authorization: Bearer pms_...` answers 204
+  whether or not the token was live, and audits `auth.workload.revoke`. `pmon`
+  calls it on logout and when a new `pmon login --workload` replaces the token.
 - **Audit.** `auth.workload.bind` on the `workload` channel: SUCCESS names the
   service principal and the binding with the `sub` and the identifying claims;
   FAILURE is unattributed.

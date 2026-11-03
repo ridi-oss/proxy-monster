@@ -152,8 +152,8 @@ token or a token file another process refreshes; a relative path is resolved
 where `pmon login` runs. An `env:` token exchanges only once, so it is used for
 one wire token and never renewed. `pmon logout` and a new workload login revoke
 the service token on the server; a renewal leaves the previous token to expire
-on its own, so the connections it opened keep working. A workload login grants wire
-access only; `pmon mcp` needs a person's login.
+on its own, so the connections it opened keep working. A workload login grants
+wire access only; `pmon mcp` needs a person's login.
 
 ## Commands
 

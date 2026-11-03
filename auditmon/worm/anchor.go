@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
 	"strconv"
 	"strings"
 )
@@ -71,27 +70,7 @@ func WriteAnchor(os ObjectStore, a Anchor) error {
 // object (undeletable under Object-Lock) must never wedge the monitor. Signature validity is NOT judged here
 // — that needs the signer, so the caller selects the highest VALID anchor.
 func ReadAnchors(os ObjectStore) ([]Anchor, error) {
-	keys, err := os.List(checkpointPrefix)
-	if err != nil {
-		return nil, err
-	}
-	var anchors []Anchor
-	for _, k := range keys {
-		if _, ok := parseCheckpointID(k); !ok {
-			continue
-		}
-		body, err := os.Get(k)
-		if err != nil {
-			return nil, err
-		}
-		var a Anchor
-		if err := json.Unmarshal(body, &a); err != nil {
-			continue
-		}
-		anchors = append(anchors, a)
-	}
-	sort.Slice(anchors, func(i, j int) bool { return anchors[i].UpToID < anchors[j].UpToID })
-	return anchors, nil
+	return NewReader(os).Anchors()
 }
 
 func parseCheckpointID(key string) (int64, bool) {

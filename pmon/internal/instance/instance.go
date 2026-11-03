@@ -18,6 +18,7 @@ type Info struct {
 	Version     string `json:"version"`
 	MCPURL      string `json:"mcpUrl"`
 	InstallName string `json:"installName"`
+	Description string `json:"description"`
 }
 
 // ErrUnsupported is a server older than /api/instance.

@@ -45,14 +45,15 @@ type ServerInfo struct {
 	Name         string `json:"name"`
 	Default      bool   `json:"default,omitempty"`
 	ControlPlane string `json:"controlPlane"`
-	// ServerVersion and InstanceName are the server's release and instance name from its /api/instance;
-	// empty for a server older than that route or not reached yet.
-	ServerVersion    string `json:"serverVersion,omitempty"`
-	InstanceName     string `json:"instanceName,omitempty"`
-	Principal        string `json:"principal,omitempty"`
-	LoggedIn         bool   `json:"loggedIn"`
-	ExpiresAt        string `json:"expiresAt,omitempty"`
-	SessionExpiresAt string `json:"sessionExpiresAt,omitempty"`
+	// ServerVersion, InstanceName and InstanceDescription are what the server's /api/instance says; empty for
+	// a server older than that route or not reached yet.
+	ServerVersion       string `json:"serverVersion,omitempty"`
+	InstanceName        string `json:"instanceName,omitempty"`
+	InstanceDescription string `json:"instanceDescription,omitempty"`
+	Principal           string `json:"principal,omitempty"`
+	LoggedIn            bool   `json:"loggedIn"`
+	ExpiresAt           string `json:"expiresAt,omitempty"`
+	SessionExpiresAt    string `json:"sessionExpiresAt,omitempty"`
 	// Scopes beyond mcp:read and mcp:query last until ElevatedUntil.
 	Scopes        []string `json:"scopes,omitempty"`
 	ElevatedUntil string   `json:"elevatedUntil,omitempty"`

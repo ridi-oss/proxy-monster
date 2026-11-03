@@ -62,9 +62,10 @@ func (c *mcpCmd) Run() error {
 			}
 			return mcpbridge.Token{URL: tok.URL, Value: tok.Token, ExpiresAt: expiresAt}, nil
 		},
-		HTTP: &http.Client{},
-		In:   os.Stdin,
-		Out:  os.Stdout,
+		Offline: &offlineTools{client: client, server: server},
+		HTTP:    &http.Client{},
+		In:      os.Stdin,
+		Out:     os.Stdout,
 	}
 	return bridge.Run(ctx)
 }

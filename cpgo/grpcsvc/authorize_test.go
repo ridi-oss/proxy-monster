@@ -622,7 +622,21 @@ func TestAuthorizeRequestCredentials(t *testing.T) {
 	if _, err := f.authorize(on(catalogOp(ref("def", "app", "")), retired, "reports", "")); err != nil {
 		t.Errorf("a retired session token still authorizes: %v", err)
 	}
-	_, err := f.authorize(on(catalogOp(ref("def", "app", "")), f.token("USER", "alice"), "nope", ""))
+	f.exec(`INSERT INTO workload_binding (name, issuer, subject, principal, purposes) VALUES ('batch', 'aws', 'arn', 'svc:batch', ARRAY['wire'])`)
+	service := func(expires string) string {
+		tok := fmt.Sprintf("tok-%d-SERVICE", f.next())
+		f.exec(`INSERT INTO proxy_token (token_hash, kind, principal, expires_at, claims, workload_binding_id)
+			SELECT $1, 'SERVICE', 'svc:batch', now() + $2::interval, '{}'::jsonb, id FROM workload_binding WHERE name = 'batch'`, tokenHash(tok), expires)
+		return tok
+	}
+	for name, tok := range map[string]string{"live": service("1 hour"), "expired an hour ago": service("-1 hour")} {
+		if _, err := f.authorize(on(catalogOp(ref("def", "app", "")), tok, "reports", "")); err != nil {
+			t.Errorf("a %s SERVICE token on an open connection: %v", name, err)
+		}
+	}
+	_, err := f.authorize(on(catalogOp(ref("def", "app", "")), service("-25 hours"), "reports", ""))
+	wantStatus(t, "a SERVICE token a day past expiry", err, codes.Unauthenticated, badCredential)
+	_, err = f.authorize(on(catalogOp(ref("def", "app", "")), f.token("USER", "alice"), "nope", ""))
 	wantStatus(t, "unknown datasource", err, codes.NotFound, "unknown datasource")
 	f.exec(`INSERT INTO datasource (name, host, port, db_name) VALUES ('unpushed', 'h', 1, 'app')`)
 	_, err = f.authorize(on(catalogOp(ref("def", "app", "")), f.token("USER", "alice"), "unpushed", ""))

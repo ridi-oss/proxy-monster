@@ -4,14 +4,18 @@ import (
 	"bytes"
 	"context"
 	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/sha512"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"math"
+	"math/big"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -26,6 +30,7 @@ import (
 // Issuer is one trusted CI OIDC issuer from PM_CI_OIDC_ISSUERS.
 type Issuer struct {
 	Name, URL, Audience string
+	Kind                Kind
 }
 
 var issuerName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
@@ -52,7 +57,7 @@ func ParseIssuers(raw, audience string, authDebug bool) ([]Issuer, error) {
 		if slices.ContainsFunc(out, func(i Issuer) bool { return i.Name == name }) {
 			return nil, errors.New("PM_CI_OIDC_ISSUERS names must be unique")
 		}
-		out = append(out, Issuer{Name: name, URL: issuer, Audience: audience})
+		out = append(out, Issuer{Name: name, URL: issuer, Audience: audience, Kind: inferKind(u)})
 	}
 	return out, nil
 }
@@ -195,7 +200,7 @@ func (v *Verifier) Verify(ctx context.Context, jwt string) (Issuer, map[string]a
 	if t.typ != nil && !strings.EqualFold(*t.typ, "JWT") {
 		return cfg, nil, invalid{"JOSE header typ (type) " + *t.typ + " not allowed"}
 	}
-	if err := v.checkSignature(ctx, t, keys); err != nil {
+	if err := v.checkSignature(ctx, t, keys, cfg.Kind); err != nil {
 		return cfg, nil, err
 	}
 	if err := v.checkClaims(t.claims, cfg); err != nil {
@@ -204,11 +209,11 @@ func (v *Verifier) Verify(ctx context.Context, jwt string) (Issuer, map[string]a
 	return cfg, t.claims, nil
 }
 
-func (v *Verifier) checkSignature(ctx context.Context, t *token, keys *keySource) error {
-	if t.alg != "RS256" {
+func (v *Verifier) checkSignature(ctx context.Context, t *token, keys *keySource, kind Kind) error {
+	if !slices.Contains(kind.algorithms(), t.alg) {
 		return invalid{"Signed JWT rejected: Another algorithm expected, or no matching key(s) found"}
 	}
-	candidates, err := keys.matching(ctx, v, t.kid)
+	candidates, err := keys.matching(ctx, v, t.kid, t.alg)
 	if err != nil {
 		return invalid{err.Error()}
 	}
@@ -219,13 +224,28 @@ func (v *Verifier) checkSignature(ctx context.Context, t *token, keys *keySource
 	if t.crit {
 		return invalid{"Signed JWT rejected: Invalid signature"}
 	}
-	digest := sha256.Sum256([]byte(t.signingInput))
 	for _, k := range candidates {
-		if rsa.VerifyPKCS1v15(k, crypto.SHA256, digest[:], t.signature) == nil {
+		if verifySignature(t, k) {
 			return nil
 		}
 	}
 	return invalid{"Signed JWT rejected: Invalid signature"}
+}
+
+func verifySignature(t *token, key crypto.PublicKey) bool {
+	switch k := key.(type) {
+	case *rsa.PublicKey:
+		digest := sha256.Sum256([]byte(t.signingInput))
+		return rsa.VerifyPKCS1v15(k, crypto.SHA256, digest[:], t.signature) == nil
+	case *ecdsa.PublicKey:
+		if k.Curve != elliptic.P384() || len(t.signature) != 96 {
+			return false
+		}
+		digest := sha512.Sum384([]byte(t.signingInput))
+		r, s := new(big.Int).SetBytes(t.signature[:48]), new(big.Int).SetBytes(t.signature[48:])
+		return ecdsa.Verify(k, digest[:], r, s)
+	}
+	return false
 }
 
 // checkClaims is Nimbus's DefaultJWTClaimsVerifier in its order, then Kotlin's future-iat check.
@@ -311,8 +331,8 @@ func (v *Verifier) keySource(ctx context.Context, cfg Issuer) (*keySource, error
 	return v.keys[cfg.URL], nil
 }
 
-// matching is the RSA signing keys under kid (any kid when kid is empty).
-func (ks *keySource) matching(ctx context.Context, v *Verifier, kid string) ([]*rsa.PublicKey, error) {
+// matching is the signing keys for alg under kid (any kid when kid is empty).
+func (ks *keySource) matching(ctx context.Context, v *Verifier, kid, alg string) ([]crypto.PublicKey, error) {
 	ks.mu.Lock()
 	defer ks.mu.Unlock()
 	now := time.Now()
@@ -321,12 +341,12 @@ func (ks *keySource) matching(ctx context.Context, v *Verifier, kid string) ([]*
 			return nil, err
 		}
 	}
-	keys := match(ks.set, kid)
+	keys := match(ks.set, kid, alg)
 	if len(keys) == 0 && now.Sub(ks.fetchedAt) >= jwksMinRefresh {
 		if err := ks.fetch(ctx, v); err != nil {
 			return nil, err
 		}
-		keys = match(ks.set, kid)
+		keys = match(ks.set, kid, alg)
 	}
 	return keys, nil
 }
@@ -340,14 +360,22 @@ func (ks *keySource) fetch(ctx context.Context, v *Verifier) error {
 	return nil
 }
 
-func match(set []jose.JSONWebKey, kid string) []*rsa.PublicKey {
-	var out []*rsa.PublicKey
+func match(set []jose.JSONWebKey, kid, alg string) []crypto.PublicKey {
+	var out []crypto.PublicKey
 	for _, k := range set {
-		pub, ok := k.Key.(*rsa.PublicKey)
-		if !ok || (kid != "" && k.KeyID != kid) || (k.Use != "" && k.Use != "sig") || (k.Algorithm != "" && k.Algorithm != "RS256") {
+		if (kid != "" && k.KeyID != kid) || (k.Use != "" && k.Use != "sig") || (k.Algorithm != "" && k.Algorithm != alg) {
 			continue
 		}
-		out = append(out, pub)
+		switch pub := k.Key.(type) {
+		case *rsa.PublicKey:
+			if alg == "RS256" {
+				out = append(out, pub)
+			}
+		case *ecdsa.PublicKey:
+			if alg == "ES384" && pub.Curve == elliptic.P384() {
+				out = append(out, pub)
+			}
+		}
 	}
 	return out
 }

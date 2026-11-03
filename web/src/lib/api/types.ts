@@ -342,6 +342,40 @@ export interface AppUserInput {
   email?: string | null;
   active: boolean;
 }
+export type WorkloadIssuerKind = 'generic' | 'github-actions' | 'aws-sts' | 'hcp-terraform' | 'kubernetes';
+export interface WorkloadIssuer {
+  name: string;
+  kind: WorkloadIssuerKind;
+  url: string;
+}
+export type WorkloadPurpose = 'wire' | 'mcp';
+export interface WorkloadBinding {
+  id: number;
+  name: string;
+  description?: string | null;
+  issuer: string;
+  subject: string;
+  conditions: Record<string, string[]>;
+  principal: string;
+  purposes: WorkloadPurpose[];
+  mcpScopes: string[];
+  ttlSeconds: number;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+export interface WorkloadBindingInput {
+  name: string;
+  description?: string | null;
+  issuer: string;
+  subject: string;
+  conditions: Record<string, string[]>;
+  principal?: string | null;
+  purposes: WorkloadPurpose[];
+  mcpScopes: string[];
+  ttlSeconds: number;
+  enabled: boolean;
+}
 export interface AppGroup {
   id: number;
   name: string;

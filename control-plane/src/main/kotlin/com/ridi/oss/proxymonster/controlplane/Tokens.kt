@@ -39,6 +39,7 @@ enum class TokenKind {
     EDITOR,         // stateful editor session
     APPROVER_EXEC,  // approver running an approved query under role R
     WORKLOAD,       // CI OIDC exchange; HTTP bearer only, never a wire credential
+    SERVICE,        // workload binding exchange; a wire credential for a service principal
     ;
 
     companion object {
@@ -84,6 +85,7 @@ data class CreateTokenInput(val name: String? = null, val ttlSeconds: Long? = nu
 const val TOKEN_MIN_TTL_SECONDS = 60L
 const val TOKEN_MAX_TTL_SECONDS = 24 * 3600L
 const val SESSION_TTL_SECONDS = 12 * 3600L   // daemon session default (refreshed by the daemon)
+const val SERVICE_OPEN_CONNECTION_GRACE_HOURS = 24
 const val DEFAULT_USER_TTL_SECONDS = 3600L   // generated "connect password" default: 1h
 
 /** Clamp a requested TTL into the allowed window — the invariant that keeps tokens expiring + bounded. */
@@ -198,12 +200,14 @@ class TokenStore(internal val dataSource: DataSource) {
      * lock (or generate WAL per query). `last_used_at` is stamped once per session by [validate] at the
      * handshake, which is freshness enough for a "recently used" signal.
      */
-    fun resolve(token: String, allowRetired: Boolean = true): WireIdentity? = dataSource.connection.use { c ->
+    fun resolve(token: String, allowRetired: Boolean = true, openConnectionGrace: Boolean = false): WireIdentity? = dataSource.connection.use { c ->
         c.prepareStatement(
-            "SELECT principal, roles, kind FROM proxy_token WHERE token_hash = ? AND kind IN ('SESSION', 'USER', 'EDITOR', 'APPROVER_EXEC') AND revoked_at IS NULL AND (? OR retired_at IS NULL) AND expires_at > now()",
+            "SELECT principal, roles, kind FROM proxy_token WHERE token_hash = ? AND kind IN ('SESSION', 'USER', 'SERVICE', 'EDITOR', 'APPROVER_EXEC') AND revoked_at IS NULL AND (? OR retired_at IS NULL) " +
+                "AND (expires_at > now() OR (? AND kind = 'SERVICE' AND expires_at > now() - interval '$SERVICE_OPEN_CONNECTION_GRACE_HOURS hours'))",
         ).use { ps ->
             ps.setString(1, hash(token))
             ps.setBoolean(2, allowRetired)
+            ps.setBoolean(3, openConnectionGrace)
             ps.executeQuery().use { rs ->
                 if (rs.next()) {
                     WireIdentity(
@@ -228,13 +232,12 @@ class TokenStore(internal val dataSource: DataSource) {
             // An editor-door token (editor, approver-exec) opens only through goproxy's editor door, and a login token only
             // through its wire door, so an editor-door token leaked out of the proxy can't open a native MySQL/PG session.
             """UPDATE proxy_token SET last_used_at = now()
-               WHERE token_hash = ? AND kind IN (?, ?) AND revoked_at IS NULL AND retired_at IS NULL AND expires_at > now()
+               WHERE token_hash = ? AND kind = ANY(?) AND revoked_at IS NULL AND retired_at IS NULL AND expires_at > now()
                RETURNING principal, roles, kind""",
         ).use { ps ->
             ps.setString(1, hash(token))
-            val kinds = if (editorDoor) listOf(TokenKind.EDITOR, TokenKind.APPROVER_EXEC) else listOf(TokenKind.SESSION, TokenKind.USER)
-            ps.setString(2, kinds[0].name)
-            ps.setString(3, kinds[1].name)
+            val kinds = if (editorDoor) listOf(TokenKind.EDITOR, TokenKind.APPROVER_EXEC) else listOf(TokenKind.SESSION, TokenKind.USER, TokenKind.SERVICE)
+            ps.setArray(2, c.createArrayOf("text", kinds.map { it.name }.toTypedArray()))
             ps.executeQuery().use { rs ->
                 if (rs.next()) {
                     WireIdentity(

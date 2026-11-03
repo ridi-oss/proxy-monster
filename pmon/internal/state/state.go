@@ -62,6 +62,8 @@ type Server struct {
 	// Scopes is what the login granted. Those beyond mcp:read and mcp:query last until ElevatedUntil.
 	Scopes        []string `json:"scopes,omitempty"`
 	ElevatedUntil string   `json:"elevatedUntil,omitempty"`
+	Workload      string   `json:"workload,omitempty"`
+	Audience      string   `json:"audience,omitempty"`
 	// Ports is the STICKY datasource-name -> local loopback port map, persisted so a datasource keeps the
 	// same port across daemon restarts. Unique across every server.
 	Ports map[string]int `json:"ports"`
@@ -383,7 +385,8 @@ func NewServerID() string {
 
 // SameSession reports whether b is still the logged-in session a was read from.
 func SameSession(a, b *Server) bool {
-	return a != nil && b.LoggedIn() && a.ID == b.ID && a.ControlPlane == b.ControlPlane && a.RenewalToken == b.RenewalToken
+	return a != nil && b.LoggedIn() && a.ID == b.ID && a.ControlPlane == b.ControlPlane && a.RenewalToken == b.RenewalToken &&
+		a.Workload == b.Workload
 }
 
 // Save atomically replaces the config file.
@@ -427,6 +430,7 @@ func (s *Server) LoggedIn() bool {
 func (s *Server) ClearLogin() {
 	s.Principal, s.Token, s.ExpiresAt, s.IssuedAt, s.SessionExpiresAt, s.RenewalToken = "", "", "", "", "", ""
 	s.Scopes, s.ElevatedUntil = nil, ""
+	s.Workload, s.Audience = "", ""
 }
 
 // Resolve is name, or the default server when name is empty.

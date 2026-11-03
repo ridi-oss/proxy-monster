@@ -316,7 +316,7 @@ func TestSettleDefaultsTheCIAudienceToTheOrigin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []workload.Issuer{{Name: "github", URL: "https://ci.example.com", Audience: "https://pm.example.com:8443"}}; !slices.Equal(cfg.CI, want) {
+	if want := []workload.Issuer{{Name: "github", URL: "https://ci.example.com", Audience: "https://pm.example.com:8443", Kind: workload.KindGeneric}}; !slices.Equal(cfg.CI, want) {
 		t.Errorf("issuers %+v, want %+v", cfg.CI, want)
 	}
 }

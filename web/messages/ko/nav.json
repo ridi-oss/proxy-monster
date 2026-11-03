@@ -11,6 +11,7 @@
   "policies": "정책",
   "users": "사용자",
   "groups": "그룹",
+  "workloadBindings": "워크로드 바인딩",
   "policyRoles": "역할",
   "policyAssignments": "할당",
   "policyMaskFns": "마스킹 함수",

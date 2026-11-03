@@ -56,6 +56,7 @@ type ServerInfo struct {
 	// Scopes beyond mcp:read and mcp:query last until ElevatedUntil.
 	Scopes        []string `json:"scopes,omitempty"`
 	ElevatedUntil string   `json:"elevatedUntil,omitempty"`
+	Workload      string   `json:"workload,omitempty"`
 	// ReauthRequired is set once renewal has been refused: the session window closed, so brokering keeps
 	// working only until the wire token expires and the user must log in again.
 	ReauthRequired bool `json:"reauthRequired"`
@@ -211,7 +212,10 @@ type LoginRequest struct {
 	ControlPlane string `json:"controlPlane,omitempty"`
 	TTLSeconds   int    `json:"ttlSeconds,omitempty"`
 	// Scopes replaces the server's default scopes when non-empty.
-	Scopes []string `json:"scopes,omitempty"`
+	Scopes        []string `json:"scopes,omitempty"`
+	Workload      string   `json:"workload,omitempty"`
+	Audience      string   `json:"audience,omitempty"`
+	WorkloadToken string   `json:"workloadToken,omitempty"`
 }
 
 // MCPTokenRequest asks for an MCP access token from Server's login ([state.DefaultServer] when empty).

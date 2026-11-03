@@ -23,6 +23,7 @@ import (
 
 	"github.com/ridi-oss/proxy-monster/cpgo/gobridge"
 	bridgepb "github.com/ridi-oss/proxy-monster/cpgo/gobridge/pb"
+	"github.com/ridi-oss/proxy-monster/cpgo/routes/workload"
 )
 
 func testPEM(t *testing.T) string {
@@ -87,7 +88,7 @@ func TestStartBridgeRefusesAnAmbiguousOrMisplacedKey(t *testing.T) {
 		"a non-numeric App ID":    {GitHub: githubConfig{AppID: "app", PrivateKey: testPEM(t)}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if s, err := startBridge(context.Background(), cfg, "t", make(chan error, 1)); err == nil {
+			if s, err := startBridge(context.Background(), cfg, "t", workload.NewBridgeService(nil), make(chan error, 1)); err == nil {
 				_ = s.Close()
 				t.Fatal("want an error")
 			}

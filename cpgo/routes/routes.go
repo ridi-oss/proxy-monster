@@ -29,7 +29,7 @@ func Register(mux *http.ServeMux, pool *pgxpool.Pool, gate api.Gate, login oidc.
 	oidc.Register(mux, login, au)
 	device.Register(mux, au)
 	oauth.Register(mux, au, clients)
-	workload.Register(mux, au, ci)
+	workload.Register(mux, gate, au, ci)
 	me.Register(mux, pool, gate)
 	auditlog.Register(mux, pool, gate)
 	policies.Register(mux, pool, gate)

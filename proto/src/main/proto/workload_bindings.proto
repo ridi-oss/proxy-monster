@@ -1,0 +1,79 @@
+syntax = "proto3";
+
+package proxymonster.cpgo.v1;
+
+option java_package = "com.ridi.oss.proxymonster.cpgo";
+option java_multiple_files = true;
+
+service WorkloadBindings {
+  rpc ListBindings(ListBindingsRequest) returns (ListBindingsResponse);
+  rpc CreateBinding(WriteBindingRequest) returns (WorkloadBinding);
+  rpc UpdateBinding(WriteBindingRequest) returns (WorkloadBinding);
+  rpc DeleteBinding(DeleteBindingRequest) returns (DeleteBindingResponse);
+}
+
+message WorkloadBindingError {
+  string code = 1;
+  repeated BindingErrorParam params = 2;
+}
+
+message BindingErrorParam {
+  string key = 1;
+  string value = 2;
+}
+
+message BindingCaller {
+  string principal = 1;
+  string client_addr = 2;
+}
+
+message ConditionValues {
+  repeated string values = 1;
+}
+
+message WorkloadBinding {
+  int64 id = 1;
+  string name = 2;
+  optional string description = 3;
+  string issuer = 4;
+  string subject = 5;
+  map<string, ConditionValues> conditions = 6;
+  string principal = 7;
+  repeated string purposes = 8;
+  repeated string mcp_scopes = 9;
+  int32 ttl_seconds = 10;
+  bool enabled = 11;
+  string created_at = 12;
+  string updated_at = 13;
+}
+
+message WorkloadBindingInput {
+  string name = 1;
+  optional string description = 2;
+  string issuer = 3;
+  string subject = 4;
+  map<string, ConditionValues> conditions = 5;
+  optional string principal = 6;
+  repeated string purposes = 7;
+  repeated string mcp_scopes = 8;
+  optional int32 ttl_seconds = 9;
+  optional bool enabled = 10;
+}
+
+message ListBindingsRequest {}
+
+message ListBindingsResponse {
+  repeated WorkloadBinding bindings = 1;
+}
+
+message WriteBindingRequest {
+  BindingCaller caller = 1;
+  WorkloadBindingInput binding = 2;
+}
+
+message DeleteBindingRequest {
+  BindingCaller caller = 1;
+  string name = 2;
+}
+
+message DeleteBindingResponse {}

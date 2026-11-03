@@ -33,6 +33,8 @@ import {
   getTableDetail,
   getTokens,
   getUsers,
+  getWorkloadBindings,
+  getWorkloadIssuers,
 } from './api/client';
 
 const KEYS = {
@@ -52,6 +54,8 @@ const KEYS = {
   roles: 'roles',
   users: 'users',
   groups: 'groups',
+  workloadIssuers: 'workload-issuers',
+  workloadBindings: 'workload-bindings',
   groupMembers: (id: number) => ['group-members', id] as const,
   groupRoles: (id: number) => ['group-roles', id] as const,
   maskFns: 'mask-fns',
@@ -140,6 +144,14 @@ export function useRoles() {
 
 export function useUsers() {
   return useSWR(KEYS.users, getUsers);
+}
+
+export function useWorkloadIssuers() {
+  return useSWR(KEYS.workloadIssuers, getWorkloadIssuers);
+}
+
+export function useWorkloadBindings() {
+  return useSWR(KEYS.workloadBindings, getWorkloadBindings);
 }
 
 export function useGroups() {

@@ -101,7 +101,8 @@ func TestVerifyFailsOnABrokenDiscoveryDocument(t *testing.T) {
 
 func TestParseIssuers(t *testing.T) {
 	got, err := workload.ParseIssuers("github=https://token.actions.githubusercontent.com, gitlab=https://gitlab.com,", "aud", false)
-	want := []workload.Issuer{{"github", "https://token.actions.githubusercontent.com", "aud"}, {"gitlab", "https://gitlab.com", "aud"}}
+	want := []workload.Issuer{{"github", "https://token.actions.githubusercontent.com", "aud", workload.KindGitHubActions},
+		{"gitlab", "https://gitlab.com", "aud", workload.KindGeneric}}
 	if err != nil || !slices.Equal(got, want) {
 		t.Fatalf("got %+v %v", got, err)
 	}

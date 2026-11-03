@@ -24,6 +24,7 @@ const NAMESPACES = {
   Datasources: 'datasources',
   Groups: 'groups',
   Users: 'users',
+  WorkloadBindings: 'workload-bindings',
   Policies: 'policies',
   Connect: 'connect',
 } as const;

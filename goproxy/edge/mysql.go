@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"net"
 
+	"github.com/ridi-oss/proxy-monster/goproxy/mysql"
 	"github.com/ridi-oss/proxy-monster/mysqlwire"
 )
 
 const (
-	mysqlServerVersion      = "8.0.40-proxy-monster"
 	maxMySQLHandshakePacket = 64 << 10
 	mysqlSSLRequestSeq      = 1
 	mysqlErrPacketHeader    = 0xff
@@ -19,8 +19,7 @@ func openMySQL(client net.Conn, connID uint32) (opening, error) {
 	if err != nil {
 		return opening{}, err
 	}
-	greeting := mysqlwire.ServerGreetingSSL(connID, scramble, mysqlServerVersion, true)
-	if err := mysqlwire.WritePacket(client, 0, greeting); err != nil {
+	if err := mysqlwire.WritePacket(client, 0, mysql.FrontendGreetingSSL(connID, scramble)); err != nil {
 		return opening{}, err
 	}
 	seq, sslRequest, err := mysqlwire.ReadPacketLimited(client, maxMySQLHandshakePacket)

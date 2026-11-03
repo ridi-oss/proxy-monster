@@ -171,7 +171,7 @@ func Load(registry spi.Registry) (*Config, error) {
 	if proxyProtocolPort == 0 && strings.TrimSpace(raw.ProxyProtocolPort) != "" {
 		return nil, fmt.Errorf("PM_PROXY_PROTOCOL_PORT=%q has an invalid port (want 1-65535)", raw.ProxyProtocolPort)
 	}
-	trustedProxies, err := parseTrustedProxies(raw.TrustedProxies)
+	trustedProxies, err := ParseTrustedProxies(raw.TrustedProxies)
 	if err != nil {
 		return nil, err
 	}
@@ -228,7 +228,7 @@ func Load(registry spi.Registry) (*Config, error) {
 	}, nil
 }
 
-func parseTrustedProxies(raw string) ([]netip.Prefix, error) {
+func ParseTrustedProxies(raw string) ([]netip.Prefix, error) {
 	var prefixes []netip.Prefix
 	for _, entry := range strings.Split(raw, ",") {
 		entry = strings.TrimSpace(entry)

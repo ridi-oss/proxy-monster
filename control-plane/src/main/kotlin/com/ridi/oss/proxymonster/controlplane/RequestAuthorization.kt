@@ -44,7 +44,7 @@ internal fun ControlPlaneCore.resolveRequestIdentity(token: String, clientAddr: 
     val ephemeral = kind == TokenKind.EDITOR || kind == TokenKind.APPROVER_EXEC
     val providedRoles = if (ephemeral) identity.roles.toSet().takeIf { it.isNotEmpty() } else null
     val channel = when (kind) {
-        TokenKind.SESSION, TokenKind.USER -> Channel.WIRE
+        TokenKind.SESSION, TokenKind.USER, TokenKind.SERVICE -> Channel.WIRE
         TokenKind.EDITOR -> Channel.EDITOR
         TokenKind.APPROVER_EXEC -> if (providedRoles == null) Channel.EDITOR else Channel.WORKFLOW_EXECUTOR
         TokenKind.WORKLOAD -> throw StatusException(Status.UNAUTHENTICATED.withDescription("unsupported token kind"))

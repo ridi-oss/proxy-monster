@@ -133,6 +133,31 @@ class GrpcDecideHandlerDbTest {
     }
 
     @Test
+    fun `a workload SERVICE token opens through the wire door only and is re-resolved per decision`() = runBlocking {
+        val token = "pms_grpc-service-token"
+        dataSource.connection.use { c ->
+            c.createStatement().use { st ->
+                st.execute(
+                    """INSERT INTO workload_binding (name, issuer, subject, principal, purposes)
+                       VALUES ('grpc-batch', 'aws-prod', 'arn:aws:iam::111122223333:role/batch', 'svc:grpc-batch', ARRAY['wire'])""",
+                )
+                st.execute(
+                    """INSERT INTO proxy_token (token_hash, kind, principal, expires_at, claims, workload_binding_id)
+                       SELECT '${com.ridi.oss.proxymonster.auth.sha256Hex(token)}', 'SERVICE', 'svc:grpc-batch', now() + interval '10 minutes',
+                              '{}'::jsonb, id FROM workload_binding WHERE name = 'grpc-batch'""",
+                )
+            }
+        }
+        fun open(door: ConnectionDoor) = openConnectionRequest { this.token = token; datasourceName = ds.name; this.door = door }
+        assertEquals(Status.Code.UNAUTHENTICATED, statusOf { stub.openConnection(open(ConnectionDoor.CONNECTION_DOOR_EDITOR)) })
+        assertEquals("svc:grpc-batch", stub.openConnection(open(ConnectionDoor.CONNECTION_DOOR_WIRE)).principal)
+        assertEquals("svc:grpc-batch", core.tokenStore.resolve(token)?.principal)
+        dataSource.connection.use { c -> c.createStatement().use { it.execute("UPDATE proxy_token SET revoked_at = now() WHERE kind = 'SERVICE'") } }
+        assertNull(core.tokenStore.resolve(token))
+        assertEquals(Status.Code.UNAUTHENTICATED, statusOf { stub.openConnection(open(ConnectionDoor.CONNECTION_DOOR_WIRE)) })
+    }
+
+    @Test
     fun `openConnection rejects a revoked token UNAUTHENTICATED`() {
         val t = core.tokenStore.issue(TokenKind.USER, "revoke-user", emptyList(), null, 3600)
         assertTrue(core.tokenStore.revoke(t.id, "revoke-user"))

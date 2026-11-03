@@ -39,6 +39,7 @@ enum class TokenKind {
     EDITOR,         // stateful editor session
     APPROVER_EXEC,  // approver running an approved query under role R
     WORKLOAD,       // CI OIDC exchange; HTTP bearer only, never a wire credential
+    SERVICE,        // workload binding exchange; a wire credential for a service principal
     ;
 
     companion object {
@@ -200,7 +201,7 @@ class TokenStore(internal val dataSource: DataSource) {
      */
     fun resolve(token: String, allowRetired: Boolean = true): WireIdentity? = dataSource.connection.use { c ->
         c.prepareStatement(
-            "SELECT principal, roles, kind FROM proxy_token WHERE token_hash = ? AND kind IN ('SESSION', 'USER', 'EDITOR', 'APPROVER_EXEC') AND revoked_at IS NULL AND (? OR retired_at IS NULL) AND expires_at > now()",
+            "SELECT principal, roles, kind FROM proxy_token WHERE token_hash = ? AND kind IN ('SESSION', 'USER', 'SERVICE', 'EDITOR', 'APPROVER_EXEC') AND revoked_at IS NULL AND (? OR retired_at IS NULL) AND expires_at > now()",
         ).use { ps ->
             ps.setString(1, hash(token))
             ps.setBoolean(2, allowRetired)
@@ -228,13 +229,12 @@ class TokenStore(internal val dataSource: DataSource) {
             // An editor-door token (editor, approver-exec) opens only through goproxy's editor door, and a login token only
             // through its wire door, so an editor-door token leaked out of the proxy can't open a native MySQL/PG session.
             """UPDATE proxy_token SET last_used_at = now()
-               WHERE token_hash = ? AND kind IN (?, ?) AND revoked_at IS NULL AND retired_at IS NULL AND expires_at > now()
+               WHERE token_hash = ? AND kind = ANY(?) AND revoked_at IS NULL AND retired_at IS NULL AND expires_at > now()
                RETURNING principal, roles, kind""",
         ).use { ps ->
             ps.setString(1, hash(token))
-            val kinds = if (editorDoor) listOf(TokenKind.EDITOR, TokenKind.APPROVER_EXEC) else listOf(TokenKind.SESSION, TokenKind.USER)
-            ps.setString(2, kinds[0].name)
-            ps.setString(3, kinds[1].name)
+            val kinds = if (editorDoor) listOf(TokenKind.EDITOR, TokenKind.APPROVER_EXEC) else listOf(TokenKind.SESSION, TokenKind.USER, TokenKind.SERVICE)
+            ps.setArray(2, c.createArrayOf("text", kinds.map { it.name }.toTypedArray()))
             ps.executeQuery().use { rs ->
                 if (rs.next()) {
                     WireIdentity(

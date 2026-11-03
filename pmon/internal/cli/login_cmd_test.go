@@ -34,3 +34,19 @@ func TestElevatedLine(t *testing.T) {
 		t.Errorf("closed window = %q", after)
 	}
 }
+
+func TestWorkloadLoginFlagsAreCheckedBeforeTheDaemon(t *testing.T) {
+	scopes := "mcp:read"
+	for _, tc := range []struct {
+		cmd  loginCmd
+		want string
+	}{
+		{loginCmd{Workload: "aws", Scopes: &scopes}, "--scopes does not apply"},
+		{loginCmd{Audience: "https://pm.example.com"}, "--audience needs --workload"},
+		{loginCmd{Workload: "gcp"}, "unknown workload token source"},
+	} {
+		if err := tc.cmd.Run(); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%+v: %v, want %q", tc.cmd, err, tc.want)
+		}
+	}
+}

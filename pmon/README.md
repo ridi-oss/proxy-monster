@@ -123,6 +123,32 @@ bundled `pmon`. `pmon remote` lists each remote's state. The menu-bar app shows
 each remote as its own submenu, adds and removes remotes in Settings › Servers,
 and notifies you when a connected remote drops.
 
+### Workload login (no browser)
+
+A service with no human behind it logs in with the OIDC token its platform
+issues, which the server maps to a service principal through a workload binding
+(see `docs/auth-model.md` in the repository):
+
+```sh
+pmon login --url https://pm.example.com --workload aws          # STS GetWebIdentityToken, default AWS credential chain
+pmon login --url https://pm.example.com --workload github       # GitHub Actions, needs `permissions: id-token: write`
+pmon login --url https://pm.example.com --workload file:/var/run/secrets/pm/token
+pmon login --url https://pm.example.com --workload env:PM_WORKLOAD_TOKEN
+```
+
+The token's audience is the control plane's origin unless `--audience` names
+another. The daemon fetches a fresh token from the same source and exchanges it
+before the wire token expires, with no prompt, so a sidecar container or a CI
+step keeps its brokers and the fixed local password for as long as it runs. A
+refused renewal is retried every minute rather than waiting for a login. The
+daemon reads the source itself: start it in the workload's environment (run
+`pmon daemon` as the container's process, or let `pmon login` start it), since
+`aws` reads AWS credentials and `AWS_REGION` there, `github` reads the Actions
+request variables, and `env:` reads the daemon's variable. A `file:` source is
+re-read on every renewal, which suits a Kubernetes projected service-account
+token or a token file another process refreshes. A workload login grants wire
+access only; `pmon mcp` needs a person's login.
+
 ## Commands
 
 <!-- prettier-ignore -->
@@ -130,6 +156,7 @@ and notifies you when a connected remote drops.
 | --- | --- |
 | `pmon server set [name] --url U` / `unset [name]` / `list` | Manage servers (`-f` on `unset` skips the live-connection prompt) |
 | `pmon login [server] [--url U] [--scopes S]` | Device-auth flow; starts the daemon if needed and opens the server's brokers |
+| `pmon login [server] [--url U] --workload SOURCE [--audience A]` | Log in as a service with a platform OIDC token; the daemon renews it unattended |
 | `pmon logout [server] [--all]` | Clear a server's credentials and close its brokers (the daemon stays up) |
 | `pmon show [server] <ds>` | One datasource's local connection string |
 | `pmon mcp [server]` | Local stdio MCP server relaying to the server's `/mcp` over the pmon login |

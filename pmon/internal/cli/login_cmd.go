@@ -11,6 +11,7 @@ import (
 	"github.com/ridi-oss/proxy-monster/pmon/control"
 	"github.com/ridi-oss/proxy-monster/pmon/internal/login"
 	"github.com/ridi-oss/proxy-monster/pmon/internal/state"
+	"github.com/ridi-oss/proxy-monster/pmon/internal/workload"
 )
 
 // loginCmd authenticates through the daemon's control socket: the DAEMON runs the device-auth flow and streams
@@ -18,10 +19,12 @@ import (
 // race into two device flows. It starts the daemon if none is running, and the brokers open as soon as the
 // login lands — there is no separate step to begin serving.
 type loginCmd struct {
-	Server string  `arg:"" optional:"" help:"Server to log in to (default: the default server; with --url, the server at that URL, else the name it advertises)."`
-	URL    string  `help:"Set the server's control-plane URL first (as 'pmon server set' does)."`
-	TTL    int     `default:"43200" help:"Requested token lifetime in seconds (default 12h; the server clamps it)."`
-	Scopes *string `help:"Comma-separated scopes to grant instead of the default mcp:read,mcp:query. Available: mcp:read, mcp:query, mcp:approvals:write, mcp:datasources:write, mcp:policies:write, mcp:identity:write, mcp:tokens."`
+	Server   string  `arg:"" optional:"" help:"Server to log in to (default: the default server; with --url, the server at that URL, else the name it advertises)."`
+	URL      string  `help:"Set the server's control-plane URL first (as 'pmon server set' does)."`
+	TTL      int     `default:"43200" help:"Requested token lifetime in seconds (default 12h; the server clamps it)."`
+	Scopes   *string `help:"Comma-separated scopes to grant instead of the default mcp:read,mcp:query. Available: mcp:read, mcp:query, mcp:approvals:write, mcp:datasources:write, mcp:policies:write, mcp:identity:write, mcp:tokens."`
+	Workload string  `placeholder:"SOURCE" help:"Log in without a browser, as the service a workload binding on the server maps this workload's OIDC token to: aws (STS GetWebIdentityToken), github (GitHub Actions), file:<path> (re-read on every renewal), or env:<VAR>. The daemon fetches a fresh token and renews on its own."`
+	Audience string  `help:"Audience to request for the --workload token (default: the control plane's origin)."`
 }
 
 // parseScopes splits a --scopes value. Absent means the server's default; present but empty is an error.
@@ -46,13 +49,24 @@ func (c *loginCmd) Run() error {
 	if err != nil {
 		return err
 	}
+	if c.Workload != "" && c.Scopes != nil {
+		return fmt.Errorf("--scopes does not apply to a --workload login, which grants wire access only")
+	}
+	if c.Audience != "" && c.Workload == "" {
+		return fmt.Errorf("--audience needs --workload")
+	}
+	if c.Workload != "" {
+		if _, err := workload.Parse(c.Workload); err != nil {
+			return err
+		}
+	}
 	ctx := context.Background()
 	client, err := control.EnsureDaemon(ctx)
 	if err != nil {
 		return err
 	}
 
-	req := control.LoginRequest{Server: c.Server, ControlPlane: c.URL, TTLSeconds: c.TTL, Scopes: scopes}
+	req := control.LoginRequest{Server: c.Server, ControlPlane: c.URL, TTLSeconds: c.TTL, Scopes: scopes, Workload: c.Workload, Audience: c.Audience}
 	if req.TTLSeconds <= 0 {
 		req.TTLSeconds = login.DefaultTTL
 	}

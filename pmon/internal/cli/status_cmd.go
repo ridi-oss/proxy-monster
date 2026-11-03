@@ -71,6 +71,9 @@ func (statusCmd) Run() error {
 		if srv.SessionExpiresAt != "" {
 			fmt.Printf("session:   %s\n", expiryLine(srv.SessionExpiresAt))
 		}
+		if srv.Workload != "" {
+			fmt.Printf("workload:  %s (renewed by the daemon)\n", srv.Workload)
+		}
 		if len(srv.Scopes) > 0 {
 			fmt.Printf("scopes:    %s\n", strings.Join(srv.Scopes, " "))
 		}

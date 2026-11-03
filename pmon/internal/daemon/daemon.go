@@ -297,6 +297,7 @@ func (d *Daemon) Status() control.Status {
 			SessionExpiresAt:   srv.SessionExpiresAt,
 			Scopes:             slices.Clone(srv.Scopes),
 			ElevatedUntil:      srv.ElevatedUntil,
+			Workload:           srv.Workload,
 			ReauthRequired:     d.reauthRequired[name],
 			LastDiscoveryError: d.lastDiscoveryErr[name],
 		})
@@ -417,6 +418,9 @@ func (d *Daemon) Login(ctx context.Context, req control.LoginRequest, onEvent fu
 		return fmt.Errorf("unknown server %q — set it with `pmon server set %s --url <control-plane-url>`, or log in with `pmon login --url <control-plane-url> %s`", name, name, name)
 	}
 
+	if req.Workload != "" {
+		return d.workloadLogin(ctx, name, srv, req, onEvent)
+	}
 	res, err := login.Run(ctx, login.Options{
 		ControlPlane: srv.ControlPlane,
 		TTLSeconds:   req.TTLSeconds,
@@ -1284,11 +1288,15 @@ func (d *Daemon) maybeRenewServer(ctx context.Context, name string, srv state.Se
 	d.mu.Lock()
 	refused := d.reauthRequired[name]
 	d.mu.Unlock()
-	if refused || !srv.LoggedIn() || srv.RenewalToken == "" {
+	if refused || !srv.LoggedIn() || (srv.RenewalToken == "" && srv.Workload == "") {
 		return
 	}
 	expiry, err := time.Parse(time.RFC3339, srv.ExpiresAt)
 	if err != nil || time.Until(expiry) > renewLead(srv, expiry) {
+		return
+	}
+	if srv.Workload != "" {
+		d.renewWorkload(ctx, name, srv)
 		return
 	}
 

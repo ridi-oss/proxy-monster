@@ -91,9 +91,10 @@ type config struct {
 	OIDCUserAttributes string `env:"PM_OIDC_USER_ATTRIBUTES" group:"kotlin" help:"id_token claims kept as Cedar User attributes; read only with OIDC login on."`
 	IdPRecheck         string `env:"PM_IDP_RECHECK_INTERVAL" name:"idp-recheck-interval" default:"300" group:"kotlin" help:"Seconds between IdP liveness rechecks of each session."`
 
-	CIIssuers  string `env:"PM_CI_OIDC_ISSUERS" name:"ci-oidc-issuers" group:"kotlin" help:"Trusted CI OIDC issuers, name=issuerUrl,… e.g. github=https://token.actions.githubusercontent.com; empty turns the CI token exchange off."`
-	CIAudience string `env:"PM_CI_OIDC_AUDIENCE" name:"ci-oidc-audience" group:"kotlin" help:"Audience every CI OIDC token must carry; default the control plane's origin."`
-	CICAFile   string `env:"PM_CI_OIDC_CA_FILE" name:"ci-oidc-ca-file" help:"PEM CA certificates trusted for the CI OIDC issuers besides the system ones."`
+	CIIssuers   string `env:"PM_CI_OIDC_ISSUERS" name:"ci-oidc-issuers" group:"kotlin" help:"Trusted CI OIDC issuers, name=issuerUrl,… e.g. github=https://token.actions.githubusercontent.com; empty turns the CI token exchange off."`
+	CIAudience  string `env:"PM_CI_OIDC_AUDIENCE" name:"ci-oidc-audience" group:"kotlin" help:"Audience every CI OIDC token must carry; default the control plane's origin."`
+	CICAFile    string `env:"PM_CI_OIDC_CA_FILE" name:"ci-oidc-ca-file" help:"PEM CA certificates trusted for the CI OIDC issuers besides the system ones."`
+	IssuerKinds string `env:"PM_WORKLOAD_ISSUER_KINDS" name:"workload-issuer-kinds" help:"Kind of a PM_CI_OIDC_ISSUERS issuer whose host does not say it, name=kind,… with kind generic|github-actions|aws-sts|hcp-terraform|kubernetes."`
 
 	Session session.Settings `kong:"-"`
 	// OIDC is nil unless OIDC login is on.
@@ -237,6 +238,9 @@ func settle(c config) (config, error) {
 		audience = c.Session.Issuer()
 	}
 	if c.CI, err = workload.ParseIssuers(c.CIIssuers, audience, c.AuthDebug); err != nil {
+		return c, err
+	}
+	if c.CI, err = workload.ApplyKinds(c.CI, c.IssuerKinds); err != nil {
 		return c, err
 	}
 	c.Crypto, err = idp.NewCrypto(c.ResultKey)

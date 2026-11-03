@@ -629,13 +629,11 @@ func TestAuthorizeRequestCredentials(t *testing.T) {
 			SELECT $1, 'SERVICE', 'svc:batch', now() + $2::interval, '{}'::jsonb, id FROM workload_binding WHERE name = 'batch'`, tokenHash(tok), expires)
 		return tok
 	}
-	for name, tok := range map[string]string{"live": service("1 hour"), "expired an hour ago": service("-1 hour")} {
-		if _, err := f.authorize(on(catalogOp(ref("def", "app", "")), tok, "reports", "")); err != nil {
-			t.Errorf("a %s SERVICE token on an open connection: %v", name, err)
-		}
+	if _, err := f.authorize(on(catalogOp(ref("def", "app", "")), service("1 hour"), "reports", "")); err != nil {
+		t.Errorf("a live SERVICE token: %v", err)
 	}
-	_, err := f.authorize(on(catalogOp(ref("def", "app", "")), service("-25 hours"), "reports", ""))
-	wantStatus(t, "a SERVICE token a day past expiry", err, codes.Unauthenticated, badCredential)
+	_, err := f.authorize(on(catalogOp(ref("def", "app", "")), service("-1 second"), "reports", ""))
+	wantStatus(t, "a SERVICE token past expiry", err, codes.Unauthenticated, badCredential)
 	_, err = f.authorize(on(catalogOp(ref("def", "app", "")), f.token("USER", "alice"), "nope", ""))
 	wantStatus(t, "unknown datasource", err, codes.NotFound, "unknown datasource")
 	f.exec(`INSERT INTO datasource (name, host, port, db_name) VALUES ('unpushed', 'h', 1, 'app')`)

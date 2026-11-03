@@ -48,8 +48,9 @@ control-plane store, which is PostgreSQL only and carries no portability caveat
 
 ## Workload identity
 
-- 🟡 A workload `SERVICE` token opens connections only until it expires (the
-  binding TTL, 60-3600 s), but a connection it already opened keeps working for
+- 🟡 A workload `SERVICE` token opens connections and authorizes Athena API
+  requests only until it expires (the binding TTL, 60-3600 s), but a wire
+  connection it already opened keeps working for
   up to 24 hours past that expiry, so a client pool can hold connections longer
   than the TTL. Recycle pooled connections within that day. Revoking the token,
   or disabling or deleting its binding, still stops every connection at the next

@@ -263,11 +263,12 @@ stored anywhere: the platform signs the JWT, proxy-monster verifies it.
   second exchange answers 401 `workload.token_replayed`.
 - **Result.** `wire`: a `SERVICE` token (`pms_`) and the service principal it
   names, accepted at goproxy's wire door and by `Decide` like a `SESSION`/`USER`
-  token and as the datasource discovery bearer, never on other HTTP routes or
-  the editor door. It opens connections only until it expires, but a connection
-  it already opened keeps deciding for up to 24 hours past the expiry, so a
-  client pool may outlive the TTL; revocation still stops it at the next
-  statement. `mcp`: an MCP access token for the `/mcp` resource, scopes within
+  token, as the datasource discovery bearer, and for Athena API requests
+  (`AuthorizeRequest`), never on other HTTP routes or the editor door. It opens
+  connections and authorizes Athena requests only until it expires, but a wire
+  connection it already opened keeps deciding for up to 24 hours past the
+  expiry, so a client pool may outlive the TTL; revocation still stops it at
+  the next statement. `mcp`: an MCP access token for the `/mcp` resource, scopes within
   the binding's (all of them when the request names none), lasting the shorter
   of the binding TTL and `PM_OAUTH_ACCESS_TTL`, with no refresh token; its
   consent's client is `workload:<binding>`.

@@ -1,8 +1,7 @@
 -- name: RequestCaller :one
 SELECT principal, kind FROM proxy_token
 WHERE token_hash = $1 AND kind IN ('SESSION', 'USER', 'SERVICE', 'EDITOR', 'APPROVER_EXEC')
-  AND revoked_at IS NULL
-  AND (expires_at > now() OR (kind = 'SERVICE' AND expires_at > now() - interval '24 hours'));
+  AND revoked_at IS NULL AND expires_at > now();
 
 -- name: RequestDatasource :one
 SELECT name, engine, current_catalog_name, tags FROM datasource WHERE name = $1 AND deleted_at IS NULL;

@@ -27,8 +27,14 @@ internal class ResolvedRequestIdentity(
 }
 
 /** A token whose principal is still active; a deprovisioned user's surviving token row resolves to null. */
-internal fun resolveActiveToken(tokenStore: TokenStore, users: UserGroupStore, token: String, allowRetired: Boolean = true): WireIdentity? =
-    tokenStore.resolve(token, allowRetired)?.takeUnless { users.isDeactivated(it.principal) }
+internal fun resolveActiveToken(
+    tokenStore: TokenStore,
+    users: UserGroupStore,
+    token: String,
+    allowRetired: Boolean = true,
+    openConnectionGrace: Boolean = false,
+): WireIdentity? =
+    tokenStore.resolve(token, allowRetired, openConnectionGrace)?.takeUnless { users.isDeactivated(it.principal) }
 
 /**
  * The one place a wire token becomes a caller. Native tokens (SESSION, USER) are channel "wire"; ephemeral
@@ -37,7 +43,7 @@ internal fun resolveActiveToken(tokenStore: TokenStore, users: UserGroupStore, t
  * EditorQuery carried. Fails UNAUTHENTICATED.
  */
 internal fun ControlPlaneCore.resolveRequestIdentity(token: String, clientAddr: String?): ResolvedRequestIdentity {
-    val identity = resolveActiveToken(tokenStore, userGroupStore, token)
+    val identity = resolveActiveToken(tokenStore, userGroupStore, token, openConnectionGrace = true)
         ?: throw StatusException(Status.UNAUTHENTICATED.withDescription("invalid, expired, revoked, or deactivated credential"))
     val kind = TokenKind.fromWire(identity.kind)
         ?: throw StatusException(Status.UNAUTHENTICATED.withDescription("unsupported token kind"))

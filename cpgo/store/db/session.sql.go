@@ -189,7 +189,7 @@ func (q *Queries) WebSessionIDByKey(ctx context.Context, sessionKey *string) (in
 
 const wirePrincipal = `-- name: WirePrincipal :one
 SELECT t.principal FROM proxy_token t
-WHERE t.token_hash = $1 AND t.kind IN ('SESSION', 'USER') AND t.revoked_at IS NULL
+WHERE t.token_hash = $1 AND t.kind IN ('SESSION', 'USER', 'SERVICE') AND t.revoked_at IS NULL
   AND t.retired_at IS NULL AND t.expires_at > now()
   AND NOT EXISTS (SELECT 1 FROM app_user u WHERE u.principal = t.principal AND NOT u.active)
 `

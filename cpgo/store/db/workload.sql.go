@@ -10,6 +10,183 @@ import (
 	"time"
 )
 
+const createWorkloadBinding = `-- name: CreateWorkloadBinding :one
+INSERT INTO workload_binding (name, description, issuer, subject, conditions, principal, purposes, mcp_scopes, ttl_seconds, enabled)
+VALUES ($1, $2, $3, $4, $5::jsonb, $6,
+        $7::text[], $8::text[], $9, $10)
+RETURNING id
+`
+
+type CreateWorkloadBindingParams struct {
+	Name        string
+	Description *string
+	Issuer      string
+	Subject     string
+	Conditions  []byte
+	Principal   string
+	Purposes    []string
+	McpScopes   []string
+	TtlSeconds  int32
+	Enabled     bool
+}
+
+func (q *Queries) CreateWorkloadBinding(ctx context.Context, arg CreateWorkloadBindingParams) (int64, error) {
+	row := q.db.QueryRow(ctx, createWorkloadBinding,
+		arg.Name,
+		arg.Description,
+		arg.Issuer,
+		arg.Subject,
+		arg.Conditions,
+		arg.Principal,
+		arg.Purposes,
+		arg.McpScopes,
+		arg.TtlSeconds,
+		arg.Enabled,
+	)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
+const deleteWorkloadBinding = `-- name: DeleteWorkloadBinding :execrows
+UPDATE workload_binding SET deleted_at = now(), enabled = false, updated_at = now() WHERE id = $1 AND deleted_at IS NULL
+`
+
+func (q *Queries) DeleteWorkloadBinding(ctx context.Context, id int64) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteWorkloadBinding, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const issuerWorkloadBindings = `-- name: IssuerWorkloadBindings :many
+SELECT id, name, description, issuer, subject, conditions, principal, purposes, mcp_scopes, ttl_seconds, enabled, created_at, updated_at
+FROM workload_binding WHERE issuer = $1 AND enabled AND deleted_at IS NULL ORDER BY id
+`
+
+type IssuerWorkloadBindingsRow struct {
+	ID          int64
+	Name        string
+	Description *string
+	Issuer      string
+	Subject     string
+	Conditions  []byte
+	Principal   string
+	Purposes    []string
+	McpScopes   []string
+	TtlSeconds  int32
+	Enabled     bool
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+func (q *Queries) IssuerWorkloadBindings(ctx context.Context, issuer string) ([]IssuerWorkloadBindingsRow, error) {
+	rows, err := q.db.Query(ctx, issuerWorkloadBindings, issuer)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []IssuerWorkloadBindingsRow{}
+	for rows.Next() {
+		var i IssuerWorkloadBindingsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Description,
+			&i.Issuer,
+			&i.Subject,
+			&i.Conditions,
+			&i.Principal,
+			&i.Purposes,
+			&i.McpScopes,
+			&i.TtlSeconds,
+			&i.Enabled,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const mintServiceToken = `-- name: MintServiceToken :one
+INSERT INTO proxy_token (token_hash, kind, principal, roles, name, expires_at, claims, workload_binding_id)
+VALUES ($1, 'SERVICE', $2, '[]'::jsonb, $3, $4, $5::jsonb,
+        $6)
+RETURNING id, expires_at
+`
+
+type MintServiceTokenParams struct {
+	TokenHash         string
+	Principal         string
+	Name              *string
+	ExpiresAt         time.Time
+	Claims            []byte
+	WorkloadBindingID *int64
+}
+
+type MintServiceTokenRow struct {
+	ID        int64
+	ExpiresAt time.Time
+}
+
+func (q *Queries) MintServiceToken(ctx context.Context, arg MintServiceTokenParams) (MintServiceTokenRow, error) {
+	row := q.db.QueryRow(ctx, mintServiceToken,
+		arg.TokenHash,
+		arg.Principal,
+		arg.Name,
+		arg.ExpiresAt,
+		arg.Claims,
+		arg.WorkloadBindingID,
+	)
+	var i MintServiceTokenRow
+	err := row.Scan(&i.ID, &i.ExpiresAt)
+	return i, err
+}
+
+const mintWorkloadMcpToken = `-- name: MintWorkloadMcpToken :one
+INSERT INTO proxy_token
+(token_hash, kind, principal, roles, expires_at, resource, client_id, scope, refresh_family, consent_id, workload_binding_id)
+VALUES ($1, 'MCP_ACCESS', $2, '[]'::jsonb, $3, $4, $5,
+        $6, $7, $8, $9)
+RETURNING id
+`
+
+type MintWorkloadMcpTokenParams struct {
+	TokenHash         string
+	Principal         string
+	ExpiresAt         time.Time
+	Resource          *string
+	ClientID          *string
+	Scope             *string
+	RefreshFamily     *string
+	ConsentID         *int64
+	WorkloadBindingID *int64
+}
+
+func (q *Queries) MintWorkloadMcpToken(ctx context.Context, arg MintWorkloadMcpTokenParams) (int64, error) {
+	row := q.db.QueryRow(ctx, mintWorkloadMcpToken,
+		arg.TokenHash,
+		arg.Principal,
+		arg.ExpiresAt,
+		arg.Resource,
+		arg.ClientID,
+		arg.Scope,
+		arg.RefreshFamily,
+		arg.ConsentID,
+		arg.WorkloadBindingID,
+	)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
 const mintWorkloadToken = `-- name: MintWorkloadToken :one
 INSERT INTO proxy_token (token_hash, kind, principal, roles, name, expires_at, claims)
 VALUES ($1, 'WORKLOAD', $2, '[]'::jsonb, NULL, now() + ($3::bigint * interval '1 second'), $4::jsonb)
@@ -38,4 +215,188 @@ func (q *Queries) MintWorkloadToken(ctx context.Context, arg MintWorkloadTokenPa
 	var i MintWorkloadTokenRow
 	err := row.Scan(&i.ID, &i.ExpiresAt)
 	return i, err
+}
+
+const pruneWorkloadTokenUse = `-- name: PruneWorkloadTokenUse :exec
+DELETE FROM workload_token_use WHERE expires_at <= now()
+`
+
+func (q *Queries) PruneWorkloadTokenUse(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, pruneWorkloadTokenUse)
+	return err
+}
+
+const revokeWorkloadBindingConsents = `-- name: RevokeWorkloadBindingConsents :exec
+UPDATE oauth_consent SET revoked_at = now(), updated_at = now() WHERE client_id = $1 AND revoked_at IS NULL
+`
+
+func (q *Queries) RevokeWorkloadBindingConsents(ctx context.Context, clientID string) error {
+	_, err := q.db.Exec(ctx, revokeWorkloadBindingConsents, clientID)
+	return err
+}
+
+const revokeWorkloadBindingTokens = `-- name: RevokeWorkloadBindingTokens :execrows
+UPDATE proxy_token SET revoked_at = now() WHERE workload_binding_id = $1 AND revoked_at IS NULL
+`
+
+func (q *Queries) RevokeWorkloadBindingTokens(ctx context.Context, workloadBindingID *int64) (int64, error) {
+	result, err := q.db.Exec(ctx, revokeWorkloadBindingTokens, workloadBindingID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const updateWorkloadBinding = `-- name: UpdateWorkloadBinding :execrows
+UPDATE workload_binding SET description = $1, issuer = $2, subject = $3,
+    conditions = $4::jsonb, principal = $5, purposes = $6::text[],
+    mcp_scopes = $7::text[], ttl_seconds = $8, enabled = $9, updated_at = now()
+WHERE id = $10 AND deleted_at IS NULL
+`
+
+type UpdateWorkloadBindingParams struct {
+	Description *string
+	Issuer      string
+	Subject     string
+	Conditions  []byte
+	Principal   string
+	Purposes    []string
+	McpScopes   []string
+	TtlSeconds  int32
+	Enabled     bool
+	ID          int64
+}
+
+func (q *Queries) UpdateWorkloadBinding(ctx context.Context, arg UpdateWorkloadBindingParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateWorkloadBinding,
+		arg.Description,
+		arg.Issuer,
+		arg.Subject,
+		arg.Conditions,
+		arg.Principal,
+		arg.Purposes,
+		arg.McpScopes,
+		arg.TtlSeconds,
+		arg.Enabled,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const useWorkloadToken = `-- name: UseWorkloadToken :execrows
+INSERT INTO workload_token_use (issuer, jti, expires_at) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING
+`
+
+type UseWorkloadTokenParams struct {
+	Issuer    string
+	Jti       string
+	ExpiresAt time.Time
+}
+
+func (q *Queries) UseWorkloadToken(ctx context.Context, arg UseWorkloadTokenParams) (int64, error) {
+	result, err := q.db.Exec(ctx, useWorkloadToken, arg.Issuer, arg.Jti, arg.ExpiresAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const workloadBinding = `-- name: WorkloadBinding :one
+SELECT id, name, description, issuer, subject, conditions, principal, purposes, mcp_scopes, ttl_seconds, enabled, created_at, updated_at
+FROM workload_binding WHERE id = $1 AND deleted_at IS NULL
+`
+
+type WorkloadBindingRow struct {
+	ID          int64
+	Name        string
+	Description *string
+	Issuer      string
+	Subject     string
+	Conditions  []byte
+	Principal   string
+	Purposes    []string
+	McpScopes   []string
+	TtlSeconds  int32
+	Enabled     bool
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+func (q *Queries) WorkloadBinding(ctx context.Context, id int64) (WorkloadBindingRow, error) {
+	row := q.db.QueryRow(ctx, workloadBinding, id)
+	var i WorkloadBindingRow
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Description,
+		&i.Issuer,
+		&i.Subject,
+		&i.Conditions,
+		&i.Principal,
+		&i.Purposes,
+		&i.McpScopes,
+		&i.TtlSeconds,
+		&i.Enabled,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const workloadBindings = `-- name: WorkloadBindings :many
+SELECT id, name, description, issuer, subject, conditions, principal, purposes, mcp_scopes, ttl_seconds, enabled, created_at, updated_at
+FROM workload_binding WHERE deleted_at IS NULL ORDER BY name
+`
+
+type WorkloadBindingsRow struct {
+	ID          int64
+	Name        string
+	Description *string
+	Issuer      string
+	Subject     string
+	Conditions  []byte
+	Principal   string
+	Purposes    []string
+	McpScopes   []string
+	TtlSeconds  int32
+	Enabled     bool
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+func (q *Queries) WorkloadBindings(ctx context.Context) ([]WorkloadBindingsRow, error) {
+	rows, err := q.db.Query(ctx, workloadBindings)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []WorkloadBindingsRow{}
+	for rows.Next() {
+		var i WorkloadBindingsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Description,
+			&i.Issuer,
+			&i.Subject,
+			&i.Conditions,
+			&i.Principal,
+			&i.Purposes,
+			&i.McpScopes,
+			&i.TtlSeconds,
+			&i.Enabled,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }

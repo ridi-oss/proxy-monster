@@ -23,7 +23,7 @@ type loginCmd struct {
 	URL      string  `help:"Set the server's control-plane URL first (as 'pmon server set' does)."`
 	TTL      int     `default:"43200" help:"Requested token lifetime in seconds (default 12h; the server clamps it)."`
 	Scopes   *string `help:"Comma-separated scopes to grant instead of the default mcp:read,mcp:query. Available: mcp:read, mcp:query, mcp:approvals:write, mcp:datasources:write, mcp:policies:write, mcp:identity:write, mcp:tokens."`
-	Workload string  `placeholder:"SOURCE" help:"Log in without a browser, as the service a workload binding on the server maps this workload's OIDC token to: aws (STS GetWebIdentityToken), github (GitHub Actions), file:<path> (re-read on every renewal), or env:<VAR>. The daemon fetches a fresh token and renews on its own."`
+	Workload string  `placeholder:"SOURCE" help:"Log in without a browser, as the service a workload binding on the server maps this workload's OIDC token to: aws (STS GetWebIdentityToken), github (GitHub Actions), file:<path> (re-read on every renewal), or env:<VAR> (used once, never renewed). This command fetches the first token; the daemon renews aws, github, and file sources with its own environment and credentials."`
 	Audience string  `help:"Audience to request for the --workload token (default: the control plane's origin)."`
 }
 
@@ -74,7 +74,8 @@ func (c *loginCmd) Run() error {
 	// A daemon reporting no version opens its own browser. Asked here rather than in the prompt
 	// callback, which the poll loop waits on.
 	daemonOpensItsOwn := false
-	if s, err := client.Status(ctx); err == nil {
+	status, statusErr := client.Status(ctx)
+	if s := status; statusErr == nil {
 		if err := requireCurrentDaemon(s); err != nil {
 			return err
 		}
@@ -84,6 +85,14 @@ func (c *loginCmd) Run() error {
 			}
 		}
 		daemonOpensItsOwn = s.Version == ""
+	}
+	if c.Workload != "" {
+		if statusErr != nil {
+			status = nil
+		}
+		if req.Workload, req.WorkloadToken, err = c.workloadToken(ctx, status); err != nil {
+			return err
+		}
 	}
 	server := c.Server
 	if err := client.Login(ctx, req, func(ev control.LoginEvent) {
@@ -122,4 +131,36 @@ func (c *loginCmd) Run() error {
 	fmt.Printf("%d datasource(s) brokered from %q — `"+self+" status` for the list, `%s` for a connection string\n",
 		brokeredCount(s, server), server, showHint(server, server == s.DefaultServer))
 	return nil
+}
+
+func (c *loginCmd) workloadToken(ctx context.Context, status *control.Status) (spec, token string, err error) {
+	if spec, err = workload.Absolute(c.Workload); err != nil {
+		return "", "", err
+	}
+	source, err := workload.Parse(spec)
+	if err != nil {
+		return "", "", err
+	}
+	audience := c.Audience
+	if audience == "" {
+		controlPlane := c.URL
+		if controlPlane == "" && status != nil {
+			name := cmp.Or(c.Server, status.DefaultServer)
+			for _, srv := range status.Servers {
+				if srv.Name == name {
+					controlPlane = srv.ControlPlane
+				}
+			}
+		}
+		if controlPlane == "" {
+			return "", "", fmt.Errorf("cannot tell which control plane the workload token is for; pass --url or --audience")
+		}
+		if audience, err = workload.Audience(controlPlane); err != nil {
+			return "", "", err
+		}
+	}
+	if token, err = source.Token(ctx, audience); err != nil {
+		return "", "", err
+	}
+	return spec, token, nil
 }

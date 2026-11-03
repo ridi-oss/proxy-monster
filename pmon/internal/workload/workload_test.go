@@ -122,3 +122,21 @@ func TestAWSAsksForAShortES384Token(t *testing.T) {
 		t.Errorf("denied: %v", err)
 	}
 }
+
+func TestOnlyEnvSourcesAreOneShot(t *testing.T) {
+	for spec, want := range map[string]bool{"aws": true, "github": true, "file:/t": true, "env:TOK": false} {
+		if got := Renewable(spec); got != want {
+			t.Errorf("Renewable(%q) = %v", spec, got)
+		}
+	}
+	t.Chdir(t.TempDir())
+	wd, _ := os.Getwd()
+	if got, err := Absolute("file:jwt"); err != nil || got != "file:"+filepath.Join(wd, "jwt") {
+		t.Errorf("relative file = %q %v", got, err)
+	}
+	for _, spec := range []string{"file:/abs/jwt", "env:TOK", "aws"} {
+		if got, err := Absolute(spec); err != nil || got != spec {
+			t.Errorf("Absolute(%q) = %q %v", spec, got, err)
+		}
+	}
+}

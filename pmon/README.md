@@ -137,16 +137,22 @@ pmon login --url https://pm.example.com --workload env:PM_WORKLOAD_TOKEN
 ```
 
 The token's audience is the control plane's origin unless `--audience` names
-another. The daemon fetches a fresh token from the same source and exchanges it
-before the wire token expires, with no prompt, so a sidecar container or a CI
-step keeps its brokers and the fixed local password for as long as it runs. A
-refused renewal is retried every minute rather than waiting for a login. The
-daemon reads the source itself: start it in the workload's environment (run
-`pmon daemon` as the container's process, or let `pmon login` start it), since
-`aws` reads AWS credentials and `AWS_REGION` there, `github` reads the Actions
-request variables, and `env:` reads the daemon's variable. A `file:` source is
+another. `pmon login` fetches the first token in its own environment and the
+daemon exchanges it. Before the wire token expires, the daemon fetches a fresh
+token from the same source and exchanges it, with no prompt, so a sidecar
+container or a CI step keeps its brokers and the fixed local password for as
+long as it runs. A refused renewal is retried every minute rather than waiting
+for a login, and a renewal that maps to a different service principal is
+refused. Renewals read the source in the daemon's environment: start the daemon
+in the workload's environment (run `pmon daemon` as the container's process, or
+let `pmon login` start it), since `aws` reads AWS credentials and `AWS_REGION`
+there and `github` reads the Actions request variables. A `file:` source is
 re-read on every renewal, which suits a Kubernetes projected service-account
-token or a token file another process refreshes. A workload login grants wire
+token or a token file another process refreshes; a relative path is resolved
+where `pmon login` runs. An `env:` token exchanges only once, so it is used for
+one wire token and never renewed. `pmon logout` and a new workload login revoke
+the service token on the server; a renewal leaves the previous token to expire
+on its own, so the connections it opened keep working. A workload login grants wire
 access only; `pmon mcp` needs a person's login.
 
 ## Commands
@@ -156,7 +162,7 @@ access only; `pmon mcp` needs a person's login.
 | --- | --- |
 | `pmon server set [name] --url U` / `unset [name]` / `list` | Manage servers (`-f` on `unset` skips the live-connection prompt) |
 | `pmon login [server] [--url U] [--scopes S]` | Device-auth flow; starts the daemon if needed and opens the server's brokers |
-| `pmon login [server] [--url U] --workload SOURCE [--audience A]` | Log in as a service with a platform OIDC token; the daemon renews it unattended |
+| `pmon login [server] [--url U] --workload SOURCE [--audience A]` | Log in as a service with a platform OIDC token; the daemon renews it unattended (except `env:`) |
 | `pmon logout [server] [--all]` | Clear a server's credentials and close its brokers (the daemon stays up) |
 | `pmon show [server] <ds>` | One datasource's local connection string |
 | `pmon mcp [server]` | Local stdio MCP server relaying to the server's `/mcp` over the pmon login |

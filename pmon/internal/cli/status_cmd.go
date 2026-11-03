@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ridi-oss/proxy-monster/pmon/control"
+	"github.com/ridi-oss/proxy-monster/pmon/internal/workload"
 )
 
 // statusCmd shows the daemon's state. Every datasource fact comes from the DAEMON's live listener set, not
@@ -71,8 +72,10 @@ func (statusCmd) Run() error {
 		if srv.SessionExpiresAt != "" {
 			fmt.Printf("session:   %s\n", expiryLine(srv.SessionExpiresAt))
 		}
-		if srv.Workload != "" {
+		if srv.Workload != "" && workload.Renewable(srv.Workload) {
 			fmt.Printf("workload:  %s (renewed by the daemon)\n", srv.Workload)
+		} else if srv.Workload != "" {
+			fmt.Printf("workload:  %s (not renewed; log in again before the token expires)\n", srv.Workload)
 		}
 		if len(srv.Scopes) > 0 {
 			fmt.Printf("scopes:    %s\n", strings.Join(srv.Scopes, " "))

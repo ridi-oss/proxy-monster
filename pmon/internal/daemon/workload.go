@@ -16,17 +16,20 @@ import (
 
 var parseWorkloadSource = workload.Parse
 
-func (d *Daemon) exchangeWorkload(ctx context.Context, srv *state.Server, spec, audience string) (*login.WorkloadResult, error) {
+func (d *Daemon) exchangeWorkload(ctx context.Context, srv *state.Server, spec, audience, jwt string) (*login.WorkloadResult, error) {
 	source, err := parseWorkloadSource(spec)
 	if err != nil {
 		return nil, err
+	}
+	if jwt != "" {
+		return login.ExchangeWorkload(ctx, d.httpClient, srv.ControlPlane, jwt)
 	}
 	if audience == "" {
 		if audience, err = workload.Audience(srv.ControlPlane); err != nil {
 			return nil, err
 		}
 	}
-	jwt, err := source.Token(ctx, audience)
+	jwt, err = source.Token(ctx, audience)
 	if err != nil {
 		return nil, err
 	}
@@ -34,7 +37,7 @@ func (d *Daemon) exchangeWorkload(ctx context.Context, srv *state.Server, spec, 
 }
 
 func (d *Daemon) workloadLogin(ctx context.Context, name string, srv *state.Server, req control.LoginRequest, onEvent func(control.LoginEvent)) error {
-	res, err := d.exchangeWorkload(ctx, srv, req.Workload, req.Audience)
+	res, err := d.exchangeWorkload(ctx, srv, req.Workload, req.Audience, req.WorkloadToken)
 	if err != nil {
 		return err
 	}
@@ -63,7 +66,7 @@ func (d *Daemon) workloadLogin(ctx context.Context, name string, srv *state.Serv
 	if err != nil {
 		return fmt.Errorf("could not save the login: %w", err)
 	}
-	replacedEnded := srv.RenewalToken == "" || d.endOnServer(srv, true)
+	replacedEnded := d.endOnServer(srv, true)
 	onEvent(control.LoginEvent{Kind: "done", Server: name, Principal: res.Principal(), ExpiresAt: res.ExpiresAt,
 		ReplacedNotEndedOnServer: !replacedEnded})
 	d.openListeners(ctx)
@@ -72,13 +75,24 @@ func (d *Daemon) workloadLogin(ctx context.Context, name string, srv *state.Serv
 }
 
 func (d *Daemon) renewWorkload(ctx context.Context, name string, srv state.Server) {
-	res, err := d.exchangeWorkload(ctx, &srv, srv.Workload, srv.Audience)
+	res, err := d.exchangeWorkload(ctx, &srv, srv.Workload, srv.Audience, "")
 	if err != nil {
 		var apiErr *login.APIError
 		if errors.As(err, &apiErr) {
 			err = fmt.Errorf("%w (%s)", err, cmp.Or(apiErr.Code, "no code"))
 		}
 		fmt.Fprintf(os.Stderr, "workload token renewal for %q failed (will retry): %v\n", name, err)
+		return
+	}
+	if res.Principal() != srv.Principal {
+		d.revokeService(srv.ControlPlane, res.Token)
+		d.mu.Lock()
+		d.reauthRequired[name] = true
+		d.mu.Unlock()
+		fmt.Fprintf(os.Stderr, "workload token renewal for %q returned %s instead of %s; run `pmon login --workload` again\n",
+			name, res.Principal(), srv.Principal)
+		d.publish(control.Event{Kind: "reauth", Message: fmt.Sprintf("the workload token for %q now maps to %s; run `pmon login --workload`", name, res.Principal())})
+		d.publishStatus()
 		return
 	}
 	issuedAt := time.Now().UTC().Format(time.RFC3339)
@@ -97,4 +111,14 @@ func (d *Daemon) renewWorkload(ctx context.Context, name string, srv state.Serve
 		return
 	}
 	d.publishStatus()
+}
+
+func (d *Daemon) revokeService(controlPlane, token string) bool {
+	ctx, cancel := context.WithTimeout(d.ctx, endOnServerTimeout)
+	defer cancel()
+	if err := login.RevokeService(ctx, d.httpClient, controlPlane, token); err != nil {
+		fmt.Fprintf(os.Stderr, "could not revoke the service token on %s: %v\n", controlPlane, err)
+		return false
+	}
+	return true
 }

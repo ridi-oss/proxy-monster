@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -41,6 +42,23 @@ func Parse(spec string) (Source, error) {
 		return Env{Name: arg, Getenv: os.Getenv}, nil
 	}
 	return nil, fmt.Errorf("unknown workload token source %q: use one of %s", spec, strings.Join(Sources, ", "))
+}
+
+func Renewable(spec string) bool {
+	kind, _, _ := strings.Cut(spec, ":")
+	return kind != "env"
+}
+
+func Absolute(spec string) (string, error) {
+	kind, path, _ := strings.Cut(spec, ":")
+	if kind != "file" || path == "" {
+		return spec, nil
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("workload token file: %w", err)
+	}
+	return "file:" + abs, nil
 }
 
 func Audience(controlPlane string) (string, error) {

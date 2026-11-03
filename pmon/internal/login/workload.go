@@ -23,6 +23,23 @@ func (r WorkloadResult) Principal() string {
 	return "workload:" + r.Name
 }
 
+func RevokeService(ctx context.Context, client *http.Client, controlPlane, token string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, controlPlane+"/api/workload/revoke", nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return apiError(resp)
+	}
+	return nil
+}
+
 func ExchangeWorkload(ctx context.Context, client *http.Client, controlPlane, jwt string) (*WorkloadResult, error) {
 	var out WorkloadResult
 	if err := postJSON(ctx, client, controlPlane+"/api/workload/exchange",

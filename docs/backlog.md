@@ -42,10 +42,14 @@ forward work. MySQL leads PostgreSQL in priority.
   read-only datasource discovery routes only. Make it a first-class client —
   either an OAuth bearer client of its own, or a reuse of the web session — so
   the whole API is reachable under one authentication model.
-- Headless token mint for CI: every `pmon` login goes through the browser device
-  flow, so an unattended runner has no non-interactive path. A
-  client-credentials grant or a pre-issued personal access token would cover it;
-  the console Tokens page is the one-shot workaround meanwhile.
+- Workload identity follow-ups: `pmon login --workload` and the workload
+  exchange cover unattended runners
+  ([auth-model.md](./auth-model.md#workload-identity-exchange-server-to-server)).
+  Open: expose the binding's claims to Cedar as `context.workload` so a policy
+  can key on a source VPC or a Terraform run phase without a role per binding;
+  let an open connection outlive its `SERVICE` token (re-key it in place, or
+  accept the platform JWT itself as the wire password and mint a
+  connection-scoped token at `OpenConnection`).
 - Device-login hardening: fold the approved-code consume and the token mint into
   one transaction (a crash between them strands the login with no credential, so
   the user must log in again); carry the console session's refresh token onto a

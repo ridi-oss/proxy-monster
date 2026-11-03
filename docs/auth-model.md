@@ -219,6 +219,65 @@ JWT for a control-plane bearer token at `POST /api/workload/token` with body
   `event_name`, and `actor` claims as optional attributes; other claims are
   dropped. A Workload is a principal only for `task.request`.
 
+## Workload identity exchange (server-to-server)
+
+A service with no human behind it (an AWS batch job, Lambda, ECS task, EKS pod,
+a GitHub Actions job, an HCP Terraform run) exchanges the short-lived OIDC JWT
+its platform issues for a proxy-monster credential at
+`POST /api/workload/exchange` with body
+`{"token": "<JWT>", "purpose": "wire" | "mcp", "scopes"?: [...]}`. No secret is
+stored anywhere: the platform signs the JWT, proxy-monster verifies it.
+
+- **Issuers.** The same `PM_CI_OIDC_ISSUERS` list and `PM_CI_OIDC_AUDIENCE`
+  audience as the CI exchange. Each issuer has a kind, read from its host:
+  `token.actions.githubusercontent.com` is `github-actions`,
+  `<id>.tokens.sts.global.api.aws` is `aws-sts` (AWS IAM outbound identity
+  federation, one issuer per AWS account), `app.terraform.io` is
+  `hcp-terraform`, `oidc.eks.<region>.amazonaws.com/id/<id>` is `kubernetes`,
+  anything else `generic`. `PM_WORKLOAD_ISSUER_KINDS=<name>=<kind>,…` names the
+  kind of an issuer whose host does not say it, such as a Terraform Enterprise
+  host. `aws-sts` tokens may be signed ES384 or RS256; every other kind RS256.
+- **Claims.** The verified claims are flattened for matching: a nested object
+  joins its keys with a dot (`principal_tags.kubernetes-namespace`,
+  `kubernetes.io.namespace`), AWS's `https://sts.amazonaws.com/` object lifts
+  to the top level (`aws_account`, `org_id`, `ou_path`,
+  `lambda_source_function_arn`), and an array keeps every element.
+- **Bindings.** An admin maps tokens to a service principal with a workload
+  binding (`/api/workload-bindings`, gated by `admin.identity`): the issuer
+  name, the exact `sub` (or a prefix ending in `*`), optional `conditions`
+  (claim → value or values, each exact or a `*`-suffixed prefix; every
+  condition must hold), the principal (`svc:<name>` by default), the purposes
+  it may mint (`wire`, `mcp`), the MCP scopes an `mcp` exchange may carry, and a
+  TTL (60-3600 s, default 900). Exactly one enabled binding must match, or the
+  exchange answers 403 `workload.no_binding` / `workload.ambiguous_binding`.
+- **Subjects.** An AWS token's `sub` is the IAM role ARN, path included, for
+  every caller (EC2, Lambda, ECS task role, EKS Pod Identity, IRSA, an SSO
+  session); bind it exactly. `principal_tags` merges the role's IAM tags with
+  session tags, so use it only as a condition beside an exact `sub`: EKS Pod
+  Identity sets `kubernetes-namespace` and `kubernetes-service-account` there,
+  which pins one service account. A GitHub token's `sub` is
+  `repo:<owner>/<repo>:environment:<env>` (or `:ref:<ref>`); bind a protected
+  environment for production datasources. An HCP Terraform token's `sub` ends
+  in `:run_phase:<plan|apply>`, so a `plan` binding can carry read scopes only.
+- **Replay.** Each token's `jti` (or its hash) is recorded until it expires; a
+  second exchange answers 401 `workload.token_replayed`.
+- **Result.** `wire`: a `SERVICE` token (`pms_`), accepted at goproxy's wire
+  door and by `Decide` like a `SESSION`/`USER` token and as the datasource
+  discovery bearer, never on other HTTP routes or the editor door. `mcp`: an
+  MCP access token for the `/mcp` resource, scopes within the binding's (all of
+  them when the request names none), lasting the shorter of the binding TTL and
+  `PM_OAUTH_ACCESS_TTL`, with no refresh token; its consent's client is
+  `workload:<binding>`.
+- **Principal.** The binding's `svc:` principal holds roles like any principal,
+  through `principal_role` (and JIT grants); there is no directory row unless an
+  admin adds one. Cedar sees it as a `User`.
+- **Revocation.** Disabling a binding, deleting it, or changing anything but its
+  description, TTL, or a widening of purposes or scopes revokes every token it
+  minted and its MCP consents.
+- **Audit.** `auth.workload.bind` on the `workload` channel: SUCCESS names the
+  service principal and the binding with the `sub` and the identifying claims;
+  FAILURE is unattributed.
+
 ## SCIM 2.0 provisioning — IdP → local directory (opt-in)
 
 SCIM is off by default. Until `PM_SCIM_TOKEN` is configured every SCIM route

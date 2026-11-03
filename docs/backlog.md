@@ -47,9 +47,9 @@ forward work. MySQL leads PostgreSQL in priority.
   ([auth-model.md](./auth-model.md#workload-identity-exchange-server-to-server)).
   Open: expose the binding's claims to Cedar as `context.workload` so a policy
   can key on a source VPC or a Terraform run phase without a role per binding;
-  let an open connection outlive its `SERVICE` token (re-key it in place, or
   accept the platform JWT itself as the wire password and mint a
-  connection-scoped token at `OpenConnection`).
+  connection-scoped token at `OpenConnection`, so a client needs no exchange
+  step.
 - Device-login hardening: fold the approved-code consume and the token mint into
   one transaction (a crash between them strands the login with no credential, so
   the user must log in again); carry the console session's refresh token onto a

@@ -264,10 +264,13 @@ stored anywhere: the platform signs the JWT, proxy-monster verifies it.
 - **Result.** `wire`: a `SERVICE` token (`pms_`) and the service principal it
   names, accepted at goproxy's wire door and by `Decide` like a `SESSION`/`USER`
   token and as the datasource discovery bearer, never on other HTTP routes or
-  the editor door. `mcp`: an MCP access token for the `/mcp` resource, scopes
-  within the binding's (all of them when the request names none), lasting the
-  shorter of the binding TTL and `PM_OAUTH_ACCESS_TTL`, with no refresh token;
-  its consent's client is `workload:<binding>`.
+  the editor door. It opens connections only until it expires, but a connection
+  it already opened keeps deciding for up to 24 hours past the expiry, so a
+  client pool may outlive the TTL; revocation still stops it at the next
+  statement. `mcp`: an MCP access token for the `/mcp` resource, scopes within
+  the binding's (all of them when the request names none), lasting the shorter
+  of the binding TTL and `PM_OAUTH_ACCESS_TTL`, with no refresh token; its
+  consent's client is `workload:<binding>`.
 - **Principal.** The binding's `svc:` principal holds roles like any principal,
   through `principal_role` (and JIT grants); there is no directory row unless an
   admin adds one. Cedar sees it as a `User`.

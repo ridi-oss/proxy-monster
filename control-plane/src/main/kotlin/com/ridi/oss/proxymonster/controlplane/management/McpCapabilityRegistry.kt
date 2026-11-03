@@ -119,6 +119,10 @@ object McpCapabilityRegistry {
         write("add_group_member", AuthzAction.ADMIN_IDENTITY, "mcp:identity:write"),
         write("remove_group_member", AuthzAction.ADMIN_IDENTITY, "mcp:identity:write", destructive = true),
         write("set_group_roles", AuthzAction.ADMIN_IDENTITY, "mcp:identity:write"),
+        read("list_workload_bindings", AuthzAction.ADMIN_IDENTITY),
+        write("create_workload_binding", AuthzAction.ADMIN_IDENTITY, "mcp:identity:write"),
+        write("update_workload_binding", AuthzAction.ADMIN_IDENTITY, "mcp:identity:write"),
+        write("delete_workload_binding", AuthzAction.ADMIN_IDENTITY, "mcp:identity:write", destructive = true),
         read("list_group_members", AuthzAction.ADMIN_IDENTITY),
         read("list_group_roles", AuthzAction.ADMIN_IDENTITY),
 
@@ -193,6 +197,7 @@ object McpCapabilityRegistry {
         "list_access_grants", "list_query_history", "clear_query_history", "delete_query_task",
         "approve_access_request", "reject_access_request", "revoke_access_grant",
         "list_tokens", "mint_token", "revoke_token",
+        "list_workload_bindings", "create_workload_binding", "update_workload_binding", "delete_workload_binding",
     )
 
     fun verify() {

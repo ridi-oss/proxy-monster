@@ -7,6 +7,7 @@ import com.ridi.oss.proxymonster.controlplane.grpc.GrpcServer
 import com.ridi.oss.proxymonster.controlplane.management.McpCapabilityRegistry
 import com.ridi.oss.proxymonster.controlplane.support.ALL_MCP_SCOPES
 import com.ridi.oss.proxymonster.controlplane.support.EnforcementFixture
+import com.ridi.oss.proxymonster.controlplane.support.FakeWorkloadBindings
 import com.ridi.oss.proxymonster.controlplane.support.McpTokens
 import com.ridi.oss.proxymonster.controlplane.support.PerConnectionCatalogFixture
 import com.ridi.oss.proxymonster.controlplane.support.installControlPlane
@@ -67,6 +68,7 @@ class McpToolCoverageDbTest {
     private lateinit var server: GrpcServer
     private lateinit var rawChannel: ManagedChannel
     private lateinit var stub: ControlPlaneGrpcKt.ControlPlaneCoroutineStub
+    private lateinit var workloadBindings: FakeWorkloadBindings
 
     private val sql = "SELECT id, ssn FROM users ORDER BY id"
     private val maskedRows = listOf(listOf("1", "*******4320"), listOf("2", "*******4321"))
@@ -80,17 +82,19 @@ class McpToolCoverageDbTest {
         server = GrpcServer(0, ControlPlaneGrpcService(core), secretToken = null).also { it.start() }
         rawChannel = NettyChannelBuilder.forAddress("localhost", server.boundPort).usePlaintext().build()
         stub = ControlPlaneGrpcKt.ControlPlaneCoroutineStub(rawChannel)
+        workloadBindings = FakeWorkloadBindings()
     }
 
     @AfterAll
     fun close() {
         rawChannel.shutdownNow().awaitTermination(5, TimeUnit.SECONDS)
         server.shutdown()
+        workloadBindings.close()
     }
 
     @Test
     fun `every MCP tool answers a successful call`() = testApplication {
-        val client = installControlPlane(mcpTestConfig(resultKey = ByteArray(32)), core)
+        val client = installControlPlane(mcpTestConfig(resultKey = ByteArray(32)).copy(cpGoBridge = workloadBindings.config), core)
         val ds = fx.datasource
         val catalog = ds.effectiveCatalog
         val schema = ds.defaultSchemas.first()
@@ -213,6 +217,11 @@ class McpToolCoverageDbTest {
         on("list_group_roles") { client.ok(adm, "list_group_roles", args("groupName" to "cov-group")) }
         on("remove_group_member") { client.ok(adm, "remove_group_member", args("groupName" to "cov-group", "principal" to "cov-user@example.com")) }
         on("delete_group") { client.ok(adm, "delete_group", args("name" to "cov-group")) }
+        val binding = arrayOf("name" to "cov-binding", "issuer" to "aws-prod", "subject" to "arn:aws:iam::111122223333:role/cov", "purposes" to listOf("wire"))
+        on("create_workload_binding") { client.ok(adm, "create_workload_binding", args(*binding)) }
+        on("list_workload_bindings") { client.ok(adm, "list_workload_bindings") }
+        on("update_workload_binding") { client.ok(adm, "update_workload_binding", args(*binding, "enabled" to false)) }
+        on("delete_workload_binding") { client.ok(adm, "delete_workload_binding", args("name" to "cov-binding")) }
         on("delete_role") { client.ok(adm, "delete_role", args("name" to "cov-role")) }
         on("deprovision_user") { client.ok(adm, "deprovision_user", args("principal" to "cov-user@example.com")) }
         on("delete_mask_fn") { client.ok(adm, "delete_mask_fn", args("name" to "cov-mask")) }

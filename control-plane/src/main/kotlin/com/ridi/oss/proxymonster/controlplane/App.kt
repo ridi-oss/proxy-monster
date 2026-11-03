@@ -16,6 +16,7 @@ import com.ridi.oss.proxymonster.controlplane.source.GitHubAdapter
 import com.ridi.oss.proxymonster.controlplane.source.GitHubSourceFlow
 import com.ridi.oss.proxymonster.controlplane.source.PrincipalDirectory
 import com.ridi.oss.proxymonster.controlplane.management.PolicyManagementService
+import com.ridi.oss.proxymonster.controlplane.mcp.WorkloadBindingsBridge
 import com.ridi.oss.proxymonster.controlplane.mcp.installMcp
 import com.ridi.oss.proxymonster.controlplane.mcp.instanceInfoRoute
 import com.ridi.oss.proxymonster.controlplane.mcp.mcpConnectRoute
@@ -466,6 +467,7 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
     installMcp(
         config, core, datasourceManagement, policyManagement, identityManagement, editorTaskService, approvalService,
         access = accessService, audit = auditService, queryHistory = queryHistoryStore, tokens = tokenService,
+        workloadBindings = cpGoBridge?.channel?.let(::WorkloadBindingsBridge),
     )
 
     routing {

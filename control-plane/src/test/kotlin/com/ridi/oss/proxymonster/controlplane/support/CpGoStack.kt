@@ -2,6 +2,7 @@ package com.ridi.oss.proxymonster.controlplane.support
 
 import com.ridi.oss.proxymonster.controlplane.Config
 import com.ridi.oss.proxymonster.controlplane.ControlPlaneCore
+import com.ridi.oss.proxymonster.controlplane.CpGoBridgeConfig
 import com.ridi.oss.proxymonster.controlplane.grpc.ControlPlaneGrpcService
 import com.ridi.oss.proxymonster.controlplane.grpc.GrpcServer
 import com.ridi.oss.proxymonster.controlplane.module
@@ -38,10 +39,15 @@ class CpGoStack(
     database: String,
     extraEnv: Map<String, String> = emptyMap(),
     withGrpc: Boolean = false,
+    withBridge: Boolean = false,
     configure: Application.() -> Unit = {},
 ) : AutoCloseable {
     private val token = Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(24).also(SecureRandom()::nextBytes))
-    private val kotlinConfig = config.copy(internalToken = token, trustedProxies = setOf("127.0.0.1"), bindHost = "127.0.0.1")
+    private val bridgePort = if (withBridge) freePort() else 0
+    private val kotlinConfig = config.copy(
+        internalToken = token, trustedProxies = setOf("127.0.0.1"), bindHost = "127.0.0.1",
+        cpGoBridge = if (withBridge) CpGoBridgeConfig("127.0.0.1:$bridgePort", token) else config.cpGoBridge,
+    )
     private val kotlin: EmbeddedServer<NettyApplicationEngine, NettyApplicationEngine.Configuration> =
         embeddedServer(Netty, host = "127.0.0.1", port = 0) {
             module(kotlinConfig, core)
@@ -75,7 +81,7 @@ class CpGoStack(
                 "PM_GRPC_PORT" to grpcPort.toString(),
                 // A wildcard listener on macOS silently shares its port with another process's 127.0.0.1 one.
                 "PM_BIND_HOST" to "127.0.0.1",
-            )
+            ) + (if (withBridge) mapOf("PM_CP_GO_GRPC_PORT" to bridgePort.toString()) else emptyMap())
             process = ProcessBuilder(cpGoBinary())
                 .redirectErrorStream(true)
                 .redirectOutput(log)

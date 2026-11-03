@@ -1,8 +1,17 @@
 name: proxy-monster SQL
 description:
-  File a pull request's new SQL files as proxy-monster approval requests.
+  File a pull request's new SQL files as proxy-monster approval requests, or
+  mint a wire token for the job.
 
 inputs:
+  mode:
+    description: >-
+      `file` files the pull request's new SQL files. `token` exchanges the job's
+      OIDC token for a wire token through a workload binding and sets the
+      `token` output, masked, for a SQL client to use as its password through
+      the proxy.
+    required: false
+    default: file
   server:
     description: Control-plane base URL.
     required: true
@@ -13,17 +22,21 @@ inputs:
     required: false
     default: ""
   dir:
-    description: Directory holding the SQL files.
-    required: true
+    description: Directory holding the SQL files. Required in `file` mode.
+    required: false
+    default: ""
   datasource:
-    description: Datasource the files run on.
-    required: true
+    description: Datasource the files run on. Required in `file` mode.
+    required: false
+    default: ""
   schema:
-    description: Default schema of the run's connection.
-    required: true
+    description: Default schema of the run's connection. Required in `file` mode.
+    required: false
+    default: ""
   role:
-    description: Role the files run under.
-    required: true
+    description: Role the files run under. Required in `file` mode.
+    required: false
+    default: ""
   instance:
     description: >-
       The control plane's instance name (PM_INSTANCE_NAME). With it, a pull
@@ -52,9 +65,33 @@ inputs:
     required: false
     default: latest
 
+outputs:
+  token:
+    description: The wire token, in `token` mode; masked in the log.
+    value: ${{ steps.token.outputs.token }}
+  expires-at:
+    description: When the wire token expires, in `token` mode.
+    value: ${{ steps.token.outputs.expires-at }}
+  binding:
+    description: The workload binding that minted the token, in `token` mode.
+    value: ${{ steps.token.outputs.binding }}
+
 runs:
   using: composite
   steps:
+    - name: Check the mode
+      shell: bash
+      env:
+        MODE: ${{ inputs.mode }}
+      run: |
+        case "$MODE" in
+          file | token) ;;
+          *)
+            echo "::error::mode must be file or token"
+            exit 1
+            ;;
+        esac
+
     - name: Set up Go
       if: inputs.version == 'source'
       uses: actions/setup-go@v7
@@ -122,7 +159,17 @@ runs:
         tar -xzf "$tmp/$asset" -C "$RUNNER_TEMP/pm-ci-bin" pm-ci
         echo "$RUNNER_TEMP/pm-ci-bin" >> "$GITHUB_PATH"
 
+    - name: Mint a wire token
+      id: token
+      if: inputs.mode == 'token'
+      shell: bash
+      env:
+        PM_CI_SERVER_URL: ${{ inputs.server }}
+        PM_CI_AUDIENCE: ${{ inputs.audience }}
+      run: pm-ci token
+
     - name: Run
+      if: inputs.mode != 'token'
       shell: bash
       working-directory: ${{ github.workspace }}
       env:

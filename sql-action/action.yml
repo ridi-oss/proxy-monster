@@ -30,7 +30,8 @@ inputs:
     required: false
     default: ""
   schema:
-    description: Default schema of the run's connection. Required in `file` mode.
+    description:
+      Default schema of the run's connection. Required in `file` mode.
     required: false
     default: ""
   role:

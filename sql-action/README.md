@@ -48,14 +48,14 @@ arm64. `version: source` builds it from the action's own ref with
 
 ## Wire access from a job
 
-`mode: token` exchanges the job's GitHub OIDC token at
-`/api/workload/exchange` for a short-lived wire token (`pms_…`), through the
-workload binding the control plane maps the token to
+`mode: token` exchanges the job's GitHub OIDC token at `/api/workload/exchange`
+for a short-lived wire token (`pms_…`), through the workload binding the control
+plane maps the token to
 ([auth-model.md](../docs/auth-model.md#workload-identity-exchange-server-to-server)).
-The token is masked in the log and set as the `token` output, with
-`expires-at` and `binding`; use it as the SQL client's password to the
-datasource's proxy address. Bind a protected environment
-(`repo:acme/shop:environment:prod`) for a production datasource.
+The token is masked in the log and set as the `token` output, with `expires-at`
+and `binding`; use it as the SQL client's password to the datasource's proxy
+address. Bind a protected environment (`repo:acme/shop:environment:prod`) for a
+production datasource.
 
 ```yaml
 jobs:
@@ -69,7 +69,9 @@ jobs:
         with:
           mode: token
           server: https://pm.example.com
-      - run: mysql -h shop-mysql.pm.example.com -u ci --enable-cleartext-plugin -p"$PM_TOKEN" -e 'SELECT 1'
+      - run:
+          mysql -h shop-mysql.pm.example.com -u ci --enable-cleartext-plugin
+          -p"$PM_TOKEN" -e 'SELECT 1'
         env:
           PM_TOKEN: ${{ steps.pm.outputs.token }}
 ```

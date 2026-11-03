@@ -1,6 +1,7 @@
 package workload_test
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -309,4 +310,45 @@ func TestBindingWritesAreValidatedAndAdminOnly(t *testing.T) {
 func itoa(n int64) string {
 	b, _ := json.Marshal(n)
 	return string(b)
+}
+
+func TestAnExchangeRacingADisableMintsNothing(t *testing.T) {
+	ai := newAWSIssuer(t)
+	h := newHarness(t, ai.issuer())
+	id := h.bind(`{"name":"batch-settlement","issuer":"aws-prod","subject":"` + role + `","purposes":["wire"]}`)
+	tx, err := h.e.St.Pool.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if _, err := tx.Exec(t.Context(), `UPDATE workload_binding SET enabled = false, updated_at = now() WHERE id = $1`, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(t.Context(), `UPDATE proxy_token SET revoked_at = now() WHERE workload_binding_id = $1 AND revoked_at IS NULL`, id); err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		status int
+		body   string
+	}
+	done := make(chan result, 1)
+	jwt := ai.token(t, role, nil)
+	go func() {
+		status, body := h.e.Do(t, http.MethodPost, exchangePath, `{"token":"`+jwt+`","purpose":"wire"}`, nil)
+		done <- result{status, body}
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for h.e.Count(t, `SELECT count(*) FROM pg_locks WHERE NOT granted`) == 0 && len(done) == 0 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err := tx.Commit(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	got := <-done
+	if got.status != http.StatusForbidden || got.body != `{"code":"workload.no_binding","params":{}}` {
+		t.Errorf("exchange racing a disable: %d %s", got.status, got.body)
+	}
+	if n := h.e.Count(t, `SELECT count(*) FROM proxy_token WHERE workload_binding_id = $1 AND revoked_at IS NULL`, id); n != 0 {
+		t.Errorf("%d live tokens for a disabled binding", n)
+	}
 }

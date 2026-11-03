@@ -25,6 +25,28 @@ const exchangeAction = "auth.workload.bind"
 
 var errReplayed = errors.New("workload token already exchanged")
 
+type refusal struct {
+	code   api.Code
+	reason string
+}
+
+func (r *refusal) Error() string { return r.reason }
+
+func admit(b Binding, purpose string, asked []string) ([]string, error) {
+	if !b.allows(purpose) {
+		return nil, &refusal{api.CodePurposeNotAllowed, "purpose " + purpose + " not allowed"}
+	}
+	if purpose != PurposeMCP || len(asked) == 0 {
+		return b.MCPScopes, nil
+	}
+	for _, s := range asked {
+		if !slices.Contains(b.MCPScopes, s) {
+			return nil, &refusal{api.CodeScopeNotAllowed, "scope " + api.Truncate(s, 64) + " not allowed"}
+		}
+	}
+	return sortedUnique(asked), nil
+}
+
 var auditedClaims = []string{"aws_account", "lambda_source_function_arn", "ec2_instance_source_vpc",
 	"principal_tags.kubernetes-namespace", "principal_tags.kubernetes-service-account", "repository", "environment", "ref",
 	"terraform_workspace_name", "terraform_run_phase", "terraform_run_id", "kubernetes.io.namespace"}
@@ -99,22 +121,30 @@ func (x exchange) bind(w http.ResponseWriter, r *http.Request) error {
 		return refuse(api.CodeAmbiguousBinding, "several bindings match", issuer.Name)
 	}
 	b := matched[0]
-	if !b.allows(*in.Purpose) {
-		return refuse(api.CodePurposeNotAllowed, "purpose "+*in.Purpose+" not allowed", b.Name)
-	}
-	scopes := b.MCPScopes
-	if *in.Purpose == PurposeMCP && len(in.Scopes) > 0 {
-		for _, s := range in.Scopes {
-			if !slices.Contains(b.MCPScopes, s) {
-				return refuse(api.CodeScopeNotAllowed, "scope "+api.Truncate(s, 64)+" not allowed", b.Name)
-			}
-		}
-		scopes = sortedUnique(in.Scopes)
+	var rf *refusal
+	if _, err := admit(b, *in.Purpose, in.Scopes); errors.As(err, &rf) {
+		return refuse(rf.code, rf.reason, b.Name)
 	}
 	actor := audit.Actor{Principal: b.Principal, ClientAddr: ip, Channel: "workload"}
 	var out any
 	err = pgx.BeginFunc(ctx, x.Pool, func(tx pgx.Tx) error {
 		q := db.New(tx)
+		locked, err := q.LockWorkloadBinding(ctx, b.ID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return &refusal{api.CodeNoBinding, "binding changed during the exchange"}
+		}
+		if err != nil {
+			return err
+		}
+		live := toBinding(db.WorkloadBindingRow(locked))
+		if !live.matches(sub, claims) || live.Principal != b.Principal {
+			return &refusal{api.CodeNoBinding, "binding changed during the exchange"}
+		}
+		b = live
+		scopes, err := admit(b, *in.Purpose, in.Scopes)
+		if err != nil {
+			return err
+		}
 		if err := q.PruneWorkloadTokenUse(ctx); err != nil {
 			return err
 		}
@@ -165,6 +195,9 @@ func (x exchange) bind(w http.ResponseWriter, r *http.Request) error {
 	})
 	if errors.Is(err, errReplayed) {
 		return refuse(api.CodeTokenReplayed, "token already exchanged", b.Name)
+	}
+	if errors.As(err, &rf) {
+		return refuse(rf.code, rf.reason, b.Name)
 	}
 	if err != nil {
 		return err

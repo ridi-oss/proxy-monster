@@ -11,6 +11,10 @@ FROM workload_binding WHERE deleted_at IS NULL ORDER BY name;
 SELECT id, name, description, issuer, subject, conditions, principal, purposes, mcp_scopes, ttl_seconds, enabled, created_at, updated_at
 FROM workload_binding WHERE id = $1 AND deleted_at IS NULL;
 
+-- name: LockWorkloadBinding :one
+SELECT id, name, description, issuer, subject, conditions, principal, purposes, mcp_scopes, ttl_seconds, enabled, created_at, updated_at
+FROM workload_binding WHERE id = $1 AND enabled AND deleted_at IS NULL FOR SHARE;
+
 -- name: IssuerWorkloadBindings :many
 SELECT id, name, description, issuer, subject, conditions, principal, purposes, mcp_scopes, ttl_seconds, enabled, created_at, updated_at
 FROM workload_binding WHERE issuer = $1 AND enabled AND deleted_at IS NULL ORDER BY id;

@@ -115,6 +115,48 @@ func (q *Queries) IssuerWorkloadBindings(ctx context.Context, issuer string) ([]
 	return items, nil
 }
 
+const lockWorkloadBinding = `-- name: LockWorkloadBinding :one
+SELECT id, name, description, issuer, subject, conditions, principal, purposes, mcp_scopes, ttl_seconds, enabled, created_at, updated_at
+FROM workload_binding WHERE id = $1 AND enabled AND deleted_at IS NULL FOR SHARE
+`
+
+type LockWorkloadBindingRow struct {
+	ID          int64
+	Name        string
+	Description *string
+	Issuer      string
+	Subject     string
+	Conditions  []byte
+	Principal   string
+	Purposes    []string
+	McpScopes   []string
+	TtlSeconds  int32
+	Enabled     bool
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+func (q *Queries) LockWorkloadBinding(ctx context.Context, id int64) (LockWorkloadBindingRow, error) {
+	row := q.db.QueryRow(ctx, lockWorkloadBinding, id)
+	var i LockWorkloadBindingRow
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Description,
+		&i.Issuer,
+		&i.Subject,
+		&i.Conditions,
+		&i.Principal,
+		&i.Purposes,
+		&i.McpScopes,
+		&i.TtlSeconds,
+		&i.Enabled,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const mintServiceToken = `-- name: MintServiceToken :one
 INSERT INTO proxy_token (token_hash, kind, principal, roles, name, expires_at, claims, workload_binding_id)
 VALUES ($1, 'SERVICE', $2, '[]'::jsonb, $3, $4, $5::jsonb,

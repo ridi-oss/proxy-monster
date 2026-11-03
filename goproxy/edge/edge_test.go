@@ -16,6 +16,7 @@ import (
 	"net/netip"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -324,9 +325,16 @@ type edgeFixture struct {
 	addr     string
 	roots    *x509.CertPool
 	backends map[string]*fakeBackend
+	server   *Server
+	dials    *atomic.Int32
 }
 
 func startEdge(t *testing.T, d kindDriver, trusted string) edgeFixture {
+	t.Helper()
+	return startEdgeRouting(t, d, trusted, d.kind)
+}
+
+func startEdgeRouting(t *testing.T, d kindDriver, trusted string, routedKind Kind) edgeFixture {
 	t.Helper()
 	mem := newMemNet()
 	certA, certB := newTestCert(t, hostA), newTestCert(t, hostB)
@@ -337,15 +345,24 @@ func startEdge(t *testing.T, d kindDriver, trusted string) edgeFixture {
 	roots.AddCert(certB.leaf)
 
 	server, err := New(&Config{
-		Listeners:      []Listener{{Kind: d.kind, Port: 1}},
-		Routes:         map[string]string{hostA: backendA.addr, hostB: backendB.addr},
+		Listeners: []Listener{{Kind: d.kind, Port: 1}},
+		Routes: map[string]Route{
+			hostA: {Kind: routedKind, Backend: backendA.addr},
+			hostB: {Kind: routedKind, Backend: backendB.addr},
+		},
 		TrustedProxies: []netip.Prefix{netip.MustParsePrefix(trusted)},
+		MaxConnections: 8,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	server.handshakeTimeout = 2 * time.Second
-	server.dial = mem.dialer(edgeSocket)
+	dials := &atomic.Int32{}
+	dial := mem.dialer(edgeSocket)
+	server.dial = func(ctx context.Context, network, address string) (net.Conn, error) {
+		dials.Add(1)
+		return dial(ctx, network, address)
+	}
 	ln := mem.listen()
 	served := make(chan error, 1)
 	go func() { served <- server.Serve(d.kind, ln) }()
@@ -362,6 +379,8 @@ func startEdge(t *testing.T, d kindDriver, trusted string) edgeFixture {
 		addr:     ln.Addr().String(),
 		roots:    roots,
 		backends: map[string]*fakeBackend{hostA: backendA, hostB: backendB},
+		server:   server,
+		dials:    dials,
 	}
 }
 
@@ -391,14 +410,13 @@ func isClosed(err error) bool {
 	return errors.As(err, &opErr) && strings.Contains(opErr.Err.Error(), "reset")
 }
 
-func expectNoBackendHit(t *testing.T, f edgeFixture) {
+func expectNoBackendDial(t *testing.T, f edgeFixture) {
 	t.Helper()
-	for host, b := range f.backends {
-		select {
-		case hit := <-b.hits:
-			t.Fatalf("backend %s was dialed: %+v", host, hit)
-		default:
-		}
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+	f.server.Shutdown(ctx)
+	if n := f.dials.Load(); n != 0 {
+		t.Fatalf("edge dialed a backend %d time(s)", n)
 	}
 }
 
@@ -450,7 +468,28 @@ func TestEdgeClosesUnknownSNI(t *testing.T) {
 			if err := client.Handshake(); err == nil {
 				t.Fatal("TLS handshake for an unrouted host succeeded")
 			}
-			expectNoBackendHit(t, f)
+			expectNoBackendDial(t, f)
+		})
+	}
+}
+
+func TestEdgeClosesSNIRoutedToAnotherEngine(t *testing.T) {
+	for _, d := range drivers {
+		other := KindHTTPS
+		if d.kind == KindHTTPS {
+			other = KindMySQL
+		}
+		t.Run(string(d.kind), func(t *testing.T) {
+			f := startEdgeRouting(t, d, "127.0.0.1/32", other)
+			conn := dialEdge(t, f.mem, f.addr, true)
+			if err := d.clientOpen(conn); err != nil {
+				t.Fatal(err)
+			}
+			client := tls.Client(conn, &tls.Config{ServerName: hostA, RootCAs: f.roots})
+			if err := client.Handshake(); err == nil {
+				t.Fatal("TLS handshake for a host routed to another engine succeeded")
+			}
+			expectNoBackendDial(t, f)
 		})
 	}
 }
@@ -463,7 +502,7 @@ func TestEdgeClosesMissingSNI(t *testing.T) {
 	if err := client.Handshake(); err == nil {
 		t.Fatal("TLS handshake without SNI succeeded")
 	}
-	expectNoBackendHit(t, f)
+	expectNoBackendDial(t, f)
 }
 
 func TestEdgeRefusesPlaintextLogin(t *testing.T) {
@@ -481,7 +520,7 @@ func TestEdgeRefusesPlaintextLogin(t *testing.T) {
 			if _, err := conn.Read(make([]byte, 1)); err == nil {
 				t.Fatal("edge kept the plaintext connection open")
 			}
-			expectNoBackendHit(t, f)
+			expectNoBackendDial(t, f)
 		})
 	}
 }
@@ -494,7 +533,7 @@ func TestEdgeRejectsUntrustedPeer(t *testing.T) {
 			if _, err := conn.Read(make([]byte, 1)); err == nil {
 				t.Fatal("edge answered a peer outside PM_TRUSTED_PROXIES")
 			}
-			expectNoBackendHit(t, f)
+			expectNoBackendDial(t, f)
 		})
 	}
 }
@@ -510,7 +549,7 @@ func TestEdgeRejectsTrustedPeerWithoutHeader(t *testing.T) {
 			if _, err := conn.Read(make([]byte, 1)); err == nil {
 				t.Fatal("edge answered a connection without a PROXY header")
 			}
-			expectNoBackendHit(t, f)
+			expectNoBackendDial(t, f)
 		})
 	}
 }

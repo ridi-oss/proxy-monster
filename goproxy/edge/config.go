@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/alecthomas/kong"
+	"github.com/ridi-oss/proxy-monster/goproxy/config"
 )
 
 type Kind string
@@ -23,18 +24,27 @@ type rawFlags struct {
 	Routes         string `env:"PM_WIRE_ROUTES"`
 	TrustedProxies string `env:"PM_TRUSTED_PROXIES"`
 	HealthPort     string `env:"PM_EDGE_HEALTH_PORT"`
+	MaxConnections string `env:"PM_EDGE_MAX_CONNECTIONS"`
 }
+
+const defaultMaxConnections = 1024
 
 type Listener struct {
 	Kind Kind
 	Port int
 }
 
+type Route struct {
+	Kind    Kind
+	Backend string
+}
+
 type Config struct {
 	Listeners      []Listener
-	Routes         map[string]string
+	Routes         map[string]Route
 	TrustedProxies []netip.Prefix
 	HealthPort     int
+	MaxConnections int
 }
 
 func Load() (*Config, error) {
@@ -58,7 +68,7 @@ func parse(raw rawFlags) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	trusted, err := parseTrustedProxies(raw.TrustedProxies)
+	trusted, err := config.ParseTrustedProxies(raw.TrustedProxies)
 	if err != nil {
 		return nil, err
 	}
@@ -77,7 +87,21 @@ func parse(raw rawFlags) (*Config, error) {
 			}
 		}
 	}
-	return &Config{Listeners: listeners, Routes: routes, TrustedProxies: trusted, HealthPort: healthPort}, nil
+	maxConnections := defaultMaxConnections
+	if s := strings.TrimSpace(raw.MaxConnections); s != "" {
+		n, err := strconv.ParseUint(s, 10, 31)
+		if err != nil || n == 0 {
+			return nil, fmt.Errorf("PM_EDGE_MAX_CONNECTIONS=%q must be a positive integer", raw.MaxConnections)
+		}
+		maxConnections = int(n)
+	}
+	return &Config{
+		Listeners:      listeners,
+		Routes:         routes,
+		TrustedProxies: trusted,
+		HealthPort:     healthPort,
+		MaxConnections: maxConnections,
+	}, nil
 }
 
 func parseListeners(raw string) ([]Listener, error) {
@@ -92,11 +116,9 @@ func parseListeners(raw string) ([]Listener, error) {
 		if !ok {
 			return nil, fmt.Errorf("PM_EDGE_LISTEN entry %q must be kind:port", entry)
 		}
-		kind := Kind(strings.ToLower(strings.TrimSpace(kindText)))
-		switch kind {
-		case KindMySQL, KindPostgres, KindHTTPS:
-		default:
-			return nil, fmt.Errorf("PM_EDGE_LISTEN entry %q has unknown kind %q (want mysql, postgres, or https)", entry, kindText)
+		kind, err := parseKind(kindText)
+		if err != nil {
+			return nil, fmt.Errorf("PM_EDGE_LISTEN entry %q: %w", entry, err)
 		}
 		port, err := parsePort(strings.TrimSpace(portText))
 		if err != nil {
@@ -114,19 +136,24 @@ func parseListeners(raw string) ([]Listener, error) {
 	return listeners, nil
 }
 
-func parseRoutes(raw string) (map[string]string, error) {
-	routes := map[string]string{}
+func parseRoutes(raw string) (map[string]Route, error) {
+	routes := map[string]Route{}
 	for _, entry := range strings.Split(raw, ",") {
 		entry = strings.TrimSpace(entry)
 		if entry == "" {
 			continue
 		}
-		hostText, backend, ok := strings.Cut(entry, "=")
-		if !ok {
-			return nil, fmt.Errorf("PM_WIRE_ROUTES entry %q must be host=backend-host:port", entry)
+		target, backend, ok := strings.Cut(entry, "=")
+		kindText, hostText, hasKind := strings.Cut(target, ":")
+		if !ok || !hasKind {
+			return nil, fmt.Errorf("PM_WIRE_ROUTES entry %q must be kind:host=backend-host:port", entry)
 		}
-		host := strings.ToLower(strings.TrimSpace(hostText))
-		if host == "" || strings.ContainsAny(host, ":/* ") {
+		kind, err := parseKind(kindText)
+		if err != nil {
+			return nil, fmt.Errorf("PM_WIRE_ROUTES entry %q: %w", entry, err)
+		}
+		host := normalizeHost(hostText)
+		if host == "" || strings.ContainsAny(host, ":/* ") || strings.HasPrefix(host, ".") || strings.Contains(host, "..") {
 			return nil, fmt.Errorf("PM_WIRE_ROUTES entry %q has an invalid host name %q", entry, hostText)
 		}
 		backend = strings.TrimSpace(backend)
@@ -140,32 +167,26 @@ func parseRoutes(raw string) (map[string]string, error) {
 		if _, dup := routes[host]; dup {
 			return nil, fmt.Errorf("PM_WIRE_ROUTES routes host %q more than once", host)
 		}
-		routes[host] = backend
+		routes[host] = Route{Kind: kind, Backend: backend}
 	}
 	if len(routes) == 0 {
-		return nil, fmt.Errorf("PM_WIRE_ROUTES is required, for example db1.example.com=10.0.1.5:16033")
+		return nil, fmt.Errorf("PM_WIRE_ROUTES is required, for example mysql:db1.example.com=10.0.1.5:16033")
 	}
 	return routes, nil
 }
 
-func parseTrustedProxies(raw string) ([]netip.Prefix, error) {
-	var prefixes []netip.Prefix
-	for _, entry := range strings.Split(raw, ",") {
-		entry = strings.TrimSpace(entry)
-		if entry == "" {
-			continue
-		}
-		if prefix, err := netip.ParsePrefix(entry); err == nil {
-			prefixes = append(prefixes, prefix.Masked())
-			continue
-		}
-		addr, err := netip.ParseAddr(entry)
-		if err != nil {
-			return nil, fmt.Errorf("PM_TRUSTED_PROXIES entry %q is neither an IP address nor a CIDR block", entry)
-		}
-		prefixes = append(prefixes, netip.PrefixFrom(addr, addr.BitLen()))
+func parseKind(text string) (Kind, error) {
+	kind := Kind(strings.ToLower(strings.TrimSpace(text)))
+	switch kind {
+	case KindMySQL, KindPostgres, KindHTTPS:
+		return kind, nil
+	default:
+		return "", fmt.Errorf("unknown kind %q (want mysql, postgres, or https)", text)
 	}
-	return prefixes, nil
+}
+
+func normalizeHost(host string) string {
+	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
 }
 
 func parsePort(s string) (int, error) {

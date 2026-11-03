@@ -324,17 +324,22 @@ An edge reads only these variables; the datasource variables above (and
   shares the address (Athena's proxy default is 6443). Example:
   `mysql:3306,postgres:5432,https:6443`
 - `PM_WIRE_ROUTES` — _required in edge mode_. Comma-separated
-  `<host>=<backend>:<port>` entries. `<host>` is the name clients connect to and
-  must match the SNI exactly (case-insensitive; no wildcards); a host listed
-  twice refuses to start. The backend is that datasource proxy's address and its
-  `PM_PROXY_PROTOCOL_PORT`. Example:
-  `orders.pm.example.com=10.20.1.5:16033,billing.pm.example.com=10.20.1.6:16432`
+  `<kind>:<host>=<backend>:<port>` entries. `<kind>` is the datasource's engine,
+  as in `PM_EDGE_LISTEN`; a connection that arrives on another engine's port is
+  closed without dialing the backend. `<host>` is the name clients connect to
+  and must match the SNI exactly (case-insensitive, a trailing dot ignored, no
+  wildcards); a host listed twice refuses to start. The backend is that
+  datasource proxy's address and its `PM_PROXY_PROTOCOL_PORT`. Example:
+  `mysql:orders.pm.example.com=10.20.1.5:16033,postgres:billing.pm.example.com=10.20.1.6:16432`
 - `PM_TRUSTED_PROXIES` — _required in edge mode_. Comma-separated addresses or
   CIDR blocks. Every edge listener requires a PROXY protocol v1 or v2 header
   from one of these peers, as on a datasource proxy's PROXY protocol port; any
   other peer is closed at accept.
 - `PM_EDGE_HEALTH_PORT` — _optional_. A plain TCP port that accepts and closes,
   for load-balancer health checks. Unset disables it.
+- `PM_EDGE_MAX_CONNECTIONS` — _optional_. The most connections the edge holds
+  at once, across every listener and datasource. A connection over the limit is
+  closed at accept and logged with outcome `at_capacity`. Default `1024`.
 
 Each routed datasource proxy needs:
 

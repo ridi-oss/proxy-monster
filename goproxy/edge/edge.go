@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,9 +20,10 @@ import (
 )
 
 const (
-	handshakeTimeout         = 15 * time.Second
-	drainTimeout             = 10 * time.Second
-	maxConcurrentConnections = 256
+	handshakeTimeout = 15 * time.Second
+	drainTimeout     = 10 * time.Second
+	minAcceptBackoff = 5 * time.Millisecond
+	maxAcceptBackoff = time.Second
 )
 
 var (
@@ -64,7 +66,7 @@ func New(config *Config) (*Server, error) {
 		trust:            trust,
 		dial:             (&net.Dialer{}).DialContext,
 		handshakeTimeout: handshakeTimeout,
-		slots:            make(chan struct{}, maxConcurrentConnections),
+		slots:            make(chan struct{}, max(config.MaxConnections, 1)),
 		listeners:        map[net.Listener]struct{}{},
 		conns:            map[net.Conn]struct{}{},
 	}, nil
@@ -142,15 +144,19 @@ func (s *Server) Serve(kind Kind, ln net.Listener) error {
 	if !s.trackListener(proxied) {
 		return nil
 	}
+	var backoff time.Duration
 	for {
 		conn, err := proxied.Accept()
 		if err != nil {
 			if errors.Is(err, net.ErrClosed) {
 				return nil
 			}
-			return err
+			backoff = s.acceptFailed(kind, err, backoff)
+			continue
 		}
+		backoff = 0
 		if !s.acquire() {
+			slog.Warn("edge connection", "client", socketPeer(conn), "kind", string(kind), "outcome", "at_capacity", "max_connections", cap(s.slots))
 			_ = conn.Close()
 			continue
 		}
@@ -162,6 +168,12 @@ func (s *Server) Serve(kind Kind, ln net.Listener) error {
 		go func() {
 			defer s.release()
 			defer s.untrackConn(conn)
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					_ = conn.Close()
+					slog.Error("edge connection handler panicked", "client", socketPeer(conn), "kind", string(kind), "panic", recovered, "stack", string(debug.Stack()))
+				}
+			}()
 			s.handle(kind, conn)
 		}()
 	}
@@ -171,16 +183,26 @@ func (s *Server) ServeHealth(ln net.Listener) error {
 	if !s.trackListener(ln) {
 		return nil
 	}
+	var backoff time.Duration
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
 			if errors.Is(err, net.ErrClosed) {
 				return nil
 			}
-			return err
+			backoff = s.acceptFailed("health", err, backoff)
+			continue
 		}
+		backoff = 0
 		_ = conn.Close()
 	}
+}
+
+func (s *Server) acceptFailed(kind Kind, err error, previous time.Duration) time.Duration {
+	backoff := min(max(previous*2, minAcceptBackoff), maxAcceptBackoff)
+	slog.Warn("edge accept failed; retrying", "kind", string(kind), "error", err.Error(), "retry_in", backoff)
+	time.Sleep(backoff)
+	return backoff
 }
 
 func (s *Server) Shutdown(ctx context.Context) {
@@ -359,12 +381,17 @@ func (s *Server) handle(kind Kind, conn net.Conn) {
 		record.outcome = "no_sni"
 		return
 	}
-	backendAddr, ok := s.config.Routes[strings.ToLower(open.serverName)]
+	route, ok := s.config.Routes[normalizeHost(open.serverName)]
 	if !ok {
 		record.outcome = "unknown_sni"
 		return
 	}
-	record.backend = backendAddr
+	record.backend = route.Backend
+	if route.Kind != kind {
+		record.fail("wrong_engine", fmt.Errorf("host is routed to a %s backend", route.Kind))
+		return
+	}
+	backendAddr := route.Backend
 
 	ctx, cancel := context.WithDeadline(context.Background(), deadline)
 	backend, err := s.dial(ctx, "tcp", backendAddr)
@@ -402,7 +429,12 @@ func (s *Server) handle(kind Kind, conn net.Conn) {
 		record.fail("client_error", err)
 		return
 	}
-	record.bytesUp, record.bytesDown = splice(conn, backend)
+	var spliceErr error
+	record.bytesUp, record.bytesDown, spliceErr = splice(conn, backend)
+	if spliceErr != nil {
+		record.fail("reset", spliceErr)
+		return
+	}
 	record.outcome = "closed"
 }
 
@@ -425,16 +457,46 @@ func socketPeer(conn net.Conn) string {
 	return conn.RemoteAddr().String()
 }
 
-func splice(client, backend net.Conn) (up, down int64) {
-	upDone := make(chan int64, 1)
+func splice(client, backend net.Conn) (up, down int64, err error) {
+	type copied struct {
+		n   int64
+		err error
+	}
+	upDone := make(chan copied, 1)
 	go func() {
-		n, _ := io.Copy(backend, client)
-		_ = backend.Close()
-		_ = client.Close()
-		upDone <- n
+		n, err := io.Copy(backend, client)
+		finishDirection(backend, client, err)
+		upDone <- copied{n, err}
 	}()
-	down, _ = io.Copy(client, backend)
+	down, downErr := io.Copy(client, backend)
+	finishDirection(client, backend, downErr)
+	upResult := <-upDone
 	_ = client.Close()
 	_ = backend.Close()
-	return <-upDone, down
+	return upResult.n, down, errors.Join(spliceError(upResult.err), spliceError(downErr))
+}
+
+func finishDirection(dst, src net.Conn, err error) {
+	if err == nil && closeWrite(dst) == nil {
+		return
+	}
+	_ = dst.Close()
+	_ = src.Close()
+}
+
+func closeWrite(conn net.Conn) error {
+	if proxied, ok := conn.(*proxyproto.Conn); ok {
+		conn = proxied.Raw()
+	}
+	if halfCloser, ok := conn.(interface{ CloseWrite() error }); ok {
+		return halfCloser.CloseWrite()
+	}
+	return errors.ErrUnsupported
+}
+
+func spliceError(err error) error {
+	if err == nil || errors.Is(err, net.ErrClosed) || errors.Is(err, io.ErrClosedPipe) {
+		return nil
+	}
+	return err
 }

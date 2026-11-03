@@ -193,6 +193,17 @@ func TestMCPPurposeMintsAnAccessTokenWithinTheBindingScopes(t *testing.T) {
 	if n := h.e.Count(t, `SELECT count(*) FROM proxy_token WHERE kind = 'MCP_ACCESS' AND scope = 'mcp:policies:write mcp:read'`); n != 1 {
 		t.Errorf("%d tokens with every binding scope", n)
 	}
+	var minted struct {
+		AccessToken string `json:"accessToken"`
+	}
+	_ = json.Unmarshal([]byte(body), &minted)
+	if status, got := h.e.DoHeader(t, http.MethodPost, "/oauth/revoke", "token="+minted.AccessToken, nil,
+		"Content-Type", "application/x-www-form-urlencoded"); status != http.StatusOK {
+		t.Fatalf("revoke %d %s", status, got)
+	}
+	if n := h.e.Count(t, `SELECT count(*) FROM proxy_token WHERE kind = 'MCP_ACCESS' AND scope = 'mcp:read' AND revoked_at IS NOT NULL`); n != 1 {
+		t.Errorf("RFC 7009 revoke left the workload access token live (%d revoked)", n)
+	}
 	if body := h.exchange(ai.token(t, role, nil), "mcp", `,"scopes":["mcp:identity:write"]`, http.StatusForbidden); body !=
 		`{"code":"workload.scope_not_allowed","params":{}}` {
 		t.Errorf("scope %s", body)

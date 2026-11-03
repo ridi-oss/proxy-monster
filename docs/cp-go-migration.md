@@ -54,9 +54,10 @@ per-boot `PM_CP_INTERNAL_TOKEN`, one token for both directions:
   inside a Kotlin transaction does not. A service is deleted when its Kotlin
   caller moves to Go, and the listener with the last one (phase 8).
 
-| Service        | Kotlin caller                                                                 | Deleted when                      |
-| -------------- | ----------------------------------------------------------------------------- | --------------------------------- |
-| `GitHubSource` | the SQL-from-GitHub flow ([sql-from-github.md](./sql-from-github.md#sources)) | the flow moves with approvals (5) |
+| Service            | Kotlin caller                                                                                       | Deleted when                      |
+| ------------------ | --------------------------------------------------------------------------------------------------- | --------------------------------- |
+| `GitHubSource`     | the SQL-from-GitHub flow ([sql-from-github.md](./sql-from-github.md#sources))                       | the flow moves with approvals (5) |
+| `WorkloadBindings` | the MCP workload binding tools ([mcp-access-control.md](./mcp-access-control.md#workload-bindings)) | the MCP server moves (8)          |
 
 Both processes ship in the existing control-plane image, with `cp-go` as the
 entrypoint, so deployment does not change. After the last phase the image is one

@@ -360,6 +360,32 @@ All under `admin.policies` (write tools also require `mcp:policies:write`):
 - `list_group_members` / `list_group_roles` (`groupName`) → `admin.identity`,
   scope `mcp:read` (REST: `GET /api/groups/{id}/members`, `.../roles`).
 
+### Workload bindings
+
+Workload bindings map a platform-issued OIDC token to a `svc:` service principal
+([auth-model.md](./auth-model.md#workload-identity-exchange-server-to-server)).
+They live in cp-go; these tools reach them over the `WorkloadBindings` gobridge
+service, and cp-go runs each write in its own transaction with its
+`admin.identity` audit row on the `mcp` channel, naming the MCP caller. Without
+the bridge (a Kotlin control plane run without cp-go) every tool answers
+`workload.not_configured`.
+
+- `list_workload_bindings` → `admin.identity`, scope `mcp:read`; answers
+  `{bindings: [...]}`, each as `GET /api/workload-bindings` returns it.
+- `create_workload_binding` / `update_workload_binding` (`name`, `issuer`,
+  `subject`, `purposes`; optional `description`, `conditions` as claim → string
+  or string array, `principal`, `mcpScopes`, `ttlSeconds`, `enabled`) and
+  `delete_workload_binding` (`name`) → `admin.identity`, scope
+  `mcp:identity:write`. A binding is addressed by its immutable `name`; an
+  update replaces it whole, and one that narrows it or disables it, like a
+  delete, revokes every token it minted. Validation answers the REST route's
+  codes (`common.field_required`, `common.invalid_value`,
+  `common.already_exists`, `common.not_found`).
+
+An MCP token minted by `POST /api/workload/exchange` sits under a consent for
+the client `workload:<binding>` and is served like any other: the scope is a
+ceiling and Cedar decides each call for the binding's principal.
+
 ### Query and approval tools
 
 - `list_connectable_datasources` (`datasource.connect`, scope `mcp:query`) — the

@@ -337,8 +337,8 @@ An edge reads only these variables; the datasource variables above (and
   other peer is closed at accept.
 - `PM_EDGE_HEALTH_PORT` — _optional_. A plain TCP port that accepts and closes,
   for load-balancer health checks. Unset disables it.
-- `PM_EDGE_MAX_CONNECTIONS` — _optional_. The most connections the edge holds
-  at once, across every listener and datasource. A connection over the limit is
+- `PM_EDGE_MAX_CONNECTIONS` — _optional_. The most connections the edge holds at
+  once, across every listener and datasource. A connection over the limit is
   closed at accept and logged with outcome `at_capacity`. Default `1024`.
 
 Each routed datasource proxy needs:

@@ -1268,6 +1268,7 @@ func TestHaltDoesNotClearOnIncompleteEvidence(t *testing.T) {
 	if err != nil || len(anchors) < 2 {
 		t.Fatalf("want two anchors, got %d (err=%v)", len(anchors), err)
 	}
+	flaky.block(anchors[len(anchors)-1].Signature)
 
 	if _, err := fx.pool.Exec(fx.ctx, "UPDATE audit_event SET principal = 'mallory' WHERE id = 1"); err != nil {
 		t.Fatalf("tamper: %v", err)
@@ -1285,7 +1286,6 @@ func TestHaltDoesNotClearOnIncompleteEvidence(t *testing.T) {
 	}
 	// …but ONE anchor becomes unverifiable, so the cross-check at that anchored head never runs. The other
 	// anchor still verifies, so this is a partially-blind pass, not a blind one.
-	flaky.block(anchors[len(anchors)-1].Signature)
 	if err := m.FullVerify(fx.ctx); err != nil {
 		t.Fatalf("full verify while partially blind: %v", err)
 	}

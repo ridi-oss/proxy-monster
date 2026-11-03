@@ -15,7 +15,13 @@ import "errors"
 type ObjectStore interface {
 	Put(key string, body []byte) error
 	List(prefix string) ([]string, error)
+	ListObjects(prefix string) ([]ObjectInfo, error)
 	Get(key string) ([]byte, error)
+}
+
+type ObjectInfo struct {
+	Key     string
+	Version string
 }
 
 // ErrNotFound reports that an object does not exist, as distinct from being unreadable.

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -79,6 +80,30 @@ func (s *s3Store) List(prefix string) ([]string, error) {
 		}
 	}
 	return keys, nil
+}
+
+func (s *s3Store) ListObjects(prefix string) ([]ObjectInfo, error) {
+	var out []ObjectInfo
+	p := s3.NewListObjectsV2Paginator(s.client, &s3.ListObjectsV2Input{
+		Bucket: aws.String(s.bucket),
+		Prefix: aws.String(prefix),
+	})
+	for p.HasMorePages() {
+		page, err := p.NextPage(context.Background())
+		if err != nil {
+			return nil, fmt.Errorf("worm: list %q: %w", prefix, err)
+		}
+		for _, obj := range page.Contents {
+			if obj.Key == nil {
+				continue
+			}
+			out = append(out, ObjectInfo{
+				Key:     *obj.Key,
+				Version: aws.ToString(obj.ETag) + "@" + aws.ToTime(obj.LastModified).UTC().Format(time.RFC3339Nano),
+			})
+		}
+	}
+	return out, nil
 }
 
 func (s *s3Store) Get(key string) ([]byte, error) {

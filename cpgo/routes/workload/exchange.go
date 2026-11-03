@@ -29,6 +29,11 @@ var auditedClaims = []string{"aws_account", "lambda_source_function_arn", "ec2_i
 	"principal_tags.kubernetes-namespace", "principal_tags.kubernetes-service-account", "repository", "environment", "ref",
 	"terraform_workspace_name", "terraform_run_phase", "terraform_run_id", "kubernetes.io.namespace"}
 
+type serviceToken struct {
+	tokens.IssuedToken
+	Principal string `json:"principal"`
+}
+
 type mcpToken struct {
 	AccessToken string `json:"accessToken"`
 	ExpiresAt   string `json:"expiresAt"`
@@ -132,7 +137,8 @@ func (x exchange) bind(w http.ResponseWriter, r *http.Request) error {
 			if err != nil {
 				return err
 			}
-			out = tokens.IssuedToken{Token: token, ID: row.ID, Kind: "SERVICE", Name: &name, ExpiresAt: api.JavaInstant(row.ExpiresAt)}
+			out = serviceToken{IssuedToken: tokens.IssuedToken{Token: token, ID: row.ID, Kind: "SERVICE", Name: &name,
+				ExpiresAt: api.JavaInstant(row.ExpiresAt)}, Principal: b.Principal}
 			minted = strconv.FormatInt(row.ID, 10)
 		} else {
 			settings := x.Sessions.Settings()

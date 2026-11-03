@@ -121,7 +121,7 @@ func (h *harness) exchange(jwt, purpose, extra string, want int) string {
 	return h.do(http.MethodPost, exchangePath, `{"token":"`+jwt+`","purpose":"`+purpose+`"`+extra+`}`, nil, want)
 }
 
-var serviceBody = regexp.MustCompile(`^\{"token":"pms_[A-Za-z0-9_-]{43}","id":\d+,"kind":"SERVICE","name":"batch-settlement","expiresAt":"[^"]+"\}$`)
+var serviceBody = regexp.MustCompile(`^\{"token":"pms_[A-Za-z0-9_-]{43}","id":\d+,"kind":"SERVICE","name":"batch-settlement","expiresAt":"[^"]+","principal":"svc:batch-settlement"\}$`)
 
 func TestAWSTokenExchangesForAServiceWireTokenOnce(t *testing.T) {
 	ai := newAWSIssuer(t)

@@ -157,13 +157,14 @@ class GrpcDecideHandlerDbTest {
         }
         expire("1 minute")
         assertEquals(Status.Code.UNAUTHENTICATED, statusOf { stub.openConnection(open(ConnectionDoor.CONNECTION_DOOR_WIRE)) })
-        assertEquals("svc:grpc-batch", core.tokenStore.resolve(token)?.principal, "an open connection outlives its SERVICE token")
+        assertEquals("svc:grpc-batch", core.tokenStore.resolve(token, openConnectionGrace = true)?.principal, "an open connection outlives its SERVICE token")
+        assertNull(core.tokenStore.resolve(token), "the grace is only for an open connection")
         assertNull(core.tokenStore.resolve(token, allowRetired = false))
         expire("25 hours")
-        assertNull(core.tokenStore.resolve(token))
+        assertNull(core.tokenStore.resolve(token, openConnectionGrace = true))
         expire("-10 minutes")
         dataSource.connection.use { c -> c.createStatement().use { it.execute("UPDATE proxy_token SET revoked_at = now() WHERE kind = 'SERVICE'") } }
-        assertNull(core.tokenStore.resolve(token))
+        assertNull(core.tokenStore.resolve(token, openConnectionGrace = true))
         assertEquals(Status.Code.UNAUTHENTICATED, statusOf { stub.openConnection(open(ConnectionDoor.CONNECTION_DOOR_WIRE)) })
     }
 

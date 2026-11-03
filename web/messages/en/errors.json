@@ -128,6 +128,11 @@
   },
   "workload": {
     "not_configured": "CI token exchange is not configured on this server.",
-    "issuer_not_trusted": "The token's issuer is not trusted."
+    "issuer_not_trusted": "The token's issuer is not trusted.",
+    "token_replayed": "This workload token was already exchanged. Request a fresh token from the platform.",
+    "no_binding": "No workload binding matches this token.",
+    "ambiguous_binding": "More than one workload binding matches this token.",
+    "purpose_not_allowed": "The matching workload binding does not allow this purpose.",
+    "scope_not_allowed": "The matching workload binding does not allow a requested scope."
   }
 }

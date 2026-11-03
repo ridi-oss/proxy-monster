@@ -11,6 +11,7 @@
   "policies": "Policies",
   "users": "Users",
   "groups": "Groups",
+  "workloadBindings": "Workload bindings",
   "policyRoles": "Roles",
   "policyAssignments": "Assignments",
   "policyMaskFns": "Mask functions",

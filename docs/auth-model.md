@@ -261,13 +261,13 @@ stored anywhere: the platform signs the JWT, proxy-monster verifies it.
   `:run_phase:<plan|apply>`, so a `plan` binding can carry read scopes only.
 - **Replay.** Each token's `jti` (or its hash) is recorded until it expires; a
   second exchange answers 401 `workload.token_replayed`.
-- **Result.** `wire`: a `SERVICE` token (`pms_`), accepted at goproxy's wire
-  door and by `Decide` like a `SESSION`/`USER` token and as the datasource
-  discovery bearer, never on other HTTP routes or the editor door. `mcp`: an MCP
-  access token for the `/mcp` resource, scopes within the binding's (all of them
-  when the request names none), lasting the shorter of the binding TTL and
-  `PM_OAUTH_ACCESS_TTL`, with no refresh token; its consent's client is
-  `workload:<binding>`.
+- **Result.** `wire`: a `SERVICE` token (`pms_`) and the service principal it
+  names, accepted at goproxy's wire door and by `Decide` like a `SESSION`/`USER`
+  token and as the datasource discovery bearer, never on other HTTP routes or
+  the editor door. `mcp`: an MCP access token for the `/mcp` resource, scopes
+  within the binding's (all of them when the request names none), lasting the
+  shorter of the binding TTL and `PM_OAUTH_ACCESS_TTL`, with no refresh token;
+  its consent's client is `workload:<binding>`.
 - **Principal.** The binding's `svc:` principal holds roles like any principal,
   through `principal_role` (and JIT grants); there is no directory row unless an
   admin adds one. Cedar sees it as a `User`.

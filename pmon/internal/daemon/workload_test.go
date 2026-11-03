@@ -52,7 +52,7 @@ func newWorkloadCP(t *testing.T, datasources []driver.Endpoint) *workloadCP {
 			default:
 				n := cp.minted.Add(1)
 				_ = json.NewEncoder(w).Encode(map[string]any{"token": fmt.Sprintf("pms_%d", n), "id": n, "kind": "SERVICE",
-					"name": "batch-settlement", "expiresAt": time.Now().Add(cp.ttl).UTC().Format(time.RFC3339)})
+					"name": "batch-settlement", "principal": "svc:batch-settlement", "expiresAt": time.Now().Add(cp.ttl).UTC().Format(time.RFC3339)})
 			}
 		case "/api/datasources":
 			if got := r.Header.Get("Authorization"); !strings.HasPrefix(got, "Bearer pms_") {
@@ -118,7 +118,7 @@ func TestWorkloadLoginBrokersWithAServiceTokenAndNoPrompt(t *testing.T) {
 	}
 	s := d.Status()
 	srv := s.Server("default")
-	if srv == nil || !srv.LoggedIn || srv.Principal != "workload:batch-settlement" || srv.Workload != "env:TEST_JWT" {
+	if srv == nil || !srv.LoggedIn || srv.Principal != "svc:batch-settlement" || srv.Workload != "env:TEST_JWT" {
 		t.Fatalf("server = %+v", srv)
 	}
 	saved := d.snapshot().Servers["default"]

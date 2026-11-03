@@ -13,9 +13,15 @@ type WorkloadResult struct {
 	Kind      string `json:"kind"`
 	Name      string `json:"name"`
 	ExpiresAt string `json:"expiresAt"`
+	Service   string `json:"principal"`
 }
 
-func (r WorkloadResult) Principal() string { return "workload:" + r.Name }
+func (r WorkloadResult) Principal() string {
+	if r.Service != "" {
+		return r.Service
+	}
+	return "workload:" + r.Name
+}
 
 func ExchangeWorkload(ctx context.Context, client *http.Client, controlPlane, jwt string) (*WorkloadResult, error) {
 	var out WorkloadResult

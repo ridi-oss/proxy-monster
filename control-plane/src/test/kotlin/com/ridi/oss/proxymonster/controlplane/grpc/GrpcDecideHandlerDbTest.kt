@@ -133,7 +133,7 @@ class GrpcDecideHandlerDbTest {
     }
 
     @Test
-    fun `a workload SERVICE token opens through the wire door only and is re-resolved per decision`() = runBlocking {
+    fun `a workload SERVICE token opens through the wire door only and an open connection outlives it for a day`() = runBlocking {
         val token = "pms_grpc-service-token"
         dataSource.connection.use { c ->
             c.createStatement().use { st ->
@@ -152,6 +152,16 @@ class GrpcDecideHandlerDbTest {
         assertEquals(Status.Code.UNAUTHENTICATED, statusOf { stub.openConnection(open(ConnectionDoor.CONNECTION_DOOR_EDITOR)) })
         assertEquals("svc:grpc-batch", stub.openConnection(open(ConnectionDoor.CONNECTION_DOOR_WIRE)).principal)
         assertEquals("svc:grpc-batch", core.tokenStore.resolve(token)?.principal)
+        fun expire(ago: String) = dataSource.connection.use { c ->
+            c.createStatement().use { it.execute("UPDATE proxy_token SET expires_at = now() - interval '$ago' WHERE kind = 'SERVICE'") }
+        }
+        expire("1 minute")
+        assertEquals(Status.Code.UNAUTHENTICATED, statusOf { stub.openConnection(open(ConnectionDoor.CONNECTION_DOOR_WIRE)) })
+        assertEquals("svc:grpc-batch", core.tokenStore.resolve(token)?.principal, "an open connection outlives its SERVICE token")
+        assertNull(core.tokenStore.resolve(token, allowRetired = false))
+        expire("25 hours")
+        assertNull(core.tokenStore.resolve(token))
+        expire("-10 minutes")
         dataSource.connection.use { c -> c.createStatement().use { it.execute("UPDATE proxy_token SET revoked_at = now() WHERE kind = 'SERVICE'") } }
         assertNull(core.tokenStore.resolve(token))
         assertEquals(Status.Code.UNAUTHENTICATED, statusOf { stub.openConnection(open(ConnectionDoor.CONNECTION_DOOR_WIRE)) })

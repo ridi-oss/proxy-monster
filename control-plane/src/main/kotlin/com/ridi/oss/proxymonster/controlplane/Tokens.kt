@@ -84,7 +84,8 @@ data class CreateTokenInput(val name: String? = null, val ttlSeconds: Long? = nu
 /** Min/max lifetime for any issued token. No token is permanent; none lives past [TOKEN_MAX_TTL_SECONDS]. */
 const val TOKEN_MIN_TTL_SECONDS = 60L
 const val TOKEN_MAX_TTL_SECONDS = 24 * 3600L
-const val SESSION_TTL_SECONDS = 12 * 3600L   // daemon session default (refreshed by the daemon)
+const val SESSION_TTL_SECONDS = 12 * 3600L
+const val SERVICE_CONNECTION_GRACE_HOURS = 24   // daemon session default (refreshed by the daemon)
 const val DEFAULT_USER_TTL_SECONDS = 3600L   // generated "connect password" default: 1h
 
 /** Clamp a requested TTL into the allowed window — the invariant that keeps tokens expiring + bounded. */
@@ -201,10 +202,12 @@ class TokenStore(internal val dataSource: DataSource) {
      */
     fun resolve(token: String, allowRetired: Boolean = true): WireIdentity? = dataSource.connection.use { c ->
         c.prepareStatement(
-            "SELECT principal, roles, kind FROM proxy_token WHERE token_hash = ? AND kind IN ('SESSION', 'USER', 'SERVICE', 'EDITOR', 'APPROVER_EXEC') AND revoked_at IS NULL AND (? OR retired_at IS NULL) AND expires_at > now()",
+            "SELECT principal, roles, kind FROM proxy_token WHERE token_hash = ? AND kind IN ('SESSION', 'USER', 'SERVICE', 'EDITOR', 'APPROVER_EXEC') AND revoked_at IS NULL AND (? OR retired_at IS NULL) " +
+                "AND (expires_at > now() OR (? AND kind = 'SERVICE' AND expires_at > now() - interval '$SERVICE_CONNECTION_GRACE_HOURS hours'))",
         ).use { ps ->
             ps.setString(1, hash(token))
             ps.setBoolean(2, allowRetired)
+            ps.setBoolean(3, allowRetired)
             ps.executeQuery().use { rs ->
                 if (rs.next()) {
                     WireIdentity(

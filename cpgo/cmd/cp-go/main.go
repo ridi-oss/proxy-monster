@@ -282,7 +282,8 @@ func run(ctx context.Context, cfg config) int {
 	}
 	// Before the child starts, so its first call into Go finds the bridge.
 	served := make(chan error, 5)
-	goBridge, err := startBridge(ctx, cfg, internalToken, served)
+	bindings := workload.NewBridgeService(cfg.CI)
+	goBridge, err := startBridge(ctx, cfg, internalToken, bindings, served)
 	if err != nil {
 		slog.Error("cp-go: " + err.Error())
 		return 1
@@ -321,6 +322,7 @@ func run(ctx context.Context, cfg config) int {
 		return shutdownChild(kt)
 	}
 	defer pool.Close()
+	bindings.Ready(pool)
 
 	kotlin := bridge.New(httpUpstream, internalToken)
 	resolver := session.NewResolver(pool, cfg.Session)
@@ -453,7 +455,7 @@ type httpServer interface {
 }
 
 // startBridge serves the Go services the Kotlin child calls (cpgo/gobridge).
-func startBridge(ctx context.Context, cfg config, token string, served chan<- error) (*gobridge.Server, error) {
+func startBridge(ctx context.Context, cfg config, token string, bindings *workload.BridgeService, served chan<- error) (*gobridge.Server, error) {
 	gh, err := newGitHub(ctx, cfg.GitHub)
 	if err != nil {
 		return nil, err
@@ -468,6 +470,7 @@ func startBridge(ctx context.Context, cfg config, token string, served chan<- er
 	if gh != nil {
 		bridgepb.RegisterGitHubSourceServer(s.GRPC(), gh)
 	}
+	bridgepb.RegisterWorkloadBindingsServer(s.GRPC(), bindings)
 	s.Serve(served)
 	return s, nil
 }

@@ -55,16 +55,24 @@ func (b Bindings) listIssuers(w http.ResponseWriter, _ *http.Request) error {
 }
 
 func (b Bindings) list(w http.ResponseWriter, r *http.Request) error {
-	rows, err := db.New(b.Pool).WorkloadBindings(r.Context())
+	out, err := listBindings(r.Context(), b.Pool)
 	if err != nil {
 		return err
+	}
+	api.WriteJSON(w, http.StatusOK, out)
+	return nil
+}
+
+func listBindings(ctx context.Context, q db.DBTX) ([]Binding, error) {
+	rows, err := db.New(q).WorkloadBindings(ctx)
+	if err != nil {
+		return nil, err
 	}
 	out := make([]Binding, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, toBinding(db.WorkloadBindingRow(row)))
 	}
-	api.WriteJSON(w, http.StatusOK, out)
-	return nil
+	return out, nil
 }
 
 func decodeBinding(r *http.Request, issuers []Issuer) (validBinding, error) {
@@ -87,6 +95,17 @@ func getBinding(ctx context.Context, q db.DBTX, id int64) (*Binding, error) {
 	return &out, nil
 }
 
+func bindingID(ctx context.Context, q db.DBTX, name string) (int64, error) {
+	all, err := listBindings(ctx, q)
+	if err != nil {
+		return 0, err
+	}
+	if i := slices.IndexFunc(all, func(b Binding) bool { return b.Name == name }); i >= 0 {
+		return all[i].ID, nil
+	}
+	return 0, api.NotFound("workload_binding")
+}
+
 func entity(name string) string { return audit.Entity("WorkloadBinding", name) }
 
 func (b Bindings) create(w http.ResponseWriter, r *http.Request) error {
@@ -95,18 +114,7 @@ func (b Bindings) create(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	return api.Mutate(b.Pool, w, r, http.StatusCreated, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error) {
-		conditions, _ := json.Marshal(in.conditions)
-		id, err := db.New(tx).CreateWorkloadBinding(ctx, db.CreateWorkloadBindingParams{Name: in.name, Description: in.description,
-			Issuer: in.issuer, Subject: in.subject, Conditions: conditions, Principal: in.principal, Purposes: in.purposes,
-			McpScopes: in.mcpScopes, TtlSeconds: in.ttl, Enabled: in.enabled})
-		if err != nil {
-			return nil, api.Unique(err, "workload_binding", in.name)
-		}
-		out, err := getBinding(ctx, tx, id)
-		if err != nil {
-			return nil, err
-		}
-		return out, audit.Admin(ctx, tx, actor, adminAction, entity(out.Name), "create workload binding '"+out.Name+"' -> "+out.Principal)
+		return createBinding(ctx, tx, actor, in)
 	})
 }
 
@@ -116,53 +124,76 @@ func (b Bindings) update(w http.ResponseWriter, r *http.Request, id int64) error
 		return err
 	}
 	return api.Mutate(b.Pool, w, r, http.StatusOK, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error) {
-		before, err := getBinding(ctx, tx, id)
-		if err != nil {
-			return nil, err
-		}
-		if in.name != before.Name {
-			return nil, api.CodeInvalidValue.Err("field", "name")
-		}
-		q := db.New(tx)
-		conditions, _ := json.Marshal(in.conditions)
-		if _, err := q.UpdateWorkloadBinding(ctx, db.UpdateWorkloadBindingParams{ID: id, Description: in.description, Issuer: in.issuer,
-			Subject: in.subject, Conditions: conditions, Principal: in.principal, Purposes: in.purposes, McpScopes: in.mcpScopes,
-			TtlSeconds: in.ttl, Enabled: in.enabled}); err != nil {
-			return nil, err
-		}
-		after, err := getBinding(ctx, tx, id)
-		if err != nil {
-			return nil, err
-		}
-		summary := "update workload binding '" + after.Name + "'"
-		if narrowed(*before, *after) {
-			revoked, err := revoke(ctx, q, *before)
-			if err != nil {
-				return nil, err
-			}
-			summary += "; revoked " + revoked + " token(s)"
-		}
-		return after, audit.Admin(ctx, tx, actor, adminAction, entity(after.Name), summary)
+		return updateBinding(ctx, tx, actor, id, in)
 	})
 }
 
 func (b Bindings) delete(w http.ResponseWriter, r *http.Request, id int64) error {
 	return api.Mutate(b.Pool, w, r, http.StatusNoContent, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (any, error) {
-		before, err := getBinding(ctx, tx, id)
-		if err != nil {
-			return nil, err
-		}
-		q := db.New(tx)
-		if _, err := q.DeleteWorkloadBinding(ctx, id); err != nil {
-			return nil, err
-		}
+		return nil, deleteBinding(ctx, tx, actor, id)
+	})
+}
+
+func createBinding(ctx context.Context, tx pgx.Tx, actor audit.Actor, in validBinding) (*Binding, error) {
+	conditions, _ := json.Marshal(in.conditions)
+	id, err := db.New(tx).CreateWorkloadBinding(ctx, db.CreateWorkloadBindingParams{Name: in.name, Description: in.description,
+		Issuer: in.issuer, Subject: in.subject, Conditions: conditions, Principal: in.principal, Purposes: in.purposes,
+		McpScopes: in.mcpScopes, TtlSeconds: in.ttl, Enabled: in.enabled})
+	if err != nil {
+		return nil, api.Unique(err, "workload_binding", in.name)
+	}
+	out, err := getBinding(ctx, tx, id)
+	if err != nil {
+		return nil, err
+	}
+	return out, audit.Admin(ctx, tx, actor, adminAction, entity(out.Name), "create workload binding '"+out.Name+"' -> "+out.Principal)
+}
+
+func updateBinding(ctx context.Context, tx pgx.Tx, actor audit.Actor, id int64, in validBinding) (*Binding, error) {
+	before, err := getBinding(ctx, tx, id)
+	if err != nil {
+		return nil, err
+	}
+	if in.name != before.Name {
+		return nil, api.CodeInvalidValue.Err("field", "name")
+	}
+	q := db.New(tx)
+	conditions, _ := json.Marshal(in.conditions)
+	if _, err := q.UpdateWorkloadBinding(ctx, db.UpdateWorkloadBindingParams{ID: id, Description: in.description, Issuer: in.issuer,
+		Subject: in.subject, Conditions: conditions, Principal: in.principal, Purposes: in.purposes, McpScopes: in.mcpScopes,
+		TtlSeconds: in.ttl, Enabled: in.enabled}); err != nil {
+		return nil, err
+	}
+	after, err := getBinding(ctx, tx, id)
+	if err != nil {
+		return nil, err
+	}
+	summary := "update workload binding '" + after.Name + "'"
+	if narrowed(*before, *after) {
 		revoked, err := revoke(ctx, q, *before)
 		if err != nil {
 			return nil, err
 		}
-		return nil, audit.Admin(ctx, tx, actor, adminAction, entity(before.Name),
-			"delete workload binding '"+before.Name+"'; revoked "+revoked+" token(s)")
-	})
+		summary += "; revoked " + revoked + " token(s)"
+	}
+	return after, audit.Admin(ctx, tx, actor, adminAction, entity(after.Name), summary)
+}
+
+func deleteBinding(ctx context.Context, tx pgx.Tx, actor audit.Actor, id int64) error {
+	before, err := getBinding(ctx, tx, id)
+	if err != nil {
+		return err
+	}
+	q := db.New(tx)
+	if _, err := q.DeleteWorkloadBinding(ctx, id); err != nil {
+		return err
+	}
+	revoked, err := revoke(ctx, q, *before)
+	if err != nil {
+		return err
+	}
+	return audit.Admin(ctx, tx, actor, adminAction, entity(before.Name),
+		"delete workload binding '"+before.Name+"'; revoked "+revoked+" token(s)")
 }
 
 func narrowed(before, after Binding) bool {

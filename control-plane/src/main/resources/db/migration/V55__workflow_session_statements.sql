@@ -9,7 +9,8 @@ unless
   context has channel &&
   (context.channel == "editor" ||
    context.channel == "wire" ||
-   ((context.channel == "workflow-executor" || context.channel == "workflow-viewer") &&
+   ((context.channel == "workflow-executor" ||
+     context.channel == "workflow-viewer") &&
     action == Action::"stmt.kind.set_session_var"))
 };
 $$,

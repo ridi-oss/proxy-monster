@@ -122,7 +122,7 @@ data class QueryResponse(
 
 /**
  * Which surface/phase a decision is in (docs/authz-context.md). Drives the session-statement
- * gate (only a persistent WIRE session may passthrough BEGIN/SET) and is overlaid onto the Cedar
+ * gate (wire and editor may passthrough BEGIN/SET, a workflow only a variable SET) and is overlaid onto the Cedar
  * `context.channel` a policy conditions on — authoritative, from the entry point / ephemeral-token kind,
  * never client-asserted. [contextValue] is the exact Cedar string.
  */
@@ -417,7 +417,7 @@ internal fun effectiveAuthzContext(
  * the analyzer-emitted required grants in category order. Wire-safe metadata/session chatter is
  * passthrough-classified; the wire and editor channels may passthrough connection-scoped
  * (TX_CONTROL/SESSION_MUTATING) statements on their held connection — re-decided per statement — while
- * the workflow channels refuse them, since each workflow run uses a fresh connection.
+ * the workflow channels admit only a session variable SET, through the seeded `stmt.cat.session` forbid.
  */
 fun decideQuery(
     principal: String,
@@ -645,8 +645,9 @@ internal fun decideFacts(
     // A resolved statement that touches no column/table/function, changes no catalog, and calls no function
     // has nothing to mask, re-inspect, or authorize beyond the kind gate it already passed: relay it verbatim
     // (SHOW/SET/const-SELECT). A catalog-changing (DDL) or function-bearing no-column statement falls through
-    // so its re-inspection and function authorization still run. A session statement on a non-persistent channel
-    // (MCP/workflow) is denied earlier at the kind gate by the seeded `stmt.cat.session` Cedar forbid.
+    // so its re-inspection and function authorization still run. A session statement the channel may not run
+    // (any on MCP, all but a variable SET on a workflow) is denied earlier at the kind gate by the seeded
+    // `stmt.cat.session` Cedar forbid.
     if (facts.resolved &&
         !facts.catalogChanging &&
         facts.functionsList.isEmpty() &&

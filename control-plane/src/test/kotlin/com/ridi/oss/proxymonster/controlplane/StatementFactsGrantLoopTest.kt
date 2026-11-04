@@ -339,32 +339,53 @@ class StatementFactsGrantLoopTest {
     }
 
     @Test
-    fun `session statement passes through only on persistent-connection channels`() {
+    fun `a session variable SET passes through on the wire, the editor, and both workflow channels, never MCP`() {
         val session = statementFacts {
             resolved = true
             statementExec = executeGrant(StatementKind.STATEMENT_KIND_SET_SESSION_VAR)
         }
         assertEquals(EnfAction.ALLOW, decide(session, Channel.WIRE).action)
         assertEquals(EnfAction.ALLOW, decide(session, Channel.EDITOR).action)
+        assertEquals(EnfAction.ALLOW, decide(session, Channel.WORKFLOW_EXECUTOR).action)
+        assertEquals(EnfAction.ALLOW, decide(session, Channel.WORKFLOW_VIEWER).action)
         assertEquals(EnfAction.DENY, decide(session, Channel.MCP).action)
-        assertEquals(EnfAction.DENY, decide(session, Channel.WORKFLOW_EXECUTOR).action)
     }
 
     @Test
-    fun `session rewrite rides the passthrough on persistent-connection channels`() {
-        // The analyzer's results-charset pin (issue #81) is emitted as a rewrite on a session SET; it must
-        // survive the session passthrough so the data plane relays utf8mb4 to the target DB. Denied channels
-        // (MCP/workflow) never execute the SET, so no rewrite reaches them.
+    fun `transaction control and USE stay on the wire and the editor, so a workflow cannot leave a transaction to roll back`() {
+        for (kind in listOf(
+            StatementKind.STATEMENT_KIND_START_TRANSACTION,
+            StatementKind.STATEMENT_KIND_COMMIT,
+            StatementKind.STATEMENT_KIND_ROLLBACK,
+            StatementKind.STATEMENT_KIND_SAVEPOINT,
+            StatementKind.STATEMENT_KIND_SET_TRANSACTION,
+            StatementKind.STATEMENT_KIND_USE,
+        )) {
+            val facts = statementFacts {
+                resolved = true
+                statementExec = executeGrant(kind)
+            }
+            assertEquals(EnfAction.ALLOW, decide(facts, Channel.WIRE).action, "$kind on wire")
+            assertEquals(EnfAction.ALLOW, decide(facts, Channel.EDITOR).action, "$kind on editor")
+            for (denied in listOf(Channel.WORKFLOW_EXECUTOR, Channel.WORKFLOW_VIEWER, Channel.MCP)) {
+                assertEquals(EnfAction.DENY, decide(facts, denied).action, "$kind on $denied")
+            }
+        }
+    }
+
+    @Test
+    fun `the utf8mb4 results-charset pin rides the session passthrough wherever a SET runs`() {
         val pinned = statementFacts {
             resolved = true
             statementExec = executeGrant(StatementKind.STATEMENT_KIND_SET_SESSION_VAR)
             rewrittenSql = "SET character_set_results = utf8mb4"
         }
-        val wire = decide(pinned, Channel.WIRE)
-        assertEquals(EnfAction.ALLOW, wire.action)
-        assertTrue(wire.passthrough)
-        assertEquals("SET character_set_results = utf8mb4", wire.rewrittenSql)
-        assertEquals("SET character_set_results = utf8mb4", decide(pinned, Channel.EDITOR).rewrittenSql)
+        for (channel in listOf(Channel.WIRE, Channel.EDITOR, Channel.WORKFLOW_EXECUTOR)) {
+            val ctx = decide(pinned, channel)
+            assertEquals(EnfAction.ALLOW, ctx.action, "$channel")
+            assertTrue(ctx.passthrough, "$channel")
+            assertEquals("SET character_set_results = utf8mb4", ctx.rewrittenSql, "$channel")
+        }
         assertEquals(EnfAction.DENY, decide(pinned, Channel.MCP).action)
     }
 }

@@ -7,12 +7,14 @@ import com.ridi.oss.proxymonster.controlplane.grpc.ControlPlaneGrpcService
 import com.ridi.oss.proxymonster.controlplane.grpc.GrpcServer
 import com.ridi.oss.proxymonster.controlplane.support.CpGoStack
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
+import com.ridi.oss.proxymonster.controlplane.support.openEmptyEditorConnection
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.controlplane.support.testLoginRoute
 import com.ridi.oss.proxymonster.grpc.ControlPlaneGrpcKt
 import com.ridi.oss.proxymonster.grpc.EnfAction as WireEnfAction
 import com.ridi.oss.proxymonster.grpc.ProxyEditorMsg
 import com.ridi.oss.proxymonster.grpc.EditorDecision
+import com.ridi.oss.proxymonster.grpc.decisionRequest
 import com.ridi.oss.proxymonster.grpc.editorDecision
 import com.ridi.oss.proxymonster.grpc.editorDone
 import com.ridi.oss.proxymonster.grpc.editorError
@@ -557,6 +559,94 @@ class ApprovalExecuteRouteDbTest {
         assertEquals(1L, storedResultCount(id), "the second, rejected execute must not add or replace a stored result")
         val stored = resultStore.accessFor(id)!!.decrypted!!
         assertEquals(listOf(listOf("some-value")), stored.rows, "the original stored rows must be unchanged by the rejected second execute")
+    }
+
+    @Test
+    fun `an approved batch runs a session variable SET and then its query, each decided ALLOW on workflow-executor`() = testApplication {
+        val client = wireAsExecutor()
+        val sessionDs = core.datasourceStore.seed(name = "exec-session-ds", engine = "postgres")
+        val roleName = "exec-session-role"
+        val roleId = core.policyStore.createRole(RoleInput(roleName)).id
+        core.cedarPolicyStore.create(
+            CedarPolicyInput(
+                name = "exec-session-role-grants",
+                cedarSrc = """permit(principal in Role::"$roleName", action in [Action::"datasource.connect", Action::"stmt.cat.read", Action::"stmt.cat.session"], resource in Datasource::"${sessionDs.name}");""",
+            ),
+            updatedBy = null,
+        )
+        val statements = listOf("SET statement_timeout = '5min'", "SELECT 1")
+        val id = core.accessStore.createQueryRequest(
+            principal = requester, datasourceId = sessionDs.id, statements = statements,
+            denyReason = null, sourceDecisionId = null, reason = "need it", title = null,
+            evaluatedDecision = "DENY", roleId = roleId,
+        ).id
+        dataSource.connection.use { c ->
+            c.prepareStatement("UPDATE access_request SET status='APPROVED', decided_by=? WHERE id=?").use { ps ->
+                ps.setString(1, executor)
+                ps.setLong(2, id)
+                ps.executeUpdate()
+            }
+        }
+
+        val verdicts = java.util.concurrent.CopyOnWriteArrayList<Pair<String, WireEnfAction>>()
+        supervisorScope {
+            val event = async { stub.events(eventsRequest { datasourceName = sessionDs.name; protocolVersion = CONTROL_PROTOCOL_VERSION }).first() }
+            awaitUntil("Events stream attached") { sessionDs.name in core.proxyEventsHub.attached() }
+
+            val responseDeferred = async { client.post("/api/approvals/$id/execute") }
+            val open = withTimeout(5_000) { event.await() }.openEditorSession
+            val connectionId = stub.openEmptyEditorConnection(open, sessionDs.name, sessionDs.effectiveCatalog)
+
+            val proxyRequests = Channel<ProxyEditorMsg>(Channel.UNLIMITED)
+            val proxy = async {
+                stub.editorExec(proxyRequests.receiveAsFlow()).collect { control ->
+                    when {
+                        control.hasQuery() -> {
+                            val verdict = stub.decide(
+                                decisionRequest {
+                                    token = open.ephemeralToken
+                                    datasourceName = sessionDs.name
+                                    currentCatalog = sessionDs.effectiveCatalog
+                                    searchPath.add("public")
+                                    this.connectionId = connectionId
+                                    sql = control.query.sql
+                                },
+                            ).verdict
+                            verdicts += control.query.sql to verdict.decision
+                            proxyRequests.send(proxyEditorMsg { decision = editorDecision { decision = verdict.decision; decisionId = verdict.decisionId } })
+                            if (verdict.decision != WireEnfAction.DENY) {
+                                if (control.query.sql.startsWith("SELECT")) {
+                                    proxyRequests.send(rowsChunk(listOf("?column?"), listOf(listOf("1"))))
+                                    proxyRequests.send(proxyEditorMsg { done = editorDone { rowsAffected = -1 } })
+                                } else {
+                                    proxyRequests.send(proxyEditorMsg { resultRows = editorResultRows {} })
+                                    proxyRequests.send(proxyEditorMsg { done = editorDone { rowsAffected = 0 } })
+                                }
+                            }
+                        }
+                        control.hasClose() -> proxyRequests.close()
+                        else -> fail("control plane sent an empty editor control message")
+                    }
+                }
+            }
+            proxyRequests.send(proxyEditorMsg { sessionReady = editorReady { sessionId = open.sessionId } })
+            proxyRequests.send(proxyEditorMsg { serving = editorServing {} })
+
+            val response = withTimeout(5_000) { responseDeferred.await() }
+            withTimeout(5_000) { proxy.await() }
+            assertEquals(HttpStatusCode.Accepted, response.status, response.bodyAsText())
+            awaitUntil("the batch completes") { core.accessStore.getRequest(id)?.status == "EXECUTED" }
+            awaitUntil("Events stream detached") { sessionDs.name !in core.proxyEventsHub.attached() }
+        }
+
+        assertEquals(statements.map { it to WireEnfAction.ALLOW }, verdicts.toList())
+        val doneResults = dataSource.connection.use { c ->
+            c.prepareStatement("SELECT count(*) FROM query_result WHERE task_id = ? AND status = 'DONE' AND decision_id IS NOT NULL").use { ps ->
+                ps.setLong(1, id)
+                ps.executeQuery().use { rs -> rs.next(); rs.getLong(1) }
+            }
+        }
+        assertEquals(2L, doneResults, "both statements store a DONE result charged to their own decision")
     }
 
     /**

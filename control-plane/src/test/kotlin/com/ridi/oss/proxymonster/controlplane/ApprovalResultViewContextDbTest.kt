@@ -169,7 +169,7 @@ class ApprovalResultViewContextDbTest {
                 name = "approval-view-pii-reader-connect-select",
                 cedarSrc = """permit(
                     principal in Role::"$roleName",
-                    action in [Action::"datasource.connect", Action::"stmt.cat.read", Action::"stmt.cat.metadata"],
+                    action in [Action::"datasource.connect", Action::"stmt.cat.read", Action::"stmt.cat.metadata", Action::"stmt.cat.session"],
                     resource in Datasource::"${fx.datasource.name}"
                 );""",
             ),
@@ -657,6 +657,22 @@ class ApprovalResultViewContextDbTest {
     }
 
     @Test
+    fun `a stored session variable SET from an approved run stays viewable`() = testApplication {
+        resetMutableAuthzState()
+        val id = seedResult(
+            sql = "SET search_path TO reporting",
+            columns = emptyList(),
+            rows = emptyList(),
+        )
+        val client = wire()
+        client.login(executor)
+
+        val response = client.get("/api/approvals/$id/result")
+        assertEquals(HttpStatusCode.OK, response.status, response.bodyAsText())
+        assertTrue(response.body<QueryResultView>().rows.isEmpty())
+    }
+
+    @Test
     fun `a passthrough that re-decides DENY is still refused without stored data`() = testApplication {
         // Dropping the blanket passthrough deny must not widen the DENY branch: a session statement re-decides
         // DENY on the workflow-viewer channel (each view runs on a fresh connection, no session to mutate), so
@@ -664,7 +680,7 @@ class ApprovalResultViewContextDbTest {
         resetMutableAuthzState()
         val sentinel = "LEAK-SENTINEL-SESSION"
         val id = seedResult(
-            sql = "SET search_path TO reporting",
+            sql = "BEGIN",
             columns = listOf("ok"),
             rows = listOf(listOf(sentinel)),
         )

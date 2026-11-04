@@ -74,9 +74,9 @@ PR. The PR gets a comment:
 
 Each Action step names a directory and where its files run: `datasource`,
 `schema`, and `role`. The run's connection opens with that schema as its default
-namespace, so files carry no `USE` (session statements are forbidden on workflow
-runs). The control plane never sees repository layout. One repository may have
-several steps.
+namespace, so files carry no `USE`: a workflow run admits a session variable
+`SET`, but not `USE` or transaction control. The control plane never sees
+repository layout. One repository may have several steps.
 
 A scope is one line of runs: query executions in a named scope happen one PR at
 a time. It defaults to `<datasource>/<schema>`, and a step may set it to any

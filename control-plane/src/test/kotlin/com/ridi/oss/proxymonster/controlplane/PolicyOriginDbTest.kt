@@ -66,7 +66,7 @@ class PolicyOriginDbTest {
             }
         }
         assertEquals(
-            "5e14794fbf24f054a79e2e911fa8dbd4",
+            "93d323b463e4fd8aa90cf66d6d240506",
             digest,
             "the seeded security posture changed: a policy body, id, key, origin, enabled flag, role, " +
                 "group, or group-to-role link differs from what a fresh install is supposed to enforce",

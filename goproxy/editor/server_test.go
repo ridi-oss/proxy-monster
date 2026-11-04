@@ -1070,6 +1070,23 @@ func TestServerMySQLReportsNamespaceAfterUse(t *testing.T) {
 	}
 }
 
+func TestServerMySQLKeepsSessionSqlModeAcrossStatements(t *testing.T) {
+	fixture := editorSeedMySQL(t)
+	fake, client := editorStartFakeCP(t, editorSessionID)
+	editorLaunch(t, fake, client, fixture)
+
+	editorSendQuery(fake, "SET SESSION sql_mode = 'STRICT_TRANS_TABLES'", 20)
+	editorExpectDecision(t, editorRecv(t, fake), pb.EnfAction_ALLOW, nil, "")
+	editorExpectRows(t, editorRecv(t, fake), nil)
+	editorExpectDone(t, editorRecv(t, fake), 0)
+
+	editorSendQuery(fake, "SELECT @@SESSION.sql_mode AS mode", 20)
+	editorExpectDecision(t, editorRecv(t, fake), pb.EnfAction_ALLOW, nil, "")
+	rows := editorExpectRows(t, editorRecv(t, fake), []string{"mode"})
+	editorExpectValues(t, rows, [][]editorExpectedValue{{{value: "STRICT_TRANS_TABLES"}}})
+	editorExpectDone(t, editorRecv(t, fake), -1)
+}
+
 func TestServerMySQLOpensInDefaultSchema(t *testing.T) {
 	fixture := editorSeedMySQL(t)
 	const altSchema = editorMySQLSchema + "_default"

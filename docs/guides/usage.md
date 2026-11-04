@@ -50,9 +50,11 @@ Each statement is also gated by its kind, separately from the columns it reads:
 | admin | `KILL`, `FLUSH`, `GRANT`, `LOAD DATA` | `stmt.cat.admin.*` |
 
 Holding a role that reads a table does not let you run `SHOW TABLES` or `SET` on
-it — those are their own grants. Session statements run only from the console
-editor and a wire connection; through MCP or an approval they are always denied,
-since each of those runs on a fresh connection.
+it — those are their own grants. Session statements run from the console editor
+and a wire connection. An approved workflow runs only a session variable `SET`
+(for example `SET SESSION sql_mode = 'STRICT_TRANS_TABLES'`), which applies to
+the statements after it in the same request; `USE`, `BEGIN`, and `COMMIT` are
+denied there. Through MCP every session statement is denied.
 
 ## 1. Run a query against dev
 

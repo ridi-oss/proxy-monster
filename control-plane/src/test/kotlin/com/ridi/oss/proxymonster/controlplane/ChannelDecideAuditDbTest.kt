@@ -53,9 +53,7 @@ class ChannelDecideAuditDbTest {
 
 
     @Test
-    fun `the editor channel passthrough-allows a session statement, workflow phases still deny`() {
-        // The stateful editor may run SET/USE/BEGIN (its held connection persists them; the proxy
-        // re-probes the live path per query, so it's safe). The one-shot workflow phases still deny.
+    fun `the editor passthrough-allows SET and BEGIN, a workflow passthrough-allows SET but denies BEGIN`() {
         val editor = decide("SET search_path = public", Channel.EDITOR)
         assertEquals(EnfAction.ALLOW, editor.action, "editor session may passthrough SET: ${editor.denyReason}")
         assertTrue(editor.passthrough, "SET is a session-mutating passthrough on the editor channel")
@@ -64,7 +62,14 @@ class ChannelDecideAuditDbTest {
         assertEquals(EnfAction.ALLOW, begin.action, "editor session may passthrough BEGIN: ${begin.denyReason}")
 
         val wfexec = decide("SET search_path = public", Channel.WORKFLOW_EXECUTOR)
-        assertEquals(EnfAction.DENY, wfexec.action, "a workflow-executor one-shot may not run a session statement")
+        assertEquals(EnfAction.ALLOW, wfexec.action, "workflow executor may passthrough SET: ${wfexec.denyReason}")
+        assertTrue(wfexec.passthrough, "SET is a session-mutating passthrough on the workflow executor")
+
+        val viewer = decide("SET search_path = public", Channel.WORKFLOW_VIEWER)
+        assertEquals(EnfAction.ALLOW, viewer.action, "a stored SET result stays viewable: ${viewer.denyReason}")
+
+        val wfBegin = decide("BEGIN", Channel.WORKFLOW_EXECUTOR)
+        assertEquals(EnfAction.DENY, wfBegin.action, "a workflow may not open a transaction it cannot commit")
     }
 
     @Test

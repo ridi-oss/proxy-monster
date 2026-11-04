@@ -352,6 +352,10 @@ explicit, audited toggle; ships through `-261`):
 | `-260` | `preset.production-metadata` | any principal → `stmt.cat.metadata` on `system:production` |
 | `-261` | `preset.production-session` | any principal → `stmt.cat.session` on `system:production` |
 
+`-280` `preset.session-channel-forbid` (global, enabled) overrides both session
+presets: it forbids `stmt.cat.session` off the `editor` and `wire` channels,
+except `stmt.kind.set_session_var` on the two workflow channels.
+
 Context tag producer:
 
 <!-- prettier-ignore -->

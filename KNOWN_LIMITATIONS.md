@@ -144,6 +144,11 @@ captured on the connection's own held target-DB connection (design:
   execute (they can't view the result — `/result` checks `isDeactivated`).
   Whether the task should run at all is unresolved, flagged rather than silently
   decided. Detail: [`docs/task-execution.md`](./docs/task-execution.md).
+- 🟡 A workflow admits every session variable `SET`: Cedar sees the kind, not
+  the variable. After `SET autocommit = 0` the writes roll back at the end of
+  the run but record DONE; `SET foreign_key_checks = 0` skips the checks;
+  PostgreSQL `SET search_path` can run a different table than role discovery
+  previewed.
 - 🟡 Open presets — curation is load-bearing. Under `system:development` (and
   the permit-by-default system posture), a data-reading system object that the
   shipped `system:` classification _forgets to tag_ is exposed. The curated

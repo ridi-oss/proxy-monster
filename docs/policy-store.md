@@ -352,6 +352,14 @@ explicit, audited toggle; ships through `-261`):
 | `-260` | `preset.production-metadata` | any principal → `stmt.cat.metadata` on `system:production` |
 | `-261` | `preset.production-session` | any principal → `stmt.cat.session` on `system:production` |
 
+Session channel guard (global, enabled). It is a forbid, so it overrides both
+session presets above:
+
+<!-- prettier-ignore -->
+| id | `system_key` | effect |
+| --- | --- | --- |
+| `-280` | `preset.session-channel-forbid` | forbid `stmt.cat.session` unless `context.channel` is `editor` or `wire`, or the statement is `stmt.kind.set_session_var` on `workflow-executor` / `workflow-viewer` |
+
 Context tag producer:
 
 <!-- prettier-ignore -->

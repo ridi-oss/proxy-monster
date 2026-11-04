@@ -100,10 +100,12 @@ Both request and response messages live in `proto/src/main/proto/analyzer.proto`
    to `stmt.cat.session`. Kotlin authorizes the kind, then relays the statement
    verbatim: a resolved statement with no column/table/function grant (and no
    catalog change) has nothing to mask, so the relay is derived from the grant
-   shape, not from any SQL-shape knowledge in Kotlin. A session statement is
-   denied on a non-persistent channel (MCP or a workflow phase) by the seeded
-   `stmt.cat.session` Cedar forbid, since each such query runs on a fresh
-   connection.
+   shape, not from any SQL-shape knowledge in Kotlin. The seeded
+   `stmt.cat.session` Cedar forbid admits every session statement on the wire
+   and the editor. On the two workflow channels it admits only
+   `stmt.kind.set_session_var`, so an approved batch can set a session variable
+   for the statements after it but cannot open a transaction it never commits.
+   It denies every session statement on MCP.
 
 ## The deny taxonomy
 

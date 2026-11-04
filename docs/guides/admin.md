@@ -165,8 +165,9 @@ the trusted-network preset also applies; elsewhere the stored value comes back
 masked.
 
 Enabled guardrails you normally leave alone: `system:session-channel-forbid`
-(session statements only on the editor and wire), the `system:` classification
-floors (`system:critical-guard` and friends), and the result caps below.
+(session statements on the editor and wire, plus a session variable `SET` in a
+workflow), the `system:` classification floors (`system:critical-guard` and
+friends), and the result caps below.
 
 ### 4. Map groups to roles
 

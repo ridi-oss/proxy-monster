@@ -17,7 +17,7 @@ import (
 
 func TestShowGenericFormatsPreserveExistingFlags(t *testing.T) {
 	e := newEnv(t)
-	cp := fakeCP(t, []map[string]any{{"name": "mysql", "engine": "mysql", "dbName": "sample", "advertiseAddr": dummyProxy(t)}})
+	cp := fakeCP(t, []map[string]any{{"name": "mysql", "engine": "mysql", "connectionInfo": map[string]any{"properties": map[string]string{"database": "sample"}}, "advertiseAddr": dummyProxy(t)}})
 	e.mustRun(t, "login", "--url", cp.URL)
 	for _, format := range []string{"url", "jdbc", "go-dsn", "cli"} {
 		legacy := e.mustRun(t, "show", "mysql", "--"+format)

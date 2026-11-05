@@ -95,7 +95,6 @@ func (c *showCmd) Run() error {
 		Name:           found.Name,
 		ConnectionInfo: found.ConnectionInfo.Clone(),
 		Engine:         found.Engine,
-		DbName:         found.DbName,
 		Port:           found.LocalPort,
 		User:           srv.Principal,
 		Password:       s.LocalPassword,

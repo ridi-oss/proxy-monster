@@ -492,6 +492,14 @@ Fixes for gaps documented in
 
 ## Refactoring
 
+- Retire `dbName`. pmon reads a datasource's database from its connection info,
+  and `dbName` remains only for releases from before the published `database`
+  property: `/api/datasources` serves it for older pmon, and pmon reads and
+  writes it at its JSON boundaries (`driver.Endpoint` from the control plane,
+  `control.Datasource` between the daemon and its CLI and tray) for older
+  control planes and daemons. Remove all of them once no supported pmon or
+  server predates the property.
+
 - Make Go the canonical implementation for logic that lives in both languages,
   and call it from Kotlin over FFM instead of hand-maintaining byte-identical
   copies. Masking is the clearest case: `Masking.kt` and `Masks.kt` under

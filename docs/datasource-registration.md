@@ -116,11 +116,12 @@ enough to open a local broker port for that datasource.
 
 `connection_info` is what a client needs beyond the address: an endpoint plus
 engine-defined properties, nonsecret by contract: MySQL and PostgreSQL publish
-`database` (`PM_TARGET_DB`), which `/api/datasources` also serves as `dbName`,
-and Athena its region, workgroup, catalog and database. An absent message keeps
-the stored value; an explicit empty message clears it. The engine definition
-validates the accepted fields, and a non-connectable listing omits it along with
-the other connection material.
+`database` (`PM_TARGET_DB`), and Athena its region, workgroup, catalog and
+database. An absent message keeps the stored value; an explicit empty message
+clears it. The engine definition validates the accepted fields, and a
+non-connectable listing omits it along with the other connection material. pmon
+reads its database from these properties; `/api/datasources` also serves
+`dbName` for released pmon versions.
 
 `description` is one line saying what the datasource holds, from the proxy's
 `PM_DATASOURCE_DESCRIPTION`. Register refuses more than 500 characters or any

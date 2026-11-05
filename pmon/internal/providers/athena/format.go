@@ -35,9 +35,6 @@ func (Provider) FormatConnectionString(format driver.Format, target driver.Targe
 	}
 	database := target.ConnectionInfo.Properties["database"]
 	if database == "" {
-		database = target.DbName
-	}
-	if database == "" {
 		database = "default"
 	}
 	credentials := localCredentials(target.User, target.Name, target.Password)

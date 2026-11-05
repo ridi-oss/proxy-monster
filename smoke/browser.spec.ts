@@ -131,3 +131,42 @@ for (const ds of datasources) {
   });
 }
 
+for (const ds of datasources) {
+  test(`${ds.engine}: an approved role grant reads cleartext until the grantee revokes it`, async ({
+    page,
+    browser,
+  }) => {
+    const grantee = ['smoke-ui-grantee', ['system:production-viewer'], TRUSTED_IP] as const;
+    const emails = page.locator('table tbody tr td:nth-child(3)');
+    await login(page, ...grantee);
+    await runInEditor(page, ds.name, 'SELECT id, email FROM users ORDER BY id');
+    await expect(page.getByText('MASK', { exact: true })).toBeVisible({ timeout: 30_000 });
+
+    await page.goto('/workflows/new?kind=role');
+    await page.locator('#role-request-role').click();
+    await page.getByRole('option', { name: 'system:production-pii-accessor', exact: true }).click();
+    await page.locator('#role-request-datasource').click();
+    await page.getByRole('option', { name: ds.name, exact: true }).click();
+    await page.locator('#role-request-reason').fill('smoke test');
+    await page.getByRole('button', { name: 'Submit request', exact: true }).click();
+    await page.waitForURL(/\/workflows\/\d+$/);
+    await asApprover(browser, new URL(page.url()).pathname, async (approver) => {
+      await approver.getByRole('button', { name: 'Approve', exact: true }).click();
+      await expect(approver.getByText(/^Approved — smoke-ui-grantee granted/)).toBeVisible();
+    });
+
+    await page.goto('/workflows/grants');
+    const grant = page.locator('div.rounded-lg', { hasText: 'system:production-pii-accessor' });
+    await expect(grant.getByRole('button', { name: 'Revoke', exact: true })).toBeVisible({ timeout: 30_000 });
+    await runInEditor(page, ds.name, 'SELECT id, email FROM users ORDER BY id');
+    await expect(emails).toHaveCount(3, { timeout: 30_000 });
+    for (let i = 0; i < 3; i++) await expect(emails.nth(i)).toContainText('@');
+
+    await page.goto('/workflows/grants');
+    await grant.getByRole('button', { name: 'Revoke', exact: true }).click();
+    await expect(page.getByText('No active elevation.')).toBeVisible();
+    await runInEditor(page, ds.name, 'SELECT id, email FROM users ORDER BY id');
+    await expect(page.getByText('MASK', { exact: true })).toBeVisible({ timeout: 30_000 });
+    for (let i = 0; i < 3; i++) await expect(emails.nth(i)).toHaveText(MASK);
+  });
+}

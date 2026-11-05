@@ -263,7 +263,6 @@ func datasourceEntry(s *control.Status, srv control.ServerInfo, ds control.Datas
 		Name:           ds.Name,
 		ConnectionInfo: ds.ConnectionInfo.Clone(),
 		Engine:         ds.Engine,
-		DbName:         ds.DbName,
 		Port:           ds.LocalPort,
 		User:           srv.Principal,
 		Password:       s.LocalPassword,

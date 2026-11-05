@@ -439,10 +439,11 @@ physical shape needs the same authority as querying it.
 
 The unfiltered list is the alternate path to those same bytes, so it redacts
 rather than filters: a row the caller cannot connect to keeps its identity
-(name, engine, tags) and loses its connection material — `host`, `port`,
-`dbName`, `advertiseAddr`, `advertiseCertChain`. Enough to name in an access
-request, not enough to dial. There is no admin exemption: a list row that
-answered more fully than `{id}` does would simply be a way around `{id}`.
+(name, engine, tags) and loses its connection material — `targetInfo`, `dbName`,
+`connectionInfo`, `advertiseAddr`, `advertiseCertChain`, the current catalog and
+the description. Enough to name in an access request, not enough to dial. There
+is no admin exemption: a list row that answered more fully than `{id}` does
+would simply be a way around `{id}`.
 
 `admin.datasources` does **not** imply any of these reads. The seeded
 `system:admin` role carries the three `admin.*` actions and no

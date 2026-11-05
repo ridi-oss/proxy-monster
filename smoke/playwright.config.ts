@@ -7,6 +7,7 @@ export default defineConfig({
   fullyParallel: false,
   workers: 1,
   retries: 0,
+  timeout: 120_000,
   reporter: [['list']],
-  use: { baseURL: process.env.SMOKE_WEB_URL, browserName: 'chromium' },
+  use: { baseURL: process.env.SMOKE_WEB_URL, browserName: 'chromium', screenshot: 'only-on-failure' },
 });

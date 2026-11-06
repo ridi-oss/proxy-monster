@@ -112,7 +112,8 @@ class NotificationRenderer(private val catalog: MessageCatalog = MessageCatalog(
     }
 
     /** One timeline entry as a reply in a request's thread; [names] holds each principal's display, such as a mention. */
-    fun threadLine(e: com.ridi.oss.proxymonster.controlplane.RequestEvent, locale: String, names: Map<String, String> = emptyMap()): String {
+    /** Null for a kind this version has no line for, such as one a newer control plane recorded. */
+    fun threadLine(e: com.ridi.oss.proxymonster.controlplane.RequestEvent, locale: String, names: Map<String, String> = emptyMap()): String? {
         fun name(principal: String) = names[principal] ?: SlackMarkup.escape(principal)
         // A code reviewer who maps to no user is named by their GitHub login, the body.
         val actor = e.actor?.let(::name) ?: e.body?.takeIf { e.kind in CODE_REVIEWS }?.let(SlackMarkup::escape).orEmpty()
@@ -124,7 +125,7 @@ class NotificationRenderer(private val catalog: MessageCatalog = MessageCatalog(
         return when (e.kind) {
             "comment" -> "*$actor*: $body"
             "lgtm" -> "*$actor*: LGTM" + if (body.isNotEmpty()) "\n> " + body.replace("\n", "\n> ") else ""
-            else -> catalog.text(
+            else -> catalog.textOrNull(
                 "thread.${e.kind}", locale,
                 mapOf("actor" to actor, "body" to body, "revision" to (e.revision ?: 1).toString()),
             )

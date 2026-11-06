@@ -4,6 +4,7 @@ import com.ridi.oss.proxymonster.controlplane.i18n.MessageCatalog
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -205,6 +206,7 @@ class NotificationRendererTest {
             "*mallory* requested changes to the code on GitHub.",
             renderer.threadLine(review("code_changes_requested", null, "mallory"), "en"),
         )
+        assertNull(renderer.threadLine(review("code_reviewed_by_robot", null, "mallory"), "en"), "a kind this version has no line for")
         val m = message(NotificationEvent.TASK_REQUESTED, RenderedStatement("SELECT 1", true)).copy(
             ccs = listOf("<@UCAROL>"),
             codeReviews = listOf(com.ridi.oss.proxymonster.controlplane.CodeReview("<@UBOB>", true, true), com.ridi.oss.proxymonster.controlplane.CodeReview("mallory", false, false)),

@@ -283,17 +283,30 @@ class NotificationService(
             val removed = thread.kind == NotificationKind.CC &&
                 accessStore.getRequest(thread.taskId)?.ccs?.contains(thread.recipient) != true
             val locale = store.localeOf(thread.recipient) ?: defaultLocale
-            for ((event, sourceThread) in store.eventsAfter(thread.taskId, thread.lastEventId)) {
-                if (!removed && event.kind !in UNTHREADED && sourceThread != thread.externalRef && !event.deleted &&
-                    !event.byMention
+            var cursor = thread.lastEventId
+            val events = store.eventsAfter(thread.taskId, cursor)
+            val finishedAt = store.finishedAt(thread.taskId)
+            for ((event, sourceThread) in events) {
+                // Claimed before posting, so a second control plane running during a deploy cannot post it too.
+                if (!store.moveThread(thread, cursor, event.id)) break
+                val line = if (!removed && event.kind !in UNTHREADED && sourceThread != thread.externalRef && !event.deleted &&
+                    !event.byMention && (finishedAt == null || event.id <= finishedAt)
                 ) {
-                    when (val r = transport.reply(thread.externalRef, renderer.threadLine(event, locale, namesIn(event, transport)))) {
+                    renderer.threadLine(event, locale, namesIn(event, transport))
+                } else {
+                    null
+                }
+                if (line != null) {
+                    when (val r = transport.reply(thread.externalRef, line)) {
                         is DeliveryResult.Sent -> store.addPost(event.id, r.externalRef)
-                        is DeliveryResult.Retry -> break
+                        is DeliveryResult.Retry -> {
+                            store.moveThread(thread, event.id, cursor)
+                            break
+                        }
                         is DeliveryResult.Drop -> log.warn("thread reply dropped task={} event={}: {}", thread.taskId, event.id, r.reason)
                     }
                 }
-                store.advanceThread(thread, event.id)
+                cursor = event.id
             }
         }
     }
@@ -302,7 +315,7 @@ class NotificationService(
     suspend fun propagate(event: RequestEvent) {
         val transport = transports.firstOrNull { it.supportsReplies } ?: return
         for (ref in store.postsOf(event.id)) {
-            val text = if (event.deleted) null else renderer.threadLine(event, defaultLocale, namesIn(event, transport))
+            val text = if (event.deleted) null else renderer.threadLine(event, defaultLocale, namesIn(event, transport)) ?: continue
             val result = runCatching { transport.editReply(ref, text) }.getOrElse { DeliveryResult.Retry(it.message ?: "") }
             if (result !is DeliveryResult.Sent) log.warn("thread reply edit failed event={} ref={}: {}", event.id, ref, result)
         }

@@ -106,7 +106,7 @@ func withSource(t *testing.T, src workload.Source) {
 
 func TestWorkloadLoginBrokersWithAServiceTokenAndNoPrompt(t *testing.T) {
 	isolate(t)
-	cp := newWorkloadCP(t, []driver.Endpoint{{Name: "acme-mysql", Engine: "mysql", DbName: "app", AdvertiseAddr: freePort(t)}})
+	cp := newWorkloadCP(t, []driver.Endpoint{{Name: "acme-mysql", Engine: "mysql", AdvertiseAddr: freePort(t)}})
 	src := &countingSource{audiences: make(chan string, 4)}
 	withSource(t, src)
 	d := New("test", providers.Builtins())

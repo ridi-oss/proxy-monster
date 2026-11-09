@@ -102,9 +102,7 @@ class ApprovalExecuteRouteDbTest {
         resultStore = QueryResultStore(dataSource, ResultCrypto(ByteArray(32) { it.toByte() }))
         sessionStore = PrincipalSessionStore(dataSource, null)
 
-        datasource = core.datasourceStore.create(
-            DatasourceInput(name = "exec-route-ds", engine = "postgres", host = "localhost", port = 5432, dbName = "app"),
-        )
+        datasource = core.datasourceStore.registerOnly("exec-route-ds", "postgres")
 
         // The executor holds real task.approve and task.run grants, clearing mayDecide — which isolates the
         // branches under test here (the execute-under-R DENY floor) from the authority gate in front of them.

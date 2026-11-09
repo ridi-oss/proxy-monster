@@ -7,7 +7,7 @@
 # on 0.0.0.0; server.js otherwise defaults HOSTNAME to "localhost", unreachable from outside it.
 
 # Match ../mise.toml's node/pnpm pins — bump both together.
-FROM node:24-alpine AS base
+FROM node:24.22.2-alpine AS base
 RUN corepack enable && corepack prepare pnpm@10.22.0 --activate
 
 FROM base AS deps

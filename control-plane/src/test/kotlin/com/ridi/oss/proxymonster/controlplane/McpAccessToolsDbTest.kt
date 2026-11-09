@@ -63,7 +63,7 @@ class McpAccessToolsDbTest {
         core = ControlPlaneCore(dataSource)
         tokens = McpTokens(dataSource, config.mcpResource)
         roleId = core.policyStore.createRole(RoleInput(roleName)).id
-        datasource = core.datasourceStore.create(DatasourceInput("mcp-jit-ds", "postgres"))
+        datasource = core.datasourceStore.registerOnly("mcp-jit-ds", "postgres")
         cpGo = CpGoStack(config, core, database) { routing { testLoginRoute(PrincipalSessionStore(dataSource, null), config) } }
     }
 

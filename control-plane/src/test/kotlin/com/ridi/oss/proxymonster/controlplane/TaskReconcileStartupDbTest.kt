@@ -30,9 +30,7 @@ class TaskReconcileStartupDbTest {
     @Test
     fun `boot fails orphaned executions, spares not-started tasks, and is idempotent`() {
         val core = ControlPlaneCore(ds)
-        val datasource = core.datasourceStore.create(
-            DatasourceInput(name = "reconcile-ds", engine = "postgres", host = "localhost", port = 5432, dbName = "app"),
-        )
+        val datasource = core.datasourceStore.registerOnly("reconcile-ds", "postgres")
 
         // An orphan: claimed for execution and its child moved to RUNNING, then the process "died" before
         // either reached a terminal state.

@@ -18,6 +18,17 @@ import (
 	"github.com/alecthomas/kong"
 )
 
+// TestMain drops the GIT_* variables a git hook or `git rebase --exec` exports; with GIT_DIR set, every git
+// call here would run against the enclosing repository instead of its temp repo.
+func TestMain(m *testing.M) {
+	for _, kv := range os.Environ() {
+		if name, _, _ := strings.Cut(kv, "="); strings.HasPrefix(name, "GIT_") {
+			os.Unsetenv(name)
+		}
+	}
+	os.Exit(m.Run())
+}
+
 type testRepo struct {
 	t   *testing.T
 	dir string

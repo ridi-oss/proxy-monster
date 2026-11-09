@@ -58,9 +58,7 @@ class ApprovalSurfaceCreatorKindDbTest {
         editorExecService = EditorExecService(core)
         resultStore = QueryResultStore(dataSource, ResultCrypto(ByteArray(32) { it.toByte() }))
         sessionStore = PrincipalSessionStore(dataSource, null)
-        datasource = core.datasourceStore.create(
-            DatasourceInput(name = "surface-ds", engine = "postgres", host = "localhost", port = 5432, dbName = "app"),
-        )
+        datasource = core.datasourceStore.registerOnly("surface-ds", "postgres")
         // Blanket task authority for the caller, so every 404 below is the creator_kind guard's and never a
         // missing grant. task.assume covers the /result case, which is gated separately from the rest.
         core.cedarPolicyStore.create(

@@ -5,6 +5,7 @@ package driver
 
 import (
 	"context"
+	"encoding/json"
 	"maps"
 	"net"
 )
@@ -13,13 +14,28 @@ import (
 type Endpoint struct {
 	Name          string `json:"name"`
 	Engine        string `json:"engine"`
-	DbName        string `json:"dbName"`
 	AdvertiseAddr string `json:"advertiseAddr"`
 	CertChainPEM  string `json:"advertiseCertChain"`
 	// TLS can be required even when the proxy publishes no certificate chain.
 	WireTLS bool `json:"advertiseWireTls"`
 	// ConnectionInfo is what the proxy published beyond its address; nil when it published nothing.
 	ConnectionInfo *ConnectionInfo `json:"connectionInfo,omitempty"`
+}
+
+// UnmarshalJSON also reads dbName, which a control plane serves where its proxies predate the published
+// database property.
+func (e *Endpoint) UnmarshalJSON(data []byte) error {
+	type endpoint Endpoint
+	var v struct {
+		endpoint
+		DbName string `json:"dbName"`
+	}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+	*e = Endpoint(v.endpoint)
+	e.ConnectionInfo = e.ConnectionInfo.WithLegacyDatabase(v.DbName)
+	return nil
 }
 
 // Clone deep-copies the mutable ConnectionInfo so a provider may edit its copy without touching the daemon's.
@@ -33,6 +49,30 @@ func (e Endpoint) Clone() Endpoint {
 type ConnectionInfo struct {
 	Endpoint   string            `json:"endpoint"`
 	Properties map[string]string `json:"properties"`
+}
+
+// Property returns the published property key, or "" when there is none.
+func (info *ConnectionInfo) Property(key string) string {
+	if info == nil {
+		return ""
+	}
+	return info.Properties[key]
+}
+
+// WithLegacyDatabase is info with a peer's dbName as its database when info publishes none.
+func (info *ConnectionInfo) WithLegacyDatabase(dbName string) *ConnectionInfo {
+	if dbName == "" || info.Property("database") != "" {
+		return info
+	}
+	out := info.Clone()
+	if out == nil {
+		out = &ConnectionInfo{}
+	}
+	if out.Properties == nil {
+		out.Properties = map[string]string{}
+	}
+	out.Properties["database"] = dbName
+	return out
 }
 
 func (info *ConnectionInfo) Clone() *ConnectionInfo {
@@ -74,7 +114,6 @@ type Target struct {
 	// ConnectionInfo is the datasource's published metadata, or nil; a formatter that needs it returns "" without.
 	ConnectionInfo *ConnectionInfo
 	Engine         string
-	DbName         string
 	Port           int
 	User           string
 	Password       string

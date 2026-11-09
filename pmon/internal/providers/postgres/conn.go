@@ -22,10 +22,11 @@ func (Provider) SupportedFormats() []driver.Format {
 func (Provider) DefaultFormat() driver.Format { return driver.URL }
 
 func (Provider) FormatConnectionString(format driver.Format, t driver.Target, _ driver.Options) string {
-	dbPath := url.PathEscape(t.DbName)
+	database := t.ConnectionInfo.Property("database")
+	dbPath := url.PathEscape(database)
 	keywordUser := keywordValue(t.User)
 	keywordPassword := keywordValue(t.Password)
-	keywordDB := keywordValue(t.DbName)
+	keywordDB := keywordValue(database)
 	switch format {
 	case driver.JDBC:
 		return fmt.Sprintf("jdbc:postgresql://%s:%d/%s?user=%s&password=%s&sslmode=disable",

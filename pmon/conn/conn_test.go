@@ -8,7 +8,7 @@ import (
 )
 
 func TestMySQLFormats(t *testing.T) {
-	target := driver.Target{Engine: "mysql", DbName: "app", Port: 6100, User: "you@example.com", Password: "pw"}
+	target := driver.Target{Engine: "mysql", ConnectionInfo: database("app"), Port: 6100, User: "you@example.com", Password: "pw"}
 	cases := map[driver.Format]string{
 		driver.URL:   "mysql://you%40example.com:pw@127.0.0.1:6100/app",
 		driver.JDBC:  "jdbc:mysql://127.0.0.1:6100/app?user=you%40example.com&password=pw&jdbcCompliantTruncation=false",
@@ -23,7 +23,7 @@ func TestMySQLFormats(t *testing.T) {
 }
 
 func TestMySQLJDBCTruncationDiagnostics(t *testing.T) {
-	target := driver.Target{Engine: "mysql", DbName: "app", Port: 6100, User: "you@example.com", Password: "pw"}
+	target := driver.Target{Engine: "mysql", ConnectionInfo: database("app"), Port: 6100, User: "you@example.com", Password: "pw"}
 	if got, want := StringWithOptions(driver.JDBC, target, driver.Options{JDBCTruncationDiagnostics: true}),
 		"jdbc:mysql://127.0.0.1:6100/app?user=you%40example.com&password=pw"; got != want {
 		t.Errorf("StringWithOptions(JDBC, truncation diagnostics) = %q, want %q", got, want)
@@ -31,7 +31,7 @@ func TestMySQLJDBCTruncationDiagnostics(t *testing.T) {
 }
 
 func TestPostgresFormats(t *testing.T) {
-	target := driver.Target{Engine: "postgres", DbName: "app", Port: 6101, User: "you@example.com", Password: "pw"}
+	target := driver.Target{Engine: "postgres", ConnectionInfo: database("app"), Port: 6101, User: "you@example.com", Password: "pw"}
 	cases := map[driver.Format]string{
 		driver.URL:   "postgresql://you%40example.com:pw@127.0.0.1:6101/app?sslmode=disable",
 		driver.JDBC:  "jdbc:postgresql://127.0.0.1:6101/app?user=you%40example.com&password=pw&sslmode=disable",
@@ -48,7 +48,7 @@ func TestPostgresFormats(t *testing.T) {
 // TestUnknownFormatFallsBackToURL locks the documented default, so a caller that forgets to map a flag gets a
 // usable URI rather than an empty string.
 func TestUnknownFormatFallsBackToURL(t *testing.T) {
-	target := driver.Target{Engine: "mysql", DbName: "app", Port: 6100, User: "u", Password: "p"}
+	target := driver.Target{Engine: "mysql", ConnectionInfo: database("app"), Port: 6100, User: "u", Password: "p"}
 	if got, want := String("", target), String(driver.URL, target); got != want {
 		t.Errorf("empty format = %q, want the driver.URL form %q", got, want)
 	}
@@ -60,7 +60,7 @@ func TestUnknownFormatFallsBackToURL(t *testing.T) {
 // TestUnknownEngineFormatsAsMySQL: MySQL is the brokered engine, so an unrecognized engine string must still
 // produce something usable rather than an empty line.
 func TestUnknownEngineFormatsAsMySQL(t *testing.T) {
-	got := String(driver.URL, driver.Target{Engine: "mariadb", DbName: "app", Port: 6100, User: "u", Password: "p"})
+	got := String(driver.URL, driver.Target{Engine: "mariadb", ConnectionInfo: database("app"), Port: 6100, User: "u", Password: "p"})
 	if !strings.HasPrefix(got, "mysql://") {
 		t.Errorf("unknown engine formatted %q, want the mysql:// form", got)
 	}
@@ -71,7 +71,7 @@ func TestUnknownEngineFormatsAsMySQL(t *testing.T) {
 // command substitution live.
 func TestCLIQuotingNeutralizesShellMetacharacters(t *testing.T) {
 	got := String(driver.CLI, driver.Target{
-		Engine: "mysql", DbName: "my db", Port: 6100,
+		Engine: "mysql", ConnectionInfo: database("my db"), Port: 6100,
 		User: "you@example.com", Password: "pw'$(id)`whoami`",
 	})
 	// The single quote is closed and re-opened via the '\'' idiom, so nothing inside reaches the shell live.
@@ -86,7 +86,7 @@ func TestCLIQuotingNeutralizesShellMetacharacters(t *testing.T) {
 // TestURLFormsPercentEncodeCredentials: a principal is an email (with @) and a password is random base64url,
 // so both must be escaped or the URI parses wrong.
 func TestURLFormsPercentEncodeCredentials(t *testing.T) {
-	target := driver.Target{Engine: "mysql", DbName: "app", Port: 6100, User: "you@example.com", Password: "a/b+c=d"}
+	target := driver.Target{Engine: "mysql", ConnectionInfo: database("app"), Port: 6100, User: "you@example.com", Password: "a/b+c=d"}
 	for _, format := range []driver.Format{driver.URL, driver.JDBC} {
 		got := String(format, target)
 		if strings.Contains(got, "you@example.com") {
@@ -96,4 +96,8 @@ func TestURLFormsPercentEncodeCredentials(t *testing.T) {
 			t.Errorf("String(%s) = %q leaves the raw password unescaped", format, got)
 		}
 	}
+}
+
+func database(name string) *driver.ConnectionInfo {
+	return &driver.ConnectionInfo{Properties: map[string]string{"database": name}}
 }

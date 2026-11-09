@@ -76,7 +76,7 @@ abstract class PerConnectionCatalogAdversarialDbContract {
     protected open fun secondSchema(): String? = null
 
     protected fun userSchema(): String = if (fixture.datasource.engine == Engine.MYSQL) {
-        fixture.datasource.dbName
+        enforcement.database
     } else {
         fixture.datasource.defaultSchemas.first { it !in fixture.datasource.engine.systemSchemas }
     }
@@ -246,7 +246,7 @@ class PerConnectionCatalogMysqlAdversarialDbTest : PerConnectionCatalogAdversari
     override fun secondSchema() = second
 
     override fun configureFlagship() {
-        val schema = enforcement.datasource.dbName
+        val schema = enforcement.database
         target().use { c ->
             c.createStatement().use { st ->
                 st.execute("DROP TABLE IF EXISTS `$schema`.accounts")
@@ -402,7 +402,7 @@ class PerConnectionCatalogPostgresAdversarialDbTest : PerConnectionCatalogAdvers
                 st.execute("INSERT INTO restricted.accounts VALUES (2)")
             }
         }
-        val safeTable = "${enforcement.datasource.name}/${enforcement.datasource.dbName}/safe/accounts"
+        val safeTable = "${enforcement.datasource.name}/${enforcement.datasource.effectiveCatalog}/safe/accounts"
         val accounts = enforcement.execOnTarget(
             "SELECT table_schema, column_name, data_type, ordinal_position, is_nullable FROM information_schema.columns WHERE table_schema IN ('safe', 'restricted') AND table_name = 'accounts' ORDER BY table_schema, ordinal_position",
         )

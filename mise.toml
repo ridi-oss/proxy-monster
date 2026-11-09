@@ -22,7 +22,7 @@ sqlc = "1.31.1"
 # web/ (Next.js). Pinned rather than "whatever's on PATH" so `pnpm install`'s lockfile resolution
 # and `next build` behavior stay reproducible across machines. Match web/Dockerfile's base image +
 # corepack pin when bumping either.
-node = "24.18.0"
+node = "24.22.2"
 pnpm = "10.22.0"
 # auto-approver/ (pmon-auto-approver-agent): tests, and the self-contained binary the server image ships. Match the
 # oven/bun image in control-plane/Dockerfile when bumping.

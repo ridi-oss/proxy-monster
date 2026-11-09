@@ -157,7 +157,7 @@ func TestLoginOpensBrokersImmediately(t *testing.T) {
 	isolate(t)
 	proxyAddr := freePort(t)
 	cp := newFakeCP(t, []driver.Endpoint{
-		{Name: "acme-mysql", Engine: "mysql", DbName: "app", AdvertiseAddr: proxyAddr, CertChainPEM: "abc"},
+		{Name: "acme-mysql", Engine: "mysql", AdvertiseAddr: proxyAddr, CertChainPEM: "abc"},
 	})
 
 	d := New("test", providers.Builtins())
@@ -347,7 +347,7 @@ func TestReloginEndsTheReplacedLoginOnTheServer(t *testing.T) {
 func TestBrokeringImpliesALocalPassword(t *testing.T) {
 	isolate(t)
 	cp := newFakeCP(t, []driver.Endpoint{
-		{Name: "acme-mysql", Engine: "mysql", DbName: "app", AdvertiseAddr: freePort(t)},
+		{Name: "acme-mysql", Engine: "mysql", AdvertiseAddr: freePort(t)},
 	})
 
 	d := New("test", providers.Builtins())
@@ -370,8 +370,8 @@ func TestBrokeringImpliesALocalPassword(t *testing.T) {
 func TestStatusReportsUnbrokerableDatasourcesWithAReason(t *testing.T) {
 	isolate(t)
 	cp := newFakeCP(t, []driver.Endpoint{
-		{Name: "unsupported", Engine: "sqlite", DbName: "app", AdvertiseAddr: freePort(t)},
-		{Name: "no-addr", Engine: "mysql", DbName: "app"},
+		{Name: "unsupported", Engine: "sqlite", AdvertiseAddr: freePort(t)},
+		{Name: "no-addr", Engine: "mysql"},
 	})
 
 	d := New("test", providers.Builtins())
@@ -401,7 +401,7 @@ func TestRediscoveryClosesARevokedDatasource(t *testing.T) {
 	isolate(t)
 	proxyAddr := freePort(t)
 	cp := newFakeCP(t, []driver.Endpoint{
-		{Name: "acme-mysql", Engine: "mysql", DbName: "app", AdvertiseAddr: proxyAddr},
+		{Name: "acme-mysql", Engine: "mysql", AdvertiseAddr: proxyAddr},
 	})
 
 	d := New("test", providers.Builtins())
@@ -450,7 +450,7 @@ func TestRediscoveryClosesARevokedDatasource(t *testing.T) {
 func TestLogoutClosesBrokersButKeepsTheDaemonIdle(t *testing.T) {
 	isolate(t)
 	cp := newFakeCP(t, []driver.Endpoint{
-		{Name: "acme-mysql", Engine: "mysql", DbName: "app", AdvertiseAddr: freePort(t)},
+		{Name: "acme-mysql", Engine: "mysql", AdvertiseAddr: freePort(t)},
 	})
 
 	d := New("test", providers.Builtins())
@@ -528,7 +528,7 @@ func TestDiscoveryFailureIsSurfacedNotFatal(t *testing.T) {
 func TestConcurrentDiscoveryKeepsTheStickyPort(t *testing.T) {
 	isolate(t)
 	cp := newFakeCP(t, []driver.Endpoint{
-		{Name: "acme-mysql", Engine: "mysql", DbName: "app", AdvertiseAddr: freePort(t)},
+		{Name: "acme-mysql", Engine: "mysql", AdvertiseAddr: freePort(t)},
 	})
 
 	d := New("test", providers.Builtins())
@@ -703,7 +703,7 @@ func TestRenewalWithNoExpiryIsRetriedNotPersisted(t *testing.T) {
 func TestLiveConnsCountsARealConnection(t *testing.T) {
 	isolate(t)
 	cp := newFakeCP(t, []driver.Endpoint{
-		{Name: "acme-mysql", Engine: "mysql", DbName: "app", AdvertiseAddr: freePort(t)},
+		{Name: "acme-mysql", Engine: "mysql", AdvertiseAddr: freePort(t)},
 	})
 	d := New("test", providers.Builtins())
 	if err := d.Login(context.Background(), control.LoginRequest{ControlPlane: cp.URL}, func(control.LoginEvent) {}); err != nil {
@@ -785,7 +785,7 @@ func TestLogoutDuringDiscoveryLeavesNoListener(t *testing.T) {
 	discovering := make(chan struct{})
 	release := make(chan struct{})
 	cp := newFakeCP(t, []driver.Endpoint{
-		{Name: "acme-mysql", Engine: "mysql", DbName: "app", AdvertiseAddr: freePort(t)},
+		{Name: "acme-mysql", Engine: "mysql", AdvertiseAddr: freePort(t)},
 	})
 	// Wrap discovery so the test can land a logout while it is in flight.
 	gate := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -877,7 +877,7 @@ func TestLogoutClosesEstablishedSessions(t *testing.T) {
 func TestRevocationClosesEstablishedSessions(t *testing.T) {
 	isolate(t)
 	cp := newFakeCP(t, []driver.Endpoint{
-		{Name: "acme-mysql", Engine: "mysql", DbName: "app", AdvertiseAddr: freePort(t)},
+		{Name: "acme-mysql", Engine: "mysql", AdvertiseAddr: freePort(t)},
 	})
 
 	d := New("test", providers.Builtins())
@@ -1045,7 +1045,7 @@ func TestAPortCollisionIsVisibleNotSilent(t *testing.T) {
 	defer blocker.Close()
 
 	cp := newFakeCP(t, []driver.Endpoint{
-		{Name: "acme-mysql", Engine: "mysql", DbName: "app", AdvertiseAddr: freePort(t)},
+		{Name: "acme-mysql", Engine: "mysql", AdvertiseAddr: freePort(t)},
 	})
 	d := New("test", providers.Builtins())
 	if err := d.Login(context.Background(), control.LoginRequest{ControlPlane: cp.URL}, func(control.LoginEvent) {}); err != nil {

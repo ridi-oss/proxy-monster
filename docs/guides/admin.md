@@ -320,9 +320,8 @@ Tools worth knowing:
 - `set_column_classifications` — bulk tagging, all or nothing, up to 500
   columns.
 - `get_policy_schema`, `validate_policy` — check Cedar before `create_policy`.
-- `create_datasource`, `update_datasource`, `refresh_datasource`,
-  `test_datasource` — pre-provision a datasource, ask its proxy to re-push the
-  catalog, check that a proxy is attached.
+- `refresh_datasource`, `test_datasource` — ask a datasource's proxy to re-push
+  the catalog, check that a proxy is attached.
 - `list_audit`, `get_audit_event` — the decision log.
 
 Scope is a ceiling, never a grant. Cedar still decides every call; a write scope

@@ -64,7 +64,7 @@ class EnginesTest {
     }
 
     @Test fun `registered definitions own analyzer configuration and manifest series`() {
-        val mysql = Datasource(1, "mysql", Engine.MYSQL, "", 0, "app", engineVersion = "8.0.44", mysqlLowerCaseTableNames = 1)
+        val mysql = Datasource(1, "mysql", Engine.MYSQL, "app", engineVersion = "8.0.44", mysqlLowerCaseTableNames = 1)
         val postgres = mysql.copy(engine = Engine.POSTGRES, engineVersion = "17.9", mysqlLowerCaseTableNames = null)
         val mysqlConfig = mysql.engine.definition.analyzerEngineConfig(mysql, sessionObservation { this.mysql = mySqlSession { ansiQuotes = true } })
         assertEquals(Engine.MYSQL, mysqlConfig.engine)

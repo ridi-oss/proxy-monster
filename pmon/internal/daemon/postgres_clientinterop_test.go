@@ -128,7 +128,7 @@ func newPostgresHarness(t *testing.T) *postgresHarness {
 func postgresConnString(format driver.Format, port int) string {
 	provider, _ := providers.Builtins().Lookup("postgres")
 	return provider.FormatConnectionString(format, driver.Target{
-		Engine: "postgres", DbName: itDatabase, Port: port, User: itPrincipal, Password: itLocalPassword,
+		Engine: "postgres", ConnectionInfo: database(itDatabase), Port: port, User: itPrincipal, Password: itLocalPassword,
 	}, driver.Options{})
 }
 

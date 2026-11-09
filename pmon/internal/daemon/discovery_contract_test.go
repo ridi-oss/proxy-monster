@@ -20,7 +20,7 @@ func TestDiscoveryParsesTheControlPlaneChainField(t *testing.T) {
       "id": 1,
       "name": "acme-mysql",
       "engine": "mysql",
-      "dbName": "app",
+      "connectionInfo": {"endpoint": "proxy.example:6033", "properties": {"database": "app"}},
       "advertiseAddr": "proxy.example:6033",
       "advertiseCertChain": "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n",
       "advertiseWireTls": true
@@ -35,6 +35,9 @@ func TestDiscoveryParsesTheControlPlaneChainField(t *testing.T) {
 	}
 	if got[0].AdvertiseAddr != "proxy.example:6033" {
 		t.Errorf("AdvertiseAddr = %q", got[0].AdvertiseAddr)
+	}
+	if got[0].ConnectionInfo.Property("database") != "app" {
+		t.Errorf("database = %q, want app from connectionInfo.properties", got[0].ConnectionInfo.Property("database"))
 	}
 	if !strings.Contains(got[0].CertChainPEM, "BEGIN CERTIFICATE") {
 		t.Errorf(

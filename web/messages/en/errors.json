@@ -70,8 +70,6 @@
     "reserved_tag": "The tag \"{tag}\" is reserved for system classification and can't be set on a column.",
     "batch_too_large": "A batch may carry at most {max} columns.",
     "duplicate_column": "The column \"{column}\" appears more than once in this batch.",
-    "engine_immutable": "A datasource's engine can't be changed. Delete and re-create it to switch engines.",
-    "invalid_engine": "\"{engine}\" isn't a supported engine — use \"postgres\" or \"mysql\".",
     "no_wire_cert": "This datasource's proxy has not advertised a TLS certificate.",
     "not_connectable": "You do not have access to connect to this datasource.",
     "wire_cert_unusable": "The stored certificate chain is not usable as a trust anchor. Re-register the proxy, then try again.",

@@ -33,9 +33,7 @@ class EditorTaskStoreDbTest {
         dataSource = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_editor_store"))
         accessStore = AccessStore(dataSource)
         resultStore = QueryResultStore(dataSource, ResultCrypto(ByteArray(32) { it.toByte() }))
-        datasourceId = DatasourceStore(dataSource).create(
-            DatasourceInput(name = "ds", engine = "postgres", host = "h", port = 5432, dbName = "d"),
-        ).id
+        datasourceId = DatasourceStore(dataSource).registerOnly("ds", "postgres").id
     }
 
     private fun result() = DecryptedResult(listOf("id"), listOf(listOf("1"), listOf("2")))

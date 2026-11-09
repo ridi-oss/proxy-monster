@@ -62,17 +62,15 @@ class ApprovalRoutesHttpDbTest {
                 st.execute("CREATE TABLE orders (id BIGINT PRIMARY KEY, amount BIGINT)")
             }
         }
-        mysql = core.datasourceStore.create(
-            DatasourceInput(name = "approvals-mysql", engine = "mysql", host = SharedMySql.host(), port = SharedMySql.port(), dbName = target),
-        )
+        mysql = core.datasourceStore.seed(name = "approvals-mysql", engine = "mysql")
         core.datasourceStore.pushTestCatalog(mysql, SharedMySql.jdbcUrlFor(target), SharedMySql.username(), SharedMySql.password())
         mysql = core.datasourceStore.get(mysql.id)!!
         pg = core.datasourceStore.seed(name = "approvals-pg", engine = "postgres")
-        locked = core.datasourceStore.create(DatasourceInput(name = "approvals-locked", engine = "mysql", host = "h", port = 3306, dbName = "app"))
-        gone = core.datasourceStore.create(DatasourceInput(name = "approvals-gone", engine = "mysql", host = "h", port = 3306, dbName = "app"))
+        locked = core.datasourceStore.registerOnly("approvals-locked", "mysql")
+        gone = core.datasourceStore.registerOnly("approvals-gone", "mysql")
 
-        val catalog = mysql.engine.catalogName(mysql.dbName)
-        val schema = mysql.engine.defaultSchema(mysql.dbName)
+        val catalog = mysql.effectiveCatalog
+        val schema = mysql.engine.defaultSchema(target)
         val users = "${mysql.name}/$catalog/$schema/users"
         val mask = core.policyStore.createMaskFn(MaskFnInput("last4", "LAST_N"))
         core.datasourceStore.upsertClassification(

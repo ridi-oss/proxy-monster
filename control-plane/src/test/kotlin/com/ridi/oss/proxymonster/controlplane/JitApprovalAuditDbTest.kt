@@ -41,9 +41,7 @@ class JitApprovalAuditDbTest {
         core = ControlPlaneCore(dataSource)
         recorder = ManagementAuditRecorder(core.auditStore)
         role = core.policyStore.createRole(RoleInput("jit-audit-role"))
-        datasource = core.datasourceStore.create(
-            DatasourceInput(name = "jit-audit-ds", engine = "postgres", host = "localhost", port = 5432, dbName = "app"),
-        )
+        datasource = core.datasourceStore.registerOnly("jit-audit-ds", "postgres")
     }
 
     private fun actor() = AuditActor("jit-audit-${System.nanoTime()}@example.com", clientAddr = "192.0.2.1", channel = AuditSource.CONSOLE)

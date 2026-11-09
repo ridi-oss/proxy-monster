@@ -61,7 +61,7 @@ class PmonMcpTokenDbTest {
         val database = SharedPostgres.migratedDatabase("pm_pmon_mcp_token")
         dataSource = SharedPostgres.hikari(database)
         core = ControlPlaneCore(dataSource)
-        datasource = core.datasourceStore.create(DatasourceInput("pmon-mcp-ds", "postgres"))
+        datasource = core.datasourceStore.registerOnly("pmon-mcp-ds", "postgres")
         stack = CpGoStack(config, core, database) { routing { testLoginRoute(PrincipalSessionStore(dataSource, null), config) } }
     }
 

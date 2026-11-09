@@ -34,8 +34,7 @@ func (s *Server) TryRegisterAndPushCatalog(cfg *config.Config, engine *engines.E
 // control-plane protocol-version mismatch is permanent and returns at once.
 func (s *Server) RegisterAndPushCatalog(cfg *config.Config, engine *engines.Engine, certChain func() *string) error {
 	for attempt := 0; attempt < bootRegisterAttempts; attempt++ {
-		targetConfig := s.target.Config()
-		err := s.client.Register(engine.Proto, targetConfig.Host, targetConfig.Port, targetConfig.Db, cfg.DatasourceTags, cfg.AdvertiseAddr, certChain(), cfg.TLSEnabled(), s.target.ConnectionInfo(), &cfg.DatasourceDescription)
+		err := s.client.Register(engine.Proto, s.target.TargetInfo(), cfg.DatasourceTags, cfg.AdvertiseAddr, certChain(), cfg.TLSEnabled(), s.target.ConnectionInfo(), &cfg.DatasourceDescription)
 		if errors.Is(err, cp.ErrIncompatibleControlPlane) {
 			return err
 		}

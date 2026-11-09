@@ -126,7 +126,7 @@ type EngineTraits struct {
 	// syntaxCalls are call-shaped syntax over one subquery, lowercase: Postgres ARRAY(SELECT ...) is no pg_proc function.
 	syntaxCalls []string
 
-	// connectionProperties are the ConnectionInfo keys the engine's proxies may publish: Athena region, workgroup.
+	// connectionProperties are the ConnectionInfo keys the engine's proxies publish: MySQL database, Athena region.
 	connectionProperties []string
 	// catalogIsConnectionIndependent: one connection's catalog answers for all; false for Postgres pg_temp_*.
 	catalogIsConnectionIndependent bool

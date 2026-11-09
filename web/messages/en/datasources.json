@@ -2,10 +2,9 @@
   "list": {
     "title": "Datasources",
     "subtitle": "Target databases the broker proxies. Click a row to browse its catalog.",
-    "addDatasource": "Add datasource",
     "loading": "Loading datasources…",
     "emptyTitle": "No datasources yet.",
-    "emptyHint": "Add a target database, then start its proxy — registering pushes its catalog automatically.",
+    "emptyHint": "Start a proxy for a target database. It appears here when the proxy registers and pushes its catalog.",
     "colName": "Name",
     "colEngine": "Engine",
     "colConnection": "Connection",
@@ -21,7 +20,6 @@
     "testConnection": "Test connection",
     "refreshCatalog": "Refresh catalog",
     "moreActions": "More actions",
-    "edit": "Edit",
     "delete": "Delete",
     "toast": {
       "connected": "{name}: connected",
@@ -47,23 +45,6 @@
     "connected": "connected",
     "failed": "failed",
     "refreshNotified": "{notified, plural, =0 {no proxy attached} one {# proxy notified} other {# proxies notified}}"
-  },
-  "form": {
-    "editTitle": "Edit {name}",
-    "addTitle": "Add datasource",
-    "editDescription": "Update the advisory connection details for this datasource.",
-    "addDescription": "Pre-provision a datasource by name. Its proxy fills in the rest when it registers.",
-    "saveFailed": "failed to save datasource",
-    "labelName": "Name",
-    "labelEngine": "Engine",
-    "engineImmutableHint": "Engine can't be changed after creation.",
-    "labelPort": "Port",
-    "labelHost": "Host",
-    "labelDatabase": "Database",
-    "advisoryHint": "Connection details are advisory and optional — the proxy is authoritative and overwrites them when it registers. No credentials are stored: the control plane never connects to the target.",
-    "cancel": "Cancel",
-    "submitEdit": "Save changes",
-    "submitCreate": "Add datasource"
   },
   "classify": {
     "triggerClassify": "+ classify",

@@ -6,6 +6,7 @@
 package control
 
 import (
+	"encoding/json"
 	"slices"
 	"strings"
 
@@ -71,7 +72,6 @@ type Datasource struct {
 	Server         string                 `json:"server"`
 	Name           string                 `json:"name"`
 	Engine         string                 `json:"engine"`
-	DbName         string                 `json:"dbName"`
 	ConnectionInfo *driver.ConnectionInfo `json:"connectionInfo,omitempty"`
 	// LocalPort is the sticky loopback port a client connects to; 0 when this datasource has no listener.
 	LocalPort int `json:"localPort"`
@@ -91,6 +91,30 @@ type Datasource struct {
 	Reason string `json:"reason,omitempty"`
 	// LiveConns is the number of client connections currently open through this broker.
 	LiveConns int `json:"liveConns"`
+}
+
+type datasource Datasource
+
+// MarshalJSON also writes dbName, and UnmarshalJSON reads it, so a peer and a daemon from before the
+// database property still agree on the database.
+func (d Datasource) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		datasource
+		DbName string `json:"dbName,omitempty"`
+	}{datasource(d), d.ConnectionInfo.Property("database")})
+}
+
+func (d *Datasource) UnmarshalJSON(data []byte) error {
+	var v struct {
+		datasource
+		DbName string `json:"dbName"`
+	}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+	*d = Datasource(v.datasource)
+	d.ConnectionInfo = d.ConnectionInfo.WithLegacyDatabase(v.DbName)
+	return nil
 }
 
 // TotalLiveConns is how many client connections are open across every broker — what a stop/quit confirmation

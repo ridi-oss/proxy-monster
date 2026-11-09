@@ -16,7 +16,7 @@ import (
 
 const tableDetailConnectTimeout = 5 * time.Second
 
-// OpenPool opens a target's metadata pool and the endpoint it advertises to clients.
+// OpenPool opens a target's metadata pool and the endpoint and database it advertises to clients.
 func OpenPool(open func(spi.TargetConfig) (*sql.DB, error), config spi.TargetConfig) (pool *sql.DB, info *pb.ConnectionInfo, err error) {
 	pool, err = open(config)
 	if err != nil {
@@ -25,7 +25,7 @@ func OpenPool(open func(spi.TargetConfig) (*sql.DB, error), config spi.TargetCon
 	// Metadata reads must observe the defaults a new target session would inherit.
 	pool.SetMaxIdleConns(0)
 	advertise, _ := os.LookupEnv("PM_ADVERTISE_ADDR")
-	return pool, &pb.ConnectionInfo{Endpoint: strings.TrimSpace(advertise)}, nil
+	return pool, &pb.ConnectionInfo{Endpoint: strings.TrimSpace(advertise), Properties: map[string]string{"database": config.Db}}, nil
 }
 
 // ReadTableDetail reads one table's detail, names in canonical spelling, on its own pooled connection.

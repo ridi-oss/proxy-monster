@@ -438,7 +438,7 @@ OAuth-authenticated MCP client is
 ### Prerequisites
 
 - JDK, Gradle, Go, Node, pnpm — all pinned in `mise.toml` (temurin-24, Gradle
-  8.14.5, Go 1.23, Node 24.18.0, pnpm 10.22.0 — matching `web/Dockerfile`'s base
+  8.14.5, Go 1.23, Node 24.22.2, pnpm 10.22.0 — matching `web/Dockerfile`'s base
   image + corepack pin). Run `mise install` from the repo root, or use your own
   matching toolchain. JDK 24 is the floor: the Gradle build compiles with
   `--release 24` and targets JVM 24, so an older JDK fails with
@@ -587,7 +587,7 @@ curl -b /tmp/pm.jar http://localhost:8080/api/datasources
 ```
 
 The roles you log in with are the ones the response reflects: a row's connection
-material (`host`, `port`, `dbName`, `advertiseAddr`, `advertiseCertChain`) needs
+material (`targetInfo`, `dbName`, `advertiseAddr`, `advertiseCertChain`) needs
 `datasource.connect` on that datasource, so a role that does not grant it sees
 the row's identity only. Easier from the console — see the
 [login step](#first-login-and-first-query).
@@ -818,7 +818,7 @@ per statement.
   (`V8__seed.sql`); harmless before your first login, self-resolves after. Under
   real OIDC (not debug auth), admin membership comes from the IdP's group claim
   via `PM_OIDC_GROUP_MAP`, not this endpoint.
-- The admin UI 403s, or a datasource row arrives without its host/port, with
+- The admin UI 403s, or a datasource row arrives without its target info, with
   `PM_AUTH_DEBUG=true` — the flag authenticates you, it does not grant anything.
   Sign in at `/login` with the roles you need (`system:admin` for admin, a
   `system:development-*` role for a `system:development`-tagged datasource).

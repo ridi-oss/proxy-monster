@@ -253,9 +253,6 @@ Fixes for gaps documented in
   behind an admin assertion, auto-clearing declared-pure functions (low
   priority).
 - Surface computed `system:` tags in the catalog browser (display only).
-- Clear the config catalog and re-introspect when a datasource's identity
-  changes through the admin API. A retarget of the target database invalidates
-  it; other updates leave a stale catalog behind the config surfaces.
 - Tombstone a closed `connection_id` and require mint evidence. A closed or
   forged connection id is indistinguishable from a genuine post-restart id, so
   the decide path re-establishes it as restart recovery. No cross-principal
@@ -498,6 +495,14 @@ Fixes for gaps documented in
   restriction on the whole.
 
 ## Refactoring
+
+- Retire `dbName`. pmon reads a datasource's database from its connection info,
+  and `dbName` remains only for releases from before the published `database`
+  property: `/api/datasources` serves it for older pmon, and pmon reads and
+  writes it at its JSON boundaries (`driver.Endpoint` from the control plane,
+  `control.Datasource` between the daemon and its CLI and tray) for older
+  control planes and daemons. Remove all of them once no supported pmon or
+  server predates the property.
 
 - Make Go the canonical implementation for logic that lives in both languages,
   and call it from Kotlin over FFM instead of hand-maintaining byte-identical

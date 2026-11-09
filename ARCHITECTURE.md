@@ -194,6 +194,7 @@ entry is involved on that path.
 | From → To | Port / Protocol | Direction | Purpose |
 | --- | --- | --- | --- |
 | pmon (SQL client) → Proxy | wire · MySQL/PG (TLS opt) | inbound | run SQL through enforcement |
+| SQL client → Edge → Proxy | wire · MySQL 3306 / PG 5432 / HTTPS 6443 (TLS required) · PROXY v2 to the proxy's `PM_PROXY_PROTOCOL_PORT` | inbound | optional `PM_MODE=edge` router: one entry port per engine, datasource picked by TLS SNI, TLS not terminated |
 | pmon → CP | HTTPS · `/auth/*` `/api/datasources` | via edge | device-auth login, token renewal, datasource discovery (not through the web) |
 | Proxy → CP | gRPC · `PM_GRPC_PORT` | internal | authorize · register · push catalog (plaintext HTTP/2; gated by one shared secret only when `PM_SECRET_TOKEN` is set) |
 | Proxy → Target DB | MySQL / PG | internal | relay the (masked) statement |

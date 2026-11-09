@@ -51,6 +51,7 @@ object McpCapabilityRegistry {
         // Checked only inside a query decision; no MCP tool.
         AuthzAction.RESULT_READ_UNMASKED,
         AuthzAction.RESULT_READ_MASKED,
+        AuthzAction.RESULT_FILTER_LITERAL,
         AuthzAction.RESULT_CAP,
         AuthzAction.NATIVE_INVOKE,
         AuthzAction.EXCEPTION_UNANALYZABLE,

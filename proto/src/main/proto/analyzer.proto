@@ -212,11 +212,18 @@ message RequireStatementExecGrant {
 
 // How a MASKED verdict applies to a grant. DENIED always denies the entire statement, regardless of
 // this value. The zero value is invalid and must deny.
+//
+// ALLOW_LITERAL_FILTER marks a column used in a read's WHERE only as the bare operand of
+// `col = literal` / `col IN (literals)`. A MASKED verdict on it denies the statement exactly like
+// DENY_STATEMENT, unless the principal is also permitted `result.filter.literal` on the column — an opt-in
+// that lets a masked column be filtered on (the caller already knows the value) without ever returning it.
+// An UNMASKED verdict passes as for any other disposition.
 enum MaskedDisposition {
   MASKED_DISPOSITION_UNSPECIFIED = 0;
   MASKED_DISPOSITION_DENY_STATEMENT = 1;
   MASKED_DISPOSITION_MASK_OUTPUT = 2;
   MASKED_DISPOSITION_REDACT_OUTPUT_NULL = 3;
+  MASKED_DISPOSITION_ALLOW_LITERAL_FILTER = 4;
 }
 
 // The kind of statement — one value per statement kind PM classifies, the granular half of the

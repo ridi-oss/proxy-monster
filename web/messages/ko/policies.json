@@ -126,6 +126,7 @@
       "grantRevoke": "접근 권한 부여 철회",
       "resultReadUnmasked": "접근한 컬럼의 평문 조회",
       "resultReadMasked": "마스킹된 값 (컬럼의 마스크 함수 또는 안전한 기본값)",
+      "resultFilterLiteral": "WHERE에서 = 또는 IN 리터럴로 마스킹된 컬럼 필터링 (값은 반환되지 않음)",
       "datasourceConnect": "이 데이터소스에 접근 가능 여부",
       "stmtCatRead": "읽기 구문 실행 (SELECT 등)",
       "stmtCatWriteInsert": "INSERT 실행 (upsert에도 필요)",

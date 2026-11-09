@@ -321,6 +321,10 @@ func TestAnExchangeRacingADisableMintsNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
+	var holder int32
+	if err := tx.QueryRow(t.Context(), `SELECT pg_backend_pid()`).Scan(&holder); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := tx.Exec(t.Context(), `UPDATE workload_binding SET enabled = false, updated_at = now() WHERE id = $1`, id); err != nil {
 		t.Fatal(err)
 	}
@@ -338,7 +342,7 @@ func TestAnExchangeRacingADisableMintsNothing(t *testing.T) {
 		done <- result{status, body}
 	}()
 	deadline := time.Now().Add(10 * time.Second)
-	for h.e.Count(t, `SELECT count(*) FROM pg_locks WHERE NOT granted`) == 0 && len(done) == 0 && time.Now().Before(deadline) {
+	for h.e.Count(t, `SELECT count(*) FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid))`, holder) == 0 && len(done) == 0 && time.Now().Before(deadline) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	if err := tx.Commit(t.Context()); err != nil {

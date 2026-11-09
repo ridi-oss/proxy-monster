@@ -52,10 +52,12 @@ class SlackTransportTest {
         taskId: Long = 42,
         actions: Set<NotificationAction> = setOf(NotificationAction.OPEN, NotificationAction.DENY, NotificationAction.APPROVE_AND_RUN),
         statement: RenderedStatement = RenderedStatement("SELECT 1", complete = true),
+        title: String? = null,
     ) = NotificationMessage(
         event = event,
         taskId = taskId,
         requester = "requester@example.com",
+        title = title,
         datasource = "prod-db",
         roleName = "reader",
         reason = "need it",
@@ -188,6 +190,24 @@ class SlackTransportTest {
         assertTrue(post.isJson, "chat.postMessage carries a blocks array and must be JSON")
         assertEquals("D_U_SAM", post.json!!["channel"]!!.jsonPrimitive.content)
         assertTrue(post.blocks().isNotEmpty(), "the message has Block Kit content")
+    }
+
+    @Test
+    fun `the request title heads the message as plain text`() = runBlocking {
+        transport.deliver("D_U_SAM", message(title = "Backfill <!channel> *orders*"), "en")
+        val blocks = slack.lastRequest("chat.postMessage")!!.blocks()
+
+        val header = blocks.first()
+        assertEquals("header", header["type"]?.jsonPrimitive?.content)
+        val text = header["text"]!!.jsonObject
+        assertEquals("plain_text", text["type"]?.jsonPrimitive?.content)
+        assertEquals("Backfill <!channel> *orders*", text["text"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `a request without a title has no header`() = runBlocking {
+        transport.deliver("D_U_SAM", message(title = " "), "en")
+        assertTrue(slack.lastRequest("chat.postMessage")!!.blocks().none { it["type"]?.jsonPrimitive?.content == "header" })
     }
 
     @Test

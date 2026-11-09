@@ -499,6 +499,18 @@ Fixes for gaps documented in
   `control.Datasource` between the daemon and its CLI and tray) for older
   control planes and daemons. Remove all of them once no supported pmon or
   server predates the property.
+- Retire `advertise_addr`. The proxy publishes the address clients dial twice at
+  Register: as `advertise_addr` and as `connection_info.endpoint` (Athena's with
+  an `https://` prefix). pmon (`driver.Endpoint.AdvertiseAddr`, its MySQL and
+  PostgreSQL brokers) and the console's direct-connect strings read
+  `advertiseAddr`. Move them to the endpoint, then drop the field from
+  `RegisterRequest`, the `datasource` column and `/api/datasources`, keeping
+  `advertiseAddr` served for released pmon the way `dbName` is.
+- Delete the registered-database engine traits. Since the control plane stopped
+  holding `db_name`, nothing calls `Engine.defaultSchema(registeredDbName)` (the
+  `defaultSchema` trait, its `EngineCallRequest` arm and the Kotlin wrappers).
+  `catalogName` is still called, by `CatalogIdentity`, with a catalog name; its
+  parameter, like the others still spelled `registeredDbName`, should say so.
 
 - Make Go the canonical implementation for logic that lives in both languages,
   and call it from Kotlin over FFM instead of hand-maintaining byte-identical
@@ -517,3 +529,12 @@ Fixes for gaps documented in
   repeats the admission, the deferred closes, the on-open run and the drain
   point around its own protocol. Move the shared steps into shared code and
   leave each engine its dial, framing and protocol loop.
+
+## To discuss
+
+- Is `connection_info` for clients only? The proto describes it as a nonsecret
+  endpoint and properties for clients, but `Datasource.targetSettings()` hands
+  every property to the analyzer, and Athena's default session takes its
+  workgroup from `properties["workgroup"]`, so for Athena it steers enforcement.
+  Either name that dual role, or have the proxy report the workgroup as a target
+  setting (like `engine_version`) and keep `connection_info` client-facing.

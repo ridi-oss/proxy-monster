@@ -48,8 +48,8 @@ message:
   `DETAIL` dump), `W` (an input function's context:
   `JSON data, line 1: {"value":"<stored value>"`), and `q` (SQL text built at
   run time and run by `query_to_xml` or `ts_stat`); those four are stripped.
-- The editor/approval run path stores a failed statement's target-DB error, so
-  `goproxy/run/runner.go` carries both forms (raw + redacted strip) and the
+- The editor session stores a failed statement's target-DB error, so
+  `goproxy/editor/server.go` carries both forms (raw + redacted strip) and the
   control plane picks one per viewer at view time — an error string cannot be
   re-masked by ordinal the way rows are.
 
@@ -283,7 +283,7 @@ a child table's row (KNOWN_LIMITATIONS.md).
 The synchronous `POST /api/datasources/{id}/query` route returns the result
 inline, so a target-DB failure surfaces the form the run's own decision dictated
 — raw unless it sanitized diagnostics (the proxy echoes the flag back on
-`RunDecision`). The async editor/approval paths instead store both forms and
+`EditorDecision`). The async editor/approval paths instead store both forms and
 re-gate per viewer at view (above).
 
 The control plane carries the per-decision result as

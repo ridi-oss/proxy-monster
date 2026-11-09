@@ -38,10 +38,8 @@ var Postgres = &Engine{
 		systemSchemaFirst:   postgresCatalogFirstAfterTempSchemas,
 		nativeOutputLabel:   postgresNativeOutputLabel,
 		diagnosticLeakKeys:  postgresDiagnosticLeakKeys,
-		normalizeRules: func() normalizeRules {
-			return normalizeRules{dialect: dialects.Postgres(), foldIdentifiers: true}
-		},
-		foldColumn: func(name string) string { return name },
+		normalizeRules:      normalizeRules{foldIdentifiers: true},
+		foldColumn:          func(name string) string { return name },
 		builtinFunctionRows: map[string][]string{
 			"pg_available_extension_versions": {"name", "version", "superuser", "trusted", "relocatable", "schema", "requires", "comment"},
 			"unnest":                          {"unnest"},
@@ -50,13 +48,14 @@ var Postgres = &Engine{
 		passthroughCommands: []string{"RESET", "SHOW"},
 		syntaxCalls:         []string{"array"},
 
-		checksTargetErrors:  true,
-		implicitColumns:     postgresSystemColumns,
-		defaultSchemaPrefix: "SET search_path TO ",
-		defaultSchema:       func(string) string { return "public" },
-		serverVersion:       postgresServerVersion,
-		manifestSeries:      func(version string) string { return strings.SplitN(version, ".", 2)[0] },
-		functionCatalog:     postgresFunctionCatalog,
+		connectionProperties: []string{"database"},
+		checksTargetErrors:   true,
+		implicitColumns:      postgresSystemColumns,
+		defaultSchemaPrefix:  "SET search_path TO ",
+		defaultSchema:        func(string) string { return "public" },
+		serverVersion:        postgresServerVersion,
+		manifestSeries:       func(version string) string { return strings.SplitN(version, ".", 2)[0] },
+		functionCatalog:      postgresFunctionCatalog,
 	},
 	// PostgreSQL has no relay rewrite: client_encoding is handled on the wire, not by an analyzer rewrite,
 	// so there is nothing to rewrite here.

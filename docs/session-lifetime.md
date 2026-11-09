@@ -56,9 +56,9 @@ The two authenticated surfaces share identity but have different runtime needs
   clocks, device binding, refresh token, and explicit end reason.
 - Local proxy / wire — a SQL client presents an expiring wire token as its
   password; the Go proxy resolves it via the control-plane's gRPC
-  `validateToken` / `Decide`. Its `kind='DAEMON'` row bounds renewal, but `pmon`
-  never calls the renew route, so in practice the wire token's own TTL is the
-  session lifetime and live role resolution is what keeps every query
+  `openConnection` / `Decide`. Its `kind='DAEMON'` row bounds renewal, but
+  `pmon` never calls the renew route, so in practice the wire token's own TTL is
+  the session lifetime and live role resolution is what keeps every query
   fail-closed after group loss
   ([auth-model.md](./auth-model.md#cli--daemon-login--control-plane-brokered-device-authorization)).
 

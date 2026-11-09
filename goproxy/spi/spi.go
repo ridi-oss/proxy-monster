@@ -35,17 +35,17 @@ type Identity struct {
 	OnOpen       []*pb.ProxyCommand
 }
 
-// RunStream is the subset of the proxy-dialed run stream used by the runner.
-type RunStream interface {
-	Send(*pb.ProxyRunMsg) error
-	Recv() (*pb.ControlRunMsg, error)
+// EditorStream is the subset of the proxy-dialed editor stream used by the server.
+type EditorStream interface {
+	Send(*pb.ProxyEditorMsg) error
+	Recv() (*pb.CpEditorMsg, error)
 	CloseSend() error
 }
 
 // TableDetailStream is the subset of the proxy-dialed table-detail stream used by the table browser.
 type TableDetailStream interface {
 	Send(*pb.ProxyTableDetailMsg) error
-	Recv() (*pb.ControlTableDetailMsg, error)
+	Recv() (*pb.CpTableDetailMsg, error)
 }
 
 // ControlPlane is the proxy's client to the control plane. cp.Client implements it; a test fake embeds it
@@ -60,11 +60,11 @@ type ControlPlane interface {
 	// AuthorizeRequest asks whether one operation with no SQL behind it (a catalog or table-metadata read,
 	// an Athena API call) is allowed.
 	AuthorizeRequest(context.Context, *pb.RequestAuthorization) (*pb.RequestAuthorizationResult, error)
-	Register(registrationEngine enginepb.Engine, host string, port int, dbName string, tags []string, advertiseAddr string, advertiseCertChain *string, wireTLS bool, connectionInfo *pb.ConnectionInfo, description *string) error
+	Register(registrationEngine enginepb.Engine, targetInfo string, tags []string, advertiseAddr string, advertiseCertChain *string, wireTLS bool, connectionInfo *pb.ConnectionInfo, description *string) error
 	PushCatalog(*pb.CatalogRequest) error
-	ValidateToken(token, clientAddr string) (Identity, error)
+	OpenConnection(token, clientAddr string, door pb.ConnectionDoor) (Identity, error)
 	CloseConnection(connectionID []byte) error
-	OpenRunStream(context.Context) (RunStream, error)
+	OpenEditorStream(context.Context) (EditorStream, error)
 	OpenTableDetailStream(context.Context) (TableDetailStream, error)
 }
 
@@ -85,11 +85,11 @@ type Listen struct {
 	TrustedProxies    []netip.Prefix
 }
 
-// Connection is goproxy's connection to the target DB for a control-plane run.
+// Connection is goproxy's connection to the target DB for an editor session.
 type Connection interface {
 	ServeStatement(sql string, maxRows int) (StatementResult, error)
 	// OnOpen runs the on-open catalog fetch. ctx is the target-DB open context: if the control-plane closes the
-	// run (or the proxy drains) while the fetch is in flight, ctx is cancelled and the in-flight target-DB read
+	// editor session (or the proxy drains) while the fetch is in flight, ctx is cancelled and the in-flight target-DB read
 	// unwinds at once (a catalog push RPC to the control-plane still runs to its own deadline).
 	OnOpen(ctx context.Context, cmds []*pb.ProxyCommand) error
 	// Namespace reads the session's effective namespace for reporting. It never feeds authorization, which
@@ -189,10 +189,12 @@ type Provider interface {
 }
 
 // Target is one open target database. It owns its connection pool and answers everything the proxy core asks of
-// a target: the catalog scan, a table's detail, the wire server, and a connection for a run. Boot and the
-// Runner hold a Target and never see a connection string or a *sql.DB.
+// a target: the catalog scan, a table's detail, the wire server, and a connection for an editor session. Boot and the
+// Server hold a Target and never see a connection string or a *sql.DB.
 type Target interface {
 	Config() TargetConfig
+	// TargetInfo says where the proxy connects, in the engine's own terms; the control plane only shows it.
+	TargetInfo() string
 	// ConnectionInfo is the nonsecret client-facing metadata published at Register: an endpoint plus the
 	// properties the engine allows. A wire dialect publishes only the advertised address.
 	ConnectionInfo() *pb.ConnectionInfo
@@ -200,7 +202,7 @@ type Target interface {
 	ReadTableDetail(ctx context.Context, table *enginepb.ObjectRef) (*TableDetail, error)
 	NewWireServer(listen Listen, client ControlPlane, tlsProvider func() (*tls.Config, error)) WireServer
 	// OpenConnection dials and authenticates the target DB. ctx is the target-DB open context: cancelling it aborts
-	// an in-flight dial/auth so a run the control-plane already closed does not finish a target-DB handshake.
+	// an in-flight dial/auth so an editor session the control-plane already closed does not finish a target-DB handshake.
 	// A non-empty defaultSchema opens the session in that schema; empty keeps the target's default.
 	OpenConnection(ctx context.Context, authz *Authorizer, guard ExecGuard, readTimeout time.Duration, defaultSchema string) (Connection, error)
 	Close() error

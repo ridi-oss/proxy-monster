@@ -15,7 +15,7 @@ import (
 
 // Provider registers the Athena engine under PM_ENGINE=athena. OpenTarget reads the target scope from the
 // environment (PM_TARGET_DB is the default database) and pins the AWS identity; the Db then serves the
-// Athena JSON API to clients and the editor run path.
+// Athena JSON API to clients and editor sessions.
 type Provider struct{}
 
 func (Provider) Engine() *engines.Engine { return engines.Athena }

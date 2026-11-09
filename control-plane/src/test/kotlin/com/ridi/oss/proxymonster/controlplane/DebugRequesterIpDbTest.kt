@@ -222,9 +222,7 @@ class DebugRequesterIpDbTest {
         requireDockerOrSkip()
         val dataSource = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_debug_requester_ip_cedar"))
         val core = ControlPlaneCore(dataSource)
-        core.datasourceStore.create(
-            DatasourceInput(name = TAG_DS, engine = "postgres", host = "localhost", port = 5432, dbName = "app"),
-        )
+        core.datasourceStore.registerOnly(TAG_DS, "postgres")
         core.cedarPolicyStore.create(CedarPolicyInput(name = "t-net-producer", cedarSrc = trustedNetworkRule), updatedBy = null)
         core.cedarPolicyStore.create(CedarPolicyInput(name = "t-net-consumer", cedarSrc = tagGatedPermit), updatedBy = null)
 

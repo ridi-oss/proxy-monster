@@ -67,7 +67,7 @@ abstract class ConfigCatalogRefreshDbContract {
     private val ds get() = fixture.datasource
     private val writer = "writer@example.com"
 
-    private fun schema(): String = if (ds.engine == Engine.MYSQL) ds.dbName else ds.defaultSchemas.first { it !in ds.engine.systemSchemas }
+    private fun schema(): String = if (ds.engine == Engine.MYSQL) fixture.enforcement.database else ds.defaultSchemas.first { it !in ds.engine.systemSchemas }
 
     private fun target(): Connection = DriverManager.getConnection(
         fixture.enforcement.targetJdbcUrl, fixture.enforcement.targetUser, fixture.enforcement.targetPassword,
@@ -170,7 +170,7 @@ abstract class ConfigCatalogRefreshDbContract {
                     delay(SETTLE_MILLIS)
                     val commit = decide(opened, "COMMIT")
                     assertEquals(EnfAction.ALLOW, commit.ctx.action, commit.ctx.denyReason)
-                    assertEquals(listOf(schema()), commit.afterStatement.map { it.schema }, "COMMIT re-measures the DDL's schema")
+                    assertEquals(listOf(schema()), commit.afterStatement.map { it.schema }, "COMMIT re-inspects the DDL's schema")
                     held.commit()
                     fixture.pushFromTarget(held, opened.connectionId, schema(), unchanged = true)
                 }

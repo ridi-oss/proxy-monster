@@ -1,4 +1,4 @@
-package run_test
+package editor_test
 
 import (
 	"context"
@@ -18,9 +18,9 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/ridi-oss/proxy-monster/goproxy/cp"
+	"github.com/ridi-oss/proxy-monster/goproxy/editor"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
-	"github.com/ridi-oss/proxy-monster/goproxy/run"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
@@ -46,7 +46,7 @@ func (tableDetailFake *tableDetailFakeCP) tableDetailExpect(sessionID string) {
 	tableDetailFake.mu.Unlock()
 }
 
-func (tableDetailFake *tableDetailFakeCP) TableDetailExec(stream grpc.BidiStreamingServer[pb.ProxyTableDetailMsg, pb.ControlTableDetailMsg]) error {
+func (tableDetailFake *tableDetailFakeCP) TableDetailExec(stream grpc.BidiStreamingServer[pb.ProxyTableDetailMsg, pb.CpTableDetailMsg]) error {
 	tableDetailReady, err := stream.Recv()
 	if err != nil {
 		tableDetailFake.observed <- tableDetailObserved{err: fmt.Errorf("receive session ready: %w", err)}
@@ -74,8 +74,8 @@ func (tableDetailFake *tableDetailFakeCP) TableDetailExec(stream grpc.BidiStream
 	}
 	tableDetailClone := proto.Clone(tableDetailMessage).(*pb.ProxyTableDetailMsg)
 	tableDetailFake.observed <- tableDetailObserved{sessionID: tableDetailSessionID, message: tableDetailClone}
-	return stream.Send(&pb.ControlTableDetailMsg{
-		Kind: &pb.ControlTableDetailMsg_Close{Close: &pb.TableDetailClose{}},
+	return stream.Send(&pb.CpTableDetailMsg{
+		Kind: &pb.CpTableDetailMsg_Close{Close: &pb.TableDetailClose{}},
 	})
 }
 
@@ -108,7 +108,7 @@ func tableDetailRun(
 ) *pb.ProxyTableDetailMsg {
 	t.Helper()
 	tableDetailFake.tableDetailExpect(tableDetailSessionID)
-	run.NewRunner(tableDetailClient, tableDetailTarget, 0).RunTableDetail(tableDetailSessionID, &enginepb.ObjectRef{Catalog: catalog, Schema: schema, Table: table})
+	editor.NewServer(tableDetailClient, tableDetailTarget, 0).ServeTableDetail(tableDetailSessionID, &enginepb.ObjectRef{Catalog: catalog, Schema: schema, Table: table})
 	select {
 	case tableDetailObservation := <-tableDetailFake.observed:
 		if tableDetailObservation.err != nil {

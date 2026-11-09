@@ -287,17 +287,17 @@ func (c *nativeRequest) admitSubmission(envelope *Envelope) (*Envelope, error) {
 		return nil, err
 	}
 	// The control plane pinned the scope: any other workgroup or database was already a scope violation.
-	authz, identity, err := spi.Authenticate(c.server.client, c.token, c.clientAddr)
+	authz, identity, err := spi.Authenticate(c.server.client, c.token, c.clientAddr, pb.ConnectionDoor_CONNECTION_DOOR_WIRE)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrUnauthorized, err)
 	}
 	if identity.Principal != c.principal {
-		_ = authz.Close()
+		authz.Close()
 		return nil, ErrUnauthorized
 	}
 	commandRunner, err := c.server.target.newProxyCommandRunner(authz)
 	if err != nil {
-		_ = authz.Close()
+		authz.Close()
 		return nil, err
 	}
 	c.authz, c.commandRunner = authz, commandRunner
@@ -490,7 +490,7 @@ func (c *nativeRequest) settle(id string) {
 	}
 	c.authz, c.commandRunner = nil, nil
 	go func() {
-		defer func() { _ = authz.Close() }()
+		defer authz.Close()
 		ctx, cancel := context.WithTimeout(context.Background(), afterStatementTimeout)
 		defer cancel()
 		if _, err := c.server.target.awaitExecution(ctx, id); err != nil {
@@ -674,7 +674,7 @@ func (c *nativeRequest) complete(status string) {
 
 func (c *nativeRequest) release() {
 	if c.authz != nil {
-		_ = c.authz.Close()
+		c.authz.Close()
 		c.authz, c.commandRunner = nil, nil
 	}
 }

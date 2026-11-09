@@ -186,7 +186,7 @@ data class Config(
         // Matches the proxy's duration-safe ceiling (goproxy/config/config.go): (MaxInt64ns - 30s)/1s =
         // 9_223_372_006 seconds (~292 years). Bounding the control-plane to the identical value keeps the
         // "one shared PM_QUERY_TIMEOUT" lockstep contract exact and every downstream millisecond
-        // conversion (the exchange + run-stream caps) within Long range.
+        // conversion (the exchange + editor-stream caps) within Long range.
         const val MAX_QUERY_TIMEOUT_SECONDS = 9_223_372_006L
 
         // The control-plane's per-statement exchange budget sits this far above the configured query
@@ -237,7 +237,7 @@ data class Config(
             } ?: 600
             require(queryTimeoutSeconds > 0) { "PM_QUERY_TIMEOUT must be greater than zero" }
             // Reject values the proxy would also reject, so a set-but-oversized timeout fails fast at boot
-            // instead of silently overflowing the millisecond exchange/run-stream conversions to a negative
+            // instead of silently overflowing the millisecond exchange/editor-stream conversions to a negative
             // or tiny cap (and diverging from the proxy's identical bound).
             require(queryTimeoutSeconds <= MAX_QUERY_TIMEOUT_SECONDS) {
                 "PM_QUERY_TIMEOUT must be at most $MAX_QUERY_TIMEOUT_SECONDS seconds; got '$queryTimeoutSeconds'"

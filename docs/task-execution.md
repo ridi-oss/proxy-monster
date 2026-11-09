@@ -77,12 +77,12 @@ request lifecycle, a human approver, and the encrypted result store.
    plan — then runs the statement and applies the masks.
    - Wire: the native session's own target-DB connection; roles = caller's own;
      channel `wire`.
-   - Editor: CP-driven `RunExec` on an editor session connection (or one-shot
+   - Editor: CP-driven `EditorExec` on an editor session connection (or one-shot
      `/api/datasources/{id}/query`); roles = caller's own; channel `editor`.
    - Workflow: approver of record triggers `POST .../execute` (202); CP launches
-     an application-scoped coroutine that dials a new `RunExec` stream with an
-     `APPROVER_EXEC` token and `assumeRoles={R}`; channel `workflow-executor`.
-     Execute-once CAS: `APPROVED → EXECUTING`.
+     an application-scoped coroutine that dials a new `EditorExec` stream with
+     an `APPROVER_EXEC` token and `assumeRoles={R}`; channel
+     `workflow-executor`. Execute-once CAS: `APPROVED → EXECUTING`.
 4. Result. Wire streams the masked result on the socket. Editor returns rows on
    the HTTP response. Workflow saves encrypted rows under the `query_result`
    child (`PM_RESULT_KEY`, fail-closed when unset).
@@ -110,7 +110,7 @@ by the per-statement `Decide`.
 | `execute-as R` | the connecting principal's own roles | the caller's own roles (no elevation) | the elevation role set R |
 | Connection | the wire session's own target-DB connection | the editor session's held connection (or one-shot dial) | a new connection, dialed at run |
 | Executor (runs it) | the connecting client (caller) | the caller | the approver of record |
-| Run | per-statement `Decide` → apply masks (streams to socket) | per-statement `Decide` via `RunExec` → apply masks | per-statement `Decide` via `RunExec` under `{R}` → apply masks |
+| Run | per-statement `Decide` → apply masks (streams to socket) | per-statement `Decide` via `EditorExec` → apply masks | per-statement `Decide` via `EditorExec` under `{R}` → apply masks |
 | Result | streams back on the socket | HTTP response rows | `save → query_result` ciphertext; view via `/api/approvals/{id}/result` |
 
 ## Masking is context-conditioned, and decided at run
@@ -194,18 +194,18 @@ revocation guard, but the authoritative connect gate is at connection open.
   (like the purge sweep in `App.kt`) so it outlives the HTTP request. Submit
   returns `202` with `decision: EXECUTING`; the task/child status is polled
   (`GET /api/approvals/{id}` / `.../result`). The coroutine does not poll or
-  hold a thread — it awaits the proxy's completion signal (`RunDone` /
-  `RunError`). Native wire blocks on the socket and streams rows live; editor
+  hold a thread — it awaits the proxy's completion signal (`EditorDone` /
+  `EditorError`). Native wire blocks on the socket and streams rows live; editor
   waits on the HTTP response for that query.
 - One timeout. A single configurable `PM_QUERY_TIMEOUT` — one value across
   triggers, default 600 s (10 min) — nested so the proxy's guard aborts first
   and the control plane sees a clean, attributable error rather than a raw
   stream timeout.
-- Cancel / abort. There is no `RunCancel` control message on the run channel
-  today (`ControlRunMsg` is only `RunQuery` | `RunClose`). In-flight aborts use
-  the proxy timeout watchdog: PostgreSQL `CancelRequest` (via the session's
-  `TargetDbKeyData`), MySQL `KILL QUERY <conn-id>`, without dropping the
-  connection for a clean timeout path. A cancel is a control-plane-side
+- Cancel / abort. There is no `EditorCancel` control message on the editor
+  session today (`CpEditorMsg` is only `EditorQuery` | `EditorClose`). In-flight
+  aborts use the proxy timeout watchdog: PostgreSQL `CancelRequest` (via the
+  session's `TargetDbKeyData`), MySQL `KILL QUERY <conn-id>`, without dropping
+  the connection for a clean timeout path. A cancel is a control-plane-side
   terminalization: `POST /api/approvals/{id}/cancel` and
   `POST /api/editor/tasks/{taskId}/cancel` are `task.cancel`-gated, accept only
   an `EXECUTING` task (`approval.not_cancelable` otherwise), and write
@@ -221,11 +221,11 @@ revocation guard, but the authoritative connect gate is at connection open.
   and idempotent; the `executing_at` / `executed_at` timestamps let the
   reconcile distinguish orphans from live work.
 
-The control-plane-driven channel uses a neutral run protocol in code: `RunExec`,
-`ProxyRunMsg` / `ControlRunMsg`, `RunQuery`, `RunReady`, `RunDecision`,
-`RunResultRows`, `RunDone`, `RunError`, `RunClose`. The same channel serves
-editor and workflow execution; only the result sink differs (editor returns on
-HTTP; workflow saves under a result id).
+The control-plane-driven channel uses a neutral run protocol in code:
+`EditorExec`, `ProxyEditorMsg` / `CpEditorMsg`, `EditorQuery`, `EditorReady`,
+`EditorDecision`, `EditorResultRows`, `EditorDone`, `EditorError`,
+`EditorClose`. The same channel serves editor and workflow execution; only the
+result sink differs (editor returns on HTTP; workflow saves under a result id).
 
 ## Completion observation
 

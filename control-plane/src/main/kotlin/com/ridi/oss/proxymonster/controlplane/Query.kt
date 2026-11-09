@@ -46,7 +46,6 @@ import com.ridi.oss.proxymonster.analyzer.pb.column
 import com.ridi.oss.proxymonster.grpc.resultRequirements
 import com.ridi.oss.proxymonster.analyzer.pb.namespace as pbNamespace
 import com.ridi.oss.proxymonster.probe.Analyzer
-import com.ridi.oss.proxymonster.probe.Dialect
 import com.ridi.oss.proxymonster.probe.Masking
 import com.ridi.oss.proxymonster.probe.analyzerFor
 import com.ridi.oss.proxymonster.probe.bindMasks
@@ -360,7 +359,7 @@ fun protectedPredicateLiterals(
     liveSearchPath: List<String>? = null,
     session: SessionObservation = SessionObservation.getDefaultInstance(),
 ): List<String>? {
-    val resolvedSearchPath = (liveSearchPath ?: ds.defaultSchemas).ifEmpty { listOf(ds.dbName.ifBlank { "public" }) }
+    val resolvedSearchPath = liveSearchPath ?: ds.defaultSchemas
     val (catalogIndex, facts) = try {
         val (index, analyzer) = analyzerAndCatalogIndex(ds, catalog, tempColumns, resolvedSearchPath, session)
         index to analyzer.analyze(sql)
@@ -457,11 +456,10 @@ fun decideQuery(
     factsOverride: StatementFacts? = null,
 ): DecisionContext {
     val id = ds.id
-    val dialect = ds.engine.dialect
     if (liveSearchPath != null && liveSearchPath.isEmpty() && catalog.columns.isNotEmpty()) {
         return structuralDeny(CATALOG_CONFIGURATION_DENY, emptyList(), failedStage = "catalog").copy(catalogMiss = true)
     }
-    val resolvedSearchPath = (liveSearchPath ?: ds.defaultSchemas).ifEmpty { listOf(ds.dbName.ifBlank { "public" }) }
+    val resolvedSearchPath = liveSearchPath ?: ds.defaultSchemas
 
     val catalogAndFacts = try {
         val (index, analyzer) = analyzerAndCatalogIndex(ds, catalog, tempColumns, resolvedSearchPath, session)
@@ -645,9 +643,9 @@ internal fun decideFacts(
     }
 
     // A resolved statement that touches no column/table/function, changes no catalog, and calls no function
-    // has nothing to mask, re-measure, or authorize beyond the kind gate it already passed: relay it verbatim
+    // has nothing to mask, re-inspect, or authorize beyond the kind gate it already passed: relay it verbatim
     // (SHOW/SET/const-SELECT). A catalog-changing (DDL) or function-bearing no-column statement falls through
-    // so its re-measure and function authorization still run. A session statement on a non-persistent channel
+    // so its re-inspection and function authorization still run. A session statement on a non-persistent channel
     // (MCP/workflow) is denied earlier at the kind gate by the seeded `stmt.cat.session` Cedar forbid.
     if (facts.resolved &&
         !facts.catalogChanging &&
@@ -675,8 +673,7 @@ internal fun decideFacts(
         }
         if (facts.functionsList.isNotEmpty()) {
             val functionTags = facts.functionsList.mapNotNull { name ->
-                (systemClassification?.tagForFunction(ds.engine, ds.engineVersion, name)
-                    ?: BaselineDangerousFunctions.classify(name.substringAfterLast('.'))?.id)?.let { name to it }
+                functionTag(systemClassification, ds, name)?.let { name to it }
             }.toMap()
             if (functionTags.isNotEmpty()) {
                 val refs = functionTags.keys.map(::FunctionRef)
@@ -801,8 +798,7 @@ internal fun decideFacts(
     if (functionGrants.isNotEmpty() || facts.functionsList.isNotEmpty()) {
         val names = (functionGrants.map { it.function.name } + facts.functionsList).distinct()
         val functionTags = names.mapNotNull { name ->
-            (systemClassification?.tagForFunction(ds.engine, ds.engineVersion, name)
-                ?: BaselineDangerousFunctions.classify(name.substringAfterLast('.'))?.id)?.let { name to it }
+            functionTag(systemClassification, ds, name)?.let { name to it }
         }.toMap()
         // now() relays; pg_read_file and every user function need a grant. functionsList (calls seen in an
         // unanalyzable statement) has no builtin flag, so only its dangerous names are gated.
@@ -1179,7 +1175,7 @@ fun Route.queryRoutes(
     config: Config,
     datasourceStore: DatasourceStore,
     historyStore: QueryHistoryStore,
-    runExecService: RunExecService,
+    editorExecService: EditorExecService,
 ) {
     post("/api/datasources/{id}/query") {
         val principal = call.requireApi() ?: return@post
@@ -1190,7 +1186,7 @@ fun Route.queryRoutes(
         runCatching { historyStore.add(principal, id, req.sql) }
         try {
             call.respond(
-                runExecService.run(
+                editorExecService.run(
                     principal, ds, req.sql, req.maxRows,
                     requesterIp = call.httpRequesterIp(config),
                     exchangeTimeoutMs = config.queryExchangeTimeoutMs,
@@ -1200,12 +1196,12 @@ fun Route.queryRoutes(
             call.respond(HttpStatusCode.ServiceUnavailable, ApiError("query.no_proxy_attached"))
         } catch (_: ProxyStreamWedgedException) {
             call.respond(HttpStatusCode.ServiceUnavailable, ApiError("query.proxy_stream_wedged"))
-        } catch (_: ProxyRunTimeoutException) {
+        } catch (_: ProxyEditorTimeoutException) {
             call.respond(HttpStatusCode.GatewayTimeout, ApiError("query.proxy_timeout"))
-        } catch (e: TargetDbRunException) {
+        } catch (e: TargetDbEditorException) {
             // The run's decision already chose the form (raw for a full reader, redacted for a masked one).
             call.respond(HttpStatusCode.BadGateway, ApiError("query.failed", mapOf("detail" to e.decidedMessage)))
-        } catch (e: ProxyRunException) {
+        } catch (e: ProxyEditorException) {
             // A generic failure's text can echo the target host (`dial tcp 10.0.3.7:5432: …`) — log only.
             call.application.environment.log.warn("query run failed", e)
             call.respond(HttpStatusCode.BadGateway, ApiError("query.failed"))
@@ -1270,7 +1266,7 @@ fun Route.editorSessionRoutes(
     userGroupStore: UserGroupStore,
     roleResolver: RoleResolver,
     authz: Authz,
-    runExecService: RunExecService,
+    editorExecService: EditorExecService,
     appScope: CoroutineScope,
     systemClassification: SystemClassificationService? = null,
     // Pushes a task's terminal transition to the owner's SSE stream so the tab updates without waiting for
@@ -1280,7 +1276,7 @@ fun Route.editorSessionRoutes(
     auditStore: AuditStore? = null,
     service: EditorTaskService = EditorTaskService(
         config, datasourceStore, accessStore, queryResultStore, policyStore, userGroupStore, roleResolver, authz,
-        runExecService, appScope, systemClassification, taskCompletionHub, auditStore,
+        editorExecService, appScope, systemClassification, taskCompletionHub, auditStore,
     ),
 ) {
     post("/api/editor/sessions") {
@@ -1289,14 +1285,14 @@ fun Route.editorSessionRoutes(
         val ds = datasourceStore.get(input.datasourceId)
             ?: return@post call.respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "datasource")))
         try {
-            call.respond(EditorSessionOpened(runExecService.openSession(principal, ds, call.httpRequesterIp(config))))
+            call.respond(EditorSessionOpened(editorExecService.openSession(principal, ds)))
         } catch (_: NoProxyAttachedException) {
             call.respond(HttpStatusCode.ServiceUnavailable, ApiError("query.no_proxy_attached"))
         } catch (_: ProxyStreamWedgedException) {
             call.respond(HttpStatusCode.ServiceUnavailable, ApiError("query.proxy_stream_wedged"))
-        } catch (_: ProxyRunTimeoutException) {
+        } catch (_: ProxyEditorTimeoutException) {
             call.respond(HttpStatusCode.GatewayTimeout, ApiError("query.proxy_timeout"))
-        } catch (e: ProxyRunException) {
+        } catch (e: ProxyEditorException) {
             // An open failure's text can echo the target host (`dial tcp 10.0.3.7:5432: …`) — log only.
             call.application.environment.log.warn("editor session open failed", e)
             call.respond(HttpStatusCode.BadGateway, ApiError("query.failed"))
@@ -1369,10 +1365,10 @@ fun Route.editorSessionRoutes(
     // The session's datasource when [principal] owns the session and may connect to it; the response is sent
     // otherwise. A missing session and someone else's get the same 404, so a guessed id reveals nothing. The
     // session's path names the target's schemas, so reading it needs datasource.connect, as the catalog does.
-    suspend fun ApplicationCall.ownedConnectableSession(principal: String): Pair<OpenEditorSession, Datasource>? {
+    suspend fun ApplicationCall.ownedConnectableSession(principal: String): Pair<EditorSession, Datasource>? {
         val sessionId = parameters["sessionId"]
             ?: return null.also { respond(HttpStatusCode.BadRequest, ApiError("common.bad_id")) }
-        val session = runExecService.sessionOwnedBy(sessionId, principal)
+        val session = editorExecService.sessionOwnedBy(sessionId, principal)
             ?: return null.also { respond(HttpStatusCode.NotFound, ApiError("common.not_found", mapOf("resource" to "editor_session"))) }
         val ds = datasourceStore.getByName(session.datasourceName)
         if (ds == null || userGroupStore.isDeactivated(principal) ||
@@ -1421,7 +1417,7 @@ fun Route.editorSessionRoutes(
         // Close only if the caller owns the session (mirrors runOnSession) — a leaked sessionId must not let
         // another principal tear down this connection. Idempotent NoContent regardless, so it's not an
         // existence oracle for someone else's session id.
-        runExecService.closeSessionOwnedBy(sessionId, principal)
+        editorExecService.closeSessionOwnedBy(sessionId, principal)
         call.respond(HttpStatusCode.NoContent)
     }
 }
@@ -1448,3 +1444,7 @@ private fun StatementFacts.beforeDecideCommands(): List<ProxyCommand> {
     val need = athenaPreparedDefinitionNeed
     return listOf(proxyCommand { fetchAthenaPreparedDefinition = fetchAthenaPreparedDefinition { workgroup = need.workgroup; name = need.name } })
 }
+
+private fun functionTag(systemClassification: SystemClassificationService?, ds: Datasource, name: String): String? =
+    if (systemClassification != null) systemClassification.tagForFunction(ds.engine, ds.engineVersion, name)
+    else BaselineDangerousFunctions.classify(name.substringAfterLast('.'))?.id

@@ -442,7 +442,7 @@ type EngineFacts struct {
 	SystemSchemas []string `protobuf:"bytes,3,rep,name=system_schemas,json=systemSchemas,proto3" json:"system_schemas,omitempty"`
 	// The ConnectionInfo property keys this engine's proxies may publish.
 	ConnectionProperties []string `protobuf:"bytes,4,rep,name=connection_properties,json=connectionProperties,proto3" json:"connection_properties,omitempty"`
-	// One connection's catalog measurement answers for every connection of the datasource.
+	// One connection's catalog inspection answers for every connection of the datasource.
 	CatalogIsConnectionIndependent bool `protobuf:"varint,5,opt,name=catalog_is_connection_independent,json=catalogIsConnectionIndependent,proto3" json:"catalog_is_connection_independent,omitempty"`
 	// The proxy can prepare a statement on the target without running it.
 	ChecksTargetErrors bool `protobuf:"varint,6,opt,name=checks_target_errors,json=checksTargetErrors,proto3" json:"checks_target_errors,omitempty"`

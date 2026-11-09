@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"strings"
 	"time"
@@ -17,7 +18,7 @@ import (
 	"github.com/ridi-oss/proxy-monster/goproxy/wire"
 )
 
-// connection is goproxy's connection to the target, for a wire client or a control-plane run.
+// connection is goproxy's connection to the target, for a wire client or an editor session.
 type connection struct {
 	target         *target
 	session        *engines.Session
@@ -33,26 +34,38 @@ type connection struct {
 	pendingDirty   bool
 	poisoned       bool
 	tempOverlay    []spi.TempColumn
-	// forward and flushForward relay what the target reports to a wire client; a run has none.
+	// forward and flushForward relay what the target reports to a wire client; an editor session has none.
 	forward      func(pgproto3.BackendMessage)
 	flushForward func() error
 }
 
 func (t *target) OpenConnection(ctx context.Context, authz *spi.Authorizer, guard spi.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.Connection, error) {
-	var extra map[string]string
+	var startup map[string]string
 	if defaultSchema != "" {
-		extra = map[string]string{"search_path": `"` + strings.ReplaceAll(defaultSchema, `"`, `""`) + `"`}
+		startup = map[string]string{"search_path": `"` + strings.ReplaceAll(defaultSchema, `"`, `""`) + `"`}
 	}
-	conn, _, keyData, txStatus, catalog, err := dialTargetDbAuthParams(ctx, t.config, extra)
-	if err != nil {
-		return nil, err
-	}
-	conn = wire.WithTargetDbReadTimeout(conn, readTimeout)
+	c, _, err := t.openConnection(ctx, authz, guard, startup, func(conn net.Conn) net.Conn {
+		return wire.WithTargetDbReadTimeout(conn, readTimeout)
+	})
+	return c, err
+}
+
+// errTargetDbUnavailable marks an open that never reached the target, so a wire client is told so.
+var errTargetDbUnavailable = errors.New("target DB unavailable")
+
+// openConnection dials the target as goproxy's own user with the extra startup settings, wraps the socket, and
+// builds the connection on it, for a wire client and an editor session alike. It also returns the target's startup
+// parameters, which a wire client is sent.
+func (t *target) openConnection(ctx context.Context, authz *spi.Authorizer, guard spi.ExecGuard, startup map[string]string, wrap func(net.Conn) net.Conn) (*connection, []pgproto3.ParameterStatus, error) {
 	generation, ok := wire.NextBackendGeneration()
 	if !ok {
-		_ = conn.Close()
-		return nil, errors.New("run backend generation out of range")
+		return nil, nil, errors.New("backend generation out of range")
 	}
+	conn, parameters, keyData, txStatus, catalog, err := dialTargetDbAuthParams(ctx, t.config, startup)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: %w", errTargetDbUnavailable, err)
+	}
+	conn = wrap(conn)
 	c := &connection{
 		target:         t,
 		targetDbConn:   conn,
@@ -66,10 +79,10 @@ func (t *target) OpenConnection(ctx context.Context, authz *spi.Authorizer, guar
 	}
 	if c.session, err = c.newSession(); err != nil {
 		_ = conn.Close()
-		return nil, err
+		return nil, nil, err
 	}
 	c.commandRunner = c.newCommandRunner(c.runProbe)
-	return c, nil
+	return c, parameters, nil
 }
 
 // OnOpen runs the on-open catalog fetch over the target DB conn. A cancel of ctx (the control-plane closed the

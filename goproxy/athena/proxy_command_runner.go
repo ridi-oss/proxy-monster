@@ -21,7 +21,7 @@ import (
 const metadataTimeout = 60 * time.Second
 
 // proxyCommandRunner answers the control plane's per-connection catalog commands from Glue table metadata. The
-// listing is the measurement, so its hash is always trusted.
+// listing is the inspection, so its hash is always trusted.
 type proxyCommandRunner struct {
 	target       *target
 	connectionID []byte
@@ -40,7 +40,7 @@ func (t *target) newProxyCommandRunner(authz *spi.Authorizer) (*proxyCommandRunn
 // maxPreparedDefinitions bounds the definitions one decision may accumulate across its before-decide rounds.
 const maxPreparedDefinitions = 8
 
-// RunAll executes a command list: a Refetch re-measures a database from Glue; a FetchAthenaPreparedDefinition
+// RunAll executes a command list: a Refetch re-inspects a database from Glue; a FetchAthenaPreparedDefinition
 // reads the named prepared statement from the workgroup and appends it to session's Athena scope, so the
 // re-sent decision carries it. Any other arm fails closed.
 func (r *proxyCommandRunner) RunAll(commands []*pb.ProxyCommand, snapshot *spi.SessionSnapshot) error {

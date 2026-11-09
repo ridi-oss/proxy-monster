@@ -9,7 +9,6 @@ import com.ridi.oss.proxymonster.controlplane.DecisionContext
 import com.ridi.oss.proxymonster.controlplane.decideQuery
 import com.ridi.oss.proxymonster.controlplane.PrincipalSessionStore
 import com.ridi.oss.proxymonster.controlplane.Datasource
-import com.ridi.oss.proxymonster.controlplane.DatasourceInput
 import com.ridi.oss.proxymonster.controlplane.DatasourceStore
 import com.ridi.oss.proxymonster.controlplane.MaskFnInput
 import com.ridi.oss.proxymonster.controlplane.catalogName
@@ -19,6 +18,7 @@ import com.ridi.oss.proxymonster.controlplane.QueryResponse
 import com.ridi.oss.proxymonster.controlplane.RoleAssignmentInput
 import com.ridi.oss.proxymonster.controlplane.RoleInput
 import com.ridi.oss.proxymonster.controlplane.RoleResolver
+import com.ridi.oss.proxymonster.controlplane.seed
 import com.ridi.oss.proxymonster.controlplane.TokenStore
 import com.ridi.oss.proxymonster.controlplane.UserGroupStore
 import com.ridi.oss.proxymonster.controlplane.authz.Authz
@@ -51,6 +51,7 @@ internal fun DatasourceStore.pushTestCatalog(
     canonical: Boolean = false,
 ) {
     data class Namespace(
+        val catalog: String,
         val defaultSchemas: List<String>,
         val mysqlLowerCaseTableNames: Int?,
         val engineVersion: String,
@@ -64,8 +65,7 @@ internal fun DatasourceStore.pushTestCatalog(
            ORDER BY table_schema, table_name, ordinal_position"""
     val namespace = DriverManager.getConnection(jdbcUrl, user, password).use { target ->
         val captured = if (isMysql) {
-            target.prepareStatement("SELECT DATABASE(), @@lower_case_table_names, DATABASE() = ?, VERSION()").use { ps ->
-                ps.setString(1, datasource.dbName)
+            target.prepareStatement("SELECT DATABASE(), @@lower_case_table_names, VERSION()").use { ps ->
                 ps.executeQuery().use { rs ->
                     check(rs.next()) { "MySQL namespace probe returned no row" }
                     val currentDb = rs.getString(1) ?: error("MySQL connection has no current database")
@@ -73,31 +73,28 @@ internal fun DatasourceStore.pushTestCatalog(
                     check(!rs.wasNull() && lowerCaseTableNames in 0..2) {
                         "MySQL returned invalid lower_case_table_names: $lowerCaseTableNames"
                     }
-                    check(rs.getBoolean(3)) {
-                        "MySQL current database '$currentDb' does not match bound database '${datasource.dbName}'"
-                    }
-                    val engineVersion = rs.getString(4) ?: error("MySQL returned no server version")
-                    Namespace(listOf(currentDb), lowerCaseTableNames, engineVersion)
+                    val engineVersion = rs.getString(3) ?: error("MySQL returned no server version")
+                    Namespace(datasource.engine.catalogName(currentDb), listOf(currentDb), lowerCaseTableNames, engineVersion)
                 }
             }
         } else {
             val schemas = ArrayList<String>()
-            val engineVersion = target.prepareStatement("SELECT version()").use { ps ->
+            val (engineVersion, currentDb) = target.prepareStatement("SELECT version(), current_database()").use { ps ->
                 ps.executeQuery().use { rs ->
                     check(rs.next()) { "PostgreSQL version probe returned no row" }
-                    rs.getString(1) ?: error("PostgreSQL returned no server version")
+                    (rs.getString(1) ?: error("PostgreSQL returned no server version")) to rs.getString(2)
                 }
             }
             target.prepareStatement("SELECT unnest(current_schemas(true))").use { ps ->
                 ps.executeQuery().use { rs -> while (rs.next()) schemas += rs.getString(1) }
             }
-            Namespace(schemas, null, engineVersion)
+            Namespace(currentDb, schemas, null, engineVersion)
         }
         target.prepareStatement(columnSql).use { ps ->
             ps.executeQuery().use { rs ->
                 while (rs.next()) {
                     columns += pushedColumn(
-                        catalog = datasource.effectiveCatalog,
+                        catalog = captured.catalog,
                         schema = rs.getString(1),
                         table = rs.getString(2),
                         column = rs.getString(3),
@@ -113,7 +110,7 @@ internal fun DatasourceStore.pushTestCatalog(
     storePushedCatalog(
         id = datasource.id,
         defaultSchemas = namespace.defaultSchemas,
-        currentCatalog = datasource.effectiveCatalog,
+        currentCatalog = namespace.catalog,
         mysqlLowerCaseTableNames = namespace.mysqlLowerCaseTableNames,
         engineVersion = namespace.engineVersion,
         catalog = catalogSnapshot {
@@ -203,6 +200,8 @@ class EnforcementFixture(
     val targetJdbcUrl: String,
     val targetUser: String,
     val targetPassword: String,
+    /** The target database the proxy would be configured with (PM_TARGET_DB). */
+    val database: String,
     // The control-plane store's database name, for a CpGoStack over the same store.
     val metaDatabase: String,
 ) {
@@ -279,9 +278,9 @@ class EnforcementFixture(
          * unmasked/masked-pii pair `analyst` has — proves a CTAS that reads a masked column still gets
          * caught by PolicyEvaluator's write-payload rule even though stmt.cat.ddl itself is granted).
          */
-        private fun seedPolicy(s: MetaStores, ds: Datasource): Datasource {
-            val catalog = ds.engine.catalogName(ds.dbName)
-            val schema = ds.engine.defaultSchema(ds.dbName)
+        private fun seedPolicy(s: MetaStores, ds: Datasource, database: String): Datasource {
+            val catalog = checkNotNull(s.datasourceStore.get(ds.id)).effectiveCatalog
+            val schema = ds.engine.defaultSchema(database)
             val usersTableEuid = "${ds.name}/$catalog/$schema/users"
             val maskFn = s.policyStore.createMaskFn(MaskFnInput("last4", "LAST_N"))
             s.datasourceStore.upsertClassification(
@@ -506,16 +505,10 @@ class EnforcementFixture(
                     st.execute("INSERT INTO orders VALUES (1,100),(2,200)")
                 }
             }
-            val ds = s.datasourceStore.create(
-                DatasourceInput(
-                    name = "target-pg", engine = "postgres",
-                    host = SharedPostgres.host(), port = SharedPostgres.port(),
-                    dbName = targetDb,
-                ),
-            )
+            val ds = s.datasourceStore.seed(name = "target-pg", engine = "postgres")
             s.datasourceStore.pushTestCatalog(ds, SharedPostgres.jdbcUrlFor(targetDb), SharedPostgres.username(), SharedPostgres.password())
-            val refreshed = seedPolicy(s, ds)
-            return s.fixture(refreshed, SharedPostgres.jdbcUrlFor(targetDb), SharedPostgres.username(), SharedPostgres.password())
+            val refreshed = seedPolicy(s, ds, targetDb)
+            return s.fixture(refreshed, targetDb, SharedPostgres.jdbcUrlFor(targetDb), SharedPostgres.username(), SharedPostgres.password())
         }
 
         fun mysql(): EnforcementFixture {
@@ -532,16 +525,10 @@ class EnforcementFixture(
                     st.execute("INSERT INTO orders VALUES (1,100),(2,200)")
                 }
             }
-            val ds = s.datasourceStore.create(
-                DatasourceInput(
-                    name = "target-mysql", engine = "mysql",
-                    host = SharedMySql.host(), port = SharedMySql.port(),
-                    dbName = targetDb,
-                ),
-            )
+            val ds = s.datasourceStore.seed(name = "target-mysql", engine = "mysql")
             s.datasourceStore.pushTestCatalog(ds, SharedMySql.jdbcUrlFor(targetDb), SharedMySql.username(), SharedMySql.password())
-            val refreshed = seedPolicy(s, ds)
-            return s.fixture(refreshed, SharedMySql.jdbcUrlFor(targetDb), SharedMySql.username(), SharedMySql.password())
+            val refreshed = seedPolicy(s, ds, targetDb)
+            return s.fixture(refreshed, targetDb, SharedMySql.jdbcUrlFor(targetDb), SharedMySql.username(), SharedMySql.password())
         }
 
         private data class MetaStores(
@@ -561,14 +548,14 @@ class EnforcementFixture(
             // first isAuthorized() builds its cached PolicySet from the already-seeded enabledSources()
             // (at the post-seed stateVersion), and no Cedar mutation happens during run(), so that
             // cache stays valid for the fixture's lifetime.
-            fun fixture(ds: Datasource, targetJdbcUrl: String, targetUser: String, targetPassword: String): EnforcementFixture {
+            fun fixture(ds: Datasource, database: String, targetJdbcUrl: String, targetUser: String, targetPassword: String): EnforcementFixture {
                 val roleResolver = RoleResolver(meta, userGroupStore, accessStore)
                 val engine = CedarEngine(cedarPolicyStore)
                 val authz = Authz(engine, cedarPolicyStore, RoleSource { p -> roleResolver.resolve(p) })
                 return EnforcementFixture(
                     datasourceStore, policyStore, auditStore, accessStore, userGroupStore, tokenStore, daemonSessionStore,
                     ds, ROLE, CLEARTEXT, roleResolver, authz, meta, cedarPolicyStore,
-                    targetJdbcUrl, targetUser, targetPassword, metaDatabase,
+                    targetJdbcUrl, targetUser, targetPassword, database, metaDatabase,
                 )
             }
         }

@@ -200,7 +200,7 @@ func TestIdentityFromWire(t *testing.T) {
 		name string
 		wire *pb.WireIdentity
 	}{
-		{"short id", &pb.WireIdentity{ConnectionId: []byte("short")}},
+		{"missing id", &pb.WireIdentity{}},
 		{"blank on-open schema", &pb.WireIdentity{ConnectionId: []byte("0123456789abcdef"), OnOpen: []*pb.ProxyCommand{refetch("", nil)}}},
 		{"unknown on-open command", &pb.WireIdentity{ConnectionId: []byte("0123456789abcdef"), OnOpen: []*pb.ProxyCommand{{}}}},
 	} {
@@ -212,14 +212,14 @@ func TestIdentityFromWire(t *testing.T) {
 	}
 }
 
-func TestValidateTokenAndDecideUnreachable(t *testing.T) {
+func TestOpenConnectionAndDecideUnreachable(t *testing.T) {
 	c, err := New("127.0.0.1:1", "", "ds")
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	t.Cleanup(func() { _ = c.Close() })
-	if _, err := c.ValidateToken("token", ""); err == nil {
-		t.Fatal("ValidateToken against unreachable control plane succeeded")
+	if _, err := c.OpenConnection("token", "", pb.ConnectionDoor_CONNECTION_DOOR_WIRE); err == nil {
+		t.Fatal("OpenConnection against unreachable control plane succeeded")
 	}
 	out := c.Decide(spi.DecideRequest{Token: "token", SQL: "SELECT 1"})
 	if !out.IsErr() || out.Err == "" {
@@ -230,7 +230,7 @@ func TestValidateTokenAndDecideUnreachable(t *testing.T) {
 func TestRegisterUnspecifiedEngineRejectedBeforeRPC(t *testing.T) {
 	fake := &fakeControlPlane{}
 	c := startFakeControlPlane(t, fake)
-	if err := c.Register(enginepb.Engine_ENGINE_UNSPECIFIED, "localhost", 1234, "db", nil, "", nil, false, nil, nil); err == nil || !strings.Contains(err.Error(), "unspecified engine") {
+	if err := c.Register(enginepb.Engine_ENGINE_UNSPECIFIED, "localhost:1234", nil, "", nil, false, nil, nil); err == nil || !strings.Contains(err.Error(), "unspecified engine") {
 		t.Fatalf("Register error = %v, want local unspecified-engine error", err)
 	}
 	fake.mu.Lock()
@@ -246,14 +246,14 @@ type fakeControlPlane struct {
 
 	mu sync.Mutex
 
-	validateResp *pb.WireIdentity
-	validateErr  error
-	decideResp   *pb.WireDecision
-	decideQueue  []*pb.WireDecision
-	pushGen      uint64
+	openResp    *pb.WireIdentity
+	openErr     error
+	decideResp  *pb.WireDecision
+	decideQueue []*pb.WireDecision
+	pushGen     uint64
 
-	lastValidateReq  *pb.ValidateTokenRequest
-	lastValidateMeta string
+	lastOpenReq      *pb.OpenConnectionRequest
+	lastOpenMeta     string
 	decideReqs       []*pb.DecisionRequest
 	lastDecideMeta   string
 	lastRegisterReq  *pb.RegisterRequest
@@ -268,7 +268,7 @@ type fakeControlPlane struct {
 	lastFragmentMeta string
 	lastClose        *pb.CloseConnectionRequest
 	lastCloseMeta    string
-	events           []*pb.ControlEvent
+	events           []*pb.CpEvent
 	lastEventsReq    *pb.EventsRequest
 	lastEventsMeta   string
 }
@@ -285,16 +285,16 @@ func metaValue(ctx context.Context) string {
 	return values[0]
 }
 
-func (f *fakeControlPlane) ValidateToken(ctx context.Context, req *pb.ValidateTokenRequest) (*pb.WireIdentity, error) {
+func (f *fakeControlPlane) OpenConnection(ctx context.Context, req *pb.OpenConnectionRequest) (*pb.WireIdentity, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.lastValidateReq = proto.Clone(req).(*pb.ValidateTokenRequest)
-	f.lastValidateMeta = metaValue(ctx)
-	if f.validateErr != nil {
-		return nil, f.validateErr
+	f.lastOpenReq = proto.Clone(req).(*pb.OpenConnectionRequest)
+	f.lastOpenMeta = metaValue(ctx)
+	if f.openErr != nil {
+		return nil, f.openErr
 	}
-	if f.validateResp != nil {
-		return f.validateResp, nil
+	if f.openResp != nil {
+		return f.openResp, nil
 	}
 	return &pb.WireIdentity{Principal: "default@example.com", ConnectionId: []byte("0123456789abcdef")}, nil
 }
@@ -354,11 +354,11 @@ func (f *fakeControlPlane) CloseConnection(ctx context.Context, req *pb.CloseCon
 	return &pb.CloseConnectionResponse{}, nil
 }
 
-func (f *fakeControlPlane) Events(req *pb.EventsRequest, stream grpc.ServerStreamingServer[pb.ControlEvent]) error {
+func (f *fakeControlPlane) Events(req *pb.EventsRequest, stream grpc.ServerStreamingServer[pb.CpEvent]) error {
 	f.mu.Lock()
 	f.lastEventsReq = proto.Clone(req).(*pb.EventsRequest)
 	f.lastEventsMeta = metaValue(stream.Context())
-	events := append([]*pb.ControlEvent(nil), f.events...)
+	events := append([]*pb.CpEvent(nil), f.events...)
 	f.mu.Unlock()
 	for _, event := range events {
 		if err := stream.Send(event); err != nil {
@@ -387,43 +387,43 @@ func startFakeControlPlane(t *testing.T, fake *fakeControlPlane) *Client {
 	return client
 }
 
-func TestValidateTokenMapsRequestAndIdentity(t *testing.T) {
-	fake := &fakeControlPlane{validateResp: &pb.WireIdentity{
+func TestOpenConnectionMapsRequestAndIdentity(t *testing.T) {
+	fake := &fakeControlPlane{openResp: &pb.WireIdentity{
 		Principal:    "alice@example.com",
 		Roles:        []string{"analyst"},
 		ConnectionId: []byte("0123456789abcdef"),
 		OnOpen:       []*pb.ProxyCommand{refetch("app", nil)},
 	}}
 	c := startFakeControlPlane(t, fake)
-	got, err := c.ValidateToken("raw-token", "198.51.100.7:5432")
+	got, err := c.OpenConnection("raw-token", "198.51.100.7:5432", pb.ConnectionDoor_CONNECTION_DOOR_EDITOR)
 	if err != nil {
-		t.Fatalf("ValidateToken: %v", err)
+		t.Fatalf("OpenConnection: %v", err)
 	}
 	if got.Principal != "alice@example.com" || !proto.Equal(got.OnOpen[0], refetch("app", nil)) {
 		t.Fatalf("identity = %+v", got)
 	}
 	fake.mu.Lock()
-	req, meta := fake.lastValidateReq, fake.lastValidateMeta
+	req, meta := fake.lastOpenReq, fake.lastOpenMeta
 	fake.mu.Unlock()
-	if req.GetToken() != "raw-token" || req.GetDatasourceName() != "ds-1" || req.GetClientAddr() != "198.51.100.7:5432" {
-		t.Fatalf("ValidateTokenRequest = %+v, want token, datasource and client_addr", req)
+	if req.GetToken() != "raw-token" || req.GetDatasourceName() != "ds-1" || req.GetClientAddr() != "198.51.100.7:5432" || req.GetDoor() != pb.ConnectionDoor_CONNECTION_DOOR_EDITOR {
+		t.Fatalf("OpenConnectionRequest = %+v, want token, datasource, client_addr and door", req)
 	}
 	if meta != "secret-abc" {
 		t.Fatalf("metadata = %q, want secret-abc", meta)
 	}
 }
 
-func TestValidateTokenRejectedAndMalformed(t *testing.T) {
+func TestOpenConnectionRejectedAndMissingID(t *testing.T) {
 	t.Run("rejected", func(t *testing.T) {
-		c := startFakeControlPlane(t, &fakeControlPlane{validateErr: status.Error(codes.Unauthenticated, "invalid token")})
-		if _, err := c.ValidateToken("bad", ""); err == nil || !strings.Contains(err.Error(), "invalid token") {
-			t.Fatalf("ValidateToken error = %v", err)
+		c := startFakeControlPlane(t, &fakeControlPlane{openErr: status.Error(codes.Unauthenticated, "invalid token")})
+		if _, err := c.OpenConnection("bad", "", pb.ConnectionDoor_CONNECTION_DOOR_WIRE); err == nil || !strings.Contains(err.Error(), "invalid token") {
+			t.Fatalf("OpenConnection error = %v", err)
 		}
 	})
-	t.Run("malformed id", func(t *testing.T) {
-		c := startFakeControlPlane(t, &fakeControlPlane{validateResp: &pb.WireIdentity{ConnectionId: []byte("bad")}})
-		if _, err := c.ValidateToken("token", ""); err == nil {
-			t.Fatal("ValidateToken accepted malformed connection id")
+	t.Run("missing id", func(t *testing.T) {
+		c := startFakeControlPlane(t, &fakeControlPlane{openResp: &pb.WireIdentity{}})
+		if _, err := c.OpenConnection("token", "", pb.ConnectionDoor_CONNECTION_DOOR_WIRE); err == nil {
+			t.Fatal("OpenConnection accepted a missing connection id")
 		}
 	})
 }
@@ -625,7 +625,7 @@ func TestRegisterAndPushCatalog(t *testing.T) {
 	fake := &fakeControlPlane{}
 	c := startFakeControlPlane(t, fake)
 	chain := "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
-	if err := c.Register(enginepb.Engine_MYSQL, "target DB", 3306, "app", []string{"tag"}, "127.0.0.1:6033", &chain, true, nil, nil); err != nil {
+	if err := c.Register(enginepb.Engine_MYSQL, "target DB:3306", []string{"tag"}, "127.0.0.1:6033", &chain, true, nil, nil); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	catalog := &pb.CatalogRequest{Catalog: &enginepb.CatalogSnapshot{Columns: []*enginepb.Column{{Schema: "s", Table: "t", Column: "c"}}}}
@@ -635,7 +635,7 @@ func TestRegisterAndPushCatalog(t *testing.T) {
 	fake.mu.Lock()
 	register, catalogReq := fake.lastRegisterReq, fake.lastCatalog
 	fake.mu.Unlock()
-	if register.GetEngine() != enginepb.Engine_MYSQL || register.GetName() != "ds-1" {
+	if register.GetEngine() != enginepb.Engine_MYSQL || register.GetName() != "ds-1" || register.GetTargetInfo() != "target DB:3306" {
 		t.Fatalf("RegisterRequest = %+v", register)
 	}
 	// The proxy must announce its wire-protocol version so the control plane can turn away a skewed rollout.
@@ -670,7 +670,7 @@ func TestRegisterRejectsIncompatibleControlPlaneVersion(t *testing.T) {
 	bad := ProtocolVersion + 1
 	fake := &fakeControlPlane{registerRespVersion: &bad}
 	c := startFakeControlPlane(t, fake)
-	err := c.Register(enginepb.Engine_MYSQL, "target DB", 3306, "app", nil, "", nil, false, nil, nil)
+	err := c.Register(enginepb.Engine_MYSQL, "target DB:3306", nil, "", nil, false, nil, nil)
 	if !errors.Is(err, ErrIncompatibleControlPlane) {
 		t.Fatalf("Register against a version-skewed control plane must return ErrIncompatibleControlPlane: %v", err)
 	}
@@ -687,7 +687,7 @@ func TestRegisterTreatsControlPlaneRejectionAsIncompatible(t *testing.T) {
 		"proxy wire-protocol version 1 is incompatible with this control-plane's version 2 — deploy the proxy and control-plane from the same server-v* release",
 	)}
 	c := startFakeControlPlane(t, fake)
-	err := c.Register(enginepb.Engine_MYSQL, "target DB", 3306, "app", nil, "", nil, false, nil, nil)
+	err := c.Register(enginepb.Engine_MYSQL, "target DB:3306", nil, "", nil, false, nil, nil)
 	if !errors.Is(err, ErrIncompatibleControlPlane) {
 		t.Fatalf("a control-plane version rejection must surface as ErrIncompatibleControlPlane: %v", err)
 	}
@@ -727,29 +727,25 @@ func TestPushSchemaFragmentAndCloseConnection(t *testing.T) {
 	}
 }
 
-func TestStreamEventsDispatchesOpenRunChannel(t *testing.T) {
-	open := &pb.OpenRunChannel{
-		SessionId: "sess-1", EphemeralToken: "eph-9", ConnectionId: []byte("0123456789abcdef"), OnOpen: []*pb.ProxyCommand{refetch("app", nil)},
-		DefaultSchema: "orders",
-	}
-	fake := &fakeControlPlane{events: []*pb.ControlEvent{
-		{Kind: &pb.ControlEvent_RefreshCatalog{RefreshCatalog: &pb.RefreshCatalog{}}},
-		{Kind: &pb.ControlEvent_OpenRunChannel{OpenRunChannel: open}},
-		{Kind: &pb.ControlEvent_OpenTableDetailChannel{OpenTableDetailChannel: &pb.OpenTableDetailChannel{SessionId: "sess-2", Catalog: "db", Schema: "public", Table: "users"}}},
+func TestStreamEventsDispatchesOpenEditorSession(t *testing.T) {
+	open := &pb.OpenEditorSession{SessionId: "sess-1", EphemeralToken: "eph-9", DefaultSchema: "orders"}
+	fake := &fakeControlPlane{events: []*pb.CpEvent{
+		{Kind: &pb.CpEvent_RefreshCatalog{RefreshCatalog: &pb.RefreshCatalog{}}},
+		{Kind: &pb.CpEvent_OpenEditorSession{OpenEditorSession: open}},
+		{Kind: &pb.CpEvent_OpenTableDetailChannel{OpenTableDetailChannel: &pb.OpenTableDetailChannel{SessionId: "sess-2", Catalog: "db", Schema: "public", Table: "users"}}},
 	}}
 	c := startFakeControlPlane(t, fake)
 	var refreshes int
-	var openedRun *pb.OpenRunChannel
-	var openedErr error
+	var openedSession *pb.OpenEditorSession
 	var table []string
-	err := c.StreamEvents(func() { refreshes++ }, func(req *pb.OpenRunChannel, mapErr error) { openedRun, openedErr = req, mapErr }, func(sessionID string, ref *enginepb.ObjectRef) {
+	err := c.StreamEvents(func() { refreshes++ }, func(req *pb.OpenEditorSession) { openedSession = req }, func(sessionID string, ref *enginepb.ObjectRef) {
 		table = []string{sessionID, ref.GetCatalog(), ref.GetSchema(), ref.GetTable()}
 	})
 	if err == nil {
 		t.Fatal("StreamEvents returned nil, want EOF")
 	}
-	if refreshes != 1 || openedErr != nil || !proto.Equal(openedRun, open) || !reflect.DeepEqual(table, []string{"sess-2", "db", "public", "users"}) {
-		t.Fatalf("dispatch refresh/run/table = %d/%v %v/%v", refreshes, openedRun, openedErr, table)
+	if refreshes != 1 || !proto.Equal(openedSession, open) || !reflect.DeepEqual(table, []string{"sess-2", "db", "public", "users"}) {
+		t.Fatalf("dispatch refresh/session/table = %d/%v/%v", refreshes, openedSession, table)
 	}
 	fake.mu.Lock()
 	req, meta := fake.lastEventsReq, fake.lastEventsMeta
@@ -759,27 +755,14 @@ func TestStreamEventsDispatchesOpenRunChannel(t *testing.T) {
 	}
 }
 
-func TestStreamEventsDispatchesMalformedOpenRunChannel(t *testing.T) {
-	fake := &fakeControlPlane{events: []*pb.ControlEvent{{Kind: &pb.ControlEvent_OpenRunChannel{OpenRunChannel: &pb.OpenRunChannel{
-		SessionId: "bad", OnOpen: []*pb.ProxyCommand{refetch("", nil)},
-	}}}}}
-	c := startFakeControlPlane(t, fake)
-	var openedRun *pb.OpenRunChannel
-	var openedErr error
-	_ = c.StreamEvents(func() {}, func(req *pb.OpenRunChannel, mapErr error) { openedRun, openedErr = req, mapErr }, func(string, *enginepb.ObjectRef) {})
-	if openedRun.GetSessionId() != "bad" || openedErr == nil {
-		t.Fatalf("malformed run open was not dispatched with its mapping error: %v %v", openedRun, openedErr)
-	}
-}
-
 func TestStreamEventsReturnsErrDrainingOnDrainSignal(t *testing.T) {
 	// A drain is neither an error nor a max-age expiry: streamEvents must surface it as errDraining so the
 	// loop reconnects at once instead of waiting out the backoff.
-	fake := &fakeControlPlane{events: []*pb.ControlEvent{
-		{Kind: &pb.ControlEvent_Draining{Draining: &pb.Draining{}}},
+	fake := &fakeControlPlane{events: []*pb.CpEvent{
+		{Kind: &pb.CpEvent_Draining{Draining: &pb.Draining{}}},
 	}}
 	c := startFakeControlPlane(t, fake)
-	err := c.StreamEvents(func() {}, func(*pb.OpenRunChannel, error) {}, func(string, *enginepb.ObjectRef) {})
+	err := c.StreamEvents(func() {}, func(*pb.OpenEditorSession) {}, func(string, *enginepb.ObjectRef) {})
 	if !errors.Is(err, errDraining) {
 		t.Fatalf("StreamEvents err = %v, want errDraining", err)
 	}
@@ -793,11 +776,11 @@ type drainingControlPlane struct {
 	opens int
 }
 
-func (f *drainingControlPlane) Events(_ *pb.EventsRequest, stream grpc.ServerStreamingServer[pb.ControlEvent]) error {
+func (f *drainingControlPlane) Events(_ *pb.EventsRequest, stream grpc.ServerStreamingServer[pb.CpEvent]) error {
 	f.mu.Lock()
 	f.opens++
 	f.mu.Unlock()
-	return stream.Send(&pb.ControlEvent{Kind: &pb.ControlEvent_Draining{Draining: &pb.Draining{}}})
+	return stream.Send(&pb.CpEvent{Kind: &pb.CpEvent_Draining{Draining: &pb.Draining{}}})
 }
 
 func (f *drainingControlPlane) openCount() int {
@@ -837,7 +820,7 @@ func TestEventsLoopReconnectsFastOnDrain(t *testing.T) {
 			streamMaxAge:      time.Minute, // long enough that only the drain path paces this test
 			reconnect:         backoff,
 			rotationReconnect: eventsRotationReconnect,
-		}, func() {}, func() {}, func(*pb.OpenRunChannel, error) {}, func(string, *enginepb.ObjectRef) {})
+		}, func() {}, func() {}, func(*pb.OpenEditorSession) {}, func(string, *enginepb.ObjectRef) {})
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -866,7 +849,7 @@ type holdOpenControlPlane struct {
 	done  chan struct{}
 }
 
-func (f *holdOpenControlPlane) Events(_ *pb.EventsRequest, stream grpc.ServerStreamingServer[pb.ControlEvent]) error {
+func (f *holdOpenControlPlane) Events(_ *pb.EventsRequest, stream grpc.ServerStreamingServer[pb.CpEvent]) error {
 	f.mu.Lock()
 	f.opens++
 	if f.opens == 1 && f.done != nil {
@@ -928,7 +911,7 @@ type versionRejectingControlPlane struct {
 	opens int
 }
 
-func (f *versionRejectingControlPlane) Events(_ *pb.EventsRequest, _ grpc.ServerStreamingServer[pb.ControlEvent]) error {
+func (f *versionRejectingControlPlane) Events(_ *pb.EventsRequest, _ grpc.ServerStreamingServer[pb.CpEvent]) error {
 	f.mu.Lock()
 	f.opens++
 	f.mu.Unlock()
@@ -970,7 +953,7 @@ func TestRunEventsLoopExitsOnEventsVersionRejection(t *testing.T) {
 			streamMaxAge:      time.Minute,
 			reconnect:         10 * time.Millisecond,
 			rotationReconnect: eventsRotationReconnect,
-		}, func() {}, func() {}, func(*pb.OpenRunChannel, error) {}, func(string, *enginepb.ObjectRef) {})
+		}, func() {}, func() {}, func(*pb.OpenEditorSession) {}, func(string, *enginepb.ObjectRef) {})
 	}()
 	select {
 	case err := <-errCh:
@@ -995,7 +978,7 @@ func TestStreamEventsEndsAtItsMaxAge(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	start := time.Now()
-	err := c.streamEvents(ctx, 300*time.Millisecond, func() {}, func(*pb.OpenRunChannel, error) {}, func(string, *enginepb.ObjectRef) {})
+	err := c.streamEvents(ctx, 300*time.Millisecond, func() {}, func(*pb.OpenEditorSession) {}, func(string, *enginepb.ObjectRef) {})
 	elapsed := time.Since(start)
 
 	if err == nil {
@@ -1025,7 +1008,7 @@ func TestEventsLoopReopensAfterMaxAge(t *testing.T) {
 			streamMaxAge:      150 * time.Millisecond,
 			reconnect:         10 * time.Millisecond,
 			rotationReconnect: 10 * time.Millisecond,
-		}, func() {}, func() {}, func(*pb.OpenRunChannel, error) {}, func(string, *enginepb.ObjectRef) {})
+		}, func() {}, func() {}, func(*pb.OpenEditorSession) {}, func(string, *enginepb.ObjectRef) {})
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -1064,7 +1047,7 @@ func TestEventsLoopRotationGapStaysBoundedAcrossPeriods(t *testing.T) {
 		loopDone := make(chan struct{})
 		go func() {
 			defer close(loopDone)
-			c.runEventsLoop(ctx, timings, func() {}, func() {}, func(*pb.OpenRunChannel, error) {}, func(string, *enginepb.ObjectRef) {})
+			c.runEventsLoop(ctx, timings, func() {}, func() {}, func(*pb.OpenEditorSession) {}, func(string, *enginepb.ObjectRef) {})
 		}()
 		defer func() {
 			cancel()
@@ -1142,7 +1125,7 @@ func TestEventsLoopBacksOffOnServerDeadlineExceeded(t *testing.T) {
 			streamMaxAge:      time.Minute, // long, so only the server's status ends the stream
 			reconnect:         backoff,
 			rotationReconnect: 10 * time.Millisecond,
-		}, func() {}, func() {}, func(*pb.OpenRunChannel, error) {}, func(string, *enginepb.ObjectRef) {})
+		}, func() {}, func() {}, func(*pb.OpenEditorSession) {}, func(string, *enginepb.ObjectRef) {})
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -1175,7 +1158,7 @@ func TestEventsLoopReopensWithoutWaitingForResync(t *testing.T) {
 			streamMaxAge:      150 * time.Millisecond,
 			reconnect:         10 * time.Millisecond,
 			rotationReconnect: 10 * time.Millisecond,
-		}, resync, func() {}, func(*pb.OpenRunChannel, error) {}, func(string, *enginepb.ObjectRef) {})
+		}, resync, func() {}, func(*pb.OpenEditorSession) {}, func(string, *enginepb.ObjectRef) {})
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -1204,7 +1187,7 @@ type refusingControlPlane struct {
 	opens []time.Time
 }
 
-func (f *refusingControlPlane) Events(_ *pb.EventsRequest, _ grpc.ServerStreamingServer[pb.ControlEvent]) error {
+func (f *refusingControlPlane) Events(_ *pb.EventsRequest, _ grpc.ServerStreamingServer[pb.CpEvent]) error {
 	f.mu.Lock()
 	f.opens = append(f.opens, time.Now())
 	f.mu.Unlock()
@@ -1248,7 +1231,7 @@ func TestEventsLoopWaitsTheBackoffBetweenReopens(t *testing.T) {
 			streamMaxAge:      time.Minute, // long enough that only the backoff paces this test
 			reconnect:         backoff,
 			rotationReconnect: eventsRotationReconnect,
-		}, func() {}, func() {}, func(*pb.OpenRunChannel, error) {}, func(string, *enginepb.ObjectRef) {})
+		}, func() {}, func() {}, func(*pb.OpenEditorSession) {}, func(string, *enginepb.ObjectRef) {})
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -1282,7 +1265,7 @@ type deadlineControlPlane struct {
 	opens int
 }
 
-func (f *deadlineControlPlane) Events(_ *pb.EventsRequest, _ grpc.ServerStreamingServer[pb.ControlEvent]) error {
+func (f *deadlineControlPlane) Events(_ *pb.EventsRequest, _ grpc.ServerStreamingServer[pb.CpEvent]) error {
 	f.mu.Lock()
 	f.opens++
 	f.mu.Unlock()

@@ -91,17 +91,6 @@ fun clampTtlSeconds(ttlSeconds: Long): Long = ttlSeconds.coerceIn(TOKEN_MIN_TTL_
 
 // ---- Store ------------------------------------------------------------------
 
-/**
- * SHA-256 hex digest of a wire/ephemeral token — the ONE hashing definition shared by [TokenStore] (the
- * `proxy_token.token_hash` column) and [RequesterIpRegistry] (RunExec.kt): the
- * CP-only decide-time carrier keys off this SAME hash so it never stores a raw token at rest in a second
- * map, and its key always matches the token row's own `token_hash`.
- */
-internal fun tokenHash(token: String): String {
-    val md = MessageDigest.getInstance("SHA-256")
-    return md.digest(token.toByteArray()).joinToString("") { "%02x".format(it) }
-}
-
 class TokenStore(internal val dataSource: DataSource) {
     private val json = Json
     private val stringList = ListSerializer(String.serializer())
@@ -111,7 +100,11 @@ class TokenStore(internal val dataSource: DataSource) {
     val sessionTtlSeconds = SESSION_TTL_SECONDS
     val defaultUserTtlSeconds = DEFAULT_USER_TTL_SECONDS
 
-    private fun hash(token: String): String = tokenHash(token)
+    /** SHA-256 hex digest of a token, as `proxy_token.token_hash` stores it. */
+    private fun hash(token: String): String {
+        val md = MessageDigest.getInstance("SHA-256")
+        return md.digest(token.toByteArray()).joinToString("") { "%02x".format(it) }
+    }
 
     private fun randomToken(prefix: String): String {
         val raw = ByteArray(32).also { rng.nextBytes(it) }
@@ -227,20 +220,21 @@ class TokenStore(internal val dataSource: DataSource) {
 
     /**
      * Validate a presented token: must exist, not be revoked, and not be expired. On success,
-     * stamp `last_used_at` and return the principal + base roles. Null otherwise. Used for the session
-     * handshake (per-query enforcement uses [resolve], which skips the write). A retired token fails here only.
+     * stamp `last_used_at` and return the principal + base roles. Null otherwise. Used for the connection
+     * open (per-query enforcement uses [resolve], which skips the write). A retired token fails here only.
      */
-    fun validate(token: String): WireIdentity? = dataSource.connection.use { c ->
+    fun validate(token: String, editorDoor: Boolean = false): WireIdentity? = dataSource.connection.use { c ->
         c.prepareStatement(
-            // A transient editor/approver-exec token authorizes exactly ONE proxy-mediated query via the
-            // per-query `resolve` path — it must NOT pass the wire-session handshake, so a leaked ephemeral
-            // token can't open a native MySQL/PG session as that principal within its short TTL. Both
-            // ephemeral kinds (editor and approver-exec) are excluded here.
+            // An editor-door token (editor, approver-exec) opens only through goproxy's editor door, and a login token only
+            // through its wire door, so an editor-door token leaked out of the proxy can't open a native MySQL/PG session.
             """UPDATE proxy_token SET last_used_at = now()
-               WHERE token_hash = ? AND kind IN ('SESSION', 'USER') AND revoked_at IS NULL AND retired_at IS NULL AND expires_at > now()
+               WHERE token_hash = ? AND kind IN (?, ?) AND revoked_at IS NULL AND retired_at IS NULL AND expires_at > now()
                RETURNING principal, roles, kind""",
         ).use { ps ->
             ps.setString(1, hash(token))
+            val kinds = if (editorDoor) listOf(TokenKind.EDITOR, TokenKind.APPROVER_EXEC) else listOf(TokenKind.SESSION, TokenKind.USER)
+            ps.setString(2, kinds[0].name)
+            ps.setString(3, kinds[1].name)
             ps.executeQuery().use { rs ->
                 if (rs.next()) {
                     WireIdentity(

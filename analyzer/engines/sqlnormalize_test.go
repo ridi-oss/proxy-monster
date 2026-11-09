@@ -1,6 +1,30 @@
 package engines
 
-import "testing"
+import (
+	"testing"
+
+	"google.golang.org/protobuf/proto"
+
+	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
+)
+
+// normalizeAs normalizes sql for a wireName target: MySQL as an 8.0 server with lower_case_table_names=0.
+func normalizeAs(sql, wireName string) (string, bool) {
+	config := &pb.EngineConfig{Target: &pb.TargetSettings{}}
+	if e, err := Parse(wireName); err == nil {
+		config.Engine = e.Proto
+	}
+	if config.Engine == pb.Engine_MYSQL {
+		config.Target = &pb.TargetSettings{EngineVersion: "8.0.36", MysqlLowerCaseTableNames: proto.Int32(0)}
+	}
+	return SqlNormalize(sql, config)
+}
+
+func TestSqlNormalizeNeedsTheTargetMySQLReports(t *testing.T) {
+	if got, ok := SqlNormalize("SELECT 1", &pb.EngineConfig{Engine: pb.Engine_MYSQL}); ok || got != "" {
+		t.Fatalf("SqlNormalize without lower_case_table_names = (%q, %v), want empty/false", got, ok)
+	}
+}
 
 func TestSqlNormalizeEqualClasses(t *testing.T) {
 	cases := []struct {
@@ -69,8 +93,8 @@ func TestSqlNormalizeEqualClasses(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			left, leftOK := SqlNormalize(tc.left, tc.dialect)
-			right, rightOK := SqlNormalize(tc.right, tc.dialect)
+			left, leftOK := normalizeAs(tc.left, tc.dialect)
+			right, rightOK := normalizeAs(tc.right, tc.dialect)
 			if !leftOK || !rightOK {
 				t.Fatalf("normalization denied: left=(%q, %v) right=(%q, %v)", left, leftOK, right, rightOK)
 			}
@@ -126,9 +150,9 @@ func TestSqlNormalizeFailsClosed(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, ok := SqlNormalize(tc.sql, tc.dialect)
+			got, ok := normalizeAs(tc.sql, tc.dialect)
 			if ok || got != "" {
-				t.Fatalf("SqlNormalize(%q, %q) = (%q, %v), want empty/false", tc.sql, tc.dialect, got, ok)
+				t.Fatalf("normalizeAs(%q, %q) = (%q, %v), want empty/false", tc.sql, tc.dialect, got, ok)
 			}
 		})
 	}
@@ -150,9 +174,9 @@ func TestSqlNormalizeRejectsMySQLExecutableAndHintComments(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, ok := SqlNormalize(tc.sql, "mysql")
+			got, ok := normalizeAs(tc.sql, "mysql")
 			if ok || got != "" {
-				t.Fatalf("SqlNormalize(%q) = (%q, %v), want empty/false", tc.sql, got, ok)
+				t.Fatalf("normalizeAs(%q) = (%q, %v), want empty/false", tc.sql, got, ok)
 			}
 		})
 	}
@@ -176,12 +200,12 @@ func TestSqlNormalizeAllowsCommentMarkersInsideOpaqueTokens(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, ok := SqlNormalize(tc.sql, "mysql")
+			got, ok := normalizeAs(tc.sql, "mysql")
 			if !ok {
-				t.Fatalf("SqlNormalize(%q) denied", tc.sql)
+				t.Fatalf("normalizeAs(%q) denied", tc.sql)
 			}
 			if got != tc.want {
-				t.Fatalf("SqlNormalize(%q) = %q, want %q", tc.sql, got, tc.want)
+				t.Fatalf("normalizeAs(%q) = %q, want %q", tc.sql, got, tc.want)
 			}
 		})
 	}
@@ -219,8 +243,8 @@ func TestSqlNormalizeClassifierCollisionRegressions(t *testing.T) {
 }
 
 func TestSqlNormalizePostgresUsesASCIIFolding(t *testing.T) {
-	upper, upperOK := SqlNormalize("SELECT CAFÉ", "postgres")
-	lower, lowerOK := SqlNormalize("SELECT café", "postgres")
+	upper, upperOK := normalizeAs("SELECT CAFÉ", "postgres")
+	lower, lowerOK := normalizeAs("SELECT café", "postgres")
 	if !upperOK || !lowerOK {
 		t.Fatalf("normalization denied: upper=(%q, %v) lower=(%q, %v)", upper, upperOK, lower, lowerOK)
 	}
@@ -233,7 +257,7 @@ func TestSqlNormalizePostgresUsesASCIIFolding(t *testing.T) {
 }
 
 func TestSqlNormalizeIsLexerOnly(t *testing.T) {
-	got, ok := SqlNormalize("SELECT (1", "postgres")
+	got, ok := normalizeAs("SELECT (1", "postgres")
 	if !ok {
 		t.Fatal("lexically complete SQL was denied because it is syntactically invalid")
 	}
@@ -244,8 +268,8 @@ func TestSqlNormalizeIsLexerOnly(t *testing.T) {
 
 func assertNormalizesDistinct(t *testing.T, dialect, leftSQL, rightSQL string) {
 	t.Helper()
-	left, leftOK := SqlNormalize(leftSQL, dialect)
-	right, rightOK := SqlNormalize(rightSQL, dialect)
+	left, leftOK := normalizeAs(leftSQL, dialect)
+	right, rightOK := normalizeAs(rightSQL, dialect)
 	if !leftOK || !rightOK {
 		t.Fatalf("normalization denied: left=(%q, %v) right=(%q, %v)", left, leftOK, right, rightOK)
 	}

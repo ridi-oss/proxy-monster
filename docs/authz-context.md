@@ -177,12 +177,11 @@ which resolves the principal's roles once and threads that single snapshot
 through both the pass-1 tag derivation and the pass-2 authorization (never a
 forked tag-derivation, never a second, disagreeing role resolution). For the
 CP-mediated `editor` / approval-executor decide path — where the gRPC `decide`
-handler has only the resolved ephemeral token, no HTTP request in hand — the
-HTTP requester IP observed when the token was minted is carried via a
-token-hash-keyed `RequesterIpRegistry` on `ControlPlaneCore` (entry lifetime ==
-token lifetime; an absent entry means `requester_ip` is simply absent,
-fail-closed). A persistent editor session's `requester_ip` is refreshed per
-query, so a decision always sees the current request's IP.
+handler has no HTTP request in hand — each `EditorQuery` carries the HTTP
+requester IP of the request that sent it, and goproxy reports it as that
+statement's `client_addr`, the same field a wire client's socket address uses.
+So a persistent editor session's decision always sees the current request's IP,
+and a request with none decides with `requester_ip` absent, fail-closed.
 
 ## Concepts
 

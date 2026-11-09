@@ -315,7 +315,7 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
 
     // HTTP-only stores (not on the gRPC decision path).
     val queryHistoryStore = QueryHistoryStore(dataSource)
-    val runExecService = RunExecService(core, config.queryTimeoutSeconds)
+    val editorExecService = EditorExecService(core, config.queryTimeoutSeconds)
     // In-process push of task terminal transitions to the SSE stream, so a watching editor/approval tab
     // updates without waiting for its next poll. HTTP-only (the run coroutines + the SSE stream live here),
     // single-replica, and a pure accelerator over the poll (see TaskCompletionHub). On `core` so the SIGTERM
@@ -364,7 +364,7 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
         // deprovision path it joins that atomic teardown transaction and rolls back with it if the teardown aborts.
         onWebSessionEnded = { p, conn ->
             queryResultStore?.deleteEditorResultsForPrincipal(p, conn)
-            runExecService.closeSessionsForPrincipal(p)
+            editorExecService.closeSessionsForPrincipal(p)
         },
     )
     val webSessionSerializer = jsonSessionSerializer<WebSessionRef>()
@@ -392,7 +392,7 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
             }
             // Reap editor sessions idle past the cutoff — releases the held proxy stream + target DB
             // connection + revokes the per-session token, so an abandoned editor tab doesn't pin resources.
-            runCatching { runExecService.sweepIdleSessions(EDITOR_SESSION_MAX_IDLE_MS) }
+            runCatching { editorExecService.sweepIdleSessions(EDITOR_SESSION_MAX_IDLE_MS) }
                 .onFailure { environment.log.warn("editor session idle sweep failed", it) }
             runCatching { core.connectionCatalog.sweepIdle(60L * 60 * 1000) }
                 .onFailure { environment.log.warn("connection catalog idle sweep failed", it) }
@@ -437,12 +437,12 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
     )
     val editorTaskService = EditorTaskService(
         config, datasourceStore, accessStore, queryResultStore, policyStore, userGroupStore,
-        roleResolver, authz, runExecService, this@module, core.systemClassification, taskCompletionHub,
+        roleResolver, authz, editorExecService, this@module, core.systemClassification, taskCompletionHub,
         core.auditStore,
     )
     approvalService = ApprovalService(
         config, accessStore, store, datasourceStore, policyStore, userGroupStore, queryResultStore,
-        roleResolver, authz, runExecService, this@module, core.systemClassification, taskCompletionHub,
+        roleResolver, authz, editorExecService, this@module, core.systemClassification, taskCompletionHub,
         notifications,
     )
     launch {
@@ -517,7 +517,7 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
         // execute-under-R with encrypted short-retention result storage.
         approvalRoutes(
             config, accessStore, store, datasourceStore, policyStore, userGroupStore, queryResultStore,
-            roleResolver, authz, runExecService, this@module, core.systemClassification, taskCompletionHub,
+            roleResolver, authz, editorExecService, this@module, core.systemClassification, taskCompletionHub,
             notifications, service = approvalService,
         )
 
@@ -525,12 +525,12 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
         // surface and not an authorization input — it only changes which locale a message renders in.
 
         // Enforcing SQL query endpoint (deny + result masking; effective roles come from RoleResolver).
-        queryRoutes(config, datasourceStore, queryHistoryStore, runExecService)
+        queryRoutes(config, datasourceStore, queryHistoryStore, editorExecService)
         // Persistent editor sessions (one held proxy stream / target-DB connection per session)
         // whose submits run async as auto-approved EDITOR tasks with saved, task.assume-gated results.
         editorSessionRoutes(
             config, datasourceStore, accessStore, queryResultStore, policyStore, userGroupStore,
-            roleResolver, authz, runExecService, this@module, core.systemClassification, taskCompletionHub,
+            roleResolver, authz, editorExecService, this@module, core.systemClassification, taskCompletionHub,
             core.auditStore, service = editorTaskService,
         )
 
@@ -556,7 +556,7 @@ fun Application.module(config: Config, core: ControlPlaneCore) {
         internalSignalRoutes(
             config.internalToken, cedarPolicyStore::markCommittedMutation,
             requestNotifier(core.accessStore, notifications),
-            runExecService::closeSessionsForPrincipal,
+            editorExecService::closeSessionsForPrincipal,
             core.proxyEventsHub::attached,
             { name -> core.connectionCatalog.invalidateDatasource(name) },
         )

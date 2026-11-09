@@ -75,7 +75,7 @@ type Decision struct {
 	// Submission is the engine-specific companion to RewrittenSQL (analyzer.proto Submission); the dialect
 	// reads its own arm. nil = the text is the whole submission.
 	Submission *enginepb.Submission
-	// ResultRequirements is echoed on RunDecision for the control plane; the proxy does not read it.
+	// ResultRequirements is echoed on EditorDecision for the control plane; the proxy does not read it.
 	ResultRequirements *pb.ResultRequirements
 }
 

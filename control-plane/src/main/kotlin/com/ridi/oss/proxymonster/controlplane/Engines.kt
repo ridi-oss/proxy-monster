@@ -8,7 +8,6 @@ import com.ridi.oss.proxymonster.analyzer.pb.SessionObservation
 import com.ridi.oss.proxymonster.controlplane.management.ManagementException
 import com.ridi.oss.proxymonster.grpc.ConnectionInfo
 import com.ridi.oss.proxymonster.grpc.Engine
-import com.ridi.oss.proxymonster.probe.Dialect
 import com.ridi.oss.proxymonster.probe.GoEngine
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.descriptors.PrimitiveKind
@@ -27,13 +26,11 @@ class EngineDefinition internal constructor(val engine: Engine) {
 
     /** The persistence, registration, and JSON string: "mysql", "postgres". */
     val wireName: String = facts.wireName
-    /** The analyzer SQL dialect. */
-    val dialect: Dialect = Dialect.entries.single { it.wireName == wireName }
     /** The ConnectionInfo property keys this engine's proxies may publish; anything else is refused at register. */
     val connectionProperties: Set<String> = facts.connectionPropertiesList.toSet()
     /** The fixed, enumerable system schemas whose content is identical across every datasource of one version. */
     val systemSchemas: Set<String> = facts.systemSchemasList.toSet()
-    /** True when one connection's catalog measurement answers for every connection of the datasource. */
+    /** True when one connection's catalog inspection answers for every connection of the datasource. */
     val catalogIsConnectionIndependent: Boolean = facts.catalogIsConnectionIndependent
     /** True when the proxy can prepare a statement on the target without running it (`check_target_error`). */
     val checksTargetErrors: Boolean = facts.checksTargetErrors
@@ -105,7 +102,6 @@ val Engine.definition: EngineDefinition
     get() = checkNotNull(engineDefinitions[this]) { "unregistered engine: $this" }
 
 val Engine.wireName: String get() = definition.wireName
-val Engine.dialect: Dialect get() = definition.dialect
 val Engine.systemSchemas: Set<String> get() = definition.systemSchemas
 val Engine.catalogIsConnectionIndependent: Boolean get() = definition.catalogIsConnectionIndependent
 val Engine.checksTargetErrors: Boolean get() = definition.checksTargetErrors

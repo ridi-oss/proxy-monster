@@ -113,8 +113,8 @@ class AccountManagementEnforcementDbTest {
             ctx.action,
             "CREATE USER denied for the stmt.cat.admin.account holder: ${ctx.denyReason} (stage=${ctx.failedStage})",
         )
-        assertTrue(ctx.passthrough, "account DDL must relay as a no-column passthrough, not fall through the DDL/re-measure path")
-        assertFalse(ctx.catalogChanging, "CREATE USER changes accounts, not the column catalog the proxy re-measures")
+        assertTrue(ctx.passthrough, "account DDL must relay as a no-column passthrough, not fall through the DDL/re-inspect path")
+        assertFalse(ctx.catalogChanging, "CREATE USER changes accounts, not the column catalog the proxy re-inspects")
 
         // MySQL returns the generated password in a result set; the stored workflow result must be viewable,
         // not dropped because the analyzer emitted no output columns for it.

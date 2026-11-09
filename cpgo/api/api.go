@@ -107,8 +107,6 @@ var (
 	CodeScopesExpired         = Code{"auth.scopes_expired", http.StatusForbidden}
 	CodeOIDCNotConfigured     = Code{"common.oidc_not_configured", http.StatusNotImplemented}
 	CodeInvalidRequesterIP    = Code{"auth.invalid_requester_ip", http.StatusBadRequest}
-	CodeInvalidEngine         = Code{"datasource.invalid_engine", http.StatusBadRequest}
-	CodeEngineImmutable       = Code{"datasource.engine_immutable", http.StatusConflict}
 	CodeInUseProxyAttached    = Code{"datasource.in_use_proxy_attached", http.StatusConflict}
 	CodeInUseActiveRequests   = Code{"datasource.in_use_active_requests", http.StatusConflict}
 	CodeInvalidToken          = Code{"common.invalid_token", http.StatusUnauthorized}

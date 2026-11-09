@@ -1,4 +1,4 @@
-package run
+package editor
 
 import (
 	"sync"

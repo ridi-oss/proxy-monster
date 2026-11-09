@@ -41,7 +41,6 @@ suspend fun decideConnection(
     channel: Channel = Channel.WIRE,
     providedRoles: Set<String>? = null,
     tempColumns: List<CatalogColumn> = emptyList(),
-    httpRequesterIp: String? = null,
     targetCheck: TargetCheck? = null,
 ): EnforcementOutcome? = core.connectionCatalog.withConnection(connectionId) { connection ->
     // Snapshot the generation at entry; the registry mutex is held through analysis + audit, so only an
@@ -58,12 +57,8 @@ suspend fun decideConnection(
     }
 
     val t0 = System.nanoTime()
-    // requester_ip's source is selected by CHANNEL, never nullable fallback: WIRE attests the client socket;
-    // editor/workflow channels use only the HTTP carrier recorded when the CP minted their token.
-    val requesterIp = when (channel) {
-        Channel.WIRE -> parseRequesterIp(clientAddr)
-        else -> httpRequesterIp
-    }
+    // goproxy reports it for every channel: a wire client's socket, or the requester an editor connection's EditorQuery carried.
+    val requesterIp = parseRequesterIp(clientAddr)
     val ctx = decideQuery(
         principal = principal,
         ds = ds,

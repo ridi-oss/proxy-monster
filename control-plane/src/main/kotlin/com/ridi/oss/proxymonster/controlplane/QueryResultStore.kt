@@ -2,10 +2,10 @@ package com.ridi.oss.proxymonster.controlplane
 
 import com.ridi.oss.proxymonster.grpc.ResultRequirements
 import com.ridi.oss.proxymonster.storage.StoredResult
-import com.ridi.oss.proxymonster.grpc.RunError
-import com.ridi.oss.proxymonster.grpc.runResultRows
-import com.ridi.oss.proxymonster.grpc.runRow
-import com.ridi.oss.proxymonster.grpc.runValue
+import com.ridi.oss.proxymonster.grpc.EditorError
+import com.ridi.oss.proxymonster.grpc.editorResultRows
+import com.ridi.oss.proxymonster.grpc.editorRow
+import com.ridi.oss.proxymonster.grpc.editorValue
 import com.ridi.oss.proxymonster.storage.storedResult
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
@@ -57,23 +57,23 @@ class ResultAccess(
     val meta: QueryResultMeta,
     val sql: String?,
     decrypt: () -> DecryptedResult?,
-    decryptError: () -> RunError? = { null },
+    decryptError: () -> EditorError? = { null },
     /** What the view of this DONE or FAILED result is decided from; null denies. */
     val requirements: ResultRequirements? = null,
 ) {
     val decrypted: DecryptedResult? by lazy(decrypt)
-    val errorDetail: RunError? by lazy(decryptError)
+    val errorDetail: EditorError? by lazy(decryptError)
 }
 
 /** Protobuf at rest, so a Go control-plane reads the same bytes. */
 internal object ResultPayloadCodec {
     fun encode(result: DecryptedResult): ByteArray = storedResult {
-        rows = runResultRows {
+        rows = editorResultRows {
             columns.addAll(result.columns)
             rows.addAll(
                 result.rows.map { row ->
-                    runRow {
-                        values.addAll(row.map { cell -> runValue { value = cell ?: ""; isNull = cell == null } })
+                    editorRow {
+                        values.addAll(row.map { cell -> editorValue { value = cell ?: ""; isNull = cell == null } })
                     }
                 },
             )
@@ -228,7 +228,7 @@ class QueryResultStore(private val dataSource: DataSource, private val crypto: R
         denyReason: String? = null,
         decisionId: Long? = null,
         // A target-DB failure's error (both forms), encrypted into error_detail.
-        diagnostic: RunError? = null,
+        diagnostic: EditorError? = null,
         // Runs in the child's RUNNING → FAILED transaction (mirrors [completeRun]) so the caller can
         // terminalize the parent atomically; a throw here rolls the child transition back too.
         onFailed: (Connection, QueryResultMeta) -> Unit = { _, _ -> },
@@ -398,7 +398,7 @@ class QueryResultStore(private val dataSource: DataSource, private val crypto: R
             meta,
             row.sql,
             decrypt = { payload?.let { ResultPayloadCodec.decode(crypto.decrypt(it)) } },
-            decryptError = { errorBytes?.let { RunError.parseFrom(crypto.decrypt(it)) } },
+            decryptError = { errorBytes?.let { EditorError.parseFrom(crypto.decrypt(it)) } },
             requirements = row.requirements?.takeIf { !expired }?.let { ResultRequirements.parseFrom(it) },
         )
     }

@@ -632,7 +632,7 @@ curl -b /tmp/pm.jar http://localhost:8080/api/datasources
 ```
 
 The roles you log in with are the ones the response reflects: a row's connection
-material (`host`, `port`, `dbName`, `advertiseAddr`, `advertiseCertChain`) needs
+material (`targetInfo`, `dbName`, `advertiseAddr`, `advertiseCertChain`) needs
 `datasource.connect` on that datasource, so a role that does not grant it sees
 the row's identity only. Easier from the console — see the
 [login step](#first-login-and-first-query).
@@ -849,11 +849,10 @@ per statement.
 
 ### Troubleshooting
 
-- A proxy logs "could not register + catalog push after N attempts" —
+- A proxy exits with "could not register + push catalog after N attempts" —
   control-plane isn't reachable at `PM_CONTROL_PLANE_GRPC` (default
   `localhost:9090`), or its gRPC port differs from what you passed. The proxy
-  still starts and serves, but every query fails closed (`NOT_FOUND`) until a
-  push succeeds — it keeps retrying in the background.
+  refuses to serve without its catalog.
 - Two proxies registering under the same `PM_DATASOURCE_NAME` silently merge
   into one datasource row (whichever pushed last "wins" the catalog) — a known,
   bounded residual of the shared-secret trust model
@@ -864,7 +863,7 @@ per statement.
   (`V8__seed.sql`); harmless before your first login, self-resolves after. Under
   real OIDC (not debug auth), admin membership comes from the IdP's group claim
   via `PM_OIDC_GROUP_MAP`, not this endpoint.
-- The admin UI 403s, or a datasource row arrives without its host/port, with
+- The admin UI 403s, or a datasource row arrives without its target info, with
   `PM_AUTH_DEBUG=true` — the flag authenticates you, it does not grant anything.
   Sign in at `/login` with the roles you need (`system:admin` for admin, a
   `system:development-*` role for a `system:development`-tagged datasource).

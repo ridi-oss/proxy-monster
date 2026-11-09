@@ -28,8 +28,8 @@ func (s *Server) WrapTargetDbConn(c net.Conn) net.Conn {
 	return withIODeadlines(c, targetDbResponseIdleTimeout, SocketWriteTimeout)
 }
 
-// WithTargetDbReadTimeout bounds a proxy-dialed run-session target-DB connection with a caller-chosen read-idle
-// timeout and the standard socket write timeout. Not drain-aware — the run drain is handled separately.
+// WithTargetDbReadTimeout bounds a proxy-dialed editor-session target-DB connection with a caller-chosen read-idle
+// timeout and the standard socket write timeout. Not drain-aware — the editor-session drain is handled separately.
 func WithTargetDbReadTimeout(conn net.Conn, readTimeout time.Duration) net.Conn {
 	return withIODeadlines(conn, readTimeout, SocketWriteTimeout)
 }

@@ -956,8 +956,8 @@ func ddlFacts(root exp.Expression, session *Session) *pb.StatementFacts {
 		Resolved:     true,
 		FailureClass: pb.FailureClass_FAILURE_CLASS_UNSPECIFIED,
 		// A temp-scoped DDL target is session-local, so it changes no shared catalog and must not force
-		// every other connection to re-measure. Account-object DDL (CREATE/ALTER/DROP USER|ROLE) changes
-		// accounts/roles, not the column catalog the proxy re-measures for masking, so it is not
+		// every other connection to re-inspect. Account-object DDL (CREATE/ALTER/DROP USER|ROLE) changes
+		// accounts/roles, not the column catalog the proxy re-inspects for masking, so it is not
 		// catalog-changing either — it relays as a no-column passthrough, which keeps a statement result
 		// like CREATE USER … IDENTIFIED BY RANDOM PASSWORD viewable rather than dropped for column mismatch.
 		CatalogChanging: !isTemporaryDDL(root, session) && !isAccountObjectDDL(root),
@@ -965,7 +965,7 @@ func ddlFacts(root exp.Expression, session *Session) *pb.StatementFacts {
 }
 
 // isAccountObjectDDL is true for CREATE/ALTER/DROP of a USER or ROLE — account management that touches no
-// table or column, so unlike schema DDL it changes no catalog the proxy re-measures.
+// table or column, so unlike schema DDL it changes no catalog the proxy re-inspects.
 func isAccountObjectDDL(root exp.Expression) bool {
 	switch objectKindText(root) {
 	case "USER", "ROLE":

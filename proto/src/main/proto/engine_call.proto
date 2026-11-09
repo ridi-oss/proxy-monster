@@ -64,7 +64,7 @@ message EngineFacts {
   repeated string system_schemas = 3;
   // The ConnectionInfo property keys this engine's proxies may publish.
   repeated string connection_properties = 4;
-  // One connection's catalog measurement answers for every connection of the datasource.
+  // One connection's catalog inspection answers for every connection of the datasource.
   bool catalog_is_connection_independent = 5;
   // The proxy can prepare a statement on the target without running it.
   bool checks_target_errors = 6;

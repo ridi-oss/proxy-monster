@@ -17,14 +17,14 @@ import com.ridi.oss.proxymonster.controlplane.support.str
 import com.ridi.oss.proxymonster.controlplane.support.withFakeProxy
 import com.ridi.oss.proxymonster.grpc.ControlPlaneGrpcKt
 import com.ridi.oss.proxymonster.grpc.EnfAction
-import com.ridi.oss.proxymonster.grpc.ProxyRunMsg
-import com.ridi.oss.proxymonster.grpc.proxyRunMsg
+import com.ridi.oss.proxymonster.grpc.ProxyEditorMsg
+import com.ridi.oss.proxymonster.grpc.proxyEditorMsg
 import com.ridi.oss.proxymonster.grpc.proxyTableDetailMsg
-import com.ridi.oss.proxymonster.grpc.runDecision
-import com.ridi.oss.proxymonster.grpc.runDone
-import com.ridi.oss.proxymonster.grpc.runResultRows
-import com.ridi.oss.proxymonster.grpc.runRow
-import com.ridi.oss.proxymonster.grpc.runValue
+import com.ridi.oss.proxymonster.grpc.editorDecision
+import com.ridi.oss.proxymonster.grpc.editorDone
+import com.ridi.oss.proxymonster.grpc.editorResultRows
+import com.ridi.oss.proxymonster.grpc.editorRow
+import com.ridi.oss.proxymonster.grpc.editorValue
 import com.ridi.oss.proxymonster.grpc.tableDetailResult
 import com.ridi.oss.proxymonster.probe.TableDetail
 import com.ridi.oss.proxymonster.probe.TableDetailColumn
@@ -142,15 +142,10 @@ class McpToolCoverageDbTest {
         }
 
         // Datasources and classifications, on a throwaway datasource.
+        val covDs = core.datasourceStore.registerOnly("cov-ds", "mysql")
+        // Classification needs lower_case_table_names, which introspection reports.
+        core.datasourceStore.storePushedCatalog(covDs.id, listOf("app"), 0, "8.0.36", catalogSnapshot {}, currentCatalog = "def")
         on("list_datasources") { client.ok(adm, "list_datasources") }
-        on("create_datasource") {
-            client.ok(adm, "create_datasource", args("name" to "cov-ds", "engine" to "mysql", "dbName" to "app")).also {
-                // Classification needs lower_case_table_names, which introspection reports.
-                val created = checkNotNull(core.datasourceStore.getByName("cov-ds"))
-                core.datasourceStore.storePushedCatalog(created.id, listOf("app"), 0, "8.0.36", catalogSnapshot {}, currentCatalog = "def")
-            }
-        }
-        on("update_datasource") { client.ok(adm, "update_datasource", args("datasource" to "cov-ds", "host" to "db.internal")) }
         on("get_datasource_liveness") { client.ok(adm, "get_datasource_liveness", args("datasource" to ds.name)) }
         on("browse_catalog") { client.ok(adm, "browse_catalog", args("datasource" to ds.name)) }
         on("get_table_detail") {
@@ -338,22 +333,22 @@ class McpToolCoverageDbTest {
         AuditEvent(principal = principal, datasource = fx.datasource.name, statement = sql, decision = Decision.MASK, channel = channel.contextValue),
     )
 
-    private fun masked(requirements: ResultRequirements, decisionId: Long): List<ProxyRunMsg> = listOf(
-        proxyRunMsg {
-            decision = runDecision {
+    private fun masked(requirements: ResultRequirements, decisionId: Long): List<ProxyEditorMsg> = listOf(
+        proxyEditorMsg {
+            decision = editorDecision {
                 decision = EnfAction.MASK
                 this.decisionId = decisionId
                 maskedColumns += "ssn"
                 resultRequirements = requirements
             }
         },
-        proxyRunMsg {
-            resultRows = runResultRows {
+        proxyEditorMsg {
+            resultRows = editorResultRows {
                 columns += listOf("id", "ssn")
-                rows += maskedRows.map { row -> runRow { values += row.map { v -> runValue { value = v } } } }
+                rows += maskedRows.map { row -> editorRow { values += row.map { v -> editorValue { value = v } } } }
             }
         },
-        proxyRunMsg { done = runDone { rowsAffected = -1 } },
+        proxyEditorMsg { done = editorDone { rowsAffected = -1 } },
     )
 
     private companion object {

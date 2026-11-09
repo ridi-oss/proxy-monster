@@ -1,8 +1,9 @@
-package run
+package editor
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync/atomic"
 	"time"
@@ -21,27 +22,25 @@ type refreshBatch struct {
 }
 
 // TryRegisterAndPushCatalog is RegisterAndPushCatalog unless another attempt is already running.
-func (r *Runner) TryRegisterAndPushCatalog(cfg *config.Config, engine *engines.Engine, certChain func() *string) error {
+func (s *Server) TryRegisterAndPushCatalog(cfg *config.Config, engine *engines.Engine, certChain func() *string) error {
 	var err error
-	if !tryRun(r.registerSlots, func() { err = r.RegisterAndPushCatalog(cfg, engine, certChain) }) {
+	if !tryRun(s.registerSlots, func() { err = s.RegisterAndPushCatalog(cfg, engine, certChain) }) {
 		slog.Debug("skipping register/push catalog; another attempt is already in progress")
 	}
 	return err
 }
 
 // RegisterAndPushCatalog registers the datasource and pushes its catalog, retrying transient failures. A
-// control-plane protocol-version mismatch is permanent, so it is the only error returned to make boot or a
-// reconnect exit; all other failures leave the proxy running fail-closed until the next resync can recover.
-func (r *Runner) RegisterAndPushCatalog(cfg *config.Config, engine *engines.Engine, certChain func() *string) error {
+// control-plane protocol-version mismatch is permanent and returns at once.
+func (s *Server) RegisterAndPushCatalog(cfg *config.Config, engine *engines.Engine, certChain func() *string) error {
 	for attempt := 0; attempt < bootRegisterAttempts; attempt++ {
-		targetConfig := r.target.Config()
-		err := r.client.Register(engine.Proto, targetConfig.Host, targetConfig.Port, targetConfig.Db, cfg.DatasourceTags, cfg.AdvertiseAddr, certChain(), cfg.TLSEnabled(), r.target.ConnectionInfo(), &cfg.DatasourceDescription)
+		err := s.client.Register(engine.Proto, s.target.TargetInfo(), cfg.DatasourceTags, cfg.AdvertiseAddr, certChain(), cfg.TLSEnabled(), s.target.ConnectionInfo(), &cfg.DatasourceDescription)
 		if errors.Is(err, cp.ErrIncompatibleControlPlane) {
 			return err
 		}
 		if err != nil {
 			slog.Warn("datasource registration failed", "attempt", attempt+1, "of", bootRegisterAttempts, "error", err)
-		} else if r.RefreshCatalog() {
+		} else if s.RefreshCatalog() {
 			slog.Info("datasource registered + catalog pushed", "datasource", cfg.DatasourceName)
 			return nil
 		}
@@ -51,19 +50,18 @@ func (r *Runner) RegisterAndPushCatalog(cfg *config.Config, engine *engines.Engi
 			time.Sleep(backoff)
 		}
 	}
-	slog.Error("could not register + push catalog after all attempts — starting anyway; decisions fail closed until the control plane has this datasource's catalog", "attempts", bootRegisterAttempts)
-	return nil
+	return fmt.Errorf("could not register + push catalog after %d attempts", bootRegisterAttempts)
 }
 
 // RefreshCatalog introspects the target and pushes the catalog; concurrent callers share one refresh.
-func (r *Runner) RefreshCatalog() bool {
-	return runMergedRefresh(&r.refreshBatch, r.refreshCatalogNow)
+func (s *Server) RefreshCatalog() bool {
+	return runMergedRefresh(&s.refreshBatch, s.refreshCatalogNow)
 }
 
-func (r *Runner) refreshCatalogNow() bool {
-	catalog, err := r.target.Introspect(context.Background())
+func (s *Server) refreshCatalogNow() bool {
+	catalog, err := s.target.Introspect(context.Background())
 	if err == nil {
-		err = r.client.PushCatalog(catalog)
+		err = s.client.PushCatalog(catalog)
 	}
 
 	if err != nil {

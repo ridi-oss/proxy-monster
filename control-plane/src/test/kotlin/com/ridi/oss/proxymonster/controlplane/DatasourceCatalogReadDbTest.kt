@@ -37,7 +37,7 @@ class DatasourceCatalogReadDbTest {
             core.connectionCatalog,
         )
         val store = core.datasourceStore
-        id = store.create(DatasourceInput("catalog-read", "mysql", dbName = "shop")).id
+        id = store.registerOnly("catalog-read", "mysql").id
         store.storePushedCatalog(
             id, listOf("shop"), 0, "8.0.36",
             snapshotOf(

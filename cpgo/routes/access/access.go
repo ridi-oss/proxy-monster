@@ -67,6 +67,7 @@ type accessRequest struct {
 	Revision                         int32           `json:"revision"`
 	RevisedAt                        *string         `json:"revisedAt,omitempty"`
 	ContentHash                      *string         `json:"contentHash,omitempty"`
+	RawHash                          *string         `json:"rawHash,omitempty"`
 	PullRequest                      *pullRequestRef `json:"pullRequest,omitempty"`
 	ForceRun                         bool            `json:"forceRun"`
 	ForceRunBy                       *string         `json:"forceRunBy,omitempty"`
@@ -97,7 +98,7 @@ func toAccessRequest(r db.AccessRequestsRow) accessRequest {
 		ApprovedAt: api.OptInstant(r.ApprovedAt), ExecutingAt: api.OptInstant(r.ExecutingAt), ExecutedAt: api.OptInstant(r.ExecutedAt),
 		ExecuteAs: r.ExecuteAs, CreatorKind: &r.CreatorKind, StatementCarriesProtectedLiteral: r.StatementCarriesProtectedLiteral,
 		Source: r.Source, Scope: r.Scope, FileKey: r.FileKey, ChangeKey: r.ChangeKey, MergedAt: api.OptInstant(r.MergedAt),
-		Revision: r.Revision, RevisedAt: api.OptInstant(r.RevisedAt), ContentHash: r.ContentHash,
+		Revision: r.Revision, RevisedAt: api.OptInstant(r.RevisedAt), ContentHash: r.ContentHash, RawHash: r.RawHash,
 		ForceRun: r.ForceRun, ForceRunBy: r.ForceRunBy, CCs: r.Ccs}
 	if r.Source == "github" && r.Repository != nil && r.Pr != nil {
 		a.PullRequest = &pullRequestRef{Repository: *r.Repository, PR: *r.Pr, PRURL: r.PrUrl, Path: r.Path, HeadSHA: r.HeadSha,

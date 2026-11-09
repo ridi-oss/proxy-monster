@@ -46,9 +46,7 @@ class ApprovalInvolvedListDbTest {
         dataSource = SharedPostgres.hikari(database)
         core = ControlPlaneCore(dataSource)
         sessionStore = PrincipalSessionStore(dataSource, null)
-        datasource = core.datasourceStore.create(
-            DatasourceInput(name = "involved-ds", engine = "postgres", host = "localhost", port = 5432, dbName = "app"),
-        )
+        datasource = core.datasourceStore.registerOnly("involved-ds", "postgres")
         core.cedarPolicyStore.create(
             CedarPolicyInput(
                 name = "involved-test-approver",

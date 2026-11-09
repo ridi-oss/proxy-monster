@@ -23,12 +23,12 @@ import com.ridi.oss.proxymonster.controlplane.KeyOrder
 import com.ridi.oss.proxymonster.controlplane.changeKey
 import com.ridi.oss.proxymonster.controlplane.compareFileKeys
 import com.ridi.oss.proxymonster.controlplane.contentHash
-import com.ridi.oss.proxymonster.controlplane.dialect
 import com.ridi.oss.proxymonster.controlplane.inTx
 import com.ridi.oss.proxymonster.controlplane.i18n.MessageCatalog
 import com.ridi.oss.proxymonster.controlplane.management.AuditActor
 import com.ridi.oss.proxymonster.controlplane.notify.NotificationEvent
 import com.ridi.oss.proxymonster.controlplane.notify.NotificationService
+import com.ridi.oss.proxymonster.controlplane.rawSqlHash
 import com.ridi.oss.proxymonster.controlplane.splitEngineConfig
 import com.ridi.oss.proxymonster.probe.splitStatements
 import io.ktor.http.HttpStatusCode
@@ -91,7 +91,7 @@ class GitHubSourceFlow(
 
     private data class PostedState(val headSha: String, val status: CheckStatus, val conclusion: CheckConclusion?, val title: String)
 
-    private class Keyed(val file: GitHubFileInput, val statements: List<String>, val key: String, val contentHash: String)
+    private class Keyed(val file: GitHubFileInput, val statements: List<String>, val key: String, val contentHash: String?, val rawHash: String)
 
     suspend fun file(workload: AuthzPrincipal.Workload, input: GitHubRequestsInput): List<AccessRequest> {
         val repository = input.repository.trim()
@@ -127,11 +127,9 @@ class GitHubSourceFlow(
             throw TaskServiceException(HttpStatusCode.Conflict, ApiError("approval.github_stale_head", mapOf("head" to pr.headSha)))
         }
         val scope = input.scope?.trim()?.takeIf { it.isNotEmpty() } ?: "${ds.name}/${input.schema}"
-        val dialect = ds.engine.dialect
-
         return mutex.withLock {
             val all = accessStore.listGithubRequests(repository, number)
-            val existing = all.filter { it.scope == scope }
+            var existing = all.filter { it.scope == scope }
             if (files.isEmpty()) {
                 existing.filter { it.status in OPEN }.forEach { accessStore.endUnstarted(it.id, DELETED) }
                 accessStore.setPrHead(repository, number, scope, emptyList(), pr.headSha, input.order.wireName)
@@ -152,9 +150,13 @@ class GitHubSourceFlow(
             val splitConfig = ds.splitEngineConfig()
             val keyed = files.map { f ->
                 val statements = splitStatements(f.content, splitConfig)?.takeIf { it.isNotEmpty() } ?: throw unsplittable()
-                val hash = contentHash(f.content, dialect)
-                Keyed(f, statements, changeKey(f.key, hash), hash)
+                val hash = contentHash(f.content, ds)
+                val raw = rawSqlHash(f.content)
+                Keyed(f, statements, changeKey(f.key, hash, raw), hash, raw)
             }
+            // A file whose normalized hash changed since filing, as a normalizer upgrade can, takes its key now.
+            val rekeyed = keyed.sumOf { accessStore.rekeyFile(scope, it.file.key, it.rawHash, it.key, it.contentHash) }
+            if (rekeyed > 0) existing = accessStore.listGithubRequests(repository, number).filter { it.scope == scope }
 
             val requester = all.firstOrNull()?.principal
                 ?: pr.author?.let { adapter.resolveUser(repo.owner, it, MappingRole.REQUESTER, pr.commitEmailsBy(it)) }
@@ -175,6 +177,7 @@ class GitHubSourceFlow(
                         repository, number, prUrl = prUrl, path = k.file.path, headSha = pr.headSha,
                         defaultSchema = input.schema, keyOrder = input.order.wireName,
                     ),
+                    rawHash = k.rawHash,
                 )
                 val alreadyRan = { accessStore.changeKeyExecuted(scope, k.key) }
                 val free = { r: AccessRequest -> r.id !in taken }

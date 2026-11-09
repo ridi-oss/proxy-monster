@@ -29,7 +29,7 @@ class GrpcTempOverlayTest {
         assertEquals(1, out.size)
         val c = out.single()
         assertTrue(c.isTemp, "an overlaid session temp must be flagged isTemp (reads unmasked)")
-        assertEquals("appdb", c.catalog, "the overlay keeps the catalog the proxy measured")
+        assertEquals("appdb", c.catalog, "the overlay keeps the catalog the proxy inspected")
         assertEquals("pg_temp_3", c.schema)
         assertEquals("scratch", c.table)
     }

@@ -9,12 +9,12 @@ import (
 )
 
 // gracefulDrain must drain the wire IMMEDIATELY (independent of the Events loop, so a loop still winding down
-// — e.g. mid catalog refresh — cannot delay closing the listener), yet still gate the RUN drain on the Events
-// loop's return so no dispatch that lands late is missed, and it must not return until the in-flight runs
+// — e.g. mid catalog refresh — cannot delay closing the listener), yet still gate the editor-session drain on the Events
+// loop's return so no dispatch that lands late is missed, and it must not return until the in-flight editor sessions
 // finish. This guards both the Wait-vs-late-Add race and the wire-must-not-wait-behind-events ordering.
 func TestGracefulDrainDrainsWireBeforeTheRunBarrier(t *testing.T) {
-	runs := drain.New()
-	runs.Add() // one in-flight run, not yet finished
+	editorSessions := drain.NewTracker()
+	editorSessions.Add() // one in-flight editor session, not yet finished
 
 	cancelled := make(chan struct{})
 	eventsDone := make(chan struct{})
@@ -33,7 +33,7 @@ func TestGracefulDrainDrainsWireBeforeTheRunBarrier(t *testing.T) {
 	}
 
 	done := make(chan struct{})
-	go func() { gracefulDrain(runs, eventsCancel, eventsDone, drainWire); close(done) }()
+	go func() { gracefulDrain(editorSessions, eventsCancel, eventsDone, drainWire); close(done) }()
 
 	// It signals draining and cancels the Events loop up front.
 	select {
@@ -41,7 +41,7 @@ func TestGracefulDrainDrainsWireBeforeTheRunBarrier(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("gracefulDrain did not cancel the events loop")
 	}
-	if !runs.Draining() {
+	if !editorSessions.Draining() {
 		t.Fatal("gracefulDrain did not begin draining before stopping the events loop")
 	}
 
@@ -55,31 +55,31 @@ func TestGracefulDrainDrainsWireBeforeTheRunBarrier(t *testing.T) {
 		t.Fatal("wire was never drained")
 	}
 
-	// But the RUN drain must still wait for the Events loop: gracefulDrain must NOT return yet.
+	// But the editor-session drain must still wait for the Events loop: gracefulDrain must NOT return yet.
 	select {
 	case <-done:
-		t.Fatal("gracefulDrain returned before the events loop stopped — the run barrier is violated")
+		t.Fatal("gracefulDrain returned before the events loop stopped — the editor session barrier is violated")
 	case <-time.After(100 * time.Millisecond):
 	}
 
 	// A dispatch that lands while the Events loop is still winding down (before eventsDone) must still be
-	// counted — the whole point of awaiting eventsDone before runs.Wait. Register it now.
-	runs.Add()
+	// counted — the whole point of awaiting eventsDone before editorSessions.Wait. Register it now.
+	editorSessions.Add()
 
-	// Release the Events loop; now it waits for BOTH in-flight runs — still live.
+	// Release the Events loop; now it waits for BOTH in-flight editor sessions — still live.
 	close(eventsDone)
 	select {
 	case <-done:
-		t.Fatal("gracefulDrain returned before the in-flight runs finished")
+		t.Fatal("gracefulDrain returned before the in-flight editor sessions finished")
 	case <-time.After(100 * time.Millisecond):
 	}
 
-	// Finishing both runs lets it return.
-	runs.Done()
-	runs.Done()
+	// Finishing both editor sessions lets it return.
+	editorSessions.Done()
+	editorSessions.Done()
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("gracefulDrain did not return after the in-flight runs finished")
+		t.Fatal("gracefulDrain did not return after the in-flight editor sessions finished")
 	}
 }

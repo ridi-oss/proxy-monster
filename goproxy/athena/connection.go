@@ -37,9 +37,9 @@ type connection struct {
 }
 
 func (t *target) OpenConnection(_ context.Context, authz *spi.Authorizer, guard spi.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.Connection, error) {
-	// Every Athena query names the configured database, so a run cannot open anywhere else.
+	// Every Athena query names the configured database, so an editor session cannot open anywhere else.
 	if defaultSchema != "" && defaultSchema != t.databaseIdentity() {
-		return nil, fmt.Errorf("athena run cannot open in database %q: the target is configured for %q", defaultSchema, t.config.database)
+		return nil, fmt.Errorf("athena editor session cannot open in database %q: the target is configured for %q", defaultSchema, t.config.database)
 	}
 	commandRunner, err := t.newProxyCommandRunner(authz)
 	if err != nil {

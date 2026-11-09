@@ -78,7 +78,7 @@ func verifyPostgresHashAndFragment(t *testing.T, database *sql.DB, wantCrypto bo
 			t.Fatalf("Postgres exec %q: %v", statement, err)
 		}
 	}
-	measure := func(schema string) []byte {
+	inspectHash := func(schema string) []byte {
 		t.Helper()
 		hashSQL, columns, err := queries.SchemaHash(schema, setupRows)
 		if err != nil {
@@ -104,8 +104,8 @@ func verifyPostgresHashAndFragment(t *testing.T, database *sql.DB, wantCrypto bo
 	schema := targettest.UniqueFixtureName("pm_hash_pg_fragment")
 	exec("CREATE SCHEMA " + quote(schema))
 	exec("CREATE TABLE " + quote(schema) + ".sample (id INTEGER NOT NULL, note TEXT NULL)")
-	first := measure(schema)
-	if second := measure(schema); !reflect.DeepEqual(first, second) {
+	first := inspectHash(schema)
+	if second := inspectHash(schema); !reflect.DeepEqual(first, second) {
 		t.Fatalf("Postgres hash nondeterministic: %x != %x", first, second)
 	}
 	if wantCrypto && len(first) != 32 {
@@ -141,7 +141,7 @@ func verifyPostgresHashAndFragment(t *testing.T, database *sql.DB, wantCrypto bo
 			exec("CREATE SCHEMA " + quote(fixture))
 			exec("CREATE TABLE " + quote(fixture) + ".same_table (id INTEGER NOT NULL, note TEXT NULL)")
 		}
-		firstHash, secondHash := measure(firstSchema), measure(secondSchema)
+		firstHash, secondHash := inspectHash(firstSchema), inspectHash(secondSchema)
 		if reflect.DeepEqual(firstHash, secondHash) {
 			t.Fatalf("byte-identical tables in distinct Postgres schemas collided: %x", firstHash)
 		}
@@ -150,12 +150,12 @@ func verifyPostgresHashAndFragment(t *testing.T, database *sql.DB, wantCrypto bo
 	matrixSchema := targettest.UniqueFixtureName("pm_hash_pg_fields")
 	exec("CREATE SCHEMA " + quote(matrixSchema))
 	exec("CREATE TABLE " + quote(matrixSchema) + ".base (a INTEGER NOT NULL)")
-	previous := measure(matrixSchema)
+	previous := inspectHash(matrixSchema)
 	mutate := func(name, statement string) {
 		t.Helper()
 		t.Run(name, func(t *testing.T) {
 			exec(statement)
-			next := measure(matrixSchema)
+			next := inspectHash(matrixSchema)
 			if reflect.DeepEqual(next, previous) {
 				t.Fatalf("%s did not change schema hash: %x", name, next)
 			}

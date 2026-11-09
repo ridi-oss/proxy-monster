@@ -1,4 +1,4 @@
-package run
+package editor
 
 import (
 	"context"
@@ -9,12 +9,12 @@ import (
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 )
 
-// RunTableDetail blocks for one short-lived, proxy-dialed table-detail session.
-func (r *Runner) RunTableDetail(sessionID string, table *enginepb.ObjectRef) {
+// ServeTableDetail blocks for one short-lived, proxy-dialed table-detail session.
+func (s *Server) ServeTableDetail(sessionID string, table *enginepb.ObjectRef) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	stream, err := r.client.OpenTableDetailStream(ctx)
+	stream, err := s.client.OpenTableDetailStream(ctx)
 	if err != nil {
 		return
 	}
@@ -26,7 +26,7 @@ func (r *Runner) RunTableDetail(sessionID string, table *enginepb.ObjectRef) {
 		return
 	}
 
-	detail, detailErr := r.target.ReadTableDetail(ctx, table)
+	detail, detailErr := s.target.ReadTableDetail(ctx, table)
 	if detailErr != nil {
 		message := "table introspection failed"
 		if text := strings.TrimSpace(detailErr.Error()); text != "" {

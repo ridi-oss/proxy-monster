@@ -105,10 +105,10 @@ func (s *service) AuthorizeRequest(ctx context.Context, r *pb.RequestAuthorizati
 	if err != nil {
 		return nil, status.Error(codes.Internal, "unregistered engine")
 	}
-	ds := requestDatasource{name: row.Name, tags: row.Tags, engine: engine, catalog: engine.CatalogName(row.DbName).String()}
-	if row.CurrentCatalogName != nil {
-		ds.catalog = *row.CurrentCatalogName
+	if row.CurrentCatalogName == nil {
+		return nil, status.Error(codes.FailedPrecondition, "datasource has no catalog yet")
 	}
+	ds := requestDatasource{name: row.Name, tags: row.Tags, engine: engine, catalog: *row.CurrentCatalogName}
 	parents, err := s.authz.Parents(ctx, tok.Principal)
 	if err != nil {
 		return nil, err

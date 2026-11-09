@@ -16,7 +16,7 @@ const (
 	StatusCanceled = "canceled"
 )
 
-// RowBudget bounds an in-memory result collection (the run channel's paged reads) the way [RelayStats]
+// RowBudget bounds an in-memory result collection (the editor session's paged reads) the way [RelayStats]
 // plus a [Decision] bounds a wire relay. A zero MaxRows/MaxBytes is uncapped on that dimension.
 type RowBudget struct {
 	MaxRows  int

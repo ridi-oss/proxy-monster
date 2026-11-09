@@ -366,7 +366,7 @@ func interpretSessionProbeRow(values []*string, session *engines.Session) (names
 	return mysqlNamespace(session.CatalogSchemaName(&enginepb.Column{Schema: *values[0]}).String()), ansiQuotes, nil
 }
 
-// textResultCollector decodes one COM_QUERY text result for probes and run execution.
+// textResultCollector decodes one COM_QUERY text result for probes and editor-session execution.
 type textResultCollector struct {
 	expected, columns        int
 	budget                   relay.RowBudget
@@ -457,7 +457,7 @@ func (c *textResultCollector) displayValues(values []*string) []*string {
 		}
 		// A binary/blob column is always rendered as hex. Anything else is left as-is UNLESS its bytes are
 		// not valid UTF-8 — BIT and GEOMETRY carry a binary charset but are not named by isBinaryColumn, and
-		// RunValue.value is a proto3 string, so a non-UTF-8 cell would fail to marshal and abort the query.
+		// EditorValue.value is a proto3 string, so a non-UTF-8 cell would fail to marshal and abort the query.
 		if !isBinaryColumn(def) && utf8.ValidString(*out[i]) {
 			continue
 		}

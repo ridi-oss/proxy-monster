@@ -97,9 +97,9 @@ func TestDecisionsUnderShippedPolicies(t *testing.T) {
 	exec(`INSERT INTO app_role (name) VALUES ('ip-auditor')`)
 	exec(`INSERT INTO principal_role (principal, role_id) SELECT 'edge', id FROM app_role WHERE name = 'ip-auditor'`)
 	exec(`INSERT INTO policy (name, cedar_src, enabled, origin) VALUES ('ip-gated', 'permit(principal in Role::"ip-auditor", action == Action::"audit.read", resource) when { context has requester_ip && context.requester_ip.isInRange(ip("203.0.113.0/24")) };', true, 'USER')`)
-	exec(`INSERT INTO datasource (name, host, port, db_name, tags) VALUES ('gated', 'h', 1, 'd', '["prod"]')`)
+	exec(`INSERT INTO datasource (name, tags) VALUES ('gated', '["prod"]')`)
 	exec(`INSERT INTO policy (name, cedar_src, enabled, origin) VALUES ('connect', 'permit(principal == User::"connector", action == Action::"datasource.connect", resource == Datasource::"gated");', true, 'USER')`)
-	exec(`INSERT INTO datasource (name, host, port, db_name) VALUES ('ip-ds', 'h', 1, 'd')`)
+	exec(`INSERT INTO datasource (name) VALUES ('ip-ds')`)
 	exec(`INSERT INTO policy (name, cedar_src, enabled, origin) VALUES ('ip-connect', 'permit(principal == User::"edge-connector", action == Action::"datasource.connect", resource == Datasource::"ip-ds") when { context has requester_ip && context.requester_ip.isInRange(ip("203.0.113.0/24")) };', true, 'USER')`)
 	exec(`INSERT INTO policy (name, cedar_src, enabled, origin) VALUES ('no-github-reads', 'forbid(principal == User::"alice", action == Action::"task.read", resource) when { resource has source && resource.source == "github" };', true, 'USER')`)
 	exec(`INSERT INTO app_user (principal, active) VALUES ('grouped', true), ('lapsed', false)`)
@@ -248,7 +248,7 @@ func TestMayRequestAndScopedDecisions(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	exec(`INSERT INTO datasource (name, host, port, db_name, tags) VALUES ('orders', 'h', 1, 'd', '["prod"]')`)
+	exec(`INSERT INTO datasource (name, tags) VALUES ('orders', '["prod"]')`)
 	exec(`INSERT INTO policy (name, cedar_src, enabled, origin) VALUES ('office', 'permit(principal, action == Action::"context.tag::office", resource) when { context has requester_ip && context.requester_ip.isInRange(ip("10.0.0.0/8")) };', true, 'USER')`)
 	exec(`INSERT INTO policy (name, cedar_src, enabled, origin) VALUES ('office-approver', 'permit(principal == User::"bob", action == Action::"task.approve", resource) when { context has tags && context.tags.contains("office") && context has channel && context.channel == "workflow-viewer" };', true, 'USER')`)
 	var id int64

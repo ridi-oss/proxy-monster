@@ -13,7 +13,7 @@ import (
 // TestDialTargetDbAuthIDAbortsOnContextCancel proves the real MySQL dial honors the target-DB open context: a
 // target DB that accepts the TCP connection but never sends its greeting stalls the auth read, and cancelling
 // the context must close the conn and return at once — not block until targetDbHandshakeTimeout. This is the
-// mechanism the run target-DB open relies on; the runner-level tests exercise only the fake provider, so a
+// mechanism the editor-session target-DB open relies on; the server-level tests exercise only the fake provider, so a
 // regression that dropped DialContext or the auth AfterFunc would not surface there.
 func TestDialTargetDbAuthIDAbortsOnContextCancel(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")

@@ -39,10 +39,10 @@ import (
 
 // ProtocolVersion is this proxy's proxy<->control-plane wire-protocol version, exchanged at Register so a
 // half-finished rollout (proxy and control-plane on different server-v* releases) fails fast with a clear
-// error instead of a stalled run channel. Bump it on any incompatible wire change. It MUST match the
+// error instead of a stalled editor session. Bump it on any incompatible wire change. It MUST match the
 // control-plane's CONTROL_PROTOCOL_VERSION; the two are separate constants in separate languages kept in
 // lockstep by hand — a server-v* release always ships both at the same value.
-const ProtocolVersion int32 = 6
+const ProtocolVersion int32 = 8
 
 // ErrIncompatibleControlPlane means the control-plane speaks a different wire-protocol version than this
 // proxy — a PERMANENT deploy-skew condition, not a transient failure. boot treats it as fatal (refuse to
@@ -71,7 +71,7 @@ const (
 	// re-homing to a live instance where a load balancer fronts several, or reconnecting once it is back.
 	eventsDrainReconnect = 500 * time.Millisecond
 	// eventsRotationReconnect paces the reopen after the max-age expiry below. The proxy reads as UNATTACHED
-	// until the stream is back, and every run dispatched in that window fails "no proxy is attached", so the
+	// until the stream is back, and every editor session dispatched in that window fails "no proxy is attached", so the
 	// error backoff would spend 5s of every rotation refusing queries. Non-zero for the same reason as the
 	// drain pace: the reopen launches a resync, so a stream that expires instantly must not spin the loop.
 	eventsRotationReconnect = 100 * time.Millisecond
@@ -194,8 +194,8 @@ func (c *Client) AuthorizeRequest(parent context.Context, request *pb.RequestAut
 // identityFromWire maps the control plane's WireIdentity into the proxy's session identity. PURE function
 // (no I/O) so it is directly unit-testable.
 func identityFromWire(id *pb.WireIdentity) (spi.Identity, error) {
-	if len(id.GetConnectionId()) != 16 {
-		return spi.Identity{}, fmt.Errorf("control plane returned connection_id with %d bytes, want 16", len(id.GetConnectionId()))
+	if len(id.GetConnectionId()) == 0 {
+		return spi.Identity{}, errors.New("control plane returned no connection_id")
 	}
 	onOpen, err := commandsFromWire(id.GetOnOpen())
 	if err != nil {
@@ -209,13 +209,13 @@ func identityFromWire(id *pb.WireIdentity) (spi.Identity, error) {
 	}, nil
 }
 
-// ValidateToken authenticates the session-open token through the control plane. ANY failure, including an
+// OpenConnection authenticates the session-open token through the control plane. ANY failure, including an
 // UNAUTHENTICATED status or an empty response, returns an error so the wire broker fails closed.
-func (c *Client) ValidateToken(token, clientAddr string) (spi.Identity, error) {
+func (c *Client) OpenConnection(token, clientAddr string, door pb.ConnectionDoor) (spi.Identity, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), rpcDeadline)
 	defer cancel()
 
-	resp, err := c.stub.ValidateToken(c.outCtx(ctx), &pb.ValidateTokenRequest{Token: token, DatasourceName: c.datasourceName, ClientAddr: clientAddr})
+	resp, err := c.stub.OpenConnection(c.outCtx(ctx), &pb.OpenConnectionRequest{Token: token, DatasourceName: c.datasourceName, ClientAddr: clientAddr, Door: door})
 	if err != nil {
 		if st, ok := status.FromError(err); ok {
 			msg := st.Message()
@@ -427,7 +427,7 @@ func (c *Client) ReportCompletion(report spi.CompletionReport) {
 // advertiseCertChain is a pointer for explicit presence. nil means "no opinion" and preserves whatever the
 // control plane stores (a transient read at re-register); a non-nil empty string is authoritative and CLEARS
 // the stored chain, so an operator who stops publishing does not leave clients on dead roots.
-func (c *Client) Register(registrationEngine enginepb.Engine, host string, port int, dbName string, tags []string, advertiseAddr string, advertiseCertChain *string, wireTLS bool, connectionInfo *pb.ConnectionInfo, description *string) error {
+func (c *Client) Register(registrationEngine enginepb.Engine, targetInfo string, tags []string, advertiseAddr string, advertiseCertChain *string, wireTLS bool, connectionInfo *pb.ConnectionInfo, description *string) error {
 	// Fail-closed defense-in-depth — never send an unspecified engine (boot already validated the provider).
 	if registrationEngine == enginepb.Engine_ENGINE_UNSPECIFIED {
 		return fmt.Errorf("cp: refusing to register datasource %q with an unspecified engine", c.datasourceName)
@@ -439,9 +439,7 @@ func (c *Client) Register(registrationEngine enginepb.Engine, host string, port 
 	resp, err := c.stub.Register(c.outCtx(ctx), &pb.RegisterRequest{
 		Name:               c.datasourceName,
 		Engine:             registrationEngine,
-		Host:               host,
-		Port:               int32(port),
-		DbName:             dbName,
+		TargetInfo:         targetInfo,
 		Tags:               tags,
 		AdvertiseAddr:      advertiseAddr,
 		AdvertiseCertChain: advertiseCertChain,
@@ -460,7 +458,7 @@ func (c *Client) Register(registrationEngine enginepb.Engine, host string, port 
 		return fmt.Errorf("cp: register datasource %q: %w", c.datasourceName, err)
 	}
 	// Mirror check: an OLDER control-plane that predates the version field cannot reject us, so it returns 0.
-	// Refuse to run against it rather than proceed to a run channel it cannot speak.
+	// Refuse to run against it rather than proceed to an editor session it cannot speak.
 	if resp.GetProtocolVersion() != ProtocolVersion {
 		return fmt.Errorf(
 			"%w: control-plane at version %d, this proxy at %d — deploy both from the same server-v* release",
@@ -490,7 +488,7 @@ func (c *Client) PushCatalog(catalog *pb.CatalogRequest) error {
 	return nil
 }
 
-// PushSchemaFragment applies one measured connection-local schema fragment and returns its generation.
+// PushSchemaFragment applies one inspected connection-local schema fragment and returns its generation.
 // The fragment is the proto message the command runner built; it stamps DatasourceName before sending (the
 // command runner does not know it), mirroring PushCatalog.
 func (c *Client) PushSchemaFragment(push *pb.SchemaFragmentPush) (uint64, error) {
@@ -518,7 +516,7 @@ func (c *Client) CloseConnection(connectionID []byte) error {
 	return nil
 }
 
-// StreamEvents opens the proxy-initiated Events stream and dispatches refresh/run/table-detail
+// StreamEvents opens the proxy-initiated Events stream and dispatches refresh/editor-session/table-detail
 // nudges until the stream ends or errors. Blocks the calling goroutine for the stream's lifetime.
 //
 // Bounded by eventsStreamMaxAgeDefault rather than left open indefinitely. The open stream IS the liveness
@@ -528,11 +526,11 @@ func (c *Client) CloseConnection(connectionID []byte) error {
 // plane sees a detach immediately followed by an attach.
 func (c *Client) StreamEvents(
 	onRefresh func(),
-	onOpenRun func(*pb.OpenRunChannel, error),
+	onOpenEditor func(*pb.OpenEditorSession),
 	onOpenTableDetail func(sessionID string, table *enginepb.ObjectRef),
 ) error {
 	timings := defaultEventLoopTimings()
-	return c.streamEvents(context.Background(), timings.streamMaxAge, onRefresh, onOpenRun, onOpenTableDetail)
+	return c.streamEvents(context.Background(), timings.streamMaxAge, onRefresh, onOpenEditor, onOpenTableDetail)
 }
 
 // errDraining is returned by streamEvents when the control plane signals a graceful shutdown over the
@@ -550,7 +548,7 @@ func (c *Client) streamEvents(
 	parent context.Context,
 	maxAge time.Duration,
 	onRefresh func(),
-	onOpenRun func(*pb.OpenRunChannel, error),
+	onOpenEditor func(*pb.OpenEditorSession),
 	onOpenTableDetail func(sessionID string, table *enginepb.ObjectRef),
 ) error {
 	ctx, cancel := context.WithTimeout(c.outCtx(parent), maxAge)
@@ -583,10 +581,8 @@ func (c *Client) streamEvents(
 			return errDraining
 		case ev.GetRefreshCatalog() != nil:
 			onRefresh()
-		case ev.GetOpenRunChannel() != nil:
-			e := ev.GetOpenRunChannel()
-			_, mapErr := commandsFromWire(e.GetOnOpen())
-			onOpenRun(e, mapErr)
+		case ev.GetOpenEditorSession() != nil:
+			onOpenEditor(ev.GetOpenEditorSession())
 		case ev.GetOpenTableDetailChannel() != nil:
 			t := ev.GetOpenTableDetailChannel()
 			onOpenTableDetail(t.GetSessionId(), &enginepb.ObjectRef{Catalog: t.GetCatalog(), Schema: t.GetSchema(), Table: t.GetTable()})
@@ -597,7 +593,7 @@ func (c *Client) streamEvents(
 // RunEventsLoop holds the Events stream open until ctx is cancelled. On a drop it waits
 // eventsReconnectDefault, resyncs (re-registers + re-pushes the catalog, so a control plane that restarted
 // with lost state re-learns this datasource) and reopens. Cancelling ctx returns the loop, which shutdown
-// uses to stop new run dispatches before it drains the in-flight ones (the run-stream analogue of the wire
+// uses to stop new editor-session dispatches before it drains the in-flight ones (the editor-stream analogue of the wire
 // server closing its listener).
 //
 // The resync runs in the background rather than in line. It introspects the whole catalog, which on a
@@ -611,10 +607,10 @@ func (c *Client) RunEventsLoop(
 	ctx context.Context,
 	resync func(),
 	onRefresh func(),
-	onOpenRun func(*pb.OpenRunChannel, error),
+	onOpenEditor func(*pb.OpenEditorSession),
 	onOpenTableDetail func(sessionID string, table *enginepb.ObjectRef),
 ) error {
-	return c.runEventsLoop(ctx, defaultEventLoopTimings(), resync, onRefresh, onOpenRun, onOpenTableDetail)
+	return c.runEventsLoop(ctx, defaultEventLoopTimings(), resync, onRefresh, onOpenEditor, onOpenTableDetail)
 }
 
 func (c *Client) runEventsLoop(
@@ -622,11 +618,11 @@ func (c *Client) runEventsLoop(
 	timings eventLoopTimings,
 	resync func(),
 	onRefresh func(),
-	onOpenRun func(*pb.OpenRunChannel, error),
+	onOpenEditor func(*pb.OpenEditorSession),
 	onOpenTableDetail func(sessionID string, table *enginepb.ObjectRef),
 ) error {
 	for {
-		err := c.streamEvents(ctx, timings.streamMaxAge, onRefresh, onOpenRun, onOpenTableDetail)
+		err := c.streamEvents(ctx, timings.streamMaxAge, onRefresh, onOpenEditor, onOpenTableDetail)
 		// A wire-protocol version rejection on the events stream is the same fatal deploy skew Register
 		// refuses — the control-plane's events() emits the marker Register's classifier matches. Do NOT
 		// reconnect: behind a load balancer a resync Register can reach a compatible instance and mask this,
@@ -662,19 +658,19 @@ func (c *Client) runEventsLoop(
 	}
 }
 
-// RunExec opens a proxy-dialed run stream. Deliberately not deadlined: it lives for the session.
-func (c *Client) RunExec(ctx context.Context) (grpc.BidiStreamingClient[pb.ProxyRunMsg, pb.ControlRunMsg], error) {
-	return c.stub.RunExec(c.outCtx(ctx))
+// EditorExec opens a proxy-dialed editor stream. Deliberately not deadlined: it lives for the session.
+func (c *Client) EditorExec(ctx context.Context) (grpc.BidiStreamingClient[pb.ProxyEditorMsg, pb.CpEditorMsg], error) {
+	return c.stub.EditorExec(c.outCtx(ctx))
 }
 
-// OpenRunStream exposes the run stream through the dependency-free SPI.
-func (c *Client) OpenRunStream(ctx context.Context) (spi.RunStream, error) {
-	return c.RunExec(ctx)
+// OpenEditorStream exposes the editor stream through the dependency-free SPI.
+func (c *Client) OpenEditorStream(ctx context.Context) (spi.EditorStream, error) {
+	return c.EditorExec(ctx)
 }
 
 // TableDetailExec opens a short-lived proxy-dialed table-detail stream; the control plane owns its
 // explicit timeout.
-func (c *Client) TableDetailExec(ctx context.Context) (grpc.BidiStreamingClient[pb.ProxyTableDetailMsg, pb.ControlTableDetailMsg], error) {
+func (c *Client) TableDetailExec(ctx context.Context) (grpc.BidiStreamingClient[pb.ProxyTableDetailMsg, pb.CpTableDetailMsg], error) {
 	return c.stub.TableDetailExec(c.outCtx(ctx))
 }
 

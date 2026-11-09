@@ -21,7 +21,7 @@ import kotlin.test.assertEquals
 /**
  * The gRPC transport + `x-pm-secret-token` gate, tested in isolation from the real handlers' DB work
  * via a probe service that only reaches the gRPC [io.grpc.Context] and echoes what it observed. This
- * keeps the interceptor test fast + DB-free; the real Decide/ValidateToken handler behavior is covered
+ * keeps the interceptor test fast + DB-free; the real Decide/OpenConnection handler behavior is covered
  * by the DB-backed [GrpcDecideHandlerDbTest]. Two properties are asserted: the gate is fail-closed
  * (wrong/missing secret → UNAUTHENTICATED before the handler), and it propagates exactly the presented
  * token into the handler Context (a null on the open-gate path — never a stale or wrong value).

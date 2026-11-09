@@ -7,9 +7,10 @@ broker service account — and pushes the resulting catalog. The control-plane's
 only database dependency is its own metadata Postgres: zero target-datasource
 credentials live in the control-plane, ever.
 
-Point a proxy at a new target and it appears in the control-plane on its own.
-The admin "Add Datasource" form is optional pre-provisioning (reserve a name,
-set up policy ahead of time), not a required gate.
+A datasource appears in the control-plane when its proxy registers. The
+control-plane cannot create or rename one: the name, engine, and target are the
+proxy's settings, and `Register` (an upsert by name) is the only write that
+creates a datasource. An admin can delete one.
 
 A proxy needs only `PM_DATASOURCE_NAME` — already what Cedar policies key on
 (`Datasource::"<name>"`, `authz/Authz.kt`) — plus `PM_TARGET_*` for its own
@@ -30,14 +31,14 @@ stream is the natural fit for liveness and refresh push.
 service ControlPlane {
   rpc Register(RegisterRequest) returns (RegisterResponse);            // boot: declare identity
   rpc PushCatalog(CatalogRequest) returns (CatalogResponse);          // push the introspected catalog
-  rpc ValidateToken(ValidateTokenRequest) returns (WireIdentity);     // wire-auth handshake, once per session
+  rpc OpenConnection(OpenConnectionRequest) returns (WireIdentity);     // wire-auth handshake, once per session
   rpc AuthorizeRequest(RequestAuthorization) returns (RequestAuthorizationResult); // metadata access, no SQL session
   rpc Decide(DecisionRequest) returns (WireDecision);                 // per-query enforcement decision
   rpc PushSchemaFragment(SchemaFragmentPush) returns (SchemaFragmentAck);  // per-connection catalog fragment
   rpc CloseConnection(CloseConnectionRequest) returns (CloseConnectionResponse);
-  rpc Events(EventsRequest) returns (stream ControlEvent);            // liveness + refresh/run/table-detail nudges
-  rpc RunExec(stream ProxyRunMsg) returns (stream ControlRunMsg);     // CP-driven editor/workflow execution
-  rpc TableDetailExec(stream ProxyTableDetailMsg) returns (stream ControlTableDetailMsg);  // admin table browser
+  rpc Events(EventsRequest) returns (stream CpEvent);            // liveness + refresh/run/table-detail nudges
+  rpc EditorExec(stream ProxyEditorMsg) returns (stream CpEditorMsg);     // CP-driven editor/workflow execution
+  rpc TableDetailExec(stream ProxyTableDetailMsg) returns (stream CpTableDetailMsg);  // admin table browser
   rpc ReportCompletion(CompletionReport) returns (google.protobuf.Empty);  // post-relay result-volume, audit-only
 }
 ```
@@ -50,21 +51,20 @@ shared secret as call metadata (see [Trust model](#trust-model)).
 session behind it. It checks the token, the live roles, the requester context,
 and the datasource connect gate without allocating a connection catalog. A
 missing or unrecognized operation denies. Selectors carry the catalog and schema
-explicitly and must name the datasource's measured catalog.
+explicitly and must name the datasource's current catalog.
 
 ## Registration
 
 `goproxy/boot/boot.go` calls `Register` then `PushCatalog` on boot, retrying
-with backoff. Registration is idempotent, upserted by `name`: a restart or
-redeploy upserts the same row.
+with backoff, and exits when both have not succeeded: without its catalog every
+decision fails closed. Registration is idempotent, upserted by `name`: a restart
+or redeploy upserts the same row.
 
 ```protobuf
 message RegisterRequest {
   string name = 1;              // stable identity; Cedar's Datasource::"<name>"; upsert key
   Engine engine = 2;            // POSTGRES | MYSQL
-  string host = 3;              // advisory only — admin UI / triage
-  int32 port = 4;               // advisory only
-  string db_name = 5;           // advisory only
+  reserved 3, 4, 5;             // the target's host, port and database
   repeated string tags = 6;     // posture tags; empty => production floor
   string advertise_addr = 7;                    // client-facing host:port a wire client dials to reach THIS proxy
   reserved 8, 9;                                // a leaf SHA-256 clients pinned against, and the leaf alone
@@ -73,6 +73,7 @@ message RegisterRequest {
   int32 protocol_version = 12;
   ConnectionInfo connection_info = 13;          // nonsecret endpoint + properties for clients; absent = keep stored
   optional string description = 14;            // PM_DATASOURCE_DESCRIPTION; absent = keep stored, empty = clear
+  string target_info = 15;                      // where the proxy connects, in its engine's words
 }
 message ConnectionInfo {
   string endpoint = 1;
@@ -80,14 +81,15 @@ message ConnectionInfo {
 }
 ```
 
-`host`/`port`/`db_name` are descriptive: nothing in enforcement reads them
-(Cedar keys on `name`; lineage reads the pushed catalog). They exist for the
-admin UI and incident triage — which physical instance a datasource points at.
+`target_info` is descriptive: nothing in enforcement reads it (Cedar keys on
+`name`; lineage reads the pushed catalog). Each engine writes `target_info` as
+where it connects (MySQL and PostgreSQL `host:port`, Athena its endpoint,
+workgroup and catalog), and the console shows it.
 
 The three `advertise_*` fields are the opposite — client-facing and consumed.
 `advertise_addr` is the `host:port` a wire client dials to reach this
 datasource's proxy (`PM_ADVERTISE_ADDR`, [`../INSTALL.md`](../INSTALL.md)), not
-the upstream target DB `host`/`port` above.
+the target DB in `target_info` above.
 
 `advertise_cert_chain` is the certificate chain a client should trust to reach
 this proxy: PEM, leaf first, then any intermediates and the root. A self-signed
@@ -113,10 +115,13 @@ that never had TLS.
 enough to open a local broker port for that datasource.
 
 `connection_info` is what a client needs beyond the address: an endpoint plus
-engine-defined properties, nonsecret by contract. An absent message keeps the
-stored value; an explicit empty message clears it. The engine definition
-validates the accepted fields, and a non-connectable listing omits it along with
-the other connection material.
+engine-defined properties, nonsecret by contract: MySQL and PostgreSQL publish
+`database` (`PM_TARGET_DB`), and Athena its region, workgroup, catalog and
+database. An absent message keeps the stored value; an explicit empty message
+clears it. The engine definition validates the accepted fields, and a
+non-connectable listing omits it along with the other connection material. pmon
+reads its database from these properties; `/api/datasources` also serves
+`dbName` for released pmon versions.
 
 `description` is one line saying what the datasource holds, from the proxy's
 `PM_DATASOURCE_DESCRIPTION`. Register refuses more than 500 characters or any
@@ -199,7 +204,7 @@ per-statement decision cache — the prepared-statement fast path is traded for
 the fail-closed guarantee. A cached `ALLOW` whose grant expired would otherwise
 relay cleartext.
 
-`ValidateToken` stays scoped to the wire-protocol auth handshake — MySQL and
+`OpenConnection` stays scoped to the wire-protocol auth handshake — MySQL and
 PostgreSQL need an accept/reject signal at the auth step before any query flows.
 Its job is "may this session open," not "cache something `Decide` will trust."
 
@@ -214,7 +219,7 @@ extended — not a new one.
 
 It is one system-wide secret, and `Register` takes a caller-asserted name: any
 holder can register under, or overwrite, any datasource name. A wrong catalog or
-wrong tags on a name is detectable — an admin sees a `host`/`port` that does not
+wrong tags on a name is detectable — an admin sees a `target_info` that does not
 match what they expect. The `advertise_*` fields are not: whoever holds the
 secret can repoint a datasource at their own address, advertise a chain that
 matches the certificate they serve there, and collect the wire tokens `pmon`
@@ -236,23 +241,23 @@ reconnecting if it drops. The open stream is itself the liveness signal — the
 control-plane sees the stream close and knows the proxy is down, with no polling
 interval to wait out. Down the same stream the control-plane pushes nudges:
 `RefreshCatalog` (re-introspect now — an admin asked, or a connection's DDL just
-changed structure on the target), plus the `OpenRunChannel` and
+changed structure on the target), plus the `OpenEditorSession` and
 `OpenTableDetailChannel` nudges below.
 
 ```protobuf
-message ControlEvent {
+message CpEvent {
   oneof kind {
     RefreshCatalog refresh_catalog = 1;
-    OpenRunChannel open_run_channel = 2;
+    OpenEditorSession open_editor_session = 2;
     OpenTableDetailChannel open_table_detail_channel = 3;
   }
 }
 ```
 
 The proxy re-introspects on boot, on a `RefreshCatalog` nudge, and on a longer
-ambient cadence as a safety net against silent schema drift — a new unclassified
-PII column with zero policy coverage is exactly the gap this tool exists to
-close.
+periodic cadence as a safety net against silent schema drift — a new
+unclassified PII column with zero policy coverage is exactly the gap this tool
+exists to close.
 
 The REST projection of that signal is three routes, none of which dials a
 target:
@@ -285,37 +290,35 @@ guarded, not warned.
 The guard is atomic in the conflict arm:
 `ON CONFLICT (name) DO UPDATE SET … WHERE datasource.engine = EXCLUDED.engine` —
 a row raced in under a different engine matches 0 rows and `register` rejects,
-regardless of who else writes the row. `host`/`port`/`db_name` stay
-advisory-mutable; a `db_name` change still invalidates the stale catalog
-fail-closed. The admin edit path (`PUT /api/datasources/{id}`) enforces the same
-immutability, rejecting an `engine` change with
-`409 datasource.engine_immutable`; the web edit form seeds `engine` from the
-current value and disables it.
+regardless of who else writes the row. `target_info` and `connection_info`
+change with each `Register`. A proxy pointed at another database pushes that
+database's catalog before it serves, and the push drops the held schemas it
+disagrees with.
 
-## The run channel — editor and workflow execution
+## The editor session — editor and workflow execution
 
 The SQL editor and the approval-workflow executor run their queries through the
 proxy, over the same `Decide` and result-relay path a native-wire client uses —
 not a separate in-control-plane enforcement path. Since the control-plane never
 dials into a proxy, execution rides a proxy-dialed bidirectional stream: the
-control-plane nudges the proxy over `Events` (`OpenRunChannel`, carrying a
+control-plane nudges the proxy over `Events` (`OpenEditorSession`, carrying a
 short-lived ephemeral token minted for the requester), and the proxy dials back
-with `RunExec`. Data then flows both ways over a connection the control-plane
+with `EditorExec`. Data then flows both ways over a connection the control-plane
 never opened.
 
-One stream serves one session (session ↔ `RunExec` stream ↔ its own target-DB
+One stream serves one session (session ↔ `EditorExec` stream ↔ its own target-DB
 connection), so a slow query in one session cannot head-of-line-block another,
 the stream's lifecycle is the session's lifecycle, and each session gets a
 dedicated target-DB connection where transactions, `SET`, and temp tables behave
 like a real session.
 
 ```protobuf
-// ProxyRunMsg (proxy -> cp):
-//   RunReady        — correlates this stream to its OpenRunChannel
-//   RunDecision     — the enforcement verdict + UX metadata, before any rows
-//   RunResultRows   — masked rows (ALLOW/MASK only)
-//   RunDone | RunError
-// ControlRunMsg (cp -> proxy): RunQuery{sql, max_rows} | RunClose
+// ProxyEditorMsg (proxy -> cp):
+//   EditorReady        — correlates this stream to its OpenEditorSession
+//   EditorDecision     — the enforcement verdict + UX metadata, before any rows
+//   EditorResultRows   — masked rows (ALLOW/MASK only)
+//   EditorDone | EditorError
+// CpEditorMsg (cp -> proxy): EditorQuery{sql, max_rows} | EditorClose
 ```
 
 The proxy runs the query on the session's connection, decides it through its

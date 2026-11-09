@@ -32,8 +32,8 @@ const (
 	serveExitWait = 1 * time.Second
 )
 
-// backendGeneration is a monotonic counter shared across every wire connection of both engines; each run's
-// command runner keys on its value to invalidate a stale schema fetch.
+// backendGeneration is a monotonic counter shared across every target-DB connection, wire or editor session; each
+// connection's command runner keys on its value to invalidate a stale schema fetch.
 var backendGeneration atomic.Uint64
 
 // NextBackendGeneration returns the next backend generation and whether it is within range. Out of range is
@@ -67,7 +67,7 @@ func New(listen spi.Listen, name string, handle func(net.Conn)) *Server {
 		listen:      listen,
 		handle:      handle,
 		connSlots:   make(chan struct{}, maxConcurrentConnections),
-		draining:    drain.New(),
+		draining:    drain.NewTracker(),
 		serveExited: make(chan struct{}),
 	}
 }

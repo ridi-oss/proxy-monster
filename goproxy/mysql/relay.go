@@ -50,7 +50,7 @@ type resultHooks struct {
 	OnSchema      func(string)
 	OnSysVars     func([]sysVarChange) error
 	// RedactErr, when non-nil, rewrites a standalone target-DB ERR packet before it reaches the sink — the one
-	// client-facing ERR site for both the wire relay and the run collector, so redaction here covers both.
+	// client-facing ERR site for both the wire relay and the editor-session collector, so redaction here covers both.
 	RedactErr func([]byte) []byte
 	// MoreResults sets SERVER_MORE_RESULTS_EXISTS on the result's final OK/EOF: another result of the same
 	// multi-statement query follows.

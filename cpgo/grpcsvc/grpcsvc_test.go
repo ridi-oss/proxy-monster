@@ -30,7 +30,7 @@ type kotlin struct {
 	pb.UnimplementedControlPlaneServer
 }
 
-func (kotlin) ValidateToken(context.Context, *pb.ValidateTokenRequest) (*pb.WireIdentity, error) {
+func (kotlin) OpenConnection(context.Context, *pb.OpenConnectionRequest) (*pb.WireIdentity, error) {
 	return &pb.WireIdentity{Principal: "from-kotlin"}, nil
 }
 
@@ -93,7 +93,7 @@ func TestReportCompletion(t *testing.T) {
 	st, c := setup(t, "")
 	ctx := context.Background()
 	id := decision(t, st)
-	if _, err := st.Pool.Exec(ctx, `INSERT INTO datasource (name, host, port, db_name) VALUES ('sales-mysql', 'h', 1, 'd')`); err != nil {
+	if _, err := st.Pool.Exec(ctx, `INSERT INTO datasource (name) VALUES ('sales-mysql')`); err != nil {
 		t.Fatal(err)
 	}
 	const wireTask = `INSERT INTO access_request (principal, kind, creator_kind, source_decision_id, status, datasource_id)
@@ -179,7 +179,7 @@ func TestReportCompletion(t *testing.T) {
 		t.Fatalf("chain: %+v %v", finding, err)
 	}
 
-	if r, err := c.ValidateToken(ctx, &pb.ValidateTokenRequest{}); err != nil || r.GetPrincipal() != "from-kotlin" {
+	if r, err := c.OpenConnection(ctx, &pb.OpenConnectionRequest{}); err != nil || r.GetPrincipal() != "from-kotlin" {
 		t.Fatalf("a method Go does not serve must reach Kotlin: %v %v", r, err)
 	}
 }

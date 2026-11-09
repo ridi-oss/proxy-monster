@@ -351,7 +351,7 @@ of a route and the gate it calls. Paths are relative to
 | Audit ingest (from the proxy) | `/api/ingest/decision` | `App.kt` | `X-PM-Ingest-Token` vs `PM_SECRET_TOKEN`; open when that env is unset (dev only) |
 | Audit read | `/api/audit`, `/api/audit/{id}` | `cpgo/routes/auditlog/audit.go` | `requireApi` + Cedar `audit.read` — allow on `AuditLog` returns all rows, else own rows only |
 | Caller capability summary | `/api/me/permissions` | `cpgo/routes/policies/permissions.go` | `requireApi`; UI convenience, computed from `admin.*` + `audit.read` |
-| Datasources, catalog, classification | `/api/datasources**` | `Datasources.kt`; the list, `{id}`, `{id}/wire-cert`, create, edit and delete in `cpgo/routes/datasources/` | mixed: list = `requireApiOrBearer`, redacting non-connectable rows; `live` = `requireApi`; `{id}`, `{id}/catalog`, `{id}/wire-cert`, `{id}/table-detail` = `requireApiOrBearer` + `datasource.connect`; rest = `requireAdmin(admin.datasources)` |
+| Datasources, catalog, classification | `/api/datasources**` | `Datasources.kt`; the list, `{id}`, `{id}/wire-cert` and delete in `cpgo/routes/datasources/` | mixed: list = `requireApiOrBearer`, redacting non-connectable rows; `live` = `requireApi`; `{id}`, `{id}/catalog`, `{id}/wire-cert`, `{id}/table-detail` = `requireApiOrBearer` + `datasource.connect`; rest = `requireAdmin(admin.datasources)` |
 | One-shot editor query | `/api/datasources/{id}/query` | `Query.kt` | `requireApi`, then the per-statement `decideQuery` |
 | Editor sessions and tasks | `/api/editor/**` | `Query.kt` | `requireApi` + owner scope; cancel adds `task.cancel`, result adds `task.assume` |
 | Task-completion SSE | `/api/tasks/events` | `App.kt` | resolves the session itself; each push re-filtered through `task.read` |
@@ -439,10 +439,11 @@ physical shape needs the same authority as querying it.
 
 The unfiltered list is the alternate path to those same bytes, so it redacts
 rather than filters: a row the caller cannot connect to keeps its identity
-(name, engine, tags) and loses its connection material — `host`, `port`,
-`dbName`, `advertiseAddr`, `advertiseCertChain`. Enough to name in an access
-request, not enough to dial. There is no admin exemption: a list row that
-answered more fully than `{id}` does would simply be a way around `{id}`.
+(name, engine, tags) and loses its connection material — `targetInfo`, `dbName`,
+`connectionInfo`, `advertiseAddr`, `advertiseCertChain`, the current catalog and
+the description. Enough to name in an access request, not enough to dial. There
+is no admin exemption: a list row that answered more fully than `{id}` does
+would simply be a way around `{id}`.
 
 `admin.datasources` does **not** imply any of these reads. The seeded
 `system:admin` role carries the three `admin.*` actions and no

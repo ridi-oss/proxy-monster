@@ -51,8 +51,8 @@ class ControlPlaneCore(
     // keyed off datasource.engine_version. Fallback off by default (an uncertified major → deny-by-default).
     val systemClassification = SystemClassificationService()
 
-    // Open proxy Events streams (docs/datasource-registration.md) — liveness + refresh/run push.
-    // Shared so the gRPC handlers and the HTTP routes agree on attached proxies and pending run dials.
+    // Open proxy Events streams (docs/datasource-registration.md) — liveness + refresh/editor-session push.
+    // Shared so the gRPC handlers and the HTTP routes agree on attached proxies and pending editor-session dials.
     val proxyEventsHub = ProxyEventsHub()
 
     // Per-principal fan-out of task terminal transitions to the console's SSE streams. Constructed here
@@ -62,13 +62,6 @@ class ControlPlaneCore(
     val taskCompletionHub = TaskCompletionHub()
     val configCatalogRefresh = ConfigCatalogRefresh(proxyEventsHub, configCatalogRefreshWindowMillis)
     val connectionCatalog = ConnectionCatalogRegistry(requestConfigCatalogRefresh = configCatalogRefresh::request)
-    val runChannels = RunChannelRegistry()
+    val editorSessions = EditorSessionRegistry()
     val tableDetailChannels = TableDetailChannelRegistry()
-
-    // The HTTP requester IP observed when an ephemeral EDITOR/
-    // APPROVER_EXEC token was minted (docs/authz-context.md), keyed by token hash — the async decide-time carrier the gRPC decide
-    // handler reads (RunExec.kt's [RequesterIpRegistry] doc has the full rationale). Lives here for the
-    // SAME reason [runChannels] does: [com.ridi.oss.proxymonster.controlplane.grpc.ControlPlaneGrpcService]
-    // is constructed independently in Main.kt, before Application.module's RunExecService exists.
-    val runRequesterIps = RequesterIpRegistry()
 }

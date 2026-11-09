@@ -101,7 +101,7 @@ type EngineTraits struct {
 	// referencedColumnKeys (the shared template) and add engine channels on top.
 	diagnosticLeakKeys func(session *Session, report ProbeResult, qualifySchema schema.Schema) map[string]bool
 	// normalizeRules are the lexer rules SqlNormalize applies: MySQL refuses `/*! */`, Postgres folds identifiers.
-	normalizeRules func() normalizeRules
+	normalizeRules normalizeRules
 	// foldColumn is a column name as the engine compares it: MySQL and Athena fold, Postgres keeps it exact.
 	foldColumn func(name string) string
 	// normalizeCatalogOnBuild folds the introspected catalog when the analyzer builds its schema; Postgres keeps
@@ -126,7 +126,7 @@ type EngineTraits struct {
 	// syntaxCalls are call-shaped syntax over one subquery, lowercase: Postgres ARRAY(SELECT ...) is no pg_proc function.
 	syntaxCalls []string
 
-	// connectionProperties are the ConnectionInfo keys the engine's proxies may publish: Athena region, workgroup.
+	// connectionProperties are the ConnectionInfo keys the engine's proxies publish: MySQL database, Athena region.
 	connectionProperties []string
 	// catalogIsConnectionIndependent: one connection's catalog answers for all; false for Postgres pg_temp_*.
 	catalogIsConnectionIndependent bool

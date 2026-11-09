@@ -216,9 +216,9 @@ func TestRefetchUntrustedHashesUseNonce(t *testing.T) {
 			if len(pushed.ContentHash) != 32 {
 				t.Fatalf("nonce length = %d, want 32", len(pushed.ContentHash))
 			}
-			for _, measured := range tc.hashes {
-				if bytes.Equal(pushed.ContentHash, []byte(measured)) {
-					t.Fatalf("nonce aliases measured hash %q", measured)
+			for _, h := range tc.hashes {
+				if bytes.Equal(pushed.ContentHash, []byte(h)) {
+					t.Fatalf("nonce aliases inspected hash %q", h)
 				}
 			}
 		})

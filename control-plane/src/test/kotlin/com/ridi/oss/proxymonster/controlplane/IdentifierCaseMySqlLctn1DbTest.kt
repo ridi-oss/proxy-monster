@@ -16,8 +16,8 @@ import com.ridi.oss.proxymonster.controlplane.support.mcpTestConfig
 import com.ridi.oss.proxymonster.controlplane.support.ok
 import com.ridi.oss.proxymonster.controlplane.support.okResult
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
-import com.ridi.oss.proxymonster.grpc.ControlEvent
-import com.ridi.oss.proxymonster.grpc.ControlTableDetailMsg
+import com.ridi.oss.proxymonster.grpc.CpEvent
+import com.ridi.oss.proxymonster.grpc.CpTableDetailMsg
 import com.ridi.oss.proxymonster.grpc.EnfAction
 import com.ridi.oss.proxymonster.grpc.proxyTableDetailMsg
 import com.ridi.oss.proxymonster.grpc.tableDetailResult
@@ -280,12 +280,12 @@ class IdentifierCaseMySqlLctn1DbTest {
     private fun answerTableDetail(t: NameCaseTarget, detail: TableDetail): AutoCloseable {
         val core = stack.core
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-        val events = KChannel<ControlEvent>(KChannel.UNLIMITED)
+        val events = KChannel<CpEvent>(KChannel.UNLIMITED)
         core.proxyEventsHub.register(t.datasource.name, events)
         scope.launch {
             for (event in events) {
                 if (!event.hasOpenTableDetailChannel()) continue
-                val outbound = KChannel<ControlTableDetailMsg>(KChannel.BUFFERED)
+                val outbound = KChannel<CpTableDetailMsg>(KChannel.BUFFERED)
                 val attached = core.tableDetailChannels.attach(event.openTableDetailChannel.sessionId, outbound) ?: continue
                 attached.inbound.send(proxyTableDetailMsg { result = tableDetailResult { json = MCP_TEST_JSON.encodeToString(detail) } })
                 outbound.receive()

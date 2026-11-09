@@ -2,6 +2,7 @@ package com.ridi.oss.proxymonster.controlplane
 
 import com.ridi.oss.proxymonster.classification.BaselineDangerousFunctions
 import com.ridi.oss.proxymonster.classification.SystemClassificationStore
+import com.ridi.oss.proxymonster.classification.SystemClassifier
 import com.ridi.oss.proxymonster.classification.SystemTag
 import com.ridi.oss.proxymonster.grpc.Engine
 import org.slf4j.LoggerFactory
@@ -103,67 +104,35 @@ class SystemClassificationService(
 
     /**
      * The shipped `system:` tag id for a called function, or null when it is an ordinary safe function
-     * (a standard builtin or an unclassified user/UDF). The analyzer emits only the BARE function name
-     * (sqlglot drops the schema qualifier at parse time), so this resolves it against every system/logical
-     * schema + the cross-schema rules — see [SystemClassifier.classifyBareFunction]. Only a non-null
-     * (dangerous) result is marshalled as a Cedar Function and hits the shipped `system:data-leak`/
-     * `system:critical` forbid.
+     * (a standard builtin or an unclassified user/UDF). Only a non-null (dangerous) result is marshalled as a
+     * Cedar Function and hits the shipped `system:data-leak`/`system:critical` forbid.
      *
-     * The version-independent [BaselineDangerousFunctions] floor is unioned in strongest-first: it classifies
-     * the cross-engine-stable IO/exec builtins EVEN when no manifest
-     * governs the datasource (absent/uncertified `engine_version`) OR the governing manifest doesn't classify
-     * the name. It is a FLOOR only — it can raise (or match) but never LOWER a manifest classification, and it
-     * classifies no safe function — so those builtins stay gated even on a no-manifest datasource.
+     * A `schema.name` identity (every PostgreSQL call, resolved or explicit, and a qualified MySQL call)
+     * classifies against that schema only: the manifest's cross-schema (`*`) rules always apply, and its
+     * in-schema rules plus the [BaselineDangerousFunctions] floor apply only when the schema is one the
+     * engine's manifests say holds builtins. So a user `public.pg_read_file` is not the builtin, while an
+     * unqualified PostgreSQL `pg_read_file` resolves to `pg_catalog.pg_read_file` and stays tagged. A bare
+     * name (MySQL/Athena builtin, or a call recovered unqualified from an unanalyzable statement) classifies
+     * against every builtin schema, as does any name when the engine ships no manifest.
+     *
+     * A governed datasource uses its certified manifest; a no-manifest one (absent/uncertified version) uses
+     * the union of every shipped manifest of the engine, strongest tag per name. The baseline is a FLOOR: it
+     * can raise but never lower a manifest classification, and it classifies no safe function.
      */
     fun tagForFunction(engine: Engine, engineVersion: String?, name: String): String? {
-        val governing = classifierFor(engine, engineVersion)
-        // Manifests key on "set_config"; the identity may be "pg_catalog.set_config". Classify both, keep the stronger.
-        val candidates = if ('.' in name) listOf(name, name.substringAfterLast('.')) else listOf(name)
-        var strongest: SystemTag? = null
-        for (candidate in candidates) {
-            val tag = classifyOneFunctionCandidate(governing, engine, candidate)
-            strongest = when {
-                strongest == null -> tag
-                tag == null -> strongest
-                else -> SystemTag.stronger(strongest, tag)
-            }
+        val classifiers = classifierFor(engine, engineVersion)?.let(::listOf) ?: store.classifiersForEngine(engine.wireName)
+        val schema = name.substringBeforeLast('.', "")
+        val bare = name.substringAfterLast('.')
+        if (schema.isEmpty() || '.' in schema) {
+            return floor(strongest(classifiers) { it.classifyBareFunction(bare) }, BaselineDangerousFunctions.classify(bare))?.id
         }
-        return strongest?.id
+        val builtinSchema = classifiers.isEmpty() || classifiers.any { it.holdsBuiltinFunctions(schema) }
+        val baselineTag = if (builtinSchema) BaselineDangerousFunctions.classify(bare) else null
+        return floor(strongest(classifiers) { it.classifyQualifiedFunction(schema, bare) }, baselineTag)?.id
     }
 
-    private fun classifyOneFunctionCandidate(
-        governing: com.ridi.oss.proxymonster.classification.SystemClassifier?,
-        engine: Engine,
-        name: String,
-    ): SystemTag? {
-        // A GOVERNED datasource trusts its own certified manifest; a NO-manifest datasource (uncertified/
-        // absent major, fallback off) falls back to the version-INDEPENDENT union floor of every shipped
-        // manifest of this engine — strongest tag per name. That brings no-manifest function-gating to
-        // PARITY with certified: the manifest's `table_to_xml*`/pageinspect/`lo_*`/replication/backup
-        // dangerous families (which a thin hand-curated baseline missed → a cleartext-PII relay on any
-        // pg≠16/17, mysql≠8.0/8.4 datasource) are now classified there too, derived from the manifests
-        // themselves so nothing drifts. Over-classifying a function absent in the datasource's real version
-        // is a harmless over-deny (fail-safe). The whole function model is enumerate-dangerous / allow-safe
-        // (the certified path too), so this is parity, not a new posture.
-        val manifestTag = if (governing != null) {
-            governing.classifyBareFunction(name)
-        } else {
-            noManifestFunctionFloor(engine, name)
-        }
-        val baselineTag = BaselineDangerousFunctions.classify(name)
-        return floor(manifestTag, baselineTag)
-    }
-
-    /** The strongest dangerous-function tag any shipped manifest of [engine] assigns [name] — the
-     *  version-independent floor for a datasource with no governing manifest. Null when no manifest of the
-     *  engine classifies it (an ordinary safe builtin / a UDF stays unclassified → not forbidden). */
-    private fun noManifestFunctionFloor(engine: Engine, name: String): SystemTag? {
-        var tag: SystemTag? = null
-        for (classifier in store.classifiersForEngine(engine.wireName)) {
-            classifier.classifyBareFunction(name)?.let { t -> tag = tag?.let { SystemTag.stronger(it, t) } ?: t }
-        }
-        return tag
-    }
+    private inline fun strongest(classifiers: List<SystemClassifier>, tag: (SystemClassifier) -> SystemTag?): SystemTag? =
+        classifiers.mapNotNull(tag).reduceOrNull { a, b -> SystemTag.stronger(a, b) }
 
     /** The strongest of the manifest and the baseline tag (either may be null) — the FLOOR combinator: the
      *  baseline never weakens a manifest classification, and a name neither classifies stays null (safe). */
@@ -182,7 +151,7 @@ class SystemClassificationService(
     fun tagForCommand(engine: Engine, engineVersion: String?, command: String): String? =
         classifierFor(engine, engineVersion)?.classifyCommand(command)?.id
 
-    private fun classifierFor(engine: Engine, engineVersion: String?): com.ridi.oss.proxymonster.classification.SystemClassifier? {
+    private fun classifierFor(engine: Engine, engineVersion: String?): SystemClassifier? {
         val (version, _) = engine.parseServerVersion(engineVersion)
         if (version == null) return null
         return store.resolveSeries(engine.wireName, engine.definition.manifestSeries(version), allowFallback)?.classifier

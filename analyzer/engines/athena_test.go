@@ -37,8 +37,8 @@ func TestAthenaSQLNormalization(t *testing.T) {
 		{"CREATE EXTERNAL TABLE `sample` (id BIGINT) STORED AS PARQUET", "create external table `sample` (id bigint) stored as parquet;"},
 		{"SHOW TABLES; SELECT email FROM users", "show tables; select email from users;"},
 	} {
-		left, leftOK := SqlNormalize(pair[0], "athena")
-		right, rightOK := SqlNormalize(pair[1], "athena")
+		left, leftOK := normalizeAs(pair[0], "athena")
+		right, rightOK := normalizeAs(pair[1], "athena")
 		if !leftOK || !rightOK || left != right {
 			t.Fatalf("Athena normalization mismatch: %q %v / %q %v", left, leftOK, right, rightOK)
 		}

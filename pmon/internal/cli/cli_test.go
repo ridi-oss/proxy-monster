@@ -266,7 +266,7 @@ func TestLoginStartsTheDaemonAndOpensBrokers(t *testing.T) {
 	e := newEnv(t)
 	proxy := dummyProxy(t)
 	cp := fakeCP(t, []map[string]any{
-		{"name": "acme-mysql", "engine": "mysql", "dbName": "my_database", "advertiseAddr": proxy},
+		{"name": "acme-mysql", "engine": "mysql", "connectionInfo": map[string]any{"properties": map[string]string{"database": "my_database"}}, "advertiseAddr": proxy},
 	})
 
 	out := e.mustRun(t, "login", "--url", cp.URL)
@@ -302,7 +302,7 @@ func TestLoginStartsTheDaemonAndOpensBrokers(t *testing.T) {
 func TestShowFormats(t *testing.T) {
 	e := newEnv(t)
 	cp := fakeCP(t, []map[string]any{
-		{"name": "acme-mysql", "engine": "mysql", "dbName": "my_database", "advertiseAddr": dummyProxy(t)},
+		{"name": "acme-mysql", "engine": "mysql", "connectionInfo": map[string]any{"properties": map[string]string{"database": "my_database"}}, "advertiseAddr": dummyProxy(t)},
 	})
 	e.mustRun(t, "login", "--url", cp.URL)
 
@@ -360,7 +360,7 @@ func TestShowJDBCTruncationDiagnosticsRequiresJDBC(t *testing.T) {
 func TestShowRejectsAnUnknownDatasourceWithTheKnownOnes(t *testing.T) {
 	e := newEnv(t)
 	cp := fakeCP(t, []map[string]any{
-		{"name": "acme-mysql", "engine": "mysql", "dbName": "app", "advertiseAddr": dummyProxy(t)},
+		{"name": "acme-mysql", "engine": "mysql", "connectionInfo": map[string]any{"properties": map[string]string{"database": "app"}}, "advertiseAddr": dummyProxy(t)},
 	})
 	e.mustRun(t, "login", "--url", cp.URL)
 
@@ -376,7 +376,7 @@ func TestShowRejectsAnUnknownDatasourceWithTheKnownOnes(t *testing.T) {
 func TestPostgresShowFormats(t *testing.T) {
 	e := newEnv(t)
 	cp := fakeCP(t, []map[string]any{
-		{"name": "acme-postgres", "engine": "postgres", "dbName": "app", "advertiseAddr": dummyProxy(t)},
+		{"name": "acme-postgres", "engine": "postgres", "connectionInfo": map[string]any{"properties": map[string]string{"database": "app"}}, "advertiseAddr": dummyProxy(t)},
 	})
 	if out := e.mustRun(t, "login", "--url", cp.URL); !strings.Contains(out, "1 datasource(s) brokered") {
 		t.Fatalf("login = %q, want the PostgreSQL broker to open", out)
@@ -405,7 +405,7 @@ func TestPostgresShowFormats(t *testing.T) {
 func TestShowExplainsAnUnsupportedDatasource(t *testing.T) {
 	e := newEnv(t)
 	cp := fakeCP(t, []map[string]any{
-		{"name": "unsupported", "engine": "sqlite", "dbName": "app", "advertiseAddr": dummyProxy(t)},
+		{"name": "unsupported", "engine": "sqlite", "connectionInfo": map[string]any{"properties": map[string]string{"database": "app"}}, "advertiseAddr": dummyProxy(t)},
 	})
 	e.mustRun(t, "login", "--url", cp.URL)
 
@@ -423,7 +423,7 @@ func TestShowExplainsAnUnsupportedDatasource(t *testing.T) {
 func TestLogoutClosesBrokersAndKeepsTheDaemonUp(t *testing.T) {
 	e := newEnv(t)
 	cp := fakeCP(t, []map[string]any{
-		{"name": "acme-mysql", "engine": "mysql", "dbName": "app", "advertiseAddr": dummyProxy(t)},
+		{"name": "acme-mysql", "engine": "mysql", "connectionInfo": map[string]any{"properties": map[string]string{"database": "app"}}, "advertiseAddr": dummyProxy(t)},
 	})
 	e.mustRun(t, "login", "--url", cp.URL)
 
@@ -448,7 +448,7 @@ func TestLogoutClosesBrokersAndKeepsTheDaemonUp(t *testing.T) {
 // both servers' datasources, `show [server] <ds>`, per-server logout, and `server unset`.
 func TestTwoServers(t *testing.T) {
 	e := newEnv(t)
-	ds := []map[string]any{{"name": "acme-mysql", "engine": "mysql", "dbName": "app", "advertiseAddr": dummyProxy(t)}}
+	ds := []map[string]any{{"name": "acme-mysql", "engine": "mysql", "connectionInfo": map[string]any{"properties": map[string]string{"database": "app"}}, "advertiseAddr": dummyProxy(t)}}
 	prod, dev := fakeCP(t, ds), fakeCP(t, ds)
 
 	if out, err := e.run("login"); err == nil || !strings.Contains(out, "pmon server set --url") {
@@ -503,7 +503,7 @@ func TestTwoServers(t *testing.T) {
 func TestRestartKeepsStickyPortsAndPassword(t *testing.T) {
 	e := newEnv(t)
 	cp := fakeCP(t, []map[string]any{
-		{"name": "acme-mysql", "engine": "mysql", "dbName": "app", "advertiseAddr": dummyProxy(t)},
+		{"name": "acme-mysql", "engine": "mysql", "connectionInfo": map[string]any{"properties": map[string]string{"database": "app"}}, "advertiseAddr": dummyProxy(t)},
 	})
 	e.mustRun(t, "login", "--url", cp.URL)
 
@@ -615,7 +615,7 @@ func TestLogoutEndsTheServerLoginOrWarns(t *testing.T) {
 // another server is created or chosen.
 func TestDefaultServerCanBeChosen(t *testing.T) {
 	e := newEnv(t)
-	ds := []map[string]any{{"name": "acme-mysql", "engine": "mysql", "dbName": "app", "advertiseAddr": dummyProxy(t)}}
+	ds := []map[string]any{{"name": "acme-mysql", "engine": "mysql", "connectionInfo": map[string]any{"properties": map[string]string{"database": "app"}}, "advertiseAddr": dummyProxy(t)}}
 	prod, dev := fakeCP(t, ds), fakeCP(t, ds)
 	e.mustRun(t, "server", "set", "prod", "--url", prod.URL)
 	e.mustRun(t, "server", "set", "dev", "--url", dev.URL)

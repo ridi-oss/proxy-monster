@@ -185,8 +185,9 @@ Verified on the real Cedar engine in [docs/cedar-sim/](./cedar-sim/)
   groups and [user attributes](./auth-model.md#user-attributes), so
   `resource.requester.manager == principal` routes approval to their manager.
 - Execute run: `decideQuery` under `assumeRoles={R}` on the `workflow-executor`
-  channel (via `RunExecService.run` + proxy `Decide`) → R's enforced result. A
-  column R cannot read at all ⇒ Q-under-R denied ⇒ pick another role / narrow Q.
+  channel (via `EditorExecService.run` + proxy `Decide`) → R's enforced result.
+  A column R cannot read at all ⇒ Q-under-R denied ⇒ pick another role / narrow
+  Q.
 - Role discovery: the same `decideQuery(under candidate role, Q)`, one per
   candidate, with `assumeRoles={R}` alone AND on the `workflow-executor` channel
   — matching execute on both axes, so a channel-scoped grant fires the same way

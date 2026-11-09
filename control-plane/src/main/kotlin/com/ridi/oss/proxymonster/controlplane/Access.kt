@@ -8,7 +8,7 @@ import com.ridi.oss.proxymonster.controlplane.authz.requireAdmin
 import com.ridi.oss.proxymonster.controlplane.management.AuditActor
 import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
 import com.ridi.oss.proxymonster.controlplane.management.auditEntity
-import com.ridi.oss.proxymonster.probe.Dialect
+import com.ridi.oss.proxymonster.analyzer.pb.engineConfig
 import com.ridi.oss.proxymonster.probe.sqlGrantHash
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.request.receive
@@ -34,7 +34,8 @@ import javax.sql.DataSource
 
 /** What an edit sets besides the statements: the new SQL's hash and analysis, and a title or reason to replace (null keeps). */
 data class RequestEdit(
-    val contentHash: String,
+    val contentHash: String?,
+    val rawHash: String,
     val denyReason: String?,
     val evaluatedDecision: String?,
     val carriesProtectedLiteral: Boolean?,
@@ -83,6 +84,7 @@ data class AccessRequest(
     val revisedAt: String? = null,
     /** [contentHash] of the request's SQL; an edit that keeps it keeps the revision and the approval. */
     val contentHash: String? = null,
+    val rawHash: String? = null,
     val pullRequest: PullRequestRef? = null,
     /** An admin let this request run past its scope's freshness and one-PR-at-a-time checks. */
     val forceRun: Boolean = false,
@@ -121,9 +123,10 @@ data class PullRequestRef(
 data class RequestOrigin(
     val scope: String,
     val fileKey: String,
-    val contentHash: String,
+    val contentHash: String?,
     val changeKey: String,
     val pullRequest: PullRequestRef,
+    val rawHash: String? = null,
 )
 
 /**
@@ -151,11 +154,17 @@ data class AccessGrant(
 
 @Serializable data class RejectInput(val reason: String)
 
-/** `n:` the SQL's grant hash, or `r:` its raw bytes' hash when the normalizer refuses it. */
-fun contentHash(sql: String, dialect: Dialect): String =
-    sqlGrantHash(sql, dialect)?.let { "n:$it" } ?: "r:${sha256Hex(sql)}"
+/** The SQL's grant hash, or null when the normalizer refuses it. */
+fun contentHash(sql: String, ds: Datasource): String? =
+    sqlGrantHash(sql, engineConfig { engine = ds.engine; target = ds.targetSettings() })
 
-fun changeKey(fileKey: String, contentHash: String): String = sha256Hex(fileKey + "\n" + contentHash)
+/** The SQL text's own hash, which holds when a normalizer upgrade changes [contentHash]. */
+fun rawSqlHash(sql: String): String = sha256Hex(sql)
+
+fun AccessRequest.hasSql(sql: String, ds: Datasource): Boolean =
+    (contentHash != null && contentHash == contentHash(sql, ds)) || (rawHash != null && rawHash == rawSqlHash(sql))
+
+fun changeKey(fileKey: String, contentHash: String?, rawHash: String): String = sha256Hex(fileKey + "\n" + (contentHash ?: rawHash))
 
 /** How a pull request's file keys sort: `numeric` keeps `9` before `10`, `string` compares bytes. */
 @Serializable
@@ -291,6 +300,7 @@ class AccessStore(internal val dataSource: DataSource) {
         recorder: ManagementAuditRecorder? = null,
         source: String = "console",
         contentHash: String? = null,
+        rawHash: String? = null,
         origin: RequestOrigin? = null,
     ): AccessRequest {
         require(statements.isNotEmpty()) { "a query request needs at least one statement" }
@@ -306,8 +316,8 @@ class AccessStore(internal val dataSource: DataSource) {
                    (principal, kind, role_id, datasource_id, deny_reason, source_decision_id, reason, title,
                     evaluated_decision, requested_duration_sec, execute_as, creator_kind,
                     statement_carries_protected_literal, source, scope, change_key, path, pr_url,
-                    repository, pr, default_schema, head_sha, file_key, content_hash, key_order)
-                   VALUES (?, 'QUERY', ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, 'WORKFLOW', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    repository, pr, default_schema, head_sha, file_key, content_hash, key_order, raw_hash)
+                   VALUES (?, 'QUERY', ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, 'WORKFLOW', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT (source_decision_id) WHERE kind = 'QUERY' AND status = 'PENDING' AND source_decision_id IS NOT NULL
                    DO NOTHING
                    RETURNING id""",
@@ -336,6 +346,7 @@ class AccessStore(internal val dataSource: DataSource) {
                 ps.setString(21, origin?.fileKey)
                 ps.setString(22, contentHash ?: origin?.contentHash)
                 ps.setString(23, ref?.keyOrder)
+                ps.setString(24, rawHash ?: origin?.rawHash)
                 ps.executeQuery().use { rs ->
                     if (rs.next()) rs.getLong(1) else throw DuplicatePendingQueryRequestException()
                 }
@@ -611,7 +622,7 @@ class AccessStore(internal val dataSource: DataSource) {
                    SET status = 'PENDING', decided_by = NULL, decided_at = NULL, approved_at = NULL,
                        rejection_reason = NULL, source_decision_id = NULL, deny_reason = ?, evaluated_decision = ?,
                        statement_carries_protected_literal = ?, title = COALESCE(?, title), reason = COALESCE(?, reason),
-                       content_hash = ?, revision = revision + 1, revised_at = now(), approved_review_id = NULL,
+                       content_hash = ?, raw_hash = ?, revision = revision + 1, revised_at = now(), approved_review_id = NULL,
                        force_run = FALSE, force_run_by = NULL,
                        file_key = COALESCE(?, file_key),
                        change_key = COALESCE(?, change_key), head_sha = COALESCE(?, head_sha)
@@ -624,10 +635,11 @@ class AccessStore(internal val dataSource: DataSource) {
                 ps.setString(4, edit.title)
                 ps.setString(5, edit.reason)
                 ps.setString(6, edit.contentHash)
-                ps.setString(7, edit.origin?.fileKey)
-                ps.setString(8, edit.origin?.changeKey)
-                ps.setString(9, edit.origin?.pullRequest?.headSha)
-                ps.setLong(10, id)
+                ps.setString(7, edit.rawHash)
+                ps.setString(8, edit.origin?.fileKey)
+                ps.setString(9, edit.origin?.changeKey)
+                ps.setString(10, edit.origin?.pullRequest?.headSha)
+                ps.setLong(11, id)
                 ps.executeQuery().use { rs -> if (rs.next()) rs.getInt(1) else null }
             } ?: return@inTx false
             c.prepareStatement("DELETE FROM query_result WHERE task_id = ?").use { ps ->
@@ -775,6 +787,26 @@ class AccessStore(internal val dataSource: DataSource) {
             }
         }
     }
+
+    /**
+     * Give [scope]'s rows of file [fileKey] whose SQL text hashes to [rawHash] the file's current [changeKey]
+     * and [contentHash]. Returns how many rows changed.
+     */
+    fun rekeyFile(scope: String, fileKey: String, rawHash: String, changeKey: String, contentHash: String?): Int =
+        dataSource.connection.use { c ->
+            c.prepareStatement(
+                """UPDATE access_request SET change_key = ?, content_hash = ?
+                   WHERE source = 'github' AND scope = ? AND file_key = ? AND raw_hash = ? AND change_key IS DISTINCT FROM ?""",
+            ).use { ps ->
+                ps.setString(1, changeKey)
+                ps.setString(2, contentHash)
+                ps.setString(3, scope)
+                ps.setString(4, fileKey)
+                ps.setString(5, rawHash)
+                ps.setString(6, changeKey)
+                ps.executeUpdate()
+            }
+        }
 
     fun changeKeyExecuted(scope: String, changeKey: String): Boolean = dataSource.connection.use { c ->
         c.prepareStatement(
@@ -1299,6 +1331,7 @@ class AccessStore(internal val dataSource: DataSource) {
         revision = getInt("revision"),
         revisedAt = getTimestamp("revised_at")?.toInstant()?.toString(),
         contentHash = getString("content_hash"),
+        rawHash = getString("raw_hash"),
         pullRequest = pullRequestRef(),
         forceRun = getBoolean("force_run"),
         forceRunBy = getString("force_run_by"),
@@ -1350,7 +1383,7 @@ class AccessStore(internal val dataSource: DataSource) {
                       ar.statement_carries_protected_literal, ar.source, ar.scope, ar.change_key,
                       ar.merged_at, ar.revision, ar.revised_at, ar.path, ar.pr_url, ar.repository, ar.pr,
                       ar.default_schema, ar.pr_auto_merge, ar.head_sha, ar.merge_sha,
-                      ar.approved_review_id, ar.filed_head, ar.file_key, ar.content_hash, ar.key_order,
+                      ar.approved_review_id, ar.filed_head, ar.file_key, ar.content_hash, ar.raw_hash, ar.key_order,
                       ar.force_run, ar.force_run_by,
                       (SELECT coalesce(array_agg(p.principal ORDER BY p.principal), '{}') FROM request_participant p
                        WHERE p.request_id = ar.id AND p.kind = 'cc') AS ccs

@@ -55,7 +55,7 @@ class McpSelfToolsDbTest {
         core = ControlPlaneCore(dataSource)
         tokens = McpTokens(dataSource)
         history = QueryHistoryStore(dataSource)
-        datasource = core.datasourceStore.create(DatasourceInput("mcp-self-ds", "postgres"))
+        datasource = core.datasourceStore.registerOnly("mcp-self-ds", "postgres")
         // cp-go serves the console's /api/me/permissions; MCP is still Kotlin.
         cpGo = CpGoStack(config, core, database) { routing { testLoginRoute(PrincipalSessionStore(dataSource, null), config) } }
     }

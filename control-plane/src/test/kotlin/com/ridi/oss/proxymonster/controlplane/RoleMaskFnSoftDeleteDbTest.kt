@@ -110,7 +110,7 @@ class RoleMaskFnSoftDeleteDbTest {
 
     @Test
     fun `a soft-deleted mask function falls back and its name is reusable`() {
-        val datasource = datasourceStore.create(DatasourceInput("maskfn-ds-${System.nanoTime()}", "mysql"))
+        val datasource = datasourceStore.seed(name = "maskfn-ds-${System.nanoTime()}", engine = "mysql")
         datasourceStore.storePushedCatalog(datasource.id, listOf("app"), 0, "8.0.36", catalogSnapshot {}, currentCatalog = "def")
         val name = "email-mask-${System.nanoTime()}"
         val fn = policyStore.createMaskFn(MaskFnInput(name, "LAST_N"))

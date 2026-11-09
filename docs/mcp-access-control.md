@@ -126,7 +126,7 @@ Three facts about the system force the design.
 │            ▼                     ▼                       │  editor / workflow-viewer (tasks)
 │         same stores the REST routes use (Postgres)       │
 └──────────────────────────────────────────────────────────┘
-        │ gRPC run channel (queries run through the proxy)
+        │ gRPC editor session (queries run through the proxy)
         ▼
    wire proxy  ───────────────►  target DBs
 ```
@@ -250,7 +250,7 @@ the user's authority (e.g. a read-only agent):
 | Scope | Ceiling over | Cedar action still enforced |
 | --- | --- | --- |
 | `mcp:read` | all in-scope read tools, including audit, token listing, own permissions | matching `admin.*` per tool, or the REST route's gate (`audit.read`, `token.list`) |
-| `mcp:datasources:write` | datasource create/update/delete, refresh, test, classification writes | `admin.datasources` |
+| `mcp:datasources:write` | datasource delete, refresh, test, classification writes | `admin.datasources` |
 | `mcp:policies:write` | Cedar policy + role + mask-fn writes | `admin.policies` |
 | `mcp:identity:write` | users/groups/members/role-assignments | `admin.identity` |
 | `mcp:query` | queries, own tasks and query history, approval and access requests, grant listing | the REST route's Cedar gate per tool |
@@ -273,7 +273,7 @@ MCP tools name datasources by stable name and call the same management services
 as REST. Every listed tool below is gated by its registry Cedar action (not
 REST's session-only `requireApi` on some list routes).
 
-- `list_datasources` (`admin.datasources`) — name, engine, host/port, dbName,
+- `list_datasources` (`admin.datasources`) — name, engine, dbName, targetInfo,
   tags, defaultSchemas, `catalogSyncedAt`, `lastSeenAt`, engineVersion.
 - `get_datasource_liveness` (`admin.datasources`) — mirrors
   `GET /api/datasources/live` for one named datasource.
@@ -283,13 +283,9 @@ REST's session-only `requireApi` on some list routes).
 
 ### Datasources (write)
 
-All under `admin.datasources`, scope `mcp:datasources:write`. Arguments and
-results carry no credential fields: a datasource is `name`, `engine`, `host`,
-`port`, `dbName`, the shape of REST's `DatasourceInput`.
+All under `admin.datasources`, scope `mcp:datasources:write`. A datasource is
+created by its proxy's `Register`, so there is no create or update tool.
 
-- `create_datasource` — REST: `POST /api/datasources`.
-- `update_datasource` (by `datasource` name) — REST:
-  `PUT /api/datasources/{id}`.
 - `delete_datasource` (destructive; soft delete) — REST:
   `DELETE /api/datasources/{id}`.
 - `refresh_datasource` — asks the attached proxy to re-push the catalog (REST:
@@ -325,9 +321,8 @@ results carry no credential fields: a datasource is `name`, `engine`, `host`,
 
 MCP exposes column tags only. There is no table-level tag store; tagging a whole
 table is out of scope until/unless the target DB grows one (a separate design).
-Datasource tags are set only by the proxy's gRPC `Register`/`PushCatalog` —
-there is no REST field to edit them (`DatasourceInput` has no `tags`) — so MCP
-reports datasource tags but has no `set_datasource_tags` tool.
+Datasource tags are set only by the proxy's gRPC `Register`/`PushCatalog`, so
+MCP reports datasource tags but has no `set_datasource_tags` tool.
 
 ### Cedar policies (read + write)
 

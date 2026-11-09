@@ -223,6 +223,14 @@ forward work. MySQL leads PostgreSQL in priority.
 Fixes for gaps documented in
 [`../KNOWN_LIMITATIONS.md`](../KNOWN_LIMITATIONS.md):
 
+- Delete the table-detail channel (high priority). goproxy reads a table's
+  detail (columns, indexes, foreign keys, defaults, comments) over its own
+  `TableDetailExec` stream, authorized only by `datasource.connect`, so a user
+  sees the detail of a table they cannot select from. Read it on the user's
+  editor session through `Decide` instead, and delete `OpenTableDetailChannel`,
+  `TableDetailExec` and goproxy's `ServeTableDetail`. Its queries are
+  system-catalog reads, which are readable at the floor, so they also need
+  filtering to the tables the user may select from.
 - Bind a saved result's view to the execution's namespace and physical lineage
   (saved lineage), so an output-name match can no longer release stored
   cleartext under a mask plan computed for a different physical column. High
@@ -241,9 +249,6 @@ Fixes for gaps documented in
   behind an admin assertion, auto-clearing declared-pure functions (low
   priority).
 - Surface computed `system:` tags in the catalog browser (display only).
-- Clear the config catalog and re-introspect when a datasource's identity
-  changes through the admin API. A retarget of the target database invalidates
-  it; other updates leave a stale catalog behind the config surfaces.
 - Tombstone a closed `connection_id` and require mint evidence. A closed or
   forged connection id is indistinguishable from a genuine post-restart id, so
   the decide path re-establishes it as restart recovery. No cross-principal
@@ -321,7 +326,7 @@ Fixes for gaps documented in
 - Editor: surface a canceled Athena run as CANCELLED rather than a generic
   failure; stream scan progress (bytes scanned, elapsed) during polling; record
   bytes scanned on completion and show the estimated cost. Progress and cost
-  share one run-statistics message on the run channel.
+  share one run-statistics message on the editor session.
 - Feed the resolved result cap into the Athena LIMIT rewrite alongside the
   editor's row cap.
 - Ship a narrower default `native.invoke` policy: the broad permit lets a viewer
@@ -407,6 +412,11 @@ Fixes for gaps documented in
   decoding the binary row format per column type, applying the mask, and
   re-encoding — including the length-encoding and null-bitmap changes that
   follow from a changed value.
+- Make the editor session's 5,000-row ceiling configurable. It is hard-coded in
+  goproxy's editor server (`maxMaxRows`), `EditorExec`, the approval run, the
+  MCP `run_query` schema and the web workbench, so it caps a result even under
+  an uncapped verdict (KNOWN_LIMITATIONS.md, Result caps and rates). Read it
+  from one setting and hand it to each of them.
 
 ## Management over MCP
 
@@ -482,6 +492,14 @@ Fixes for gaps documented in
 
 ## Refactoring
 
+- Retire `dbName`. pmon reads a datasource's database from its connection info,
+  and `dbName` remains only for releases from before the published `database`
+  property: `/api/datasources` serves it for older pmon, and pmon reads and
+  writes it at its JSON boundaries (`driver.Endpoint` from the control plane,
+  `control.Datasource` between the daemon and its CLI and tray) for older
+  control planes and daemons. Remove all of them once no supported pmon or
+  server predates the property.
+
 - Make Go the canonical implementation for logic that lives in both languages,
   and call it from Kotlin over FFM instead of hand-maintaining byte-identical
   copies. Masking is the clearest case: `Masking.kt` and `Masks.kt` under
@@ -491,3 +509,11 @@ Fixes for gaps documented in
   serve the JVM side. Medium priority.
 - Structural de-duplication: shared route-CRUD helpers, web CRUD tabs, JDBC
   helpers, relative-time formatting, and reject dialogs.
+- goproxy's MySQL and PostgreSQL connections are driven by the same steps
+  written twice. Each engine's `openConnection` (`connection.go`) allocates the
+  backend generation, marks a failed dial with `errTargetDbUnavailable`, and
+  builds the session and the `ProxyCommandRunner`; `OnOpen`, `Close` and the
+  read-timeout `OpenConnection` match too. Each `wire_client.go` `handleConn`
+  repeats the admission, the deferred closes, the on-open run and the drain
+  point around its own protocol. Move the shared steps into shared code and
+  leave each engine its dial, framing and protocol loop.

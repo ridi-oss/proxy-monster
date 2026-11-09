@@ -140,7 +140,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 	clientConn = s.WrapClientConn(clientConn)
 	token := mysqlwire.ParseClearPassword(tokenPayload)
 	clientAddr := clientConn.RemoteAddr().String()
-	authz, identity, err := spi.Authenticate(s.client, token, clientAddr)
+	authz, identity, err := spi.Authenticate(s.client, token, clientAddr, pb.ConnectionDoor_CONNECTION_DOOR_WIRE)
 	if err != nil {
 		_ = mysqlwire.WritePacket(clientConn, tokenSeq+1, mysqlwire.ErrPacketState(
 			1045,
@@ -149,15 +149,11 @@ func (s *Server) handleConn(clientConn net.Conn) {
 		))
 		return
 	}
-	defer func() {
-		if err := authz.Close(); err != nil {
-			slog.Warn("failed to close mysql control-plane connection", "error", err)
-		}
-	}()
+	defer authz.Close()
 	slog.Info("authenticated mysql client", "client", clientConn.RemoteAddr().String(), "principal", identity.Principal, "roles", identity.Roles)
 
-	targetDbConn, targetGreeting, err := dialTargetDbAuthID(context.Background(), s.target.config, deprecateEOF)
-	if err != nil {
+	c, err := openConnection(context.Background(), s.target.config, authz, nil, deprecateEOF, s.WrapTargetDbConn)
+	if errors.Is(err, errTargetDbUnavailable) {
 		slog.Warn("mysql target DB unavailable", "host", s.target.config.Host, "port", s.target.config.Port, "error", err)
 		_ = mysqlwire.WritePacket(clientConn, tokenSeq+1, mysqlwire.ErrPacketState(
 			1045,
@@ -166,8 +162,16 @@ func (s *Server) handleConn(clientConn net.Conn) {
 		))
 		return
 	}
-	targetDbConn = s.WrapTargetDbConn(targetDbConn)
-	defer targetDbConn.Close()
+	if err != nil {
+		slog.Warn("mysql target DB settings unavailable", "error", err)
+		_ = mysqlwire.WritePacket(clientConn, tokenSeq+1, mysqlwire.ErrPacketState(
+			1105,
+			"HY000",
+			"proxy-monster: catalog initialization failed",
+		))
+		return
+	}
+	defer c.Close()
 
 	preparedStmts := make(map[uint32]preparedStmt)
 	if handshake.Database != "" {
@@ -177,7 +181,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 		// target DB's response is consumed here (the client is still awaiting the single auth result): only a
 		// failure is surfaced to the client, and the auth OK written below stands in for success.
 		payload := append([]byte{mysqlwire.ComInitDB}, handshake.Database...)
-		result, err := executeSingleResponse(targetDbConn, 0, payload)
+		result, err := executeSingleResponse(c.targetDbConn, 0, payload)
 		if err != nil {
 			_ = mysqlwire.WritePacket(clientConn, tokenSeq+1, mysqlwire.ErrPacketState(
 				1045,
@@ -194,17 +198,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 		authz.MarkNamespaceDirty()
 	}
 
-	c, err := newConnection(targetDbConn, targetGreeting, s.target.config, authz, nil, deprecateEOF)
-	if err != nil {
-		slog.Warn("mysql target DB settings unavailable", "error", err)
-		_ = mysqlwire.WritePacket(clientConn, tokenSeq+1, mysqlwire.ErrPacketState(
-			1105,
-			"HY000",
-			"proxy-monster: catalog initialization failed",
-		))
-		return
-	}
-	if err := c.commandRunner.RunAll(identity.OnOpen, nil); err != nil {
+	if err := c.OnOpen(context.Background(), identity.OnOpen); err != nil {
 		slog.Warn("mysql catalog initialization failed", "error", err)
 		_ = mysqlwire.WritePacket(clientConn, tokenSeq+1, mysqlwire.ErrPacketState(
 			1105,

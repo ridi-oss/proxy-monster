@@ -1,5 +1,10 @@
 package com.ridi.oss.proxymonster.controlplane.support
 
+import com.ridi.oss.proxymonster.grpc.EditorQuery
+import com.ridi.oss.proxymonster.grpc.openConnectionRequest
+import com.ridi.oss.proxymonster.grpc.schemaFragmentPush
+import com.ridi.oss.proxymonster.grpc.ConnectionDoor
+import com.google.protobuf.ByteString
 import com.ridi.oss.proxymonster.auth.sha256Hex
 import com.ridi.oss.proxymonster.controlplane.Config
 import com.ridi.oss.proxymonster.controlplane.ControlPlaneCore
@@ -9,15 +14,15 @@ import com.ridi.oss.proxymonster.controlplane.grpc.CONTROL_PROTOCOL_VERSION
 import com.ridi.oss.proxymonster.controlplane.management.McpCapabilityRegistry
 import com.ridi.oss.proxymonster.controlplane.module
 import com.ridi.oss.proxymonster.grpc.ControlPlaneGrpcKt
-import com.ridi.oss.proxymonster.grpc.ControlTableDetailMsg
-import com.ridi.oss.proxymonster.grpc.OpenRunChannel
+import com.ridi.oss.proxymonster.grpc.CpTableDetailMsg
+import com.ridi.oss.proxymonster.grpc.OpenEditorSession
 import com.ridi.oss.proxymonster.grpc.OpenTableDetailChannel
-import com.ridi.oss.proxymonster.grpc.ProxyRunMsg
+import com.ridi.oss.proxymonster.grpc.ProxyEditorMsg
 import com.ridi.oss.proxymonster.grpc.ProxyTableDetailMsg
 import com.ridi.oss.proxymonster.grpc.eventsRequest
-import com.ridi.oss.proxymonster.grpc.proxyRunMsg
-import com.ridi.oss.proxymonster.grpc.runReady
-import com.ridi.oss.proxymonster.grpc.runServing
+import com.ridi.oss.proxymonster.grpc.proxyEditorMsg
+import com.ridi.oss.proxymonster.grpc.editorReady
+import com.ridi.oss.proxymonster.grpc.editorServing
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.cookies.HttpCookies
 import io.ktor.client.request.header
@@ -177,6 +182,44 @@ fun JsonObject.str(name: String): String? = (this[name] as? JsonPrimitive)?.cont
 
 fun parseJson(body: String): JsonElement = MCP_TEST_JSON.parseToJsonElement(body)
 
+/** Opens a connection on the editor door, as goproxy does when it admits an editor session, and returns its ID. */
+suspend fun ControlPlaneGrpcKt.ControlPlaneCoroutineStub.openEditorConnection(open: OpenEditorSession, datasourceName: String): ByteString =
+    openConnection(
+        openConnectionRequest {
+            token = open.ephemeralToken
+            this.datasourceName = datasourceName
+            door = ConnectionDoor.CONNECTION_DOOR_EDITOR
+        },
+    ).connectionId
+
+/** [openEditorConnection] on an empty target DB: answers each on-open refetch with an empty schema. */
+suspend fun ControlPlaneGrpcKt.ControlPlaneCoroutineStub.openEmptyEditorConnection(
+    open: OpenEditorSession,
+    datasourceName: String,
+    catalog: String,
+): ByteString {
+    val identity = openConnection(
+        openConnectionRequest {
+            token = open.ephemeralToken
+            this.datasourceName = datasourceName
+            door = ConnectionDoor.CONNECTION_DOOR_EDITOR
+        },
+    )
+    identity.onOpenList.forEachIndexed { i, command ->
+        pushSchemaFragment(
+            schemaFragmentPush {
+                connectionId = identity.connectionId
+                this.datasourceName = datasourceName
+                this.catalog = catalog
+                schema = command.refetch.schema
+                contentHash = ByteString.copyFromUtf8("empty:${command.refetch.schema}")
+                backendGeneration = i + 1L
+            },
+        )
+    }
+    return identity.connectionId
+}
+
 /**
  * Attaches a fake proxy to [datasourceName] over the real gRPC Events stream while [body] runs. Each run the
  * control plane opens is answered with [respond]'s frames, and each table-detail request with [tableDetail]'s
@@ -186,7 +229,7 @@ suspend fun withFakeProxy(
     core: ControlPlaneCore,
     stub: ControlPlaneGrpcKt.ControlPlaneCoroutineStub,
     datasourceName: String,
-    respond: suspend (WireIdentity?, String, OpenRunChannel) -> List<ProxyRunMsg>,
+    respond: suspend (WireIdentity?, EditorQuery, OpenEditorSession) -> List<ProxyEditorMsg>,
     tableDetail: ((OpenTableDetailChannel) -> ProxyTableDetailMsg)? = null,
     body: suspend () -> Unit,
 ) = supervisorScope {
@@ -196,7 +239,7 @@ suspend fun withFakeProxy(
                 if (event.hasOpenTableDetailChannel() && tableDetail != null) {
                     val open = event.openTableDetailChannel
                     launch {
-                        val outbound = Channel<ControlTableDetailMsg>(Channel.BUFFERED)
+                        val outbound = Channel<CpTableDetailMsg>(Channel.BUFFERED)
                         val attached = core.tableDetailChannels.attach(open.sessionId, outbound) ?: return@launch
                         attached.inbound.send(tableDetail(open))
                         outbound.receive()
@@ -205,16 +248,16 @@ suspend fun withFakeProxy(
                     }
                     return@collect
                 }
-                if (!event.hasOpenRunChannel()) return@collect
-                val open = event.openRunChannel
+                if (!event.hasOpenEditorSession()) return@collect
+                val open = event.openEditorSession
                 val identity = core.tokenStore.resolve(open.ephemeralToken)
                 launch {
-                    val out = Channel<ProxyRunMsg>(Channel.UNLIMITED)
-                    out.send(proxyRunMsg { sessionReady = runReady { sessionId = open.sessionId } })
-                    out.send(proxyRunMsg { serving = runServing {} })
-                    stub.runExec(out.receiveAsFlow()).collect { control ->
+                    val out = Channel<ProxyEditorMsg>(Channel.UNLIMITED)
+                    out.send(proxyEditorMsg { sessionReady = editorReady { sessionId = open.sessionId } })
+                    out.send(proxyEditorMsg { serving = editorServing {} })
+                    stub.editorExec(out.receiveAsFlow()).collect { control ->
                         when {
-                            control.hasQuery() -> respond(identity, control.query.sql, open).forEach { out.send(it) }
+                            control.hasQuery() -> respond(identity, control.query, open).forEach { out.send(it) }
                             control.hasClose() -> out.close()
                         }
                     }

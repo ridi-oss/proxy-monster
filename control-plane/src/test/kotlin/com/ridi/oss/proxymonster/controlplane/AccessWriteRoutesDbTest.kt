@@ -194,8 +194,8 @@ class AccessWriteRoutesDbTest {
 
     private fun seed() {
         core.policyStore.createRole(RoleInput(ROLE))
-        openDs = core.datasourceStore.create(DatasourceInput(name = "aw-open", engine = "mysql", host = "h", port = 3306, dbName = "app")).id
-        closedDs = core.datasourceStore.create(DatasourceInput(name = "aw-closed", engine = "mysql", host = "h", port = 3306, dbName = "app")).id
+        openDs = core.datasourceStore.registerOnly("aw-open", "mysql").id
+        closedDs = core.datasourceStore.registerOnly("aw-closed", "mysql").id
         core.cedarPolicyStore.create(
             CedarPolicyInput("aw-no-request", """forbid(principal, action == Action::"task.request", resource == Datasource::"aw-closed");"""),
             updatedBy = "test",

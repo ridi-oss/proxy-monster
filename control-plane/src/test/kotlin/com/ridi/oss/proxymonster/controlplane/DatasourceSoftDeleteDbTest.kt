@@ -7,7 +7,7 @@ import com.ridi.oss.proxymonster.controlplane.management.ManagementAuditRecorder
 import com.ridi.oss.proxymonster.controlplane.management.ManagementException
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
-import com.ridi.oss.proxymonster.grpc.ControlEvent
+import com.ridi.oss.proxymonster.grpc.CpEvent
 import com.ridi.oss.proxymonster.grpc.Engine
 import com.ridi.oss.proxymonster.analyzer.pb.column
 import com.ridi.oss.proxymonster.grpc.schemaFragmentPush
@@ -62,7 +62,7 @@ class DatasourceSoftDeleteDbTest {
     @Test
     fun `deleting a datasource with access-request history soft-deletes it and keeps the rows`() {
         val name = "soft-del-history-${System.nanoTime()}"
-        val ds = datasources.createDatasource(DatasourceInput(name, "mysql"), actor)
+        val ds = store.registerOnly(name, "mysql")
         // A QUERY task pins the access_request -> datasource foreign key; a hard delete cannot satisfy it.
         insertQueryRequest(ds.id, principal = "requester@example.com")
 
@@ -93,22 +93,13 @@ class DatasourceSoftDeleteDbTest {
     @Test
     fun `a soft-deleted name is free for a new datasource to reuse`() {
         val name = "soft-del-reuse-${System.nanoTime()}"
-        val first = datasources.createDatasource(DatasourceInput(name, "mysql"), actor)
+        val first = store.registerOnly(name, "mysql")
         assertTrue(datasources.deleteDatasource(first.id, actor).deleted)
 
-        // The admin create surface reuses the freed name as a fresh datasource.
-        val second = datasources.createDatasource(DatasourceInput(name, "mysql"), actor)
+        // A proxy registering the freed name gets a fresh datasource (the ON CONFLICT arbiter is live-only).
+        val second = store.registerOnly(name, "mysql")
         assertNotEquals(first.id, second.id)
         assertEquals(second.id, store.getByName(name)?.id, "the live name resolves to the new datasource")
-
-        // ...and so does a proxy self-registering the same name (the ON CONFLICT arbiter is live-only).
-        assertTrue(datasources.deleteDatasource(second.id, actor).deleted)
-        val third = store.register(
-            name = name, engine = Engine.MYSQL, host = "db.internal", port = 3306, dbName = "app",
-            tags = emptyList(), advertiseAddr = "", advertiseCertChain = null, advertiseWireTls = false,
-        )
-        assertNotEquals(second.id, third.id)
-        assertEquals(third.id, store.getByName(name)?.id)
     }
 
     @Test
@@ -117,7 +108,7 @@ class DatasourceSoftDeleteDbTest {
         // Register with a posture tag so the retained-tags property is observable — a task's lifecycle Cedar
         // check must still see `system:production` after the datasource is gone, not empty tags.
         val ds = store.register(
-            name = name, engine = Engine.MYSQL, host = "db", port = 3306, dbName = "app",
+            name = name, engine = Engine.MYSQL, targetInfo = "db:3306",
             tags = listOf("system:production"), advertiseAddr = "", advertiseCertChain = null, advertiseWireTls = false,
         )
         assertTrue(datasources.deleteDatasource(ds.id, actor).deleted)
@@ -132,8 +123,8 @@ class DatasourceSoftDeleteDbTest {
     @Test
     fun `delete is refused while a proxy is attached`() {
         val name = "soft-del-attached-${System.nanoTime()}"
-        val ds = datasources.createDatasource(DatasourceInput(name, "mysql"), actor)
-        val channel = Channel<ControlEvent>(capacity = 1)
+        val ds = store.registerOnly(name, "mysql")
+        val channel = Channel<CpEvent>(capacity = 1)
         core.proxyEventsHub.register(name, channel)
 
         val e = assertFailsWith<ManagementException> { datasources.deleteDatasource(ds.id, actor) }
@@ -149,7 +140,7 @@ class DatasourceSoftDeleteDbTest {
     fun `the in-flight guard blocks non-terminal query work but not approved or terminal work`() {
         // Non-terminal work still bound to the datasource blocks the delete.
         for (status in listOf("PENDING", "EXECUTING")) {
-            val ds = datasources.createDatasource(DatasourceInput("guard-block-$status-${System.nanoTime()}", "mysql"), actor)
+            val ds = store.registerOnly("guard-block-$status-${System.nanoTime()}", "mysql")
             insertQueryRequest(ds.id, principal = "r@example.com", status = status)
             val e = assertFailsWith<ManagementException> { datasources.deleteDatasource(ds.id, actor) }
             assertEquals("datasource.in_use_active_requests", e.error.code, "$status must block")
@@ -159,16 +150,16 @@ class DatasourceSoftDeleteDbTest {
         // permanently undeletable — it must NOT block (deleting strands it fail-closed). Terminal history
         // never blocks — it is exactly what the soft delete retains.
         for (status in listOf("APPROVED", "EXECUTED", "CANCELLED")) {
-            val ds = datasources.createDatasource(DatasourceInput("guard-pass-$status-${System.nanoTime()}", "mysql"), actor)
+            val ds = store.registerOnly("guard-pass-$status-${System.nanoTime()}", "mysql")
             insertQueryRequest(ds.id, principal = "r@example.com", status = status)
             assertTrue(datasources.deleteDatasource(ds.id, actor).deleted, "$status must not block")
         }
     }
 
     @Test
-    fun `deleting a datasource drops its name-keyed enforcement catalog so a reused name re-measures`() = runBlocking {
+    fun `deleting a datasource drops its name-keyed enforcement catalog so a reused name re-inspects`() = runBlocking {
         val name = "soft-del-catalog-${System.nanoTime()}"
-        val ds = datasources.createDatasource(DatasourceInput(name, "mysql"), actor)
+        val ds = store.seed(name, "mysql")
         // Seed the in-memory authoritative catalog for this datasource's name, as a proxy push would.
         val opened = core.connectionCatalog.open(Binding(name, "principal", "USER", ds.effectiveCatalog, ds.engine), ds.namespaces(listOf("app")))
         core.connectionCatalog.applyPush(
@@ -195,7 +186,7 @@ class DatasourceSoftDeleteDbTest {
             core.connectionCatalog.authoritativeFor(name, namespace(ds.effectiveCatalog, "app")),
             "delete drops the name-keyed authoritative catalog",
         )
-        // A new connection on the freed name must therefore re-measure its own target DB, not adopt the drop.
+        // A new connection on the freed name must therefore re-inspect its own target DB, not adopt the drop.
         val reused = core.connectionCatalog.open(Binding(name, "after", "USER", ds.effectiveCatalog, ds.engine), ds.namespaces(listOf("app")), adoptHeldContent = true)
         assertEquals(
             listOf("app"),

@@ -35,7 +35,7 @@ statement touching a masked column still `DENY`s mid-session.
   session like a wire client. Selecting N statements runs them in order on that
   session's connection; each is still independently gated by the shared query
   engine. The control plane holds one proxy stream (one target-DB connection)
-  per editor session across many queries (`RunExecService.openSession` /
+  per editor session across many queries (`EditorExecService.openSession` /
   `runOnSession` / `closeSession` / `sweepIdleSessions`); the web editor opens,
   reuses, and closes one session per datasource (`useResultTabs`).
 - The session-close route is ownership-checked (`closeSessionOwnedBy`), so a

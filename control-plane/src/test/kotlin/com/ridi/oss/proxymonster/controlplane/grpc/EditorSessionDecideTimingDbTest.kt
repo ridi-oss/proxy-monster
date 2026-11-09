@@ -1,27 +1,27 @@
 package com.ridi.oss.proxymonster.controlplane.grpc
 
+import com.ridi.oss.proxymonster.controlplane.support.openEmptyEditorConnection
 import com.ridi.oss.proxymonster.controlplane.ControlPlaneCore
 import com.ridi.oss.proxymonster.controlplane.effectiveCatalog
 import com.ridi.oss.proxymonster.controlplane.Datasource
-import com.ridi.oss.proxymonster.controlplane.DatasourceInput
-import com.ridi.oss.proxymonster.controlplane.RunExecService
+import com.ridi.oss.proxymonster.controlplane.EditorExecService
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
+import com.ridi.oss.proxymonster.controlplane.seed
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
-import com.ridi.oss.proxymonster.controlplane.tokenHash
 import com.ridi.oss.proxymonster.grpc.ControlPlaneGrpcKt
 import com.ridi.oss.proxymonster.grpc.EnfAction as WireEnfAction
-import com.ridi.oss.proxymonster.grpc.ProxyRunMsg
+import com.ridi.oss.proxymonster.grpc.ProxyEditorMsg
 import com.ridi.oss.proxymonster.grpc.decisionRequest
-import com.ridi.oss.proxymonster.grpc.runDecision
-import com.ridi.oss.proxymonster.grpc.runDone
-import com.ridi.oss.proxymonster.grpc.runResultRows
-import com.ridi.oss.proxymonster.grpc.runRow
-import com.ridi.oss.proxymonster.grpc.runReady
-import com.ridi.oss.proxymonster.grpc.runServing
-import com.ridi.oss.proxymonster.grpc.runValue
+import com.ridi.oss.proxymonster.grpc.editorDecision
+import com.ridi.oss.proxymonster.grpc.editorDone
+import com.ridi.oss.proxymonster.grpc.editorResultRows
+import com.ridi.oss.proxymonster.grpc.editorRow
+import com.ridi.oss.proxymonster.grpc.editorReady
+import com.ridi.oss.proxymonster.grpc.editorServing
+import com.ridi.oss.proxymonster.grpc.editorValue
 import com.ridi.oss.proxymonster.grpc.eventsRequest
-import com.ridi.oss.proxymonster.grpc.proxyRunMsg
+import com.ridi.oss.proxymonster.grpc.proxyEditorMsg
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder
 import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
@@ -39,14 +39,13 @@ import java.util.concurrent.TimeUnit
 import javax.sql.DataSource
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertNull
 import kotlin.test.fail
 
 /**
- * Timing regression for [RunExecService.runOnSession]'s per-query requester_ip refresh.
+ * Timing regression for [EditorExecService.runOnSession]'s per-query requester_ip refresh.
  *
  * The refresh MUST happen BEFORE the query crosses the wire, so the gRPC `Decide` the proxy triggers for THAT
- * query reads the CURRENT request's IP, never the stale open-time / previous-query one. [GrpcRunExecDbTest]'s
+ * query reads the CURRENT request's IP, never the stale open-time / previous-query one. [GrpcEditorExecDbTest]'s
  * persistent-session test asserts the registry value only AFTER `runOnSession` returns — which holds regardless
  * of whether the refresh ran before or after the send — and its fake proxy never invokes the real `Decide`. So
  * moving the refresh to after the send leaves it green.
@@ -62,7 +61,7 @@ import kotlin.test.fail
 class EditorSessionDecideTimingDbTest {
     private lateinit var dataSource: DataSource
     private lateinit var core: ControlPlaneCore
-    private lateinit var service: RunExecService
+    private lateinit var service: EditorExecService
     private lateinit var datasource: Datasource
     private lateinit var server: GrpcServer
     private lateinit var stub: ControlPlaneGrpcKt.ControlPlaneCoroutineStub
@@ -73,10 +72,8 @@ class EditorSessionDecideTimingDbTest {
         requireDockerOrSkip()
         dataSource = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_editor_decide_timing"))
         core = ControlPlaneCore(dataSource)
-        service = RunExecService(core)
-        datasource = core.datasourceStore.create(
-            DatasourceInput(name = "timing-ds", engine = "postgres", host = "localhost", port = 5432, dbName = "app"),
-        )
+        service = EditorExecService(core)
+        datasource = core.datasourceStore.seed(name = "timing-ds", engine = "postgres")
         // connect + sql.select granted to ANY principal ONLY when requester_ip is inside 203.0.113.0/24. A null
         // or out-of-range IP fails `context has requester_ip` / the range test → the permit never fires →
         // deny-by-default at the connect gate. So the Decide verdict is a pure function of the current IP.
@@ -108,23 +105,22 @@ class EditorSessionDecideTimingDbTest {
     }
 
     @Test
-    fun `each session query's real gRPC Decide sees THAT query's refreshed requester_ip, proving refresh-before-send`() = runBlocking {
+    fun `each session query's real gRPC Decide sees that query's own requester_ip`() = runBlocking {
         supervisorScope {
             val event = async { stub.events(eventsRequest { datasourceName = datasource.name; protocolVersion = CONTROL_PROTOCOL_VERSION }).first() }
             awaitUntil("Events stream attached") { datasource.name in core.proxyEventsHub.attached() }
 
-            // Open from an ALLOWED IP; the open-time entry is in-range, so a stale read would ALLOW — the trap
-            // the second (null-IP) query must not fall into.
-            val sessionIdDeferred = async { service.openSession("timing-user", datasource, requesterIp = "203.0.113.42") }
-            val open = withTimeout(5_000) { event.await() }.openRunChannel
+            val sessionIdDeferred = async { service.openSession("timing-user", datasource) }
+            val open = withTimeout(5_000) { event.await() }.openEditorSession
             val ephemeralToken = open.ephemeralToken
+            val connectionId = stub.openEmptyEditorConnection(open, datasource.name, datasource.effectiveCatalog)
 
-            // The fake proxy invokes the REAL Decide (session token) WHILE servicing each query, then fabricates
-            // an ALLOW so runOnSession returns normally. The Decide verdict is what pins the refresh timing.
+            // The fake proxy invokes the REAL Decide with the query's requester_ip as client_addr, as goproxy does,
+            // then fabricates an ALLOW so runOnSession returns normally.
             val decideByQuery = Collections.synchronizedMap(LinkedHashMap<String, WireEnfAction>())
-            val proxyRequests = Channel<ProxyRunMsg>(Channel.UNLIMITED)
+            val proxyRequests = Channel<ProxyEditorMsg>(Channel.UNLIMITED)
             val proxy = async {
-                stub.runExec(proxyRequests.receiveAsFlow()).collect { control ->
+                stub.editorExec(proxyRequests.receiveAsFlow()).collect { control ->
                     when {
                         control.hasQuery() -> {
                             val response = stub.decide(
@@ -133,41 +129,38 @@ class EditorSessionDecideTimingDbTest {
                                     datasourceName = datasource.name
                                     currentCatalog = datasource.effectiveCatalog
                                     currentCatalog = datasource.effectiveCatalog
-                                    connectionId = open.connectionId
+                                    searchPath.add("public")
+                                    this.connectionId = connectionId
                                     sql = control.query.sql
+                                    clientAddr = control.query.requesterIp
                                 },
                             )
                             decideByQuery[control.query.sql] = response.verdict.decision
-                            proxyRequests.send(proxyRunMsg { decision = runDecision { decision = WireEnfAction.ALLOW } })
+                            proxyRequests.send(proxyEditorMsg { decision = editorDecision { decision = WireEnfAction.ALLOW } })
                             proxyRequests.send(rowsChunk(listOf("echo"), listOf(listOf(control.query.sql))))
-                            proxyRequests.send(proxyRunMsg { done = runDone { rowsAffected = -1 } })
+                            proxyRequests.send(proxyEditorMsg { done = editorDone { rowsAffected = -1 } })
                         }
                         control.hasClose() -> proxyRequests.close()
                         else -> fail("control plane sent an empty editor control message")
                     }
                 }
             }
-            proxyRequests.send(proxyRunMsg { sessionReady = runReady { sessionId = open.sessionId } })
-            proxyRequests.send(proxyRunMsg { serving = runServing {} })
+            proxyRequests.send(proxyEditorMsg { sessionReady = editorReady { sessionId = open.sessionId } })
+            proxyRequests.send(proxyEditorMsg { serving = editorServing {} })
             val sessionId = withTimeout(5_000) { sessionIdDeferred.await() }
 
-            // Query 1 from an ALLOWED IP → the refreshed IP reaches the decide → ALLOW.
+            // Query 1 from an allowed IP → ALLOW. Query 2 from a null (unresolvable) IP must not inherit it: its
+            // decide sees no requester_ip, so the ip-gated connect permit can't fire → DENY.
             withTimeout(5_000) { service.runOnSession(sessionId, "timing-user", "select 1", 500, requesterIp = "203.0.113.50") }
-            // Query 2 from a null (unresolvable) IP → the refresh CLEARS the stale allowed IP before the send, so
-            // this query's decide sees no requester_ip → the ip-gated connect permit can't fire → DENY.
             withTimeout(5_000) { service.runOnSession(sessionId, "timing-user", "select 2", 500, requesterIp = null) }
 
             assertEquals(
                 WireEnfAction.ALLOW, decideByQuery["select 1"],
-                "the first query's Decide must see the refreshed allowed IP 203.0.113.50",
+                "the first query's Decide must see its allowed IP 203.0.113.50",
             )
             assertEquals(
                 WireEnfAction.DENY, decideByQuery["select 2"],
-                "the second query's Decide must see the CURRENT null IP, not the stale allowed one — refresh happens BEFORE the send",
-            )
-            assertNull(
-                core.runRequesterIps.get(tokenHash(ephemeralToken)),
-                "a null-IP session query clears the stale allowed IP fail-closed",
+                "the second query's Decide must see its own null IP, not the first query's",
             )
 
             service.closeSessionOwnedBy(sessionId, "timing-user")
@@ -176,13 +169,13 @@ class EditorSessionDecideTimingDbTest {
         }
     }
 
-    private fun rowsChunk(columns: List<String>, rows: List<List<String?>>): ProxyRunMsg = proxyRunMsg {
-        resultRows = runResultRows {
+    private fun rowsChunk(columns: List<String>, rows: List<List<String?>>): ProxyEditorMsg = proxyEditorMsg {
+        resultRows = editorResultRows {
             this.columns += columns
             this.rows += rows.map { values ->
-                runRow {
+                editorRow {
                     this.values += values.map { value ->
-                        runValue {
+                        editorValue {
                             if (value == null) isNull = true else this.value = value
                         }
                     }

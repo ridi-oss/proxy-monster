@@ -34,9 +34,7 @@ class EditorSelfApproveAuthzDbTest {
         requireDockerOrSkip()
         dataSource = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_editor_selfapprove"))
         core = ControlPlaneCore(dataSource)
-        ds = core.datasourceStore.create(
-            DatasourceInput(name = "editor-ds", engine = "postgres", host = "h", port = 5432, dbName = "d"),
-        )
+        ds = core.datasourceStore.registerOnly("editor-ds", "postgres")
     }
 
     /** Direct task.approve query for a self-request, on the given channel (null = an ordinary human approval). */

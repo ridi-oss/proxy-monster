@@ -38,11 +38,11 @@ import com.ridi.oss.proxymonster.controlplane.support.webSessionCookie
 import com.ridi.oss.proxymonster.controlplane.support.withFakeProxy
 import com.ridi.oss.proxymonster.grpc.ControlPlaneGrpcKt
 import com.ridi.oss.proxymonster.grpc.EnfAction
-import com.ridi.oss.proxymonster.grpc.ProxyRunMsg
-import com.ridi.oss.proxymonster.grpc.proxyRunMsg
-import com.ridi.oss.proxymonster.grpc.runDecision
-import com.ridi.oss.proxymonster.grpc.runDone
-import com.ridi.oss.proxymonster.grpc.runError
+import com.ridi.oss.proxymonster.grpc.ProxyEditorMsg
+import com.ridi.oss.proxymonster.grpc.proxyEditorMsg
+import com.ridi.oss.proxymonster.grpc.editorDecision
+import com.ridi.oss.proxymonster.grpc.editorDone
+import com.ridi.oss.proxymonster.grpc.editorError
 import io.grpc.ManagedChannel
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder
 import io.ktor.client.HttpClient
@@ -129,9 +129,7 @@ class GitHubSourceFlowDbTest {
         core = ControlPlaneCore(dataSource)
         resultStore = QueryResultStore(dataSource, ResultCrypto(ByteArray(32) { it.toByte() }))
         sessionStore = PrincipalSessionStore(dataSource, null)
-        datasource = core.datasourceStore.create(
-            DatasourceInput(name = "shop-pg", engine = "postgres", host = "localhost", port = 5432, dbName = "app"),
-        )
+        datasource = core.datasourceStore.registerOnly("shop-pg", "postgres")
         role = core.policyStore.createRole(RoleInput("schema-migrator"))
         for (p in listOf(alice, bob, carol, dave)) {
             core.userGroupStore.createUser(AppUserInput(principal = p), core.tokenStore, core.accessStore, sessionStore)
@@ -167,7 +165,7 @@ class GitHubSourceFlowDbTest {
         )
         approvals = ApprovalService(
             config, core.accessStore, core.auditStore, core.datasourceStore, core.policyStore, core.userGroupStore,
-            resultStore, core.roleResolver, core.authz, RunExecService(core), appScope, notifications = notifications,
+            resultStore, core.roleResolver, core.authz, EditorExecService(core), appScope, notifications = notifications,
         )
         flow = GitHubSourceFlow(
             adapter, approvals, core.accessStore, core.datasourceStore, core.policyStore, core.authz, notifications,
@@ -257,23 +255,24 @@ class GitHubSourceFlowDbTest {
     private fun recheck(n: Int) = runBlocking { evaluate(n) }
 
     /** The proxy's answer to one statement: ALLOW and done, or a target error when the SQL contains [fail]. */
-    private fun answer(sql: String, fail: String?): List<ProxyRunMsg> {
+    private fun answer(sql: String, fail: String?): List<ProxyEditorMsg> {
         val id = core.auditStore.insert(
             AuditEvent(principal = carol, datasource = datasource.name, statement = "ddl", decision = Decision.ALLOW, channel = "workflow-executor"),
         )
-        val decided = proxyRunMsg { decision = runDecision { decision = EnfAction.ALLOW; decisionId = id } }
+        val decided = proxyEditorMsg { decision = editorDecision { decision = EnfAction.ALLOW; decisionId = id } }
         return if (fail != null && fail in sql) {
-            listOf(decided, proxyRunMsg { error = runError { message = "ER_PARSE_ERROR"; rawMessage = "syntax error"; targetDbError = true } })
+            listOf(decided, proxyEditorMsg { error = editorError { message = "ER_PARSE_ERROR"; rawMessage = "syntax error"; targetDbError = true } })
         } else {
-            listOf(decided, proxyRunMsg { done = runDone { rowsAffected = 0 } })
+            listOf(decided, proxyEditorMsg { done = editorDone { rowsAffected = 0 } })
         }
     }
 
-    /** The default schema of every run channel the fake proxy was asked to open. */
+    /** The default schema of every editor session the fake proxy was asked to open. */
     private val openedSchemas = Collections.synchronizedList(mutableListOf<String>())
 
     private fun withProxy(fail: String? = null, body: suspend () -> Unit) = runBlocking {
-        withFakeProxy(core, stub, datasource.name, respond = { _, sql, open ->
+        withFakeProxy(core, stub, datasource.name, respond = { _, query, open ->
+            val sql = query.sql
             openedSchemas += open.defaultSchema
             answer(sql, fail)
         }) { body() }
@@ -315,7 +314,7 @@ class GitHubSourceFlowDbTest {
                 githubSourceRoutes(config, core.tokenStore, flow)
                 approvalRoutes(
                     config, core.accessStore, core.auditStore, core.datasourceStore, core.policyStore,
-                    core.userGroupStore, resultStore, core.roleResolver, core.authz, RunExecService(core),
+                    core.userGroupStore, resultStore, core.roleResolver, core.authz, EditorExecService(core),
                     service = approvals,
                 )
             }
@@ -351,9 +350,9 @@ class GitHubSourceFlowDbTest {
         assertEquals("${datasource.name}/$schema", filed.scope)
         assertEquals("https://github.com/acme/shop/pull/$n", filed.pullRequest!!.prUrl)
         assertEquals("001", filed.fileKey)
-        assertEquals(contentHash("create table t (id int)", datasource.engine.dialect), filed.contentHash)
-        assertTrue(filed.contentHash!!.startsWith("n:"))
-        assertEquals(changeKey("001", filed.contentHash!!), filed.changeKey)
+        assertEquals(contentHash("create table t (id int)", datasource)!!, filed.contentHash)
+        assertEquals(rawSqlHash("create table t (id int)"), filed.rawHash)
+        assertEquals(changeKey("001", filed.contentHash, filed.rawHash!!), filed.changeKey)
         assertEquals("string", filed.pullRequest!!.keyOrder)
         assertEquals("acme/shop", filed.pullRequest!!.repository)
         assertEquals(n, filed.pullRequest!!.pr)
@@ -411,6 +410,32 @@ class GitHubSourceFlowDbTest {
         val kept = file(n, schema, listOf("db/a.sql" to "CREATE TABLE a (id bigint) -- reformatted")).single()
         assertEquals(second.id, kept.id)
         assertEquals("APPROVED", kept.status)
+    }
+
+    @Test
+    fun `a file whose normalized hash changes keeps its request and approval`() {
+        val n = number()
+        val schema = schema()
+        open(n)
+        val sql = "create table a (id int)"
+        val first = file(n, schema, listOf("db/a.sql" to sql)).single()
+        update(n) { it.copy(reviews = listOf(approval(bobUser))) }
+        recheck(n)
+        assertEquals("APPROVED", status(first.id))
+        dataSource.connection.use { c ->
+            c.prepareStatement("UPDATE access_request SET content_hash = 'stale', change_key = 'stale' WHERE id = ?").use { ps ->
+                ps.setLong(1, first.id)
+                ps.executeUpdate()
+            }
+        }
+
+        update(n) { it.copy(headSha = "sha$n-2") }
+        val again = file(n, schema, listOf("db/a.sql" to sql)).single()
+        assertEquals(first.id, again.id)
+        assertEquals(first.contentHash, again.contentHash)
+        assertEquals(first.changeKey, again.changeKey)
+        assertEquals("APPROVED", again.status)
+        assertTrue(adapter.dismissals.none { it.pr == n })
     }
 
     @Test
@@ -1469,7 +1494,7 @@ class GitHubSourceFlowDbTest {
         )
         val threadedApprovals = ApprovalService(
             config, core.accessStore, core.auditStore, core.datasourceStore, core.policyStore, core.userGroupStore,
-            resultStore, core.roleResolver, core.authz, RunExecService(core), appScope, notifications = service,
+            resultStore, core.roleResolver, core.authz, EditorExecService(core), appScope, notifications = service,
         )
         val threadedFlow = GitHubSourceFlow(
             adapter, threadedApprovals, core.accessStore, core.datasourceStore, core.policyStore, core.authz, service,

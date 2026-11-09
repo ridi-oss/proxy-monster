@@ -1,6 +1,8 @@
 package spi
 
 import (
+	"encoding/hex"
+	"log/slog"
 	"time"
 
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
@@ -54,10 +56,10 @@ func NewAuthorizer(client ControlPlane, token string, connectionID []byte) *Auth
 	return &Authorizer{client: client, token: token, connectionID: append([]byte(nil), connectionID...), nsDirty: true}
 }
 
-// Authenticate validates a wire client's token and opens the Authorizer for the connection it opened. The
+// Authenticate opens a connection on the control plane with a client's token and returns its Authorizer. The
 // caller closes the connection with Close.
-func Authenticate(client ControlPlane, token, clientAddr string) (*Authorizer, Identity, error) {
-	identity, err := client.ValidateToken(token, clientAddr)
+func Authenticate(client ControlPlane, token, clientAddr string, door pb.ConnectionDoor) (*Authorizer, Identity, error) {
+	identity, err := client.OpenConnection(token, clientAddr, door)
 	if err != nil {
 		return nil, Identity{}, err
 	}
@@ -66,10 +68,18 @@ func Authenticate(client ControlPlane, token, clientAddr string) (*Authorizer, I
 	return authz, identity, nil
 }
 
-// Close ends the connection on the control plane.
-func (a *Authorizer) Close() error { return a.client.CloseConnection(a.connectionID) }
+// Close ends the connection on the control plane; a failure is logged, as no caller can act on it.
+func (a *Authorizer) Close() {
+	if err := a.client.CloseConnection(a.connectionID); err != nil {
+		slog.Warn("control-plane connection close failed", "connection_id", hex.EncodeToString(a.connectionID), "error", err)
+	}
+}
 
 func (a *Authorizer) ConnectionID() []byte { return a.connectionID }
+
+// SetClientAddr sets the client_addr the next decisions report. An editor session sets it per statement, to that
+// statement's requester.
+func (a *Authorizer) SetClientAddr(addr string) { a.clientAddr = addr }
 
 func (a *Authorizer) Client() ControlPlane { return a.client }
 

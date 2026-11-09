@@ -527,7 +527,7 @@ class NotificationServiceDbTest {
         val recorder = ManagementAuditRecorder(fx.auditStore)
         val actor = AuditActor("req@example.com", clientAddr = null, channel = "console")
         for (sql in listOf("SELECT 2", "SELECT 3")) {
-            fx.accessStore.editQueryRequest(task, listOf(sql), RequestEdit("h", null, "ALLOW", false), actor, recorder) { c, r ->
+            fx.accessStore.editQueryRequest(task, listOf(sql), RequestEdit("h", "r", null, "ALLOW", false), actor, recorder) { c, r ->
                 svc.emit(c, NotificationEvent.TASK_EDITED, r)
             }
             svc.drainOnce()

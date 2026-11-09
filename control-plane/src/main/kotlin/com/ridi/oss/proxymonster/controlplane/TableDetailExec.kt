@@ -1,8 +1,8 @@
 package com.ridi.oss.proxymonster.controlplane
 
-import com.ridi.oss.proxymonster.grpc.ControlTableDetailMsg
+import com.ridi.oss.proxymonster.grpc.CpTableDetailMsg
 import com.ridi.oss.proxymonster.grpc.ProxyTableDetailMsg
-import com.ridi.oss.proxymonster.grpc.controlTableDetailMsg
+import com.ridi.oss.proxymonster.grpc.cpTableDetailMsg
 import com.ridi.oss.proxymonster.grpc.tableDetailClose
 import com.ridi.oss.proxymonster.probe.TableDetail
 import kotlinx.coroutines.CompletableDeferred
@@ -29,7 +29,7 @@ data class PendingTableDetail(
 
 /** The two directions of one claimed table-detail stream. */
 data class AttachedTableDetail(
-    val outbound: SendChannel<ControlTableDetailMsg>,
+    val outbound: SendChannel<CpTableDetailMsg>,
     val inbound: Channel<ProxyTableDetailMsg>,
 )
 
@@ -43,7 +43,7 @@ class TableDetailChannelRegistry {
         }
     }
 
-    fun attach(sessionId: String, outbound: SendChannel<ControlTableDetailMsg>): AttachedTableDetail? {
+    fun attach(sessionId: String, outbound: SendChannel<CpTableDetailMsg>): AttachedTableDetail? {
         val session = pending.remove(sessionId) ?: return null
         val attached = AttachedTableDetail(outbound, Channel(Channel.BUFFERED))
         session.ready.complete(attached)
@@ -114,13 +114,13 @@ class TableDetailService(private val core: ControlPlaneCore) {
                 },
             )
         } finally {
-            // Resolve the same attach-vs-timeout race as RunExec: either remove wins while pending, or
+            // Resolve the same attach-vs-timeout race as EditorExec: either remove wins while pending, or
             // attach already completed [ready] and cleanup obtains the claimed outbound channel.
             if (registered && attached == null && core.tableDetailChannels.remove(sessionId) == null) {
                 attached = withContext(NonCancellable) { pending.ready.await() }
             }
             try {
-                attached?.outbound?.trySend(controlTableDetailMsg { close = tableDetailClose {} })
+                attached?.outbound?.trySend(cpTableDetailMsg { close = tableDetailClose {} })
             } finally {
                 if (registered) core.tableDetailChannels.remove(sessionId)
             }

@@ -14,14 +14,14 @@ import com.ridi.oss.proxymonster.controlplane.Binding
 import com.ridi.oss.proxymonster.controlplane.CatalogMutationResult
 import com.ridi.oss.proxymonster.controlplane.Channel
 import com.ridi.oss.proxymonster.controlplane.ControlPlaneCore
+import com.ridi.oss.proxymonster.controlplane.Datasource
 import com.ridi.oss.proxymonster.controlplane.DatasourceEngineConflictException
 import com.ridi.oss.proxymonster.controlplane.management.AuditActor
 import com.ridi.oss.proxymonster.controlplane.management.ManagementException
 import com.ridi.oss.proxymonster.controlplane.management.auditEntity
 import com.ridi.oss.proxymonster.controlplane.catalogIsConnectionIndependent
-import com.ridi.oss.proxymonster.controlplane.effectiveCatalog
 import com.ridi.oss.proxymonster.controlplane.requireCatalog
-import com.ridi.oss.proxymonster.controlplane.measuredCatalog
+import com.ridi.oss.proxymonster.controlplane.reportedCatalog
 import com.ridi.oss.proxymonster.controlplane.namespaces
 import com.ridi.oss.proxymonster.controlplane.namespace
 import com.ridi.oss.proxymonster.controlplane.definition
@@ -37,21 +37,22 @@ import com.ridi.oss.proxymonster.grpc.CatalogResponse
 import com.ridi.oss.proxymonster.grpc.CloseConnectionRequest
 import com.ridi.oss.proxymonster.grpc.CloseConnectionResponse
 import com.ridi.oss.proxymonster.grpc.CompletionReport
-import com.ridi.oss.proxymonster.grpc.ControlRunMsg
-import com.ridi.oss.proxymonster.grpc.ControlEvent
+import com.ridi.oss.proxymonster.grpc.CpEditorMsg
+import com.ridi.oss.proxymonster.grpc.CpEvent
 import com.ridi.oss.proxymonster.grpc.ControlPlaneGrpcKt
-import com.ridi.oss.proxymonster.grpc.ControlTableDetailMsg
+import com.ridi.oss.proxymonster.grpc.CpTableDetailMsg
 import com.ridi.oss.proxymonster.grpc.DecisionRequest
 import com.ridi.oss.proxymonster.grpc.Engine
 import com.ridi.oss.proxymonster.grpc.EventsRequest
-import com.ridi.oss.proxymonster.grpc.ProxyRunMsg
+import com.ridi.oss.proxymonster.grpc.ProxyEditorMsg
 import com.ridi.oss.proxymonster.grpc.ProxyTableDetailMsg
 import com.ridi.oss.proxymonster.grpc.RegisterRequest
 import com.ridi.oss.proxymonster.grpc.RegisterResponse
 import com.ridi.oss.proxymonster.grpc.SchemaFragmentAck
 import com.ridi.oss.proxymonster.grpc.SchemaFragmentPush
 import com.ridi.oss.proxymonster.grpc.TempColumn
-import com.ridi.oss.proxymonster.grpc.ValidateTokenRequest
+import com.ridi.oss.proxymonster.grpc.ConnectionDoor
+import com.ridi.oss.proxymonster.grpc.OpenConnectionRequest
 import com.ridi.oss.proxymonster.grpc.WireDecision
 import com.ridi.oss.proxymonster.grpc.WireIdentity
 import com.ridi.oss.proxymonster.grpc.catalogResponse
@@ -73,19 +74,19 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 
-// The run handler bounds only the wait for the FIRST frame (the run's id): a proxy that opens a stream but
-// never identifies its run, or never closes, must not park the handler forever. Once a stream is attached to
-// its run there is no fixed overall cap — its lifetime is the run's or session's own (see runExec). This
-// backstop sits above RUN_DIALBACK_TIMEOUT_MS so the caller's own dial-back timeout reports first on a live
-// run; it only reaps a handler the caller has already given up on.
-internal const val RUN_FIRST_FRAME_TIMEOUT_MS = 30_000L
+// The editor handler bounds only the wait for the FIRST frame (the session id): a proxy that opens a stream but
+// never identifies its session, or never closes, must not park the handler forever. Once a stream is attached to
+// its session there is no fixed overall cap — its lifetime is the session's own (see editorExec). This
+// backstop sits above EDITOR_DIALBACK_TIMEOUT_MS so the caller's own dial-back timeout reports first on a live
+// session; it only reaps a handler the caller has already given up on.
+internal const val EDITOR_FIRST_FRAME_TIMEOUT_MS = 30_000L
 private const val TABLE_DETAIL_STREAM_TIMEOUT_MS = 60_000L
 // The proxy<->control-plane wire-protocol version this control-plane speaks, exchanged at Register so a
 // half-finished rollout (proxy and control-plane on different server-v* releases) fails fast with a clear
-// error instead of a stalled run channel. Bump it on any incompatible wire change. It MUST match the proxy's
+// error instead of a stalled editor session. Bump it on any incompatible wire change. It MUST match the proxy's
 // goproxy cp.ProtocolVersion; the two are separate constants in separate languages kept in lockstep by hand —
 // a server-v* release always ships both at the same value.
-internal const val CONTROL_PROTOCOL_VERSION = 6
+internal const val CONTROL_PROTOCOL_VERSION = 8
 
 /**
  * Build the session-temp overlay from a decide request's proxy-supplied [temps], applying BOTH
@@ -119,27 +120,27 @@ internal fun editorTempOverlay(channel: Channel, engine: Engine, temps: List<Tem
  * shared [ControlPlaneCore] — the SAME store/authz graph the HTTP surface uses, so policy edits made
  * through the web API are seen by these decisions (see ControlPlaneCore for why sharing is mandatory).
  *
- * The hot path is [validateToken] (session handshake) and [decide] (per-query
+ * The hot path is [openConnection] (session handshake) and [decide] (per-query
  * enforcement, re-validating the raw token EVERY call so a revoked token or deprovisioned principal
  * loses access on the next query, not at session end). [register]/[pushCatalog] keep the datasource
- * catalog current and [events] carries the liveness + refresh/run push stream.
+ * catalog current and [events] carries the liveness + refresh/editor-session push stream.
  */
 class ControlPlaneGrpcService(
     private val core: ControlPlaneCore,
-    private val firstFrameTimeoutMs: Long = RUN_FIRST_FRAME_TIMEOUT_MS,
+    private val firstFrameTimeoutMs: Long = EDITOR_FIRST_FRAME_TIMEOUT_MS,
 ) :
     ControlPlaneGrpcKt.ControlPlaneCoroutineImplBase() {
 
     private val log = org.slf4j.LoggerFactory.getLogger(ControlPlaneGrpcService::class.java)
 
     /**
-     * Record a rejected wire credential. The proxy carries the end-client address on [ValidateTokenRequest],
+     * Record a rejected wire credential. The proxy carries the end-client address on [OpenConnectionRequest],
      * stored raw (blank→null), exactly as the decide audit row stores it. The requested datasource is
      * caller-supplied and unvalidated at this point, so it is bounded and confined to `detail` rather than
      * naming the resource.
      */
-    private fun auditWireRejection(request: ValidateTokenRequest, principal: String?, reason: String) {
-        // Best-effort: this rejection changes no state, and validateToken is the hot wire path — an audit
+    private fun auditWireRejection(request: OpenConnectionRequest, principal: String?, reason: String) {
+        // Best-effort: this rejection changes no state, and openConnection is the hot wire path — an audit
         // insert that throws (the chain-head lock, a broken chain) must not replace UNAUTHENTICATED with
         // INTERNAL, which every bad token got before this trail existed.
         core.authAudit.failureBestEffort(
@@ -151,16 +152,18 @@ class ControlPlaneGrpcService(
         )
     }
 
-    override suspend fun validateToken(request: ValidateTokenRequest): WireIdentity {
-        val id = core.tokenStore.validate(request.token)
+    override suspend fun openConnection(request: OpenConnectionRequest): WireIdentity {
+        val editorDoor = request.door == ConnectionDoor.CONNECTION_DOOR_EDITOR
+        val id = core.tokenStore.validate(request.token, editorDoor)
+        // A refused editor-door token is the control plane's own, revoked when its editor session ended; only a client's login is audited.
         if (id == null) {
             // validate() collapses invalid/expired/revoked into one null, and none of them names a
             // principal — hence one reason covering the set, and no attribution.
-            auditWireRejection(request, principal = null, reason = "invalid_expired_or_revoked")
+            if (!editorDoor) auditWireRejection(request, principal = null, reason = "invalid_expired_or_revoked")
             throw StatusException(Status.UNAUTHENTICATED.withDescription("invalid, expired, or revoked wire token"))
         }
         if (core.userGroupStore.isDeactivated(id.principal)) {
-            auditWireRejection(request, id.principal, reason = "principal_deprovisioned")
+            if (!editorDoor) auditWireRejection(request, id.principal, reason = "principal_deprovisioned")
             throw StatusException(Status.UNAUTHENTICATED.withDescription("principal is deprovisioned"))
         }
         if (request.datasourceName.isBlank()) {
@@ -169,7 +172,7 @@ class ControlPlaneGrpcService(
         val ds = core.datasourceStore.getByName(request.datasourceName)
             ?: throw StatusException(Status.NOT_FOUND.withDescription("unknown datasource '${request.datasourceName}'"))
         val opened = core.connectionCatalog.open(
-            Binding(ds.name, id.principal, id.kind, ds.effectiveCatalog, ds.engine),
+            Binding(ds.name, id.principal, id.kind, ds.pushedCatalog(), ds.engine),
             ds.namespaces(ds.defaultSchemas + ds.engine.systemSchemas),
             adoptHeldContent = ds.engine.catalogIsConnectionIndependent,
         )
@@ -206,11 +209,10 @@ class ControlPlaneGrpcService(
         // The connection's session/temp columns, overlaid onto the base catalog. Both trust
         // gates (EDITOR-channel-only + temp-schema filter) live in [editorTempOverlay] so they're unit-testable.
         val tempColumns = editorTempOverlay(channel, ds.engine, request.tempColumnsList)
-        val httpIp = resolved.httpRequesterIp
-        if (request.connectionId.size() != 16) {
-            throw StatusException(Status.INVALID_ARGUMENT.withDescription("connection_id must be exactly 16 bytes"))
+        if (request.connectionId.isEmpty) {
+            throw StatusException(Status.INVALID_ARGUMENT.withDescription("connection_id is required"))
         }
-        val binding = Binding(ds.name, id.principal, id.kind, ds.effectiveCatalog, ds.engine)
+        val binding = Binding(ds.name, id.principal, id.kind, ds.pushedCatalog(), ds.engine)
         val connection = core.connectionCatalog.find(request.connectionId)
         if (connection == null) {
             val recovered = core.connectionCatalog.recover(
@@ -227,7 +229,7 @@ class ControlPlaneGrpcService(
         return when (
             val outcome = decideConnection(
                 core, request.connectionId, id.principal, ds, request.sql, request.searchPathList,
-                clientAddr, request.session, channel, assumeRoles, tempColumns, httpRequesterIp = httpIp,
+                clientAddr, request.session, channel, assumeRoles, tempColumns,
                 targetCheck = if (request.hasTargetCheck()) request.targetCheck else null,
             ) ?: throw StatusException(Status.NOT_FOUND.withDescription("connection disappeared during Decide"))
         ) {
@@ -287,7 +289,7 @@ class ControlPlaneGrpcService(
             throw StatusException(Status.INVALID_ARGUMENT.withDescription("datasource name must not be blank"))
         }
         // Reject a half-finished rollout talking across versions here — the proxy's first call — rather than
-        // let it surface later as a stalled run channel. The proxy makes the mirror check against
+        // let it surface later as a stalled editor session. The proxy makes the mirror check against
         // RegisterResponse.protocol_version, so an OLDER control-plane is refused on that side.
         requireCompatibleProtocolVersion(request.protocolVersion)
         val engine = try {
@@ -318,14 +320,11 @@ class ControlPlaneGrpcService(
                 )
             }
         }
-        val priorDbName = core.datasourceStore.getByName(request.name)?.dbName
         val ds = try {
             core.datasourceStore.register(
                 name = request.name,
                 engine = engine,
-                host = request.host,
-                port = request.port,
-                dbName = request.dbName,
+                targetInfo = request.targetInfo,
                 tags = request.tagsList,
                 advertiseAddr = request.advertiseAddr,
                 advertiseCertChain = certChain,
@@ -342,16 +341,6 @@ class ControlPlaneGrpcService(
             // the proxy's own misconfiguration, so it must read as one rather than an opaque server error.
             throw StatusException(Status.INVALID_ARGUMENT.withDescription(e.error.code))
         }
-        // The catalog push that follows registration cannot repair this: it only confirms content it agrees
-        // with, and a retarget is precisely the case where it disagrees. So the held structure would survive,
-        // describing a database that is no longer there, and the next connection would adopt it.
-        if (priorDbName != null && priorDbName != ds.dbName) {
-            val dropped = core.connectionCatalog.invalidateDatasource(ds.name)
-            log.info(
-                "datasource '{}' retargeted {} -> {}: dropped {} enforcement schema(s)",
-                ds.name, priorDbName, ds.dbName, dropped.size,
-            )
-        }
         return registerResponse {
             name = ds.name
             protocolVersion = CONTROL_PROTOCOL_VERSION
@@ -366,7 +355,7 @@ class ControlPlaneGrpcService(
                 Status.NOT_FOUND.withDescription("unknown datasource '${request.datasourceName}' — Register first"),
             )
         val currentCatalog = try {
-            ds.measuredCatalog(request.currentCatalog)
+            ds.reportedCatalog(request.currentCatalog)
         } catch (e: ManagementException) {
             throw StatusException(Status.INVALID_ARGUMENT.withDescription(e.error.code))
         }
@@ -386,11 +375,10 @@ class ControlPlaneGrpcService(
         } catch (e: ManagementException) {
             throw StatusException(Status.INVALID_ARGUMENT.withDescription(e.error.code))
         }
-        // This push is a fresh whole-catalog read of the target DB, so where it agrees with content the
-        // enforcement pool already holds it re-measures that content — the ambient refresh keeps held
-        // fragments verified instead of only feeding the config catalog, and a connection is not made to
-        // re-probe a schema the proxy just confirmed.
-        val confirmed = core.connectionCatalog.recordAmbientMeasurement(
+        // This push is a fresh whole-catalog inspection of the target DB: it confirms the held content it agrees
+        // with and marks the rest unverified, so a new connection never decides on structure the target DB no
+        // longer has.
+        val confirmed = core.connectionCatalog.applyCatalogPush(
             ds.name,
             request.catalog.columnsList.groupBy({ namespace(it.catalog, it.schema) }) {
                 FragmentColumn(it.catalog, it.schema, it.table, it.column, it.dataType, it.ordinal, it.nullable)
@@ -398,7 +386,7 @@ class ControlPlaneGrpcService(
             request.catalog.routinesList.associate { namespace(currentCatalog, it.schema) to it.namesList },
         )
         if (confirmed.isNotEmpty()) {
-            log.debug("datasource '{}': ambient refresh re-verified {} pooled schema(s)", ds.name, confirmed.size)
+            log.debug("datasource '{}': catalog push re-verified {} pooled schema(s)", ds.name, confirmed.size)
         }
         // Which shipped system-classification manifest governs THIS datasource, resolved from the version the
         // proxy just pushed — so an operator sees at connect time whether its system schemas are classified,
@@ -412,15 +400,15 @@ class ControlPlaneGrpcService(
     }
 
     /**
-     * A proxy-dialed, single-request run stream. The first request must claim a pending run session;
+     * A proxy-dialed, single-request editor stream. The first request must claim a pending editor session;
      * every later proxy message is relayed to that request's private inbound channel. The request Flow is
      * collected exactly once because grpc-kotlin's bidi request stream is single-collect.
      */
-    override fun runExec(requests: Flow<ProxyRunMsg>): Flow<ControlRunMsg> = channelFlow {
+    override fun editorExec(requests: Flow<ProxyEditorMsg>): Flow<CpEditorMsg> = channelFlow {
         var sessionId: String? = null
         var attached: Attached? = null
         // Bound ONLY the wait for the first frame. There is deliberately no overall stream cap: once the
-        // stream is attached to its run, its lifetime is the run's or session's own — the caller's RunClose
+        // stream is attached to its session, its lifetime is the session's own — the caller's EditorClose
         // for a one-shot run, and the idle sweep / closeSession / token expiry for a persistent editor session.
         // A fixed overall cap here would silently cut a live, actively-used session short.
         val firstFrameTimer = launch {
@@ -430,7 +418,7 @@ class ControlPlaneGrpcService(
             // stream. Re-check liveness so an attach that raced the deadline wins.
             ensureActive()
             throw StatusException(
-                Status.DEADLINE_EXCEEDED.withDescription("RunExec sent no first frame in time"),
+                Status.DEADLINE_EXCEEDED.withDescription("EditorExec sent no first frame in time"),
             )
         }
         try {
@@ -440,17 +428,17 @@ class ControlPlaneGrpcService(
                     if (!message.hasSessionReady()) {
                         throw StatusException(
                             Status.FAILED_PRECONDITION.withDescription(
-                                "the first RunExec message must be RunReady",
+                                "the first EditorExec message must be EditorReady",
                             ),
                         )
                     }
                     val id = message.sessionReady.sessionId
                     sessionId = id
-                    attached = core.runChannels.attach(id, channel)
+                    attached = core.editorSessions.attach(id, channel)
                         ?: throw StatusException(
-                            Status.NOT_FOUND.withDescription("unknown or already-claimed run session '$id'"),
+                            Status.NOT_FOUND.withDescription("unknown or already-claimed editor session '$id'"),
                         )
-                    // Attached — the run/session lifecycle governs the stream from here; drop the first-frame bound.
+                    // Attached — the session lifecycle governs the stream from here; drop the first-frame bound.
                     firstFrameTimer.cancel()
                 } else {
                     current.inbound.send(message)
@@ -459,19 +447,19 @@ class ControlPlaneGrpcService(
             if (attached == null) {
                 throw StatusException(
                     Status.FAILED_PRECONDITION.withDescription(
-                        "RunExec closed before RunReady",
+                        "EditorExec closed before EditorReady",
                     ),
                 )
             }
         } catch (e: ClosedSendChannelException) {
-            // The run consumer closed its inbound while the proxy was still streaming: the run ended
+            // The session consumer closed its inbound while the proxy was still streaming: the session ended
             // (served-and-done or abandoned at the open ceiling) but this proxy has not closed its side.
             // That is a normal end of the stream, not a fault — complete it so the proxy sees a clean
             // close rather than an UNKNOWN status.
         } finally {
             firstFrameTimer.cancel()
             attached?.inbound?.close()
-            sessionId?.let { core.runChannels.remove(it) }
+            sessionId?.let { core.editorSessions.remove(it) }
         }
     }
 
@@ -479,7 +467,7 @@ class ControlPlaneGrpcService(
      * A proxy-dialed, single-request table-detail stream. The first request claims the pending HTTP fetch;
      * the remaining proxy result/error is relayed to that request's private inbound channel.
      */
-    override fun tableDetailExec(requests: Flow<ProxyTableDetailMsg>): Flow<ControlTableDetailMsg> = channelFlow {
+    override fun tableDetailExec(requests: Flow<ProxyTableDetailMsg>): Flow<CpTableDetailMsg> = channelFlow {
         var sessionId: String? = null
         var attached: AttachedTableDetail? = null
         try {
@@ -531,7 +519,7 @@ class ControlPlaneGrpcService(
      * unknown datasource is NOT_FOUND (Register first). While open, the stream relays any `RefreshCatalog`
      * an admin pushes (see [ProxyEventsHub]); it emits nothing on its own.
      */
-    override fun events(request: EventsRequest): Flow<ControlEvent> = channelFlow {
+    override fun events(request: EventsRequest): Flow<CpEvent> = channelFlow {
         val name = request.datasourceName
         // Version-gate the liveness stream too, not just Register. The datasource row outlives a rejected
         // Register, so an old proxy could otherwise attach here and be treated as live — the exact mixed-version
@@ -609,3 +597,6 @@ internal fun inspectTrustChain(pem: String): String? {
     }
     return null
 }
+
+private fun Datasource.pushedCatalog(): String = currentCatalog
+    ?: throw StatusException(Status.FAILED_PRECONDITION.withDescription("datasource '$name' has no catalog yet"))

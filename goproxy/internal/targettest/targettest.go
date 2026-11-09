@@ -26,7 +26,7 @@ func EqualColumns(left, right []*analyzerpb.Column) bool {
 	return slices.EqualFunc(left, right, func(a, b *analyzerpb.Column) bool { return proto.Equal(a, b) })
 }
 
-// InCatalog returns columns stamped with the catalog the connection under test measures.
+// InCatalog returns columns stamped with the catalog the connection under test inspects.
 func InCatalog(catalog string, columns []*analyzerpb.Column) []*analyzerpb.Column {
 	out := make([]*analyzerpb.Column, len(columns))
 	for i, column := range columns {

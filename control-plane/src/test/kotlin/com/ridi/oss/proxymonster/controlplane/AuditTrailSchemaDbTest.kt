@@ -92,8 +92,7 @@ class AuditTrailSchemaDbTest {
 
     private fun seedDatasource(dataSource: DataSource): Long = dataSource.connection.use { connection ->
         connection.prepareStatement(
-            "INSERT INTO datasource (name, engine, host, port, db_name) " +
-                "VALUES ('audit-schema-ds', 'postgres', 'localhost', 5432, 'app') RETURNING id",
+            "INSERT INTO datasource (name, engine) VALUES ('audit-schema-ds', 'postgres') RETURNING id",
         ).use { statement -> statement.executeQuery().use { result -> result.next(); result.getLong(1) } }
     }
 

@@ -49,7 +49,7 @@ import kotlin.test.assertTrue
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class ApprovalDiscoverPickSubmitRouteDbTest {
     private lateinit var fx: EnforcementFixture
-    private lateinit var runExecService: RunExecService
+    private lateinit var editorExecService: EditorExecService
     private lateinit var sessionStore: PrincipalSessionStore
     private lateinit var config: Config
 
@@ -61,8 +61,8 @@ class ApprovalDiscoverPickSubmitRouteDbTest {
         requireDockerOrSkip()
         fx = EnforcementFixture.postgres()
         // Never exercised by discover-roles or the proactive-compose POST /api/approvals — both routes
-        // stop at decideQuery / accessStore.createQueryRequest, well short of runExecService.
-        runExecService = RunExecService(ControlPlaneCore(fx.dataSource))
+        // stop at decideQuery / accessStore.createQueryRequest, well short of editorExecService.
+        editorExecService = EditorExecService(ControlPlaneCore(fx.dataSource))
         sessionStore = PrincipalSessionStore(fx.dataSource, null)
 
         // A datasource-scoped query-approval policy row (a global NULL-datasource row is already seeded
@@ -88,7 +88,7 @@ class ApprovalDiscoverPickSubmitRouteDbTest {
     private fun seedRolesForUnionVsAloneTeeth() {
         val ds = fx.datasource
         // Postgres EUID shape used by EnforcementFixture.seedPolicy: "<ds>/<catalog>/<schema>/users".
-        val usersEuid = "${ds.name}/${ds.dbName}/public/users"
+        val usersEuid = "${ds.name}/${ds.effectiveCatalog}/public/users"
 
         fun grant(name: String, src: String) =
             fx.cedarPolicyStore.create(CedarPolicyInput(name = name, cedarSrc = src), updatedBy = "discover-pick-submit-test")
@@ -122,7 +122,7 @@ class ApprovalDiscoverPickSubmitRouteDbTest {
                 approvalRoutes(
                     config, fx.accessStore, fx.auditStore, fx.datasourceStore, fx.policyStore,
                     fx.userGroupStore, null, fx.roleResolver,
-                    fx.authz, runExecService,
+                    fx.authz, editorExecService,
                 )
             }
         }

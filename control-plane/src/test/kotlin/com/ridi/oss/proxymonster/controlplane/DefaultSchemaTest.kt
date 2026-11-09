@@ -6,7 +6,7 @@ import kotlin.test.assertEquals
 
 class DefaultSchemaTest {
     private fun first(engine: Engine, lctn: Int?, vararg schemas: String): String? =
-        Datasource(1, "ds", engine, "", 0, "app", defaultSchemas = schemas.toList(), engineVersion = "8.0.44".takeIf { engine == Engine.MYSQL }, mysqlLowerCaseTableNames = lctn).firstUserDefaultSchema()
+        Datasource(1, "ds", engine, "app", defaultSchemas = schemas.toList(), engineVersion = "8.0.44".takeIf { engine == Engine.MYSQL }, mysqlLowerCaseTableNames = lctn).firstUserDefaultSchema()
 
     @Test
     fun `skips only schemas whose canonical name is a system schema`() {

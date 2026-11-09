@@ -4,11 +4,9 @@ import com.ridi.oss.proxymonster.auth.McpAccessIdentity
 import com.ridi.oss.proxymonster.auth.sha256Hex
 import com.ridi.oss.proxymonster.controlplane.AccessService
 import com.ridi.oss.proxymonster.controlplane.ApiError
-import com.ridi.oss.proxymonster.controlplane.DatasourceInput
-import com.ridi.oss.proxymonster.controlplane.wireName
 import com.ridi.oss.proxymonster.controlplane.ApprovalService
 import com.ridi.oss.proxymonster.controlplane.EditorTaskService
-import com.ridi.oss.proxymonster.controlplane.RunExecService
+import com.ridi.oss.proxymonster.controlplane.EditorExecService
 import com.ridi.oss.proxymonster.controlplane.SERVER_VERSION
 import com.ridi.oss.proxymonster.controlplane.TaskServiceException
 import com.ridi.oss.proxymonster.controlplane.AuditService
@@ -116,12 +114,12 @@ fun Application.installMcp(
     identityService: IdentityManagementService,
     editorTasks: EditorTaskService = EditorTaskService(
         config, core.datasourceStore, core.accessStore, queryResultStore = null, core.policyStore, core.userGroupStore,
-        core.roleResolver, core.authz, RunExecService(core), appScope = this, core.systemClassification,
+        core.roleResolver, core.authz, EditorExecService(core), appScope = this, core.systemClassification,
         core.taskCompletionHub, core.auditStore,
     ),
     approvals: ApprovalService = ApprovalService(
         config, core.accessStore, core.auditStore, core.datasourceStore, core.policyStore, core.userGroupStore,
-        queryResultStore = null, core.roleResolver, core.authz, RunExecService(core), appScope = this,
+        queryResultStore = null, core.roleResolver, core.authz, EditorExecService(core), appScope = this,
         core.systemClassification, core.taskCompletionHub,
     ),
     access: AccessService = AccessService(
@@ -722,33 +720,6 @@ private fun executeWrite(
                 },
             )
             "delete_mask_fn" -> structured(policies.deleteMaskFn(args.requiredString("name"), actor, connection))
-            "create_datasource" -> structured(
-                datasources.createDatasource(
-                    DatasourceInput(
-                        args.requiredString("name"),
-                        args.string("engine") ?: "postgres",
-                        args.string("host").orEmpty(),
-                        args.int("port") ?: 0,
-                        args.string("dbName").orEmpty(),
-                    ),
-                    actor, connection,
-                ),
-            )
-            "update_datasource" -> structured(
-                datasources.getDatasource(args.requiredString("datasource")).let { current ->
-                    datasources.updateDatasource(
-                        current.name,
-                        DatasourceInput(
-                            args.string("newName") ?: current.name,
-                            args.string("engine") ?: current.engine.wireName,
-                            args.string("host") ?: current.host,
-                            args.int("port") ?: current.port,
-                            args.string("dbName") ?: current.dbName,
-                        ),
-                        actor, connection,
-                    )
-                },
-            )
             "delete_datasource" -> structured(datasources.deleteDatasource(args.requiredString("datasource"), actor, connection))
             "refresh_datasource" -> structured(datasources.refreshDatasource(args.requiredString("datasource")))
             "test_datasource" -> structured(datasources.testDatasource(args.requiredString("datasource")))
@@ -771,12 +742,9 @@ private fun schemaFor(tool: String): ToolSchema {
             put("type", "array")
             put("items", buildJsonObject { put("type", "string") })
         }
-        fun datasourceFields() { string("engine"); string("host"); integer("port", min = 0, max = 65535); string("dbName") }
         when (tool) {
             "get_datasource_liveness", "browse_catalog", "list_column_tags" -> string("datasource")
             "list_group_members", "list_group_roles" -> string("groupName")
-            "create_datasource" -> { string("name"); datasourceFields() }
-            "update_datasource" -> { string("datasource"); string("newName"); datasourceFields() }
             "delete_datasource", "refresh_datasource", "test_datasource" -> string("datasource")
             "get_table_detail" -> { string("datasource"); string("catalog"); string("schema"); string("table") }
             "get_policy", "enable_policy", "disable_policy", "delete_policy", "delete_role", "delete_group", "delete_mask_fn" -> string("name")
@@ -861,8 +829,7 @@ private fun schemaFor(tool: String): ToolSchema {
     val required = when (tool) {
         "get_datasource_liveness", "browse_catalog", "list_column_tags" -> listOf("datasource")
         "list_group_members", "list_group_roles" -> listOf("groupName")
-        "create_datasource" -> listOf("name")
-        "update_datasource", "delete_datasource", "refresh_datasource", "test_datasource" -> listOf("datasource")
+        "delete_datasource", "refresh_datasource", "test_datasource" -> listOf("datasource")
         "get_table_detail" -> listOf("datasource", "catalog", "schema", "table")
         "get_policy", "enable_policy", "disable_policy", "delete_policy", "delete_role", "delete_group", "delete_mask_fn" -> listOf("name")
         "validate_policy" -> listOf("cedarSrc")

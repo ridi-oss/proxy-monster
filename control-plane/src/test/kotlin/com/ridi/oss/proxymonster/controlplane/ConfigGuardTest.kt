@@ -75,7 +75,7 @@ class ConfigGuardTest {
 
     @Test fun `PM_QUERY_TIMEOUT is bounded to the proxy's duration-safe ceiling (no ms overflow)`() {
         // The shared CP+proxy maximum: accepted here, rejected one above. Keeps queryExchangeTimeoutMs /
-        // the run-stream cap from overflowing Long, and keeps the lockstep contract with goproxy exact.
+        // the editor-stream cap from overflowing Long, and keeps the lockstep contract with goproxy exact.
         assertEquals(
             Config.MAX_QUERY_TIMEOUT_SECONDS,
             Config.fromEnv(envOf("PM_QUERY_TIMEOUT" to Config.MAX_QUERY_TIMEOUT_SECONDS.toString())).queryTimeoutSeconds,
@@ -89,18 +89,18 @@ class ConfigGuardTest {
         assertFailsWith<IllegalArgumentException> { Config.fromEnv(envOf("PM_QUERY_TIMEOUT" to Long.MAX_VALUE.toString())) }
     }
 
-    @Test fun `run token TTL outlives the whole run, session TTL outlives the query window`() {
-        // The one-shot run token must stay valid for the ENTIRE run it authorizes — the dial-back + the
+    @Test fun `editor-door token TTL outlives the whole run, session TTL outlives the query window`() {
+        // The one-shot editor-door token must stay valid for the ENTIRE run it authorizes — the dial-back + the
         // target-DB open + the exchange (PM_QUERY_TIMEOUT + exchange grace) — not merely the query window, else a
         // long query on a slow target-DB open fails UNAUTHENTICATED mid-run when the proxy revalidates the token.
         // The editor-session token's 8h floor spans many queries, so it need only clear one window.
         val runOverheadSeconds =
-            (RUN_DIALBACK_TIMEOUT_MS + RUN_OPEN_TIMEOUT_MS) / 1000 + Config.QUERY_EXCHANGE_GRACE_MS / 1000
+            (EDITOR_DIALBACK_TIMEOUT_MS + EDITOR_OPEN_TIMEOUT_MS) / 1000 + Config.QUERY_EXCHANGE_GRACE_MS / 1000
         // 616 is the smallest timeout at which the old floor-only grace under-budgeted the full run.
         for (timeout in listOf(1L, 600L, 616L, 3600L, 36_000L, Config.MAX_QUERY_TIMEOUT_SECONDS)) {
             assertTrue(
-                RunExecService.runTokenTtlSeconds(timeout, 1) >= timeout + runOverheadSeconds,
-                "run token TTL must cover dial-back + target-DB open + exchange for timeout=$timeout",
+                EditorExecService.tokenTtlSeconds(timeout, 1) >= timeout + runOverheadSeconds,
+                "editor-door token TTL must cover dial-back + target-DB open + exchange for timeout=$timeout",
             )
             // A run is a BATCH whose statements share one token, each able to take a full query window.
             // Budgeting for one would expire the token partway through, after earlier statements had
@@ -111,16 +111,16 @@ class ConfigGuardTest {
                     Math.multiplyExact(timeout, statements.toLong())
                 }.getOrDefault(Long.MAX_VALUE)
                 assertTrue(
-                    RunExecService.runTokenTtlSeconds(timeout, statements) >= minOf(batchBudget, Long.MAX_VALUE - 1),
-                    "run token TTL must cover a $statements-statement batch for timeout=$timeout",
+                    EditorExecService.tokenTtlSeconds(timeout, statements) >= minOf(batchBudget, Long.MAX_VALUE - 1),
+                    "editor-door token TTL must cover a $statements-statement batch for timeout=$timeout",
                 )
                 assertTrue(
-                    RunExecService.runTokenTtlSeconds(timeout, statements) > 0,
-                    "run token TTL must never overflow negative for timeout=$timeout, statements=$statements",
+                    EditorExecService.tokenTtlSeconds(timeout, statements) > 0,
+                    "editor-door token TTL must never overflow negative for timeout=$timeout, statements=$statements",
                 )
             }
             assertTrue(
-                RunExecService.editorSessionTtlSeconds(timeout) > timeout,
+                EditorExecService.editorSessionTtlSeconds(timeout) > timeout,
                 "editor session TTL must exceed the query window for timeout=$timeout",
             )
         }

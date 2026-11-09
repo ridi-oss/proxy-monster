@@ -1,5 +1,6 @@
 package com.ridi.oss.proxymonster.controlplane
 
+import com.ridi.oss.proxymonster.controlplane.support.openEditorConnection
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
 import com.ridi.oss.proxymonster.controlplane.grpc.ControlPlaneGrpcService
 import com.ridi.oss.proxymonster.controlplane.grpc.GrpcServer
@@ -15,18 +16,19 @@ import com.ridi.oss.proxymonster.controlplane.support.EnforcementFixture
 import com.ridi.oss.proxymonster.controlplane.support.PerConnectionCatalogFixture
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.controlplane.support.withFakeProxy
+import com.ridi.oss.proxymonster.grpc.EditorQuery
 import com.ridi.oss.proxymonster.grpc.ControlPlaneGrpcKt
-import com.ridi.oss.proxymonster.grpc.OpenRunChannel
+import com.ridi.oss.proxymonster.grpc.OpenEditorSession
 import com.ridi.oss.proxymonster.grpc.decisionRequest
 import com.ridi.oss.proxymonster.grpc.EnfAction as WireEnfAction
-import com.ridi.oss.proxymonster.grpc.ProxyRunMsg
-import com.ridi.oss.proxymonster.grpc.proxyRunMsg
-import com.ridi.oss.proxymonster.grpc.runDecision
-import com.ridi.oss.proxymonster.grpc.runError
-import com.ridi.oss.proxymonster.grpc.runDone
-import com.ridi.oss.proxymonster.grpc.runResultRows
-import com.ridi.oss.proxymonster.grpc.runRow
-import com.ridi.oss.proxymonster.grpc.runValue
+import com.ridi.oss.proxymonster.grpc.ProxyEditorMsg
+import com.ridi.oss.proxymonster.grpc.proxyEditorMsg
+import com.ridi.oss.proxymonster.grpc.editorDecision
+import com.ridi.oss.proxymonster.grpc.editorError
+import com.ridi.oss.proxymonster.grpc.editorDone
+import com.ridi.oss.proxymonster.grpc.editorResultRows
+import com.ridi.oss.proxymonster.grpc.editorRow
+import com.ridi.oss.proxymonster.grpc.editorValue
 import io.grpc.ManagedChannel
 import io.grpc.netty.shaded.io.grpc.netty.NettyChannelBuilder
 import io.ktor.client.HttpClient
@@ -88,7 +90,7 @@ class McpQueryToolsDbTest {
     private lateinit var core: ControlPlaneCore
     private lateinit var mcpTokens: McpTokens
     private lateinit var resultStore: QueryResultStore
-    private lateinit var runExecService: RunExecService
+    private lateinit var editorExecService: EditorExecService
     private lateinit var appScope: CoroutineScope
     private lateinit var server: GrpcServer
     private lateinit var rawChannel: ManagedChannel
@@ -107,7 +109,7 @@ class McpQueryToolsDbTest {
         core = pcf.core
         mcpTokens = McpTokens(fx.dataSource, RESOURCE)
         resultStore = QueryResultStore(fx.dataSource, ResultCrypto(ByteArray(32) { it.toByte() }))
-        runExecService = RunExecService(core)
+        editorExecService = EditorExecService(core)
         appScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
         analystRoleId = fx.policyStore.listRoles().first { it.name == ANALYST }.id
         server = GrpcServer(0, ControlPlaneGrpcService(core), secretToken = null).also { it.start() }
@@ -192,7 +194,8 @@ class McpQueryToolsDbTest {
         val requesterToken = token(requester, setOf("mcp:query"))
         val approverToken = token(approver, setOf("mcp:query", "mcp:approvals:write"))
         try {
-            withFakeProxy({ identity, statement, _ ->
+            withFakeProxy({ identity, query, _ ->
+                    val statement = query.sql
                     if (identity?.kind == TokenKind.APPROVER_EXEC.name) {
                         maskedResult(executeRequirements, executionDecision(approver))
                     } else {
@@ -202,7 +205,7 @@ class McpQueryToolsDbTest {
                                 decision = Decision.DENY, detail = "ssn requires approval",
                             ),
                         )
-                        listOf(proxyRunMsg { decision = runDecision { decision = WireEnfAction.DENY; decisionId = denied; denyReason = "ssn requires approval" } })
+                        listOf(proxyEditorMsg { decision = editorDecision { decision = WireEnfAction.DENY; decisionId = denied; denyReason = "ssn requires approval" } })
                     }
             }) {
                 run {
@@ -331,8 +334,8 @@ class McpQueryToolsDbTest {
         application { installTestMcp() }
         val client = createClient { expectSuccess = false }
         val n = seq.incrementAndGet()
-        val dsA = core.datasourceStore.create(DatasourceInput("mcp-scope-a-$n", "mysql", "localhost", 3306, "app"))
-        val dsB = core.datasourceStore.create(DatasourceInput("mcp-scope-b-$n", "mysql", "localhost", 3306, "app"))
+        val dsA = core.datasourceStore.registerOnly("mcp-scope-a-$n", "mysql")
+        val dsB = core.datasourceStore.registerOnly("mcp-scope-b-$n", "mysql")
         val requester = analyst("scoped-requester")
         val approver = "mcp-scoped-approver-$n@example.com"
         val policy = core.cedarPolicyStore.create(
@@ -448,16 +451,17 @@ class McpQueryToolsDbTest {
         val maskedRequirements = fx.decide(sql, principal, Channel.EDITOR).resultRequirements!!
         val emptyRequirements = fx.decide(empty, principal, Channel.EDITOR).resultRequirements!!
         val token = token(principal, setOf("mcp:query"))
-        withFakeProxy({ _, statement, _ ->
+        withFakeProxy({ _, query, _ ->
+            val statement = query.sql
             if (statement.contains("id < 0")) {
                 listOf(
-                    proxyRunMsg {
-                        decision = runDecision {
+                    proxyEditorMsg {
+                        decision = editorDecision {
                             decision = WireEnfAction.ALLOW; decisionId = executionDecision(principal, Channel.EDITOR); resultRequirements = emptyRequirements
                         }
                     },
-                    proxyRunMsg { resultRows = runResultRows { columns += "id" } },
-                    proxyRunMsg { done = runDone { rowsAffected = -1 } },
+                    proxyEditorMsg { resultRows = editorResultRows { columns += "id" } },
+                    proxyEditorMsg { done = editorDone { rowsAffected = -1 } },
                 )
             } else {
                 maskedResult(maskedRequirements, executionDecision(principal, Channel.EDITOR))
@@ -491,8 +495,8 @@ class McpQueryToolsDbTest {
         val requirements = fx.decide(sql, principal, Channel.EDITOR).resultRequirements!!
         withFakeProxy({ _, _, _ ->
             listOf(
-                proxyRunMsg { decision = runDecision { decision = WireEnfAction.ALLOW; decisionId = executionDecision(principal, Channel.EDITOR); resultRequirements = requirements } },
-                proxyRunMsg { error = runError { message = "ERROR: 42501 insufficient_privilege"; rawMessage = "ERROR: permission denied for database hris"; targetDbError = true } },
+                proxyEditorMsg { decision = editorDecision { decision = WireEnfAction.ALLOW; decisionId = executionDecision(principal, Channel.EDITOR); resultRequirements = requirements } },
+                proxyEditorMsg { error = editorError { message = "ERROR: 42501 insufficient_privilege"; rawMessage = "ERROR: permission denied for database hris"; targetDbError = true } },
             )
         }) {
             val run = client.call(token, "run_query", buildJsonObject {
@@ -668,7 +672,7 @@ class McpQueryToolsDbTest {
         val principal = "mcp-ip-$n@example.com"
         fx.policyStore.createAssignment(RoleAssignmentInput(principal, role.id))
         val schema = fx.datasource.defaultSchemas.first()
-        val usersTable = "${fx.datasource.name}/${fx.datasource.engine.catalogName(fx.datasource.dbName)}/$schema/users"
+        val usersTable = "${fx.datasource.name}/${fx.datasource.effectiveCatalog}/$schema/users"
         val policies = listOf(
             """permit(principal in Role::"${role.name}", action in [Action::"datasource.connect", Action::"stmt.cat.read"], resource in Datasource::"${fx.datasource.name}") when { context has channel && context.channel == "editor" && context has requester_ip && context.requester_ip.isInRange(ip("203.0.113.0/24")) };""",
             """permit(principal in Role::"${role.name}", action == Action::"result.read.unmasked", resource in Table::"$usersTable") unless { resource in Tag::"pii" };""",
@@ -677,46 +681,51 @@ class McpQueryToolsDbTest {
         val token = token(principal, setOf("mcp:query"))
         try {
             DriverManager.getConnection(fx.targetJdbcUrl, fx.targetUser, fx.targetPassword).use { target ->
-                withFakeProxy({ _, statement, open ->
+                val connections = java.util.concurrent.ConcurrentHashMap<String, com.google.protobuf.ByteString>()
+                withFakeProxy({ _, query, open ->
+                    val statement = query.sql
+                    val connectionId = connections.getOrPut(open.sessionId) { stub.openEditorConnection(open, fx.datasource.name) }
                     var response = stub.decide(decisionRequest {
                         this.token = open.ephemeralToken
                         datasourceName = fx.datasource.name
                         currentCatalog = fx.datasource.effectiveCatalog
-                        connectionId = open.connectionId
+                        this.connectionId = connectionId
                         this.sql = statement
                         searchPath.add(schema)
+                        clientAddr = query.requesterIp
                     })
                     repeat(3) {
                         if (response.hasBeforeDecide()) {
-                            response.beforeDecide.commandsList.forEach { pcf.pushFromTarget(target, open.connectionId, it.refetch.schema) }
+                            response.beforeDecide.commandsList.forEach { pcf.pushFromTarget(target, connectionId, it.refetch.schema) }
                             response = stub.decide(decisionRequest {
                                 this.token = open.ephemeralToken
                                 datasourceName = fx.datasource.name
                                 currentCatalog = fx.datasource.effectiveCatalog
-                                connectionId = open.connectionId
+                                this.connectionId = connectionId
                                 this.sql = statement
                                 searchPath.add(schema)
+                                clientAddr = query.requesterIp
                             })
                         }
                     }
                     val verdict = response.verdict
                     verdicts += verdict.decision
                     if (verdict.decision == WireEnfAction.DENY) {
-                        listOf(proxyRunMsg { decision = runDecision { decision = WireEnfAction.DENY; decisionId = verdict.decisionId; denyReason = verdict.denyReason } })
+                        listOf(proxyEditorMsg { decision = editorDecision { decision = WireEnfAction.DENY; decisionId = verdict.decisionId; denyReason = verdict.denyReason } })
                     } else {
                         listOf(
-                            proxyRunMsg {
-                                decision = runDecision {
+                            proxyEditorMsg {
+                                decision = editorDecision {
                                     decision = verdict.decision; decisionId = verdict.decisionId; resultRequirements = verdict.resultRequirements
                                 }
                             },
-                            proxyRunMsg {
-                                resultRows = runResultRows {
+                            proxyEditorMsg {
+                                resultRows = editorResultRows {
                                     columns += "id"
-                                    rows += listOf("1", "2").map { v -> runRow { values += runValue { value = v } } }
+                                    rows += listOf("1", "2").map { v -> editorRow { values += editorValue { value = v } } }
                                 }
                             },
-                            proxyRunMsg { done = runDone { rowsAffected = -1 } },
+                            proxyEditorMsg { done = editorDone { rowsAffected = -1 } },
                         )
                     }
                 }) {
@@ -745,9 +754,9 @@ class McpQueryToolsDbTest {
         val client = createClient { expectSuccess = false }
         val principal = analyst("smoke")
         val token = token(principal, setOf("mcp:query"))
-        val hidden = core.datasourceStore.create(DatasourceInput("mcp-hidden-${seq.incrementAndGet()}", "mysql", "localhost", 3306, "app"))
+        val hidden = core.datasourceStore.registerOnly("mcp-hidden-${seq.incrementAndGet()}", "mysql")
         val shown = fx.datasource
-        core.datasourceStore.register(shown.name, shown.engine, shown.host, shown.port, shown.dbName, emptyList(), "", null, false, description = "Orders and payments")
+        core.datasourceStore.register(shown.name, shown.engine, shown.targetInfo, emptyList(), "", null, false, description = "Orders and payments")
 
         val listed = client.call(token, "list_connectable_datasources").ok().getValue("result").jsonArray.map { it.jsonObject }
         assertContains(listed.map { it.str("name") }, fx.datasource.name)
@@ -791,19 +800,19 @@ class McpQueryToolsDbTest {
         val store = resultStore.takeIf { withStorage }
         val editorTasks = EditorTaskService(
             config, core.datasourceStore, core.accessStore, store, core.policyStore, core.userGroupStore,
-            core.roleResolver, core.authz, runExecService, appScope, core.systemClassification, core.taskCompletionHub,
+            core.roleResolver, core.authz, editorExecService, appScope, core.systemClassification, core.taskCompletionHub,
             core.auditStore,
         )
         val approvals = ApprovalService(
             config, core.accessStore, core.auditStore, core.datasourceStore, core.policyStore, core.userGroupStore,
-            store, core.roleResolver, core.authz, runExecService, appScope, core.systemClassification,
+            store, core.roleResolver, core.authz, editorExecService, appScope, core.systemClassification,
             core.taskCompletionHub,
         )
         installMcp(config, core, datasourceService, policyService, identityService, editorTasks, approvals)
     }
 
     private suspend fun withFakeProxy(
-        respond: suspend (WireIdentity?, String, OpenRunChannel) -> List<ProxyRunMsg>,
+        respond: suspend (WireIdentity?, EditorQuery, OpenEditorSession) -> List<ProxyEditorMsg>,
         body: suspend () -> Unit,
     ) = withFakeProxy(core, stub, fx.datasource.name, respond, body = body)
 
@@ -812,21 +821,21 @@ class McpQueryToolsDbTest {
     )
 
     private fun maskedResult(requirements: com.ridi.oss.proxymonster.grpc.ResultRequirements?, decisionId: Long) = listOf(
-        proxyRunMsg {
-            decision = runDecision {
+        proxyEditorMsg {
+            decision = editorDecision {
                 decision = WireEnfAction.MASK
                 this.decisionId = decisionId
                 maskedColumns += "ssn"
                 requirements?.let { resultRequirements = it }
             }
         },
-        proxyRunMsg {
-            resultRows = runResultRows {
+        proxyEditorMsg {
+            resultRows = editorResultRows {
                 columns += listOf("id", "ssn")
-                rows += maskedRows.map { row -> runRow { values += row.map { v -> runValue { value = v } } } }
+                rows += maskedRows.map { row -> editorRow { values += row.map { v -> editorValue { value = v } } } }
             }
         },
-        proxyRunMsg { done = runDone { rowsAffected = -1 } },
+        proxyEditorMsg { done = editorDone { rowsAffected = -1 } },
     )
 
     private fun analyst(label: String): String {

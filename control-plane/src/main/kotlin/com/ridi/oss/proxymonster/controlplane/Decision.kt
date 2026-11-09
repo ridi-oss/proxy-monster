@@ -55,7 +55,7 @@ fun resultVolume(rows: List<List<String?>>): Pair<Long, Long> {
 
 /**
  * The completion row that charges [decision]'s volume to its principal (the rate input,
- * docs/result-caps.md). Every writer builds it here so the wire relay, the run channel, and a stored-result
+ * docs/result-caps.md). Every writer builds it here so the wire relay, the editor session, and a stored-result
  * view charge the same shape. [principal] overrides the decision's when someone else consumes its rows.
  */
 fun completionEvent(

@@ -38,8 +38,8 @@ type fakeControlPlane struct {
 	pb.UnimplementedControlPlaneServer
 
 	mu           sync.Mutex
-	validateErr  error
-	validateFn   func(*pb.ValidateTokenRequest) (*pb.WireIdentity, error)
+	openErr      error
+	openFn       func(*pb.OpenConnectionRequest) (*pb.WireIdentity, error)
 	onOpen       []*pb.ProxyCommand
 	decideFn     func(*pb.DecisionRequest) (*pb.WireDecision, error)
 	decideReqs   []*pb.DecisionRequest
@@ -50,20 +50,20 @@ type fakeControlPlane struct {
 	events       []string
 }
 
-func (f *fakeControlPlane) ValidateToken(_ context.Context, req *pb.ValidateTokenRequest) (*pb.WireIdentity, error) {
+func (f *fakeControlPlane) OpenConnection(_ context.Context, req *pb.OpenConnectionRequest) (*pb.WireIdentity, error) {
 	f.mu.Lock()
-	validateErr := f.validateErr
-	validateFn := f.validateFn
+	openErr := f.openErr
+	openFn := f.openFn
 	onOpen := proto.Clone(&pb.WireIdentity{OnOpen: f.onOpen}).(*pb.WireIdentity).GetOnOpen()
 	f.mu.Unlock()
-	if validateErr != nil {
-		return nil, validateErr
+	if openErr != nil {
+		return nil, openErr
 	}
 	if req.GetToken() != validToken {
 		return nil, status.Error(codes.Unauthenticated, "invalid token")
 	}
-	if validateFn != nil {
-		return validateFn(proto.Clone(req).(*pb.ValidateTokenRequest))
+	if openFn != nil {
+		return openFn(proto.Clone(req).(*pb.OpenConnectionRequest))
 	}
 	return &pb.WireIdentity{
 		Principal:    "pg-it@example.com",
@@ -184,10 +184,10 @@ func (f *fakeControlPlane) setOnOpen(commands ...*pb.ProxyCommand) {
 	f.onOpen = proto.Clone(&pb.WireIdentity{OnOpen: commands}).(*pb.WireIdentity).GetOnOpen()
 }
 
-func (f *fakeControlPlane) setValidateFunc(validate func(*pb.ValidateTokenRequest) (*pb.WireIdentity, error)) {
+func (f *fakeControlPlane) setOpenFunc(open func(*pb.OpenConnectionRequest) (*pb.WireIdentity, error)) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.validateFn = validate
+	f.openFn = open
 }
 
 func (f *fakeControlPlane) closeRequests() []*pb.CloseConnectionRequest {
@@ -1216,7 +1216,7 @@ func TestDisconnectAfterDDLDoesNotAffectSiblingConnection(t *testing.T) {
 	connectionIDs := [][]byte{[]byte("session-one-0001"), []byte("session-two-0002")}
 	var minted int
 	h := startBrokerForDBSetup(t, targetConfig, "app", func(fake *fakeControlPlane) {
-		fake.setValidateFunc(func(*pb.ValidateTokenRequest) (*pb.WireIdentity, error) {
+		fake.setOpenFunc(func(*pb.OpenConnectionRequest) (*pb.WireIdentity, error) {
 			if minted >= len(connectionIDs) {
 				return nil, status.Error(codes.Internal, "too many sessions")
 			}

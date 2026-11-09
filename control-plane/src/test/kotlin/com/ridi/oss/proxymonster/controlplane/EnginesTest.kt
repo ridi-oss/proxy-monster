@@ -5,7 +5,6 @@ import com.ridi.oss.proxymonster.analyzer.pb.SessionObservation
 import com.ridi.oss.proxymonster.analyzer.pb.sessionObservation
 import com.ridi.oss.proxymonster.analyzer.pb.mySqlSession
 import com.ridi.oss.proxymonster.grpc.Engine
-import com.ridi.oss.proxymonster.probe.Dialect
 import kotlinx.serialization.json.Json
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -42,11 +41,9 @@ class EnginesTest {
         assertEquals(Engine.POSTGRES, Json.decodeFromString(EngineWireSerializer, "\"postgres\""))
     }
 
-    @Test fun `wireName and dialect are the canonical mappings`() {
+    @Test fun `wireName is the canonical mapping`() {
         assertEquals("mysql", Engine.MYSQL.wireName)
         assertEquals("postgres", Engine.POSTGRES.wireName)
-        assertEquals(Dialect.MYSQL, Engine.MYSQL.dialect)
-        assertEquals(Dialect.POSTGRES, Engine.POSTGRES.dialect)
     }
 
     @Test fun `catalogName and defaultSchema follow each engine's namespace model`() {
@@ -60,7 +57,6 @@ class EnginesTest {
 
     @Test fun `value-returning engine methods fail closed on an unspecified engine`() {
         assertFailsWith<IllegalStateException> { Engine.ENGINE_UNSPECIFIED.wireName }
-        assertFailsWith<IllegalStateException> { Engine.ENGINE_UNSPECIFIED.dialect }
         assertFailsWith<IllegalStateException> { Engine.ENGINE_UNSPECIFIED.catalogName("db") }
         assertFailsWith<IllegalStateException> { Engine.ENGINE_UNSPECIFIED.defaultSchema("db") }
         assertFailsWith<IllegalStateException> { Engine.ENGINE_UNSPECIFIED.systemSchemas }
@@ -68,7 +64,7 @@ class EnginesTest {
     }
 
     @Test fun `registered definitions own analyzer configuration and manifest series`() {
-        val mysql = Datasource(1, "mysql", Engine.MYSQL, "", 0, "app", engineVersion = "8.0.44", mysqlLowerCaseTableNames = 1)
+        val mysql = Datasource(1, "mysql", Engine.MYSQL, "app", engineVersion = "8.0.44", mysqlLowerCaseTableNames = 1)
         val postgres = mysql.copy(engine = Engine.POSTGRES, engineVersion = "17.9", mysqlLowerCaseTableNames = null)
         val mysqlConfig = mysql.engine.definition.analyzerEngineConfig(mysql, sessionObservation { this.mysql = mySqlSession { ansiQuotes = true } })
         assertEquals(Engine.MYSQL, mysqlConfig.engine)

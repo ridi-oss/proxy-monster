@@ -156,9 +156,8 @@ class SystemClassificationServiceTest {
         assertFalse(svc.redactsColumn(Engine.POSTGRES, null, "acme", "pg_catalog", "pg_foreign_server", "srvoptions"))
     }
 
-    // tagForFunction resolves a BARE function name (the only form the analyzer can emit, since
-    // sqlglot drops the schema qualifier) against the datasource's system/logical schemas + cross-schema
-    // rules. A dangerous builtin → its system tag; a safe builtin / user function → null (not marshalled).
+    // tagForFunction resolves a BARE function name against the datasource's system/logical schemas +
+    // cross-schema rules. A dangerous builtin → its system tag; a safe builtin / user function → null (not marshalled).
     @Test
     fun `tagForFunction classifies dangerous PostgreSQL builtins from the bare name`() {
         val pg = "PostgreSQL 17.4 on x86_64-pc-linux-gnu, compiled by gcc"
@@ -231,6 +230,32 @@ class SystemClassificationServiceTest {
         for (safe in listOf("now", "count", "lower", "concat", "my_udf")) {
             assertNull(svc.tagForFunction(Engine.POSTGRES, pg, safe), "$safe governed stays safe")
             assertNull(svc.tagForFunction(Engine.POSTGRES, null, safe), "$safe no-manifest stays safe")
+        }
+    }
+
+    @Test
+    fun `a qualified call is the builtin only in a schema that holds builtins`() {
+        val pg = "PostgreSQL 17.4 on x86_64-pc-linux-gnu, compiled by gcc"
+        for (version in listOf(pg, null)) {
+            fun tag(n: String) = svc.tagForFunction(Engine.POSTGRES, version, n)
+            assertNull(tag("public.pg_read_file"), "[$version] user public.pg_read_file")
+            assertNull(tag("app.set_config"), "[$version] user app.set_config")
+            assertNull(tag("public.lo_export"), "[$version] user public.lo_export")
+            assertEquals("system:data-leak", tag("pg_catalog.pg_read_file"), "[$version]")
+            assertEquals("system:critical", tag("pg_catalog.set_config"), "[$version]")
+            assertEquals("system:data-leak", tag("pg_read_file"), "[$version] unqualified")
+            // Extension functions install into any schema.
+            assertEquals("system:data-leak", tag("public.dblink"), "[$version]")
+            assertEquals("system:critical", tag("ext.dblink_exec"), "[$version]")
+            assertEquals("system:data-leak", tag("public.xpath_table"), "[$version]")
+            assertEquals("system:data-leak", tag("public.heap_page_items"), "[$version]")
+        }
+        for (version in listOf("8.0.mysql_aurora.3.04.0 (aurora 3.04.0)", null)) {
+            fun tag(n: String) = svc.tagForFunction(Engine.MYSQL, version, n)
+            assertNull(tag("app.load_file"), "[$version] stored app.load_file")
+            assertNull(tag("app.rds_kill"), "[$version] stored app.rds_kill")
+            assertEquals("system:data-leak", tag("load_file"), "[$version] native")
+            assertEquals("system:critical", tag("mysql.rds_kill"), "[$version]")
         }
     }
 

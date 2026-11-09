@@ -75,7 +75,8 @@ func (f *fixture) datasource(name, eng, dbName string, tags ...string) {
 		tags = []string{}
 	}
 	j, _ := json.Marshal(tags)
-	f.exec(`INSERT INTO datasource (name, engine, host, port, db_name, tags) VALUES ($1, $2, 'h', 1, $3, $4::jsonb)`, name, eng, dbName, string(j))
+	f.exec(`INSERT INTO datasource (name, engine, tags, current_catalog_name) VALUES ($1, $2, $3::jsonb, $4)`,
+		name, eng, string(j), reqDS(name, eng, dbName).catalog)
 }
 
 func (f *fixture) grant(principal, role string) {
@@ -348,15 +349,15 @@ func TestPostgresSelectorsStayInDatabase(t *testing.T) {
 	f.want("table in another database", on(tableOp(ref("other", "public", "users")), alice, "reports", ""), notConnectable)
 }
 
-func TestMeasuredCatalogNamesTheDatabase(t *testing.T) {
+func TestReportedCatalogNamesTheDatabase(t *testing.T) {
 	f := newFixture(t)
-	f.datasource("measured", "postgres", "app")
-	f.exec(`UPDATE datasource SET current_catalog_name = 'App' WHERE name = 'measured'`)
+	f.datasource("reported", "postgres", "app")
+	f.exec(`UPDATE datasource SET current_catalog_name = 'App' WHERE name = 'reported'`)
 	f.grant("alice", "reader")
 	f.policies(connectAll)
 	alice := f.token("USER", "alice")
-	f.want("measured catalog", on(catalogOp(ref("App", "public", "")), alice, "measured", ""), "")
-	f.want("registered db_name", on(catalogOp(ref("app", "public", "")), alice, "measured", ""), notConnectable)
+	f.want("reported catalog", on(catalogOp(ref("App", "public", "")), alice, "reported", ""), "")
+	f.want("registered db_name", on(catalogOp(ref("app", "public", "")), alice, "reported", ""), notConnectable)
 }
 
 // MySQL and PostgreSQL reject native envelopes even with broad metadata access.
@@ -623,6 +624,9 @@ func TestAuthorizeRequestCredentials(t *testing.T) {
 	}
 	_, err := f.authorize(on(catalogOp(ref("def", "app", "")), f.token("USER", "alice"), "nope", ""))
 	wantStatus(t, "unknown datasource", err, codes.NotFound, "unknown datasource")
+	f.exec(`INSERT INTO datasource (name) VALUES ('unpushed')`)
+	_, err = f.authorize(on(catalogOp(ref("def", "app", "")), f.token("USER", "alice"), "unpushed", ""))
+	wantStatus(t, "no catalog yet", err, codes.FailedPrecondition, "datasource has no catalog yet")
 }
 
 // Native credentials use live roles rather than token roles, and ordinary roles are refreshed after deletion.

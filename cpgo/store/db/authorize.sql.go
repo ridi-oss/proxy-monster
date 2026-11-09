@@ -28,13 +28,12 @@ func (q *Queries) RequestCaller(ctx context.Context, tokenHash string) (RequestC
 }
 
 const requestDatasource = `-- name: RequestDatasource :one
-SELECT name, engine, db_name, current_catalog_name, tags FROM datasource WHERE name = $1 AND deleted_at IS NULL
+SELECT name, engine, current_catalog_name, tags FROM datasource WHERE name = $1 AND deleted_at IS NULL
 `
 
 type RequestDatasourceRow struct {
 	Name               string
 	Engine             string
-	DbName             string
 	CurrentCatalogName *string
 	Tags               []string
 }
@@ -45,7 +44,6 @@ func (q *Queries) RequestDatasource(ctx context.Context, name string) (RequestDa
 	err := row.Scan(
 		&i.Name,
 		&i.Engine,
-		&i.DbName,
 		&i.CurrentCatalogName,
 		&i.Tags,
 	)

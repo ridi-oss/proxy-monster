@@ -423,7 +423,7 @@ OAuth-authenticated MCP client is
 ### Prerequisites
 
 - JDK, Gradle, Go, Node, pnpm — all pinned in `mise.toml` (temurin-24, Gradle
-  8.14.5, Go 1.23, Node 24.18.0, pnpm 10.22.0 — matching `web/Dockerfile`'s base
+  8.14.5, Go 1.23, Node 24.22.2, pnpm 10.22.0 — matching `web/Dockerfile`'s base
   image + corepack pin). Run `mise install` from the repo root, or use your own
   matching toolchain. JDK 24 is the floor: the Gradle build compiles with
   `--release 24` and targets JVM 24, so an older JDK fails with

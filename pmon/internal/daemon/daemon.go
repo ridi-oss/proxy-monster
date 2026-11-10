@@ -26,6 +26,7 @@ import (
 	"github.com/ridi-oss/proxy-monster/pmon/internal/instance"
 	"github.com/ridi-oss/proxy-monster/pmon/internal/login"
 	"github.com/ridi-oss/proxy-monster/pmon/internal/state"
+	"github.com/ridi-oss/proxy-monster/pmon/internal/workload"
 )
 
 const (
@@ -297,6 +298,7 @@ func (d *Daemon) Status() control.Status {
 			SessionExpiresAt:   srv.SessionExpiresAt,
 			Scopes:             slices.Clone(srv.Scopes),
 			ElevatedUntil:      srv.ElevatedUntil,
+			Workload:           srv.Workload,
 			ReauthRequired:     d.reauthRequired[name],
 			LastDiscoveryError: d.lastDiscoveryErr[name],
 		})
@@ -415,6 +417,9 @@ func (d *Daemon) Login(ctx context.Context, req control.LoginRequest, onEvent fu
 		return fmt.Errorf("unknown server %q — set it with `pmon server set %s --url <control-plane-url>`, or log in with `pmon login --url <control-plane-url> %s`", name, name, name)
 	}
 
+	if req.Workload != "" {
+		return d.workloadLogin(ctx, name, srv, req, onEvent)
+	}
 	res, err := login.Run(ctx, login.Options{
 		ControlPlane: srv.ControlPlane,
 		TTLSeconds:   req.TTLSeconds,
@@ -461,7 +466,7 @@ func (d *Daemon) Login(ctx context.Context, req control.LoginRequest, onEvent fu
 		return fmt.Errorf("could not save the login: %w", err)
 	}
 	// After the save, so a failed end never costs the new login.
-	replacedEnded := srv.RenewalToken == "" || srv.RenewalToken == res.RenewalToken || d.endOnServer(srv, true)
+	replacedEnded := (srv.RenewalToken != "" && srv.RenewalToken == res.RenewalToken) || d.endOnServer(srv, true)
 	onEvent(control.LoginEvent{
 		Kind: "done", Server: name, Principal: res.Principal, ExpiresAt: res.ExpiresAt,
 		Scopes: res.Scopes, ElevatedUntil: res.ElevatedUntil, ReplacedNotEndedOnServer: !replacedEnded,
@@ -552,7 +557,13 @@ const endOnServerTimeout = 5 * time.Second
 
 // endOnServer reports true when there was nothing to end or the control plane ended it.
 func (d *Daemon) endOnServer(srv *state.Server, replaced bool) bool {
-	if srv == nil || srv.RenewalToken == "" || srv.ControlPlane == "" {
+	if srv == nil || srv.ControlPlane == "" {
+		return true
+	}
+	if srv.Workload != "" && srv.Token != "" {
+		return d.revokeService(srv.ControlPlane, srv.Token)
+	}
+	if srv.RenewalToken == "" {
 		return true
 	}
 	ctx, cancel := context.WithTimeout(d.ctx, endOnServerTimeout)
@@ -1282,11 +1293,15 @@ func (d *Daemon) maybeRenewServer(ctx context.Context, name string, srv state.Se
 	d.mu.Lock()
 	refused := d.reauthRequired[name]
 	d.mu.Unlock()
-	if refused || !srv.LoggedIn() || srv.RenewalToken == "" {
+	if refused || !srv.LoggedIn() || (srv.RenewalToken == "" && (srv.Workload == "" || !workload.Renewable(srv.Workload))) {
 		return
 	}
 	expiry, err := time.Parse(time.RFC3339, srv.ExpiresAt)
 	if err != nil || time.Until(expiry) > renewLead(srv, expiry) {
+		return
+	}
+	if srv.Workload != "" {
+		d.renewWorkload(ctx, name, srv)
 		return
 	}
 

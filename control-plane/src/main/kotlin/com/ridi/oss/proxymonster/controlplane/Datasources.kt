@@ -721,7 +721,7 @@ private fun ApplicationCall.bearerWirePrincipal(tokenStore: TokenStore, userGrou
     val token = header.substring(7).trim().ifBlank { return null }
     val id = resolveActiveToken(tokenStore, userGroupStore, token, allowRetired = false) ?: return null
     val kind = TokenKind.fromWire(id.kind)
-    if (kind != TokenKind.SESSION && kind != TokenKind.USER) return null
+    if (kind != TokenKind.SESSION && kind != TokenKind.USER && kind != TokenKind.SERVICE) return null
     return id.principal
 }
 

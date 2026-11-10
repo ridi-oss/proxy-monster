@@ -309,11 +309,11 @@ Name each instance distinctly — the tools are identical, so the name is all th
 tells you which system you are about to change.
 
 The server has about 80 tools. Admins use the datasource, catalog, tag, policy,
-role, mask-function, user, group, token, and rate tools; developers use
-`run_query` and the approval and access tools. `run_query` returns rows under
-the caller's roles, masked exactly as in the console. No tool asks
-`result.read.*`, `result.cap`, `native.invoke`, or `exception.*` directly; those
-are decided only inside a query.
+role, mask-function, user, group, workload-binding, token, and rate tools;
+developers use `run_query` and the approval and access tools. `run_query`
+returns rows under the caller's roles, masked exactly as in the console. No tool
+asks `result.read.*`, `result.cap`, `native.invoke`, or `exception.*` directly;
+those are decided only inside a query.
 
 Tools worth knowing:
 
@@ -335,7 +335,7 @@ without the role denies.
 | `mcp:approvals:write` | Approve, reject, and run approvals; decide access requests; revoke grants |
 | `mcp:datasources:write` | Datasource writes and classifications |
 | `mcp:policies:write` | Policies, roles, mask functions |
-| `mcp:identity:write` | Users, groups, members, role assignments |
+| `mcp:identity:write` | Users, groups, members, role assignments, workload bindings |
 | `mcp:tokens` | Mint and revoke your own wire tokens |
 
 A pmon login grants `mcp:read` and `mcp:query`; `pmon login --scopes` asks for

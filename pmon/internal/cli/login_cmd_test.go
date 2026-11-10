@@ -1,6 +1,9 @@
 package cli
 
 import (
+	"context"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -32,5 +35,43 @@ func TestElevatedLine(t *testing.T) {
 	after := elevatedLine(srv, time.Date(2026, 7, 26, 1, 0, 0, 0, time.UTC))
 	if !strings.Contains(after, "mcp:approvals:write EXPIRED") || !strings.Contains(after, "pmon login hr --scopes mcp:approvals:write,mcp:query,mcp:read") {
 		t.Errorf("closed window = %q", after)
+	}
+}
+
+func TestWorkloadLoginFlagsAreCheckedBeforeTheDaemon(t *testing.T) {
+	scopes := "mcp:read"
+	for _, tc := range []struct {
+		cmd  loginCmd
+		want string
+	}{
+		{loginCmd{Workload: "aws", Scopes: &scopes}, "--scopes does not apply"},
+		{loginCmd{Audience: "https://pm.example.com"}, "--audience needs --workload"},
+		{loginCmd{Workload: "gcp"}, "unknown workload token source"},
+	} {
+		if err := tc.cmd.Run(); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%+v: %v, want %q", tc.cmd, err, tc.want)
+		}
+	}
+}
+
+func TestWorkloadTokenIsFetchedHereForTheServersOrigin(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "jwt"), []byte("file-jwt\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	t.Setenv("PM_TEST_JWT", "env-jwt")
+	status := &control.Status{DefaultServer: "prod", Servers: []control.ServerInfo{{Name: "prod", ControlPlane: "https://pm.example.com/base"}}}
+	spec, token, err := (&loginCmd{Workload: "file:jwt"}).workloadToken(context.Background(), status)
+	if err != nil || spec != "file:"+filepath.Join(dir, "jwt") || token != "file-jwt" {
+		t.Errorf("file: %q %q %v", spec, token, err)
+	}
+	spec, token, err = (&loginCmd{Workload: "env:PM_TEST_JWT"}).workloadToken(context.Background(), nil)
+	if err == nil || !strings.Contains(err.Error(), "--url or --audience") {
+		t.Errorf("no control plane: %q %q %v", spec, token, err)
+	}
+	spec, token, err = (&loginCmd{Workload: "env:PM_TEST_JWT", Audience: "https://other.example.com"}).workloadToken(context.Background(), nil)
+	if err != nil || spec != "env:PM_TEST_JWT" || token != "env-jwt" {
+		t.Errorf("env: %q %q %v", spec, token, err)
 	}
 }

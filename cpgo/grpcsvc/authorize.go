@@ -91,7 +91,7 @@ func (s *service) AuthorizeRequest(ctx context.Context, r *pb.RequestAuthorizati
 	} else if deactivated {
 		return nil, status.Error(codes.Unauthenticated, "invalid, expired, revoked, or deactivated credential")
 	}
-	if tok.Kind != "SESSION" && tok.Kind != "USER" {
+	if tok.Kind != "SESSION" && tok.Kind != "USER" && tok.Kind != "SERVICE" {
 		return nil, status.Error(codes.Unauthenticated, "request authorization requires a wire credential")
 	}
 	row, err := q.RequestDatasource(ctx, r.GetDatasourceName())

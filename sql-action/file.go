@@ -195,14 +195,21 @@ func postSkipped(ctx context.Context, env sqlEnv, repository, headSha, checkName
 	}, nil)
 }
 
+func audienceOf(conn sqlConn) (string, error) {
+	if conn.Audience != "" {
+		return conn.Audience, nil
+	}
+	u, err := url.Parse(conn.Server)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return "", fmt.Errorf("invalid --server %q", conn.Server)
+	}
+	return u.Scheme + "://" + u.Host, nil
+}
+
 func authenticate(ctx context.Context, env sqlEnv, conn sqlConn) (string, error) {
-	audience := conn.Audience
-	if audience == "" {
-		u, err := url.Parse(conn.Server)
-		if err != nil || u.Scheme == "" || u.Host == "" {
-			return "", fmt.Errorf("invalid --server %q", conn.Server)
-		}
-		audience = u.Scheme + "://" + u.Host
+	audience, err := audienceOf(conn)
+	if err != nil {
+		return "", err
 	}
 	jwt, err := fetchOIDCToken(ctx, env, audience)
 	if err != nil {

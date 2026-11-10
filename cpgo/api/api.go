@@ -112,6 +112,11 @@ var (
 	CodeInvalidToken          = Code{"common.invalid_token", http.StatusUnauthorized}
 	CodeWorkloadNotConfigured = Code{"workload.not_configured", http.StatusNotFound}
 	CodeIssuerNotTrusted      = Code{"workload.issuer_not_trusted", http.StatusUnauthorized}
+	CodeTokenReplayed         = Code{"workload.token_replayed", http.StatusUnauthorized}
+	CodeNoBinding             = Code{"workload.no_binding", http.StatusForbidden}
+	CodeAmbiguousBinding      = Code{"workload.ambiguous_binding", http.StatusForbidden}
+	CodePurposeNotAllowed     = Code{"workload.purpose_not_allowed", http.StatusForbidden}
+	CodeScopeNotAllowed       = Code{"workload.scope_not_allowed", http.StatusForbidden}
 )
 
 // WriteError writes an ApiError; kv is its params as alternating keys and values, kept in that order.

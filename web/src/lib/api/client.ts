@@ -55,6 +55,9 @@ import type {
   TableDetail,
   TestResult,
   WireTokenInfo,
+  WorkloadBinding,
+  WorkloadBindingInput,
+  WorkloadIssuer,
 } from './types';
 
 /** API base; "" means same-origin so requests go through Next's rewrites. */
@@ -421,6 +424,26 @@ export function updateUser(id: number, input: AppUserInput): Promise<AppUser> {
 
 export function deleteUser(id: number): Promise<void> {
   return request<void>(`/api/users/${id}`, { method: 'DELETE' });
+}
+
+export function getWorkloadIssuers(): Promise<WorkloadIssuer[]> {
+  return request<WorkloadIssuer[]>('/api/workload-issuers');
+}
+
+export function getWorkloadBindings(): Promise<WorkloadBinding[]> {
+  return request<WorkloadBinding[]>('/api/workload-bindings');
+}
+
+export function createWorkloadBinding(input: WorkloadBindingInput): Promise<WorkloadBinding> {
+  return request<WorkloadBinding>('/api/workload-bindings', { method: 'POST', body: JSON.stringify(input) });
+}
+
+export function updateWorkloadBinding(id: number, input: WorkloadBindingInput): Promise<WorkloadBinding> {
+  return request<WorkloadBinding>(`/api/workload-bindings/${id}`, { method: 'PUT', body: JSON.stringify(input) });
+}
+
+export function deleteWorkloadBinding(id: number): Promise<void> {
+  return request<void>(`/api/workload-bindings/${id}`, { method: 'DELETE' });
 }
 
 export function getGroups(): Promise<AppGroup[]> {

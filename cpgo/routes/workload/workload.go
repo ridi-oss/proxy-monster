@@ -32,9 +32,12 @@ type exchange struct {
 	verifier *Verifier
 }
 
-func Register(mux *http.ServeMux, au websession.Auth, v *Verifier) {
+func Register(mux *http.ServeMux, gate api.Gate, au websession.Auth, v *Verifier) {
 	x := exchange{Auth: au, verifier: v}
 	mux.HandleFunc("POST /api/workload/token", api.Serve(x.exchange))
+	mux.HandleFunc("POST /api/workload/exchange", api.Serve(x.bind))
+	mux.HandleFunc("POST /api/workload/revoke", api.Serve(x.revoke))
+	registerBindings(mux, gate, Bindings{Pool: au.Pool, Issuers: v.Issuers()})
 }
 
 func (x exchange) exchange(w http.ResponseWriter, r *http.Request) error {

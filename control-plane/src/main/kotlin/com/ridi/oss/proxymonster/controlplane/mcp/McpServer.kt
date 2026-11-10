@@ -129,6 +129,7 @@ fun Application.installMcp(
     audit: AuditService = AuditService(core.authz, core.auditStore),
     queryHistory: QueryHistoryStore = QueryHistoryStore(core.dataSource),
     tokens: TokenService = TokenService(core.tokenStore, core.userGroupStore, core.authz, core.authAudit),
+    workloadBindings: WorkloadBindingsBridge? = null,
 ) {
     McpCapabilityRegistry.verify()
     val metadataUri = protectedResourceMetadataUri(config.mcpResource)
@@ -208,6 +209,7 @@ fun Application.installMcp(
             access,
             core,
             taskTools,
+            workloadBindings,
         )
     }
 }
@@ -428,6 +430,7 @@ private fun createMcpServer(
     access: AccessService,
     core: ControlPlaneCore,
     taskTools: McpTaskTools,
+    workloadBindings: WorkloadBindingsBridge?,
 ): Server {
     val server = Server(
         Implementation("proxy-monster", SERVER_VERSION, title = "proxy-monster (${config.instanceName})"),
@@ -455,9 +458,9 @@ private fun createMcpServer(
                 } else if (capability.classification == CapabilityClassification.READ) {
                     authorizeRead(context, capability, args, authorizer, core.auditStore)
                     validateArguments(capability, args)
-                    executeRead(capability.toolName, args, datasourceService, policyService, identityService, access)
+                    executeRead(capability.toolName, args, datasourceService, policyService, identityService, access, workloadBindings)
                 } else {
-                    executeWrite(capability, args, context, mutations, datasourceService, policyService, identityService, access, core)
+                    executeWrite(capability, args, context, mutations, datasourceService, policyService, identityService, access, core, workloadBindings)
                 }
                 val text = (structured["result"] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: structured.toString()
                 CallToolResult(content = listOf(TextContent(text)), structuredContent = structured)
@@ -544,6 +547,7 @@ private suspend fun executeRead(
     policies: PolicyManagementService,
     identities: IdentityManagementService,
     access: AccessService,
+    workloadBindings: WorkloadBindingsBridge?,
 ): JsonObject = when (tool) {
     "list_datasources" -> structured(datasources.listDatasources())
     "get_datasource_liveness" -> structured(datasources.getDatasourceLiveness(args.requiredString("datasource")))
@@ -563,8 +567,12 @@ private suspend fun executeRead(
     "list_mask_fns" -> structured(policies.listMaskFns())
     "list_group_members" -> structured(identities.listGroupMembers(args.requiredString("groupName")))
     "list_group_roles" -> structured(identities.listGroupRoles(args.requiredString("groupName")))
+    "list_workload_bindings" -> workloadBindings.required().list()
     else -> throw ManagementException(ApiError("mcp.invalid_request"))
 }
+
+private fun WorkloadBindingsBridge?.required(): WorkloadBindingsBridge =
+    this ?: throw ManagementException(ApiError("workload.not_configured"))
 
 private fun executeWrite(
     capability: McpCapability,
@@ -576,6 +584,7 @@ private fun executeWrite(
     identities: IdentityManagementService,
     access: AccessService,
     core: ControlPlaneCore,
+    workloadBindings: WorkloadBindingsBridge?,
 ): JsonObject {
     val datasourceName = safeDatasource(capability, args)
     val detail = mutationDetail(capability.toolName, args)
@@ -723,6 +732,9 @@ private fun executeWrite(
             "delete_datasource" -> structured(datasources.deleteDatasource(args.requiredString("datasource"), actor, connection))
             "refresh_datasource" -> structured(datasources.refreshDatasource(args.requiredString("datasource")))
             "test_datasource" -> structured(datasources.testDatasource(args.requiredString("datasource")))
+            "create_workload_binding" -> workloadBindings.required().create(args, context)
+            "update_workload_binding" -> workloadBindings.required().update(args, context)
+            "delete_workload_binding" -> workloadBindings.required().delete(args, context)
             else -> throw ManagementException(ApiError("mcp.invalid_request"))
         }
     }
@@ -741,6 +753,23 @@ private fun schemaFor(tool: String): ToolSchema {
         fun strings(name: String) = putJsonObject(name) {
             put("type", "array")
             put("items", buildJsonObject { put("type", "string") })
+        }
+        fun bindingFields() {
+            string("name"); string("description"); string("issuer"); string("subject"); string("principal")
+            putJsonObject("conditions") {
+                put("type", "object")
+                put("additionalProperties", buildJsonObject {
+                    put("anyOf", buildJsonArray {
+                        add(buildJsonObject { put("type", "string") })
+                        add(buildJsonObject { put("type", "array"); put("items", buildJsonObject { put("type", "string") }) })
+                    })
+                })
+            }
+            putJsonObject("purposes") {
+                put("type", "array")
+                put("items", buildJsonObject { put("type", "string"); put("enum", buildJsonArray { add(JsonPrimitive("wire")); add(JsonPrimitive("mcp")) }) })
+            }
+            strings("mcpScopes"); integer("ttlSeconds", min = 60, max = 3600); boolean("enabled")
         }
         when (tool) {
             "get_datasource_liveness", "browse_catalog", "list_column_tags" -> string("datasource")
@@ -820,6 +849,8 @@ private fun schemaFor(tool: String): ToolSchema {
             "revoke_access_grant", "revoke_token" -> integer("id")
             "list_tokens" -> string("principal")
             "mint_token" -> { string("name"); integer("ttlSeconds", min = 1) }
+            "create_workload_binding", "update_workload_binding" -> bindingFields()
+            "delete_workload_binding" -> string("name")
         }
         val capability = McpCapabilityRegistry.byName[tool]
         if (capability?.classification == CapabilityClassification.WRITE && capability.gate == McpGate.SYSTEM) {
@@ -859,6 +890,8 @@ private fun schemaFor(tool: String): ToolSchema {
         "request_access" -> listOf("roleName", "reason")
         "delete_query_task" -> listOf("taskId")
         "reject_access_request" -> listOf("id", "reason")
+        "create_workload_binding", "update_workload_binding" -> listOf("name", "issuer", "subject", "purposes")
+        "delete_workload_binding" -> listOf("name")
         else -> emptyList()
     }
     return ToolSchema(properties = properties, required = required)

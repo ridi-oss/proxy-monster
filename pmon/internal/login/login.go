@@ -297,6 +297,18 @@ func (e *APIError) Error() string {
 		return "no scopes given"
 	case "auth.scopes_expired":
 		return "the login's extra scopes expired and it grants nothing else"
+	case "workload.not_configured":
+		return "the server does not trust any workload token issuer"
+	case "workload.issuer_not_trusted":
+		return "the server does not trust this workload token's issuer"
+	case "workload.no_binding":
+		return "no workload binding on the server matches this token"
+	case "workload.ambiguous_binding":
+		return "several workload bindings on the server match this token"
+	case "workload.purpose_not_allowed":
+		return "the matching workload binding does not allow wire access"
+	case "workload.token_replayed":
+		return "this workload token was already exchanged; fetch a fresh one"
 	case "":
 		return fmt.Sprintf("HTTP %d", e.Status)
 	}

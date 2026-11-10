@@ -315,6 +315,8 @@ const (
 	testOIDCAuth = "gh-request-token"
 	testBearer   = "pmw_secret_workload_token"
 
+	testServiceToken = "pms_secret_service_token"
+
 	testGitHubToken = "ghs_actions_token"
 )
 
@@ -329,6 +331,7 @@ type fakeSQLServer struct {
 	checkName    string
 	checkRuns    []map[string]any
 	checkAuth    []string
+	noBinding    bool
 }
 
 func newFakeSQLServer(t *testing.T) *fakeSQLServer {
@@ -354,6 +357,21 @@ func newFakeSQLServer(t *testing.T) *fakeSQLServer {
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]string{"token": testBearer, "id": "w1", "kind": "workload", "expiresAt": "2030-01-01T00:00:00Z"})
+	})
+	mux.HandleFunc("POST /api/workload/exchange", func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]string
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		switch {
+		case body["token"] != testJWT || body["purpose"] != "wire":
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = io.WriteString(w, `{"code":"common.invalid_token","params":{"kind":"workload_oidc"}}`)
+		case f.noBinding:
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = io.WriteString(w, `{"code":"workload.no_binding","params":{}}`)
+		default:
+			_ = json.NewEncoder(w).Encode(map[string]any{"token": testServiceToken, "id": 9, "kind": "SERVICE", "name": "shop-ci",
+				"expiresAt": "2030-01-01T00:15:00Z"})
+		}
 	})
 	mux.HandleFunc("POST /api/github/requests", func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any

@@ -12,6 +12,7 @@ const PRIMARY_NAV = [
   { labelKey: 'policies', href: '/admin/policies' },
   { labelKey: 'users', href: '/admin/users' },
   { labelKey: 'groups', href: '/admin/groups' },
+  { labelKey: 'workloadBindings', href: '/admin/workload-bindings' },
 ] as const;
 
 const POLICY_NAV = [

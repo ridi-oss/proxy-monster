@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.17](https://github.com/ridi-oss/proxy-monster/compare/pmon-v0.1.16...pmon-v0.1.17) (2026-11-10)
+
+
+### Refactoring
+
+* **pmon:** read the database from connection info ([bba4329](https://github.com/ridi-oss/proxy-monster/commit/bba43297aca5b46752210792abffb493af94a550))
+
 ## [0.1.16](https://github.com/ridi-oss/proxy-monster/compare/pmon-v0.1.15...pmon-v0.1.16) (2026-10-21)
 
 

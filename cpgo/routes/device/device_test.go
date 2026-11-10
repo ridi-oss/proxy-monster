@@ -373,9 +373,9 @@ func TestPmonMCPToken(t *testing.T) {
 	if n := e.Count(t, `SELECT count(*) FROM audit_event WHERE action = 'auth.session.mcp_token' AND detail = 'scope=mcp:policies:write mcp:query mcp:read'`); n != 1 {
 		t.Fatalf("mcp-token audit rows %d", n)
 	}
-	expires, _ := time.Parse(time.RFC3339Nano, m["expiresAt"])
-	if d := time.Until(expires); d < 590*time.Second || d > 600*time.Second {
-		t.Fatalf("expires in %v", d)
+	if n := e.Count(t, `SELECT count(*) FROM proxy_token WHERE token_hash = $1
+		AND expires_at BETWEEN clock_timestamp() + interval '590 seconds' AND clock_timestamp() + interval '600 seconds'`, session.TokenHash(m["accessToken"])); n != 1 {
+		t.Fatalf("expires at %s, not 600s after the mint", m["expiresAt"])
 	}
 
 	e.Exec(t, `UPDATE principal_session SET elevated_until = now() + interval '100 seconds' WHERE kind = 'DAEMON'`)
@@ -394,7 +394,8 @@ func TestPmonMCPToken(t *testing.T) {
 	only := pmonLogin(t, e, "bob@example.com", `{"scopes":["mcp:tokens"],"ttlSeconds":300}`)
 	if status, out, m := mint(only.RenewalToken); status != http.StatusOK {
 		t.Fatalf("elevated only: %d %s", status, out)
-	} else if expires, _ := time.Parse(time.RFC3339Nano, m["expiresAt"]); time.Until(expires) > 300*time.Second {
+	} else if e.Count(t, `SELECT count(*) FROM proxy_token WHERE token_hash = $1 AND expires_at > clock_timestamp() + interval '300 seconds'`,
+		session.TokenHash(m["accessToken"])) != 0 {
 		t.Fatalf("an MCP token outlived its login: %s", m["expiresAt"])
 	}
 	e.Exec(t, `UPDATE principal_session SET elevated_until = now() WHERE principal = 'bob@example.com'`)

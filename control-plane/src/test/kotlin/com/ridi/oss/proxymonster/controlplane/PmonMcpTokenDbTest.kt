@@ -110,7 +110,7 @@ class PmonMcpTokenDbTest {
         val approved = client.mcpCall(early.accessToken, "approve_approval", approveArgs(pendingRequest()))
         assertEquals("APPROVED", approved.okResult().jsonObject.str("status"))
 
-        setElevatedUntil(login.renewalToken, Instant.now().minusSeconds(1))
+        updateDaemon(login.renewalToken, "elevated_until = now() - interval '1 second'")
         val late = client.mint(login.renewalToken)
         assertEquals("mcp:query mcp:read", late.scope)
         assertEquals("mcp.insufficient_scope", client.mcpCall(late.accessToken, "approve_approval", approveArgs(pendingRequest())).errorCode())
@@ -135,9 +135,9 @@ class PmonMcpTokenDbTest {
         assertEquals(elevatedUntil, tokenRow(minted.accessToken).expiresAt)
 
         setElevatedUntil(login.renewalToken, granted)
-        val mintedAfter = Instant.now().truncatedTo(ChronoUnit.MICROS)
+        val mintedAfter = dbNow()
         val fresh = client.mint(login.renewalToken)
-        val mintedBefore = Instant.now()
+        val mintedBefore = dbNow()
         val expires = Instant.parse(fresh.expiresAt)
         assertTrue(
             !expires.isBefore(mintedAfter.plusSeconds(config.mcpAccessTtlSeconds)) &&
@@ -151,7 +151,7 @@ class PmonMcpTokenDbTest {
         val client = stack.client()
         val login = client.pmonLogin(principal(), listOf("mcp:approvals:write"))
         assertNotNull(login.elevatedUntil)
-        setElevatedUntil(login.renewalToken, Instant.now())
+        updateDaemon(login.renewalToken, "elevated_until = now()")
         val res = client.exchange(login.renewalToken)
         assertEquals(HttpStatusCode.Forbidden to "auth.scopes_expired", refusal(res, res.bodyAsText()))
     }
@@ -236,6 +236,10 @@ class PmonMcpTokenDbTest {
             ps.setString(2, sha256Hex(renewalToken))
             assertEquals(1, ps.executeUpdate())
         }
+    }
+
+    private fun dbNow(): Instant = dataSource.connection.use { c ->
+        c.prepareStatement("SELECT clock_timestamp()").use { ps -> ps.executeQuery().use { rs -> rs.next(); rs.getTimestamp(1).toInstant() } }
     }
 
     private fun count(sql: String, vararg args: String): Long = dataSource.connection.use { c ->

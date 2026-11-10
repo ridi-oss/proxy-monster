@@ -40,6 +40,9 @@ FROM principal_session WHERE kind = 'DAEMON' AND id = $1;
 SELECT id, principal, ttl_seconds::bigint AS ttl_seconds, liveness_status, created_at, coalesce(scopes, '') AS scopes, elevated_until
 FROM principal_session WHERE kind = 'DAEMON' AND renewal_token_hash = $1;
 
+-- name: ClockNow :one
+SELECT clock_timestamp()::timestamptz AS now;
+
 -- name: DaemonWithinWindow :one
 SELECT absolute_expires_at > clock_timestamp() AS within FROM principal_session WHERE id = $1;
 

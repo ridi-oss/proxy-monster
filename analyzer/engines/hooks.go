@@ -24,7 +24,7 @@ type engineHooks interface {
 	stampSubmission(facts *pb.StatementFacts)
 	// configureNamespace maps the session's namespace onto the qualifier's resolution options: a search
 	// path for engines that have one, a fixed catalog and default schema for engines that do not.
-	configureNamespace(opts *optimizer.QualifyOpts, namespace NamespaceConfig)
+	configureNamespace(session *Session, opts *optimizer.QualifyOpts, namespace NamespaceConfig)
 	// rewriteStatement optionally rewrites a parsed statement into the SQL the proxy should relay to the
 	// target DB, returning "" to leave it unchanged.
 	rewriteStatement(root exp.Expression) string
@@ -40,7 +40,7 @@ func (sharedHooks) finishSubmission(*Session, exp.Expression) bool { return fals
 
 func (sharedHooks) stampSubmission(*pb.StatementFacts) {}
 
-func (sharedHooks) configureNamespace(opts *optimizer.QualifyOpts, namespace NamespaceConfig) {
+func (sharedHooks) configureNamespace(_ *Session, opts *optimizer.QualifyOpts, namespace NamespaceConfig) {
 	opts.SearchPath = namespace.SearchPath
 }
 

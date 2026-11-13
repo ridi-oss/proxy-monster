@@ -11,7 +11,7 @@ plugins:
       - Mcontrolplane.proto=github.com/ridi-oss/proxy-monster/cpgo/grpcsvc/pb;controlplanepb
       - Mengine.proto=github.com/ridi-oss/proxy-monster/analyzer/probe/pb
       - Manalyzer.proto=github.com/ridi-oss/proxy-monster/analyzer/probe/pb
-      - Mathena.proto=github.com/ridi-oss/proxy-monster/analyzer/probe/pb
+      - Mathena.proto=github.com/ridi-oss/proxy-monster/analyzer/probe/pb,Mbigquery.proto=github.com/ridi-oss/proxy-monster/analyzer/probe/pb
       - Mnative.proto=github.com/ridi-oss/proxy-monster/analyzer/probe/pb
   - local: protoc-gen-go-grpc
     out: .

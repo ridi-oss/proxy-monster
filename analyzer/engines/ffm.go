@@ -25,12 +25,12 @@ func AnalyzeStatement(req *pb.AnalyzeRequest) (*pb.StatementFacts, error) {
 	if err != nil {
 		return nil, err
 	}
-	namespace.EngineCatalog = engineCatalogFromProto(req.GetCatalog().GetFunctions(), namespace.SearchPath)
+	namespace.EngineCatalog = engineCatalogFromProto(req.GetCatalog().GetFunctions(), namespace.Catalog, namespace.SearchPath)
 	return EmitFacts(req.GetSql(), req.GetEngineConfig(), sch, implicit, namespace), nil
 }
 
 // Names arrive folded. Nil stays nil, which makes every call unknown.
-func engineCatalogFromProto(c *pb.FunctionCatalog, searchPath []string) *optimizer.EngineCatalog {
+func engineCatalogFromProto(c *pb.FunctionCatalog, catalog string, searchPath []string) *optimizer.EngineCatalog {
 	if c == nil {
 		return nil
 	}
@@ -62,6 +62,7 @@ func engineCatalogFromProto(c *pb.FunctionCatalog, searchPath []string) *optimiz
 		UDFSchemas:            schemaFunctions(c.GetUdfSchemas()),
 		LoadableFunctions:     stringSet(c.GetLoadableFunctions()),
 		CurrentDatabase:       currentDatabase,
+		DefaultCatalog:        catalog,
 	}
 }
 

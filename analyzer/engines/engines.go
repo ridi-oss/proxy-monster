@@ -125,6 +125,8 @@ type EngineTraits struct {
 	passthroughCommands []string
 	// syntaxCalls are call-shaped syntax over one subquery, lowercase: Postgres ARRAY(SELECT ...) is no pg_proc function.
 	syntaxCalls []string
+	// unlistedCalls are typed call nodes that skip the builtin name list, so they fail closed: BigQuery AI.GENERATE.
+	unlistedCalls map[exp.Kind]string
 
 	// connectionProperties are the ConnectionInfo keys the engine's proxies publish: MySQL database, Athena region.
 	connectionProperties []string
@@ -159,7 +161,7 @@ func noSystemSchemaFirst([]string) bool { return false }
 
 var (
 	// All is every engine, MySQL first.
-	All = []*Engine{MySQL, Postgres, Athena}
+	All = []*Engine{MySQL, Postgres, Athena, BigQuery}
 )
 
 // Parse maps an exact wire name to its engine; anything else, a different case included, is an error.
@@ -167,7 +169,7 @@ func Parse(wireName string) (*Engine, error) {
 	if i := slices.IndexFunc(All, func(e *Engine) bool { return e.WireName == wireName }); i >= 0 {
 		return All[i], nil
 	}
-	return nil, fmt.Errorf("unsupported engine %q (expected mysql, postgres, or athena)", wireName)
+	return nil, fmt.Errorf("unsupported engine %q (expected mysql, postgres, athena, or bigquery)", wireName)
 }
 
 // ByProto is the engine a proto Engine denotes; ENGINE_UNSPECIFIED and unknown values are not one.

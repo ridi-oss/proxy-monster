@@ -138,7 +138,7 @@ func analyzeProbe(t *testing.T, req *pb.AnalyzeRequest) *ProbeResult {
 		result := failResult("VALIDATE", err.Error())
 		return &result
 	}
-	namespace.EngineCatalog = engineCatalogFromProto(req.GetCatalog().GetFunctions(), namespace.SearchPath)
+	namespace.EngineCatalog = engineCatalogFromProto(req.GetCatalog().GetFunctions(), namespace.Catalog, namespace.SearchPath)
 	result := Probe(req.GetSql(), req.GetEngineConfig(), sch, implicit, namespace)
 	return &result
 }

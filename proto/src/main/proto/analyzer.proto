@@ -13,6 +13,7 @@ package proxymonster.analyzer.v1;
 
 import "engine.proto";
 import "athena.proto";
+import "bigquery.proto";
 
 option java_package = "com.ridi.oss.proxymonster.analyzer.pb";
 option java_multiple_files = true;
@@ -110,6 +111,8 @@ message SessionObservation {
     PostgresSession postgres = 2;
     // What an Athena StartQueryExecution call carries besides the SQL text (see athena.proto).
     proxymonster.athena.v1.AthenaSqlContext athena = 3;
+    // What a BigQuery jobs.query or jobs.insert call carries besides the SQL text (see bigquery.proto).
+    proxymonster.bigquery.v1.BigQuerySqlContext bigquery = 4;
   }
 }
 
@@ -565,6 +568,7 @@ message Submission {
     // The proxy must submit that list (here empty) with the rewritten text, or AWS binds the client's "7"
     // to a `?` that no longer exists.
     proxymonster.athena.v1.AthenaSubmission athena = 1;
+    proxymonster.bigquery.v1.BigQuerySubmission bigquery = 2;
   }
 }
 

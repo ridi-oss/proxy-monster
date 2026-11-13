@@ -15,6 +15,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ridi-oss/proxy-monster/goproxy/nativeapi"
+
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/listen"
@@ -114,7 +116,7 @@ type nativeRequest struct {
 	tokened       bool
 	started       time.Time
 	// Cached contexts the request phase found for the referenced executions.
-	contexts  map[string]*enginepb.AthenaCachedContext
+	contexts  map[string]*enginepb.NativeCachedContext
 	firstPage bool
 }
 
@@ -154,7 +156,7 @@ func (s *nativeServer) ServeHTTP(w http.ResponseWriter, request *http.Request) {
 		nativeError(w, http.StatusBadRequest, "athena.invalid_client_address")
 		return
 	}
-	call := &nativeRequest{server: s, request: request, token: token, clientAddr: clientAddr, operation: operation, contexts: map[string]*enginepb.AthenaCachedContext{}}
+	call := &nativeRequest{server: s, request: request, token: token, clientAddr: clientAddr, operation: operation, contexts: map[string]*enginepb.NativeCachedContext{}}
 	defer call.release()
 	forwarder, err := NewForwarder(ForwardOptions{
 		Endpoint: s.target.endpoint, MaxBodyBytes: defaultRequestLimit, Sign: s.target.sign, Transport: s.target.transport,
@@ -215,12 +217,12 @@ func (c *nativeRequest) authorizeRequest(ctx context.Context, incoming *http.Req
 		return nil, ErrUnauthorized
 	}
 	switch instructions.Action {
-	case enginepb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_FORWARD_REQUEST:
+	case enginepb.NativeInstruction_NATIVE_INSTRUCTION_FORWARD_REQUEST:
 		if c.operation == "StartQueryExecution" || c.operation == "GetQueryResultsStream" {
 			return nil, ErrUnauthorized
 		}
 		return envelope, nil
-	case enginepb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_REQUIRE_SQL_ADMISSION:
+	case enginepb.NativeInstruction_NATIVE_INSTRUCTION_REQUIRE_SQL_ADMISSION:
 		if c.operation != "StartQueryExecution" {
 			return nil, ErrUnauthorized
 		}
@@ -251,7 +253,7 @@ func (c *nativeRequest) attachContext(id string) error {
 		return nil
 	}
 	record, err := c.server.target.contexts.Find(c.server.datasourceName(), id)
-	if errors.Is(err, ErrOriginalContextUnavailable) {
+	if errors.Is(err, nativeapi.ErrOriginalContextUnavailable) {
 		return nil
 	}
 	if err != nil {
@@ -359,12 +361,12 @@ func (c *nativeRequest) authorizeResponse(status int, body []byte) ([]byte, erro
 		return nil, ErrUnauthorized
 	}
 	switch instructions.Action {
-	case enginepb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_RELEASE_METADATA:
+	case enginepb.NativeInstruction_NATIVE_INSTRUCTION_RELEASE_METADATA:
 		if c.operation == "GetQueryResults" || c.operation == "GetQueryResultsStream" {
 			return nil, ErrUnauthorized
 		}
 		return body, nil
-	case enginepb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_APPLY_ORIGINAL_CONTEXT:
+	case enginepb.NativeInstruction_NATIVE_INSTRUCTION_APPLY_ORIGINAL_CONTEXT:
 		return c.applyContexts(status, body, instructions.Contexts)
 	default:
 		return nil, ErrUnauthorized
@@ -448,26 +450,26 @@ func (c *nativeRequest) associate(status int, body []byte) ([]byte, error) {
 		c.complete("error")
 		return nil, ErrResultShape
 	}
-	record, err := newCachedContext(id, c.principal, c.server.target.binding, c.decision, nil, requestBinding(c.submitted), time.Now())
+	record, err := nativeapi.NewContext(id, c.principal, c.server.target.binding, c.decision, nil, requestBinding(c.submitted), time.Now().Add(contextLifetime))
 	if err != nil {
 		c.complete("error")
 		return nil, err
 	}
 	// A stable token can replay an execution this proxy no longer has a context for (cache loss); the
 	// current decision must not become that old result's plan, so only a fresh execution binds.
-	if _, findErr := c.server.target.contexts.Find(c.server.datasourceName(), id); c.tokened && errors.Is(findErr, ErrOriginalContextUnavailable) {
+	if _, findErr := c.server.target.contexts.Find(c.server.datasourceName(), id); c.tokened && errors.Is(findErr, nativeapi.ErrOriginalContextUnavailable) {
 		fresh, err := c.server.target.submittedAfter(c.request.Context(), id, c.started.Add(-replayTolerance))
 		if err != nil || !fresh {
 			c.complete("error")
-			return nil, ErrOriginalContextUnavailable
+			return nil, nativeapi.ErrOriginalContextUnavailable
 		}
 	}
 	err = c.server.target.contexts.Associate(c.server.datasourceName(), record)
-	if errors.Is(err, ErrContextConflict) {
+	if errors.Is(err, nativeapi.ErrContextConflict) {
 		existing, findErr := c.server.target.contexts.Find(c.server.datasourceName(), id)
 		if findErr != nil || existing.Owner != c.principal || !bytes.Equal(existing.RequestBinding, record.RequestBinding) {
 			c.complete("error")
-			return nil, ErrOriginalContextUnavailable
+			return nil, nativeapi.ErrOriginalContextUnavailable
 		}
 		err = nil
 	}
@@ -503,7 +505,7 @@ func (c *nativeRequest) settle(id string) {
 }
 
 // applyContexts enforces the admitted instructions on a result page or releases a status response.
-func (c *nativeRequest) applyContexts(status int, body []byte, refs []*enginepb.AthenaContextRef) ([]byte, error) {
+func (c *nativeRequest) applyContexts(status int, body []byte, refs []*enginepb.NativeContextRef) ([]byte, error) {
 	if status != http.StatusOK {
 		if c.sanitizeDiagnostics(nil) {
 			return redactDiagnostics(body)
@@ -511,12 +513,12 @@ func (c *nativeRequest) applyContexts(status int, body []byte, refs []*enginepb.
 		return body, nil
 	}
 	if len(refs) == 0 && c.operation != "ListQueryExecutions" {
-		return nil, ErrOriginalContextUnavailable
+		return nil, nativeapi.ErrOriginalContextUnavailable
 	}
 	for _, ref := range refs {
 		record, found := c.contexts[ref.GetResourceId()]
 		if !found || record.ContextId != ref.GetContextId() || record.Owner != c.principal || !bytes.Equal(record.TargetBinding, c.server.target.binding) {
-			return nil, ErrOriginalContextUnavailable
+			return nil, nativeapi.ErrOriginalContextUnavailable
 		}
 	}
 	if c.operation == "ListQueryExecutions" {
@@ -529,10 +531,10 @@ func (c *nativeRequest) applyContexts(status int, body []byte, refs []*enginepb.
 		return body, nil
 	}
 	if len(refs) != 1 {
-		return nil, ErrOriginalContextUnavailable
+		return nil, nativeapi.ErrOriginalContextUnavailable
 	}
 	record := c.contexts[refs[0].GetResourceId()]
-	verdict, err := cachedVerdict(record)
+	verdict, err := nativeapi.ContextVerdict(record)
 	if err != nil {
 		return nil, err
 	}
@@ -551,7 +553,7 @@ func (c *nativeRequest) applyContexts(status int, body []byte, refs []*enginepb.
 		return nil, err
 	}
 	if len(record.MetadataDigest) == 0 {
-		bound := proto.Clone(record).(*enginepb.AthenaCachedContext)
+		bound := proto.Clone(record).(*enginepb.NativeCachedContext)
 		bound.MetadataDigest = digest
 		if err := c.server.target.contexts.Rebind(c.server.datasourceName(), record, bound); err != nil {
 			return nil, err
@@ -562,7 +564,7 @@ func (c *nativeRequest) applyContexts(status int, body []byte, refs []*enginepb.
 
 // filterExecutionIDs keeps only the referenced executions in a listing, in AWS order; the page token passes
 // through so the client keeps paging.
-func filterExecutionIDs(body []byte, refs []*enginepb.AthenaContextRef) ([]byte, error) {
+func filterExecutionIDs(body []byte, refs []*enginepb.NativeContextRef) ([]byte, error) {
 	envelope, err := DecodeEnvelope(body)
 	if err != nil {
 		return nil, ErrResultShape
@@ -592,8 +594,8 @@ func filterExecutionIDs(body []byte, refs []*enginepb.AthenaContextRef) ([]byte,
 
 // sanitizeDiagnostics reports whether any context this call touches (the referenced ones, else every one
 // the request named) was admitted with diagnostic redaction; an undecodable context redacts too.
-func (c *nativeRequest) sanitizeDiagnostics(refs []*enginepb.AthenaContextRef) bool {
-	records := make([]*enginepb.AthenaCachedContext, 0, len(c.contexts))
+func (c *nativeRequest) sanitizeDiagnostics(refs []*enginepb.NativeContextRef) bool {
+	records := make([]*enginepb.NativeCachedContext, 0, len(c.contexts))
 	if refs == nil {
 		for _, record := range c.contexts {
 			records = append(records, record)
@@ -605,7 +607,7 @@ func (c *nativeRequest) sanitizeDiagnostics(refs []*enginepb.AthenaContextRef) b
 		}
 	}
 	for _, record := range records {
-		verdict, err := cachedVerdict(record)
+		verdict, err := nativeapi.ContextVerdict(record)
 		if err != nil || verdict.SanitizeDiagnostics {
 			return true
 		}
@@ -613,7 +615,7 @@ func (c *nativeRequest) sanitizeDiagnostics(refs []*enginepb.AthenaContextRef) b
 	return false
 }
 
-func expectedWidth(record *enginepb.AthenaCachedContext) *int32 {
+func expectedWidth(record *enginepb.NativeCachedContext) *int32 {
 	if record.ExpectedWidth == nil {
 		return nil
 	}
@@ -650,7 +652,7 @@ func (c *nativeRequest) fail(w http.ResponseWriter, err error) {
 		code, status = "athena.request_denied", http.StatusForbidden
 	case errors.Is(err, errAuthorizationUnavailable):
 		code, status = "athena.authorization_unavailable", http.StatusServiceUnavailable
-	case errors.Is(err, ErrOriginalContextUnavailable):
+	case errors.Is(err, nativeapi.ErrOriginalContextUnavailable):
 		code, status = "athena.original_context_unavailable", http.StatusConflict
 	case errors.Is(err, ErrBodyTooLarge):
 		code, status = "athena.request_too_large", http.StatusRequestEntityTooLarge
@@ -679,7 +681,7 @@ func (c *nativeRequest) release() {
 	}
 }
 
-func (s *nativeServer) authorize(ctx context.Context, token, clientAddr string, descriptor *enginepb.AthenaNativeDescriptor) (*pb.RequestAuthorizationResult, *enginepb.AthenaNativeInstructions, error) {
+func (s *nativeServer) authorize(ctx context.Context, token, clientAddr string, descriptor *enginepb.AthenaNativeDescriptor) (*pb.RequestAuthorizationResult, *enginepb.NativeInstructions, error) {
 	descriptor.Target = &enginepb.AthenaTarget{Region: s.target.settings.region, DefaultWorkgroup: s.target.settings.workgroup, DefaultCatalog: s.target.settings.catalog, DefaultDatabase: s.target.settings.database, Endpoint: s.target.endpoint, TargetBinding: s.target.binding}
 	if proto.Size(descriptor) > 1<<20 {
 		return nil, nil, ErrBodyTooLarge
@@ -698,21 +700,21 @@ func (s *nativeServer) authorize(ctx context.Context, token, clientAddr string, 
 		return nil, nil, fmt.Errorf("%w: %v", errAuthorizationUnavailable, err)
 	}
 	if result != nil && !result.Allowed && result.DenyReason == "native.context_unavailable" {
-		return nil, nil, ErrOriginalContextUnavailable
+		return nil, nil, nativeapi.ErrOriginalContextUnavailable
 	}
-	if result == nil || !result.Allowed || result.GetAthena() == nil {
+	if result == nil || !result.Allowed || result.GetNativeInstructions() == nil {
 		return nil, nil, ErrUnauthorized
 	}
-	instructions := *result.GetAthena()
+	instructions := *result.GetNativeInstructions()
 	switch descriptor.Phase {
 	case enginepb.NativeAuthorizationPhase_NATIVE_AUTHORIZATION_PHASE_REQUEST:
-		if instructions.Action != enginepb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_FORWARD_REQUEST &&
-			instructions.Action != enginepb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_REQUIRE_SQL_ADMISSION {
+		if instructions.Action != enginepb.NativeInstruction_NATIVE_INSTRUCTION_FORWARD_REQUEST &&
+			instructions.Action != enginepb.NativeInstruction_NATIVE_INSTRUCTION_REQUIRE_SQL_ADMISSION {
 			return nil, nil, ErrUnauthorized
 		}
 	case enginepb.NativeAuthorizationPhase_NATIVE_AUTHORIZATION_PHASE_RESPONSE:
-		if instructions.Action != enginepb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_RELEASE_METADATA &&
-			instructions.Action != enginepb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_APPLY_ORIGINAL_CONTEXT {
+		if instructions.Action != enginepb.NativeInstruction_NATIVE_INSTRUCTION_RELEASE_METADATA &&
+			instructions.Action != enginepb.NativeInstruction_NATIVE_INSTRUCTION_APPLY_ORIGINAL_CONTEXT {
 			return nil, nil, ErrUnauthorized
 		}
 	default:

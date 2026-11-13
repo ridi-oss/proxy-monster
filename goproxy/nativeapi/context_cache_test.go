@@ -1,4 +1,4 @@
-package athena
+package nativeapi
 
 import (
 	"bytes"
@@ -14,6 +14,8 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+const testFormat = "test-enforcement-context-v1"
+
 func privateCachePath(t *testing.T) string {
 	t.Helper()
 	directory := t.TempDir()
@@ -23,28 +25,28 @@ func privateCachePath(t *testing.T) string {
 	return filepath.Join(directory, "contexts.aof")
 }
 
-func testContext(t *testing.T, id string) *enginepb.AthenaCachedContext {
+func testContext(t *testing.T, id string) *enginepb.NativeCachedContext {
 	t.Helper()
 	instructions, err := proto.Marshal(&pb.Verdict{Decision: pb.EnfAction_MASK, DecisionId: 42, Masks: []*pb.ColumnMask{{Ordinal: proto.Int32(0), Kind: "FIXED"}}, SanitizeDiagnostics: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &enginepb.AthenaCachedContext{Version: 1, ContextId: "context-" + id, ResourceId: id, Owner: "alice", TargetBinding: bytes.Repeat([]byte{1}, 32), ExpiresAt: timestamppb.New(time.Now().Add(time.Hour)), ExpectedWidth: proto.Uint32(2), EnforcementInstructions: instructions}
+	return &enginepb.NativeCachedContext{Version: 1, ContextId: "context-" + id, ResourceId: id, Owner: "alice", TargetBinding: bytes.Repeat([]byte{1}, 32), ExpiresAt: timestamppb.New(time.Now().Add(time.Hour)), ExpectedWidth: proto.Uint32(2), EnforcementInstructions: instructions}
 }
 
 func TestContextAOFReopenOwnershipExpiryAndPermissions(t *testing.T) {
 	path := privateCachePath(t)
-	cache, err := OpenContextCache(path, 10)
+	cache, err := OpenContextCache(path, testFormat, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
 	record := testContext(t, "native-id")
-	original := proto.Clone(record).(*enginepb.AthenaCachedContext)
+	original := proto.Clone(record).(*enginepb.NativeCachedContext)
 	if err := cache.Associate("source", record); err != nil {
 		t.Fatal(err)
 	}
 	record.Owner = "mutated"
-	if other, err := OpenContextCache(path, 10); err == nil {
+	if other, err := OpenContextCache(path, testFormat, 10); err == nil {
 		_ = other.Close()
 		t.Fatal("second owner opened AOF")
 	}
@@ -57,7 +59,13 @@ func TestContextAOFReopenOwnershipExpiryAndPermissions(t *testing.T) {
 	if err := cache.Close(); err != nil {
 		t.Fatal(err)
 	}
-	cache, err = OpenContextCache(path, 10)
+	if other, err := OpenContextCache(path, "other-enforcement-context-v1", 10); !errors.Is(err, ErrContextCorrupt) {
+		if other != nil {
+			_ = other.Close()
+		}
+		t.Fatalf("AOF opened under another format: %v", err)
+	}
+	cache, err = OpenContextCache(path, testFormat, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +90,7 @@ func TestContextAOFReopenOwnershipExpiryAndPermissions(t *testing.T) {
 }
 
 func TestContextAssociationIsImmutableAndBounded(t *testing.T) {
-	cache, err := OpenContextCache(":memory:", 1)
+	cache, err := OpenContextCache(":memory:", testFormat, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,10 +99,10 @@ func TestContextAssociationIsImmutableAndBounded(t *testing.T) {
 	if err := cache.Associate("source", first); err != nil {
 		t.Fatal(err)
 	}
-	if err := cache.Associate("source", proto.Clone(first).(*enginepb.AthenaCachedContext)); err != nil {
+	if err := cache.Associate("source", proto.Clone(first).(*enginepb.NativeCachedContext)); err != nil {
 		t.Fatal(err)
 	}
-	changed := proto.Clone(first).(*enginepb.AthenaCachedContext)
+	changed := proto.Clone(first).(*enginepb.NativeCachedContext)
 	changed.Owner = "bob"
 	if err := cache.Associate("source", changed); !errors.Is(err, ErrContextConflict) {
 		t.Fatal("existing owner replaced")
@@ -115,7 +123,7 @@ func TestContextAssociationIsImmutableAndBounded(t *testing.T) {
 
 func TestSyncFailurePoisonsCacheBeforeReadersObserveBinding(t *testing.T) {
 	path := privateCachePath(t)
-	cache, err := OpenContextCache(path, 10)
+	cache, err := OpenContextCache(path, testFormat, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +156,7 @@ func TestSyncFailurePoisonsCacheBeforeReadersObserveBinding(t *testing.T) {
 
 func TestContextAOFFailsClosedWithoutRepairingPartialRecords(t *testing.T) {
 	path := privateCachePath(t)
-	cache, err := OpenContextCache(path, 10)
+	cache, err := OpenContextCache(path, testFormat, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +175,7 @@ func TestContextAOFFailsClosedWithoutRepairingPartialRecords(t *testing.T) {
 		if err := os.WriteFile(path, corrupt, 0600); err != nil {
 			t.Fatal(err)
 		}
-		if opened, err := OpenContextCache(path, 10); err == nil {
+		if opened, err := OpenContextCache(path, testFormat, 10); err == nil {
 			_ = opened.Close()
 			t.Fatal("corrupt AOF opened")
 		}
@@ -179,21 +187,21 @@ func TestContextAOFFailsClosedWithoutRepairingPartialRecords(t *testing.T) {
 }
 
 func TestContextRejectsHistoryAndIncompatibleInstructions(t *testing.T) {
-	for _, mutate := range []func(*enginepb.AthenaCachedContext){
-		func(record *enginepb.AthenaCachedContext) { record.Version = 2 },
-		func(record *enginepb.AthenaCachedContext) { record.ExpiresAt = nil },
-		func(record *enginepb.AthenaCachedContext) { record.TargetBinding = []byte("short") },
-		func(record *enginepb.AthenaCachedContext) {
+	for _, mutate := range []func(*enginepb.NativeCachedContext){
+		func(record *enginepb.NativeCachedContext) { record.Version = 2 },
+		func(record *enginepb.NativeCachedContext) { record.ExpiresAt = nil },
+		func(record *enginepb.NativeCachedContext) { record.TargetBinding = []byte("short") },
+		func(record *enginepb.NativeCachedContext) {
 			record.EnforcementInstructions, _ = proto.Marshal(&pb.Verdict{Decision: pb.EnfAction_ALLOW, RewrittenSql: proto.String("SELECT secret")})
 		},
-		func(record *enginepb.AthenaCachedContext) {
+		func(record *enginepb.NativeCachedContext) {
 			record.EnforcementInstructions, _ = proto.Marshal(&pb.Verdict{Decision: pb.EnfAction_ALLOW, EffectiveRoles: []string{"role"}})
 		},
-		func(record *enginepb.AthenaCachedContext) {
+		func(record *enginepb.NativeCachedContext) {
 			record.EnforcementInstructions, _ = proto.Marshal(&pb.Verdict{Decision: pb.EnfAction_DENY})
 		},
 	} {
-		cache, err := OpenContextCache(":memory:", 1)
+		cache, err := OpenContextCache(":memory:", testFormat, 1)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -211,7 +219,7 @@ func TestContextAOFRejectsPublicDirectoryAndFile(t *testing.T) {
 	if err := os.Chmod(directory, 0755); err != nil {
 		t.Fatal(err)
 	}
-	if cache, err := OpenContextCache(filepath.Join(directory, "context.aof"), 10); err == nil {
+	if cache, err := OpenContextCache(filepath.Join(directory, "context.aof"), testFormat, 10); err == nil {
 		_ = cache.Close()
 		t.Fatal("public directory accepted")
 	}
@@ -222,7 +230,7 @@ func TestContextAOFRejectsPublicDirectoryAndFile(t *testing.T) {
 	if err := os.WriteFile(path, []byte("x"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if cache, err := OpenContextCache(path, 10); err == nil {
+	if cache, err := OpenContextCache(path, testFormat, 10); err == nil {
 		_ = cache.Close()
 		t.Fatal("public AOF accepted")
 	}

@@ -1,0 +1,57 @@
+syntax = "proto3";
+
+package proxymonster.native.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option java_package = "com.ridi.oss.proxymonster.nativeapi.pb";
+option java_multiple_files = true;
+
+// What every forwarding engine (an HTTP API proxied to its provider, such as Athena) shares; each engine's
+// own descriptor carries the operation, observations, and target.
+
+enum NativeAuthorizationPhase {
+  NATIVE_AUTHORIZATION_PHASE_UNSPECIFIED = 0;
+  NATIVE_AUTHORIZATION_PHASE_REQUEST = 1;
+  NATIVE_AUTHORIZATION_PHASE_RESPONSE = 2;
+}
+
+message NativeHeader {
+  string name = 1;
+  repeated string values = 2;
+}
+
+// The decision a provider execution was admitted under, keyed by (datasource, resource_id): an Athena
+// QueryExecutionId.
+message NativeCachedContext {
+  uint32 version = 1;
+  string context_id = 2;
+  string resource_id = 3;
+  string owner = 4;
+  bytes target_binding = 5;
+  google.protobuf.Timestamp expires_at = 6;
+  optional uint32 expected_width = 7;
+  bytes metadata_digest = 8;
+  bytes request_binding = 9;
+  // Canonical Verdict containing only decision, masks, unmaskable_permitted, sanitize_diagnostics, decision_id.
+  bytes enforcement_instructions = 10;
+}
+
+enum NativeInstruction {
+  NATIVE_INSTRUCTION_UNSPECIFIED = 0;
+  NATIVE_INSTRUCTION_FORWARD_REQUEST = 1;
+  NATIVE_INSTRUCTION_REQUIRE_SQL_ADMISSION = 2;
+  NATIVE_INSTRUCTION_RELEASE_METADATA = 3;
+  NATIVE_INSTRUCTION_APPLY_ORIGINAL_CONTEXT = 4;
+}
+
+message NativeContextRef {
+  string resource_id = 1;
+  string context_id = 2;
+}
+
+// Permission applies only to this instruction and phase, never arbitrary response bytes.
+message NativeInstructions {
+  NativeInstruction action = 1;
+  repeated NativeContextRef contexts = 2;
+}

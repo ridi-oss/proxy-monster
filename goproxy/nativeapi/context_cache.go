@@ -1,4 +1,4 @@
-package athena
+package nativeapi
 
 import (
 	"bytes"
@@ -22,22 +22,24 @@ const (
 	maxContextBytes    = 64 << 10
 	maxContextAOFBytes = 256 << 20
 	contextFormatKey   = "format"
-	contextFormat      = "athena-enforcement-context-v1"
 )
 
 var (
 	// ErrOriginalContextUnavailable: no unexpired context for this execution on this datasource. A result or
 	// status read without one is refused (HTTP 409); the proxy never re-derives a plan for an unknown id.
-	ErrOriginalContextUnavailable = errors.New("athena.original_context_unavailable")
-	ErrContextConflict            = errors.New("athena: original context association conflicts")
-	ErrContextCapacity            = errors.New("athena: enforcement context capacity reached")
-	ErrContextCorrupt             = errors.New("athena: corrupt or incompatible enforcement context")
+	ErrOriginalContextUnavailable = errors.New("nativeapi: original context unavailable")
+	ErrContextConflict            = errors.New("nativeapi: original context association conflicts")
+	ErrContextCapacity            = errors.New("nativeapi: enforcement context capacity reached")
+	ErrContextCorrupt             = errors.New("nativeapi: corrupt or incompatible enforcement context")
+	// ErrUnauthorized: the caller is not the context's owner, or the target changed since it was admitted.
+	ErrUnauthorized = errors.New("nativeapi: request authorization required")
 )
 
-// EnforcementContextCache binds each QueryExecutionId AWS returned to the decision it was admitted under:
+// EnforcementContextCache binds each execution id the provider returned (an Athena QueryExecutionId) to the
+// decision it was admitted under:
 // owner, target binding, trimmed verdict, and the result shape once read. Keyed by (datasource, id), capped
 // in count, immutable once associated, and optionally persisted through an append-only file the proxy owns
-// exclusively (flock) so a restart keeps enforcing executions that are still readable in AWS.
+// exclusively (flock) so a restart keeps enforcing executions that are still readable upstream.
 type EnforcementContextCache struct {
 	mu       sync.Mutex
 	db       *buntdb.DB
@@ -49,9 +51,11 @@ type EnforcementContextCache struct {
 	now      func() time.Time
 }
 
-func OpenContextCache(path string, capacity int) (*EnforcementContextCache, error) {
-	if capacity <= 0 {
-		return nil, errors.New("athena: positive context capacity required")
+// OpenContextCache opens the cache at path, or in memory for ":memory:". format names the engine's file
+// format ("athena-enforcement-context-v1"); a file written under another format is refused.
+func OpenContextCache(path, format string, capacity int) (*EnforcementContextCache, error) {
+	if capacity <= 0 || format == "" {
+		return nil, errors.New("nativeapi: positive context capacity and a format required")
 	}
 	cache := &EnforcementContextCache{capacity: capacity, now: time.Now}
 	created := false
@@ -63,7 +67,7 @@ func OpenContextCache(path string, capacity int) (*EnforcementContextCache, erro
 		}
 		cache.syncFile = cache.file.Sync
 		if !created {
-			if err = validateContextAOF(cache.file, capacity); err != nil {
+			if err = validateContextAOF(cache.file, format, capacity); err != nil {
 				_ = cache.Close()
 				return nil, err
 			}
@@ -78,7 +82,7 @@ func OpenContextCache(path string, capacity int) (*EnforcementContextCache, erro
 	// BuntDB ignores fsync errors; this wrapper checks each sync and keeps the inode stable.
 	err = db.SetConfig(buntdb.Config{SyncPolicy: buntdb.Never, AutoShrinkDisabled: true})
 	if err == nil && (path == ":memory:" || created) {
-		err = db.Update(func(tx *buntdb.Tx) error { _, _, err := tx.Set(contextFormatKey, contextFormat, nil); return err })
+		err = db.Update(func(tx *buntdb.Tx) error { _, _, err := tx.Set(contextFormatKey, format, nil); return err })
 		if err == nil {
 			err = cache.sync()
 		}
@@ -90,7 +94,7 @@ func OpenContextCache(path string, capacity int) (*EnforcementContextCache, erro
 	return cache, nil
 }
 
-func (c *EnforcementContextCache) Lookup(datasource, resourceID, owner string, targetBinding []byte) (*enginepb.AthenaCachedContext, error) {
+func (c *EnforcementContextCache) Lookup(datasource, resourceID, owner string, targetBinding []byte) (*enginepb.NativeCachedContext, error) {
 	record, err := c.Find(datasource, resourceID)
 	if err != nil {
 		return nil, err
@@ -103,7 +107,7 @@ func (c *EnforcementContextCache) Lookup(datasource, resourceID, owner string, t
 
 // Find returns the unexpired context for a resource without an owner check; the control plane decides
 // whether the caller owns it.
-func (c *EnforcementContextCache) Find(datasource, resourceID string) (*enginepb.AthenaCachedContext, error) {
+func (c *EnforcementContextCache) Find(datasource, resourceID string) (*enginepb.NativeCachedContext, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.failure != nil {
@@ -116,7 +120,7 @@ func (c *EnforcementContextCache) Find(datasource, resourceID string) (*enginepb
 	if err != nil {
 		return nil, err
 	}
-	var record *enginepb.AthenaCachedContext
+	var record *enginepb.NativeCachedContext
 	err = c.db.View(func(tx *buntdb.Tx) error {
 		value, err := tx.Get(key)
 		if errors.Is(err, buntdb.ErrNotFound) {
@@ -137,7 +141,7 @@ func (c *EnforcementContextCache) Find(datasource, resourceID string) (*enginepb
 	return record, nil
 }
 
-func (c *EnforcementContextCache) Associate(datasource string, record *enginepb.AthenaCachedContext) error {
+func (c *EnforcementContextCache) Associate(datasource string, record *enginepb.NativeCachedContext) error {
 	data, err := proto.MarshalOptions{Deterministic: true}.Marshal(record)
 	if err != nil {
 		return err
@@ -233,7 +237,7 @@ func (c *EnforcementContextCache) Associate(datasource string, record *enginepb.
 
 // Rebind records the result shape a context was first read under. Only the metadata digest may change,
 // only from empty, and only over the exact bytes the caller read; anything else conflicts.
-func (c *EnforcementContextCache) Rebind(datasource string, previous, next *enginepb.AthenaCachedContext) error {
+func (c *EnforcementContextCache) Rebind(datasource string, previous, next *enginepb.NativeCachedContext) error {
 	before, err := proto.MarshalOptions{Deterministic: true}.Marshal(previous)
 	if err != nil {
 		return err
@@ -246,7 +250,7 @@ func (c *EnforcementContextCache) Rebind(datasource string, previous, next *engi
 	if err != nil {
 		return err
 	}
-	unchanged := proto.Clone(decoded).(*enginepb.AthenaCachedContext)
+	unchanged := proto.Clone(decoded).(*enginepb.NativeCachedContext)
 	unchanged.MetadataDigest = previous.GetMetadataDigest()
 	if len(previous.GetMetadataDigest()) != 0 || len(decoded.MetadataDigest) != 32 || !proto.Equal(unchanged, previous) {
 		return ErrContextConflict
@@ -289,7 +293,7 @@ func (c *EnforcementContextCache) Rebind(datasource string, previous, next *engi
 func (c *EnforcementContextCache) sync() error {
 	if c.syncFile != nil {
 		if err := c.syncFile(); err != nil {
-			c.failure = fmt.Errorf("athena: enforcement context sync failed: %w", err)
+			c.failure = fmt.Errorf("nativeapi: enforcement context sync failed: %w", err)
 			return c.failure
 		}
 	}
@@ -322,11 +326,11 @@ func contextKey(datasource, resourceID string) (string, error) {
 	return "context:" + base64.RawURLEncoding.EncodeToString([]byte(datasource)) + ":" + base64.RawURLEncoding.EncodeToString([]byte(resourceID)), nil
 }
 
-func decodeContext(data []byte) (*enginepb.AthenaCachedContext, error) {
+func decodeContext(data []byte) (*enginepb.NativeCachedContext, error) {
 	if len(data) == 0 || len(data) > maxContextBytes {
 		return nil, ErrContextCorrupt
 	}
-	var record enginepb.AthenaCachedContext
+	var record enginepb.NativeCachedContext
 	if err := proto.Unmarshal(data, &record); err != nil {
 		return nil, ErrContextCorrupt
 	}
@@ -370,7 +374,7 @@ func decodeContext(data []byte) (*enginepb.AthenaCachedContext, error) {
 
 func openPrivateAOF(path string) (*os.File, *flock.Flock, bool, error) {
 	if !filepath.IsAbs(path) {
-		return nil, nil, false, errors.New("athena: context path must be absolute")
+		return nil, nil, false, errors.New("nativeapi: context path must be absolute")
 	}
 	directory := filepath.Dir(path)
 	info, err := os.Stat(directory)
@@ -378,7 +382,7 @@ func openPrivateAOF(path string) (*os.File, *flock.Flock, bool, error) {
 		return nil, nil, false, err
 	}
 	if !info.IsDir() || info.Mode().Perm()&0077 != 0 {
-		return nil, nil, false, errors.New("athena: context directory must be private")
+		return nil, nil, false, errors.New("nativeapi: context directory must be private")
 	}
 	lockPath := path + ".lock"
 	for _, candidate := range []string{path, lockPath} {
@@ -387,14 +391,14 @@ func openPrivateAOF(path string) (*os.File, *flock.Flock, bool, error) {
 			return nil, nil, false, err
 		}
 		if err == nil && (!info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0) {
-			return nil, nil, false, errors.New("athena: context files must be private regular files")
+			return nil, nil, false, errors.New("nativeapi: context files must be private regular files")
 		}
 	}
 	lock := flock.New(lockPath, flock.SetPermissions(0600))
 	locked, err := lock.TryLock()
 	if err != nil || !locked {
 		_ = lock.Close()
-		return nil, nil, false, errors.New("athena: context file is already owned")
+		return nil, nil, false, errors.New("nativeapi: context file is already owned")
 	}
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
 	created := err == nil

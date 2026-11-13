@@ -1,4 +1,4 @@
-package athena
+package nativeapi
 
 import (
 	"bufio"
@@ -8,7 +8,7 @@ import (
 	"strconv"
 )
 
-func validateContextAOF(file *os.File, capacity int) error {
+func validateContextAOF(file *os.File, format string, capacity int) error {
 	info, err := file.Stat()
 	if err != nil {
 		return err
@@ -47,7 +47,7 @@ func validateContextAOF(file *os.File, capacity int) error {
 		switch {
 		case parts[0] == "set" && len(parts) == 3:
 			if parts[1] == contextFormatKey {
-				if parts[2] != contextFormat {
+				if parts[2] != format {
 					return ErrContextCorrupt
 				}
 				formatSeen = true

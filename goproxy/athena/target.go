@@ -6,11 +6,16 @@ import (
 	"net/http"
 	"net/url"
 
+	"github.com/ridi-oss/proxy-monster/goproxy/nativeapi"
+
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsa "github.com/aws/aws-sdk-go-v2/service/athena"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/wire"
 )
+
+// contextFormat names the enforcement-context file format, so a file from another engine or version is refused.
+const contextFormat = "athena-enforcement-context-v1"
 
 // target is one configured Athena datasource: the SDK client bound to the regional endpoint, the signer and
 // transport the forwarder uses, the STS-verified credential identity, the binding that ties cached contexts
@@ -24,7 +29,7 @@ type target struct {
 	identity    *credentialIdentity
 	binding     []byte
 	generations wire.BackendGenerations
-	contexts    *EnforcementContextCache
+	contexts    *nativeapi.EnforcementContextCache
 }
 
 func newTarget(ctx context.Context, cfg settings, awsCfg aws.Config, transport http.RoundTripper) (*target, error) {
@@ -46,7 +51,7 @@ func newTarget(ctx context.Context, cfg settings, awsCfg aws.Config, transport h
 		options.EndpointResolverV2 = fixedEndpoint{endpoint: endpoint}
 		options.HTTPClient = client
 	})
-	contexts, err := OpenContextCache(cfg.contextPath, 10000)
+	contexts, err := nativeapi.OpenContextCache(cfg.contextPath, contextFormat, 10000)
 	if err != nil {
 		return nil, err
 	}

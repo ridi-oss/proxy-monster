@@ -8,6 +8,7 @@ package proxymonster.v1;
 import "engine.proto";
 import "analyzer.proto";
 import "athena.proto";
+import "native.proto";
 import "google/protobuf/empty.proto";
 
 option java_package = "com.ridi.oss.proxymonster.grpc";
@@ -184,10 +185,8 @@ message RequestAuthorizationResult {
   repeated string effective_roles = 3;
   string principal = 4;
   // For a native operation, what the proxy must do with the call; allowed never grants arbitrary response
-  // bytes. Set exactly when the request's operation was a native arm, in that engine's own message.
-  oneof instructions {
-    proxymonster.athena.v1.AthenaNativeInstructions athena = 5;
-  }
+  // bytes. Set exactly when the request's operation was a native arm.
+  proxymonster.native.v1.NativeInstructions native_instructions = 5;
 }
 
 // ---- Catalog ----

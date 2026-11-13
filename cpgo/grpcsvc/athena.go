@@ -78,12 +78,12 @@ func readAthena(descriptor *analyzerpb.AthenaNativeDescriptor, datasource, princ
 	if err != nil {
 		return access{}, err
 	}
-	out := access{native: true, operation: "athena:" + descriptor.GetOperation(), athena: &analyzerpb.AthenaNativeInstructions{}}
+	out := access{native: true, operation: "athena:" + descriptor.GetOperation(), instructions: &analyzerpb.NativeInstructions{}}
 	observed := func(o *analyzerpb.AthenaResourceObservation) {
 		out.resources = append(out.resources, nativeResource{o.GetKind(), o.GetId(), o.Owner})
 	}
 	response := descriptor.GetPhase() == analyzerpb.NativeAuthorizationPhase_NATIVE_AUTHORIZATION_PHASE_RESPONSE
-	forward := analyzerpb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_FORWARD_REQUEST
+	forward := analyzerpb.NativeInstruction_NATIVE_INSTRUCTION_FORWARD_REQUEST
 	switch op.category {
 	case sqlSubmission:
 		if response {
@@ -92,7 +92,7 @@ func readAthena(descriptor *analyzerpb.AthenaNativeDescriptor, datasource, princ
 		if err := validateSubmissionScope(descriptor.GetTarget(), b); err != nil {
 			return access{}, err
 		}
-		out.athena.Action = analyzerpb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_REQUIRE_SQL_ADMISSION
+		out.instructions.Action = analyzerpb.NativeInstruction_NATIVE_INSTRUCTION_REQUIRE_SQL_ADMISSION
 	case athenaMetadata, athenaNative:
 		named, err := op.resources(b)
 		if err != nil {
@@ -105,9 +105,9 @@ func readAthena(descriptor *analyzerpb.AthenaNativeDescriptor, datasource, princ
 		for _, o := range descriptor.GetObservations() {
 			observed(o)
 		}
-		out.athena.Action = forward
+		out.instructions.Action = forward
 		if response {
-			out.athena.Action = analyzerpb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_RELEASE_METADATA
+			out.instructions.Action = analyzerpb.NativeInstruction_NATIVE_INSTRUCTION_RELEASE_METADATA
 		}
 	case athenaExecution:
 		named, err := op.resources(b)
@@ -121,7 +121,7 @@ func readAthena(descriptor *analyzerpb.AthenaNativeDescriptor, datasource, princ
 			}
 		}
 		owned := ownedContexts(descriptor, principal, now)
-		var refs []*analyzerpb.AthenaCachedContext
+		var refs []*analyzerpb.NativeCachedContext
 		for _, id := range ids {
 			ctxRef, ok := owned[id]
 			if !ok {
@@ -136,11 +136,11 @@ func readAthena(descriptor *analyzerpb.AthenaNativeDescriptor, datasource, princ
 				return access{}, denyError(nativeContextUnavailable)
 			}
 		}
-		out.athena.Action = forward
+		out.instructions.Action = forward
 		if response {
-			out.athena.Action = analyzerpb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_APPLY_ORIGINAL_CONTEXT
+			out.instructions.Action = analyzerpb.NativeInstruction_NATIVE_INSTRUCTION_APPLY_ORIGINAL_CONTEXT
 			for _, ref := range refs {
-				out.athena.Contexts = append(out.athena.Contexts, &analyzerpb.AthenaContextRef{ResourceId: ref.GetResourceId(), ContextId: ref.GetContextId()})
+				out.instructions.Contexts = append(out.instructions.Contexts, &analyzerpb.NativeContextRef{ResourceId: ref.GetResourceId(), ContextId: ref.GetContextId()})
 			}
 		}
 	case athenaHistory:
@@ -149,20 +149,20 @@ func readAthena(descriptor *analyzerpb.AthenaNativeDescriptor, datasource, princ
 			if o.GetKind() != queryExecution {
 				observed(o)
 			} else if ref, ok := owned[o.GetId()]; ok {
-				out.athena.Contexts = append(out.athena.Contexts, &analyzerpb.AthenaContextRef{ResourceId: ref.GetResourceId(), ContextId: ref.GetContextId()})
+				out.instructions.Contexts = append(out.instructions.Contexts, &analyzerpb.NativeContextRef{ResourceId: ref.GetResourceId(), ContextId: ref.GetContextId()})
 			}
 		}
-		out.athena.Action = forward
+		out.instructions.Action = forward
 		if response {
-			out.athena.Action = analyzerpb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_APPLY_ORIGINAL_CONTEXT
+			out.instructions.Action = analyzerpb.NativeInstruction_NATIVE_INSTRUCTION_APPLY_ORIGINAL_CONTEXT
 		}
 	}
 	return out, nil
 }
 
 // ownedContexts is the descriptor's cached contexts that are the principal's, bound to this target, and unexpired.
-func ownedContexts(d *analyzerpb.AthenaNativeDescriptor, principal string, now time.Time) map[string]*analyzerpb.AthenaCachedContext {
-	out := map[string]*analyzerpb.AthenaCachedContext{}
+func ownedContexts(d *analyzerpb.AthenaNativeDescriptor, principal string, now time.Time) map[string]*analyzerpb.NativeCachedContext {
+	out := map[string]*analyzerpb.NativeCachedContext{}
 	binding := d.GetTarget().GetTargetBinding()
 	for _, c := range d.GetCachedContexts() {
 		if c.GetOwner() == principal && bytes.Equal(c.GetTargetBinding(), binding) && c.GetExpiresAt().AsTime().After(now) {
@@ -229,7 +229,7 @@ func validDescriptor(d *analyzerpb.AthenaNativeDescriptor) error {
 	return nil
 }
 
-func wellFormed(c *analyzerpb.AthenaCachedContext) bool {
+func wellFormed(c *analyzerpb.NativeCachedContext) bool {
 	if c.GetVersion() != athenaContextVersion || blank(c.GetContextId()) || blank(c.GetResourceId()) || blank(c.GetOwner()) {
 		return false
 	}

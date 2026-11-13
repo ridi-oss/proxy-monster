@@ -2,20 +2,12 @@ package athena
 
 import (
 	"bytes"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"strings"
 	"time"
-
-	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
-	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
-	"github.com/ridi-oss/proxy-monster/goproxy/relay"
-	"github.com/ridi-oss/proxy-monster/goproxy/spi"
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // Athena keeps managed results for 24 hours; the enforcement context lives exactly that long.
@@ -113,52 +105,6 @@ func requestBinding(body []byte) []byte {
 func namespacedToken(datasource, principal, token string) string {
 	hash := sha256.Sum256([]byte(datasource + "\x00" + principal + "\x00" + token))
 	return hex.EncodeToString(hash[:])
-}
-
-// newCachedContext freezes an ALLOW/MASK decision for a returned execution id.
-func newCachedContext(resourceID, owner string, targetBinding []byte, decision *spi.Decision, expectedWidth *uint32, binding []byte, now time.Time) (*enginepb.AthenaCachedContext, error) {
-	action := relay.ParseEnfActionName(decision.Action)
-	if action != pb.EnfAction_ALLOW && action != pb.EnfAction_MASK {
-		return nil, ErrUnauthorized
-	}
-	if action == pb.EnfAction_ALLOW && len(decision.Masks) > 0 {
-		return nil, ErrUnauthorized
-	}
-	trimmed := &pb.Verdict{Decision: action, Masks: decision.Masks, UnmaskablePermitted: decision.UnmaskablePermitted, SanitizeDiagnostics: decision.SanitizeDiagnostics, DecisionId: decision.DecisionID}
-	instructions, err := proto.MarshalOptions{Deterministic: true}.Marshal(trimmed)
-	if err != nil {
-		return nil, err
-	}
-	var nonce [16]byte
-	if _, err := rand.Read(nonce[:]); err != nil {
-		return nil, err
-	}
-	record := &enginepb.AthenaCachedContext{
-		Version: 1, ContextId: hex.EncodeToString(nonce[:]), ResourceId: resourceID, Owner: owner,
-		TargetBinding: bytes.Clone(targetBinding), ExpiresAt: timestamppb.New(now.Add(contextLifetime)),
-		ExpectedWidth: expectedWidth, RequestBinding: bytes.Clone(binding), EnforcementInstructions: instructions,
-	}
-	if _, err := decodeContextRecord(record); err != nil {
-		return nil, err
-	}
-	return record, nil
-}
-
-func decodeContextRecord(record *enginepb.AthenaCachedContext) (*enginepb.AthenaCachedContext, error) {
-	data, err := proto.MarshalOptions{Deterministic: true}.Marshal(record)
-	if err != nil {
-		return nil, err
-	}
-	return decodeContext(data)
-}
-
-// cachedVerdict decodes the trimmed enforcement instructions a cached context carries.
-func cachedVerdict(record *enginepb.AthenaCachedContext) (*pb.Verdict, error) {
-	var verdict pb.Verdict
-	if err := proto.Unmarshal(record.GetEnforcementInstructions(), &verdict); err != nil {
-		return nil, ErrContextCorrupt
-	}
-	return &verdict, nil
 }
 
 // executionID reads the QueryExecutionId AWS returned; a client-supplied id never reaches here.

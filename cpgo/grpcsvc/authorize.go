@@ -52,11 +52,11 @@ type nativeResource struct {
 // access is what a request without SQL touches, as its engine reads it: a deny code, a metadata read (only the
 // connect gate applies), or a native call whose resources each need native.invoke as operation.
 type access struct {
-	deny      string
-	native    bool
-	operation string
-	resources []nativeResource
-	athena    *analyzerpb.AthenaNativeInstructions
+	deny         string
+	native       bool
+	operation    string
+	resources    []nativeResource
+	instructions *analyzerpb.NativeInstructions
 }
 
 // readRequest is how an engine reads a request; it never asks Cedar.
@@ -70,8 +70,8 @@ var requestReaders = map[*engines.Engine]readRequest{
 
 // admission is the verdict on one request: a deny code, or an allow with the native instructions.
 type admission struct {
-	deny   string
-	athena *analyzerpb.AthenaNativeInstructions
+	deny         string
+	instructions *analyzerpb.NativeInstructions
 }
 
 // AuthorizeRequest decides an operation that runs no SQL, such as a forwarding proxy's metadata or Athena API
@@ -121,9 +121,7 @@ func (s *service) AuthorizeRequest(ctx context.Context, r *pb.RequestAuthorizati
 	out := &pb.RequestAuthorizationResult{Allowed: a.deny == "", DenyReason: a.deny, EffectiveRoles: parents.Roles}
 	if a.deny == "" {
 		out.Principal = tok.Principal
-		if a.athena != nil {
-			out.Instructions = &pb.RequestAuthorizationResult_Athena{Athena: a.athena}
-		}
+		out.NativeInstructions = a.instructions
 	}
 	return out, nil
 }
@@ -163,7 +161,7 @@ func (s *service) authorizeRequest(ctx context.Context, r *pb.RequestAuthorizati
 	if ok, err := s.mayInvoke(ctx, ds, c, a.operation, a.resources...); err != nil || !ok {
 		return denied(r), err
 	}
-	return admission{athena: a.athena}, nil
+	return admission{instructions: a.instructions}, nil
 }
 
 // metadataAccess is a MySQL or PostgreSQL catalog or table-metadata read whose selector names the datasource's

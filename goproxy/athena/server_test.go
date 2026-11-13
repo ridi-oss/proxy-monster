@@ -33,11 +33,11 @@ func (c requestClient) AuthorizeRequest(_ context.Context, request *pb.RequestAu
 
 func nativePermission(t *testing.T, descriptor *enginepb.AthenaNativeDescriptor, principal string) *pb.RequestAuthorizationResult {
 	t.Helper()
-	action := enginepb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_FORWARD_REQUEST
+	action := enginepb.NativeInstruction_NATIVE_INSTRUCTION_FORWARD_REQUEST
 	if descriptor.Phase == enginepb.NativeAuthorizationPhase_NATIVE_AUTHORIZATION_PHASE_RESPONSE {
-		action = enginepb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_RELEASE_METADATA
+		action = enginepb.NativeInstruction_NATIVE_INSTRUCTION_RELEASE_METADATA
 	}
-	return &pb.RequestAuthorizationResult{Allowed: true, Principal: principal, Instructions: &pb.RequestAuthorizationResult_Athena{Athena: &enginepb.AthenaNativeInstructions{Action: action}}}
+	return &pb.RequestAuthorizationResult{Allowed: true, Principal: principal, NativeInstructions: &enginepb.NativeInstructions{Action: action}}
 }
 
 func nativeTestRequest(operation, body string) *http.Request {
@@ -61,12 +61,12 @@ func TestNativeServerDeniesWithoutUpstreamCalls(t *testing.T) {
 }
 
 func TestNativeServerRejectsBooleanOnlyAndWrongPhasePermission(t *testing.T) {
-	for _, action := range []enginepb.AthenaNativeInstruction{enginepb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_UNSPECIFIED, enginepb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_RELEASE_METADATA} {
+	for _, action := range []enginepb.NativeInstruction{enginepb.NativeInstruction_NATIVE_INSTRUCTION_UNSPECIFIED, enginepb.NativeInstruction_NATIVE_INSTRUCTION_RELEASE_METADATA} {
 		target := testTarget(t, func(w http.ResponseWriter, request *http.Request) { t.Fatal("invalid instruction reached AWS") })
 		client := requestClient{authorize: func(_ *pb.RequestAuthorization, _ *enginepb.AthenaNativeDescriptor) (*pb.RequestAuthorizationResult, error) {
 			result := &pb.RequestAuthorizationResult{Allowed: true, Principal: "alice"}
-			if action != enginepb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_UNSPECIFIED {
-				result.Instructions = &pb.RequestAuthorizationResult_Athena{Athena: &enginepb.AthenaNativeInstructions{Action: action}}
+			if action != enginepb.NativeInstruction_NATIVE_INSTRUCTION_UNSPECIFIED {
+				result.NativeInstructions = &enginepb.NativeInstructions{Action: action}
 			}
 			return result, nil
 		}}

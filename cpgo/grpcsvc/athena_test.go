@@ -19,10 +19,10 @@ import (
 const (
 	requestPhase  = apb.NativeAuthorizationPhase_NATIVE_AUTHORIZATION_PHASE_REQUEST
 	responsePhase = apb.NativeAuthorizationPhase_NATIVE_AUTHORIZATION_PHASE_RESPONSE
-	forward       = apb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_FORWARD_REQUEST
-	sqlAdmission  = apb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_REQUIRE_SQL_ADMISSION
-	release       = apb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_RELEASE_METADATA
-	applyContext  = apb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_APPLY_ORIGINAL_CONTEXT
+	forward       = apb.NativeInstruction_NATIVE_INSTRUCTION_FORWARD_REQUEST
+	sqlAdmission  = apb.NativeInstruction_NATIVE_INSTRUCTION_REQUIRE_SQL_ADMISSION
+	release       = apb.NativeInstruction_NATIVE_INSTRUCTION_RELEASE_METADATA
+	applyContext  = apb.NativeInstruction_NATIVE_INSTRUCTION_APPLY_ORIGINAL_CONTEXT
 )
 
 var binding = bytes.Repeat([]byte{7}, 32)
@@ -49,7 +49,7 @@ func observe(os ...*apb.AthenaResourceObservation) func(*apb.AthenaNativeDescrip
 	return func(d *apb.AthenaNativeDescriptor) { d.Observations = append(d.Observations, os...) }
 }
 
-func cached(cs ...*apb.AthenaCachedContext) func(*apb.AthenaNativeDescriptor) {
+func cached(cs ...*apb.NativeCachedContext) func(*apb.AthenaNativeDescriptor) {
 	return func(d *apb.AthenaNativeDescriptor) { d.CachedContexts = append(d.CachedContexts, cs...) }
 }
 
@@ -61,8 +61,8 @@ func verdictBytes(v *pb.Verdict) []byte {
 	return b
 }
 
-func cachedContext(id, owner string, expires time.Time, mods ...func(*apb.AthenaCachedContext)) *apb.AthenaCachedContext {
-	c := &apb.AthenaCachedContext{
+func cachedContext(id, owner string, expires time.Time, mods ...func(*apb.NativeCachedContext)) *apb.NativeCachedContext {
+	c := &apb.NativeCachedContext{
 		Version: 1, ContextId: "ctx-" + id, ResourceId: id, Owner: owner, TargetBinding: binding, ExpiresAt: timestamppb.New(expires),
 		EnforcementInstructions: verdictBytes(&pb.Verdict{Decision: pb.EnfAction_ALLOW, DecisionId: 7}),
 	}
@@ -75,17 +75,17 @@ func cachedContext(id, owner string, expires time.Time, mods ...func(*apb.Athena
 // outcome is a deny code, or an allow's Athena action with the resource ids of its context refs.
 type outcome struct {
 	deny     string
-	action   apb.AthenaNativeInstruction
+	action   apb.NativeInstruction
 	contexts []string
 }
 
 func deny(code string) outcome { return outcome{deny: code} }
 
-func act(a apb.AthenaNativeInstruction, ids ...string) outcome {
+func act(a apb.NativeInstruction, ids ...string) outcome {
 	return outcome{action: a, contexts: ids}
 }
 
-func outcomeOf(deny string, in *apb.AthenaNativeInstructions) outcome {
+func outcomeOf(deny string, in *apb.NativeInstructions) outcome {
 	o := outcome{deny: deny, action: in.GetAction()}
 	for _, c := range in.GetContexts() {
 		o.contexts = append(o.contexts, c.GetResourceId())
@@ -112,7 +112,7 @@ func newLake(t *testing.T) *lake {
 	return &lake{fixture: f, alice: f.token("USER", "alice"), carol: f.token("USER", "carol"), now: time.Now()}
 }
 
-func (l *lake) ctx(id string) *apb.AthenaCachedContext {
+func (l *lake) ctx(id string) *apb.NativeCachedContext {
 	return cachedContext(id, "alice", l.now.Add(time.Hour))
 }
 
@@ -125,7 +125,7 @@ func (l *lake) rpc(d *apb.AthenaNativeDescriptor, token, ds, addr string) outcom
 	if res.GetAllowed() != (res.GetDenyReason() == "") {
 		l.t.Errorf("allowed=%v with deny %q", res.GetAllowed(), res.GetDenyReason())
 	}
-	return outcomeOf(res.GetDenyReason(), res.GetAthena())
+	return outcomeOf(res.GetDenyReason(), res.GetNativeInstructions())
 }
 
 func (l *lake) admit(d *apb.AthenaNativeDescriptor) outcome { return l.rpc(d, l.alice, "lake", "") }
@@ -141,7 +141,7 @@ func (l *lake) direct(r *pb.RequestAuthorization, now time.Time) outcome {
 	if err != nil {
 		l.t.Fatal(err)
 	}
-	return outcomeOf(a.deny, a.athena)
+	return outcomeOf(a.deny, a.instructions)
 }
 
 type athenaCase struct {
@@ -197,7 +197,7 @@ func (l *lake) rpcOp(r *pb.RequestAuthorization) outcome {
 	if err != nil {
 		l.t.Fatal(err)
 	}
-	return outcomeOf(res.GetDenyReason(), res.GetAthena())
+	return outcomeOf(res.GetDenyReason(), res.GetNativeInstructions())
 }
 
 func TestAthenaSQLSubmissionRequiresSQLAdmission(t *testing.T) {
@@ -290,11 +290,11 @@ func TestAthenaExecutionNeedsOwnedUnexpiredBoundContext(t *testing.T) {
 	l := newLake(t)
 	gate := []string{connectAll}
 	mine := l.ctx("q1")
-	results := func(id string, phase apb.NativeAuthorizationPhase, cs ...*apb.AthenaCachedContext) *apb.AthenaNativeDescriptor {
+	results := func(id string, phase apb.NativeAuthorizationPhase, cs ...*apb.NativeCachedContext) *apb.AthenaNativeDescriptor {
 		return descriptor("GetQueryResults", `{"QueryExecutionId":"`+id+`"}`, phase, cached(cs...))
 	}
-	with := func(mod func(*apb.AthenaCachedContext)) *apb.AthenaCachedContext {
-		c := proto.Clone(mine).(*apb.AthenaCachedContext)
+	with := func(mod func(*apb.NativeCachedContext)) *apb.NativeCachedContext {
+		c := proto.Clone(mine).(*apb.NativeCachedContext)
 		mod(c)
 		return c
 	}
@@ -305,12 +305,12 @@ func TestAthenaExecutionNeedsOwnedUnexpiredBoundContext(t *testing.T) {
 		{"other execution", gate, results("q2", responsePhase, mine), deny(nativeContextUnavailable)},
 		{"other owner", gate, results("q1", responsePhase, cachedContext("q1", "bob", l.now.Add(time.Hour))), deny(nativeContextUnavailable)},
 		{"expired", gate, results("q1", responsePhase, cachedContext("q1", "alice", l.now.Add(-time.Second))), deny(nativeContextUnavailable)},
-		{"other target", gate, results("q1", responsePhase, with(func(c *apb.AthenaCachedContext) { c.TargetBinding = bytes.Repeat([]byte{9}, 32) })), deny(nativeContextUnavailable)},
-		{"short binding", gate, results("q1", responsePhase, with(func(c *apb.AthenaCachedContext) { c.TargetBinding = make([]byte, 16) })), deny(nativeInvalidDescriptor)},
-		{"version 2", gate, results("q1", responsePhase, with(func(c *apb.AthenaCachedContext) { c.Version = 2 })), deny(nativeInvalidDescriptor)},
-		{"no expiry", gate, results("q1", responsePhase, with(func(c *apb.AthenaCachedContext) { c.ExpiresAt = nil })), deny(nativeInvalidDescriptor)},
-		{"no context id", gate, results("q1", responsePhase, with(func(c *apb.AthenaCachedContext) { c.ContextId = "" })), deny(nativeInvalidDescriptor)},
-		{"short metadata digest", gate, results("q1", responsePhase, with(func(c *apb.AthenaCachedContext) { c.MetadataDigest = make([]byte, 5) })), deny(nativeInvalidDescriptor)},
+		{"other target", gate, results("q1", responsePhase, with(func(c *apb.NativeCachedContext) { c.TargetBinding = bytes.Repeat([]byte{9}, 32) })), deny(nativeContextUnavailable)},
+		{"short binding", gate, results("q1", responsePhase, with(func(c *apb.NativeCachedContext) { c.TargetBinding = make([]byte, 16) })), deny(nativeInvalidDescriptor)},
+		{"version 2", gate, results("q1", responsePhase, with(func(c *apb.NativeCachedContext) { c.Version = 2 })), deny(nativeInvalidDescriptor)},
+		{"no expiry", gate, results("q1", responsePhase, with(func(c *apb.NativeCachedContext) { c.ExpiresAt = nil })), deny(nativeInvalidDescriptor)},
+		{"no context id", gate, results("q1", responsePhase, with(func(c *apb.NativeCachedContext) { c.ContextId = "" })), deny(nativeInvalidDescriptor)},
+		{"short metadata digest", gate, results("q1", responsePhase, with(func(c *apb.NativeCachedContext) { c.MetadataDigest = make([]byte, 5) })), deny(nativeInvalidDescriptor)},
 		{"no execution id", gate, descriptor("GetQueryResults", "{}", requestPhase), deny(nativeInvalidDescriptor)},
 	}
 	for _, op := range []string{"GetQueryExecution", "GetQueryResultsStream", "StopQueryExecution", "GetQueryRuntimeStatistics"} {
@@ -320,9 +320,9 @@ func TestAthenaExecutionNeedsOwnedUnexpiredBoundContext(t *testing.T) {
 		)
 	}
 	l.run(cases)
-	if res, _ := l.authorize(on(athenaOp(results("q1", responsePhase, mine)), l.alice, "lake", "")); len(res.GetAthena().GetContexts()) != 1 ||
-		res.GetAthena().GetContexts()[0].GetContextId() != "ctx-q1" {
-		t.Errorf("context refs %v", res.GetAthena().GetContexts())
+	if res, _ := l.authorize(on(athenaOp(results("q1", responsePhase, mine)), l.alice, "lake", "")); len(res.GetNativeInstructions().GetContexts()) != 1 ||
+		res.GetNativeInstructions().GetContexts()[0].GetContextId() != "ctx-q1" {
+		t.Errorf("context refs %v", res.GetNativeInstructions().GetContexts())
 	}
 	fixed := time.Date(2026, 9, 14, 0, 0, 0, 0, time.UTC)
 	if got := l.direct(athenaOp(results("q1", responsePhase, cachedContext("q1", "alice", fixed))), fixed); !got.equal(deny(nativeContextUnavailable)) {
@@ -449,7 +449,7 @@ func TestAthenaContextTagsRolesAndRequesterIP(t *testing.T) {
 		}
 	}
 	forged := authz.Context{Channel: "wire", RequesterIP: "10.2.3.4", StmtKind: "select", Tags: []string{"forged"}, NativeOperation: "forged"}
-	if a := l.bounded(athenaOp(d), reqDS("lake", "athena", "analytics", "production"), []string{"reader"}, forged); a.deny != "" || a.athena.GetAction() != forward {
+	if a := l.bounded(athenaOp(d), reqDS("lake", "athena", "analytics", "production"), []string{"reader"}, forged); a.deny != "" || a.instructions.GetAction() != forward {
 		t.Errorf("forged statement kind, tags and operation: deny %q", a.deny)
 	}
 }

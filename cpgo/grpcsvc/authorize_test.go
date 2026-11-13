@@ -191,8 +191,8 @@ func TestMetadataUsesConnectGate(t *testing.T) {
 	for _, ds := range []struct{ name, catalog string }{{"reports", "def"}, {"reports-pg", "app"}} {
 		for _, r := range []*pb.RequestAuthorization{catalogOp(ref(ds.catalog, "app", "")), tableOp(ref(ds.catalog, "app", "users"))} {
 			f.policies(connectAll)
-			if res := f.want(ds.name+" permitted", on(r, alice, ds.name, ""), ""); res.GetPrincipal() != "alice" || res.GetInstructions() != nil {
-				t.Errorf("%s: principal %q instructions %v", ds.name, res.GetPrincipal(), res.GetInstructions())
+			if res := f.want(ds.name+" permitted", on(r, alice, ds.name, ""), ""); res.GetPrincipal() != "alice" || res.GetNativeInstructions() != nil {
+				t.Errorf("%s: principal %q instructions %v", ds.name, res.GetPrincipal(), res.GetNativeInstructions())
 			}
 			f.policies()
 			f.want(ds.name+" no permit", on(r, alice, ds.name, ""), notConnectable)
@@ -414,15 +414,15 @@ func TestAdmissionInstructions(t *testing.T) {
 	f.grant("alice", "reader")
 	f.policies(connectAll, invokeAll)
 	alice := f.token("USER", "alice")
-	if res := f.want("native", on(athenaOp(descriptor("ListWorkGroups", "{}", requestPhase)), alice, "lake", ""), ""); res.GetAthena() == nil {
+	if res := f.want("native", on(athenaOp(descriptor("ListWorkGroups", "{}", requestPhase)), alice, "lake", ""), ""); res.GetNativeInstructions() == nil {
 		t.Error("native allow without instructions")
 	}
-	if res := f.want("metadata", on(catalogOp(ref("def", "app", "")), alice, "reports", ""), ""); res.GetInstructions() != nil {
-		t.Errorf("metadata allow with instructions %v", res.GetInstructions())
+	if res := f.want("metadata", on(catalogOp(ref("def", "app", "")), alice, "reports", ""), ""); res.GetNativeInstructions() != nil {
+		t.Errorf("metadata allow with instructions %v", res.GetNativeInstructions())
 	}
 	scope := descriptor("StartQueryExecution", `{"QueryString":"select 1","WorkGroup":"other"}`, requestPhase)
-	if res := f.want("engine deny code", on(athenaOp(scope), alice, "lake", ""), nativeScopeViolation); res.GetInstructions() != nil || res.GetPrincipal() != "" {
-		t.Errorf("denied result carries %v %q", res.GetInstructions(), res.GetPrincipal())
+	if res := f.want("engine deny code", on(athenaOp(scope), alice, "lake", ""), nativeScopeViolation); res.GetNativeInstructions() != nil || res.GetPrincipal() != "" {
+		t.Errorf("denied result carries %v %q", res.GetNativeInstructions(), res.GetPrincipal())
 	}
 }
 
@@ -436,7 +436,7 @@ func TestNativeDispatchRefusesBeforeTheEngine(t *testing.T) {
 		if r.GetAthena() == nil || principal != "alice" {
 			t.Errorf("engine read %v as %q", r, principal)
 		}
-		return access{native: true, athena: &apb.AthenaNativeInstructions{}}
+		return access{native: true, instructions: &apb.NativeInstructions{}}
 	}
 	ds := reqDS("lake", "athena", "analytics", "production")
 	r := athenaOp(descriptor("ListWorkGroups", "{}", requestPhase))

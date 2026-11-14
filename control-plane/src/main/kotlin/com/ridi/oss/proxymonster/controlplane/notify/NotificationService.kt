@@ -183,6 +183,7 @@ class NotificationService(
         roleName: String?,
         source: String = "console",
         pullRequest: PullRequestRef? = null,
+        private: Boolean = false,
     ) {
         if (!enabled) return
         val subject = AccessRequest(
@@ -197,6 +198,7 @@ class NotificationService(
             revision = 1,
             source = source,
             pullRequest = pullRequest,
+            private = private,
         )
         emitRequested(c, subject)
     }
@@ -231,6 +233,20 @@ class NotificationService(
         if (!enabled) return
         runCatching { store.inTransaction { c -> emitRequested(c, req) } }
             .onFailure { log.warn("notification emit failed task={} event=task.requested", req.id, it) }
+        wake()
+    }
+
+    /** [req] was just made private: delete every message it has on a transport that no longer serves it. */
+    fun emitPrivatizedEvent(req: AccessRequest) {
+        if (!enabled) return
+        runCatching {
+            store.inTransaction { c ->
+                val names = transports.filter { !it.serves(req) }.map { it.name }.toSet()
+                for ((transport, recipient, kind) in store.messagesOf(c, req.id)) {
+                    if (transport in names) store.enqueue(c, req.id, NotificationEvent.TASK_PRIVATIZED, transport, recipient, kind)
+                }
+            }
+        }.onFailure { log.warn("notification emit failed task={} event=task.privatized", req.id, it) }
         wake()
     }
 
@@ -279,9 +295,11 @@ class NotificationService(
         if (replying.isEmpty()) return
         for (thread in store.threadsBehind(replying.keys)) {
             val transport = replying.getValue(thread.transport)
-            // A removed CC's thread stops getting new entries; the cursor still moves so it is not retried.
-            val removed = thread.kind == NotificationKind.CC &&
-                accessStore.getRequest(thread.taskId)?.ccs?.contains(thread.recipient) != true
+            // A removed CC's thread, or a request this transport no longer serves, stops getting new entries; the
+            // cursor still moves so it is not retried.
+            val req = accessStore.getRequest(thread.taskId)
+            val removed = req == null || !transport.serves(req) ||
+                thread.kind == NotificationKind.CC && thread.recipient !in req.ccs
             val locale = store.localeOf(thread.recipient) ?: defaultLocale
             for ((event, sourceThread) in store.eventsAfter(thread.taskId, thread.lastEventId)) {
                 if (!removed && event.kind !in UNTHREADED && sourceThread != thread.externalRef && !event.deleted &&
@@ -328,10 +346,14 @@ class NotificationService(
 
         val req = accessStore.getRequest(row.taskId)
             ?: return store.markDead(row.id, "task no longer exists")
+        if (row.event != NotificationEvent.TASK_PRIVATIZED && !transport.serves(req)) {
+            return store.markDead(row.id, "request is no longer sent on ${transport.name}")
+        }
 
         val locale = store.localeOf(row.recipient) ?: defaultLocale
         val existingRef = store.externalRef(row.taskId, transport.name, row.recipient, row.kind)
         if (row.event == NotificationEvent.TASK_REDRAWN) return redraw(row, req, transport, existingRef, locale)
+        if (row.event == NotificationEvent.TASK_PRIVATIZED) return privatize(row, transport, existingRef)
         val message = buildMessage(row, req, transport)
 
         // A non-update row that already left a ref was delivered by a prior attempt whose markSent did not
@@ -379,6 +401,18 @@ class NotificationService(
             is DeliveryResult.Drop -> store.markDead(row.id, result.reason)
             is DeliveryResult.Retry -> retryOrGiveUp(row, result.reason)
         }
+    }
+
+    private suspend fun privatize(row: OutboxRow, transport: NotificationTransport, ref: String?) {
+        if (ref == null) return store.markSent(row.id)
+        val deleted = try {
+            transport.deleteThread(ref)
+        } catch (e: Exception) {
+            return retryOrGiveUp(row, "delete thread: ${e.message}")
+        } ?: return store.markDead(row.id, "could not delete the thread")
+        store.forgetPosts(deleted)
+        store.forgetMessage(row.taskId, transport.name, row.recipient, row.kind)
+        store.markSent(row.id)
     }
 
     /** Retry [row] with backoff, or dead-letter it once [MAX_ATTEMPTS] is reached. */
@@ -544,7 +578,7 @@ class NotificationService(
         // A dismissed review only drops off the messages' review line.
         private val UNTHREADED = setOf(RequestEventKind.REQUESTED.wire, RequestEventKind.CODE_REVIEW_DISMISSED.wire)
         private val REDRAWABLE = NotificationEvent.entries.filter {
-            (it.isCreation || it.isUpdate) && it != NotificationEvent.TASK_REDRAWN
+            (it.isCreation || it.isUpdate) && it != NotificationEvent.TASK_REDRAWN && it != NotificationEvent.TASK_PRIVATIZED
         }
         private const val BACKOFF_BASE_SEC = 15L
         private const val BACKOFF_CAP_SEC = 900L

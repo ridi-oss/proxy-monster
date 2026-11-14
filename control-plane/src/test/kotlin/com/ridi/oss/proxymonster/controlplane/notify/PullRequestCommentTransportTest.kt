@@ -100,7 +100,7 @@ class PullRequestCommentTransportTest {
     @Test
     fun `every comment key resolves in both locales`() {
         for (locale in MessageCatalog.LOCALES) {
-            for (event in NotificationEvent.entries) {
+            for (event in NotificationEvent.entries - NotificationEvent.TASK_PRIVATIZED) {
                 assertFalse(transport.body(message(event), locale).contains("comment."), "$event/$locale")
             }
         }

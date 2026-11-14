@@ -234,7 +234,7 @@ class ApprovalRoutesHttpDbTest {
         r.post("/api/approvals", """{"reason":"r","sourceDecisionId":$allowed}""")
         r.post("/api/approvals", """{"reason":"r","sourceDecisionId":$orphan}""")
         r.post("/api/approvals", """{"reason":"r","sourceDecisionId":$denied}""")
-        r.post("/api/approvals", """{"reason":" from a denial ","sourceDecisionId":$denied,"roleId":$full,"title":"  "}""")
+        r.post("/api/approvals", """{"reason":" from a denial ","sourceDecisionId":$denied,"roleId":$full,"title":"  ","private":true}""")
         r.post("/api/approvals", """{"reason":"again","sourceDecisionId":$denied,"roleId":$full}""")
         r.post("/api/approvals", """{"reason":"r","sql":"select 1"}""")
         r.post("/api/approvals", """{"reason":"r","datasourceId":${mysql.id}}""")

@@ -149,7 +149,7 @@ func (athenaHooks) stampSubmission(facts *pb.StatementFacts) {
 	facts.Submission = &pb.Submission{Engine: &pb.Submission_Athena{Athena: &pb.AthenaSubmission{}}}
 }
 
-func (athenaHooks) configureNamespace(opts *optimizer.QualifyOpts, namespace NamespaceConfig) {
+func (athenaHooks) configureNamespace(_ *Session, opts *optimizer.QualifyOpts, namespace NamespaceConfig) {
 	if len(namespace.SearchPath) != 1 {
 		panic("Athena requires one current database")
 	}
@@ -175,25 +175,6 @@ func athenaNativeOutputLabel(_ *Session, projection, query exp.Expression) (stri
 		}
 	}
 	return "", false
-}
-
-func athenaParameterExpressions(sql string, session *Session) ([]exp.Expression, error) {
-	root, err := singleStatement("SELECT "+sql, session)
-	if err != nil {
-		return nil, err
-	}
-	if root.Kind() != exp.KindSelect || len(root.Selects()) == 0 ||
-		!root.Equal(exp.Select(exp.Args{"expressions": root.Selects()})) {
-		return nil, fmt.Errorf("expected SQL parameter expressions")
-	}
-	for _, expression := range root.Selects() {
-		if expression.Kind() == exp.KindAlias || expression.Find(exp.KindPlaceholder) != nil ||
-			expression.Find(exp.KindParameter) != nil || expression.Find(exp.KindSessionParameter) != nil ||
-			expression.Find(exp.KindColumn) != nil || expression.Find(exp.TraitQuery) != nil || expression.Find(exp.KindStar) != nil {
-			return nil, fmt.Errorf("parameter is not a scalar expression")
-		}
-	}
-	return root.Selects(), nil
 }
 
 func bindAthenaParameters(root exp.Expression, parameters []string, session *Session) error {
@@ -228,7 +209,7 @@ func bindAthenaParameters(root exp.Expression, parameters []string, session *Ses
 	}
 	sort.Slice(placeholders, func(i, j int) bool { return positions[placeholders[i]] < positions[placeholders[j]] })
 	for i, placeholder := range placeholders {
-		expressions, err := athenaParameterExpressions(parameters[i], session)
+		expressions, err := parameterExpressions(parameters[i], session)
 		if err != nil {
 			return err
 		}
@@ -257,7 +238,7 @@ func athenaExecute(root exp.Expression, session *Session) (string, []string, err
 		return "", nil, fmt.Errorf("expected EXECUTE name USING expressions")
 	}
 	runes := []rune(tail)
-	expressions, err := athenaParameterExpressions(string(runes[parsed[2].Start:]), session)
+	expressions, err := parameterExpressions(string(runes[parsed[2].Start:]), session)
 	if err != nil {
 		return "", nil, err
 	}

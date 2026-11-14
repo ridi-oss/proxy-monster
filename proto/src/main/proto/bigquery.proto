@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+package proxymonster.bigquery.v1;
+
+option java_package = "com.ridi.oss.proxymonster.bigquery.pb";
+option java_multiple_files = true;
+
+// What a BigQuery jobs.query or jobs.insert call carries besides the SQL text.
+message BigQuerySqlContext {
+  // The project the job runs and bills in; unqualified datasets resolve here.
+  string project = 1;
+  // defaultDataset of the request, where unqualified tables resolve; empty dataset_id = none.
+  string default_dataset_project_id = 2;
+  string default_dataset_id = 3;
+  // The request's queryParameters, each a GoogleSQL literal the proxy built from its typed value:
+  //   {name: "id", parameterType: {type: INT64}, parameterValue: {value: "7"}} -> {name: "id", value: "CAST('7' AS INT64)"}
+  // Positional parameters have no name and keep the request's order.
+  repeated BigQueryParameter parameters = 4;
+  // Editor row cap; a resolved query gets LIMIT max_rows when it has none or a larger one. 0 = no cap.
+  uint32 max_rows = 5;
+}
+
+message BigQueryParameter {
+  string name = 1;
+  string value = 2;
+}
+
+// Present when rewritten_sql has every parameter bound into its text: the proxy submits it with no
+// queryParameters and no parameterMode.
+message BigQuerySubmission {}

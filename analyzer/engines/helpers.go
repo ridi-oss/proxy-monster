@@ -236,3 +236,23 @@ func writeJSONScalar(buf *bytes.Buffer, value any) {
 	}
 	buf.Write(encoded)
 }
+
+// parameterExpressions parses a request's parameter values as scalar SQL expressions: "7, 'kr'" -> [7, 'kr'].
+func parameterExpressions(sql string, session *Session) ([]exp.Expression, error) {
+	root, err := singleStatement("SELECT "+sql, session)
+	if err != nil {
+		return nil, err
+	}
+	if root.Kind() != exp.KindSelect || len(root.Selects()) == 0 ||
+		!root.Equal(exp.Select(exp.Args{"expressions": root.Selects()})) {
+		return nil, fmt.Errorf("expected SQL parameter expressions")
+	}
+	for _, expression := range root.Selects() {
+		if expression.Kind() == exp.KindAlias || expression.Find(exp.KindPlaceholder) != nil ||
+			expression.Find(exp.KindParameter) != nil || expression.Find(exp.KindSessionParameter) != nil ||
+			expression.Find(exp.KindColumn) != nil || expression.Find(exp.TraitQuery) != nil || expression.Find(exp.KindStar) != nil {
+			return nil, fmt.Errorf("parameter is not a scalar expression")
+		}
+	}
+	return root.Selects(), nil
+}

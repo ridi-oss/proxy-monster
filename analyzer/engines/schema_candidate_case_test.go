@@ -62,7 +62,7 @@ func TestSchemaQualifierCandidatesIncludeFunctionQualifiers(t *testing.T) {
 		&pb.EngineConfig{Engine: pb.Engine_POSTGRES, Target: &pb.TargetSettings{EngineVersion: "16.4"}},
 		mapping,
 		nil,
-		NamespaceConfig{Catalog: "db", SearchPath: []string{"pg_catalog", "public"}, EngineCatalog: engineCatalogFromProto(&pb.FunctionCatalog{}, nil)},
+		NamespaceConfig{Catalog: "db", SearchPath: []string{"pg_catalog", "public"}, EngineCatalog: engineCatalogFromProto(&pb.FunctionCatalog{}, "db", nil)},
 	)
 	if facts.GetResolved() {
 		t.Fatalf("resolved with no inventory: %v", facts)

@@ -253,7 +253,7 @@ func TestAccessRequestBodies(t *testing.T) {
 	}
 
 	status, created := e.Do(t, http.MethodPost, "/api/access-requests", fmt.Sprintf(`{"roleId":%d,"reason":"parity"}`, role), alice)
-	want := fmt.Sprintf(`{"ccs":[],"creatorKind":"WORKFLOW","executeAs":[],"forceRun":false,"kind":"ROLE","principal":"alice@example.com","reason":"parity",`+
+	want := fmt.Sprintf(`{"ccs":[],"creatorKind":"WORKFLOW","executeAs":[],"forceRun":false,"kind":"ROLE","principal":"alice@example.com","private":false,"reason":"parity",`+
 		`"requestedDurationSec":3600,"revision":1,"roleId":%d,"roleName":"analyst","source":"console","statementCount":0,"status":"PENDING"}`, role)
 	if got := body(created, "createdAt"); status != http.StatusCreated || got != want {
 		t.Fatalf("created %d\n got %s\nwant %s", status, got, want)

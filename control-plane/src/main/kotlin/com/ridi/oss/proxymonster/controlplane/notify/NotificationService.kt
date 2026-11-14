@@ -576,7 +576,9 @@ class NotificationService(
         const val DRAIN_BATCH = 32
         const val MAX_ATTEMPTS = 6
         // A dismissed review only drops off the messages' review line.
-        private val UNTHREADED = setOf(RequestEventKind.REQUESTED.wire, RequestEventKind.CODE_REVIEW_DISMISSED.wire)
+        private val UNTHREADED = setOf(
+            RequestEventKind.REQUESTED.wire, RequestEventKind.CODE_REVIEW_DISMISSED.wire, RequestEventKind.MADE_PRIVATE.wire,
+        )
         private val REDRAWABLE = NotificationEvent.entries.filter {
             (it.isCreation || it.isUpdate) && it != NotificationEvent.TASK_REDRAWN && it != NotificationEvent.TASK_PRIVATIZED
         }

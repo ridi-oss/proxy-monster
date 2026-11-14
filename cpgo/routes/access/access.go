@@ -25,6 +25,7 @@ func Register(mux *http.ServeMux, pool *pgxpool.Pool, gate api.Gate) {
 	mux.HandleFunc("POST /api/requests/{id}/ccs", gate.RequireAPI(api.Serve(api.WithID(ac.addCC))))
 	mux.HandleFunc("DELETE /api/requests/{id}/ccs/{principal}", gate.RequireAPI(api.Serve(api.WithID(ac.removeCC))))
 	mux.HandleFunc("POST /api/requests/{id}/close", gate.RequireAPI(api.Serve(api.WithID(ac.close))))
+	mux.HandleFunc("POST /api/requests/{id}/private", gate.RequireAPI(api.Serve(api.WithID(ac.makePrivate))))
 	registerApprovals(mux, gate, ac)
 	mux.HandleFunc("POST /api/access-grants/{id}/revoke", gate.RequireAPIElse(api.Serve(ac.unauthenticatedRevoke), api.Serve(api.WithID(ac.revokeGrant))))
 }
@@ -72,6 +73,7 @@ type accessRequest struct {
 	ForceRun                         bool            `json:"forceRun"`
 	ForceRunBy                       *string         `json:"forceRunBy,omitempty"`
 	CCs                              []string        `json:"ccs"`
+	Private                          bool            `json:"private"`
 }
 
 // pullRequestRef is Kotlin's PullRequestRef: the pull request a GitHub request came from.
@@ -99,7 +101,7 @@ func toAccessRequest(r db.AccessRequestsRow) accessRequest {
 		ExecuteAs: r.ExecuteAs, CreatorKind: &r.CreatorKind, StatementCarriesProtectedLiteral: r.StatementCarriesProtectedLiteral,
 		Source: r.Source, Scope: r.Scope, FileKey: r.FileKey, ChangeKey: r.ChangeKey, MergedAt: api.OptInstant(r.MergedAt),
 		Revision: r.Revision, RevisedAt: api.OptInstant(r.RevisedAt), ContentHash: r.ContentHash, RawHash: r.RawHash,
-		ForceRun: r.ForceRun, ForceRunBy: r.ForceRunBy, CCs: r.Ccs}
+		ForceRun: r.ForceRun, ForceRunBy: r.ForceRunBy, CCs: r.Ccs, Private: r.Private}
 	if r.Source == "github" && r.Repository != nil && r.Pr != nil {
 		a.PullRequest = &pullRequestRef{Repository: *r.Repository, PR: *r.Pr, PRURL: r.PrUrl, Path: r.Path, HeadSHA: r.HeadSha,
 			DefaultSchema: r.DefaultSchema, KeyOrder: r.KeyOrder, FiledHead: r.FiledHead, MergeSHA: r.MergeSha,

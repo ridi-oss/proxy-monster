@@ -91,6 +91,7 @@ var (
 	CodeUnknownUser           = Code{"approval.unknown_user", http.StatusBadRequest}
 	CodeCCRequester           = Code{"approval.cc_requester", http.StatusBadRequest}
 	CodeCancelForbidden       = Code{"approval.cancel_forbidden", http.StatusForbidden}
+	CodeMakePrivateForbidden  = Code{"approval.make_private_forbidden", http.StatusForbidden}
 	CodeNotCancelable         = Code{"approval.not_cancelable", http.StatusConflict}
 	CodeAlreadyDecided        = Code{"approval.already_decided", http.StatusConflict}
 	CodeRequestChanged        = Code{"approval.request_changed", http.StatusConflict}

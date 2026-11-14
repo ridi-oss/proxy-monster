@@ -340,4 +340,16 @@ class SlackTransportTest {
         assertEquals("D_U_CUR", address)
         assertEquals("current@example.com", slack.lastRequest("users.lookupByEmail")!!.form["email"])
     }
+
+    @Test
+    fun `deleting a thread deletes the message and only the bot's own replies`() = runBlocking {
+        slack.threads["C1:100.1"] =
+            """[{"ts":"100.1","user":"UBOT"},{"ts":"100.2","user":"UBOT"},{"ts":"100.3","user":"U_SAM"},{"ts":"100.4","bot_id":"B_OTHER"}]"""
+        assertEquals(listOf("C1:100.2"), transport.deleteThread("C1:100.1"))
+        assertEquals(listOf("100.2", "100.1"), slack.requestsFor("chat.delete").map { it.json!!["ts"]!!.jsonPrimitive.content })
+
+        slack.clearRecorded()
+        assertNull(transport.deleteThread("C1:999.1"), "a thread it cannot read is not deleted")
+        assertTrue(slack.requestsFor("auth.test").isEmpty(), "the bot's ids are looked up once")
+    }
 }

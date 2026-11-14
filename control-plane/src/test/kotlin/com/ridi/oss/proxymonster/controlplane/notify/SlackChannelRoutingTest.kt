@@ -38,4 +38,14 @@ class SlackChannelRoutingTest {
         assertFalse(dm.serves(req(1)))
         assertTrue(dm.serves(req(3)), "no channel falls back to DMs")
     }
+
+    @Test
+    fun `a private request is sent on no Slack transport`() {
+        for (channelOnly in listOf(true, false)) {
+            val (dm, channel) = transports(channelOnly = channelOnly)
+            val private = req(3).copy(private = true)
+            assertFalse(channel.serves(private))
+            assertFalse(dm.serves(private))
+        }
+    }
 }

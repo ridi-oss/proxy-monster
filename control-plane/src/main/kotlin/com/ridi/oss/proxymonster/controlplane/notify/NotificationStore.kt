@@ -329,6 +329,43 @@ class NotificationStore(private val dataSource: DataSource) {
         }
     }
 
+    /** Every delivered message of [taskId], as (transport, recipient, kind). */
+    fun messagesOf(c: Connection, taskId: Long): List<Triple<String, String, NotificationKind>> =
+        c.prepareStatement("SELECT transport, recipient, kind FROM notification_message WHERE task_id = ? ORDER BY id").use { ps ->
+            ps.setLong(1, taskId)
+            ps.executeQuery().use { rs ->
+                val out = ArrayList<Triple<String, String, NotificationKind>>()
+                while (rs.next()) out += Triple(rs.getString(1), rs.getString(2), NotificationKind.fromWire(rs.getString(3)))
+                out
+            }
+        }
+
+    /** Drop a deleted message, so no later event edits it or replies into its thread. */
+    fun forgetMessage(taskId: Long, transport: String, recipient: String, kind: NotificationKind) {
+        dataSource.connection.use { c ->
+            c.prepareStatement(
+                "DELETE FROM notification_message WHERE task_id = ? AND transport = ? AND recipient = ? AND kind = ?",
+            ).use { ps ->
+                ps.setLong(1, taskId)
+                ps.setString(2, transport)
+                ps.setString(3, recipient)
+                ps.setString(4, kind.wire)
+                ps.executeUpdate()
+            }
+        }
+    }
+
+    /** Drop the records of deleted thread replies, so an edited comment no longer follows them. */
+    fun forgetPosts(refs: List<String>) {
+        if (refs.isEmpty()) return
+        dataSource.connection.use { c ->
+            c.prepareStatement("DELETE FROM request_event_post WHERE external_ref = ANY (?)").use { ps ->
+                ps.setArray(1, c.createArrayOf("text", refs.toTypedArray()))
+                ps.executeUpdate()
+            }
+        }
+    }
+
     /** Run [body] in one transaction — for a caller that has no transaction of its own to join. */
     fun <T> inTransaction(body: (Connection) -> T): T = dataSource.inTxLocal(body)
 

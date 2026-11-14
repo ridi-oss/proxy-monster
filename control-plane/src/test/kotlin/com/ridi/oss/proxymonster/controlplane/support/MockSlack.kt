@@ -88,6 +88,9 @@ class MockSlack private constructor() : AutoCloseable {
     /** When set, chat.update answers ok:false with this error. */
     @Volatile var updateError: String? = null
 
+    /** conversations.replies: the raw `messages` array for a thread, keyed "channel:ts"; absent → thread_not_found. */
+    val threads: MutableMap<String, String> = Collections.synchronizedMap(mutableMapOf())
+
     /** When set, every /api response carries this HTTP status (a 429/5xx transient-status test), plus an
      *  optional Retry-After header. */
     @Volatile var httpStatus: Int? = null
@@ -218,6 +221,9 @@ class MockSlack private constructor() : AutoCloseable {
                 val ts = json?.get("ts")?.let { it.toString().trim('"') } ?: "0"
                 """{"ok":true,"channel":"$channel","ts":"$ts"}"""
             }
+        "conversations.replies" -> threads["${formParam(body, "channel")}:${formParam(body, "ts")}"]
+            ?.let { """{"ok":true,"messages":$it}""" } ?: """{"ok":false,"error":"thread_not_found"}"""
+        "chat.delete" -> """{"ok":true}"""
         else -> """{"ok":false,"error":"unknown_method:$method"}"""
     }
 

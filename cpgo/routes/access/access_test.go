@@ -136,7 +136,7 @@ func TestOwnApprovalsPullRequest(t *testing.T) {
 	_, body := e.Do(t, http.MethodGet, "/api/approvals", "", e.St.WebSession(t, "alice@example.com", "k-a", "dev-a"))
 	want := `"source":"github","scope":"acme/main","fileKey":"0001","changeKey":"ck","revision":1,"contentHash":"h",` +
 		`"pullRequest":{"repository":"o/r","pr":7,"prUrl":"https://github.com/o/r/pull/7","path":"sql/0001.sql","headSha":"abc","prAutoMerge":false},` +
-		`"forceRun":true,"forceRunBy":"boss@example.com","ccs":["carol@example.com","zed@example.com"]}]`
+		`"forceRun":true,"forceRunBy":"boss@example.com","ccs":["carol@example.com","zed@example.com"],"private":false}]`
 	if !strings.HasSuffix(body, want) {
 		t.Fatalf("pull request fields in Kotlin's order:\n got %s\nwant suffix %s", body, want)
 	}
@@ -190,7 +190,7 @@ func TestAccessListFilters(t *testing.T) {
 	if got := statuses(body); got != "RATE_RESET/PENDING,ROLE/APPROVED,ROLE/PENDING" {
 		t.Fatalf("requests newest first, query tasks excluded: %s", got)
 	}
-	if !strings.Contains(body, `"executeAs":["analyst"],"creatorKind":"WORKFLOW","statementCarriesProtectedLiteral":false,"source":"console","revision":1,"forceRun":false,"ccs":[]}`) {
+	if !strings.Contains(body, `"executeAs":["analyst"],"creatorKind":"WORKFLOW","statementCarriesProtectedLiteral":false,"source":"console","revision":1,"forceRun":false,"ccs":[],"private":false}`) {
 		t.Fatalf("populated optional fields: %s", body)
 	}
 	byKind := map[string]bridge.Resource{}

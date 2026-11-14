@@ -13,6 +13,7 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
+import { PrivateField } from './private-request';
 
 const DURATION_OPTIONS: { value: string; key: string }[] = [
   { value: '1800', key: 'm30' },
@@ -39,6 +40,7 @@ export function RoleRequestComposer({
   const [roleId, setRoleId] = useState<string | null>(null);
   const [datasourceId, setDatasourceId] = useState<number | null>(null);
   const [reason, setReason] = useState('');
+  const [isPrivate, setIsPrivate] = useState(false);
   const [durationSec, setDurationSec] = useState('3600');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -64,6 +66,7 @@ export function RoleRequestComposer({
       datasourceId,
       reason: reason.trim(),
       requestedDurationSec: Number(durationSec),
+      private: isPrivate,
     };
 
     try {
@@ -158,6 +161,8 @@ export function RoleRequestComposer({
               </SelectContent>
             </Select>
           </div>
+
+          <PrivateField id="role-request-private" checked={isPrivate} onCheckedChange={setIsPrivate} />
         </CardContent>
 
         <CardFooter className="justify-end gap-2">

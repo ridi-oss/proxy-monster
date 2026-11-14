@@ -33,6 +33,8 @@ enum class NotificationEvent(val wire: String) {
     TASK_MERGED_WITHOUT_FILE("task.merged_without_file"),
     /** An admin forced a pull request's request past its scope checks: an alert, so a fresh message. */
     TASK_FORCE_RUN("task.force_run"),
+    /** The request was made private: every Slack message about it is deleted. */
+    TASK_PRIVATIZED("task.privatized"),
     ;
 
     /** True when this event should edit an existing message rather than start a new thread of its own. The two
@@ -270,4 +272,10 @@ interface NotificationTransport {
 
     /** Replace a posted reply's text, or remove it when [text] is null. */
     suspend fun editReply(replyRef: String, text: String?): DeliveryResult = DeliveryResult.Drop("no threads")
+
+    /**
+     * Delete the message [threadRef] names and this transport's own replies under it. Returns the deleted
+     * replies' refs, or null when something could not be deleted; a transient failure throws.
+     */
+    suspend fun deleteThread(threadRef: String): List<String>? = emptyList()
 }

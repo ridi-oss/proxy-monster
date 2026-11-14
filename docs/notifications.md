@@ -529,6 +529,23 @@ is nothing to run: approving grants the role); the requester gets **close
 request** while it is pending; a CC gets **LGTM**. A click goes through
 `AccessService` or `RequestThreads` on the `slack` channel.
 
+### Private requests
+
+A requester can file a request private, and later make their own request
+private; an admin can make any request private. It cannot be undone.
+
+A private request sends no Slack message at all, in either mode: no channel post
+and no DM. Approvers find it under Workflows → Incoming in the console. A pull
+request's comments are unchanged.
+
+Making a request private after it was posted deletes its channel message and
+every DM about it, each with the bot's replies in its thread (people's own
+replies in a channel thread stay). It records `task.make_private` in the audit
+log and `made_private` on the timeline, and does not ask for approval again.
+Finding the bot's thread replies needs the `channels:history`, `groups:history`,
+and `im:history` scopes; when a thread cannot be deleted, its message is kept
+and the delivery is marked failed.
+
 ## Configuration
 
 | Variable              | Default | Meaning                                                                                                                                                                                         |

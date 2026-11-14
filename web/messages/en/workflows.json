@@ -275,10 +275,23 @@
       "cc_removed": "removed {body} from the CCs",
       "code_approved": "approved the code on GitHub",
       "code_changes_requested": "requested changes to the code on GitHub",
-      "code_review_dismissed": "had their code review on GitHub dismissed"
+      "code_review_dismissed": "had their code review on GitHub dismissed",
+      "made_private": "made the request private"
     },
     "notOnRequest": "not on this request",
     "edited": "edited",
     "deleted": "Comment deleted."
+  },
+  "private": {
+    "label": "Private",
+    "hint": "Send no Slack message about it, not even a DM. Approvers find it under Workflows → Incoming.",
+    "badge": "Private",
+    "make": "Make private",
+    "making": "Making private…",
+    "dialogTitle": "Make this request private?",
+    "dialogBody": "Every Slack message about it, in channels and DMs, is deleted, and no more are sent. Approvers find it under Workflows → Incoming. This cannot be undone.",
+    "confirm": "Make private",
+    "madeToast": "The request is private.",
+    "failed": "Could not make the request private."
   }
 }

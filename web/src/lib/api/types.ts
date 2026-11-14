@@ -419,6 +419,8 @@ export interface AccessRequest {
   forceRun?: boolean;
   forceRunBy?: string | null;
   ccs?: string[];
+  /** No Slack message is ever sent about it, in a channel or a DM. */
+  private?: boolean;
 }
 
 /** One entry of a query request's timeline. `actor` is null for an event the system made. */
@@ -443,7 +445,8 @@ export interface RequestEvent {
     | 'cc_removed'
     | 'code_approved'
     | 'code_changes_requested'
-    | 'code_review_dismissed';
+    | 'code_review_dismissed'
+    | 'made_private';
   actor?: string | null;
   body?: string | null;
   revision?: number | null;
@@ -483,6 +486,7 @@ export interface AccessRequestInput {
   datasourceId?: number | null;
   reason?: string | null;
   requestedDurationSec: number;
+  private?: boolean;
 }
 
 export interface AccessGrant {
@@ -497,8 +501,8 @@ export interface AccessGrant {
 }
 
 export type CreateQueryRequestInput =
-  | { sourceDecisionId: number; reason: string; title?: string; roleId?: number }
-  | { datasourceId: number; sql: string; title: string; reason: string; roleId?: number };
+  | { sourceDecisionId: number; reason: string; title?: string; roleId?: number; private?: boolean }
+  | { datasourceId: number; sql: string; title: string; reason: string; roleId?: number; private?: boolean };
 
 export interface CreateQueryRequestResponse {
   request: AccessRequest;

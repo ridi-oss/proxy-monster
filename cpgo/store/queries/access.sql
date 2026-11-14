@@ -11,7 +11,7 @@ SELECT ar.id, ar.principal, ar.role_id, r.name AS role_name, ar.datasource_id, d
        ar.statement_carries_protected_literal, ar.source, ar.scope, ar.change_key, ar.merged_at,
        ar.revision, ar.revised_at, ar.content_hash, ar.raw_hash,
        ar.file_key, ar.path, ar.pr_url, ar.repository, ar.pr, ar.default_schema, ar.pr_auto_merge,
-       ar.head_sha, ar.merge_sha, ar.approved_review_id, ar.filed_head, ar.key_order, ar.force_run, ar.force_run_by,
+       ar.head_sha, ar.merge_sha, ar.approved_review_id, ar.filed_head, ar.key_order, ar.force_run, ar.force_run_by, ar.private,
        (SELECT coalesce(array_agg(p.principal ORDER BY p.principal), '{}') FROM request_participant p
         WHERE p.request_id = ar.id AND p.kind = 'cc')::text[] AS ccs
 FROM access_request ar LEFT JOIN app_role r ON r.id = ar.role_id
@@ -31,7 +31,7 @@ SELECT ar.id, ar.principal, ar.role_id, r.name AS role_name, ar.datasource_id, d
        ar.statement_carries_protected_literal, ar.source, ar.scope, ar.change_key, ar.merged_at,
        ar.revision, ar.revised_at, ar.content_hash, ar.raw_hash,
        ar.file_key, ar.path, ar.pr_url, ar.repository, ar.pr, ar.default_schema, ar.pr_auto_merge,
-       ar.head_sha, ar.merge_sha, ar.approved_review_id, ar.filed_head, ar.key_order, ar.force_run, ar.force_run_by,
+       ar.head_sha, ar.merge_sha, ar.approved_review_id, ar.filed_head, ar.key_order, ar.force_run, ar.force_run_by, ar.private,
        (SELECT coalesce(array_agg(p.principal ORDER BY p.principal), '{}') FROM request_participant p
         WHERE p.request_id = ar.id AND p.kind = 'cc')::text[] AS ccs
 FROM access_request ar LEFT JOIN app_role r ON r.id = ar.role_id
@@ -51,7 +51,7 @@ SELECT ar.id, ar.principal, ar.role_id, r.name AS role_name, ar.datasource_id, d
        ar.statement_carries_protected_literal, ar.source, ar.scope, ar.change_key, ar.merged_at,
        ar.revision, ar.revised_at, ar.content_hash, ar.raw_hash,
        ar.file_key, ar.path, ar.pr_url, ar.repository, ar.pr, ar.default_schema, ar.pr_auto_merge,
-       ar.head_sha, ar.merge_sha, ar.approved_review_id, ar.filed_head, ar.key_order, ar.force_run, ar.force_run_by,
+       ar.head_sha, ar.merge_sha, ar.approved_review_id, ar.filed_head, ar.key_order, ar.force_run, ar.force_run_by, ar.private,
        (SELECT coalesce(array_agg(p.principal ORDER BY p.principal), '{}') FROM request_participant p
         WHERE p.request_id = ar.id AND p.kind = 'cc')::text[] AS ccs
 FROM access_request ar LEFT JOIN app_role r ON r.id = ar.role_id
@@ -71,7 +71,7 @@ SELECT ar.id, ar.principal, ar.role_id, r.name AS role_name, ar.datasource_id, d
        ar.statement_carries_protected_literal, ar.source, ar.scope, ar.change_key, ar.merged_at,
        ar.revision, ar.revised_at, ar.content_hash, ar.raw_hash,
        ar.file_key, ar.path, ar.pr_url, ar.repository, ar.pr, ar.default_schema, ar.pr_auto_merge,
-       ar.head_sha, ar.merge_sha, ar.approved_review_id, ar.filed_head, ar.key_order, ar.force_run, ar.force_run_by,
+       ar.head_sha, ar.merge_sha, ar.approved_review_id, ar.filed_head, ar.key_order, ar.force_run, ar.force_run_by, ar.private,
        (SELECT coalesce(array_agg(p.principal ORDER BY p.principal), '{}') FROM request_participant p
         WHERE p.request_id = ar.id AND p.kind = 'cc')::text[] AS ccs
 FROM access_request ar LEFT JOIN app_role r ON r.id = ar.role_id
@@ -111,7 +111,7 @@ SELECT ar.id, ar.principal, ar.role_id, r.name AS role_name, ar.datasource_id, d
        ar.statement_carries_protected_literal, ar.source, ar.scope, ar.change_key, ar.merged_at,
        ar.revision, ar.revised_at, ar.content_hash, ar.raw_hash,
        ar.file_key, ar.path, ar.pr_url, ar.repository, ar.pr, ar.default_schema, ar.pr_auto_merge,
-       ar.head_sha, ar.merge_sha, ar.approved_review_id, ar.filed_head, ar.key_order, ar.force_run, ar.force_run_by,
+       ar.head_sha, ar.merge_sha, ar.approved_review_id, ar.filed_head, ar.key_order, ar.force_run, ar.force_run_by, ar.private,
        (SELECT coalesce(array_agg(p.principal ORDER BY p.principal), '{}') FROM request_participant p
         WHERE p.request_id = ar.id AND p.kind = 'cc')::text[] AS ccs
 FROM access_request ar LEFT JOIN app_role r ON r.id = ar.role_id
@@ -122,8 +122,11 @@ WHERE ar.id = $1;
 SELECT EXISTS (SELECT 1 FROM datasource WHERE id = $1 AND deleted_at IS NULL);
 
 -- name: CreateRoleRequest :one
-INSERT INTO access_request (principal, role_id, datasource_id, reason, requested_duration_sec, creator_kind)
-VALUES ($1, $2, $3, $4, $5, 'WORKFLOW') RETURNING id;
+INSERT INTO access_request (principal, role_id, datasource_id, reason, requested_duration_sec, creator_kind, private)
+VALUES ($1, $2, $3, $4, $5, 'WORKFLOW', $6) RETURNING id;
+
+-- name: MakeRequestPrivate :execrows
+UPDATE access_request SET private = true WHERE id = $1 AND NOT private;
 
 -- name: RoleNameOf :one
 SELECT name FROM app_role WHERE id = $1;
@@ -163,7 +166,7 @@ SELECT ar.id, ar.principal, ar.role_id, r.name AS role_name, ar.datasource_id, d
        ar.statement_carries_protected_literal, ar.source, ar.scope, ar.change_key, ar.merged_at,
        ar.revision, ar.revised_at, ar.content_hash, ar.raw_hash,
        ar.file_key, ar.path, ar.pr_url, ar.repository, ar.pr, ar.default_schema, ar.pr_auto_merge,
-       ar.head_sha, ar.merge_sha, ar.approved_review_id, ar.filed_head, ar.key_order, ar.force_run, ar.force_run_by,
+       ar.head_sha, ar.merge_sha, ar.approved_review_id, ar.filed_head, ar.key_order, ar.force_run, ar.force_run_by, ar.private,
        (SELECT coalesce(array_agg(p.principal ORDER BY p.principal), '{}') FROM request_participant p
         WHERE p.request_id = ar.id AND p.kind = 'cc')::text[] AS ccs
 FROM access_request ar LEFT JOIN app_role r ON r.id = ar.role_id

@@ -90,6 +90,8 @@ data class AccessRequest(
     val forceRun: Boolean = false,
     val forceRunBy: String? = null,
     val ccs: List<String> = emptyList(),
+    /** No Slack message, in a channel or a DM, is sent about it. */
+    val private: Boolean = false,
 ) {
     val fromPullRequest: Boolean get() = source == SOURCE_GITHUB
 }
@@ -143,6 +145,7 @@ fun AccessRequest.toApprovalResource() = AuthzResource.ApprovalRequest(
 data class AccessRequestInput(
     val roleId: Long, val datasourceId: Long? = null,
     val reason: String? = null, val requestedDurationSec: Long = 3600,
+    val private: Boolean = false,
 )
 
 @Serializable
@@ -235,8 +238,8 @@ class AccessStore(internal val dataSource: DataSource) {
     /** Insert a ROLE access request on the caller's transaction, returning its id. */
     fun createRequest(principal: String, input: AccessRequestInput, c: Connection, source: String = "console"): Long =
         c.prepareStatement(
-            """INSERT INTO access_request (principal, role_id, datasource_id, reason, requested_duration_sec, source, creator_kind)
-               VALUES (?, ?, ?, ?, ?, ?, 'WORKFLOW') RETURNING id""",
+            """INSERT INTO access_request (principal, role_id, datasource_id, reason, requested_duration_sec, source, creator_kind, private)
+               VALUES (?, ?, ?, ?, ?, ?, 'WORKFLOW', ?) RETURNING id""",
         ).use { ps ->
             ps.setString(1, principal)
             ps.setLong(2, input.roleId)
@@ -244,6 +247,7 @@ class AccessStore(internal val dataSource: DataSource) {
             ps.setString(4, input.reason)
             ps.setLong(5, input.requestedDurationSec)
             ps.setString(6, source)
+            ps.setBoolean(7, input.private)
             ps.executeQuery().use { rs -> rs.next(); rs.getLong(1) }
         }
 
@@ -302,6 +306,7 @@ class AccessStore(internal val dataSource: DataSource) {
         contentHash: String? = null,
         rawHash: String? = null,
         origin: RequestOrigin? = null,
+        private: Boolean = false,
     ): AccessRequest {
         require(statements.isNotEmpty()) { "a query request needs at least one statement" }
         val id = dataSource.inTx { c ->
@@ -316,8 +321,8 @@ class AccessStore(internal val dataSource: DataSource) {
                    (principal, kind, role_id, datasource_id, deny_reason, source_decision_id, reason, title,
                     evaluated_decision, requested_duration_sec, execute_as, creator_kind,
                     statement_carries_protected_literal, source, scope, change_key, path, pr_url,
-                    repository, pr, default_schema, head_sha, file_key, content_hash, key_order, raw_hash)
-                   VALUES (?, 'QUERY', ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, 'WORKFLOW', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    repository, pr, default_schema, head_sha, file_key, content_hash, key_order, raw_hash, private)
+                   VALUES (?, 'QUERY', ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, 'WORKFLOW', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT (source_decision_id) WHERE kind = 'QUERY' AND status = 'PENDING' AND source_decision_id IS NOT NULL
                    DO NOTHING
                    RETURNING id""",
@@ -347,6 +352,7 @@ class AccessStore(internal val dataSource: DataSource) {
                 ps.setString(22, contentHash ?: origin?.contentHash)
                 ps.setString(23, ref?.keyOrder)
                 ps.setString(24, rawHash ?: origin?.rawHash)
+                ps.setBoolean(25, private)
                 ps.executeQuery().use { rs ->
                     if (rs.next()) rs.getLong(1) else throw DuplicatePendingQueryRequestException()
                 }
@@ -1336,6 +1342,7 @@ class AccessStore(internal val dataSource: DataSource) {
         forceRun = getBoolean("force_run"),
         forceRunBy = getString("force_run_by"),
         ccs = (getArray("ccs")?.array as? Array<*>)?.map { it as String }.orEmpty(),
+        private = getBoolean("private"),
     )
 
     private fun ResultSet.pullRequestRef(): PullRequestRef? {
@@ -1384,7 +1391,7 @@ class AccessStore(internal val dataSource: DataSource) {
                       ar.merged_at, ar.revision, ar.revised_at, ar.path, ar.pr_url, ar.repository, ar.pr,
                       ar.default_schema, ar.pr_auto_merge, ar.head_sha, ar.merge_sha,
                       ar.approved_review_id, ar.filed_head, ar.file_key, ar.content_hash, ar.raw_hash, ar.key_order,
-                      ar.force_run, ar.force_run_by,
+                      ar.force_run, ar.force_run_by, ar.private,
                       (SELECT coalesce(array_agg(p.principal ORDER BY p.principal), '{}') FROM request_participant p
                        WHERE p.request_id = ar.id AND p.kind = 'cc') AS ccs
                FROM access_request ar LEFT JOIN app_role r ON r.id = ar.role_id

@@ -40,6 +40,7 @@ data class CreateQueryRequestInput(
     // Carried on the shared access_request row; not consumed by the query-approval flow (a QUERY approval is
     // executed under R by an approver, not re-run by the requester for a window). Kept for the shared column.
     val requestedDurationSec: Long = 3600,
+    val private: Boolean = false,
 )
 
 /** A request's new SQL; a null title or reason keeps the current one. */

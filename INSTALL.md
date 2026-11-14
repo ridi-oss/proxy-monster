@@ -187,7 +187,8 @@ configured per proxy under `PM_TARGET_*`.
   become comments only when the app also has the `channels:history`,
   `groups:history`, and `im:history` scopes and the `message.channels`,
   `message.groups`, and `message.im` events
-  ([docs/notifications.md](./docs/notifications.md#threads)).
+  ([docs/notifications.md](./docs/notifications.md#threads)). Making a request
+  private needs the same three history scopes to find the bot's thread replies.
 - `PM_NOTIFY_STATEMENT` — _optional_. How much of a requester's SQL a
   notification may carry: `auto` (default) shows a statement only when a
   disclosure hint clears it, hiding one whose predicate compares a literal

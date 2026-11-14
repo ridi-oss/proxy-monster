@@ -44,6 +44,16 @@ class FakeTransport(
 
     override fun taskAddress(req: com.ridi.oss.proxymonster.controlplane.AccessRequest): String? = channel
 
+    override fun serves(req: com.ridi.oss.proxymonster.controlplane.AccessRequest): Boolean = !req.private
+
+    /** Each thread deleted, by ref. */
+    val deletedThreads: MutableList<String> = Collections.synchronizedList(mutableListOf())
+
+    override suspend fun deleteThread(threadRef: String): List<String>? {
+        deletedThreads += threadRef
+        return emptyList()
+    }
+
     override val statementHardLimit: Int = 0
 
     /** Principal → address; return null to exercise the no-address drop. */

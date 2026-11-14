@@ -95,6 +95,7 @@ fun requestNotifier(accessStore: AccessStore, notifications: NotificationService
                 req?.let { notifications?.emitCcAddedEvent(it, principal) }
             }
             "cc-removed" -> req?.let { notifications?.emitRedrawEvent(it) }
+            "privatized" -> req?.let { notifications?.emitPrivatizedEvent(it) }
             else -> return false
         }
         return true

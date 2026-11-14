@@ -12,6 +12,7 @@ import io.ktor.http.encodeURLParameter
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
@@ -57,7 +58,7 @@ class SlackTransport(
         if (toChannel) channels?.channelFor(req) else null
 
     override fun serves(req: com.ridi.oss.proxymonster.controlplane.AccessRequest): Boolean =
-        toChannel || channels == null || !channels.channelOnly || channels.channelFor(req) == null
+        !req.private && (toChannel || channels == null || !channels.channelOnly || channels.channelFor(req) == null)
 
     /** A section block's `text` caps at 3000 characters; the statement shares that block with its label. */
     override val statementHardLimit = 2800
@@ -200,6 +201,55 @@ class SlackTransport(
         }
         return send(if (text == null) "chat.delete" else "chat.update", body) { replyRef }
     }
+
+    // The bot's own user and bot ids, from auth.test; a reply carries one or the other.
+    @Volatile private var botIds: Set<String>? = null
+
+    private suspend fun ownIds(): Set<String> = botIds ?: run {
+        val auth = call("auth.test", emptyMap()) ?: throw TransientSlackException("slack auth.test failed")
+        setOfNotNull(
+            auth["user_id"]?.jsonPrimitive?.contentOrNullSafe(),
+            auth["bot_id"]?.jsonPrimitive?.contentOrNullSafe(),
+        ).also { botIds = it }
+    }
+
+    override suspend fun deleteThread(threadRef: String): List<String>? {
+        val channel = threadRef.substringBefore(':', "")
+        val ts = threadRef.substringAfter(':', "")
+        if (channel.isEmpty() || ts.isEmpty()) return null
+        val own = ownIds()
+        val replies = ArrayList<String>()
+        var cursor: String? = null
+        do {
+            val page = call(
+                "conversations.replies",
+                buildMap {
+                    put("channel", channel); put("ts", ts); put("limit", "200")
+                    cursor?.let { put("cursor", it) }
+                },
+            ) ?: return null
+            page["messages"]?.jsonArray.orEmpty().map { it.jsonObject }.forEach { m ->
+                val mts = m["ts"]?.jsonPrimitive?.contentOrNullSafe() ?: return@forEach
+                val author = setOfNotNull(m["user"]?.jsonPrimitive?.contentOrNullSafe(), m["bot_id"]?.jsonPrimitive?.contentOrNullSafe())
+                if (mts != ts && author.any { it in own }) replies += mts
+            }
+            cursor = page["response_metadata"]?.jsonObject?.get("next_cursor")?.jsonPrimitive?.contentOrNullSafe()
+        } while (cursor != null)
+        if (!replies.all { delete(channel, it) }) return null
+        if (!delete(channel, ts)) return null
+        return replies.map { "$channel:$it" }
+    }
+
+    /** True once the message is gone, including when it already was. */
+    private suspend fun delete(channel: String, ts: String): Boolean =
+        when (val r = send("chat.delete", buildJsonObject { put("channel", channel); put("ts", ts) }) { "$channel:$ts" }) {
+            is DeliveryResult.Sent -> true
+            is DeliveryResult.Retry -> throw TransientSlackException("slack chat.delete: ${r.reason}")
+            is DeliveryResult.Drop -> {
+                if (r.reason != "message_not_found") log.warn("slack chat.delete {}:{} failed: {}", channel, ts, r.reason)
+                r.reason == "message_not_found"
+            }
+        }
 
     /** The Block Kit body: one context-free summary section, then the actions the message is allowed to offer. */
     private fun blocksFor(message: NotificationMessage, locale: String) = kotlinx.serialization.json.buildJsonArray {

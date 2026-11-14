@@ -36,6 +36,7 @@ import { ApproveQueryDialog } from './approve-query-dialog';
 import { RequestTimeline } from './request-timeline';
 import { useAuth } from '@/lib/auth';
 import { Field, RequestOrigin, RunsAs } from './request-origin';
+import { MakePrivateButton, PrivateBadge } from '@/components/workflows/private-request';
 
 const STATUS_STYLE: Record<string, string> = {
   DRAFT: 'border-border text-muted-foreground',
@@ -268,6 +269,7 @@ export function ApprovalDetail({ id }: { id: number }) {
                       <div className="flex flex-wrap items-center gap-2">
                         <Pill value={request.status} styles={STATUS_STYLE} />
                         <Pill value={request.evaluatedDecision} styles={DECISION_STYLE} />
+                        <PrivateBadge request={request} />
                         {request.revision > 1 && (
                           <span className="text-muted-foreground text-xs">
                             {t('approvalDetail.revision', { revision: request.revision })}
@@ -275,8 +277,14 @@ export function ApprovalDetail({ id }: { id: number }) {
                         )}
                       </div>
                     </div>
-                    {(data.canEdit || canDecide || data.canReject || data.canUnapprove || data.canClose) && (
+                    {(data.canEdit ||
+                      canDecide ||
+                      data.canReject ||
+                      data.canUnapprove ||
+                      data.canClose ||
+                      !request.private) && (
                       <div className="flex flex-wrap items-center gap-2">
+                        <MakePrivateButton request={request} onDone={refresh} />
                         {data.canEdit && (
                           <Button variant="outline" onClick={openEdit} disabled={busy !== null}>
                             {t('actions.edit')}

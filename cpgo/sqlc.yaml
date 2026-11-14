@@ -56,6 +56,7 @@ sql:
       - ../control-plane/src/main/resources/db/migration/V51__request_raw_hash.sql
       - ../control-plane/src/main/resources/db/migration/V52__datasource_target_info.sql
       - ../control-plane/src/main/resources/db/migration/V53__datasource_drop_db_name.sql
+      - ../control-plane/src/main/resources/db/migration/V54__request_private.sql
     queries: store/queries
     gen:
       go:

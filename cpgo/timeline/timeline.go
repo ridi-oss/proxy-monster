@@ -14,15 +14,16 @@ import (
 )
 
 const (
-	Requested  = "requested"
-	Approved   = "approved"
-	Rejected   = "rejected"
-	Closed     = "closed"
-	Comment    = "comment"
-	LGTM       = "lgtm"
-	CCAdded    = "cc_added"
-	CCRemoved  = "cc_removed"
-	Unapproved = "unapproved"
+	Requested   = "requested"
+	Approved    = "approved"
+	Rejected    = "rejected"
+	Closed      = "closed"
+	Comment     = "comment"
+	LGTM        = "lgtm"
+	CCAdded     = "cc_added"
+	CCRemoved   = "cc_removed"
+	Unapproved  = "unapproved"
+	MadePrivate = "made_private"
 )
 
 var decisions = map[string]bool{Approved: true, Rejected: true, Unapproved: true, "ran": true}

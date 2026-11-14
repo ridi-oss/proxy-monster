@@ -14,7 +14,7 @@ enum class RequestEventKind(val wire: String) {
     RAN("ran"), EXECUTED("executed"), FAILED("failed"), CANCELLED("cancelled"),
     COMMENT("comment"), LGTM("lgtm"), CC_ADDED("cc_added"), CC_REMOVED("cc_removed"),
     CODE_APPROVED("code_approved"), CODE_CHANGES_REQUESTED("code_changes_requested"),
-    CODE_REVIEW_DISMISSED("code_review_dismissed"),
+    CODE_REVIEW_DISMISSED("code_review_dismissed"), MADE_PRIVATE("made_private"),
 }
 
 /** A reviewer's standing code review; [name] is a principal when [principal], else their GitHub login. */

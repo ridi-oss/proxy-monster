@@ -609,6 +609,11 @@ export function closeRequest(id: number): Promise<AccessRequest> {
   return request<AccessRequest>(`/api/requests/${id}/close`, { method: 'POST' });
 }
 
+/** POST /api/requests/{id}/private — delete every Slack message about the request and send no more. */
+export function makeRequestPrivate(id: number): Promise<AccessRequest> {
+  return request<AccessRequest>(`/api/requests/${id}/private`, { method: 'POST' });
+}
+
 export function unapproveApproval(id: number): Promise<AccessRequest> {
   return request<AccessRequest>(`/api/approvals/${id}/unapprove`, { method: 'POST' });
 }

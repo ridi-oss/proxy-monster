@@ -23,6 +23,7 @@ import {
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { PrivateField } from '@/components/workflows/private-request';
 
 const DURATIONS = [
   { value: '1800', key: 'duration30m' },
@@ -59,6 +60,7 @@ export function RequestAccessDialog({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitted, setSubmitted] = useState(false);
+  const [isPrivate, setIsPrivate] = useState(false);
 
   // Seed defaults each time the dialog opens.
   useEffect(() => {
@@ -83,6 +85,7 @@ export function RequestAccessDialog({
       datasourceId,
       reason: reason.trim(),
       requestedDurationSec: Number(durationSec),
+      private: isPrivate,
     };
     try {
       await createAccessRequest(input);
@@ -173,6 +176,8 @@ export function RequestAccessDialog({
                 </SelectContent>
               </Select>
             </div>
+
+            <PrivateField id="request-access-private" checked={isPrivate} onCheckedChange={setIsPrivate} />
           </div>
         )}
 

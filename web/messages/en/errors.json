@@ -53,7 +53,8 @@
     "request_changed": "This request was changed after you opened it. Review the new SQL and approve again.",
     "not_editable": "Only a pending or approved request that has not run can be edited.",
     "edit_forbidden": "Only the requester can edit this request.",
-    "github_edit_by_push": "A request from a GitHub pull request changes with a push to its file, not here."
+    "github_edit_by_push": "A request from a GitHub pull request changes with a push to its file, not here.",
+    "make_private_forbidden": "Only the requester or an admin can make this request private."
   },
   "auth": {
     "invalid_id_token": "Invalid ID token.",

@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+package proxymonster.bigquery.v1;
+
+import "httpdb.proto";
+
+option java_package = "com.ridi.oss.proxymonster.bigquery.pb";
+option java_multiple_files = true;
+
+// What a BigQuery jobs.query or jobs.insert call carries besides the SQL text.
+message BigQuerySqlContext {
+  // The project the job runs and bills in; unqualified datasets resolve here.
+  string project = 1;
+  // defaultDataset of the request, where unqualified tables resolve; empty dataset_id = none.
+  string default_dataset_project_id = 2;
+  string default_dataset_id = 3;
+  // The request's queryParameters, each a GoogleSQL literal the proxy built from its typed value, and the
+  // editor row cap:
+  //   {name: "id", parameterType: {type: INT64}, parameterValue: {value: "7"}} -> {name: "id", value: "CAST('7' AS INT64)"}
+  // Positional parameters have no name and keep the request's order.
+  proxymonster.httpdb.v1.HttpDbSqlContext httpdb = 4;
+}

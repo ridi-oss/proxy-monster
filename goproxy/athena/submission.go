@@ -116,7 +116,7 @@ func namespacedToken(datasource, principal, token string) string {
 }
 
 // newCachedContext freezes an ALLOW/MASK decision for a returned execution id.
-func newCachedContext(resourceID, owner string, targetBinding []byte, decision *spi.Decision, expectedWidth *uint32, binding []byte, now time.Time) (*enginepb.AthenaCachedContext, error) {
+func newCachedContext(resourceID, owner string, targetBinding []byte, decision *spi.Decision, expectedWidth *uint32, binding []byte, now time.Time) (*enginepb.HttpDbCachedContext, error) {
 	action := relay.ParseEnfActionName(decision.Action)
 	if action != pb.EnfAction_ALLOW && action != pb.EnfAction_MASK {
 		return nil, ErrUnauthorized
@@ -133,7 +133,7 @@ func newCachedContext(resourceID, owner string, targetBinding []byte, decision *
 	if _, err := rand.Read(nonce[:]); err != nil {
 		return nil, err
 	}
-	record := &enginepb.AthenaCachedContext{
+	record := &enginepb.HttpDbCachedContext{
 		Version: 1, ContextId: hex.EncodeToString(nonce[:]), ResourceId: resourceID, Owner: owner,
 		TargetBinding: bytes.Clone(targetBinding), ExpiresAt: timestamppb.New(now.Add(contextLifetime)),
 		ExpectedWidth: expectedWidth, RequestBinding: bytes.Clone(binding), EnforcementInstructions: instructions,
@@ -144,7 +144,7 @@ func newCachedContext(resourceID, owner string, targetBinding []byte, decision *
 	return record, nil
 }
 
-func decodeContextRecord(record *enginepb.AthenaCachedContext) (*enginepb.AthenaCachedContext, error) {
+func decodeContextRecord(record *enginepb.HttpDbCachedContext) (*enginepb.HttpDbCachedContext, error) {
 	data, err := proto.MarshalOptions{Deterministic: true}.Marshal(record)
 	if err != nil {
 		return nil, err
@@ -153,7 +153,7 @@ func decodeContextRecord(record *enginepb.AthenaCachedContext) (*enginepb.Athena
 }
 
 // cachedVerdict decodes the trimmed enforcement instructions a cached context carries.
-func cachedVerdict(record *enginepb.AthenaCachedContext) (*pb.Verdict, error) {
+func cachedVerdict(record *enginepb.HttpDbCachedContext) (*pb.Verdict, error) {
 	var verdict pb.Verdict
 	if err := proto.Unmarshal(record.GetEnforcementInstructions(), &verdict); err != nil {
 		return nil, ErrContextCorrupt

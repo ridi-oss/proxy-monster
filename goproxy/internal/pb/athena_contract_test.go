@@ -60,11 +60,11 @@ func TestAthenaSubmissionEmptyParametersRemainPresent(t *testing.T) {
 }
 
 func TestNativeResultInstructionsReferenceOriginalContext(t *testing.T) {
-	instructions := &analyzerpb.AthenaNativeInstructions{
-		Action:   analyzerpb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_APPLY_ORIGINAL_CONTEXT,
-		Contexts: []*analyzerpb.AthenaContextRef{{ResourceId: "execution-123", ContextId: "context-456"}},
+	instructions := &analyzerpb.HttpDbInstructions{
+		Action:   analyzerpb.HttpDbInstruction_HTTP_DB_INSTRUCTION_APPLY_ORIGINAL_CONTEXT,
+		Contexts: []*analyzerpb.HttpDbContextRef{{ResourceId: "execution-123", ContextId: "context-456"}},
 	}
-	response := &RequestAuthorizationResult{Allowed: true, Instructions: &RequestAuthorizationResult_Athena{Athena: instructions}}
+	response := &RequestAuthorizationResult{Allowed: true, HttpDbInstructions: instructions}
 	encoded, err := proto.Marshal(response)
 	if err != nil {
 		t.Fatal(err)
@@ -73,11 +73,11 @@ func TestNativeResultInstructionsReferenceOriginalContext(t *testing.T) {
 	if err := proto.Unmarshal(encoded, decoded); err != nil {
 		t.Fatal(err)
 	}
-	got := decoded.GetAthena()
+	got := decoded.GetHttpDbInstructions()
 	if !proto.Equal(got, instructions) {
 		t.Fatalf("native result instructions changed: %v", got)
 	}
-	if new(analyzerpb.AthenaNativeInstructions).GetAction() != analyzerpb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_UNSPECIFIED {
+	if new(analyzerpb.HttpDbInstructions).GetAction() != analyzerpb.HttpDbInstruction_HTTP_DB_INSTRUCTION_UNSPECIFIED {
 		t.Fatal("an absent native instruction must not imply response release")
 	}
 }

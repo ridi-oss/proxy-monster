@@ -58,17 +58,17 @@ func (c *flowClient) AuthorizeRequest(_ context.Context, request *pb.RequestAuth
 	}
 	var body map[string]any
 	_ = json.Unmarshal(descriptor.Body, &body)
-	response := descriptor.Phase == enginepb.NativeAuthorizationPhase_NATIVE_AUTHORIZATION_PHASE_RESPONSE
-	instructions := &enginepb.AthenaNativeInstructions{}
+	response := descriptor.Phase == enginepb.HttpDbAuthorizationPhase_HTTP_DB_AUTHORIZATION_PHASE_RESPONSE
+	instructions := &enginepb.HttpDbInstructions{}
 	switch descriptor.Operation {
 	case "StartQueryExecution":
 		if response {
 			return &pb.RequestAuthorizationResult{DenyReason: "native.not_authorized"}, nil
 		}
-		instructions.Action = enginepb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_REQUIRE_SQL_ADMISSION
+		instructions.Action = enginepb.HttpDbInstruction_HTTP_DB_INSTRUCTION_REQUIRE_SQL_ADMISSION
 	case "GetQueryResults", "GetQueryExecution", "StopQueryExecution":
 		id, _ := body["QueryExecutionId"].(string)
-		var owned *enginepb.AthenaCachedContext
+		var owned *enginepb.HttpDbCachedContext
 		for _, ctx := range descriptor.CachedContexts {
 			if ctx.ResourceId == id && ctx.Owner == c.principal && string(ctx.TargetBinding) == string(descriptor.Target.TargetBinding) {
 				owned = ctx
@@ -83,28 +83,28 @@ func (c *flowClient) AuthorizeRequest(_ context.Context, request *pb.RequestAuth
 			}
 		}
 		if response {
-			instructions.Action = enginepb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_APPLY_ORIGINAL_CONTEXT
-			instructions.Contexts = []*enginepb.AthenaContextRef{{ResourceId: owned.ResourceId, ContextId: owned.ContextId}}
+			instructions.Action = enginepb.HttpDbInstruction_HTTP_DB_INSTRUCTION_APPLY_ORIGINAL_CONTEXT
+			instructions.Contexts = []*enginepb.HttpDbContextRef{{ResourceId: owned.ResourceId, ContextId: owned.ContextId}}
 		} else {
-			instructions.Action = enginepb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_FORWARD_REQUEST
+			instructions.Action = enginepb.HttpDbInstruction_HTTP_DB_INSTRUCTION_FORWARD_REQUEST
 		}
 	case "ListQueryExecutions":
-		instructions.Action = enginepb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_FORWARD_REQUEST
+		instructions.Action = enginepb.HttpDbInstruction_HTTP_DB_INSTRUCTION_FORWARD_REQUEST
 		if response {
-			instructions.Action = enginepb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_APPLY_ORIGINAL_CONTEXT
+			instructions.Action = enginepb.HttpDbInstruction_HTTP_DB_INSTRUCTION_APPLY_ORIGINAL_CONTEXT
 			for _, ctx := range descriptor.CachedContexts {
 				if ctx.Owner == c.principal {
-					instructions.Contexts = append(instructions.Contexts, &enginepb.AthenaContextRef{ResourceId: ctx.ResourceId, ContextId: ctx.ContextId})
+					instructions.Contexts = append(instructions.Contexts, &enginepb.HttpDbContextRef{ResourceId: ctx.ResourceId, ContextId: ctx.ContextId})
 				}
 			}
 		}
 	default:
-		instructions.Action = enginepb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_FORWARD_REQUEST
+		instructions.Action = enginepb.HttpDbInstruction_HTTP_DB_INSTRUCTION_FORWARD_REQUEST
 		if response {
-			instructions.Action = enginepb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_RELEASE_METADATA
+			instructions.Action = enginepb.HttpDbInstruction_HTTP_DB_INSTRUCTION_RELEASE_METADATA
 		}
 	}
-	return &pb.RequestAuthorizationResult{Allowed: true, Principal: c.principal, Instructions: &pb.RequestAuthorizationResult_Athena{Athena: instructions}}, nil
+	return &pb.RequestAuthorizationResult{Allowed: true, Principal: c.principal, HttpDbInstructions: instructions}, nil
 }
 
 func (c *flowClient) OpenConnection(token, _ string, _ pb.ConnectionDoor) (spi.Identity, error) {

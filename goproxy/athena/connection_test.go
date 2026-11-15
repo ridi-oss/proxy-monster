@@ -42,7 +42,7 @@ func TestConnectionSubmitsPollsReadsAndMasks(t *testing.T) {
 	if submitted == nil || submitted["QueryString"] != "SELECT email, n FROM users WHERE n > (1)" || submitted["WorkGroup"] != "primary" {
 		t.Fatalf("editor submission not admitted: %v", submitted)
 	}
-	if len(client.decisions) != 1 || client.decisions[0].GetSession().GetAthena().GetWorkgroup() != "primary" || client.decisions[0].GetSession().GetAthena().GetMaxRows() != 100 {
+	if len(client.decisions) != 1 || client.decisions[0].GetSession().GetAthena().GetWorkgroup() != "primary" || client.decisions[0].GetSession().GetAthena().GetHttpdb().GetMaxRows() != 100 {
 		t.Fatalf("editor decision lacks Athena scope: %+v", client.decisions)
 	}
 }
@@ -64,7 +64,7 @@ func TestConnectionSendsEachStatementsRowCap(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if len(client.decisions) != 2 || client.decisions[1].GetSession().GetAthena().GetMaxRows() != 7 {
+	if len(client.decisions) != 2 || client.decisions[1].GetSession().GetAthena().GetHttpdb().GetMaxRows() != 7 {
 		t.Fatalf("second decision must carry its own row cap: %+v", client.decisions)
 	}
 }

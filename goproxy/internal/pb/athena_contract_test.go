@@ -20,8 +20,8 @@ func TestNativeProtocolFieldNumbers(t *testing.T) {
 
 func TestAthenaScopeSharesAnalyzerTypeAndPreservesParameterOrder(t *testing.T) {
 	context := &analyzerpb.AthenaSqlContext{
-		Workgroup:           "reports",
-		ExecutionParameters: []string{"'second'", "'first'"},
+		Workgroup: "reports",
+		Httpdb:    &analyzerpb.HttpDbSqlContext{Parameters: []*analyzerpb.HttpDbParameter{{Value: "'second'"}, {Value: "'first'"}}},
 		PreparedDefinitions: []*analyzerpb.AthenaPreparedDefinition{{
 			Workgroup: "reports", Name: "lookup", QueryString: "SELECT email FROM users WHERE id = ?",
 		}},

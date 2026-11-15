@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
-	"sort"
-	"strconv"
 	"strings"
 
 	sqlglot "github.com/ridi-oss/sqlglot-go"
@@ -56,7 +54,7 @@ var Athena = &Engine{
 		endpointIsURL:                  true,
 		defaultSession:                 athenaDefaultSession,
 	},
-	hooks: athenaHooks{},
+	hooks: athenaHooks{httpdbHooks{sqlContext: func(o *pb.SessionObservation) *pb.HttpDbSqlContext { return o.GetAthena().GetHttpdb() }}},
 }
 
 var athenaDialect = dialects.Athena()
@@ -85,14 +83,20 @@ func checkAthenaObservation(observation *pb.SessionObservation) error {
 	return nil
 }
 
-type athenaHooks struct{ sharedHooks }
+type athenaHooks struct{ httpdbHooks }
 
 // prepareStatement binds ExecutionParameters into the statement's `?` placeholders in SQL order so lineage
 // runs on the bound text, and resolves EXECUTE against a supplied prepared definition or asks for the one
 // it needs. An empty statement carries no parameters.
 func (athenaHooks) prepareStatement(session *Session, root exp.Expression) (exp.Expression, bool, *pb.StatementFacts, error) {
 	sqlContext := session.observation.GetAthena()
-	parameters := append([]string(nil), sqlContext.GetExecutionParameters()...)
+	var parameters []string
+	for _, parameter := range sqlContext.GetHttpdb().GetParameters() {
+		if parameter.GetName() != "" {
+			return nil, false, nil, fmt.Errorf("Athena requires positional question-mark parameters")
+		}
+		parameters = append(parameters, parameter.GetValue())
+	}
 	if root.Kind() == exp.KindSemicolon {
 		if len(parameters) != 0 {
 			return nil, false, nil, fmt.Errorf("empty SQL cannot carry execution parameters")
@@ -137,13 +141,6 @@ func (athenaHooks) prepareStatement(session *Session, root exp.Expression) (exp.
 	return root, regenerate, nil, nil
 }
 
-// finishSubmission caps the submitted query at the editor's max_rows: Athena has no session row cap, so an
-// uncapped SELECT would scan and store the whole result before the proxy truncates it.
-func (athenaHooks) finishSubmission(session *Session, submission exp.Expression) bool {
-	maxRows := session.observation.GetAthena().GetMaxRows()
-	return maxRows > 0 && capAthenaRows(submission, maxRows)
-}
-
 func (athenaHooks) configureNamespace(_ *Session, opts *optimizer.QualifyOpts, namespace NamespaceConfig) {
 	if len(namespace.SearchPath) != 1 {
 		panic("Athena requires one current database")
@@ -180,14 +177,12 @@ func bindAthenaParameters(root exp.Expression, parameters []string, session *Ses
 	if len(placeholders) != len(parameters) {
 		return fmt.Errorf("expected %d execution parameters, got %d", len(placeholders), len(parameters))
 	}
-	positions := make(map[exp.Expression]int, len(placeholders))
 	for _, placeholder := range placeholders {
 		start, end, ok := placeholder.Span()
 		text, hasText := placeholder.SpanText()
 		if !ok || end != start+1 || !hasText || text != "?" || placeholder.Arg("this") != nil {
 			return fmt.Errorf("parameter position is not proven")
 		}
-		positions[placeholder] = start
 		inWhere := false
 		for parent := placeholder.Parent(); parent != nil; parent = parent.Parent() {
 			if parent.Kind() == exp.KindWhere {
@@ -202,8 +197,11 @@ func bindAthenaParameters(root exp.Expression, parameters []string, session *Ses
 			return fmt.Errorf("Athena parameters must occur in WHERE")
 		}
 	}
-	sort.Slice(placeholders, func(i, j int) bool { return positions[placeholders[i]] < positions[placeholders[j]] })
-	for i, placeholder := range placeholders {
+	ordered, err := spanOrder(placeholders)
+	if err != nil {
+		return err
+	}
+	for i, placeholder := range ordered {
 		expressions, err := parameterExpressions(parameters[i], session)
 		if err != nil {
 			return err
@@ -245,29 +243,6 @@ func athenaExecute(root exp.Expression, session *Session) (string, []string, err
 		}
 	}
 	return name, parameters, nil
-}
-
-// capAthenaRows adds LIMIT maxRows to a top-level query that has none or a larger literal one. Athena has no
-// session row cap, so an uncapped SELECT would scan and store the whole result before the proxy truncates it.
-func capAthenaRows(root exp.Expression, maxRows uint32) bool {
-	if root == nil || !root.Is(exp.TraitQuery) {
-		return false
-	}
-	limit, _ := root.Arg("limit").(exp.Expression)
-	if limit != nil {
-		current, _ := limit.Arg("expression").(exp.Expression)
-		if current == nil || !current.IsNumber() {
-			return false
-		}
-		value, err := strconv.ParseUint(current.Name(), 10, 32)
-		if err != nil || value <= uint64(maxRows) {
-			return false
-		}
-		limit.Set("expression", exp.LiteralNumber(int64(maxRows)))
-		return true
-	}
-	root.Set("limit", exp.Limit(exp.Args{"expression": exp.LiteralNumber(int64(maxRows))}))
-	return true
 }
 
 var athenaNatives = map[string][]string{"3": nativeFunctions("athena", "3")}

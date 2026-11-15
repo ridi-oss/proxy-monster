@@ -2137,8 +2137,8 @@ type StatementFacts struct {
 	Detail string `protobuf:"bytes,4,opt,name=detail,proto3" json:"detail,omitempty"`
 	// Ordered target-DB output names; RequireResultReadGrant.output_ordinals indexes this exact list.
 	OutputColumns []string `protobuf:"bytes,7,rep,name=output_columns,json=outputColumns,proto3" json:"output_columns,omitempty"`
-	// Safe analyzer rewrite (star expansion, Athena's bound parameters and row cap); absent means relay the
-	// client's SQL. Athena submits it without the client's parameters, which are bound into it:
+	// Safe analyzer rewrite (star expansion, an HTTP-API engine's bound parameters and row cap); absent means
+	// relay the client's SQL. An HTTP-API engine submits it without the client's parameters, bound into it:
 	//
 	//	QueryString "SELECT email FROM users WHERE id = ?" + ["7"] -> "SELECT email FROM users WHERE id = (7)"
 	RewrittenSql *string `protobuf:"bytes,9,opt,name=rewritten_sql,json=rewrittenSql,proto3,oneof" json:"rewritten_sql,omitempty"`

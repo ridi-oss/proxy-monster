@@ -55,3 +55,18 @@ message HttpDbInstructions {
   HttpDbInstruction action = 1;
   repeated HttpDbContextRef contexts = 2;
 }
+
+// What an engine's SQL call carries beside the text and its namespace: an Athena StartQueryExecution or a
+// BigQuery jobs.query.
+message HttpDbSqlContext {
+  // The request's parameters, in request order, each a SQL expression the analyzer binds into the text:
+  //   "SELECT email FROM users WHERE id = ?" with [{value: "7"}]. A named one (BigQuery @id) has a name.
+  repeated HttpDbParameter parameters = 1;
+  // Editor row cap; a resolved query gets LIMIT max_rows when it has none or a larger one. 0 = no cap.
+  uint32 max_rows = 2;
+}
+
+message HttpDbParameter {
+  string name = 1;
+  string value = 2;
+}

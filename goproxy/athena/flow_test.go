@@ -37,7 +37,7 @@ func TestSubmissionIsDecidedRewrittenAndMaskedOnRead(t *testing.T) {
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "exec-0001") {
 		t.Fatalf("submission failed: %d %s", response.Code, response.Body.String())
 	}
-	if len(client.decisions) != 1 || client.decisions[0].GetSession().GetAthena().GetWorkgroup() != "primary" || client.decisions[0].GetSession().GetAthena().GetMaxRows() != 0 || len(client.decisions[0].GetSession().GetAthena().GetExecutionParameters()) != 1 || client.decisions[0].CurrentCatalog != "awsdatacatalog" {
+	if len(client.decisions) != 1 || client.decisions[0].GetSession().GetAthena().GetWorkgroup() != "primary" || client.decisions[0].GetSession().GetAthena().GetHttpdb().GetMaxRows() != 0 || len(client.decisions[0].GetSession().GetAthena().GetHttpdb().GetParameters()) != 1 || client.decisions[0].CurrentCatalog != "awsdatacatalog" {
 		t.Fatalf("decision request lacks Athena scope: %+v", client.decisions)
 	}
 	if len(client.pushes) != 1 || client.pushes[0].Schema != "example" || len(client.pushes[0].Columns) != 1 {

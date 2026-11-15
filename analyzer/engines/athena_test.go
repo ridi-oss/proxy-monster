@@ -15,9 +15,13 @@ func catalogColumn(catalog, schema, table, column, dataType string) *pb.Column {
 }
 
 func athenaRequest(sql string, parameters ...string) *pb.AnalyzeRequest {
+	sqlContext := &pb.HttpDbSqlContext{}
+	for _, value := range parameters {
+		sqlContext.Parameters = append(sqlContext.Parameters, &pb.HttpDbParameter{Value: value})
+	}
 	return &pb.AnalyzeRequest{
 		Sql:          sql,
-		EngineConfig: &pb.EngineConfig{Engine: pb.Engine_ATHENA, Session: &pb.SessionObservation{Engine: &pb.SessionObservation_Athena{Athena: &pb.AthenaSqlContext{Workgroup: "sample", ExecutionParameters: parameters}}}},
+		EngineConfig: &pb.EngineConfig{Engine: pb.Engine_ATHENA, Session: &pb.SessionObservation{Engine: &pb.SessionObservation_Athena{Athena: &pb.AthenaSqlContext{Workgroup: "sample", Httpdb: sqlContext}}}},
 		Namespace:    &pb.Namespace{Catalog: "awsdatacatalog", SearchPath: []string{"sample"}},
 		Catalog: &pb.CatalogSnapshot{
 			Columns: []*pb.Column{
@@ -191,7 +195,10 @@ func TestAthenaParametersFollowSQLOrderAcrossScopes(t *testing.T) {
 }
 
 func TestAthenaParameterFailures(t *testing.T) {
+	named := athenaRequest("SELECT email FROM users WHERE id = ?", "1")
+	named.EngineConfig.Session.GetAthena().Httpdb.Parameters[0].Name = "id"
 	for _, request := range []*pb.AnalyzeRequest{
+		named,
 		athenaRequest("SELECT email FROM users WHERE id = ?"),
 		athenaRequest("SELECT email FROM users", "1"),
 		athenaRequest("SELECT ? FROM users", "1"),
@@ -306,7 +313,7 @@ func TestAthenaRowCapIsPushedIntoTheSubmission(t *testing.T) {
 		{"SELECT * FROM users", "LIMIT 5"},
 	} {
 		request := athenaRequest(tc.sql)
-		request.EngineConfig.Session.GetAthena().MaxRows = 5
+		request.EngineConfig.Session.GetAthena().Httpdb.MaxRows = 5
 		facts := analyzeProto(t, request)
 		if !facts.GetResolved() {
 			t.Fatalf("%s: unresolved: %s", tc.sql, facts)

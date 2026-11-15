@@ -460,6 +460,13 @@ Fixes for gaps documented in
   mutate sequence / large-object state. Decide the tag (reuse `system:critical`
   vs. a new state-mutation category) and audit the full surface before landing —
   a manifest change per shipped engine version, curated like the native lists.
+- A `system:egress` tag for calls that send row values out of the database,
+  where masking on the result stream can't follow them. They borrow
+  `system:critical`: PostgreSQL `dblink_exec` and `lo_export`, and BigQuery
+  `AI.GENERATE`/`AI.EMBED`/`AI.SIMILARITY` (its manifest lands with BigQuery's
+  control-plane registration), whose model endpoint receives the cleartext of a
+  masked column. Audit the rest of the surface (remote UDFs, Athena external
+  functions, export statements) before landing.
 - Reconsider redacting, rather than denying, a masked column used only in
   `GROUP BY` / `DISTINCT`; `DISTINCT` is the more defensible loosening.
 - Validate that a bare column's inferred source actually exposes it before

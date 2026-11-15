@@ -505,8 +505,8 @@ message StatementFacts {
   // was is_write — the analyzer emits DENY_STATEMENT column dispositions for write payloads directly, so
   // the control-plane needs no separate write flag (it only ever worded a deny message from it).
   reserved 8;
-  // Safe analyzer rewrite (star expansion, Athena's bound parameters and row cap); absent means relay the
-  // client's SQL. Athena submits it without the client's parameters, which are bound into it:
+  // Safe analyzer rewrite (star expansion, an HTTP-API engine's bound parameters and row cap); absent means
+  // relay the client's SQL. An HTTP-API engine submits it without the client's parameters, bound into it:
   //   QueryString "SELECT email FROM users WHERE id = ?" + ["7"] -> "SELECT email FROM users WHERE id = (7)"
   optional string rewritten_sql = 9;
   // was explain_of_query — an EXPLAIN's output is the plan, not the query's columns, so the analyzer emits

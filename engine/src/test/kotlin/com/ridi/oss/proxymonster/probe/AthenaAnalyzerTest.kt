@@ -10,6 +10,8 @@ import com.ridi.oss.proxymonster.athena.pb.AthenaSqlContext
 import com.ridi.oss.proxymonster.athena.pb.athenaPreparedDefinition
 import com.ridi.oss.proxymonster.athena.pb.athenaSqlContext
 import com.ridi.oss.proxymonster.grpc.Engine
+import com.ridi.oss.proxymonster.httpdb.pb.httpDbParameter
+import com.ridi.oss.proxymonster.httpdb.pb.httpDbSqlContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -74,7 +76,7 @@ class AthenaAnalyzerTest {
         val direct = analyzerWith(
             athenaSqlContext {
                 workgroup = "sample"
-                executionParameters.add("'sample@example.test'")
+                httpdb = httpDbSqlContext { parameters.add(httpDbParameter { value = "'sample@example.test'" }) }
             },
         ).analyze("SELECT email FROM users WHERE email = ?")
         val prepared = analyzerWith(

@@ -20,11 +20,19 @@ func (t *target) authorize(authz *spi.Authorizer, commandRunner *relay.ProxyComm
 		ProbeSession: func() (spi.SessionSnapshot, error) {
 			return spi.SessionSnapshot{
 				CurrentCatalog: t.catalogIdentity(), Namespace: []string{t.databaseIdentity()},
-				SessionObservation: &enginepb.SessionObservation{Engine: &enginepb.SessionObservation_Athena{Athena: &enginepb.AthenaSqlContext{Workgroup: t.settings.workgroup, ExecutionParameters: parameters, MaxRows: uint32(max(maxRows, 0))}}},
+				SessionObservation: &enginepb.SessionObservation{Engine: &enginepb.SessionObservation_Athena{Athena: &enginepb.AthenaSqlContext{Workgroup: t.settings.workgroup, Httpdb: sqlContext(parameters, maxRows)}}},
 			}, nil
 		},
 		Commands: commandRunner,
 	})
+}
+
+func sqlContext(parameters []string, maxRows int) *enginepb.HttpDbSqlContext {
+	out := &enginepb.HttpDbSqlContext{MaxRows: uint32(max(maxRows, 0))}
+	for _, value := range parameters {
+		out.Parameters = append(out.Parameters, &enginepb.HttpDbParameter{Value: value})
+	}
+	return out
 }
 
 // submittedQuery is the text and parameters the proxy sends: the control plane's rewrite, which has the

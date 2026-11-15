@@ -125,6 +125,9 @@ type EngineTraits struct {
 	passthroughCommands []string
 	// syntaxCalls are call-shaped syntax over one subquery, lowercase: Postgres ARRAY(SELECT ...) is no pg_proc function.
 	syntaxCalls []string
+	// typedBuiltins are calls sqlglot-go parses to their own node, so the builtin list never sees them; they are
+	// reported as builtins for the control plane to classify: BigQuery AI.GENERATE -> "ai.generate".
+	typedBuiltins map[exp.Kind]string
 
 	// connectionProperties are the ConnectionInfo keys the engine's proxies publish: MySQL database, Athena region.
 	connectionProperties []string

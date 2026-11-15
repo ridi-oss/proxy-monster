@@ -85,13 +85,14 @@ func EmitFacts(sql string, engineConfig *pb.EngineConfig, sch, implicit *schema.
 	if stop != nil {
 		return stop
 	}
+	// emitParsedFacts folds identifiers in place; the submission keeps the labels as written.
+	submission := root.Copy()
 	facts := emitParsedFacts(root, session, qualifySchema, validatedNamespace)
 	if !facts.GetResolved() {
 		return facts
 	}
 	// The text the proxy submits: the lineage rewrite (star expansion) re-parsed, else the prepared tree.
 	// The engine may still edit it (Athena's LIMIT cap), so the final text is regenerated from the tree.
-	submission := root
 	if facts.RewrittenSql != nil {
 		if submission, err = singleStatement(facts.GetRewrittenSql(), session); err != nil {
 			return unanalyzableFacts("LINEAGE", err.Error())

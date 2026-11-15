@@ -15,6 +15,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ridi-oss/proxy-monster/goproxy/httpdb"
+
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/listen"
@@ -251,7 +253,7 @@ func (c *nativeRequest) attachContext(id string) error {
 		return nil
 	}
 	record, err := c.server.target.contexts.Find(c.server.datasourceName(), id)
-	if errors.Is(err, ErrOriginalContextUnavailable) {
+	if errors.Is(err, httpdb.ErrOriginalContextUnavailable) {
 		return nil
 	}
 	if err != nil {
@@ -448,26 +450,26 @@ func (c *nativeRequest) associate(status int, body []byte) ([]byte, error) {
 		c.complete("error")
 		return nil, ErrResultShape
 	}
-	record, err := newCachedContext(id, c.principal, c.server.target.binding, c.decision, nil, requestBinding(c.submitted), time.Now())
+	record, err := httpdb.NewContext(id, c.principal, c.server.target.binding, c.decision, nil, requestBinding(c.submitted), time.Now().Add(contextLifetime))
 	if err != nil {
 		c.complete("error")
 		return nil, err
 	}
 	// A stable token can replay an execution this proxy no longer has a context for (cache loss); the
 	// current decision must not become that old result's plan, so only a fresh execution binds.
-	if _, findErr := c.server.target.contexts.Find(c.server.datasourceName(), id); c.tokened && errors.Is(findErr, ErrOriginalContextUnavailable) {
+	if _, findErr := c.server.target.contexts.Find(c.server.datasourceName(), id); c.tokened && errors.Is(findErr, httpdb.ErrOriginalContextUnavailable) {
 		fresh, err := c.server.target.submittedAfter(c.request.Context(), id, c.started.Add(-replayTolerance))
 		if err != nil || !fresh {
 			c.complete("error")
-			return nil, ErrOriginalContextUnavailable
+			return nil, httpdb.ErrOriginalContextUnavailable
 		}
 	}
 	err = c.server.target.contexts.Associate(c.server.datasourceName(), record)
-	if errors.Is(err, ErrContextConflict) {
+	if errors.Is(err, httpdb.ErrContextConflict) {
 		existing, findErr := c.server.target.contexts.Find(c.server.datasourceName(), id)
 		if findErr != nil || existing.Owner != c.principal || !bytes.Equal(existing.RequestBinding, record.RequestBinding) {
 			c.complete("error")
-			return nil, ErrOriginalContextUnavailable
+			return nil, httpdb.ErrOriginalContextUnavailable
 		}
 		err = nil
 	}
@@ -511,12 +513,12 @@ func (c *nativeRequest) applyContexts(status int, body []byte, refs []*enginepb.
 		return body, nil
 	}
 	if len(refs) == 0 && c.operation != "ListQueryExecutions" {
-		return nil, ErrOriginalContextUnavailable
+		return nil, httpdb.ErrOriginalContextUnavailable
 	}
 	for _, ref := range refs {
 		record, found := c.contexts[ref.GetResourceId()]
 		if !found || record.ContextId != ref.GetContextId() || record.Owner != c.principal || !bytes.Equal(record.TargetBinding, c.server.target.binding) {
-			return nil, ErrOriginalContextUnavailable
+			return nil, httpdb.ErrOriginalContextUnavailable
 		}
 	}
 	if c.operation == "ListQueryExecutions" {
@@ -529,10 +531,10 @@ func (c *nativeRequest) applyContexts(status int, body []byte, refs []*enginepb.
 		return body, nil
 	}
 	if len(refs) != 1 {
-		return nil, ErrOriginalContextUnavailable
+		return nil, httpdb.ErrOriginalContextUnavailable
 	}
 	record := c.contexts[refs[0].GetResourceId()]
-	verdict, err := cachedVerdict(record)
+	verdict, err := httpdb.ContextVerdict(record)
 	if err != nil {
 		return nil, err
 	}
@@ -605,7 +607,7 @@ func (c *nativeRequest) sanitizeDiagnostics(refs []*enginepb.HttpDbContextRef) b
 		}
 	}
 	for _, record := range records {
-		verdict, err := cachedVerdict(record)
+		verdict, err := httpdb.ContextVerdict(record)
 		if err != nil || verdict.SanitizeDiagnostics {
 			return true
 		}
@@ -650,7 +652,7 @@ func (c *nativeRequest) fail(w http.ResponseWriter, err error) {
 		code, status = "athena.request_denied", http.StatusForbidden
 	case errors.Is(err, errAuthorizationUnavailable):
 		code, status = "athena.authorization_unavailable", http.StatusServiceUnavailable
-	case errors.Is(err, ErrOriginalContextUnavailable):
+	case errors.Is(err, httpdb.ErrOriginalContextUnavailable):
 		code, status = "athena.original_context_unavailable", http.StatusConflict
 	case errors.Is(err, ErrBodyTooLarge):
 		code, status = "athena.request_too_large", http.StatusRequestEntityTooLarge
@@ -698,7 +700,7 @@ func (s *nativeServer) authorize(ctx context.Context, token, clientAddr string, 
 		return nil, nil, fmt.Errorf("%w: %v", errAuthorizationUnavailable, err)
 	}
 	if result != nil && !result.Allowed && result.DenyReason == "native.context_unavailable" {
-		return nil, nil, ErrOriginalContextUnavailable
+		return nil, nil, httpdb.ErrOriginalContextUnavailable
 	}
 	if result == nil || !result.Allowed || result.GetHttpDbInstructions() == nil {
 		return nil, nil, ErrUnauthorized

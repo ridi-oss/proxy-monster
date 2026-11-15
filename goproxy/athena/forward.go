@@ -10,11 +10,13 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/ridi-oss/proxy-monster/goproxy/httpdb"
 )
 
 var (
 	ErrBodyTooLarge = errors.New("athena: request body exceeds limit")
-	ErrUnauthorized = errors.New("athena: request authorization required")
+	ErrUnauthorized = httpdb.ErrUnauthorized
 	ErrUnsigned     = errors.New("athena: upstream signing required")
 )
 

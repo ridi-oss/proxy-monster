@@ -10,6 +10,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
+	"github.com/ridi-oss/proxy-monster/goproxy/httpdb"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 )
@@ -102,7 +103,7 @@ func TestReplayWithoutContextNeverBindsTheCurrentPlan(t *testing.T) {
 		t.Fatalf("first submission failed: %d %s", response.Code, response.Body.String())
 	}
 	// The proxy loses its contexts; AWS still replays exec-0001 for the token, submitted long ago.
-	server.target.contexts, _ = OpenContextCache(":memory:", 10)
+	server.target.contexts, _ = httpdb.OpenContextCache(":memory:", contextFormat, 10)
 	aws.mu.Lock()
 	aws.submitted["exec-0001"] = time.Now().Add(-time.Hour)
 	aws.mu.Unlock()

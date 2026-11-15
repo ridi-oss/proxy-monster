@@ -149,7 +149,7 @@ func (athenaHooks) stampSubmission(facts *pb.StatementFacts) {
 	facts.Submission = &pb.Submission{Engine: &pb.Submission_Athena{Athena: &pb.AthenaSubmission{}}}
 }
 
-func (athenaHooks) configureNamespace(opts *optimizer.QualifyOpts, namespace NamespaceConfig) {
+func (athenaHooks) configureNamespace(_ *Session, opts *optimizer.QualifyOpts, namespace NamespaceConfig) {
 	if len(namespace.SearchPath) != 1 {
 		panic("Athena requires one current database")
 	}

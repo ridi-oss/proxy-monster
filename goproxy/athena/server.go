@@ -114,7 +114,7 @@ type nativeRequest struct {
 	tokened       bool
 	started       time.Time
 	// Cached contexts the request phase found for the referenced executions.
-	contexts  map[string]*enginepb.AthenaCachedContext
+	contexts  map[string]*enginepb.HttpDbCachedContext
 	firstPage bool
 }
 
@@ -154,7 +154,7 @@ func (s *nativeServer) ServeHTTP(w http.ResponseWriter, request *http.Request) {
 		nativeError(w, http.StatusBadRequest, "athena.invalid_client_address")
 		return
 	}
-	call := &nativeRequest{server: s, request: request, token: token, clientAddr: clientAddr, operation: operation, contexts: map[string]*enginepb.AthenaCachedContext{}}
+	call := &nativeRequest{server: s, request: request, token: token, clientAddr: clientAddr, operation: operation, contexts: map[string]*enginepb.HttpDbCachedContext{}}
 	defer call.release()
 	forwarder, err := NewForwarder(ForwardOptions{
 		Endpoint: s.target.endpoint, MaxBodyBytes: defaultRequestLimit, Sign: s.target.sign, Transport: s.target.transport,
@@ -205,7 +205,7 @@ func (c *nativeRequest) authorizeRequest(ctx context.Context, incoming *http.Req
 	if err := c.lookupContexts(envelope); err != nil {
 		return nil, err
 	}
-	descriptor := c.descriptor(enginepb.NativeAuthorizationPhase_NATIVE_AUTHORIZATION_PHASE_REQUEST, nil)
+	descriptor := c.descriptor(enginepb.HttpDbAuthorizationPhase_HTTP_DB_AUTHORIZATION_PHASE_REQUEST, nil)
 	result, instructions, err := c.server.authorize(ctx, c.token, c.clientAddr, descriptor)
 	if err != nil {
 		return nil, err
@@ -215,12 +215,12 @@ func (c *nativeRequest) authorizeRequest(ctx context.Context, incoming *http.Req
 		return nil, ErrUnauthorized
 	}
 	switch instructions.Action {
-	case enginepb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_FORWARD_REQUEST:
+	case enginepb.HttpDbInstruction_HTTP_DB_INSTRUCTION_FORWARD_REQUEST:
 		if c.operation == "StartQueryExecution" || c.operation == "GetQueryResultsStream" {
 			return nil, ErrUnauthorized
 		}
 		return envelope, nil
-	case enginepb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_REQUIRE_SQL_ADMISSION:
+	case enginepb.HttpDbInstruction_HTTP_DB_INSTRUCTION_REQUIRE_SQL_ADMISSION:
 		if c.operation != "StartQueryExecution" {
 			return nil, ErrUnauthorized
 		}
@@ -350,7 +350,7 @@ func (c *nativeRequest) authorizeResponse(status int, body []byte) ([]byte, erro
 			return nil, err
 		}
 	}
-	descriptor := c.descriptor(enginepb.NativeAuthorizationPhase_NATIVE_AUTHORIZATION_PHASE_RESPONSE, observations)
+	descriptor := c.descriptor(enginepb.HttpDbAuthorizationPhase_HTTP_DB_AUTHORIZATION_PHASE_RESPONSE, observations)
 	result, instructions, err := c.server.authorize(c.request.Context(), c.token, c.clientAddr, descriptor)
 	if err != nil {
 		return nil, err
@@ -359,12 +359,12 @@ func (c *nativeRequest) authorizeResponse(status int, body []byte) ([]byte, erro
 		return nil, ErrUnauthorized
 	}
 	switch instructions.Action {
-	case enginepb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_RELEASE_METADATA:
+	case enginepb.HttpDbInstruction_HTTP_DB_INSTRUCTION_RELEASE_METADATA:
 		if c.operation == "GetQueryResults" || c.operation == "GetQueryResultsStream" {
 			return nil, ErrUnauthorized
 		}
 		return body, nil
-	case enginepb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_APPLY_ORIGINAL_CONTEXT:
+	case enginepb.HttpDbInstruction_HTTP_DB_INSTRUCTION_APPLY_ORIGINAL_CONTEXT:
 		return c.applyContexts(status, body, instructions.Contexts)
 	default:
 		return nil, ErrUnauthorized
@@ -503,7 +503,7 @@ func (c *nativeRequest) settle(id string) {
 }
 
 // applyContexts enforces the admitted instructions on a result page or releases a status response.
-func (c *nativeRequest) applyContexts(status int, body []byte, refs []*enginepb.AthenaContextRef) ([]byte, error) {
+func (c *nativeRequest) applyContexts(status int, body []byte, refs []*enginepb.HttpDbContextRef) ([]byte, error) {
 	if status != http.StatusOK {
 		if c.sanitizeDiagnostics(nil) {
 			return redactDiagnostics(body)
@@ -551,7 +551,7 @@ func (c *nativeRequest) applyContexts(status int, body []byte, refs []*enginepb.
 		return nil, err
 	}
 	if len(record.MetadataDigest) == 0 {
-		bound := proto.Clone(record).(*enginepb.AthenaCachedContext)
+		bound := proto.Clone(record).(*enginepb.HttpDbCachedContext)
 		bound.MetadataDigest = digest
 		if err := c.server.target.contexts.Rebind(c.server.datasourceName(), record, bound); err != nil {
 			return nil, err
@@ -562,7 +562,7 @@ func (c *nativeRequest) applyContexts(status int, body []byte, refs []*enginepb.
 
 // filterExecutionIDs keeps only the referenced executions in a listing, in AWS order; the page token passes
 // through so the client keeps paging.
-func filterExecutionIDs(body []byte, refs []*enginepb.AthenaContextRef) ([]byte, error) {
+func filterExecutionIDs(body []byte, refs []*enginepb.HttpDbContextRef) ([]byte, error) {
 	envelope, err := DecodeEnvelope(body)
 	if err != nil {
 		return nil, ErrResultShape
@@ -592,8 +592,8 @@ func filterExecutionIDs(body []byte, refs []*enginepb.AthenaContextRef) ([]byte,
 
 // sanitizeDiagnostics reports whether any context this call touches (the referenced ones, else every one
 // the request named) was admitted with diagnostic redaction; an undecodable context redacts too.
-func (c *nativeRequest) sanitizeDiagnostics(refs []*enginepb.AthenaContextRef) bool {
-	records := make([]*enginepb.AthenaCachedContext, 0, len(c.contexts))
+func (c *nativeRequest) sanitizeDiagnostics(refs []*enginepb.HttpDbContextRef) bool {
+	records := make([]*enginepb.HttpDbCachedContext, 0, len(c.contexts))
 	if refs == nil {
 		for _, record := range c.contexts {
 			records = append(records, record)
@@ -613,7 +613,7 @@ func (c *nativeRequest) sanitizeDiagnostics(refs []*enginepb.AthenaContextRef) b
 	return false
 }
 
-func expectedWidth(record *enginepb.AthenaCachedContext) *int32 {
+func expectedWidth(record *enginepb.HttpDbCachedContext) *int32 {
 	if record.ExpectedWidth == nil {
 		return nil
 	}
@@ -621,7 +621,7 @@ func expectedWidth(record *enginepb.AthenaCachedContext) *int32 {
 	return &width
 }
 
-func (c *nativeRequest) descriptor(phase enginepb.NativeAuthorizationPhase, observations []*enginepb.AthenaResourceObservation) *enginepb.AthenaNativeDescriptor {
+func (c *nativeRequest) descriptor(phase enginepb.HttpDbAuthorizationPhase, observations []*enginepb.AthenaResourceObservation) *enginepb.AthenaNativeDescriptor {
 	descriptor := nativeDescriptor(c.request, c.operation, c.requestBody, phase)
 	descriptor.Observations = observations
 	for _, record := range c.contexts {
@@ -679,7 +679,7 @@ func (c *nativeRequest) release() {
 	}
 }
 
-func (s *nativeServer) authorize(ctx context.Context, token, clientAddr string, descriptor *enginepb.AthenaNativeDescriptor) (*pb.RequestAuthorizationResult, *enginepb.AthenaNativeInstructions, error) {
+func (s *nativeServer) authorize(ctx context.Context, token, clientAddr string, descriptor *enginepb.AthenaNativeDescriptor) (*pb.RequestAuthorizationResult, *enginepb.HttpDbInstructions, error) {
 	descriptor.Target = &enginepb.AthenaTarget{Region: s.target.settings.region, DefaultWorkgroup: s.target.settings.workgroup, DefaultCatalog: s.target.settings.catalog, DefaultDatabase: s.target.settings.database, Endpoint: s.target.endpoint, TargetBinding: s.target.binding}
 	if proto.Size(descriptor) > 1<<20 {
 		return nil, nil, ErrBodyTooLarge
@@ -700,19 +700,19 @@ func (s *nativeServer) authorize(ctx context.Context, token, clientAddr string, 
 	if result != nil && !result.Allowed && result.DenyReason == "native.context_unavailable" {
 		return nil, nil, ErrOriginalContextUnavailable
 	}
-	if result == nil || !result.Allowed || result.GetAthena() == nil {
+	if result == nil || !result.Allowed || result.GetHttpDbInstructions() == nil {
 		return nil, nil, ErrUnauthorized
 	}
-	instructions := *result.GetAthena()
+	instructions := *result.GetHttpDbInstructions()
 	switch descriptor.Phase {
-	case enginepb.NativeAuthorizationPhase_NATIVE_AUTHORIZATION_PHASE_REQUEST:
-		if instructions.Action != enginepb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_FORWARD_REQUEST &&
-			instructions.Action != enginepb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_REQUIRE_SQL_ADMISSION {
+	case enginepb.HttpDbAuthorizationPhase_HTTP_DB_AUTHORIZATION_PHASE_REQUEST:
+		if instructions.Action != enginepb.HttpDbInstruction_HTTP_DB_INSTRUCTION_FORWARD_REQUEST &&
+			instructions.Action != enginepb.HttpDbInstruction_HTTP_DB_INSTRUCTION_REQUIRE_SQL_ADMISSION {
 			return nil, nil, ErrUnauthorized
 		}
-	case enginepb.NativeAuthorizationPhase_NATIVE_AUTHORIZATION_PHASE_RESPONSE:
-		if instructions.Action != enginepb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_RELEASE_METADATA &&
-			instructions.Action != enginepb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_APPLY_ORIGINAL_CONTEXT {
+	case enginepb.HttpDbAuthorizationPhase_HTTP_DB_AUTHORIZATION_PHASE_RESPONSE:
+		if instructions.Action != enginepb.HttpDbInstruction_HTTP_DB_INSTRUCTION_RELEASE_METADATA &&
+			instructions.Action != enginepb.HttpDbInstruction_HTTP_DB_INSTRUCTION_APPLY_ORIGINAL_CONTEXT {
 			return nil, nil, ErrUnauthorized
 		}
 	default:
@@ -721,10 +721,10 @@ func (s *nativeServer) authorize(ctx context.Context, token, clientAddr string, 
 	return result, &instructions, nil
 }
 
-func nativeDescriptor(request *http.Request, operation string, body []byte, phase enginepb.NativeAuthorizationPhase) *enginepb.AthenaNativeDescriptor {
+func nativeDescriptor(request *http.Request, operation string, body []byte, phase enginepb.HttpDbAuthorizationPhase) *enginepb.AthenaNativeDescriptor {
 	descriptor := &enginepb.AthenaNativeDescriptor{Service: "athena", Operation: operation, Method: request.Method, Path: request.URL.Path, RawQuery: request.URL.RawQuery, Body: body, Phase: phase}
 	for name, values := range upstreamHeaders(request.Header) {
-		descriptor.FunctionalHeaders = append(descriptor.FunctionalHeaders, &enginepb.NativeHeader{Name: name, Values: values})
+		descriptor.FunctionalHeaders = append(descriptor.FunctionalHeaders, &enginepb.HttpDbHeader{Name: name, Values: values})
 	}
 	return descriptor
 }

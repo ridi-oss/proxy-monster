@@ -8,10 +8,10 @@ import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres
 import com.ridi.oss.proxymonster.controlplane.support.requireDockerOrSkip
 import com.ridi.oss.proxymonster.grpc.ControlPlaneGrpcKt
 import com.ridi.oss.proxymonster.athena.pb.AthenaNativeDescriptor
-import com.ridi.oss.proxymonster.athena.pb.AthenaNativeInstruction
-import com.ridi.oss.proxymonster.athena.pb.NativeAuthorizationPhase
 import com.ridi.oss.proxymonster.athena.pb.athenaNativeDescriptor
 import com.ridi.oss.proxymonster.athena.pb.athenaTarget
+import com.ridi.oss.proxymonster.httpdb.pb.HttpDbAuthorizationPhase
+import com.ridi.oss.proxymonster.httpdb.pb.HttpDbInstruction
 import com.ridi.oss.proxymonster.grpc.RequestAuthorization
 import com.ridi.oss.proxymonster.grpc.objectRef
 import com.ridi.oss.proxymonster.grpc.readCatalog
@@ -268,7 +268,7 @@ class RequestAuthorizationDbTest {
                         method = "POST"
                         path = "/"
                         this.body = ByteString.copyFromUtf8(body)
-                        phase = NativeAuthorizationPhase.NATIVE_AUTHORIZATION_PHASE_REQUEST
+                        phase = HttpDbAuthorizationPhase.HTTP_DB_AUTHORIZATION_PHASE_REQUEST
                         target = athenaTarget {
                             region = "ap-northeast-2"
                             defaultWorkgroup = "primary"
@@ -291,7 +291,7 @@ class RequestAuthorizationDbTest {
         assertEquals("native.scope_violation", call("StartQueryExecution", """{"QueryString":"select 1","WorkGroup":"PRIMARY"}""").denyReason)
         val submitted = call("StartQueryExecution", """{"QueryString":"select 1","QueryExecutionContext":{"Catalog":"AwsDataCatalog","Database":"Analytics"}}""")
         assertTrue(submitted.allowed)
-        assertEquals(AthenaNativeInstruction.ATHENA_NATIVE_INSTRUCTION_REQUIRE_SQL_ADMISSION, submitted.athena.action)
+        assertEquals(HttpDbInstruction.HTTP_DB_INSTRUCTION_REQUIRE_SQL_ADMISSION, submitted.httpDbInstructions.action)
         assertTrue(call("GetTableMetadata", """{"CatalogName":"awsdatacatalog","DatabaseName":"analytics","TableName":"orders"}""").allowed)
         val forbidden = call("GetTableMetadata", """{"CatalogName":"AwsDataCatalog","DatabaseName":"Analytics","TableName":"USERS"}""")
         assertEquals("native.not_authorized", forbidden.denyReason)

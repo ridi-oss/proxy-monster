@@ -132,7 +132,7 @@ func (c *call) admitSubmission(body []byte) ([]byte, error) {
 		return nil, err
 	}
 	c.started = time.Now()
-	verdict := engine.Authorize(authz, commandRunner, submission.Query, submission.Parameters)
+	verdict := engine.Authorize(authz, commandRunner, submission)
 	switch v := verdict.(type) {
 	case spi.Fail:
 		return nil, relay.FailError{Message: v.Message}
@@ -144,7 +144,7 @@ func (c *call) admitSubmission(body []byte) ([]byte, error) {
 	default:
 		return nil, relay.FailError{Message: fmt.Sprintf("unexpected authorization verdict %T", verdict)}
 	}
-	admitted := Submission{}
+	admitted := Submission{Session: submission.Session}
 	admitted.Query, admitted.Parameters = SubmittedQuery(submission.Query, submission.Parameters, c.decision)
 	if submission.Token != "" {
 		admitted.Token = namespacedToken(c.server.datasourceName(), c.principal, submission.Token)

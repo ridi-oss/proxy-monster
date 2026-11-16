@@ -83,7 +83,7 @@ func (e *gateEngine) MaskResult(body []byte, verdict *pb.Verdict, _ *int32, _ []
 	return body, pageDigest[:], nil
 }
 
-func (e *gateEngine) Authorize(*spi.Authorizer, *relay.ProxyCommandRunner, string, []string) spi.Verdict {
+func (e *gateEngine) Authorize(*spi.Authorizer, *relay.ProxyCommandRunner, Submission) spi.Verdict {
 	if e.decision != nil {
 		return spi.Proceed{Decision: e.decision}
 	}

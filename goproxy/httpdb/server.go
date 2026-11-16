@@ -55,6 +55,8 @@ type Submission struct {
 	Query      string
 	Parameters []string
 	Token      string
+	// Session is the SQL context the body carries for Decide, for an engine that reads one from it.
+	Session *enginepb.SessionObservation
 }
 
 // Engine is one HTTP-API target database: its wire format, its control-plane target, and its SQL path.
@@ -74,7 +76,7 @@ type Engine interface {
 	FilterListing(body []byte, owned map[string]bool) ([]byte, error)
 	// MaskResult checks a result page's shape and masks it; digest is nil when the verdict masks nothing.
 	MaskResult(body []byte, verdict *pb.Verdict, expectedWidth *int32, metadataDigest []byte, firstPage bool) (masked, digest []byte, err error)
-	Authorize(authz *spi.Authorizer, commands *relay.ProxyCommandRunner, query string, parameters []string) spi.Verdict
+	Authorize(authz *spi.Authorizer, commands *relay.ProxyCommandRunner, submission Submission) spi.Verdict
 	NewProxyCommandRunner(*spi.Authorizer) (*relay.ProxyCommandRunner, error)
 	// SubmittedAfter reports whether the target records the resource as submitted at or after instant.
 	SubmittedAfter(ctx context.Context, id string, instant time.Time) (bool, error)

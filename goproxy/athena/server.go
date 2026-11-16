@@ -210,8 +210,8 @@ func (engine) MaskResult(body []byte, verdict *pb.Verdict, expectedWidth *int32,
 	return MaskResultPage(body, verdict.Masks, expectedWidth, metadataDigest, firstPage)
 }
 
-func (e engine) Authorize(authz *spi.Authorizer, commands *relay.ProxyCommandRunner, query string, parameters []string) spi.Verdict {
-	return e.target.authorize(authz, commands, query, parameters, 0)
+func (e engine) Authorize(authz *spi.Authorizer, commands *relay.ProxyCommandRunner, submission httpdb.Submission) spi.Verdict {
+	return e.target.authorize(authz, commands, submission.Query, submission.Parameters, 0)
 }
 
 func (e engine) NewProxyCommandRunner(authz *spi.Authorizer) (*relay.ProxyCommandRunner, error) {

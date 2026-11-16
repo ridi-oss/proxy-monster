@@ -46,6 +46,8 @@ const (
 type Operation struct {
 	Name string
 	Kind Kind
+	// InlineResult marks a submission whose accepted response carries its first result page.
+	InlineResult bool
 }
 
 // Submission is the SQL a submission body carries, and the client's idempotency token.

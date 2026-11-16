@@ -237,7 +237,16 @@ func (c *call) associate(status int, body []byte) ([]byte, error) {
 			c.complete("error")
 			return nil, ErrOriginalContextUnavailable
 		}
-		err = nil
+		record, err = existing, nil
+	}
+	sanitize := c.decision.SanitizeDiagnostics
+	if err == nil && c.operation.InlineResult {
+		var verdict *pb.Verdict
+		body, verdict, err = c.maskPage(record, body, true)
+		sanitize = sanitize || verdict.GetSanitizeDiagnostics()
+	}
+	if err == nil && sanitize {
+		body, err = RedactDiagnostics(body, c.server.DiagnosticKeys)
 	}
 	if err != nil {
 		c.complete("error")
@@ -303,23 +312,28 @@ func (c *call) applyContexts(status int, body []byte, refs []*enginepb.HttpDbCon
 	if len(refs) != 1 {
 		return nil, ErrOriginalContextUnavailable
 	}
-	record := c.contexts[refs[0].GetResourceId()]
+	masked, _, err := c.maskPage(c.contexts[refs[0].GetResourceId()], body, c.firstPage)
+	return masked, err
+}
+
+// maskPage masks a result page under record's verdict and binds the page's column digest to record.
+func (c *call) maskPage(record *enginepb.HttpDbCachedContext, body []byte, firstPage bool) ([]byte, *pb.Verdict, error) {
 	verdict, err := ContextVerdict(record)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	masked, digest, err := c.server.Engine.MaskResult(body, verdict, expectedWidth(record), record.MetadataDigest, c.firstPage)
+	masked, digest, err := c.server.Engine.MaskResult(body, verdict, expectedWidth(record), record.MetadataDigest, firstPage)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if digest != nil && len(record.MetadataDigest) == 0 {
 		bound := proto.Clone(record).(*enginepb.HttpDbCachedContext)
 		bound.MetadataDigest = digest
 		if err := c.server.Contexts.Rebind(c.server.datasourceName(), record, bound); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
-	return masked, nil
+	return masked, verdict, nil
 }
 
 // sanitizeDiagnostics reports whether any context this call touches (the referenced ones, else every one

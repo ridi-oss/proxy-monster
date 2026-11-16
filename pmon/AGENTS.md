@@ -28,6 +28,10 @@ active connections. Protocol behavior belongs to providers.
 - `internal/providers/athena/` verifies local SigV4 requests and forwards them
   over verified HTTPS with the current PM token. Local credentials bind to
   principal + datasource.
+- `internal/providers/bigquery/` checks a local bearer token bound to the
+  principal and datasource, and forwards `/bigquery/v2/` calls the same way. It
+  serves the bq CLI's discovery document, fetched once from Google.
+  `internal/providers/httpapi/` is the relay both share.
 - `conn/` preserves the public formatting API. Its unknown-engine MySQL fallback
   is compatibility behavior, not a broker-selection or format-capability rule.
 - `pmon show --format <name>` uses provider-declared formats; no flag uses the

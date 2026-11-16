@@ -81,6 +81,7 @@ a facts layer.
 | --- | --- |
 | [`datasource-registration.md`](./datasource-registration.md) | gRPC self-registration; Decide cutover; Register / PushCatalog + proxy introspection; events. |
 | [`athena.md`](./athena.md) | Forward Athena operations with authentication, authorization, masking, and a minimal enforcement-context cache. |
+| [`bigquery.md`](./bigquery.md) | Forward the BigQuery REST API: one project, location and dataset per datasource; SQL jobs decided and masked; pmon's local endpoint for bq and the client libraries. |
 | [`web-console.md`](./web-console.md) | The `web/` console: Editor / Workflows / Access / Audit / Admin. |
 | [`notifications.md`](./notifications.md) | Task events delivered out of band: event/route/transport seam, the approver lookup, Slack over Socket Mode. |
 | [`cedar-reverse-query.md`](./cedar-reverse-query.md) | "Who may approve this?" — Cedar partial evaluation measured against the pinned engine; three silent failure modes and why we ask once per principal instead. |

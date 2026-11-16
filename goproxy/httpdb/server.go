@@ -15,7 +15,6 @@ import (
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/listen"
-	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -76,8 +75,7 @@ type Engine interface {
 	FilterListing(body []byte, owned map[string]bool) ([]byte, error)
 	// MaskResult checks a result page's shape and masks it; digest is nil when the verdict masks nothing.
 	MaskResult(body []byte, verdict *pb.Verdict, expectedWidth *int32, metadataDigest []byte, firstPage bool) (masked, digest []byte, err error)
-	Authorize(authz *spi.Authorizer, commands *relay.ProxyCommandRunner, submission Submission) spi.Verdict
-	NewProxyCommandRunner(*spi.Authorizer) (*relay.ProxyCommandRunner, error)
+	Decider
 	// SubmittedAfter reports whether the target records the resource as submitted at or after instant.
 	SubmittedAfter(ctx context.Context, id string, instant time.Time) (bool, error)
 	// AwaitExecution returns once the resource's execution is terminal.

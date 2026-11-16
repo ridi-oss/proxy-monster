@@ -113,6 +113,17 @@ describe('query catalog tree', () => {
     expect(buildTree([column('awsdatacatalog', 'acme')], athena)[0].insert).toBe('"acme"."users"');
   });
 
+  it('backtick-quotes BigQuery names, where a double-quoted name is a string', () => {
+    const bigquery = {
+      ...postgres,
+      engine: 'bigquery',
+      dbName: 'sales',
+      defaultSchemas: ['sales'],
+      currentCatalog: 'proj',
+    };
+    expect(buildTree([column('proj', 'sales')], bigquery)[0].insert).toBe('`sales`.`users`');
+  });
+
   it('qualifies public as explicitly as a shadow schema, without catalog qualifiers', () => {
     expect(buildTree([column('def', 'app')], mysql)[0].insert).toBe('`app`.`users`');
     const tree = buildTree([column('app'), column('app', 'shadow')], {

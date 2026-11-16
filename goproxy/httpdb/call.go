@@ -52,7 +52,7 @@ func (c *call) authorizeRequest(ctx context.Context, _ *http.Request, body []byt
 	if err := c.lookupContexts(body); err != nil {
 		return nil, err
 	}
-	result, instructions, err := c.server.authorize(ctx, c.token, c.clientAddr, c.exchange(enginepb.HttpDbAuthorizationPhase_HTTP_DB_AUTHORIZATION_PHASE_REQUEST, nil))
+	result, instructions, err := c.server.authorize(ctx, c.token, c.clientAddr, c.describe(enginepb.HttpDbAuthorizationPhase_HTTP_DB_AUTHORIZATION_PHASE_REQUEST, nil))
 	if err != nil {
 		return nil, err
 	}
@@ -163,7 +163,7 @@ func (c *call) authorizeResponse(status int, body []byte) ([]byte, error) {
 	if c.operation.Kind == KindSubmission {
 		return c.associate(status, body)
 	}
-	var observations []Observation
+	var observations []*pb.HttpDbObservation
 	if status == http.StatusOK {
 		var err error
 		if observations, err = c.server.Engine.Observe(body); err != nil {
@@ -171,11 +171,11 @@ func (c *call) authorizeResponse(status int, body []byte) ([]byte, error) {
 		}
 	}
 	for _, observation := range observations {
-		if err := c.attachContext(observation.ID); err != nil {
+		if err := c.attachContext(observation.Id); err != nil {
 			return nil, err
 		}
 	}
-	result, instructions, err := c.server.authorize(c.request.Context(), c.token, c.clientAddr, c.exchange(enginepb.HttpDbAuthorizationPhase_HTTP_DB_AUTHORIZATION_PHASE_RESPONSE, observations))
+	result, instructions, err := c.server.authorize(c.request.Context(), c.token, c.clientAddr, c.describe(enginepb.HttpDbAuthorizationPhase_HTTP_DB_AUTHORIZATION_PHASE_RESPONSE, observations))
 	if err != nil {
 		return nil, err
 	}
@@ -353,12 +353,21 @@ func expectedWidth(record *enginepb.HttpDbCachedContext) *int32 {
 	return &width
 }
 
-func (c *call) exchange(phase enginepb.HttpDbAuthorizationPhase, observations []Observation) Exchange {
-	exchange := Exchange{Request: c.request, Operation: c.operation, Body: c.requestBody, Phase: phase, Observations: observations}
-	for _, record := range c.contexts {
-		exchange.Contexts = append(exchange.Contexts, record)
+// describe is the control plane's view of this call in one phase.
+func (c *call) describe(phase enginepb.HttpDbAuthorizationPhase, observations []*pb.HttpDbObservation) *pb.HttpDbRequest {
+	r := c.request
+	d := &pb.HttpDbRequest{
+		Service: c.server.Name, Operation: c.operation.Name, Method: r.Method, Path: r.URL.Path, RawQuery: r.URL.RawQuery,
+		Body: c.requestBody, Phase: phase, Observations: observations, TargetBinding: c.server.TargetBinding,
 	}
-	return exchange
+	for name, values := range upstreamHeaders(r.Header) {
+		d.FunctionalHeaders = append(d.FunctionalHeaders, &enginepb.HttpDbHeader{Name: name, Values: values})
+	}
+	for _, record := range c.contexts {
+		d.CachedContexts = append(d.CachedContexts, record)
+	}
+	c.server.Engine.SetTarget(d)
+	return d
 }
 
 // denied carries the control plane's SQL deny reason to the client in the engine's error format.

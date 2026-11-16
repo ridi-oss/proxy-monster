@@ -81,18 +81,9 @@ func (engine) References(_ *http.Request, body []byte) ([]string, bool, error) {
 	return ids, envelope.Field("NextToken") == nil, nil
 }
 
-func (e engine) Authorization(exchange httpdb.Exchange) *pb.RequestAuthorization {
-	t, request := e.target, exchange.Request
-	descriptor := &enginepb.AthenaNativeDescriptor{Service: "athena", Operation: exchange.Operation.Name, Method: request.Method, Path: request.URL.Path, RawQuery: request.URL.RawQuery, Body: exchange.Body, Phase: exchange.Phase}
-	for name, values := range httpdb.UpstreamHeaders(request.Header) {
-		descriptor.FunctionalHeaders = append(descriptor.FunctionalHeaders, &enginepb.HttpDbHeader{Name: name, Values: values})
-	}
-	for _, observation := range exchange.Observations {
-		descriptor.Observations = append(descriptor.Observations, observation.Detail.(*enginepb.AthenaResourceObservation))
-	}
-	descriptor.CachedContexts = exchange.Contexts
-	descriptor.Target = &enginepb.AthenaTarget{Region: t.settings.region, DefaultWorkgroup: t.settings.workgroup, DefaultCatalog: t.settings.catalog, DefaultDatabase: t.settings.database, Endpoint: t.endpoint, TargetBinding: t.binding}
-	return &pb.RequestAuthorization{Operation: &pb.RequestAuthorization_Athena{Athena: descriptor}}
+func (e engine) SetTarget(d *pb.HttpDbRequest) {
+	t := e.target
+	d.Target = &pb.HttpDbRequest_Athena{Athena: &enginepb.AthenaTarget{Region: t.settings.region, DefaultWorkgroup: t.settings.workgroup, DefaultCatalog: t.settings.catalog, DefaultDatabase: t.settings.database, Endpoint: t.endpoint}}
 }
 
 func (e engine) ReadSubmission(body []byte) (httpdb.Submission, error) {
@@ -129,14 +120,14 @@ func (e engine) WriteSubmission(body []byte, admitted httpdb.Submission) ([]byte
 func (engine) CreatedResource(body []byte) (string, error) { return executionID(body) }
 
 // Observe reports AWS-returned execution identities so the control plane can bind them to cached contexts.
-func (engine) Observe(body []byte) ([]httpdb.Observation, error) {
+func (engine) Observe(body []byte) ([]*pb.HttpDbObservation, error) {
 	envelope, err := httpdb.DecodeEnvelope(body)
 	if err != nil {
 		return nil, ErrResultShape
 	}
-	var observations []httpdb.Observation
-	add := func(observation *enginepb.AthenaResourceObservation) {
-		observations = append(observations, httpdb.Observation{ID: observation.Id, Detail: observation})
+	var observations []*pb.HttpDbObservation
+	add := func(id string) {
+		observations = append(observations, &pb.HttpDbObservation{Source: pb.HttpDbObservationSource_HTTP_DB_OBSERVATION_SOURCE_UPSTREAM_RESPONSE, Kind: "query-execution", Id: id})
 	}
 	observe := func(raw json.RawMessage) error {
 		if raw == nil {
@@ -153,11 +144,7 @@ func (engine) Observe(body []byte) ([]httpdb.Observation, error) {
 		if err := json.Unmarshal(execution.Field("QueryExecutionId"), &id); err != nil || id == "" {
 			return ErrResultShape
 		}
-		observation := &enginepb.AthenaResourceObservation{Source: enginepb.AthenaObservationSource_ATHENA_OBSERVATION_SOURCE_AWS_RESPONSE, Kind: "query-execution", Id: id}
-		if raw := execution.Field("WorkGroup"); raw != nil {
-			_ = json.Unmarshal(raw, &observation.Workgroup)
-		}
-		add(observation)
+		add(id)
 		return nil
 	}
 	if err := observe(envelope.Field("QueryExecution")); err != nil {
@@ -180,7 +167,7 @@ func (engine) Observe(body []byte) ([]httpdb.Observation, error) {
 			return nil, ErrResultShape
 		}
 		for _, id := range ids {
-			add(&enginepb.AthenaResourceObservation{Source: enginepb.AthenaObservationSource_ATHENA_OBSERVATION_SOURCE_AWS_RESPONSE, Kind: "query-execution", Id: id})
+			add(id)
 		}
 	}
 	return observations, nil

@@ -65,7 +65,7 @@ type readRequest func(r *pb.RequestAuthorization, ds requestDatasource, principa
 var requestReaders = map[*engines.Engine]readRequest{
 	engines.MySQL:    metadataAccess,
 	engines.Postgres: metadataAccess,
-	engines.Athena:   athenaAccess,
+	engines.Athena:   athenaAPI.access,
 }
 
 // admission is the verdict on one request: a deny code, or an allow with the native instructions.

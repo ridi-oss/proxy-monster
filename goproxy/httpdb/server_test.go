@@ -54,9 +54,8 @@ func (e *gateEngine) References(_ *http.Request, body []byte) ([]string, bool, e
 	return refs.IDs, refs.First, nil
 }
 
-func (e *gateEngine) Authorization(x Exchange) *pb.RequestAuthorization {
-	body := append(bytes.Clone(x.Body), make([]byte, e.pad)...)
-	return &pb.RequestAuthorization{Operation: &pb.RequestAuthorization_Athena{Athena: &enginepb.AthenaNativeDescriptor{Phase: x.Phase, Body: body, CachedContexts: x.Contexts}}}
+func (e *gateEngine) SetTarget(d *pb.HttpDbRequest) {
+	d.Target = &pb.HttpDbRequest_Athena{Athena: &enginepb.AthenaTarget{Endpoint: strings.Repeat("x", e.pad)}}
 }
 
 func (e *gateEngine) ReadSubmission([]byte) (Submission, error) {
@@ -71,7 +70,7 @@ func (e *gateEngine) CreatedResource(body []byte) (string, error) {
 	return created.ID, json.Unmarshal(body, &created)
 }
 
-func (e *gateEngine) Observe([]byte) ([]Observation, error)                     { return nil, nil }
+func (e *gateEngine) Observe([]byte) ([]*pb.HttpDbObservation, error)           { return nil, nil }
 func (e *gateEngine) FilterListing(b []byte, _ map[string]bool) ([]byte, error) { return b, nil }
 
 func (e *gateEngine) MaskResult(body []byte, _ *pb.Verdict, _ *int32, _ []byte, firstPage bool) ([]byte, []byte, error) {
@@ -109,7 +108,7 @@ func (*gateControlPlane) DatasourceName() string { return "ds" }
 
 func (c *gateControlPlane) AuthorizeRequest(_ context.Context, r *pb.RequestAuthorization) (*pb.RequestAuthorizationResult, error) {
 	c.calls.Add(1)
-	if r.GetAthena().Phase == enginepb.HttpDbAuthorizationPhase_HTTP_DB_AUTHORIZATION_PHASE_RESPONSE {
+	if r.GetHttpDb().Phase == enginepb.HttpDbAuthorizationPhase_HTTP_DB_AUTHORIZATION_PHASE_RESPONSE {
 		return c.response, nil
 	}
 	return c.request, nil

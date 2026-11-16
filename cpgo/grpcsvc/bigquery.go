@@ -193,7 +193,7 @@ var (
 	jobFields              = []string{"kind", "jobReference", "configuration"}
 	jobConfigurationFields = []string{"query", "labels", "dryRun", "jobTimeoutMs", "jobType"}
 	queryConfigFields      = []string{"query", "useLegacySql", "defaultDataset", "queryParameters", "parameterMode", "priority",
-		"useQueryCache", "maximumBytesBilled", "maximumBillingTier", "destinationEncryptionConfiguration", "preserveNulls"}
+		"useQueryCache", "maximumBytesBilled", "maximumBillingTier", "destinationEncryptionConfiguration", "preserveNulls", "continuous"}
 )
 
 // bigquerySubmissionScope admits a GoogleSQL query job in the target project and location. Anything that
@@ -244,7 +244,7 @@ func bigquerySubmissionScope(d *pb.HttpDbRequest, b body) error {
 	if legacy, ok := query["useLegacySql"].(bool); !ok || legacy {
 		return denyError(nativeScopeViolation)
 	}
-	if query["dryRun"] != nil && query["dryRun"] != false {
+	if query["dryRun"] != nil && query["dryRun"] != false || query["continuous"] != nil && query["continuous"] != false {
 		return denyError(nativeScopeViolation)
 	}
 	if location != nil {

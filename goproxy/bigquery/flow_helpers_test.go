@@ -121,7 +121,7 @@ func (c *flowClient) Decide(request spi.DecideRequest) spi.DecisionOutcome {
 		return spi.DecisionOutcome{Err: "missing BigQuery context"}
 	}
 	return spi.DecisionOutcome{Decision: &spi.Decision{Action: relay.EnfActionName(v.GetDecision()), DecisionID: v.GetDecisionId(), DenyReason: v.GetDenyReason(),
-		Masks: v.GetMasks(), SanitizeDiagnostics: v.GetSanitizeDiagnostics(), RewrittenSQL: v.RewrittenSql, AfterStatement: v.GetAfterStatement()}}
+		Masks: v.GetMasks(), SanitizeDiagnostics: v.GetSanitizeDiagnostics(), RewrittenSQL: v.RewrittenSql, AfterStatement: v.GetAfterStatement(), MaxRows: v.GetMaxRows()}}
 }
 
 func (c *flowClient) PushSchemaFragment(*pb.SchemaFragmentPush) (uint64, error) { return 1, nil }

@@ -12,6 +12,7 @@ func TestRegistryOpensTargetsFromTheEnvironment(t *testing.T) {
 	t.Setenv("PM_TARGET_PORT", "4000")
 	t.Setenv("PM_TARGET_DB", "shop")
 	t.Setenv("PM_ADVERTISE_ADDR", "proxy.example:6033")
+	t.Setenv("PM_BIGQUERY_PROJECT", "proj-a")
 	var perEngine engineFlags
 	flags, err := config.Parse(&perEngine)
 	if err != nil {
@@ -19,6 +20,12 @@ func TestRegistryOpensTargetsFromTheEnvironment(t *testing.T) {
 	}
 	if perEngine.Athena.Database != "shop" {
 		t.Errorf("athena Database = %q, want PM_TARGET_DB", perEngine.Athena.Database)
+	}
+	if perEngine.BigQuery.Dataset != "shop" || perEngine.BigQuery.Project != "proj-a" {
+		t.Errorf("bigquery Dataset, Project = %q, %q; want PM_TARGET_DB, PM_BIGQUERY_PROJECT", perEngine.BigQuery.Dataset, perEngine.BigQuery.Project)
+	}
+	if _, err := perEngine.registry(flags.AdvertiseAddr).For(engines.BigQuery); err != nil {
+		t.Errorf("bigquery is not registered: %v", err)
 	}
 	for _, e := range []*engines.Engine{engines.MySQL, engines.Postgres} {
 		provider, err := perEngine.registry(flags.AdvertiseAddr).For(e)

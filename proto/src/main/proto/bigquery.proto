@@ -20,3 +20,12 @@ message BigQuerySqlContext {
   // Positional parameters have no name and keep the request's order.
   proxymonster.httpdb.v1.HttpDbSqlContext httpdb = 4;
 }
+
+// The BigQuery datasource a REST call goes to: jobs run in project at location, and unqualified tables resolve
+// in default_dataset.
+message BigQueryTarget {
+  string project = 1;
+  string location = 2;
+  string default_dataset = 3;
+  string endpoint = 4;
+}

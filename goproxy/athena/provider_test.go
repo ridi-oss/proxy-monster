@@ -18,6 +18,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/config"
+	"github.com/ridi-oss/proxy-monster/goproxy/httpdb"
 )
 
 type endpointTransport struct {
@@ -156,12 +157,12 @@ func TestAWSForwardSigning(t *testing.T) {
 		w.Header().Set("X-Amzn-Requestid", "aws-native-id")
 		_, _ = io.WriteString(w, `{"FutureField":1.00,"NextToken":"native-token"}`)
 	})
-	forwarder, err := NewForwarder(ForwardOptions{Endpoint: target.endpoint, MaxBodyBytes: defaultRequestLimit, Sign: target.sign, Transport: target.transport,
-		Authorize: func(_ context.Context, request *http.Request, envelope *Envelope) (*Envelope, error) {
+	forwarder, err := httpdb.NewForwarder(httpdb.ForwardOptions{Endpoint: target.endpoint, MaxBodyBytes: defaultRequestLimit, Sign: target.sign, Transport: target.transport,
+		Authorize: func(_ context.Context, request *http.Request, body []byte) ([]byte, error) {
 			if request.Header.Get("X-Amz-Target") != "AmazonAthena.FutureOperation" {
 				return nil, ErrUnauthorized
 			}
-			return envelope, nil
+			return body, nil
 		},
 	})
 	if err != nil {

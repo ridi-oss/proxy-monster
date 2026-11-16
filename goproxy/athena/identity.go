@@ -14,6 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws/arn"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	smithyendpoints "github.com/aws/smithy-go/endpoints"
+	"github.com/ridi-oss/proxy-monster/goproxy/httpdb"
 )
 
 var ErrAWSIdentityChanged = errors.New("athena: AWS credential identity changed")
@@ -94,7 +95,7 @@ func (i *credentialIdentity) Retrieve(ctx context.Context) (aws.Credentials, err
 
 func stsEndpoint(ctx context.Context, cfg aws.Config) (smithyendpoints.Endpoint, error) {
 	if cfg.BaseEndpoint != nil {
-		base, err := upstreamEndpoint(*cfg.BaseEndpoint)
+		base, err := httpdb.UpstreamEndpoint(*cfg.BaseEndpoint)
 		if err != nil {
 			return smithyendpoints.Endpoint{}, err
 		}

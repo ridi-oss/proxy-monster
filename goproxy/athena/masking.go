@@ -1,17 +1,15 @@
 package athena
 
 import (
-	"bytes"
-	"crypto/sha256"
 	"encoding/json"
-	"errors"
 	"fmt"
 
+	"github.com/ridi-oss/proxy-monster/goproxy/httpdb"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 )
 
-var ErrResultShape = errors.New("athena: result shape cannot be enforced")
+var ErrResultShape = httpdb.ErrResultShape
 
 // MaskResultPage applies column masks to one GetQueryResults page in place, keeping every other byte. The
 // page must match the shape the context was admitted under (column count, and the column metadata digest
@@ -19,15 +17,15 @@ var ErrResultShape = errors.New("athena: result shape cannot be enforced")
 // wrong ordinal. Masked columns report type varchar. firstPage comes from the absence of the native
 // request's NextToken, never from row contents, because Athena's DML first row is a header of column names.
 func MaskResultPage(body []byte, masks []*pb.ColumnMask, expectedWidth *int32, metadataDigest []byte, firstPage bool) ([]byte, []byte, error) {
-	page, err := DecodeEnvelope(body)
+	page, err := httpdb.DecodeEnvelope(body)
 	if err != nil {
 		return nil, nil, ErrResultShape
 	}
-	result, err := DecodeEnvelope(page.Field("ResultSet"))
+	result, err := httpdb.DecodeEnvelope(page.Field("ResultSet"))
 	if err != nil {
 		return nil, nil, ErrResultShape
 	}
-	metadata, err := DecodeEnvelope(result.Field("ResultSetMetadata"))
+	metadata, err := httpdb.DecodeEnvelope(result.Field("ResultSetMetadata"))
 	if err != nil {
 		return nil, nil, ErrResultShape
 	}
@@ -35,8 +33,8 @@ func MaskResultPage(body []byte, masks []*pb.ColumnMask, expectedWidth *int32, m
 	if err := json.Unmarshal(metadata.Field("ColumnInfo"), &columns); err != nil || columns == nil {
 		return nil, nil, ErrResultShape
 	}
-	if expectedWidth != nil && (int(*expectedWidth) != len(columns) || *expectedWidth < 0) {
-		return nil, nil, ErrResultShape
+	if err := httpdb.CheckWidth(expectedWidth, len(columns)); err != nil {
+		return nil, nil, err
 	}
 	for _, mask := range masks {
 		if mask == nil {
@@ -48,24 +46,14 @@ func MaskResultPage(body []byte, masks []*pb.ColumnMask, expectedWidth *int32, m
 		return nil, nil, relay.ErrMaskUnbound
 	}
 
-	var shape any
-	decoder := json.NewDecoder(bytes.NewReader(metadata.Field("ColumnInfo")))
-	decoder.UseNumber()
-	if err := decoder.Decode(&shape); err != nil {
-		return nil, nil, ErrResultShape
-	}
-	canonical, err := json.Marshal(shape)
+	digest, err := httpdb.ColumnDigest(metadata.Field("ColumnInfo"), metadataDigest)
 	if err != nil {
-		return nil, nil, ErrResultShape
-	}
-	digest := sha256.Sum256(canonical)
-	if len(metadataDigest) != 0 && !bytes.Equal(metadataDigest, digest[:]) {
-		return nil, nil, ErrResultShape
+		return nil, nil, err
 	}
 
 	names := make([]string, len(columns))
 	for i, column := range columns {
-		info, err := DecodeEnvelope(column)
+		info, err := httpdb.DecodeEnvelope(column)
 		if err != nil {
 			return nil, nil, ErrResultShape
 		}
@@ -83,7 +71,7 @@ func MaskResultPage(body []byte, masks []*pb.ColumnMask, expectedWidth *int32, m
 		return nil, nil, ErrResultShape
 	}
 	for i, rawRow := range rows {
-		row, err := DecodeEnvelope(rawRow)
+		row, err := httpdb.DecodeEnvelope(rawRow)
 		if err != nil {
 			return nil, nil, ErrResultShape
 		}
@@ -92,9 +80,9 @@ func MaskResultPage(body []byte, masks []*pb.ColumnMask, expectedWidth *int32, m
 			return nil, nil, ErrResultShape
 		}
 		values := make([]*string, len(cells))
-		objects := make([]*Envelope, len(cells))
+		objects := make([]*httpdb.Envelope, len(cells))
 		for j, cell := range cells {
-			objects[j], err = DecodeEnvelope(cell)
+			objects[j], err = httpdb.DecodeEnvelope(cell)
 			if err != nil {
 				return nil, nil, ErrResultShape
 			}
@@ -127,13 +115,13 @@ func MaskResultPage(body []byte, masks []*pb.ColumnMask, expectedWidth *int32, m
 				delete(fields, "VarCharValue")
 				cells[j], err = json.Marshal(fields)
 			} else {
-				cells[j], err = replaceField(objects[j], "VarCharValue", *value)
+				cells[j], err = objects[j].Replace("VarCharValue", *value)
 			}
 			if err != nil {
 				return nil, nil, err
 			}
 		}
-		rows[i], err = replaceField(row, "Data", cells)
+		rows[i], err = row.Replace("Data", cells)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -142,36 +130,36 @@ func MaskResultPage(body []byte, masks []*pb.ColumnMask, expectedWidth *int32, m
 		if kind == "NULL" {
 			continue
 		}
-		column, err := DecodeEnvelope(columns[index])
+		column, err := httpdb.DecodeEnvelope(columns[index])
 		if err != nil {
 			return nil, nil, ErrResultShape
 		}
-		columns[index], err = replaceField(column, "Type", "varchar")
+		columns[index], err = column.Replace("Type", "varchar")
 		if err != nil {
 			return nil, nil, err
 		}
 	}
-	metadataBytes, err := replaceField(metadata, "ColumnInfo", columns)
+	metadataBytes, err := metadata.Replace("ColumnInfo", columns)
 	if err != nil {
 		return nil, nil, err
 	}
-	resultBytes, err := replaceField(result, "ResultSetMetadata", json.RawMessage(metadataBytes))
+	resultBytes, err := result.Replace("ResultSetMetadata", json.RawMessage(metadataBytes))
 	if err != nil {
 		return nil, nil, err
 	}
-	result, err = DecodeEnvelope(resultBytes)
+	result, err = httpdb.DecodeEnvelope(resultBytes)
 	if err != nil {
 		return nil, nil, err
 	}
-	resultBytes, err = replaceField(result, "Rows", rows)
+	resultBytes, err = result.Replace("Rows", rows)
 	if err != nil {
 		return nil, nil, err
 	}
-	output, err := replaceField(page, "ResultSet", json.RawMessage(resultBytes))
-	return output, digest[:], err
+	output, err := page.Replace("ResultSet", json.RawMessage(resultBytes))
+	return output, digest, err
 }
 
-func requiredString(envelope *Envelope, name string) (string, error) {
+func requiredString(envelope *httpdb.Envelope, name string) (string, error) {
 	raw := envelope.Field(name)
 	if len(raw) == 0 || raw[0] != '"' {
 		return "", fmt.Errorf("athena: %s must be a string", name)
@@ -179,20 +167,4 @@ func requiredString(envelope *Envelope, name string) (string, error) {
 	var value string
 	err := json.Unmarshal(raw, &value)
 	return value, err
-}
-
-func replaceField(envelope *Envelope, name string, value any) ([]byte, error) {
-	span, present := envelope.fields[name]
-	if !present {
-		return nil, fmt.Errorf("athena: missing field %s", name)
-	}
-	replacement, err := json.Marshal(value)
-	if err != nil {
-		return nil, err
-	}
-	result := make([]byte, 0, len(envelope.body)+len(replacement))
-	result = append(result, envelope.body[:span.start]...)
-	result = append(result, replacement...)
-	result = append(result, envelope.body[span.end:]...)
-	return result, nil
 }

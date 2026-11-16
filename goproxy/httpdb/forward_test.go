@@ -1,4 +1,4 @@
-package athena
+package httpdb
 
 import (
 	"bytes"
@@ -17,8 +17,8 @@ import (
 	"time"
 )
 
-func allowRequest(_ context.Context, _ *http.Request, envelope *Envelope) (*Envelope, error) {
-	return envelope, nil
+func allowRequest(_ context.Context, _ *http.Request, body []byte) ([]byte, error) {
+	return body, nil
 }
 
 func signTestRequest(_ context.Context, request *http.Request, body []byte) error {
@@ -136,12 +136,12 @@ func TestForwardRewritesBeforeSigningAndDropsClientCredentials(t *testing.T) {
 	var authorized, signed bool
 	forwarder := forwarderForTest(t, upstream, func(options *ForwardOptions) {
 		options.Endpoint += "/fixed"
-		options.Authorize = func(_ context.Context, request *http.Request, envelope *Envelope) (*Envelope, error) {
+		options.Authorize = func(_ context.Context, request *http.Request, body []byte) ([]byte, error) {
 			authorized = true
 			if request.Header.Get("Authorization") != "PM client-token" || request.Header.Get("Cookie") != "pm_session=private" {
 				t.Error("authorization cannot see incoming client credentials")
 			}
-			return envelope.WithQueryString("SELECT rewritten_column")
+			return withQuery(body, "SELECT rewritten_column")
 		}
 		options.Sign = func(ctx context.Context, request *http.Request, body []byte) error {
 			signed = true
@@ -194,9 +194,8 @@ func TestForwardDenialCannotReachUpstream(t *testing.T) {
 		sign      SignRequest
 		want      error
 	}{
-		{"denied", func(context.Context, *http.Request, *Envelope) (*Envelope, error) { return nil, denied }, signTestRequest, denied},
-		{"missing approval", func(context.Context, *http.Request, *Envelope) (*Envelope, error) { return nil, nil }, signTestRequest, ErrUnauthorized},
-		{"empty approval", func(context.Context, *http.Request, *Envelope) (*Envelope, error) { return &Envelope{}, nil }, signTestRequest, ErrUnauthorized},
+		{"denied", func(context.Context, *http.Request, []byte) ([]byte, error) { return nil, denied }, signTestRequest, denied},
+		{"missing approval", func(context.Context, *http.Request, []byte) ([]byte, error) { return nil, nil }, signTestRequest, ErrUnauthorized},
 		{"signing denied", allowRequest, func(context.Context, *http.Request, []byte) error { return denied }, denied},
 		{"unsigned", allowRequest, func(context.Context, *http.Request, []byte) error { return nil }, ErrUnsigned},
 	} {
@@ -262,11 +261,11 @@ func TestForwardBoundsIncomingAndRewrittenBodies(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			forwarder := forwarderForTest(t, upstream, func(options *ForwardOptions) {
 				options.MaxBodyBytes = 64
-				options.Authorize = func(_ context.Context, _ *http.Request, envelope *Envelope) (*Envelope, error) {
+				options.Authorize = func(_ context.Context, _ *http.Request, body []byte) ([]byte, error) {
 					if !test.rewrite {
 						t.Error("oversized request reached authorization")
 					}
-					return envelope.WithQueryString(strings.Repeat("x", 100))
+					return withQuery(body, strings.Repeat("x", 100))
 				}
 				options.Sign = func(context.Context, *http.Request, []byte) error {
 					t.Error("oversized body reached signer")
@@ -391,17 +390,32 @@ func TestForwardPreservesEncodedStreamingResponse(t *testing.T) {
 	}
 }
 
-func TestForwardRejectsAmbiguousOperation(t *testing.T) {
-	var calls atomic.Int32
-	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls.Add(1) }))
-	defer upstream.Close()
-	forwarder := forwarderForTest(t, upstream, nil)
-	request := requestForTest("GetQueryExecution", `{}`)
-	request.Header.Add("X-Amz-Target", "AmazonAthena.StartQueryExecution")
-	if _, err := forwarder.Forward(request); err == nil {
-		t.Fatal("multiple operation headers accepted")
+func withQuery(body []byte, query string) ([]byte, error) {
+	envelope, err := DecodeEnvelope(body)
+	if err != nil {
+		return nil, err
 	}
-	if calls.Load() != 0 {
-		t.Fatal("ambiguous operation reached upstream")
+	return envelope.Replace("QueryString", query)
+}
+
+func TestForwardKeepsPathUnderTheFixedOrigin(t *testing.T) {
+	const path = "/bigquery/v2/projects/p%2Fq/queries/job-1"
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if r.Method != http.MethodGet || r.URL.EscapedPath() != path || r.URL.RawQuery != "location=US&maxResults=10" || len(body) != 0 {
+			t.Errorf("upstream request = %s %s?%s, %d body bytes", r.Method, r.URL.EscapedPath(), r.URL.RawQuery, len(body))
+		}
+		_, _ = io.WriteString(w, `{}`)
+	}))
+	defer upstream.Close()
+	forwarder := forwarderForTest(t, upstream, func(options *ForwardOptions) { options.KeepPath = true })
+	request := httptest.NewRequest(http.MethodGet, "https://client.example"+path+"?location=US&maxResults=10", nil)
+	response, err := forwarder.Forward(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if _, err := NewForwarder(ForwardOptions{Endpoint: upstream.URL + "/base", MaxBodyBytes: 1, Authorize: allowRequest, Sign: signTestRequest, KeepPath: true}); err == nil {
+		t.Fatal("path-keeping forwarder accepted an endpoint with a path")
 	}
 }

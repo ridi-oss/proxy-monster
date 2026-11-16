@@ -19,6 +19,7 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	awsa "github.com/aws/aws-sdk-go-v2/service/athena"
 	smithyendpoints "github.com/aws/smithy-go/endpoints"
+	"github.com/ridi-oss/proxy-monster/goproxy/httpdb"
 )
 
 const (
@@ -86,7 +87,7 @@ func loadAWSConfig(ctx context.Context, cfg settings) (aws.Config, error) {
 // one is set, so an operator can point the proxy at an Athena emulator.
 func athenaEndpoint(ctx context.Context, region string, base *string) (string, error) {
 	if base != nil {
-		return upstreamEndpoint(*base)
+		return httpdb.UpstreamEndpoint(*base)
 	}
 	endpoint, err := awsa.NewDefaultEndpointResolverV2().ResolveEndpoint(ctx, awsa.EndpointParameters{
 		Region: aws.String(region), UseFIPS: aws.Bool(false), UseDualStack: aws.Bool(false),
@@ -107,7 +108,7 @@ func (e fixedEndpoint) ResolveEndpoint(context.Context, awsa.EndpointParameters)
 	return smithyendpoints.Endpoint{URI: *u}, nil
 }
 
-func signAWS(credentials aws.CredentialsProvider, region string) SignRequest {
+func signAWS(credentials aws.CredentialsProvider, region string) httpdb.SignRequest {
 	signer := v4.NewSigner()
 	return func(ctx context.Context, request *http.Request, body []byte) error {
 		if credentials == nil {

@@ -12,18 +12,19 @@ import (
 	"github.com/ridi-oss/proxy-monster/goproxy/httpdb"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/relay"
+	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
-func flowServer(t *testing.T, principal string, verdict *pb.Verdict) (*nativeServer, *flowClient, *fakeAthena) {
+func flowServer(t *testing.T, principal string, verdict *pb.Verdict) (*httpdb.Server, *flowClient, *fakeAthena) {
 	t.Helper()
 	aws := newFakeAthena()
 	target := testTarget(t, aws.handle)
 	client := &flowClient{principal: principal, verdict: verdict, completed: make(chan struct{}, 8)}
-	server := &nativeServer{target: target, client: client}
+	server := newServer(target, spi.Listen{}, client, nil)
 	return server, client, aws
 }
 
-func serve(server *nativeServer, principal, operation, body string) *httptest.ResponseRecorder {
+func serve(server *httpdb.Server, principal, operation, body string) *httptest.ResponseRecorder {
 	request := nativeTestRequest(operation, body)
 	request.Header.Set("Authorization", "Bearer login-"+principal)
 	response := httptest.NewRecorder()
@@ -67,7 +68,7 @@ func TestSubmissionIsDecidedRewrittenAndMaskedOnRead(t *testing.T) {
 		t.Fatalf("own history not released: %d %s", response.Code, response.Body.String())
 	}
 	bob := &flowClient{principal: "bob", verdict: maskVerdict(), completed: make(chan struct{}, 8)}
-	server.client = bob
+	server.Client = bob
 	response = serve(server, "bob", "GetQueryResults", `{"QueryExecutionId":"exec-0001"}`)
 	if response.Code != http.StatusConflict {
 		t.Fatalf("another principal read alice's execution: %d %s", response.Code, response.Body.String())
@@ -102,7 +103,7 @@ func TestReplayWithoutContextNeverBindsTheCurrentPlan(t *testing.T) {
 		t.Fatalf("first submission failed: %d %s", response.Code, response.Body.String())
 	}
 	// The proxy loses its contexts; AWS still replays exec-0001 for the token, submitted long ago.
-	server.target.contexts, _ = httpdb.OpenContextCache(":memory:", contextFormat, 10)
+	server.Contexts, _ = httpdb.OpenContextCache(":memory:", contextFormat, 10)
 	aws.mu.Lock()
 	aws.submitted["exec-0001"] = time.Now().Add(-time.Hour)
 	aws.mu.Unlock()

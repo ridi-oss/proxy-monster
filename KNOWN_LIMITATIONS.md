@@ -193,6 +193,16 @@ captured on the connection's own held target-DB connection (design:
 - 🟡 A forwarded `GetQueryResults` page reports no row or byte volume; the audit
   completion covers the accepted submission only.
 
+## BigQuery
+
+- 🟡 One datasource covers one project and one location. A table in another
+  project or location is unanalyzable and denies.
+- 🟡 Reflection runs two metadata queries per dataset in the location, at
+  startup and on every catalog refresh.
+- 🟡 Rows come only through `jobs.getQueryResults`. The Python client's
+  dataframe path reads through the BigQuery Storage API, which does not go
+  through the proxy; pass `create_bqstorage_client=False`.
+
 ## Wire-cert distribution (direct clients and `pmon`)
 
 A proxy advertises its wire-TLS certificate chain at `Register`;

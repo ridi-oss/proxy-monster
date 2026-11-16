@@ -95,7 +95,7 @@ func (e engine) ReadSubmission(body []byte) (httpdb.Submission, error) {
 	if err != nil {
 		return httpdb.Submission{}, err
 	}
-	return httpdb.Submission{Query: scope.query, Parameters: scope.parameters, Token: scope.token}, nil
+	return httpdb.Submission{Query: scope.query, Parameters: scope.parameters, Token: scope.token, Session: e.target.session(scope.parameters, 0)}, nil
 }
 
 func (e engine) WriteSubmission(body []byte, admitted httpdb.Submission) ([]byte, error) {
@@ -211,7 +211,7 @@ func (engine) MaskResult(body []byte, verdict *pb.Verdict, expectedWidth *int32,
 }
 
 func (e engine) Authorize(authz *spi.Authorizer, commands *relay.ProxyCommandRunner, submission httpdb.Submission) spi.Verdict {
-	return e.target.authorize(authz, commands, submission.Query, submission.Parameters, 0)
+	return e.target.authorize(authz, commands, submission.Query, submission.Session)
 }
 
 func (e engine) NewProxyCommandRunner(authz *spi.Authorizer) (*relay.ProxyCommandRunner, error) {

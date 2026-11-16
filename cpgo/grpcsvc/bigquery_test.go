@@ -98,6 +98,8 @@ func TestBigQuerySubmissionScope(t *testing.T) {
 		{"non-string location", gate, q(`{"query":"select 1","useLegacySql":false,"location":1}`), deny(nativeInvalidDescriptor)},
 
 		{"query job", gate, ins(`{"query":{"query":"select 1","useLegacySql":false,"priority":"BATCH"},"labels":{"a":"b"}}`), act(sqlAdmission)},
+		{"query job as bq sends it", gate, ins(`{"query":{"query":"select 1","useLegacySql":false,"continuous":false}}`), act(sqlAdmission)},
+		{"continuous job", gate, ins(`{"query":{"query":"select 1","useLegacySql":false,"continuous":true}}`), deny(nativeScopeViolation)},
 		{"job legacy SQL", gate, ins(`{"query":{"query":"select 1"}}`), deny(nativeScopeViolation)},
 		{"destination table", gate, ins(`{"query":{"query":"select 1","useLegacySql":false,"destinationTable":{"projectId":"x","datasetId":"y","tableId":"z"}}}`), deny(nativeScopeViolation)},
 		{"table definitions", gate, ins(`{"query":{"query":"select 1","useLegacySql":false,"tableDefinitions":{}}}`), deny(nativeScopeViolation)},

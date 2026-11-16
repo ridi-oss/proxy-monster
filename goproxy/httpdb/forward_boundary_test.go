@@ -1,4 +1,4 @@
-package athena
+package httpdb
 
 import (
 	"context"
@@ -11,12 +11,12 @@ import (
 	"testing"
 )
 
-func TestForwardRejectsCanceledOrMalformedRequestsBeforeAuthorization(t *testing.T) {
+func TestForwardRejectsCanceledRequestsBeforeAuthorization(t *testing.T) {
 	var calls atomic.Int32
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls.Add(1) }))
 	defer upstream.Close()
 	forwarder := forwarderForTest(t, upstream, func(options *ForwardOptions) {
-		options.Authorize = func(context.Context, *http.Request, *Envelope) (*Envelope, error) {
+		options.Authorize = func(context.Context, *http.Request, []byte) ([]byte, error) {
 			t.Error("invalid request reached authorization")
 			return nil, ErrUnauthorized
 		}
@@ -25,11 +25,6 @@ func TestForwardRejectsCanceledOrMalformedRequestsBeforeAuthorization(t *testing
 	cancel()
 	if _, err := forwarder.Forward(requestForTest("FutureOperation", `{}`).WithContext(ctx)); !errors.Is(err, context.Canceled) {
 		t.Fatalf("pre-canceled request = %v", err)
-	}
-	for _, body := range []string{`{"QueryString":"one","QueryString":"two"}`, `{"n":1} {"n":2}`, `{"broken"}`} {
-		if _, err := forwarder.Forward(requestForTest("FutureOperation", body)); err == nil {
-			t.Errorf("malformed request accepted: %s", body)
-		}
 	}
 	if calls.Load() != 0 {
 		t.Fatalf("invalid requests reached upstream: %d", calls.Load())

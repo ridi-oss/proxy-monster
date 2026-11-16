@@ -35,21 +35,6 @@ func sqlContext(parameters []string, maxRows int) *enginepb.HttpDbSqlContext {
 	return out
 }
 
-// submittedQuery is the text and parameters the proxy sends: the control plane's rewrite, which has the
-// parameters bound into it, else the client's own.
-func submittedQuery(sql string, parameters []string, decision *spi.Decision) (string, []string) {
-	if decision != nil && decision.RewrittenSQL != nil {
-		return *decision.RewrittenSQL, nil
-	}
-	return sql, parameters
-}
-
-// completion reports the wire task's outcome; Athena executes asynchronously, so an accepted submission is
-// the proxy's execution boundary and row volume is unknown.
-func completion(reporter spi.ControlPlane, decision *spi.Decision, status string, start time.Time) {
-	relay.EmitCompletion(reporter, decision, spi.RelayStats{}, status, start)
-}
-
 var errRunCanceled = errors.New("athena: query execution was canceled")
 
 func describeFailure(reason string) error {

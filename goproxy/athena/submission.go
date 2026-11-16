@@ -1,13 +1,12 @@
 package athena
 
 import (
-	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"strings"
 	"time"
+
+	"github.com/ridi-oss/proxy-monster/goproxy/httpdb"
 )
 
 // Athena keeps managed results for 24 hours; the enforcement context lives exactly that long.
@@ -24,12 +23,12 @@ type submissionScope struct {
 	token      string
 }
 
-func readSubmission(envelope *Envelope, defaults settings) (*submissionScope, error) {
-	query, present, err := envelope.QueryString()
+func readSubmission(envelope *httpdb.Envelope, defaults settings) (*submissionScope, error) {
+	query, present, err := queryString(envelope)
 	if err != nil || !present {
 		return nil, errors.New("athena: QueryString is required")
 	}
-	parameters, _, err := envelope.ExecutionParameters()
+	parameters, _, err := executionParameters(envelope)
 	if err != nil {
 		return nil, err
 	}
@@ -63,8 +62,8 @@ func readSubmission(envelope *Envelope, defaults settings) (*submissionScope, er
 }
 
 // applySubmission replaces the query string and execution parameters with the admitted ones.
-func applySubmission(envelope *Envelope, query string, parameters []string) (*Envelope, error) {
-	replaced, err := envelope.WithQueryString(query)
+func applySubmission(envelope *httpdb.Envelope, query string, parameters []string) (*httpdb.Envelope, error) {
+	replaced, err := withQueryString(envelope, query)
 	if err != nil {
 		return nil, err
 	}
@@ -76,7 +75,7 @@ func applySubmission(envelope *Envelope, query string, parameters []string) (*En
 
 // pinScope forwards the submission in exactly the scope it was admitted for; AWS would otherwise fill an
 // omitted workgroup or database with its own defaults.
-func pinScope(envelope *Envelope, cfg settings) (*Envelope, error) {
+func pinScope(envelope *httpdb.Envelope, cfg settings) (*httpdb.Envelope, error) {
 	pinned, err := envelope.WithField("WorkGroup", cfg.workgroup)
 	if err != nil {
 		return nil, err
@@ -84,32 +83,9 @@ func pinScope(envelope *Envelope, cfg settings) (*Envelope, error) {
 	return pinned.WithField("QueryExecutionContext", map[string]string{"Catalog": cfg.catalog, "Database": cfg.database})
 }
 
-// requestBinding fingerprints the upstream submission's fields so a stable-token retry can be matched to the
-// context it was admitted under; field order and whitespace do not change the submission.
-func requestBinding(body []byte) []byte {
-	decoder := json.NewDecoder(bytes.NewReader(body))
-	decoder.UseNumber()
-	var fields map[string]any
-	canonical := body
-	if decoder.Decode(&fields) == nil {
-		if encoded, err := json.Marshal(fields); err == nil {
-			canonical = encoded
-		}
-	}
-	hash := sha256.Sum256(canonical)
-	return hash[:]
-}
-
-// namespacedToken maps a client idempotency token to one stable upstream token per (datasource, principal),
-// so one principal's retry can never return another principal's execution.
-func namespacedToken(datasource, principal, token string) string {
-	hash := sha256.Sum256([]byte(datasource + "\x00" + principal + "\x00" + token))
-	return hex.EncodeToString(hash[:])
-}
-
 // executionID reads the QueryExecutionId AWS returned; a client-supplied id never reaches here.
 func executionID(body []byte) (string, error) {
-	envelope, err := DecodeEnvelope(body)
+	envelope, err := httpdb.DecodeEnvelope(body)
 	if err != nil {
 		return "", err
 	}
@@ -122,4 +98,59 @@ func executionID(body []byte) (string, error) {
 		return "", errors.New("athena: QueryExecutionId is malformed")
 	}
 	return id, nil
+}
+
+func queryString(e *httpdb.Envelope) (string, bool, error) {
+	value := e.Field("QueryString")
+	if value == nil {
+		return "", false, nil
+	}
+	if len(value) == 0 || value[0] != '"' {
+		return "", true, errors.New("athena: QueryString must be a string")
+	}
+	var query string
+	err := json.Unmarshal(value, &query)
+	return query, true, err
+}
+
+func executionParameters(e *httpdb.Envelope) ([]string, bool, error) {
+	value := e.Field("ExecutionParameters")
+	if value == nil {
+		return nil, false, nil
+	}
+	if len(value) == 0 || value[0] != '[' {
+		return nil, true, errors.New("athena: ExecutionParameters must be a string array")
+	}
+	var values []json.RawMessage
+	if err := json.Unmarshal(value, &values); err != nil {
+		return nil, true, err
+	}
+	parameters := make([]string, len(values))
+	for i, value := range values {
+		if len(value) == 0 || value[0] != '"' {
+			return nil, true, errors.New("athena: ExecutionParameters must be a string array")
+		}
+		if err := json.Unmarshal(value, &parameters[i]); err != nil {
+			return nil, true, err
+		}
+	}
+	return parameters, true, nil
+}
+
+func withQueryString(e *httpdb.Envelope, query string) (*httpdb.Envelope, error) {
+	original, present, err := queryString(e)
+	if err != nil {
+		return nil, err
+	}
+	if !present {
+		return nil, errors.New("athena: QueryString is missing")
+	}
+	if query == original {
+		return e, nil
+	}
+	body, err := e.Replace("QueryString", query)
+	if err != nil {
+		return nil, err
+	}
+	return httpdb.DecodeEnvelope(body)
 }

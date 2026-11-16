@@ -1,3 +1,6 @@
+// Package athena is the AWS Athena provider: the proxy serves the Athena JSON API over HTTPS, asks the
+// control plane what to do with each operation, decides StartQueryExecution SQL through Decide, and masks
+// GetQueryResults pages inline.
 package athena
 
 import (
@@ -47,7 +50,7 @@ func (p Provider) OpenTarget() (spi.Target, error) {
 }
 
 func (t *target) NewWireServer(listen spi.Listen, client spi.ControlPlane, tlsProvider func() (*tls.Config, error)) spi.WireServer {
-	return &nativeServer{target: t, listen: listen, client: client, tlsProvider: tlsProvider}
+	return newServer(t, listen, client, tlsProvider)
 }
 
 var _ spi.Provider = Provider{}

@@ -24,7 +24,7 @@ type target struct {
 	settings    settings
 	api         *awsa.Client
 	endpoint    string
-	sign        SignRequest
+	sign        httpdb.SignRequest
 	transport   http.RoundTripper
 	identity    *credentialIdentity
 	binding     []byte

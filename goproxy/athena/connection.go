@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsa "github.com/aws/aws-sdk-go-v2/service/athena"
 	"github.com/aws/aws-sdk-go-v2/service/athena/types"
+	"github.com/ridi-oss/proxy-monster/goproxy/httpdb"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
@@ -75,7 +76,7 @@ func (c *connection) ServeStatement(sql string, maxRows int) (result spi.Stateme
 	default:
 		return result, verdictError(verdict)
 	}
-	query, parameters := submittedQuery(sql, nil, proceed.Decision)
+	query, parameters := httpdb.SubmittedQuery(sql, nil, proceed.Decision)
 	budget := &relay.RowBudget{MaxRows: proceed.Decision.PageRows(maxRows), MaxBytes: proceed.Decision.MaxBytes}
 	exec := func() error {
 		columns, rows, affected, execErr := c.execute(query, parameters, budget, proceed.Masks, proceed.Decision.AfterStatement)

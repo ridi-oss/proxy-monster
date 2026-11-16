@@ -52,7 +52,7 @@ func nativeTestRequest(operation, body string) *http.Request {
 func TestNativeServerDeniesWithoutUpstreamCalls(t *testing.T) {
 	upstreamCalls := 0
 	target := testTarget(t, func(w http.ResponseWriter, request *http.Request) { upstreamCalls++; w.WriteHeader(500) })
-	server := &nativeServer{target: target, client: requestClient{}}
+	server := newServer(target, spi.Listen{}, requestClient{}, nil)
 	response := httptest.NewRecorder()
 	server.ServeHTTP(response, nativeTestRequest("ListWorkGroups", `{}`))
 	if response.Code != http.StatusForbidden || upstreamCalls != 0 {
@@ -70,7 +70,7 @@ func TestNativeServerRejectsBooleanOnlyAndWrongPhasePermission(t *testing.T) {
 			}
 			return result, nil
 		}}
-		server := &nativeServer{target: target, client: client}
+		server := newServer(target, spi.Listen{}, client, nil)
 		response := httptest.NewRecorder()
 		server.ServeHTTP(response, nativeTestRequest("GetWorkGroup", `{"WorkGroup":"primary"}`))
 		if response.Code != http.StatusForbidden {
@@ -101,7 +101,7 @@ func TestNativeServerChecksEachRequestAndPreservesNativeErrors(t *testing.T) {
 		}
 		return nativePermission(t, descriptor, "alice"), nil
 	}}
-	server := &nativeServer{target: target, client: client}
+	server := newServer(target, spi.Listen{}, client, nil)
 	for range 2 {
 		response := httptest.NewRecorder()
 		server.ServeHTTP(response, nativeTestRequest("GetWorkGroup", `{"WorkGroup":"primary"}`))
@@ -115,13 +115,37 @@ func TestNativeServerChecksEachRequestAndPreservesNativeErrors(t *testing.T) {
 }
 
 func TestNativeServerClosesStreamingAndS3Paths(t *testing.T) {
-	server := &nativeServer{client: requestClient{}}
+	target := testTarget(t, func(http.ResponseWriter, *http.Request) { t.Fatal("raw retrieval route reached AWS") })
+	server := newServer(target, spi.Listen{}, requestClient{}, nil)
 	for _, path := range []string{"/GetQueryResultsStream", "/bucket/results.csv"} {
 		response := httptest.NewRecorder()
 		request := httptest.NewRequest(http.MethodGet, "https://proxy.example"+path, nil)
 		server.ServeHTTP(response, request)
 		if response.Code != http.StatusBadRequest {
 			t.Fatalf("raw retrieval route accepted: %s", path)
+		}
+	}
+}
+
+func TestNativeServerRejectsAmbiguousOrMalformedRequestsBeforeAuthorization(t *testing.T) {
+	target := testTarget(t, func(http.ResponseWriter, *http.Request) { t.Fatal("invalid request reached AWS") })
+	client := requestClient{authorize: func(*pb.RequestAuthorization, *enginepb.AthenaNativeDescriptor) (*pb.RequestAuthorizationResult, error) {
+		t.Fatal("invalid request reached authorization")
+		return nil, nil
+	}}
+	server := newServer(target, spi.Listen{}, client, nil)
+	ambiguous := nativeTestRequest("GetQueryExecution", `{}`)
+	ambiguous.Header.Add("X-Amz-Target", "AmazonAthena.StartQueryExecution")
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, ambiguous)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("multiple operation headers = %d", response.Code)
+	}
+	for _, body := range []string{`{"QueryString":"one","QueryString":"two"}`, `{"n":1} {"n":2}`, `{"broken"}`} {
+		response := httptest.NewRecorder()
+		server.ServeHTTP(response, nativeTestRequest("FutureOperation", body))
+		if response.Code != http.StatusBadGateway {
+			t.Errorf("malformed request %s = %d", body, response.Code)
 		}
 	}
 }

@@ -186,10 +186,8 @@ func upstreamHeaders(incoming http.Header) http.Header {
 		name = http.CanonicalHeaderKey(name)
 		header[name] = append(header[name], values...)
 	}
-	// Disable transparent decompression so upstream response bytes and headers stay paired.
-	if header.Get("Accept-Encoding") == "" {
-		header.Set("Accept-Encoding", "identity")
-	}
+	// The server masks and refuses encoded bodies, so no response may be encoded.
+	header.Set("Accept-Encoding", "identity")
 	return header
 }
 

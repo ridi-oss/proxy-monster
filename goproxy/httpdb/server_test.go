@@ -34,15 +34,17 @@ var (
 	pageDigest   = sha256.Sum256([]byte("columns"))
 )
 
-// gateEngine reads its operation kind from X-Kind and its references from the body {"ids":[...],"first":bool}.
+// gateEngine reads its operation kind from X-Kind (inline result from X-Inline) and its references from the
+// body {"ids":[...],"first":bool}; a MASK verdict masks "secret".
 type gateEngine struct {
 	pad       int
+	decision  *spi.Decision
 	firstPage *bool
 }
 
 func (e *gateEngine) Operation(r *http.Request) (Operation, error) {
 	kind, err := strconv.Atoi(r.Header.Get("X-Kind"))
-	return Operation{Name: "op", Kind: Kind(kind)}, err
+	return Operation{Name: "op", Kind: Kind(kind), InlineResult: r.Header.Get("X-Inline") != ""}, err
 }
 
 func (e *gateEngine) References(_ *http.Request, body []byte) ([]string, bool, error) {
@@ -73,12 +75,18 @@ func (e *gateEngine) CreatedResource(body []byte) (string, error) {
 func (e *gateEngine) Observe([]byte) ([]*pb.HttpDbObservation, error)           { return nil, nil }
 func (e *gateEngine) FilterListing(b []byte, _ map[string]bool) ([]byte, error) { return b, nil }
 
-func (e *gateEngine) MaskResult(body []byte, _ *pb.Verdict, _ *int32, _ []byte, firstPage bool) ([]byte, []byte, error) {
+func (e *gateEngine) MaskResult(body []byte, verdict *pb.Verdict, _ *int32, _ []byte, firstPage bool) ([]byte, []byte, error) {
 	e.firstPage = &firstPage
+	if verdict.Decision == pb.EnfAction_MASK {
+		body = bytes.ReplaceAll(body, []byte("secret"), []byte("####"))
+	}
 	return body, pageDigest[:], nil
 }
 
 func (e *gateEngine) Authorize(*spi.Authorizer, *relay.ProxyCommandRunner, string, []string) spi.Verdict {
+	if e.decision != nil {
+		return spi.Proceed{Decision: e.decision}
+	}
 	return spi.Proceed{Decision: &spi.Decision{Action: relay.EnfActionName(pb.EnfAction_ALLOW)}}
 }
 
@@ -146,17 +154,20 @@ type gateHarness struct {
 	engine   *gateEngine
 	contexts *EnforcementContextCache
 	rec      *httptest.ResponseRecorder
+	upstream http.Header
 }
 
 type gateCase struct {
 	name              string
 	kind              Kind
+	header            http.Header
 	body              string
 	auth              []string
 	identity          string
 	request, response *pb.RequestAuthorizationResult
 	seed              []*enginepb.HttpDbCachedContext
 	pad               int
+	decision          *spi.Decision
 	upstream          upstreamReply
 	wantStatus        int
 	wantCode          string
@@ -168,6 +179,15 @@ func TestServerGates(t *testing.T) {
 	const submission = `{"sql":"SELECT 1"}`
 	conflicting := seeded("r1", "bob", ownBinding, false)
 	conflicting.RequestBinding = requestBinding([]byte(submission))
+	inline := http.Header{"X-Inline": {"1"}}
+	inlineRows := upstreamReply{body: `{"id":"r9","rows":["secret"],"Message":"saw secret"}`}
+	masking := &spi.Decision{Action: relay.EnfActionName(pb.EnfAction_MASK), Masks: []*pb.ColumnMask{{Column: "c", Kind: "FIXED", Ordinal: proto.Int32(0)}}, SanitizeDiagnostics: true}
+	boundDigest := func(t *testing.T, h gateHarness) {
+		record, err := h.contexts.Find("ds", "r9")
+		if err != nil || !bytes.Equal(record.MetadataDigest, pageDigest[:]) {
+			t.Fatalf("digest not bound: %v %x", err, record.GetMetadataDigest())
+		}
+	}
 	cases := []gateCase{
 		{name: "forward refuses a submission", kind: KindSubmission, body: submission, request: grant("alice", forward),
 			wantStatus: 403, wantCode: "request_denied"},
@@ -221,6 +241,40 @@ func TestServerGates(t *testing.T) {
 					t.Fatalf("response headers: %v", h.rec.Header())
 				}
 			}},
+		{name: "inline rows are masked and their digest bound", kind: KindSubmission, header: inline, body: submission, request: grant("alice", admit),
+			decision: masking, upstream: inlineRows, wantStatus: 200, wantUpstream: true,
+			check: func(t *testing.T, h gateHarness) {
+				if strings.Contains(h.rec.Body.String(), "secret") || !strings.Contains(h.rec.Body.String(), "####") || !strings.Contains(h.rec.Body.String(), relay.RedactedDiagnosticMessage) {
+					t.Fatalf("inline rows or diagnostics released: %s", h.rec.Body)
+				}
+				if h.engine.firstPage == nil || !*h.engine.firstPage {
+					t.Fatal("inline page not masked as the first page")
+				}
+				boundDigest(t, h)
+			}},
+		{name: "submission response under a sanitizing decision is redacted", kind: KindSubmission, body: submission, request: grant("alice", admit),
+			decision: &spi.Decision{Action: relay.EnfActionName(pb.EnfAction_ALLOW), SanitizeDiagnostics: true},
+			upstream: upstreamReply{body: `{"id":"r9","Message":"saw secret"}`}, wantStatus: 200, wantUpstream: true,
+			check: func(t *testing.T, h gateHarness) {
+				if strings.Contains(h.rec.Body.String(), "secret") {
+					t.Fatalf("diagnostic released: %s", h.rec.Body)
+				}
+			}},
+		{name: "inline rows under ALLOW pass", kind: KindSubmission, header: inline, body: submission, request: grant("alice", admit),
+			upstream: inlineRows, wantStatus: 200, wantUpstream: true,
+			check: func(t *testing.T, h gateHarness) {
+				if h.rec.Body.String() != inlineRows.body {
+					t.Fatalf("allowed inline rows altered: %s", h.rec.Body)
+				}
+				boundDigest(t, h)
+			}},
+		{name: "client gzip reaches upstream as identity", kind: KindMetadata, header: http.Header{"Accept-Encoding": {"gzip"}},
+			wantStatus: 200, wantUpstream: true,
+			check: func(t *testing.T, h gateHarness) {
+				if got := h.upstream.Values("Accept-Encoding"); len(got) != 1 || got[0] != "identity" {
+					t.Fatalf("upstream Accept-Encoding = %v", got)
+				}
+			}},
 		{name: "two authorization headers", kind: KindMetadata, auth: []string{"Bearer tok", "Bearer tok"},
 			wantStatus: 403, wantCode: "authentication_required"},
 		{name: "token with whitespace", kind: KindMetadata, auth: []string{"Bearer to k"},
@@ -239,8 +293,10 @@ func TestServerGates(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var forwarded atomic.Int32
-			target := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			var upstreamHeader http.Header
+			target := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				forwarded.Add(1)
+				upstreamHeader = r.Header.Clone()
 				for name, values := range tc.upstream.header {
 					w.Header()[name] = values
 				}
@@ -272,11 +328,14 @@ func TestServerGates(t *testing.T) {
 			if tc.response != nil {
 				cp.response = tc.response
 			}
-			engine := &gateEngine{pad: tc.pad}
+			engine := &gateEngine{pad: tc.pad, decision: tc.decision}
 			server := &Server{Engine: engine, Name: "t", Client: cp, Contexts: contexts, TargetBinding: ownBinding, ContextLifetime: time.Hour,
 				Forward:       ForwardOptions{Endpoint: target.URL, MaxBodyBytes: 1 << 20, Sign: signTestRequest, Transport: target.Client().Transport},
 				ResponseLimit: 1 << 20, DiagnosticKeys: []string{"Message"}}
 			request := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(tc.body))
+			for name, values := range tc.header {
+				request.Header[name] = values
+			}
 			request.Header.Set("X-Kind", strconv.Itoa(int(tc.kind)))
 			request.Header["Authorization"] = []string{"Bearer tok"}
 			if tc.auth != nil {
@@ -297,7 +356,7 @@ func TestServerGates(t *testing.T) {
 				}
 			}
 			if tc.check != nil {
-				tc.check(t, gateHarness{engine: engine, contexts: contexts, rec: rec})
+				tc.check(t, gateHarness{engine: engine, contexts: contexts, rec: rec, upstream: upstreamHeader})
 			}
 		})
 	}

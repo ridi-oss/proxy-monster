@@ -91,6 +91,7 @@ class SystemClassificationStore private constructor(
             "mysql/8.0",
             "mysql/8.4",
             "athena/3",
+            "bigquery/1",
         )
 
         private const val RESOURCE_DIR = "/system-classification"

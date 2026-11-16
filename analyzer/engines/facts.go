@@ -108,7 +108,6 @@ func EmitFacts(sql string, engineConfig *pb.EngineConfig, sch, implicit *schema.
 			return unanalyzableFacts("LINEAGE", err.Error())
 		}
 		facts.RewrittenSql = &text
-		session.engine.hooks.stampSubmission(facts)
 	}
 	return facts
 }

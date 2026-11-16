@@ -9,7 +9,6 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/httpdb"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/relay"
@@ -157,7 +156,7 @@ func TestStableTokenReplayKeepsTheOriginalContext(t *testing.T) {
 		t.Fatalf("reordered retry not accepted: %d %s", response.Code, response.Body.String())
 	}
 	// A later, looser decision does not replace the plan the execution was admitted under.
-	client.verdict = &pb.Verdict{Decision: pb.EnfAction_ALLOW, DecisionId: 9, RewrittenSql: proto.String("SELECT email, n FROM users WHERE n > (1)"), Submission: &enginepb.Submission{Engine: &enginepb.Submission_Athena{Athena: &enginepb.AthenaSubmission{}}}}
+	client.verdict = &pb.Verdict{Decision: pb.EnfAction_ALLOW, DecisionId: 9, RewrittenSql: proto.String("SELECT email, n FROM users WHERE n > (1)")}
 	if response := serve(server, "alice", "StartQueryExecution", body); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "exec-0001") {
 		t.Fatalf("replay under a later admission rejected: %d %s", response.Code, response.Body.String())
 	}
@@ -167,7 +166,7 @@ func TestStableTokenReplayKeepsTheOriginalContext(t *testing.T) {
 	}
 	// A different submission under the same token is a different request; its admission must not be
 	// attached to the execution AWS replays.
-	client.verdict = &pb.Verdict{Decision: pb.EnfAction_ALLOW, DecisionId: 11, RewrittenSql: proto.String("SELECT n FROM users"), Submission: &enginepb.Submission{Engine: &enginepb.Submission_Athena{Athena: &enginepb.AthenaSubmission{}}}}
+	client.verdict = &pb.Verdict{Decision: pb.EnfAction_ALLOW, DecisionId: 11, RewrittenSql: proto.String("SELECT n FROM users")}
 	if response := serve(server, "alice", "StartQueryExecution", `{"QueryString":"SELECT n FROM users","ClientRequestToken":"stable"}`); response.Code != http.StatusConflict {
 		t.Fatalf("replayed execution bound to a different submission: %d %s", response.Code, response.Body.String())
 	}

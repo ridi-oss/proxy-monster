@@ -27,14 +27,11 @@ func (t *target) authorize(authz *spi.Authorizer, commandRunner *relay.ProxyComm
 	})
 }
 
-// submittedQuery is the text and parameters the proxy sends: the control plane's rewrite and the parameter
-// list that goes with it when present, else the client's own.
+// submittedQuery is the text and parameters the proxy sends: the control plane's rewrite, which has the
+// parameters bound into it, else the client's own.
 func submittedQuery(sql string, parameters []string, decision *spi.Decision) (string, []string) {
 	if decision != nil && decision.RewrittenSQL != nil {
-		sql = *decision.RewrittenSQL
-	}
-	if decision != nil && decision.Submission.GetAthena() != nil {
-		parameters = decision.Submission.GetAthena().GetExecutionParameters()
+		return *decision.RewrittenSQL, nil
 	}
 	return sql, parameters
 }

@@ -274,6 +274,15 @@ configured per proxy under `PM_TARGET_*`.
   an Athena emulator instead of the regional endpoint; it must be an HTTPS
   origin. Wire TLS is required: Athena clients speak HTTPS to the proxy. Default
   port `6443`.
+- BigQuery (`PM_ENGINE=bigquery`) authenticates with Google Application Default
+  Credentials (`GOOGLE_APPLICATION_CREDENTIALS`, workload identity federation,
+  or the GCE/GKE metadata server) and refuses to start when it cannot tell which
+  principal those credentials act as. It requires `PM_BIGQUERY_PROJECT` and
+  `PM_BIGQUERY_LOCATION` (`US`, `asia-northeast3`, …); `PM_TARGET_DB` is the
+  default dataset. `PM_BIGQUERY_CONTEXT_PATH` works like
+  `PM_ATHENA_CONTEXT_PATH`, and `PM_BIGQUERY_ENDPOINT` (default
+  `https://bigquery.googleapis.com`, HTTPS only) points the proxy at an
+  emulator. Wire TLS is required. Default port `6444`.
 - `PM_TLS_CERT` / `PM_TLS_KEY` — _optional (both or neither; one alone ⇒ refuses
   to start)_. TLS cert+key file paths for the wire listener. Wire TLS is
   optional — the cleaner pattern is a private transport (peered VPC,

@@ -516,7 +516,7 @@ export function ApprovalDetail({ id }: { id: number }) {
               value={editSql}
               onChange={(e) => setEditSql(e.target.value)}
               rows={10}
-              className="font-mono text-xs"
+              className="max-h-[50vh] font-mono text-xs"
               autoFocus
             />
           </div>

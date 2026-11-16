@@ -1,5 +1,45 @@
 # Changelog
 
+## [0.1.44](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.43...server-v0.1.44) (2026-11-16)
+
+
+### Features
+
+* **analyzer:** BigQuery engine ([690c905](https://github.com/ridi-oss/proxy-monster/commit/690c905b343f6d6a59c3c241f86871bfd92693a5))
+* **analyzer:** engine hooks BigQuery needs, on sqlglot-go v0.39.0 ([955a4df](https://github.com/ridi-oss/proxy-monster/commit/955a4df11fb4b9bf235845f800b9acdbf39b18ae))
+* BigQuery request authorization in the control plane ([71875f4](https://github.com/ridi-oss/proxy-monster/commit/71875f4e9381908a69c93676f2b2814bc79bba01))
+* **control-plane:** register BigQuery, with AI calls critical ([b41edf9](https://github.com/ridi-oss/proxy-monster/commit/b41edf9fa4ce484e4dba0f1c0c66cd154c13c9f1))
+* **goproxy:** BigQuery editor sessions ([bc4b38e](https://github.com/ridi-oss/proxy-monster/commit/bc4b38e623c96be9232d8ec3105f6640c9e04f8c))
+* **goproxy:** BigQuery REST forwarder ([b92f50a](https://github.com/ridi-oss/proxy-monster/commit/b92f50a99b7fb08fc770f5cb9c82c6481e59e1db))
+* **goproxy:** BigQuery target with Google credentials ([c322c51](https://github.com/ridi-oss/proxy-monster/commit/c322c51466bc35e1143181c76638b359bea31eaf))
+* **goproxy:** httpdb masks rows a submission returns ([cfd094a](https://github.com/ridi-oss/proxy-monster/commit/cfd094a7a2971d66bc2a091ade315675712ccd0a))
+* **proto:** BigQuery engine and SQL context ([ce74021](https://github.com/ridi-oss/proxy-monster/commit/ce74021d623509c071329eef1b4f5cabd49e1fbf))
+
+
+### Bug Fixes
+
+* **control-plane:** cap the Java heap at half the container's memory ([e79cf12](https://github.com/ridi-oss/proxy-monster/commit/e79cf129d35f2f006c06d1de9c03023a4bf06d29))
+* **control-plane:** format the workflow session forbid and pin the new posture ([6790ccd](https://github.com/ridi-oss/proxy-monster/commit/6790ccd64a38253a7161f0a660d946edae29f202))
+* **control-plane:** let a workflow run a session variable SET ([d8b7540](https://github.com/ridi-oss/proxy-monster/commit/d8b7540d046b0c96c82b1adb9f3468906799a9c2))
+
+
+### Refactoring
+
+* **analyzer:** share SQL parameter-value parsing ([5fc6bd0](https://github.com/ridi-oss/proxy-monster/commit/5fc6bd0b719f8e1590f699a3c577d70507ebbbc8))
+* Athena submits rewritten SQL without the client's parameters ([f7707f2](https://github.com/ridi-oss/proxy-monster/commit/f7707f2da59785e7f0609d715ea33fafc5bf3264))
+* **goproxy:** share the enforcement-context cache in httpdb ([b660723](https://github.com/ridi-oss/proxy-monster/commit/b6607237229fe9a955981bc6e329d975b803fb35))
+* **goproxy:** the editor session in httpdb ([f1e226e](https://github.com/ridi-oss/proxy-monster/commit/f1e226e5c776057d0871ea69d69dd6a22100395d))
+* **goproxy:** the HTTP-API proxy lifecycle in httpdb ([0b10258](https://github.com/ridi-oss/proxy-monster/commit/0b1025834f9becebc9ce83237468dde59d515bce))
+* one request descriptor for the HTTP-API engines ([1a2a99d](https://github.com/ridi-oss/proxy-monster/commit/1a2a99dfd6a7426340f0e5bf59c21480d075b750))
+* one SQL context for the HTTP-API engines ([e4dd1a2](https://github.com/ridi-oss/proxy-monster/commit/e4dd1a2921f467a1ba92fd74e2247c230c69f50d))
+* **proto:** HTTP-API engine messages in httpdb.proto ([42613c5](https://github.com/ridi-oss/proxy-monster/commit/42613c54a549f1e61ccfe0fb5ce01d907e249ef7))
+
+
+### Documentation
+
+* **backlog:** a system:egress tag ([f423805](https://github.com/ridi-oss/proxy-monster/commit/f423805876e89d40ddf68f3e35f39dd991ec7e90))
+* state which session statements a workflow may run ([3999aa2](https://github.com/ridi-oss/proxy-monster/commit/3999aa22d2a580df3e6f26d9d970e81cec4e60cb))
+
 ## [0.1.43](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.42...server-v0.1.43) (2026-11-15)
 
 

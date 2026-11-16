@@ -21,6 +21,7 @@ require (
 	github.com/testcontainers/testcontainers-go v0.44.0
 	github.com/tidwall/buntdb v1.3.2
 	golang.org/x/crypto v0.55.0
+	golang.org/x/oauth2 v0.37.0
 	google.golang.org/grpc v1.83.2
 	google.golang.org/protobuf v1.36.12
 )
@@ -35,6 +36,7 @@ replace github.com/ridi-oss/proxy-monster/analyzer => ../analyzer
 replace github.com/ridi-oss/proxy-monster/mysqlwire => ../mysqlwire
 
 require (
+	cloud.google.com/go/compute/metadata v0.9.0 // indirect
 	dario.cat/mergo v1.0.2 // indirect
 	filippo.io/edwards25519 v1.2.0 // indirect
 	github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c // indirect

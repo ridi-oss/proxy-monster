@@ -145,6 +145,15 @@ func nonEmpty(s string) *string {
 	return &s
 }
 
+// ValidConnectionProperty reports whether value may be published as the connection property key.
+func (e *Engine) ValidConnectionProperty(key, value string) bool {
+	if strings.TrimSpace(value) == "" {
+		return false
+	}
+	pattern := e.Traits.connectionPropertyPatterns[key]
+	return pattern == nil || pattern.MatchString(value)
+}
+
 // connectionInfoValid reports whether the engine's proxies may publish info: all of the engine's properties or none,
 // and a wire host:port, or for Athena an https URL with no path, query, user or fragment.
 func (e *Engine) connectionInfoValid(info *pb.EngineConnectionInfo) bool {
@@ -156,11 +165,7 @@ func (e *Engine) connectionInfoValid(info *pb.EngineConnectionInfo) bool {
 		return false
 	}
 	for _, key := range e.Traits.connectionProperties {
-		value, ok := properties[key]
-		if !ok || strings.TrimSpace(value) == "" {
-			return false
-		}
-		if pattern := e.Traits.connectionPropertyPatterns[key]; pattern != nil && !pattern.MatchString(value) {
+		if value, ok := properties[key]; !ok || !e.ValidConnectionProperty(key, value) {
 			return false
 		}
 	}

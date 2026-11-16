@@ -1,6 +1,7 @@
 package bigquery
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,18 +15,20 @@ import (
 
 	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	"github.com/ridi-oss/proxy-monster/goproxy/httpdb"
+	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 	"github.com/ridi-oss/proxy-monster/goproxy/wire"
 )
 
 const (
-	defaultEndpoint      = "https://bigquery.googleapis.com"
 	defaultRequestLimit  = 2 << 20
 	defaultResponseLimit = 16 << 20
 	pollInterval         = 500 * time.Millisecond
 	// BigQuery keeps a query's results in its anonymous table for about 24 hours.
 	contextLifetime = 24 * time.Hour
+	// contextFormat names the enforcement-context file format, so a file from another engine or version is refused.
+	contextFormat = "bigquery-enforcement-context-v1"
 )
 
 // TokenSource returns an OAuth access token for the upstream BigQuery credential.
@@ -34,14 +37,47 @@ type TokenSource func(context.Context) (string, error)
 // target is one BigQuery datasource: jobs run in project at location, unqualified tables resolve in dataset,
 // and every upstream call carries a token from token.
 type target struct {
-	project, location, dataset string
-	endpoint                   string
-	token                      TokenSource
-	transport                  http.RoundTripper
-	inspector                  relay.Inspector
-	binding                    []byte
-	contexts                   *httpdb.EnforcementContextCache
-	generations                wire.BackendGenerations
+	settings
+	token       TokenSource
+	transport   http.RoundTripper
+	inspector   relay.Inspector
+	binding     []byte
+	contexts    *httpdb.EnforcementContextCache
+	generations wire.BackendGenerations
+}
+
+func newTarget(cfg settings, token TokenSource, principal string, transport http.RoundTripper) (*target, error) {
+	contexts, err := httpdb.OpenContextCache(cfg.contextPath, contextFormat, 10000)
+	if err != nil {
+		return nil, err
+	}
+	t := &target{settings: cfg, token: token, transport: transport, binding: targetBinding(cfg, principal), contexts: contexts}
+	t.inspector = t
+	return t, nil
+}
+
+func (t *target) TargetInfo() string {
+	u, _ := url.Parse(t.endpoint)
+	return fmt.Sprintf("%s project %s, location %s", u.Host, t.project, t.location)
+}
+
+// ConnectionInfo publishes the HTTPS endpoint and the scope; the Google credentials never leave the proxy.
+func (t *target) ConnectionInfo() *pb.ConnectionInfo {
+	endpoint := ""
+	if t.advertise != "" {
+		endpoint = "https://" + t.advertise
+	}
+	return &pb.ConnectionInfo{Endpoint: endpoint, Properties: map[string]string{"project": t.project, "location": t.location, "dataset": t.dataset}}
+}
+
+func (t *target) Close() error {
+	if transport, ok := t.transport.(interface{ CloseIdleConnections() }); ok {
+		transport.CloseIdleConnections()
+	}
+	if t.contexts != nil {
+		return t.contexts.Close()
+	}
+	return nil
 }
 
 func (t *target) sign(ctx context.Context, request *http.Request, _ []byte) error {
@@ -75,6 +111,69 @@ func (t *target) newProxyCommandRunner(authz *spi.Authorizer) (*relay.ProxyComma
 	}, nil
 }
 
+// apiError is a BigQuery error response; its message may echo stored values.
+type apiError struct {
+	status  int
+	message string
+}
+
+func (e *apiError) Error() string {
+	return fmt.Sprintf("bigquery: upstream returned %d: %s", e.status, e.message)
+}
+
+// call sends the proxy's own request to path under /bigquery/v2/ and decodes a 200 response into out.
+func (t *target) call(ctx context.Context, method, path string, query url.Values, in, out any) error {
+	var body io.Reader
+	if in != nil {
+		data, err := json.Marshal(in)
+		if err != nil {
+			return err
+		}
+		body = bytes.NewReader(data)
+	}
+	address := t.endpoint + apiPrefix + path
+	if len(query) > 0 {
+		address += "?" + query.Encode()
+	}
+	request, err := http.NewRequestWithContext(ctx, method, address, body)
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Accept-Encoding", "identity")
+	if in != nil {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	if err := t.sign(ctx, request, nil); err != nil {
+		return err
+	}
+	client := &http.Client{Transport: t.transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	response, err := client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(response.Body, defaultResponseLimit+1))
+	if err != nil {
+		return err
+	}
+	if len(data) > defaultResponseLimit {
+		return httpdb.ErrResultShape
+	}
+	if response.StatusCode != http.StatusOK {
+		var failure struct {
+			Error struct{ Message string } `json:"error"`
+		}
+		_ = json.Unmarshal(data, &failure)
+		return &apiError{status: response.StatusCode, message: failure.Error.Message}
+	}
+	if out != nil && json.Unmarshal(data, out) != nil {
+		return httpdb.ErrResultShape
+	}
+	return nil
+}
+
+func projectPath(project string) string { return "projects/" + url.PathEscape(project) }
+
 // jobStatus is the part of a jobs.get response the proxy reads.
 type jobStatus struct {
 	Statistics struct {
@@ -94,30 +193,8 @@ func (t *target) getJob(ctx context.Context, id string) (*jobStatus, error) {
 	if len(parts) != 3 {
 		return nil, errors.New("bigquery: malformed job id")
 	}
-	address := t.endpoint + "/bigquery/v2/projects/" + url.PathEscape(parts[0]) + "/jobs/" + url.PathEscape(parts[2]) + "?location=" + url.QueryEscape(parts[1])
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
-	if err != nil {
-		return nil, err
-	}
-	request.Header.Set("Accept-Encoding", "identity")
-	if err := t.sign(ctx, request, nil); err != nil {
-		return nil, err
-	}
-	client := &http.Client{Transport: t.transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	response, err := client.Do(request)
-	if err != nil {
-		return nil, err
-	}
-	defer response.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(response.Body, defaultResponseLimit))
-	if err != nil {
-		return nil, err
-	}
-	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("bigquery: jobs.get returned %d", response.StatusCode)
-	}
 	var job jobStatus
-	if err := json.Unmarshal(body, &job); err != nil {
+	if err := t.call(ctx, http.MethodGet, projectPath(parts[0])+"/jobs/"+url.PathEscape(parts[2]), url.Values{"location": {parts[1]}}, nil, &job); err != nil {
 		return nil, err
 	}
 	return &job, nil

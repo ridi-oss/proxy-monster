@@ -43,7 +43,7 @@ const (
 
 type httpDbOperation struct {
 	category  callCategory
-	resources func(body) ([]nativeResource, error)
+	resources func(*pb.HttpDbRequest, body) ([]nativeResource, error)
 }
 
 // httpDbEngine is how the control plane reads one HTTP-API engine's calls.
@@ -55,6 +55,8 @@ type httpDbEngine struct {
 	// validCall checks the engine's method, path, and target arm.
 	validCall       func(*pb.HttpDbRequest) error
 	submissionScope func(*pb.HttpDbRequest, body) error
+	// bodiless reads a call without a body as {}, as a REST GET carries none.
+	bodiless bool
 }
 
 // access reads one call from the proxy's descriptor. A SQL submission goes through SQL admission, status and
@@ -83,7 +85,11 @@ func (e httpDbEngine) read(descriptor *pb.HttpDbRequest, datasource, principal s
 	if !ok {
 		return access{}, denyError(nativeNotAuthorized)
 	}
-	b, err := decodeBody(descriptor.GetBody())
+	raw := descriptor.GetBody()
+	if e.bodiless && len(raw) == 0 {
+		raw = []byte("{}")
+	}
+	b, err := decodeBody(raw)
 	if err != nil {
 		return access{}, err
 	}
@@ -103,7 +109,7 @@ func (e httpDbEngine) read(descriptor *pb.HttpDbRequest, datasource, principal s
 		}
 		out.instructions.Action = analyzerpb.HttpDbInstruction_HTTP_DB_INSTRUCTION_REQUIRE_SQL_ADMISSION
 	case metadataCall, invokeCall:
-		named, err := op.resources(b)
+		named, err := op.resources(descriptor, b)
 		if err != nil {
 			return access{}, err
 		}
@@ -119,7 +125,7 @@ func (e httpDbEngine) read(descriptor *pb.HttpDbRequest, datasource, principal s
 			out.instructions.Action = analyzerpb.HttpDbInstruction_HTTP_DB_INSTRUCTION_RELEASE_METADATA
 		}
 	case executionCall:
-		named, err := op.resources(b)
+		named, err := op.resources(descriptor, b)
 		if err != nil {
 			return access{}, err
 		}
@@ -407,10 +413,10 @@ func (b body) optStr(field, def string) (string, error) {
 	return b.str(field)
 }
 
-func none(body) ([]nativeResource, error) { return nil, nil }
+func none(*pb.HttpDbRequest, body) ([]nativeResource, error) { return nil, nil }
 
-func one(kind string, id func(body) (string, error)) func(body) ([]nativeResource, error) {
-	return func(b body) ([]nativeResource, error) {
+func one(kind string, id func(body) (string, error)) func(*pb.HttpDbRequest, body) ([]nativeResource, error) {
+	return func(_ *pb.HttpDbRequest, b body) ([]nativeResource, error) {
 		v, err := id(b)
 		if err != nil {
 			return nil, err
@@ -419,8 +425,8 @@ func one(kind string, id func(body) (string, error)) func(body) ([]nativeResourc
 	}
 }
 
-func many(kind string, ids func(body) ([]string, error)) func(body) ([]nativeResource, error) {
-	return func(b body) ([]nativeResource, error) {
+func many(kind string, ids func(body) ([]string, error)) func(*pb.HttpDbRequest, body) ([]nativeResource, error) {
+	return func(_ *pb.HttpDbRequest, b body) ([]nativeResource, error) {
 		vs, err := ids(b)
 		if err != nil {
 			return nil, err

@@ -8,6 +8,7 @@ package proxymonster.v1;
 import "engine.proto";
 import "analyzer.proto";
 import "athena.proto";
+import "bigquery.proto";
 import "httpdb.proto";
 import "google/protobuf/empty.proto";
 
@@ -198,6 +199,7 @@ message HttpDbRequest {
   bytes target_binding = 11;
   oneof target {
     proxymonster.athena.v1.AthenaTarget athena = 12;
+    proxymonster.bigquery.v1.BigQueryTarget bigquery = 13;
   }
 }
 

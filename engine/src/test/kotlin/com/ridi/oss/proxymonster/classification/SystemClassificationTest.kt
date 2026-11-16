@@ -268,7 +268,7 @@ class SystemClassificationTest {
     fun `bundled manifests load, validate, and index`() {
         val s = SystemClassificationStore.load() // throws on any manifest validation failure → this is the boot check
         assertEquals(
-            setOf("postgres" to "16", "postgres" to "17", "mysql" to "8.0", "mysql" to "8.4", "athena" to "3"),
+            setOf("postgres" to "16", "postgres" to "17", "mysql" to "8.0", "mysql" to "8.4", "athena" to "3", "bigquery" to "1"),
             s.supported(),
         )
         assertTrue(s.checksum.length == 64, "a sha-256 checksum is exposed for diagnostics")
@@ -282,6 +282,15 @@ class SystemClassificationTest {
         assertNull(c.classifyRelation("awsdatacatalog", "sample", "columns"))
         assertNull(c.classifyFunction("awsdatacatalog", "sample", "custom_function"))
         assertEquals(SystemTag.DATA_LEAK, c.classifyCommand("SHOW_PARTITIONS"))
+    }
+
+    @Test
+    fun `BigQuery AI calls are critical only in the ai schema`() {
+        val c = SystemClassificationStore.load().classifierFor("bigquery", "1")!!
+        for (name in listOf("generate", "embed", "similarity")) {
+            assertEquals(SystemTag.CRITICAL, c.classifyQualifiedFunction("ai", name), name)
+            assertNull(c.classifyQualifiedFunction("sales", name), name)
+        }
     }
 
     @Test

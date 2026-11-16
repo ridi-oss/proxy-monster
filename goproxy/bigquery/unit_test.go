@@ -80,7 +80,7 @@ func TestOperationRoutes(t *testing.T) {
 }
 
 func TestReferencesNameTheJob(t *testing.T) {
-	e := engine{&target{location: "US"}}
+	e := engine{&target{settings: settings{location: "US"}}}
 	for target, want := range map[string]struct {
 		id    string
 		first bool

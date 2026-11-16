@@ -231,16 +231,14 @@ func testTarget(t *testing.T, handler http.HandlerFunc) *target {
 	t.Helper()
 	server := httptest.NewTLSServer(handler)
 	t.Cleanup(server.Close)
-	contexts, err := httpdb.OpenContextCache(":memory:", "bigquery-enforcement-context-v1", 100)
+	cfg := settings{project: "proj-a", location: "US", dataset: "sales", endpoint: server.URL, contextPath: ":memory:"}
+	target, err := newTarget(cfg, func(context.Context) (string, error) { return "upstream-token", nil }, "proxy@proj-a.iam.gserviceaccount.com", server.Client().Transport)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = contexts.Close() })
-	return &target{
-		project: "proj-a", location: "US", dataset: "sales", endpoint: server.URL,
-		token:     func(context.Context) (string, error) { return "upstream-token", nil },
-		transport: server.Client().Transport, inspector: fakeInspector{}, binding: bytes.Repeat([]byte{7}, 32), contexts: contexts,
-	}
+	t.Cleanup(func() { _ = target.Close() })
+	target.inspector = fakeInspector{}
+	return target
 }
 
 func flowServer(t *testing.T, principal string, verdict *pb.Verdict) (*httpdb.Server, *flowClient, *fakeBigQuery) {

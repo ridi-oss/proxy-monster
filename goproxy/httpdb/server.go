@@ -55,36 +55,20 @@ type Submission struct {
 	Token      string
 }
 
-// Observation is one resource a response names; Detail is the engine's report of it to the control plane.
-type Observation struct {
-	ID     string
-	Detail proto.Message
-}
-
-// Exchange is what the engine reports to the control plane for one phase of a call.
-type Exchange struct {
-	Request      *http.Request
-	Operation    Operation
-	Body         []byte
-	Phase        enginepb.HttpDbAuthorizationPhase
-	Observations []Observation
-	Contexts     []*enginepb.HttpDbCachedContext
-}
-
-// Engine is one HTTP-API target database: its wire format, its control-plane descriptor, and its SQL path.
+// Engine is one HTTP-API target database: its wire format, its control-plane target, and its SQL path.
 type Engine interface {
 	// Operation names a call; ErrUnsupportedTransport refuses it before authentication.
 	Operation(*http.Request) (Operation, error)
 	// References lists the resources a request names, and whether it asks for a result's first page.
 	References(r *http.Request, body []byte) (ids []string, firstPage bool, err error)
-	// Authorization is the control plane's request for one phase, with only its operation set.
-	Authorization(Exchange) *pb.RequestAuthorization
+	// SetTarget sets the request's engine target arm.
+	SetTarget(*pb.HttpDbRequest)
 	ReadSubmission(body []byte) (Submission, error)
 	// WriteSubmission returns body carrying the admitted SQL and, when non-empty, the upstream token.
 	WriteSubmission(body []byte, admitted Submission) ([]byte, error)
 	// CreatedResource is the id of the resource an accepted submission's response names.
 	CreatedResource(body []byte) (string, error)
-	Observe(body []byte) ([]Observation, error)
+	Observe(body []byte) ([]*pb.HttpDbObservation, error)
 	FilterListing(body []byte, owned map[string]bool) ([]byte, error)
 	// MaskResult checks a result page's shape and masks it; digest is nil when the verdict masks nothing.
 	MaskResult(body []byte, verdict *pb.Verdict, expectedWidth *int32, metadataDigest []byte, firstPage bool) (masked, digest []byte, err error)
@@ -104,7 +88,7 @@ type Engine interface {
 // enforcement context to result and status reads.
 type Server struct {
 	Engine Engine
-	// Name namespaces error codes, as in "athena.request_denied".
+	// Name is the descriptor's service and namespaces error codes, as in "athena.request_denied".
 	Name            string
 	Listen          spi.Listen
 	Client          spi.ControlPlane
@@ -260,16 +244,11 @@ func (s *Server) writeError(w http.ResponseWriter, status int, code string) {
 	s.Engine.WriteError(w, status, s.Name+"."+code)
 }
 
-func (s *Server) authorize(ctx context.Context, token, clientAddr string, exchange Exchange) (*pb.RequestAuthorizationResult, *enginepb.HttpDbInstructions, error) {
-	request := s.Engine.Authorization(exchange)
-	size, ok := operationSize(request)
-	if !ok {
-		return nil, nil, ErrUnauthorized
-	}
-	if size > 1<<20 {
+func (s *Server) authorize(ctx context.Context, token, clientAddr string, descriptor *pb.HttpDbRequest) (*pb.RequestAuthorizationResult, *enginepb.HttpDbInstructions, error) {
+	if proto.Size(descriptor) > 1<<20 {
 		return nil, nil, ErrBodyTooLarge
 	}
-	request.Token, request.ClientAddr = token, clientAddr
+	request := &pb.RequestAuthorization{Token: token, ClientAddr: clientAddr, Operation: &pb.RequestAuthorization_HttpDb{HttpDb: descriptor}}
 	result, err := s.Client.AuthorizeRequest(ctx, request)
 	if err != nil {
 		if st, ok := status.FromError(err); ok {
@@ -287,7 +266,7 @@ func (s *Server) authorize(ctx context.Context, token, clientAddr string, exchan
 		return nil, nil, ErrUnauthorized
 	}
 	instructions := *result.GetHttpDbInstructions()
-	switch exchange.Phase {
+	switch descriptor.Phase {
 	case enginepb.HttpDbAuthorizationPhase_HTTP_DB_AUTHORIZATION_PHASE_REQUEST:
 		if instructions.Action != enginepb.HttpDbInstruction_HTTP_DB_INSTRUCTION_FORWARD_REQUEST &&
 			instructions.Action != enginepb.HttpDbInstruction_HTTP_DB_INSTRUCTION_REQUIRE_SQL_ADMISSION {
@@ -302,19 +281,6 @@ func (s *Server) authorize(ctx context.Context, token, clientAddr string, exchan
 		return nil, nil, ErrUnauthorized
 	}
 	return result, &instructions, nil
-}
-
-// operationSize is the encoded size of the engine descriptor in the request's operation oneof.
-func operationSize(request *pb.RequestAuthorization) (int, bool) {
-	if request == nil {
-		return 0, false
-	}
-	message := request.ProtoReflect()
-	field := message.WhichOneof(message.Descriptor().Oneofs().ByName("operation"))
-	if field == nil {
-		return 0, false
-	}
-	return proto.Size(message.Get(field).Message().Interface()), true
 }
 
 func stripResponseHeader(name string) bool {

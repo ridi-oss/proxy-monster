@@ -144,8 +144,8 @@ func tableOp(t *apb.ObjectRef) *pb.RequestAuthorization {
 	return &pb.RequestAuthorization{Operation: &pb.RequestAuthorization_ReadTableMetadata{ReadTableMetadata: &pb.ReadTableMetadata{Table: t}}}
 }
 
-func athenaOp(d *apb.AthenaNativeDescriptor) *pb.RequestAuthorization {
-	return &pb.RequestAuthorization{Operation: &pb.RequestAuthorization_Athena{Athena: d}}
+func athenaOp(d *pb.HttpDbRequest) *pb.RequestAuthorization {
+	return &pb.RequestAuthorization{Operation: &pb.RequestAuthorization_HttpDb{HttpDb: d}}
 }
 
 func on(r *pb.RequestAuthorization, token, ds, addr string) *pb.RequestAuthorization {
@@ -433,7 +433,7 @@ func TestNativeDispatchRefusesBeforeTheEngine(t *testing.T) {
 	calls := 0
 	f.s.read = func(r *pb.RequestAuthorization, _ requestDatasource, principal string, _ time.Time) access {
 		calls++
-		if r.GetAthena() == nil || principal != "alice" {
+		if r.GetHttpDb() == nil || principal != "alice" {
 			t.Errorf("engine read %v as %q", r, principal)
 		}
 		return access{native: true, instructions: &apb.HttpDbInstructions{}}

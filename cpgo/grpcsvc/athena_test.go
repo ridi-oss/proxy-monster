@@ -27,13 +27,13 @@ const (
 
 var binding = bytes.Repeat([]byte{7}, 32)
 
-func descriptor(op, body string, phase apb.HttpDbAuthorizationPhase, mods ...func(*apb.AthenaNativeDescriptor)) *apb.AthenaNativeDescriptor {
-	d := &apb.AthenaNativeDescriptor{
+func descriptor(op, body string, phase apb.HttpDbAuthorizationPhase, mods ...func(*pb.HttpDbRequest)) *pb.HttpDbRequest {
+	d := &pb.HttpDbRequest{
 		Service: "athena", Operation: op, Method: "POST", Path: "/", Body: []byte(body), Phase: phase,
-		Target: &apb.AthenaTarget{
+		TargetBinding: binding, Target: &pb.HttpDbRequest_Athena{Athena: &apb.AthenaTarget{
 			Region: "ap-northeast-2", DefaultWorkgroup: "primary", DefaultCatalog: "awsdatacatalog", DefaultDatabase: "analytics",
-			Endpoint: "https://athena.ap-northeast-2.amazonaws.com", TargetBinding: binding,
-		},
+			Endpoint: "https://athena.ap-northeast-2.amazonaws.com",
+		}},
 	}
 	for _, m := range mods {
 		m(d)
@@ -41,16 +41,16 @@ func descriptor(op, body string, phase apb.HttpDbAuthorizationPhase, mods ...fun
 	return d
 }
 
-func observation(kind, id string) *apb.AthenaResourceObservation {
-	return &apb.AthenaResourceObservation{Source: apb.AthenaObservationSource_ATHENA_OBSERVATION_SOURCE_AWS_RESPONSE, Kind: kind, Id: id}
+func observation(kind, id string) *pb.HttpDbObservation {
+	return &pb.HttpDbObservation{Source: pb.HttpDbObservationSource_HTTP_DB_OBSERVATION_SOURCE_UPSTREAM_RESPONSE, Kind: kind, Id: id}
 }
 
-func observe(os ...*apb.AthenaResourceObservation) func(*apb.AthenaNativeDescriptor) {
-	return func(d *apb.AthenaNativeDescriptor) { d.Observations = append(d.Observations, os...) }
+func observe(os ...*pb.HttpDbObservation) func(*pb.HttpDbRequest) {
+	return func(d *pb.HttpDbRequest) { d.Observations = append(d.Observations, os...) }
 }
 
-func cached(cs ...*apb.HttpDbCachedContext) func(*apb.AthenaNativeDescriptor) {
-	return func(d *apb.AthenaNativeDescriptor) { d.CachedContexts = append(d.CachedContexts, cs...) }
+func cached(cs ...*apb.HttpDbCachedContext) func(*pb.HttpDbRequest) {
+	return func(d *pb.HttpDbRequest) { d.CachedContexts = append(d.CachedContexts, cs...) }
 }
 
 func verdictBytes(v *pb.Verdict) []byte {
@@ -116,7 +116,7 @@ func (l *lake) ctx(id string) *apb.HttpDbCachedContext {
 	return cachedContext(id, "alice", l.now.Add(time.Hour))
 }
 
-func (l *lake) rpc(d *apb.AthenaNativeDescriptor, token, ds, addr string) outcome {
+func (l *lake) rpc(d *pb.HttpDbRequest, token, ds, addr string) outcome {
 	l.t.Helper()
 	res, err := l.authorize(on(athenaOp(d), token, ds, addr))
 	if err != nil {
@@ -128,7 +128,7 @@ func (l *lake) rpc(d *apb.AthenaNativeDescriptor, token, ds, addr string) outcom
 	return outcomeOf(res.GetDenyReason(), res.GetHttpDbInstructions())
 }
 
-func (l *lake) admit(d *apb.AthenaNativeDescriptor) outcome { return l.rpc(d, l.alice, "lake", "") }
+func (l *lake) admit(d *pb.HttpDbRequest) outcome { return l.rpc(d, l.alice, "lake", "") }
 
 // direct authorizes at a fixed clock, as alice with reader on "lake".
 func (l *lake) direct(r *pb.RequestAuthorization, now time.Time) outcome {
@@ -147,7 +147,7 @@ func (l *lake) direct(r *pb.RequestAuthorization, now time.Time) outcome {
 type athenaCase struct {
 	name     string
 	policies []string
-	d        *apb.AthenaNativeDescriptor
+	d        *pb.HttpDbRequest
 	want     outcome
 }
 
@@ -164,16 +164,16 @@ func (l *lake) run(cases []athenaCase) {
 func TestAthenaRejectsMalformedDescriptors(t *testing.T) {
 	l := newLake(t)
 	gate := []string{connectAll, invokeAll}
-	wg := func(mod func(*apb.AthenaNativeDescriptor)) *apb.AthenaNativeDescriptor {
+	wg := func(mod func(*pb.HttpDbRequest)) *pb.HttpDbRequest {
 		return descriptor("ListWorkGroups", "{}", requestPhase, mod)
 	}
 	l.run([]athenaCase{
 		{"unknown operation", gate, descriptor("NotAnOperation", "{}", requestPhase), deny(nativeNotAuthorized)},
-		{"wrong service", gate, wg(func(d *apb.AthenaNativeDescriptor) { d.Service = "glue" }), deny(nativeNotAuthorized)},
-		{"GET method", gate, wg(func(d *apb.AthenaNativeDescriptor) { d.Method = "GET" }), deny(nativeInvalidDescriptor)},
-		{"raw query", gate, wg(func(d *apb.AthenaNativeDescriptor) { d.RawQuery = "x=1" }), deny(nativeInvalidDescriptor)},
-		{"no target", gate, wg(func(d *apb.AthenaNativeDescriptor) { d.Target = nil }), deny(nativeInvalidDescriptor)},
-		{"unspecified phase", gate, wg(func(d *apb.AthenaNativeDescriptor) {
+		{"wrong service", gate, wg(func(d *pb.HttpDbRequest) { d.Service = "glue" }), deny(nativeNotAuthorized)},
+		{"GET method", gate, wg(func(d *pb.HttpDbRequest) { d.Method = "GET" }), deny(nativeInvalidDescriptor)},
+		{"raw query", gate, wg(func(d *pb.HttpDbRequest) { d.RawQuery = "x=1" }), deny(nativeInvalidDescriptor)},
+		{"no target", gate, wg(func(d *pb.HttpDbRequest) { d.Target = nil }), deny(nativeInvalidDescriptor)},
+		{"unspecified phase", gate, wg(func(d *pb.HttpDbRequest) {
 			d.Phase = apb.HttpDbAuthorizationPhase_HTTP_DB_AUTHORIZATION_PHASE_UNSPECIFIED
 		}), deny(nativeInvalidDescriptor)},
 		{"truncated body", gate, descriptor("ListWorkGroups", "{", requestPhase), deny(nativeInvalidDescriptor)},
@@ -216,7 +216,7 @@ func TestAthenaSQLSubmissionRequiresSQLAdmission(t *testing.T) {
 func TestAthenaSQLSubmissionScope(t *testing.T) {
 	l := newLake(t)
 	gate := []string{connectAll}
-	sub := func(body string) *apb.AthenaNativeDescriptor {
+	sub := func(body string) *pb.HttpDbRequest {
 		return descriptor("StartQueryExecution", body, requestPhase)
 	}
 	l.run([]athenaCase{
@@ -230,7 +230,7 @@ func TestAthenaSQLSubmissionScope(t *testing.T) {
 		{"result reuse", gate, sub(`{"QueryString":"select 1","ResultReuseConfiguration":{"ResultReuseByAgeConfiguration":{"Enabled":true}}}`), deny(nativeScopeViolation)},
 		{"non-string catalog", gate, sub(`{"QueryString":"select 1","QueryExecutionContext":{"Catalog":5}}`), deny(nativeInvalidDescriptor)},
 		{"unconfigured workgroup", gate, descriptor("StartQueryExecution", `{"QueryString":"select 1","WorkGroup":"primary"}`, requestPhase,
-			func(d *apb.AthenaNativeDescriptor) { d.Target.DefaultWorkgroup = "" }), deny(nativeScopeViolation)},
+			func(d *pb.HttpDbRequest) { d.GetAthena().DefaultWorkgroup = "" }), deny(nativeScopeViolation)},
 	})
 }
 
@@ -255,7 +255,7 @@ func TestAthenaMetadataResponseReleasesOnlyAuthorizedObservations(t *testing.T) 
 	gate := []string{connectAll, `permit(principal, action == Action::"native.invoke", resource) when { resource.kind == "datasource" || resource.kind == "workgroup" && resource.id like "team-*" };`}
 	datasourceWide := []string{connectAll, `permit(principal, action == Action::"native.invoke", resource) when { resource.kind == "datasource" };`}
 	unspecified := observation("workgroup", "team-a")
-	unspecified.Source = apb.AthenaObservationSource_ATHENA_OBSERVATION_SOURCE_UNSPECIFIED
+	unspecified.Source = pb.HttpDbObservationSource_HTTP_DB_OBSERVATION_SOURCE_UNSPECIFIED
 	l.run([]athenaCase{
 		{"all observed permitted", gate, descriptor("ListWorkGroups", "{}", responsePhase, observe(observation("workgroup", "team-a"), observation("workgroup", "team-b"))), act(release)},
 		{"one observed denied", gate, descriptor("ListWorkGroups", "{}", responsePhase, observe(observation("workgroup", "team-a"), observation("workgroup", "finance"))), deny(nativeNotAuthorized)},
@@ -290,7 +290,7 @@ func TestAthenaExecutionNeedsOwnedUnexpiredBoundContext(t *testing.T) {
 	l := newLake(t)
 	gate := []string{connectAll}
 	mine := l.ctx("q1")
-	results := func(id string, phase apb.HttpDbAuthorizationPhase, cs ...*apb.HttpDbCachedContext) *apb.AthenaNativeDescriptor {
+	results := func(id string, phase apb.HttpDbAuthorizationPhase, cs ...*apb.HttpDbCachedContext) *pb.HttpDbRequest {
 		return descriptor("GetQueryResults", `{"QueryExecutionId":"`+id+`"}`, phase, cached(cs...))
 	}
 	with := func(mod func(*apb.HttpDbCachedContext)) *apb.HttpDbCachedContext {
@@ -307,6 +307,8 @@ func TestAthenaExecutionNeedsOwnedUnexpiredBoundContext(t *testing.T) {
 		{"expired", gate, results("q1", responsePhase, cachedContext("q1", "alice", l.now.Add(-time.Second))), deny(nativeContextUnavailable)},
 		{"other target", gate, results("q1", responsePhase, with(func(c *apb.HttpDbCachedContext) { c.TargetBinding = bytes.Repeat([]byte{9}, 32) })), deny(nativeContextUnavailable)},
 		{"short binding", gate, results("q1", responsePhase, with(func(c *apb.HttpDbCachedContext) { c.TargetBinding = make([]byte, 16) })), deny(nativeInvalidDescriptor)},
+		{"short request binding", gate, descriptor("GetQueryResults", `{"QueryExecutionId":"q1"}`, responsePhase, cached(mine), func(d *pb.HttpDbRequest) { d.TargetBinding = make([]byte, 16) }), deny(nativeInvalidDescriptor)},
+		{"no request binding", gate, descriptor("GetQueryResults", `{"QueryExecutionId":"q1"}`, responsePhase, cached(mine), func(d *pb.HttpDbRequest) { d.TargetBinding = nil }), deny(nativeInvalidDescriptor)},
 		{"version 2", gate, results("q1", responsePhase, with(func(c *apb.HttpDbCachedContext) { c.Version = 2 })), deny(nativeInvalidDescriptor)},
 		{"no expiry", gate, results("q1", responsePhase, with(func(c *apb.HttpDbCachedContext) { c.ExpiresAt = nil })), deny(nativeInvalidDescriptor)},
 		{"no context id", gate, results("q1", responsePhase, with(func(c *apb.HttpDbCachedContext) { c.ContextId = "" })), deny(nativeInvalidDescriptor)},
@@ -364,8 +366,8 @@ func TestAthenaExecutionObservationsMatchOwnedContexts(t *testing.T) {
 func TestAthenaHistoryKeepsOnlyOwnedExecutions(t *testing.T) {
 	l := newLake(t)
 	gate := []string{connectAll}
-	executions := func(ids ...string) func(*apb.AthenaNativeDescriptor) {
-		var os []*apb.AthenaResourceObservation
+	executions := func(ids ...string) func(*pb.HttpDbRequest) {
+		var os []*pb.HttpDbObservation
 		for _, id := range ids {
 			os = append(os, observation(queryExecution, id))
 		}
@@ -468,17 +470,17 @@ func TestAthenaForbidHoldsAgainstAnotherSpelling(t *testing.T) {
 // The engine reads which resources a call touches; Cedar alone decides them.
 func TestAthenaAccessNamesTheResources(t *testing.T) {
 	ds := reqDS("lake", "athena", "analytics")
-	read := func(d *apb.AthenaNativeDescriptor) access { return athenaAccess(athenaOp(d), ds, "alice", time.Now()) }
+	read := func(d *pb.HttpDbRequest) access { return athenaAPI.access(athenaOp(d), ds, "alice", time.Now()) }
 	bob := "bob"
 	for _, tc := range []struct {
 		name string
-		d    *apb.AthenaNativeDescriptor
+		d    *pb.HttpDbRequest
 		want []nativeResource
 	}{
 		{"named workgroup", descriptor("GetWorkGroup", `{"WorkGroup":"primary"}`, requestPhase), []nativeResource{{kind: "workgroup", id: "primary"}}},
 		{"listing scopes the datasource", descriptor("ListWorkGroups", "{}", requestPhase), []nativeResource{{kind: "datasource", id: "lake"}}},
 		{"response adds what it observed", descriptor("ListWorkGroups", "{}", responsePhase, observe(
-			func() *apb.AthenaResourceObservation {
+			func() *pb.HttpDbObservation {
 				o := observation("workgroup", "team-a")
 				o.Owner = &bob
 				return o
@@ -495,7 +497,7 @@ func TestAthenaAccessNamesTheResources(t *testing.T) {
 	if a := read(descriptor("GetWorkGroup", `{"WorkGroup":"primary"}`, requestPhase)); a.operation != "athena:GetWorkGroup" {
 		t.Errorf("operation %q", a.operation)
 	}
-	if a := athenaAccess(catalogOp(ref("awsdatacatalog", "analytics", "")), ds, "alice", time.Now()); a.deny != nativeNotAuthorized {
+	if a := athenaAPI.access(catalogOp(ref("awsdatacatalog", "analytics", "")), ds, "alice", time.Now()); a.deny != nativeNotAuthorized {
 		t.Errorf("a metadata read on Athena: %+v", a)
 	}
 }

@@ -171,10 +171,46 @@ message RequestAuthorization {
   oneof operation {
     ReadCatalog read_catalog = 4;
     ReadTableMetadata read_table_metadata = 5;
-    // A provider-native API call, described by that engine's own message; the engine's request authorizer
-    // decides it. An arm the datasource's engine does not own is denied.
-    proxymonster.athena.v1.AthenaNativeDescriptor athena = 6;
+    // An HTTP-API call; the datasource engine's request authorizer decides it, and a target arm
+    // that engine does not own is denied.
+    HttpDbRequest http_db = 7;
   }
+  reserved 6;
+  reserved "athena";
+}
+
+// One call to an HTTP-API engine as the proxy received it; credentials, cookies, signatures, and result rows
+// are forbidden.
+message HttpDbRequest {
+  string service = 1;
+  string operation = 2;
+  string method = 3;
+  string path = 4;
+  string raw_query = 5;
+  repeated proxymonster.httpdb.v1.HttpDbHeader functional_headers = 6;
+  // The sanitized request body in both phases; response resources belong in observations, never result cells.
+  bytes body = 7;
+  proxymonster.httpdb.v1.HttpDbAuthorizationPhase phase = 8;
+  // Resource identities the target returned, never client assertions or cached ownership claims.
+  repeated HttpDbObservation observations = 9;
+  repeated proxymonster.httpdb.v1.HttpDbCachedContext cached_contexts = 10;
+  // Canonical configured target and stable upstream account/principal identity, attested by the proxy.
+  bytes target_binding = 11;
+  oneof target {
+    proxymonster.athena.v1.AthenaTarget athena = 12;
+  }
+}
+
+enum HttpDbObservationSource {
+  HTTP_DB_OBSERVATION_SOURCE_UNSPECIFIED = 0;
+  HTTP_DB_OBSERVATION_SOURCE_UPSTREAM_RESPONSE = 1;
+}
+
+message HttpDbObservation {
+  HttpDbObservationSource source = 1;
+  string kind = 2;
+  string id = 3;
+  optional string owner = 4;
 }
 
 // Deny by default: allowed is false unless the engine admitted the operation. deny_reason is a stable

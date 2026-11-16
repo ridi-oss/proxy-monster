@@ -146,7 +146,7 @@ func (f *Forwarder) Forward(incoming *http.Request) (*http.Response, error) {
 		return nil, err
 	}
 	outgoing.GetBody = nil
-	outgoing.Header = UpstreamHeaders(incoming.Header)
+	outgoing.Header = upstreamHeaders(incoming.Header)
 	if err := f.sign(ctx, outgoing, bytes.Clone(approved)); err != nil {
 		return nil, err
 	}
@@ -166,8 +166,8 @@ func (f *Forwarder) Forward(incoming *http.Request) (*http.Response, error) {
 	return response, nil
 }
 
-// UpstreamHeaders is the incoming header set with client credentials, identity, and hop headers removed.
-func UpstreamHeaders(incoming http.Header) http.Header {
+// upstreamHeaders is the incoming header set with client credentials, identity, and hop headers removed.
+func upstreamHeaders(incoming http.Header) http.Header {
 	hopHeaders := make(map[string]bool)
 	for name, values := range incoming {
 		if strings.EqualFold(name, "Connection") {

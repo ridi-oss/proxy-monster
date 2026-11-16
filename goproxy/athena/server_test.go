@@ -17,21 +17,21 @@ func (requestClient) DatasourceName() string { return "athena-dev" }
 
 type requestClient struct {
 	spi.ControlPlane
-	authorize func(*pb.RequestAuthorization, *enginepb.AthenaNativeDescriptor) (*pb.RequestAuthorizationResult, error)
+	authorize func(*pb.RequestAuthorization, *pb.HttpDbRequest) (*pb.RequestAuthorizationResult, error)
 }
 
 func (c requestClient) AuthorizeRequest(_ context.Context, request *pb.RequestAuthorization) (*pb.RequestAuthorizationResult, error) {
 	if c.authorize == nil {
 		return &pb.RequestAuthorizationResult{}, nil
 	}
-	descriptor := request.GetAthena()
+	descriptor := request.GetHttpDb()
 	if descriptor == nil {
 		return nil, ErrUnauthorized
 	}
 	return c.authorize(request, descriptor)
 }
 
-func nativePermission(t *testing.T, descriptor *enginepb.AthenaNativeDescriptor, principal string) *pb.RequestAuthorizationResult {
+func nativePermission(t *testing.T, descriptor *pb.HttpDbRequest, principal string) *pb.RequestAuthorizationResult {
 	t.Helper()
 	action := enginepb.HttpDbInstruction_HTTP_DB_INSTRUCTION_FORWARD_REQUEST
 	if descriptor.Phase == enginepb.HttpDbAuthorizationPhase_HTTP_DB_AUTHORIZATION_PHASE_RESPONSE {
@@ -63,7 +63,7 @@ func TestNativeServerDeniesWithoutUpstreamCalls(t *testing.T) {
 func TestNativeServerRejectsBooleanOnlyAndWrongPhasePermission(t *testing.T) {
 	for _, action := range []enginepb.HttpDbInstruction{enginepb.HttpDbInstruction_HTTP_DB_INSTRUCTION_UNSPECIFIED, enginepb.HttpDbInstruction_HTTP_DB_INSTRUCTION_RELEASE_METADATA} {
 		target := testTarget(t, func(w http.ResponseWriter, request *http.Request) { t.Fatal("invalid instruction reached AWS") })
-		client := requestClient{authorize: func(_ *pb.RequestAuthorization, _ *enginepb.AthenaNativeDescriptor) (*pb.RequestAuthorizationResult, error) {
+		client := requestClient{authorize: func(_ *pb.RequestAuthorization, _ *pb.HttpDbRequest) (*pb.RequestAuthorizationResult, error) {
 			result := &pb.RequestAuthorizationResult{Allowed: true, Principal: "alice"}
 			if action != enginepb.HttpDbInstruction_HTTP_DB_INSTRUCTION_UNSPECIFIED {
 				result.HttpDbInstructions = &enginepb.HttpDbInstructions{Action: action}
@@ -89,9 +89,11 @@ func TestNativeServerChecksEachRequestAndPreservesNativeErrors(t *testing.T) {
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = io.WriteString(w, native)
 	})
-	client := requestClient{authorize: func(request *pb.RequestAuthorization, descriptor *enginepb.AthenaNativeDescriptor) (*pb.RequestAuthorizationResult, error) {
+	client := requestClient{authorize: func(request *pb.RequestAuthorization, descriptor *pb.HttpDbRequest) (*pb.RequestAuthorizationResult, error) {
 		authorizations++
-		if request.Token != "test-login" || request.ClientAddr != "192.0.2.25" || descriptor.Operation != "GetWorkGroup" {
+		if request.Token != "test-login" || request.ClientAddr != "192.0.2.25" || descriptor.Operation != "GetWorkGroup" ||
+			descriptor.Service != "athena" || descriptor.Method != "POST" || descriptor.Path != "/" || len(descriptor.TargetBinding) != 32 ||
+			descriptor.GetAthena().GetDefaultWorkgroup() == "" || descriptor.GetAthena().GetDefaultCatalog() == "" || descriptor.GetAthena().GetDefaultDatabase() == "" {
 			return &pb.RequestAuthorizationResult{}, nil
 		}
 		for _, header := range descriptor.FunctionalHeaders {
@@ -129,7 +131,7 @@ func TestNativeServerClosesStreamingAndS3Paths(t *testing.T) {
 
 func TestNativeServerRejectsAmbiguousOrMalformedRequestsBeforeAuthorization(t *testing.T) {
 	target := testTarget(t, func(http.ResponseWriter, *http.Request) { t.Fatal("invalid request reached AWS") })
-	client := requestClient{authorize: func(*pb.RequestAuthorization, *enginepb.AthenaNativeDescriptor) (*pb.RequestAuthorizationResult, error) {
+	client := requestClient{authorize: func(*pb.RequestAuthorization, *pb.HttpDbRequest) (*pb.RequestAuthorizationResult, error) {
 		t.Fatal("invalid request reached authorization")
 		return nil, nil
 	}}

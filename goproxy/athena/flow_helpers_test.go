@@ -32,7 +32,7 @@ type flowClient struct {
 	completions []spi.CompletionReport
 	completed   chan struct{}
 	closed      [][]byte
-	descriptors []*enginepb.AthenaNativeDescriptor
+	descriptors []*pb.HttpDbRequest
 }
 
 // awaitCompletion waits for the asynchronous completion report and returns the reports so far.
@@ -49,7 +49,7 @@ func (c *flowClient) awaitCompletion(t *testing.T) []spi.CompletionReport {
 }
 
 func (c *flowClient) AuthorizeRequest(_ context.Context, request *pb.RequestAuthorization) (*pb.RequestAuthorizationResult, error) {
-	descriptor := *request.GetAthena()
+	descriptor := *request.GetHttpDb()
 	c.mu.Lock()
 	c.descriptors = append(c.descriptors, &descriptor)
 	c.mu.Unlock()
@@ -70,7 +70,7 @@ func (c *flowClient) AuthorizeRequest(_ context.Context, request *pb.RequestAuth
 		id, _ := body["QueryExecutionId"].(string)
 		var owned *enginepb.HttpDbCachedContext
 		for _, ctx := range descriptor.CachedContexts {
-			if ctx.ResourceId == id && ctx.Owner == c.principal && string(ctx.TargetBinding) == string(descriptor.Target.TargetBinding) {
+			if ctx.ResourceId == id && ctx.Owner == c.principal && string(ctx.TargetBinding) == string(descriptor.TargetBinding) {
 				owned = ctx
 			}
 		}

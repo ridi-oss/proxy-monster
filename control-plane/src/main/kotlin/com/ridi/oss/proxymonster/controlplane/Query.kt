@@ -34,7 +34,6 @@ import com.ridi.oss.proxymonster.grpc.ObjectRef
 import com.ridi.oss.proxymonster.grpc.columnMask
 import com.ridi.oss.proxymonster.analyzer.pb.CatalogSnapshot
 import com.ridi.oss.proxymonster.analyzer.pb.Column
-import com.ridi.oss.proxymonster.analyzer.pb.Submission
 import com.ridi.oss.proxymonster.analyzer.pb.FailureClass
 import com.ridi.oss.proxymonster.analyzer.pb.MaskedDisposition
 import com.ridi.oss.proxymonster.analyzer.pb.SessionObservation
@@ -154,7 +153,7 @@ internal fun resultRequirementsOf(facts: StatementFacts, tempTables: Set<ObjectR
     return resultRequirements {
         this.facts = facts.toBuilder().clearDetail().clearRewrittenSql().clearSources()
             .clearSchemaQualifierCandidates().clearNamespaceQualifierCandidates().clearPredicateLiterals()
-            .clearAthenaPreparedDefinitionNeed().clearSubmission().build()
+            .clearAthenaPreparedDefinitionNeed().build()
         this.tempTables += referenced.map { it.tableRef() }.distinct().filter { it in tempTables }
     }
 }
@@ -178,8 +177,6 @@ data class DecisionContext(
     /** ALLOW/MASK only: the `*`-expanded query the wire proxy must send instead of the client's original
      * so target-DB column order matches the mask ordinals. Null = send verbatim. */
     val rewrittenSql: String? = null,
-    /** The engine-specific companion to [rewrittenSql] (analyzer.proto Submission); the proxy's engine reads it. */
-    val submission: Submission? = null,
     /** Non-empty: no verdict yet; the proxy runs these, then re-sends the same statement. */
     val beforeDecide: List<ProxyCommand> = emptyList(),
     /** The analyzer's ordered output column names for this decision (an empty list for a passthrough /
@@ -1108,7 +1105,6 @@ internal fun wireTaskForbiddenDeny(
 private fun DecisionContext.withAnalyzerRewrite(facts: StatementFacts): DecisionContext = when {
     facts.hasRewrittenSql() -> copy(
         rewrittenSql = facts.rewrittenSql,
-        submission = if (facts.hasSubmission()) facts.submission else null,
     )
     else -> this
 }

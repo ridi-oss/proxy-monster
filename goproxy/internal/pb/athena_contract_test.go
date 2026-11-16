@@ -41,24 +41,6 @@ func TestAthenaScopeSharesAnalyzerTypeAndPreservesParameterOrder(t *testing.T) {
 	}
 }
 
-func TestAthenaSubmissionEmptyParametersRemainPresent(t *testing.T) {
-	verdict := &Verdict{RewrittenSql: proto.String("SELECT email FROM users"), Submission: &analyzerpb.Submission{Engine: &analyzerpb.Submission_Athena{Athena: &analyzerpb.AthenaSubmission{}}}}
-	encoded, err := proto.Marshal(verdict)
-	if err != nil {
-		t.Fatal(err)
-	}
-	decoded := new(Verdict)
-	if err := proto.Unmarshal(encoded, decoded); err != nil {
-		t.Fatal(err)
-	}
-	if decoded.GetSubmission().GetAthena() == nil || len(decoded.GetSubmission().GetAthena().GetExecutionParameters()) != 0 {
-		t.Fatalf("replacement with empty parameters lost presence: %v", decoded)
-	}
-	if new(Verdict).GetSubmission() != nil || new(DecisionRequest).GetSession().GetAthena() != nil {
-		t.Fatal("absent Athena fields must remain absent")
-	}
-}
-
 func TestNativeResultInstructionsReferenceOriginalContext(t *testing.T) {
 	instructions := &analyzerpb.HttpDbInstructions{
 		Action:   analyzerpb.HttpDbInstruction_HTTP_DB_INSTRUCTION_APPLY_ORIGINAL_CONTEXT,

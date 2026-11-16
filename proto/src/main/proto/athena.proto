@@ -44,13 +44,6 @@ message AthenaPreparedDefinitionNeed {
   string name = 2;
 }
 
-// The parameter list the proxy submits with StatementFacts.rewritten_sql in place of the client's (see
-// StatementFacts.athena_submission for the worked example). Presence replaces the client's list even when
-// empty; absence keeps it.
-message AthenaSubmission {
-  repeated string execution_parameters = 1;
-}
-
 enum AthenaObservationSource {
   ATHENA_OBSERVATION_SOURCE_UNSPECIFIED = 0;
   ATHENA_OBSERVATION_SOURCE_AWS_RESPONSE = 2;

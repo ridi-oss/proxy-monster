@@ -348,8 +348,8 @@ message Verdict {
   // control plane: 0 = uncapped, which only a result.cap forbid produces. Set explicitly on every verdict.
   int64 max_rows = 12;
   int64 max_bytes = 13;
-  // The engine-specific companion to rewritten_sql (analyzer.proto Submission); absent = text only.
-  proxymonster.analyzer.v1.Submission submission = 14;
+  reserved 14;
+  reserved "submission";
   // The proxy sends the target's error from check_target_error, redacted, and runs nothing.
   bool forward_target_error = 15;
   // A stable code for the deny_reason the caller can branch on: "rate_spent", or empty.

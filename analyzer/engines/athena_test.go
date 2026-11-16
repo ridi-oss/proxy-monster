@@ -122,7 +122,7 @@ func TestAthenaPartitionValuesRequireUtilityGrant(t *testing.T) {
 func TestAthenaCrossCatalogRewrite(t *testing.T) {
 	request := athenaRequest("SELECT * FROM archive.sample.users")
 	facts := analyzeProto(t, request)
-	if !facts.GetResolved() || facts.GetSubmission().GetAthena() == nil {
+	if !facts.GetResolved() || facts.RewrittenSql == nil {
 		t.Fatalf("missing resolved submission: %s", facts)
 	}
 	root, err := sqlglot.ParseOne(facts.GetRewrittenSql(), "athena")
@@ -150,11 +150,11 @@ func TestAthenaCrossCatalogRewrite(t *testing.T) {
 func TestAthenaParameterBinding(t *testing.T) {
 	request := athenaRequest("SELECT email FROM users WHERE id = ? AND email = ?", "CAST('7' AS BIGINT)", "'sample@example.test'")
 	facts := analyzeProto(t, request)
-	if !facts.GetResolved() || facts.GetSubmission().GetAthena() == nil {
+	if !facts.GetResolved() || facts.RewrittenSql == nil {
 		t.Fatalf("unresolved parameters: %s", facts)
 	}
 	submitted := facts.GetRewrittenSql()
-	if len(facts.GetSubmission().GetAthena().GetExecutionParameters()) != 0 || strings.Contains(submitted, "?") {
+	if strings.Contains(submitted, "?") {
 		t.Fatalf("parameters were not replaced together: %s", facts)
 	}
 	if !strings.Contains(submitted, "sample@example.test") || !strings.Contains(submitted, "BIGINT") {
@@ -169,7 +169,7 @@ func TestAthenaParameterBinding(t *testing.T) {
 func TestAthenaParametersFollowSQLOrderAcrossScopes(t *testing.T) {
 	request := athenaRequest("/* 한글 */ WITH a AS (SELECT r.email, r.id FROM users r WHERE r.email = ?) SELECT a.email FROM a WHERE EXISTS (SELECT 1 FROM users s WHERE s.id = ?) AND a.id = ?", "'한글'", "20", "30")
 	facts := analyzeProto(t, request)
-	if !facts.GetResolved() || facts.GetSubmission().GetAthena() == nil {
+	if !facts.GetResolved() || facts.RewrittenSql == nil {
 		t.Fatalf("scoped parameters did not resolve: %s", facts)
 	}
 	root, err := sqlglot.ParseOne(facts.GetRewrittenSql(), "athena")
@@ -207,7 +207,7 @@ func TestAthenaParameterFailures(t *testing.T) {
 		athenaRequest("SELECT email FROM users WHERE id = ?", "@named"),
 		athenaRequest("SELECT email FROM users WHERE id = ?", "$?"),
 	} {
-		if facts := analyzeProto(t, request); facts.GetResolved() || facts.GetSubmission().GetAthena() != nil || facts.GetFailureClass() != pb.FailureClass_FAILURE_CLASS_UNANALYZABLE {
+		if facts := analyzeProto(t, request); facts.GetResolved() || facts.RewrittenSql != nil || facts.GetFailureClass() != pb.FailureClass_FAILURE_CLASS_UNANALYZABLE {
 			t.Fatalf("unproven parameters did not reach exception: %s: %s", request, facts)
 		}
 	}
@@ -262,7 +262,7 @@ func TestAthenaPreparedDefinition(t *testing.T) {
 	}
 	request.EngineConfig.Session.GetAthena().PreparedDefinitions = []*pb.AthenaPreparedDefinition{{Workgroup: "sample", Name: "lookup_user", QueryString: "SELECT email FROM users WHERE id = ?"}}
 	facts = analyzeProto(t, request)
-	if !facts.GetResolved() || facts.GetSubmission().GetAthena() == nil || facts.GetAthenaPreparedDefinitionNeed() != nil {
+	if !facts.GetResolved() || facts.RewrittenSql == nil || facts.GetAthenaPreparedDefinitionNeed() != nil {
 		t.Fatalf("prepared definition not expanded: %s", facts)
 	}
 	if strings.HasPrefix(facts.GetRewrittenSql(), "EXECUTE") || strings.Contains(facts.GetRewrittenSql(), "?") {
@@ -281,7 +281,7 @@ func TestAthenaMissingContextAndUnknownSemantics(t *testing.T) {
 	}
 	request := athenaRequest("SELECT email FROM users")
 	request.EngineConfig.Session.Engine = nil
-	if facts := analyzeProto(t, request); facts.GetResolved() || facts.GetSubmission().GetAthena() != nil {
+	if facts := analyzeProto(t, request); facts.GetResolved() || facts.RewrittenSql != nil {
 		t.Fatalf("missing context resolved: %s", facts)
 	}
 	for _, sql := range []string{
@@ -320,7 +320,7 @@ func TestAthenaRowCapIsPushedIntoTheSubmission(t *testing.T) {
 		}
 	}
 	request := athenaRequest("SELECT email FROM users")
-	if facts := analyzeProto(t, request); facts.GetSubmission().GetAthena() != nil {
-		t.Fatalf("no cap requested but the submission was replaced: %s", facts)
+	if facts := analyzeProto(t, request); facts.RewrittenSql != nil {
+		t.Fatalf("no cap requested but the text was rewritten: %s", facts)
 	}
 }

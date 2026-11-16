@@ -153,7 +153,6 @@ func decisionFromWireForTest(v *pb.Verdict) (any, *spi.Decision) {
 	decision := &spi.Decision{Action: relay.EnfActionName(v.GetDecision()), DecisionID: v.GetDecisionId(), DenyReason: v.GetDenyReason(), Masks: v.GetMasks(), SanitizeDiagnostics: v.GetSanitizeDiagnostics(), MaxRows: v.GetMaxRows(), MaxBytes: v.GetMaxBytes()}
 	decision.AfterStatement = v.GetAfterStatement()
 	decision.RewrittenSQL = v.RewrittenSql
-	decision.Submission = v.Submission
 	return nil, decision
 }
 
@@ -247,5 +246,5 @@ func (f *fakeAthena) handle(w http.ResponseWriter, request *http.Request) {
 
 func maskVerdict() *pb.Verdict {
 	return &pb.Verdict{Decision: pb.EnfAction_MASK, DecisionId: 7, Masks: []*pb.ColumnMask{{Column: "email", Kind: "FIXED", Ordinal: proto.Int32(0)}}, SanitizeDiagnostics: true,
-		RewrittenSql: proto.String("SELECT email, n FROM users WHERE n > (1)"), Submission: &enginepb.Submission{Engine: &enginepb.Submission_Athena{Athena: &enginepb.AthenaSubmission{}}}}
+		RewrittenSql: proto.String("SELECT email, n FROM users WHERE n > (1)")}
 }

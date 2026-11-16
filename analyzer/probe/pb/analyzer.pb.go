@@ -2137,7 +2137,10 @@ type StatementFacts struct {
 	Detail string `protobuf:"bytes,4,opt,name=detail,proto3" json:"detail,omitempty"`
 	// Ordered target-DB output names; RequireResultReadGrant.output_ordinals indexes this exact list.
 	OutputColumns []string `protobuf:"bytes,7,rep,name=output_columns,json=outputColumns,proto3" json:"output_columns,omitempty"`
-	// Safe analyzer rewrite (currently faithful star expansion); absent means relay the client's SQL.
+	// Safe analyzer rewrite (star expansion, Athena's bound parameters and row cap); absent means relay the
+	// client's SQL. Athena submits it without the client's parameters, which are bound into it:
+	//
+	//	QueryString "SELECT email FROM users WHERE id = ?" + ["7"] -> "SELECT email FROM users WHERE id = (7)"
 	RewrittenSql *string `protobuf:"bytes,9,opt,name=rewritten_sql,json=rewrittenSql,proto3,oneof" json:"rewritten_sql,omitempty"`
 	// True only for non-temporary DDL roots; Kotlin also treats called functions as catalog-changing.
 	CatalogChanging bool `protobuf:"varint,11,opt,name=catalog_changing,json=catalogChanging,proto3" json:"catalog_changing,omitempty"`
@@ -2176,9 +2179,6 @@ type StatementFacts struct {
 	// names the definition here; the proxy fetches it from AWS, adds it to SessionObservation.athena
 	// .prepared_definitions, and re-sends the same analysis. Set only on an unresolved fact.
 	AthenaPreparedDefinitionNeed *AthenaPreparedDefinitionNeed `protobuf:"bytes,21,opt,name=athena_prepared_definition_need,json=athenaPreparedDefinitionNeed,proto3" json:"athena_prepared_definition_need,omitempty"`
-	// What the proxy must submit beside rewritten_sql for engines whose request carries more than text.
-	// Absent means rewritten_sql alone (or the client's original) is the whole submission.
-	Submission *Submission `protobuf:"bytes,22,opt,name=submission,proto3" json:"submission,omitempty"`
 }
 
 func (x *StatementFacts) Reset() {
@@ -2330,90 +2330,6 @@ func (x *StatementFacts) GetAthenaPreparedDefinitionNeed() *AthenaPreparedDefini
 	return nil
 }
 
-func (x *StatementFacts) GetSubmission() *Submission {
-	if x != nil {
-		return x.Submission
-	}
-	return nil
-}
-
-// Engine-specific companions to rewritten_sql; the proxy's engine reads its own arm and no other.
-type Submission struct {
-	state         protoimpl.MessageState
-	sizeCache     protoimpl.SizeCache
-	unknownFields protoimpl.UnknownFields
-
-	// Types that are assignable to Engine:
-	//
-	//	*Submission_Athena
-	Engine isSubmission_Engine `protobuf_oneof:"engine"`
-}
-
-func (x *Submission) Reset() {
-	*x = Submission{}
-	mi := &file_analyzer_proto_msgTypes[22]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *Submission) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*Submission) ProtoMessage() {}
-
-func (x *Submission) ProtoReflect() protoreflect.Message {
-	mi := &file_analyzer_proto_msgTypes[22]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use Submission.ProtoReflect.Descriptor instead.
-func (*Submission) Descriptor() ([]byte, []int) {
-	return file_analyzer_proto_rawDescGZIP(), []int{22}
-}
-
-func (m *Submission) GetEngine() isSubmission_Engine {
-	if m != nil {
-		return m.Engine
-	}
-	return nil
-}
-
-func (x *Submission) GetAthena() *AthenaSubmission {
-	if x, ok := x.GetEngine().(*Submission_Athena); ok {
-		return x.Athena
-	}
-	return nil
-}
-
-type isSubmission_Engine interface {
-	isSubmission_Engine()
-}
-
-type Submission_Athena struct {
-	// The client submits SQL and a parameter list separately:
-	//
-	//	QueryString = "SELECT email FROM users WHERE id = ?", ExecutionParameters = ["7"]
-	//
-	// The analyzer folds the parameters into the text so lineage sees literals, and may also expand `*` or
-	// add the editor LIMIT; the result is rewritten_sql:
-	//
-	//	rewritten_sql = "SELECT email FROM users WHERE id = 7", submission.athena.execution_parameters = []
-	//
-	// The proxy must submit that list (here empty) with the rewritten text, or AWS binds the client's "7"
-	// to a `?` that no longer exists.
-	Athena *AthenaSubmission `protobuf:"bytes,1,opt,name=athena,proto3,oneof"`
-}
-
-func (*Submission_Athena) isSubmission_Engine() {}
-
 type ReturnedColumn struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -2425,7 +2341,7 @@ type ReturnedColumn struct {
 
 func (x *ReturnedColumn) Reset() {
 	*x = ReturnedColumn{}
-	mi := &file_analyzer_proto_msgTypes[23]
+	mi := &file_analyzer_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2437,7 +2353,7 @@ func (x *ReturnedColumn) String() string {
 func (*ReturnedColumn) ProtoMessage() {}
 
 func (x *ReturnedColumn) ProtoReflect() protoreflect.Message {
-	mi := &file_analyzer_proto_msgTypes[23]
+	mi := &file_analyzer_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2450,7 +2366,7 @@ func (x *ReturnedColumn) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReturnedColumn.ProtoReflect.Descriptor instead.
 func (*ReturnedColumn) Descriptor() ([]byte, []int) {
-	return file_analyzer_proto_rawDescGZIP(), []int{23}
+	return file_analyzer_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *ReturnedColumn) GetColumn() *ObjectRef {
@@ -2716,7 +2632,7 @@ var file_analyzer_proto_rawDesc = []byte{
 	0x6f, 0x6e, 0x12, 0x27, 0x0a, 0x0f, 0x6f, 0x75, 0x74, 0x70, 0x75, 0x74, 0x5f, 0x6f, 0x72, 0x64,
 	0x69, 0x6e, 0x61, 0x6c, 0x73, 0x18, 0x06, 0x20, 0x03, 0x28, 0x05, 0x52, 0x0e, 0x6f, 0x75, 0x74,
 	0x70, 0x75, 0x74, 0x4f, 0x72, 0x64, 0x69, 0x6e, 0x61, 0x6c, 0x73, 0x42, 0x0a, 0x0a, 0x08, 0x72,
-	0x65, 0x73, 0x6f, 0x75, 0x72, 0x63, 0x65, 0x22, 0x86, 0x0a, 0x0a, 0x0e, 0x53, 0x74, 0x61, 0x74,
+	0x65, 0x73, 0x6f, 0x75, 0x72, 0x63, 0x65, 0x22, 0xd2, 0x09, 0x0a, 0x0e, 0x53, 0x74, 0x61, 0x74,
 	0x65, 0x6d, 0x65, 0x6e, 0x74, 0x46, 0x61, 0x63, 0x74, 0x73, 0x12, 0x1a, 0x0a, 0x08, 0x72, 0x65,
 	0x73, 0x6f, 0x6c, 0x76, 0x65, 0x64, 0x18, 0x01, 0x20, 0x01, 0x28, 0x08, 0x52, 0x08, 0x72, 0x65,
 	0x73, 0x6f, 0x6c, 0x76, 0x65, 0x64, 0x12, 0x4b, 0x0a, 0x0d, 0x66, 0x61, 0x69, 0x6c, 0x75, 0x72,
@@ -2787,22 +2703,13 @@ var file_analyzer_proto_rawDesc = []byte{
 	0x6e, 0x61, 0x50, 0x72, 0x65, 0x70, 0x61, 0x72, 0x65, 0x64, 0x44, 0x65, 0x66, 0x69, 0x6e, 0x69,
 	0x74, 0x69, 0x6f, 0x6e, 0x4e, 0x65, 0x65, 0x64, 0x52, 0x1c, 0x61, 0x74, 0x68, 0x65, 0x6e, 0x61,
 	0x50, 0x72, 0x65, 0x70, 0x61, 0x72, 0x65, 0x64, 0x44, 0x65, 0x66, 0x69, 0x6e, 0x69, 0x74, 0x69,
-	0x6f, 0x6e, 0x4e, 0x65, 0x65, 0x64, 0x12, 0x44, 0x0a, 0x0a, 0x73, 0x75, 0x62, 0x6d, 0x69, 0x73,
-	0x73, 0x69, 0x6f, 0x6e, 0x18, 0x16, 0x20, 0x01, 0x28, 0x0b, 0x32, 0x24, 0x2e, 0x70, 0x72, 0x6f,
-	0x78, 0x79, 0x6d, 0x6f, 0x6e, 0x73, 0x74, 0x65, 0x72, 0x2e, 0x61, 0x6e, 0x61, 0x6c, 0x79, 0x7a,
-	0x65, 0x72, 0x2e, 0x76, 0x31, 0x2e, 0x53, 0x75, 0x62, 0x6d, 0x69, 0x73, 0x73, 0x69, 0x6f, 0x6e,
-	0x52, 0x0a, 0x73, 0x75, 0x62, 0x6d, 0x69, 0x73, 0x73, 0x69, 0x6f, 0x6e, 0x42, 0x0f, 0x0a, 0x0d,
-	0x5f, 0x66, 0x61, 0x69, 0x6c, 0x65, 0x64, 0x5f, 0x73, 0x74, 0x61, 0x67, 0x65, 0x42, 0x10, 0x0a,
-	0x0e, 0x5f, 0x72, 0x65, 0x77, 0x72, 0x69, 0x74, 0x74, 0x65, 0x6e, 0x5f, 0x73, 0x71, 0x6c, 0x42,
-	0x11, 0x0a, 0x0f, 0x5f, 0x73, 0x74, 0x61, 0x74, 0x65, 0x6d, 0x65, 0x6e, 0x74, 0x5f, 0x65, 0x78,
-	0x65, 0x63, 0x4a, 0x04, 0x08, 0x05, 0x10, 0x06, 0x4a, 0x04, 0x08, 0x06, 0x10, 0x07, 0x4a, 0x04,
-	0x08, 0x08, 0x10, 0x09, 0x4a, 0x04, 0x08, 0x0a, 0x10, 0x0b, 0x4a, 0x04, 0x08, 0x0f, 0x10, 0x10,
-	0x22, 0x5a, 0x0a, 0x0a, 0x53, 0x75, 0x62, 0x6d, 0x69, 0x73, 0x73, 0x69, 0x6f, 0x6e, 0x12, 0x42,
-	0x0a, 0x06, 0x61, 0x74, 0x68, 0x65, 0x6e, 0x61, 0x18, 0x01, 0x20, 0x01, 0x28, 0x0b, 0x32, 0x28,
-	0x2e, 0x70, 0x72, 0x6f, 0x78, 0x79, 0x6d, 0x6f, 0x6e, 0x73, 0x74, 0x65, 0x72, 0x2e, 0x61, 0x74,
-	0x68, 0x65, 0x6e, 0x61, 0x2e, 0x76, 0x31, 0x2e, 0x41, 0x74, 0x68, 0x65, 0x6e, 0x61, 0x53, 0x75,
-	0x62, 0x6d, 0x69, 0x73, 0x73, 0x69, 0x6f, 0x6e, 0x48, 0x00, 0x52, 0x06, 0x61, 0x74, 0x68, 0x65,
-	0x6e, 0x61, 0x42, 0x08, 0x0a, 0x06, 0x65, 0x6e, 0x67, 0x69, 0x6e, 0x65, 0x22, 0x6d, 0x0a, 0x0e,
+	0x6f, 0x6e, 0x4e, 0x65, 0x65, 0x64, 0x42, 0x0f, 0x0a, 0x0d, 0x5f, 0x66, 0x61, 0x69, 0x6c, 0x65,
+	0x64, 0x5f, 0x73, 0x74, 0x61, 0x67, 0x65, 0x42, 0x10, 0x0a, 0x0e, 0x5f, 0x72, 0x65, 0x77, 0x72,
+	0x69, 0x74, 0x74, 0x65, 0x6e, 0x5f, 0x73, 0x71, 0x6c, 0x42, 0x11, 0x0a, 0x0f, 0x5f, 0x73, 0x74,
+	0x61, 0x74, 0x65, 0x6d, 0x65, 0x6e, 0x74, 0x5f, 0x65, 0x78, 0x65, 0x63, 0x4a, 0x04, 0x08, 0x05,
+	0x10, 0x06, 0x4a, 0x04, 0x08, 0x06, 0x10, 0x07, 0x4a, 0x04, 0x08, 0x08, 0x10, 0x09, 0x4a, 0x04,
+	0x08, 0x0a, 0x10, 0x0b, 0x4a, 0x04, 0x08, 0x0f, 0x10, 0x10, 0x4a, 0x04, 0x08, 0x16, 0x10, 0x17,
+	0x52, 0x0a, 0x73, 0x75, 0x62, 0x6d, 0x69, 0x73, 0x73, 0x69, 0x6f, 0x6e, 0x22, 0x6d, 0x0a, 0x0e,
 	0x52, 0x65, 0x74, 0x75, 0x72, 0x6e, 0x65, 0x64, 0x43, 0x6f, 0x6c, 0x75, 0x6d, 0x6e, 0x12, 0x32,
 	0x0a, 0x06, 0x63, 0x6f, 0x6c, 0x75, 0x6d, 0x6e, 0x18, 0x01, 0x20, 0x01, 0x28, 0x0b, 0x32, 0x1a,
 	0x2e, 0x70, 0x72, 0x6f, 0x78, 0x79, 0x6d, 0x6f, 0x6e, 0x73, 0x74, 0x65, 0x72, 0x2e, 0x76, 0x31,
@@ -3157,7 +3064,7 @@ func file_analyzer_proto_rawDescGZIP() []byte {
 }
 
 var file_analyzer_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_analyzer_proto_msgTypes = make([]protoimpl.MessageInfo, 25)
+var file_analyzer_proto_msgTypes = make([]protoimpl.MessageInfo, 24)
 var file_analyzer_proto_goTypes = []any{
 	(MaskedDisposition)(0),               // 0: proxymonster.analyzer.v1.MaskedDisposition
 	(StatementKind)(0),                   // 1: proxymonster.analyzer.v1.StatementKind
@@ -3185,14 +3092,12 @@ var file_analyzer_proto_goTypes = []any{
 	(*UtilityResource)(nil),              // 23: proxymonster.analyzer.v1.UtilityResource
 	(*RequireResultReadGrant)(nil),       // 24: proxymonster.analyzer.v1.RequireResultReadGrant
 	(*StatementFacts)(nil),               // 25: proxymonster.analyzer.v1.StatementFacts
-	(*Submission)(nil),                   // 26: proxymonster.analyzer.v1.Submission
-	(*ReturnedColumn)(nil),               // 27: proxymonster.analyzer.v1.ReturnedColumn
-	nil,                                  // 28: proxymonster.analyzer.v1.TargetSettings.PropertiesEntry
-	(Engine)(0),                          // 29: proxymonster.v1.Engine
-	(*AthenaSqlContext)(nil),             // 30: proxymonster.athena.v1.AthenaSqlContext
-	(*ObjectRef)(nil),                    // 31: proxymonster.v1.ObjectRef
-	(*AthenaPreparedDefinitionNeed)(nil), // 32: proxymonster.athena.v1.AthenaPreparedDefinitionNeed
-	(*AthenaSubmission)(nil),             // 33: proxymonster.athena.v1.AthenaSubmission
+	(*ReturnedColumn)(nil),               // 26: proxymonster.analyzer.v1.ReturnedColumn
+	nil,                                  // 27: proxymonster.analyzer.v1.TargetSettings.PropertiesEntry
+	(Engine)(0),                          // 28: proxymonster.v1.Engine
+	(*AthenaSqlContext)(nil),             // 29: proxymonster.athena.v1.AthenaSqlContext
+	(*ObjectRef)(nil),                    // 30: proxymonster.v1.ObjectRef
+	(*AthenaPreparedDefinitionNeed)(nil), // 31: proxymonster.athena.v1.AthenaPreparedDefinitionNeed
 }
 var file_analyzer_proto_depIdxs = []int32{
 	4,  // 0: proxymonster.analyzer.v1.CatalogSnapshot.columns:type_name -> proxymonster.analyzer.v1.Column
@@ -3200,46 +3105,44 @@ var file_analyzer_proto_depIdxs = []int32{
 	7,  // 2: proxymonster.analyzer.v1.CatalogSnapshot.routines:type_name -> proxymonster.analyzer.v1.SchemaFunctions
 	7,  // 3: proxymonster.analyzer.v1.FunctionCatalog.system_function_schemas:type_name -> proxymonster.analyzer.v1.SchemaFunctions
 	7,  // 4: proxymonster.analyzer.v1.FunctionCatalog.udf_schemas:type_name -> proxymonster.analyzer.v1.SchemaFunctions
-	29, // 5: proxymonster.analyzer.v1.EngineConfig.engine:type_name -> proxymonster.v1.Engine
+	28, // 5: proxymonster.analyzer.v1.EngineConfig.engine:type_name -> proxymonster.v1.Engine
 	10, // 6: proxymonster.analyzer.v1.EngineConfig.target:type_name -> proxymonster.analyzer.v1.TargetSettings
 	11, // 7: proxymonster.analyzer.v1.EngineConfig.session:type_name -> proxymonster.analyzer.v1.SessionObservation
-	28, // 8: proxymonster.analyzer.v1.TargetSettings.properties:type_name -> proxymonster.analyzer.v1.TargetSettings.PropertiesEntry
+	27, // 8: proxymonster.analyzer.v1.TargetSettings.properties:type_name -> proxymonster.analyzer.v1.TargetSettings.PropertiesEntry
 	12, // 9: proxymonster.analyzer.v1.SessionObservation.mysql:type_name -> proxymonster.analyzer.v1.MySqlSession
 	13, // 10: proxymonster.analyzer.v1.SessionObservation.postgres:type_name -> proxymonster.analyzer.v1.PostgresSession
-	30, // 11: proxymonster.analyzer.v1.SessionObservation.athena:type_name -> proxymonster.athena.v1.AthenaSqlContext
+	29, // 11: proxymonster.analyzer.v1.SessionObservation.athena:type_name -> proxymonster.athena.v1.AthenaSqlContext
 	8,  // 12: proxymonster.analyzer.v1.AnalyzeRequest.namespace:type_name -> proxymonster.analyzer.v1.Namespace
 	9,  // 13: proxymonster.analyzer.v1.AnalyzeRequest.engine_config:type_name -> proxymonster.analyzer.v1.EngineConfig
 	5,  // 14: proxymonster.analyzer.v1.AnalyzeRequest.catalog:type_name -> proxymonster.analyzer.v1.CatalogSnapshot
 	9,  // 15: proxymonster.analyzer.v1.SplitRequest.engine_config:type_name -> proxymonster.analyzer.v1.EngineConfig
-	29, // 16: proxymonster.analyzer.v1.ColumnNamesRequest.engine:type_name -> proxymonster.v1.Engine
+	28, // 16: proxymonster.analyzer.v1.ColumnNamesRequest.engine:type_name -> proxymonster.v1.Engine
 	10, // 17: proxymonster.analyzer.v1.ColumnNamesRequest.target:type_name -> proxymonster.analyzer.v1.TargetSettings
 	4,  // 18: proxymonster.analyzer.v1.ColumnNamesRequest.columns:type_name -> proxymonster.analyzer.v1.Column
 	3,  // 19: proxymonster.analyzer.v1.ColumnNamesResponse.error:type_name -> proxymonster.analyzer.v1.ColumnNamesResponse.Error
 	4,  // 20: proxymonster.analyzer.v1.ColumnNamesResponse.columns:type_name -> proxymonster.analyzer.v1.Column
 	1,  // 21: proxymonster.analyzer.v1.RequireStatementExecGrant.statement_kind:type_name -> proxymonster.analyzer.v1.StatementKind
-	31, // 22: proxymonster.analyzer.v1.PredicateLiteral.column:type_name -> proxymonster.v1.ObjectRef
-	31, // 23: proxymonster.analyzer.v1.RequireResultReadGrant.column:type_name -> proxymonster.v1.ObjectRef
-	31, // 24: proxymonster.analyzer.v1.RequireResultReadGrant.table:type_name -> proxymonster.v1.ObjectRef
+	30, // 22: proxymonster.analyzer.v1.PredicateLiteral.column:type_name -> proxymonster.v1.ObjectRef
+	30, // 23: proxymonster.analyzer.v1.RequireResultReadGrant.column:type_name -> proxymonster.v1.ObjectRef
+	30, // 24: proxymonster.analyzer.v1.RequireResultReadGrant.table:type_name -> proxymonster.v1.ObjectRef
 	22, // 25: proxymonster.analyzer.v1.RequireResultReadGrant.function:type_name -> proxymonster.analyzer.v1.FunctionResource
 	23, // 26: proxymonster.analyzer.v1.RequireResultReadGrant.utility:type_name -> proxymonster.analyzer.v1.UtilityResource
 	0,  // 27: proxymonster.analyzer.v1.RequireResultReadGrant.masked_disposition:type_name -> proxymonster.analyzer.v1.MaskedDisposition
 	2,  // 28: proxymonster.analyzer.v1.StatementFacts.failure_class:type_name -> proxymonster.analyzer.v1.FailureClass
 	19, // 29: proxymonster.analyzer.v1.StatementFacts.sources:type_name -> proxymonster.analyzer.v1.SourceInfo
-	31, // 30: proxymonster.analyzer.v1.StatementFacts.namespace_qualifier_candidates:type_name -> proxymonster.v1.ObjectRef
+	30, // 30: proxymonster.analyzer.v1.StatementFacts.namespace_qualifier_candidates:type_name -> proxymonster.v1.ObjectRef
 	20, // 31: proxymonster.analyzer.v1.StatementFacts.statement_exec:type_name -> proxymonster.analyzer.v1.RequireStatementExecGrant
 	24, // 32: proxymonster.analyzer.v1.StatementFacts.result_reads:type_name -> proxymonster.analyzer.v1.RequireResultReadGrant
 	21, // 33: proxymonster.analyzer.v1.StatementFacts.predicate_literals:type_name -> proxymonster.analyzer.v1.PredicateLiteral
-	31, // 34: proxymonster.analyzer.v1.StatementFacts.diagnostic_leak_columns:type_name -> proxymonster.v1.ObjectRef
-	27, // 35: proxymonster.analyzer.v1.StatementFacts.returned_columns:type_name -> proxymonster.analyzer.v1.ReturnedColumn
-	32, // 36: proxymonster.analyzer.v1.StatementFacts.athena_prepared_definition_need:type_name -> proxymonster.athena.v1.AthenaPreparedDefinitionNeed
-	26, // 37: proxymonster.analyzer.v1.StatementFacts.submission:type_name -> proxymonster.analyzer.v1.Submission
-	33, // 38: proxymonster.analyzer.v1.Submission.athena:type_name -> proxymonster.athena.v1.AthenaSubmission
-	31, // 39: proxymonster.analyzer.v1.ReturnedColumn.column:type_name -> proxymonster.v1.ObjectRef
-	40, // [40:40] is the sub-list for method output_type
-	40, // [40:40] is the sub-list for method input_type
-	40, // [40:40] is the sub-list for extension type_name
-	40, // [40:40] is the sub-list for extension extendee
-	0,  // [0:40] is the sub-list for field type_name
+	30, // 34: proxymonster.analyzer.v1.StatementFacts.diagnostic_leak_columns:type_name -> proxymonster.v1.ObjectRef
+	26, // 35: proxymonster.analyzer.v1.StatementFacts.returned_columns:type_name -> proxymonster.analyzer.v1.ReturnedColumn
+	31, // 36: proxymonster.analyzer.v1.StatementFacts.athena_prepared_definition_need:type_name -> proxymonster.athena.v1.AthenaPreparedDefinitionNeed
+	30, // 37: proxymonster.analyzer.v1.ReturnedColumn.column:type_name -> proxymonster.v1.ObjectRef
+	38, // [38:38] is the sub-list for method output_type
+	38, // [38:38] is the sub-list for method input_type
+	38, // [38:38] is the sub-list for extension type_name
+	38, // [38:38] is the sub-list for extension extendee
+	0,  // [0:38] is the sub-list for field type_name
 }
 
 func init() { file_analyzer_proto_init() }
@@ -3263,16 +3166,13 @@ func file_analyzer_proto_init() {
 		(*RequireResultReadGrant_Utility)(nil),
 	}
 	file_analyzer_proto_msgTypes[21].OneofWrappers = []any{}
-	file_analyzer_proto_msgTypes[22].OneofWrappers = []any{
-		(*Submission_Athena)(nil),
-	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: file_analyzer_proto_rawDesc,
 			NumEnums:      4,
-			NumMessages:   25,
+			NumMessages:   24,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

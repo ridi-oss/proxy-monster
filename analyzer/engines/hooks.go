@@ -19,9 +19,6 @@ type engineHooks interface {
 	// re-parsed, or the prepared original) and may edit it (a row cap); true means the text must be
 	// regenerated.
 	finishSubmission(session *Session, submission exp.Expression) bool
-	// stampSubmission records on facts what the proxy needs beside the regenerated text (Athena: the
-	// execution-parameter list that goes with it). Called only when the text was regenerated.
-	stampSubmission(facts *pb.StatementFacts)
 	// configureNamespace maps the session's namespace onto the qualifier's resolution options: a search
 	// path for engines that have one, a fixed catalog and default schema for engines that do not.
 	configureNamespace(session *Session, opts *optimizer.QualifyOpts, namespace NamespaceConfig)
@@ -37,8 +34,6 @@ func (sharedHooks) prepareStatement(_ *Session, root exp.Expression) (exp.Expres
 }
 
 func (sharedHooks) finishSubmission(*Session, exp.Expression) bool { return false }
-
-func (sharedHooks) stampSubmission(*pb.StatementFacts) {}
 
 func (sharedHooks) configureNamespace(_ *Session, opts *optimizer.QualifyOpts, namespace NamespaceConfig) {
 	opts.SearchPath = namespace.SearchPath

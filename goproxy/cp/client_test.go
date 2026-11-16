@@ -72,21 +72,6 @@ func TestDecisionFromWire(t *testing.T) {
 		}
 	})
 
-	t.Run("the submission rides rewritten sql", func(t *testing.T) {
-		_, got := decisionFromWire(wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW, RewrittenSql: proto.String("SELECT 1"), Submission: &enginepb.Submission{Engine: &enginepb.Submission_Athena{Athena: &enginepb.AthenaSubmission{ExecutionParameters: []string{"'x'"}}}}}))
-		if got.Action != "ALLOW" || got.RewrittenSQL == nil || *got.RewrittenSQL != "SELECT 1" || got.Submission.GetAthena() == nil || len(got.Submission.GetAthena().ExecutionParameters) != 1 {
-			t.Fatalf("submission not mapped: %+v", got)
-		}
-		_, got = decisionFromWire(wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW, RewrittenSql: proto.String("SELECT 1"), Submission: &enginepb.Submission{Engine: &enginepb.Submission_Athena{Athena: &enginepb.AthenaSubmission{}}}}))
-		if got.Action != "ALLOW" || got.Submission.GetAthena() == nil || len(got.Submission.GetAthena().ExecutionParameters) != 0 {
-			t.Fatalf("empty parameter list lost its presence: %+v", got)
-		}
-		_, got = decisionFromWire(wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW, Submission: &enginepb.Submission{Engine: &enginepb.Submission_Athena{Athena: &enginepb.AthenaSubmission{}}}}))
-		if got.Action != "DENY" {
-			t.Fatalf("parameters without rewritten sql accepted: %+v", got)
-		}
-	})
-
 	t.Run("targeted after statement and generation survive", func(t *testing.T) {
 		commands, got := decisionFromWire(wireVerdict(&pb.Verdict{
 			Decision:            pb.EnfAction_MASK,

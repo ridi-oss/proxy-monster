@@ -44,7 +44,7 @@ class AthenaAnalyzerTest {
         val facts = analyzer.analyze("SELECT * FROM archive.sample.users")
         assertTrue(facts.resolved, facts.detail)
         assertTrue(facts.resultReadsList.any { it.hasColumn() && it.column.catalog == "archive" })
-        assertTrue(facts.submission.hasAthena())
+        assertTrue(facts.hasRewrittenSql())
         assertTrue(facts.rewrittenSql.contains("\"archive\".\"sample\".\"users\""))
         assertEquals(listOf("awsdatacatalog.sample.users.email", "archive.sample.users.email"), analyzer.columnKeys)
     }
@@ -65,7 +65,7 @@ class AthenaAnalyzerTest {
         }
         val facts = analyzerWith(trusted).analyze("EXECUTE lookup_user")
         assertTrue(facts.resolved, facts.detail)
-        assertTrue(facts.submission.hasAthena())
+        assertTrue(facts.hasRewrittenSql())
         assertFalse(facts.rewrittenSql.startsWith("EXECUTE"))
     }
 
@@ -89,11 +89,9 @@ class AthenaAnalyzerTest {
         ).analyze("EXECUTE lookup_user USING 'sample@example.test'")
         assertTrue(direct.resolved, direct.detail)
         assertTrue(prepared.resolved, prepared.detail)
-        assertTrue(direct.submission.hasAthena())
+        assertTrue(direct.hasRewrittenSql())
         assertEquals(direct.rewrittenSql, prepared.rewrittenSql)
-        assertEquals(direct.submission, prepared.submission)
         assertEquals(direct.resultReadsList, prepared.resultReadsList)
-        assertEquals(0, prepared.submission.athena.executionParametersCount)
         assertFalse(prepared.rewrittenSql.contains("?"))
     }
 
@@ -102,6 +100,6 @@ class AthenaAnalyzerTest {
         val facts = analyzerWith(null).analyze("SELECT email FROM users")
         assertFalse(facts.resolved)
         assertEquals(FailureClass.FAILURE_CLASS_UNANALYZABLE, facts.failureClass)
-        assertFalse(facts.submission.hasAthena())
+        assertFalse(facts.hasRewrittenSql())
     }
 }

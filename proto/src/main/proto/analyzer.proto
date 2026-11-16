@@ -505,7 +505,9 @@ message StatementFacts {
   // was is_write — the analyzer emits DENY_STATEMENT column dispositions for write payloads directly, so
   // the control-plane needs no separate write flag (it only ever worded a deny message from it).
   reserved 8;
-  // Safe analyzer rewrite (currently faithful star expansion); absent means relay the client's SQL.
+  // Safe analyzer rewrite (star expansion, Athena's bound parameters and row cap); absent means relay the
+  // client's SQL. Athena submits it without the client's parameters, which are bound into it:
+  //   QueryString "SELECT email FROM users WHERE id = ?" + ["7"] -> "SELECT email FROM users WHERE id = (7)"
   optional string rewritten_sql = 9;
   // was explain_of_query — an EXPLAIN's output is the plan, not the query's columns, so the analyzer emits
   // its projected columns as read-required-with-no-output-ordinal and leaves output_columns empty; nothing
@@ -549,23 +551,8 @@ message StatementFacts {
   // names the definition here; the proxy fetches it from AWS, adds it to SessionObservation.athena
   // .prepared_definitions, and re-sends the same analysis. Set only on an unresolved fact.
   proxymonster.athena.v1.AthenaPreparedDefinitionNeed athena_prepared_definition_need = 21;
-  // What the proxy must submit beside rewritten_sql for engines whose request carries more than text.
-  // Absent means rewritten_sql alone (or the client's original) is the whole submission.
-  Submission submission = 22;
-}
-
-// Engine-specific companions to rewritten_sql; the proxy's engine reads its own arm and no other.
-message Submission {
-  oneof engine {
-    // The client submits SQL and a parameter list separately:
-    //   QueryString = "SELECT email FROM users WHERE id = ?", ExecutionParameters = ["7"]
-    // The analyzer folds the parameters into the text so lineage sees literals, and may also expand `*` or
-    // add the editor LIMIT; the result is rewritten_sql:
-    //   rewritten_sql = "SELECT email FROM users WHERE id = 7", submission.athena.execution_parameters = []
-    // The proxy must submit that list (here empty) with the rewritten text, or AWS binds the client's "7"
-    // to a `?` that no longer exists.
-    proxymonster.athena.v1.AthenaSubmission athena = 1;
-  }
+  reserved 22;
+  reserved "submission";
 }
 
 message ReturnedColumn {

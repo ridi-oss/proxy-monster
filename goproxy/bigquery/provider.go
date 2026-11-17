@@ -5,7 +5,11 @@ package bigquery
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
+	"errors"
+	"fmt"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/ridi-oss/proxy-monster/analyzer/engines"
@@ -31,13 +35,24 @@ func (p Provider) OpenTarget() (spi.Target, error) {
 	if err != nil {
 		return nil, err
 	}
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.DisableCompression = true
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	principal, err := credentialPrincipal(ctx, credentials.JSON, token, &http.Client{Transport: transport}, tokenInfoEndpoint)
+	principal, err := credentialPrincipal(ctx, credentials.JSON, token, &http.Client{Transport: http.DefaultTransport}, tokenInfoEndpoint)
 	if err != nil {
 		return nil, err
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DisableCompression = true
+	if p.Flags.CAFile != "" {
+		pem, err := os.ReadFile(p.Flags.CAFile)
+		if err != nil {
+			return nil, fmt.Errorf("bigquery: PM_BIGQUERY_CA_FILE: %w", err)
+		}
+		roots := x509.NewCertPool()
+		if !roots.AppendCertsFromPEM(pem) {
+			return nil, errors.New("bigquery: PM_BIGQUERY_CA_FILE holds no certificate")
+		}
+		transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots}
 	}
 	return newTarget(cfg, token, principal, transport)
 }

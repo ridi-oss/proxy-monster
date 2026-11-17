@@ -19,6 +19,8 @@ type Flags struct {
 	Dataset     string `env:"PM_TARGET_DB"`
 	ContextPath string `env:"PM_BIGQUERY_CONTEXT_PATH" default:":memory:"`
 	Endpoint    string `env:"PM_BIGQUERY_ENDPOINT" default:"https://bigquery.googleapis.com"`
+	// CAFile is a PEM bundle trusted for PM_BIGQUERY_ENDPOINT instead of the system roots, for an emulator.
+	CAFile string `env:"PM_BIGQUERY_CA_FILE"`
 }
 
 // settings is the datasource scope the operator fixes: jobs run in project at location, and unqualified

@@ -179,18 +179,25 @@ func fakeMetadata(t *testing.T, queries *[]map[string]any) http.HandlerFunc {
 			}
 			query, _ := body["query"].(string)
 			switch {
-			case strings.Contains(query, "FROM `proj-a`.`region-us`.INFORMATION_SCHEMA.COLUMNS"):
+			case strings.Contains(query, "FROM `proj-a`.`Missing`."):
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = io.WriteString(w, `{"error":{"code":404,"message":"Not found: Dataset proj-a:Missing"}}`)
+			case strings.Contains(query, "FROM `proj-a`.`Sales`.INFORMATION_SCHEMA.COLUMNS"), strings.Contains(query, "FROM `proj-a`.`sales`.INFORMATION_SCHEMA.COLUMNS"):
 				rows := `[{"f":[{"v":"Sales"},{"v":"Users"},{"v":"Email"},{"v":"STRING"},{"v":"1"},{"v":"YES"}]},` +
 					`{"f":[{"v":"Sales"},{"v":"Users"},{"v":"profile"},{"v":"STRUCT<email STRING, age INT64>"},{"v":"2"},{"v":"NO"}]}`
 				if !strings.Contains(query, "is_hidden = 'NO'") {
 					rows += `,{"f":[{"v":"Sales"},{"v":"Users"},{"v":"_PARTITIONTIME"},{"v":"TIMESTAMP"},{"v":null},{"v":"YES"}]}`
 				}
 				_, _ = io.WriteString(w, page("cols", columnFields, rows+"]", "p2"))
-			case strings.Contains(query, "FROM `proj-a`.`region-us`.INFORMATION_SCHEMA.ROUTINES"):
+			case strings.Contains(query, "FROM `proj-a`.`Sales`.INFORMATION_SCHEMA.ROUTINES"), strings.Contains(query, "FROM `proj-a`.`sales`.INFORMATION_SCHEMA.ROUTINES"):
 				_, _ = io.WriteString(w, `{"jobComplete":false,"jobReference":`+reference("routines")+`}`)
 			default:
 				t.Errorf("unexpected query %q", query)
 			}
+		case r.Method == http.MethodGet && path == "/datasets" && r.URL.Query().Get("pageToken") == "":
+			_, _ = io.WriteString(w, `{"datasets":[{"datasetReference":{"datasetId":"sales"},"location":"US"},{"datasetReference":{"datasetId":"Elsewhere"},"location":"EU"}],"nextPageToken":"d2"}`)
+		case r.Method == http.MethodGet && path == "/datasets" && r.URL.Query().Get("pageToken") == "d2":
+			_, _ = io.WriteString(w, `{"datasets":[{"datasetReference":{"datasetId":"Missing"},"location":"us"}]}`)
 		case r.Method == http.MethodGet && path == "/queries/cols" && r.URL.Query().Get("pageToken") == "p2":
 			_, _ = io.WriteString(w, page("cols", columnFields, `[{"f":[{"v":"Sales"},{"v":"Orders"},{"v":"ID"},{"v":"ARRAY<INT64>"},{"v":"1"},{"v":"YES"}]}]`, ""))
 		case r.Method == http.MethodGet && path == "/queries/routines" && r.URL.Query().Get("location") == "US":
@@ -206,7 +213,7 @@ func fakeMetadata(t *testing.T, queries *[]map[string]any) http.HandlerFunc {
 	}
 }
 
-func TestIntrospectReadsTheLocation(t *testing.T) {
+func TestIntrospectReadsEveryDatasetInTheLocation(t *testing.T) {
 	var queries []map[string]any
 	target := testTarget(t, fakeMetadata(t, &queries))
 	catalog, err := target.Introspect(context.Background())
@@ -234,12 +241,17 @@ func TestIntrospectReadsTheLocation(t *testing.T) {
 	if catalog.GetCurrentCatalog() != "proj-a" || len(catalog.GetDefaultSchemas()) != 1 || catalog.GetDefaultSchemas()[0] != "sales" {
 		t.Errorf("namespace: %v %v", catalog.GetCurrentCatalog(), catalog.GetDefaultSchemas())
 	}
-	if len(queries) != 2 || queries[0]["queryParameters"] != nil {
-		t.Errorf("queries: %v", queries)
+	read := map[string]int{}
+	for _, query := range queries {
+		text := query["query"].(string)
+		read[text[strings.Index(text, "FROM `proj-a`.`")+15:strings.Index(text, "`.INFORMATION_SCHEMA")]]++
+	}
+	if len(read) != 2 || read["sales"] != 2 || read["Missing"] != 1 {
+		t.Errorf("datasets read: %v", read)
 	}
 }
 
-func TestInspectSchemaFiltersOneDataset(t *testing.T) {
+func TestInspectSchemaReadsOneDataset(t *testing.T) {
 	var queries []map[string]any
 	target := testTarget(t, fakeMetadata(t, &queries))
 	push, err := target.InspectSchema("Sales", nil)
@@ -250,15 +262,27 @@ func TestInspectSchemaFiltersOneDataset(t *testing.T) {
 		t.Fatalf("fragment: %v", push)
 	}
 	for _, query := range queries {
-		parameters, _ := json.Marshal(query["queryParameters"])
-		if query["parameterMode"] != "NAMED" || !strings.Contains(query["query"].(string), "= @dataset") ||
-			string(parameters) != `[{"name":"dataset","parameterType":{"type":"STRING"},"parameterValue":{"value":"Sales"}}]` {
-			t.Errorf("dataset filter not bound: %v", query)
+		if !strings.Contains(query["query"].(string), "FROM `proj-a`.`Sales`.INFORMATION_SCHEMA.") {
+			t.Errorf("not the dataset's own view: %v", query["query"])
 		}
 	}
 	again, err := target.InspectSchema("Sales", push.GetContentHash())
 	if err != nil || !again.GetUnchanged() || len(again.GetColumns()) != 0 {
 		t.Fatalf("unchanged fragment: %v %v", again, err)
+	}
+}
+
+func TestInspectSchemaOfAnUnknownDatasetIsEmpty(t *testing.T) {
+	var queries []map[string]any
+	target := testTarget(t, fakeMetadata(t, &queries))
+	for _, dataset := range []string{"Missing", "no`such", "a.b"} {
+		push, err := target.InspectSchema(dataset, nil)
+		if err != nil || len(push.GetColumns()) != 0 || len(push.GetRoutines()) != 0 || len(push.GetContentHash()) != 32 {
+			t.Errorf("%s: %v %v", dataset, push, err)
+		}
+	}
+	if len(queries) != 1 {
+		t.Errorf("an impossible dataset name reached BigQuery: %v", queries)
 	}
 }
 

@@ -8,8 +8,11 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ridi-oss/proxy-monster/analyzer/engines"
@@ -24,21 +27,26 @@ const metadataTimeout = 60 * time.Second
 // bigquerySession folds BigQuery names, which depend on no target setting.
 var bigquerySession, _ = engines.BigQuery.NewSession(nil)
 
-// informationSchema is the region-scoped INFORMATION_SCHEMA view of the target's project, so one query lists
-// every dataset in the location.
-func (t *target) informationSchema(view string) string {
-	return fmt.Sprintf("`%s`.`region-%s`.INFORMATION_SCHEMA.%s", t.project, strings.ToLower(t.location), view)
+// datasetName is what BigQuery allows in a dataset name, so a checked one is safe inside backticks.
+var datasetName = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
+
+// informationSchema is one dataset's view: the region-wide one needs table access to every dataset in the location.
+func (t *target) informationSchema(dataset, view string) (string, error) {
+	if !datasetName.MatchString(dataset) {
+		return "", fmt.Errorf("bigquery: invalid dataset name %q", dataset)
+	}
+	return fmt.Sprintf("`%s`.`%s`.INFORMATION_SCHEMA.%s", t.project, dataset, view), nil
 }
 
-// readColumns lists the location's columns, or one dataset's; a STRUCT or ARRAY column is one row with its
-// GoogleSQL type, such as STRUCT<email STRING, age INT64>.
+// readColumns lists one dataset's columns; a STRUCT or ARRAY column is one row with its GoogleSQL type, such as
+// STRUCT<email STRING, age INT64>.
 func (t *target) readColumns(ctx context.Context, dataset string) ([]*enginepb.Column, error) {
-	request := queryRequest{Query: "SELECT table_schema, table_name, column_name, data_type, ordinal_position, is_nullable FROM " +
-		t.informationSchema("COLUMNS") + " WHERE is_hidden = 'NO'"}
-	if dataset != "" {
-		request.Query += " AND table_schema = @dataset"
-		request.ParameterMode, request.QueryParameters = "NAMED", []stringParameter{namedString("dataset", dataset)}
+	view, err := t.informationSchema(dataset, "COLUMNS")
+	if err != nil {
+		return nil, err
 	}
+	request := queryRequest{Query: "SELECT table_schema, table_name, column_name, data_type, ordinal_position, is_nullable FROM " +
+		view + " WHERE is_hidden = 'NO'"}
 	request.Query += " ORDER BY table_schema, table_name, ordinal_position"
 	rows, err := t.queryRows(ctx, request)
 	if err != nil {
@@ -61,13 +69,13 @@ func (t *target) readColumns(ctx context.Context, dataset string) ([]*enginepb.C
 	return bigquerySession.CanonicalColumns(columns), nil
 }
 
-// readRoutines lists the location's routine names, or one dataset's, as (dataset, name) rows.
+// readRoutines lists one dataset's routine names as (dataset, name) rows.
 func (t *target) readRoutines(ctx context.Context, dataset string) ([][]*string, error) {
-	request := queryRequest{Query: "SELECT routine_schema, routine_name FROM " + t.informationSchema("ROUTINES")}
-	if dataset != "" {
-		request.Query += " WHERE routine_schema = @dataset"
-		request.ParameterMode, request.QueryParameters = "NAMED", []stringParameter{namedString("dataset", dataset)}
+	view, err := t.informationSchema(dataset, "ROUTINES")
+	if err != nil {
+		return nil, err
 	}
+	request := queryRequest{Query: "SELECT routine_schema, routine_name FROM " + view}
 	request.Query += " ORDER BY routine_schema, routine_name"
 	rows, err := t.queryRows(ctx, request)
 	if err != nil {
@@ -81,25 +89,90 @@ func (t *target) readRoutines(ctx context.Context, dataset string) ([][]*string,
 	return rows, nil
 }
 
+// introspectWorkers bounds the datasets read at once; each read is two metadata jobs.
+const introspectWorkers = 8
+
+// listDatasets names the datasets in the target's location that the credentials can see.
+func (t *target) listDatasets(ctx context.Context) ([]string, error) {
+	var names []string
+	query := url.Values{"maxResults": {"1000"}}
+	for {
+		var page struct {
+			Datasets []struct {
+				DatasetReference struct {
+					DatasetID string `json:"datasetId"`
+				} `json:"datasetReference"`
+				Location string `json:"location"`
+			} `json:"datasets"`
+			NextPageToken string `json:"nextPageToken"`
+		}
+		if err := t.call(ctx, http.MethodGet, projectPath(t.project)+"/datasets", query, nil, &page); err != nil {
+			return nil, err
+		}
+		for _, dataset := range page.Datasets {
+			if strings.EqualFold(dataset.Location, t.location) && datasetName.MatchString(dataset.DatasetReference.DatasetID) {
+				names = append(names, dataset.DatasetReference.DatasetID)
+			}
+		}
+		if page.NextPageToken == "" {
+			return names, nil
+		}
+		query.Set("pageToken", page.NextPageToken)
+	}
+}
+
+// Introspect reflects every dataset in the location through each dataset's own INFORMATION_SCHEMA, which needs
+// no access beyond the datasets themselves. A listed dataset gone or unreadable by then is left out, so a
+// statement naming it denies.
 func (t *target) Introspect(ctx context.Context) (*pb.CatalogRequest, error) {
-	columns, err := t.readColumns(ctx, "")
+	datasets, err := t.listDatasets(ctx)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := t.readRoutines(ctx, "")
-	if err != nil {
-		return nil, err
+	if !slices.Contains(datasets, t.dataset) {
+		datasets = append(datasets, t.dataset)
 	}
+	type reflected struct {
+		columns  []*enginepb.Column
+		routines [][]*string
+		err      error
+	}
+	results := make([]reflected, len(datasets))
+	slots := make(chan struct{}, introspectWorkers)
+	var wait sync.WaitGroup
+	for i, dataset := range datasets {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			slots <- struct{}{}
+			defer func() { <-slots }()
+			columns, err := t.readColumns(ctx, dataset)
+			var routines [][]*string
+			if err == nil {
+				routines, err = t.readRoutines(ctx, dataset)
+			}
+			var upstream *apiError
+			if errors.As(err, &upstream) && (upstream.status == http.StatusNotFound || upstream.status == http.StatusForbidden) && dataset != t.dataset {
+				columns, routines, err = nil, nil, nil
+			}
+			results[i] = reflected{columns, routines, err}
+		}()
+	}
+	wait.Wait()
+	var columns []*enginepb.Column
 	var routines []*enginepb.SchemaFunctions
-	index := map[string]*enginepb.SchemaFunctions{}
-	for _, row := range rows {
-		schema := index[*row[0]]
-		if schema == nil {
-			schema = &enginepb.SchemaFunctions{Schema: *row[0]}
-			index[*row[0]] = schema
+	for i, result := range results {
+		if result.err != nil {
+			return nil, fmt.Errorf("introspecting dataset %q: %w", datasets[i], result.err)
+		}
+		columns = append(columns, result.columns...)
+		if len(result.routines) > 0 {
+			schema := &enginepb.SchemaFunctions{Schema: *result.routines[0][0]}
+			for _, row := range result.routines {
+				schema.Names = append(schema.Names, bigquerySession.FunctionName(*row[1]).String())
+			}
 			routines = append(routines, schema)
 		}
-		schema.Names = append(schema.Names, bigquerySession.FunctionName(*row[1]).String())
 	}
 	return &pb.CatalogRequest{
 		CurrentCatalog: t.catalogIdentity(), DefaultSchemas: []string{t.dataset},
@@ -112,17 +185,25 @@ func (t *target) Introspect(ctx context.Context) (*pb.CatalogRequest, error) {
 func (t *target) InspectSchema(schema string, ifHashDiffers []byte) (*pb.SchemaFragmentPush, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), metadataTimeout)
 	defer cancel()
-	columns, err := t.readColumns(ctx, schema)
-	if err != nil {
-		return nil, fmt.Errorf("introspecting dataset %q: %w", schema, err)
-	}
-	rows, err := t.readRoutines(ctx, schema)
-	if err != nil {
-		return nil, fmt.Errorf("introspecting dataset %q routines: %w", schema, err)
-	}
-	routines := make([]string, 0, len(rows))
-	for _, row := range rows {
-		routines = append(routines, bigquerySession.FunctionName(*row[1]).String())
+	var columns []*enginepb.Column
+	routines := []string{}
+	if datasetName.MatchString(schema) {
+		var err error
+		columns, err = t.readColumns(ctx, schema)
+		var rows [][]*string
+		if err == nil {
+			rows, err = t.readRoutines(ctx, schema)
+		}
+		var upstream *apiError
+		switch {
+		case errors.As(err, &upstream) && upstream.status == http.StatusNotFound:
+			columns = nil
+		case err != nil:
+			return nil, fmt.Errorf("introspecting dataset %q: %w", schema, err)
+		}
+		for _, row := range rows {
+			routines = append(routines, bigquerySession.FunctionName(*row[1]).String())
+		}
 	}
 	hash, err := fragmentHash(columns, routines)
 	if err != nil {

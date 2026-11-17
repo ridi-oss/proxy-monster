@@ -241,7 +241,8 @@ func TestMaskPageShape(t *testing.T) {
 func TestErrorsAreGoogleShaped(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	engine{}.WriteError(recorder, http.StatusForbidden, "bigquery.request_denied")
-	if recorder.Body.String() != `{"error":{"code":403,"message":"bigquery.request_denied","status":"PERMISSION_DENIED"}}`+"\n" {
+	want := `{"error":{"code":403,"errors":[{"domain":"global","message":"bigquery.request_denied","reason":"accessDenied"}],"message":"bigquery.request_denied","status":"PERMISSION_DENIED"}}`
+	if recorder.Body.String() != want+"\n" {
 		t.Errorf("error body: %s", recorder.Body)
 	}
 }

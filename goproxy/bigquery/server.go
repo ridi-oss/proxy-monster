@@ -352,24 +352,27 @@ func (e engine) AwaitExecution(ctx context.Context, id string) error {
 	return e.target.awaitExecution(ctx, id)
 }
 
-// googleStatus is the canonical status Google APIs pair with an HTTP status.
-func googleStatus(code int) string {
+// googleStatus is the canonical status and the BigQuery error reason Google APIs pair with an HTTP status.
+func googleStatus(code int) (status, reason string) {
 	switch code {
 	case http.StatusBadRequest, http.StatusRequestEntityTooLarge:
-		return "INVALID_ARGUMENT"
+		return "INVALID_ARGUMENT", "invalid"
 	case http.StatusForbidden:
-		return "PERMISSION_DENIED"
+		return "PERMISSION_DENIED", "accessDenied"
 	case http.StatusConflict:
-		return "ABORTED"
+		return "ABORTED", "duplicate"
 	default:
-		return "UNAVAILABLE"
+		return "UNAVAILABLE", "backendError"
 	}
 }
 
+// writeGoogleError writes BigQuery's error shape; bq reads errors[0].reason and reports a body without it as malformed.
 func writeGoogleError(w http.ResponseWriter, code int, message string) {
+	status, reason := googleStatus(code)
 	w.Header().Set("Content-Type", "application/json; charset=UTF-8")
 	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"code": code, "message": message, "status": googleStatus(code)}})
+	_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"code": code, "message": message, "status": status,
+		"errors": []map[string]string{{"message": message, "domain": "global", "reason": reason}}}})
 }
 
 func (engine) WriteError(w http.ResponseWriter, status int, code string) {

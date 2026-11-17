@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """End-to-end smoke legs against a running proxy-monster stack (started by smoke/run.sh)."""
 import argparse
+import csv
 import datetime as dt
 import hashlib
 import http.cookiejar
@@ -8,6 +9,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import ssl
 import struct
 import subprocess
@@ -15,6 +17,7 @@ import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 
@@ -37,9 +40,9 @@ GITHUB_DEV = ("dev", 201)
 GITHUB_DEV_EMAIL = "dev@smoke.example"
 
 
-CATALOGS = {"mysql": ("def", "acme"), "postgres": ("acme", "public"), "athena": ("awsdatacatalog", "acme")}
+CATALOGS = {"mysql": ("def", "acme"), "postgres": ("acme", "public"), "athena": ("awsdatacatalog", "acme"), "bigquery": ("pmsmoke", "acme")}
 
-# Names leg per matrix row; one classified column per spelling. Read: (mask|deny|clear:<value prefix>, sql[, pending]).
+# Names leg per matrix row; one classified column per spelling. Read: (mask|deny|unknown|clear:<value prefix>, sql[, pending]).
 # A pending check runs and reports SKIP while it fails, UNEXPECTED PASS once it passes.
 NAMES = {
     "mysql": {
@@ -121,6 +124,28 @@ NAMES = {
             ("deny", "SELECT id, SECRET FROM Accounts ORDER BY id"),
             ("mask", "SELECT id, email FROM customers ORDER BY id"),
             ("mask", "SELECT id, Email FROM Customers ORDER BY id"),
+        ],
+    },
+    # Column names are case-insensitive and table names exact; the emulator folds table names, so a wrong table
+    # spelling is checked against the reflected catalog only.
+    "bigquery": {
+        "classify": [("Customers", "Email"), ("Customers", "phone"), ("Customers", "SSN")],
+        "refuse": [("CUSTOMERS", "EMAIL", ["Customers"])],
+        "forbid": ("Customers", "secret"),
+        "detail": [("Customers", "email"), ("Customers", "phone"), ("Customers", "ssn")],
+        "reads": [
+            ("mask", "SELECT id, Email FROM Customers ORDER BY id"),
+            ("mask", "SELECT id, email FROM Customers ORDER BY id"),
+            ("mask", "SELECT id, EMAIL FROM acme.Customers ORDER BY id"),
+            ("mask", "SELECT c.id, c.eMaIl FROM `Customers` c ORDER BY c.id"),
+            ("mask", "SELECT id, Phone FROM `pmsmoke.acme.Customers` ORDER BY id"),
+            ("mask", "SELECT id, ssn FROM Customers ORDER BY id"),
+            ("deny", "SELECT id, Secret FROM Customers ORDER BY id"),
+            ("deny", "SELECT id, SECRET FROM acme.Customers ORDER BY id"),
+            ("unknown", "SELECT id, email FROM CUSTOMERS ORDER BY id"),
+            ("unknown", "SELECT id FROM missing.orders ORDER BY id"),
+            # A dataset beside the default one is reflected too.
+            ("clear:sales-note", "SELECT id, note FROM sales.orders ORDER BY id"),
         ],
     },
 }
@@ -205,7 +230,7 @@ class Stack:
             a.call("POST", f"/api/policies/{pid}/enable")
         _, roles, _ = a.call("GET", "/api/roles")
         self.roles = {r["name"]: r["id"] for r in roles}
-        for name in ("smoke-rate-mysql", "smoke-rate-postgres", "smoke-rate-athena"):
+        for name in ("smoke-rate-mysql", "smoke-rate-postgres", "smoke-rate-athena", "smoke-rate-bigquery"):
             if name not in self.roles:
                 self.roles[name] = a.call("POST", "/api/roles", {"name": name})[1]["id"]
         _, policies, _ = a.call("GET", "/api/policies")
@@ -214,6 +239,7 @@ class Stack:
             "smoke:rate-mysql": '@cap("2, 2/1h") permit(principal in Role::"smoke-rate-mysql", action == Action::"result.cap", resource);',
             "smoke:rate-postgres": '@cap("2, 2/1h") permit(principal in Role::"smoke-rate-postgres", action == Action::"result.cap", resource);',
             "smoke:rate-athena": '@cap("2, 2/1h") permit(principal in Role::"smoke-rate-athena", action == Action::"result.cap", resource);',
+            "smoke:rate-bigquery": '@cap("2, 2/1h") permit(principal in Role::"smoke-rate-bigquery", action == Action::"result.cap", resource);',
         }
         for name, src in wanted.items():
             if name not in have:
@@ -236,7 +262,7 @@ class Stack:
         # The wire cert is connect-gated, so a viewer fetches it the way a client would.
         viewer = self.session("setup").login("smoke-viewer", ["system:production-viewer"])
         for ds in self.datasources.values():
-            if ds["engine"] == "athena":
+            if ds["engine"] in ("athena", "bigquery"):
                 status, _, _ = viewer.call("GET", f"/api/datasources/{ds['id']}/wire-cert", ok=None)
                 expect(status == 200, f"wire-cert for {ds['name']}: {status}")
                 ds["certChain"] = self.raw_get(viewer, f"/api/datasources/{ds['id']}/wire-cert")
@@ -291,10 +317,46 @@ class Stack:
                 break
         return True, rows, ""
 
+    def bigquery_call(self, ds, token, method, path, body=None):
+        """One BigQuery REST call at the proxy, the wire token as bearer; returns (status, parsed body)."""
+        ctx = ssl.create_default_context(cadata=ds["certChain"])
+        req = urllib.request.Request(f"https://127.0.0.1:{ds['port']}/bigquery/v2/projects/pmsmoke/{path}", method=method,
+                                     data=None if body is None else json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json", "Authorization": "Bearer " + token})
+        try:
+            with urllib.request.urlopen(req, context=ctx, timeout=120) as resp:
+                return resp.status, json.loads(resp.read() or b"{}")
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read() or b"{}")
+
+    def bigquery_sql(self, ds, token, sql):
+        """jobs.query, then getQueryResults two rows a page; returns (ok, rows, error text)."""
+        status, r = self.bigquery_call(ds, token, "POST", "queries", {"query": sql, "useLegacySql": False, "maxResults": 2})
+        if status != 200:
+            return False, [], (r.get("error") or {}).get("message", str(r))
+        job = r["jobReference"]
+        rows, first = [], r
+        while True:
+            if first is None:
+                query = urllib.parse.urlencode({"location": job["location"], "maxResults": 2, **({"pageToken": token_next} if token_next else {})})
+                status, r = self.bigquery_call(ds, token, "GET", f"queries/{job['jobId']}?{query}")
+                expect(status == 200, f"getQueryResults {job['jobId']}: {status} {r}")
+            first = None
+            if not r.get("jobComplete"):
+                time.sleep(0.2)
+                token_next = None
+                continue
+            rows += [[cell.get("v") for cell in row["f"]] for row in r.get("rows", [])]
+            token_next = r.get("pageToken")
+            if not token_next:
+                return True, rows, ""
+
     def wire_sql(self, ds, principal, token, sql, verbose=False):
         """Run one statement through the proxy as a native client; returns (ok, rows, stderr)."""
         if ds["engine"] == "athena":
             return self.athena_sql(ds, token, sql)
+        if ds["engine"] == "bigquery":
+            return self.bigquery_sql(ds, token, sql)
         if ds["engine"] == "mysql":
             cmd = ["mysql", "--protocol=tcp", "-h", "127.0.0.1", "-P", str(ds["port"]), "-u", principal,
                    "--enable-cleartext-plugin", "--ssl-mode=DISABLED", "-N", "-B", *(["-vvv"] if verbose else []),
@@ -354,8 +416,8 @@ class Stack:
         expect(not ok and "proxy-monster denied" in err, f"wire predicate on masked column should be denied: ok={ok} rows={rows} err={err.strip()}")
         arch = self.session("wire").login("smoke-architect", ["system:production-viewer", "system:production-architect"])
         atoken = self.wire_token(arch)
-        ddl = ("CREATE EXTERNAL TABLE smoke_ddl (id INT, note STRING) LOCATION 's3://acme-data/smoke_ddl/'"
-               if ds["engine"] == "athena" else "CREATE TABLE smoke_ddl (id INT, note VARCHAR(20))")
+        ddl = {"athena": "CREATE EXTERNAL TABLE smoke_ddl (id INT, note STRING) LOCATION 's3://acme-data/smoke_ddl/'",
+               "bigquery": "CREATE TABLE smoke_ddl (id INT64, note STRING)"}.get(ds["engine"], "CREATE TABLE smoke_ddl (id INT, note VARCHAR(20))")
         ok, _, err = self.wire_sql(ds, "smoke-architect", atoken, ddl)
         expect(ok, f"DDL as architect failed: {err.strip()}")
         try:
@@ -383,6 +445,8 @@ class Stack:
             expect(any(r[0].startswith(info) for r in rows), f"wire {sql.split()[0]} OK info not relayed intact: {rows}")
 
     def leg_pmon(self, ds):
+        if ds["engine"] == "bigquery" and not shutil.which("bq"):
+            raise Skip()
         a = self.args
         env = self.pmon_env()
         log = open(os.path.join(self.logs, f"pmon-{ds['engine']}.log"), "a")
@@ -443,6 +507,8 @@ class Stack:
             except Fail as e:
                 return False, [], str(e)
         argv = shlex.split(cli)
+        if ds["engine"] == "bigquery":
+            return self.bq_via_pmon(argv, sql, log)
         if ds["engine"] == "mysql":
             argv += ["--protocol=tcp", "--ssl-mode=DISABLED", "-N", "-B", "-e", sql]
         else:
@@ -450,6 +516,17 @@ class Stack:
         rc, out, err = run(argv)
         log.write(f"$ {argv[0]} ... {sql} -> {rc}\n{out}{err}")
         return rc == 0, [l.split("\t") for l in out.splitlines() if l], err
+
+    def bq_via_pmon(self, argv, sql, log):
+        """Run one statement with the bq command `pmon show` printed, at pmon's local BigQuery endpoint."""
+        expect(argv[:1] == ["bq"] and argv[-3:-1] == ["query", "--nouse_legacy_sql"], f"pmon show did not print a bq query command: {argv}")
+        with tempfile.TemporaryDirectory() as gcloud:
+            env = dict(os.environ, CLOUDSDK_CONFIG=gcloud, BIGQUERYRC=os.devnull, CLOUDSDK_CORE_DISABLE_PROMPTS="1")
+            rc, out, err = run([*argv[:-3], "--format=csv", "query", "--nouse_legacy_sql", sql], env=env, timeout=120)
+        log.write(f"$ bq query {sql} -> {rc}\n{out}{err}")
+        if rc != 0:
+            return False, [], " ".join((out + err).split())  # bq wraps its error text at 80 columns
+        return True, list(csv.reader(out.splitlines()))[1:], err
 
     def pmon_aws_env(self, cli):
         """The env of the `VAR=… aws athena start-query-execution …` command `pmon show --cli` prints."""
@@ -863,7 +940,8 @@ when {{ context has native_operation && (
         channels = [("editor", editor), ("wire", lambda sql: self.wire_sql(ds, "smoke-viewer", token, sql))]
         try:
             cli = self.pmon_login(ds, env, log)
-            channels.append(("pmon", lambda sql: self.pmon_sql(ds, cli, sql, log)))
+            if ds["engine"] != "bigquery" or shutil.which("bq"):
+                channels.append(("pmon", lambda sql: self.pmon_sql(ds, cli, sql, log)))
         except Fail as e:
             checks.append(("pmon", "login", str(e), None))
         try:
@@ -913,6 +991,9 @@ when {{ context has native_operation && (
 def names_expect(want, ok, rows, err):
     if want == "deny":
         expect(not ok and "policy denies column" in err, f"expected a policy deny, got ok={ok} rows={rows} err={err.strip()}")
+        return
+    if want == "unknown":
+        expect(not ok and "could not analyze" in err, f"expected a fail-closed deny, got ok={ok} rows={rows} err={err.strip()}")
         return
     expect(ok, f"failed: {err.strip()}")
     if want == "mask":

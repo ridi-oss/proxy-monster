@@ -246,3 +246,34 @@ func TestErrorsAreGoogleShaped(t *testing.T) {
 		t.Errorf("error body: %s", recorder.Body)
 	}
 }
+
+func TestValuesSpellRecordsAsPlainJSON(t *testing.T) {
+	raw := `{"jobComplete":true,"jobReference":{"projectId":"p","jobId":"j","location":"US"},"schema":{"fields":[` +
+		`{"name":"device","type":"RECORD","fields":[{"name":"model","type":"STRING"},{"name":"tags","type":"STRING","mode":"REPEATED"}]},` +
+		`{"name":"visits","type":"RECORD","mode":"REPEATED","fields":[{"name":"at","type":"TIMESTAMP"}]},{"name":"id","type":"INTEGER"}]},` +
+		`"rows":[{"f":[{"v":{"f":[{"v":"iPhone"},{"v":[{"v":"a"},{"v":"b"}]}]}},{"v":[{"v":{"f":[{"v":"1.7E9"}]}}]},{"v":"7"}]},` +
+		`{"f":[{"v":{"f":[{"v":null},{"v":[]}]}},{"v":[]},{"v":null}]}]}`
+	page, _, err := decodePage([]byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := page.values()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := [][]string{{`{"model":"iPhone","tags":["a","b"]}`, `[{"at":"1.7E9"}]`, "7"}, {`{"model":null,"tags":[]}`, `[]`, "<nil>"}}
+	if len(rows) != len(want) {
+		t.Fatalf("rows: %d, want %d", len(rows), len(want))
+	}
+	for i, row := range rows {
+		for j, cell := range row {
+			got := "<nil>"
+			if cell != nil {
+				got = *cell
+			}
+			if got != want[i][j] {
+				t.Errorf("row %d column %d = %s, want %s", i, j, got, want[i][j])
+			}
+		}
+	}
+}

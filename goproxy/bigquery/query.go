@@ -1,6 +1,7 @@
 package bigquery
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -68,7 +69,8 @@ type queryPage struct {
 	} `json:"rows"`
 }
 
-// values reads each cell as text: a scalar is its string, NULL is nil, and a RECORD or REPEATED cell is its JSON.
+// values reads each cell as text: a scalar is its string, NULL is nil, and a RECORD or REPEATED cell is plain
+// JSON, such as {"email":"a@b","age":"3"}.
 func (p *queryPage) values() ([][]*string, error) {
 	width := 0
 	if p.Schema != nil {
@@ -84,9 +86,17 @@ func (p *queryPage) values() ([][]*string, error) {
 			if len(cell.V) == 0 || string(cell.V) == "null" {
 				continue
 			}
-			text := string(cell.V)
-			if cell.V[0] == '"' && json.Unmarshal(cell.V, &text) != nil {
-				return nil, httpdb.ErrResultShape
+			var text string
+			if cell.V[0] == '"' {
+				if json.Unmarshal(cell.V, &text) != nil {
+					return nil, httpdb.ErrResultShape
+				}
+			} else {
+				var plain bytes.Buffer
+				if err := writePlain(&plain, p.Schema.Fields[i], cell.V); err != nil {
+					return nil, err
+				}
+				text = plain.String()
 			}
 			values[i] = &text
 		}
@@ -161,4 +171,62 @@ func (t *target) queryRows(ctx context.Context, request queryRequest) ([][]*stri
 		page, _, err = t.resultPage(ctx, page.JobReference, token, 0)
 	}
 	return nil, err
+}
+
+// writePlain spells a cell in the REST row form ({"f":[{"v":…}]} for a RECORD, [{"v":…}] for REPEATED) as
+// plain JSON keyed by the schema's field names.
+func writePlain(out *bytes.Buffer, field tableField, raw json.RawMessage) error {
+	if len(raw) == 0 || string(raw) == "null" {
+		out.WriteString("null")
+		return nil
+	}
+	if field.Mode == "REPEATED" {
+		var items []struct {
+			V json.RawMessage `json:"v"`
+		}
+		if json.Unmarshal(raw, &items) != nil {
+			return httpdb.ErrResultShape
+		}
+		field.Mode = ""
+		out.WriteByte('[')
+		for i, item := range items {
+			if i > 0 {
+				out.WriteByte(',')
+			}
+			if err := writePlain(out, field, item.V); err != nil {
+				return err
+			}
+		}
+		out.WriteByte(']')
+		return nil
+	}
+	if field.Type != "RECORD" && field.Type != "STRUCT" {
+		if raw[0] != '"' {
+			return httpdb.ErrResultShape
+		}
+		out.Write(raw)
+		return nil
+	}
+	var record struct {
+		F []struct {
+			V json.RawMessage `json:"v"`
+		} `json:"f"`
+	}
+	if json.Unmarshal(raw, &record) != nil || len(record.F) != len(field.Fields) {
+		return httpdb.ErrResultShape
+	}
+	out.WriteByte('{')
+	for i, sub := range field.Fields {
+		if i > 0 {
+			out.WriteByte(',')
+		}
+		name, _ := json.Marshal(sub.Name)
+		out.Write(name)
+		out.WriteByte(':')
+		if err := writePlain(out, sub, record.F[i].V); err != nil {
+			return err
+		}
+	}
+	out.WriteByte('}')
+	return nil
 }

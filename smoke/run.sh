@@ -6,7 +6,7 @@
 #   smoke/run.sh --keep          leave the stack up for debugging (prints how to stop it)
 #   smoke/run.sh --no-build      reuse the binaries from the last run
 #   smoke/run.sh --only wire     run one leg (editor|browser|wire|pmon|workflow|audit|rate|github|names|native)
-#   smoke/run.sh --engine mysql  run one matrix row (mysql|mysql-lctn1|postgres|athena)
+#   smoke/run.sh --engine mysql  run one matrix row (mysql|mysql-lctn1|postgres|athena|bigquery)
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -17,6 +17,7 @@ export SMOKE_MYSQL_PORT="${SMOKE_MYSQL_PORT:-17011}"
 export SMOKE_PG_PORT="${SMOKE_PG_PORT:-17012}"
 export SMOKE_ATHENA_PORT="${SMOKE_ATHENA_PORT:-17013}"
 export SMOKE_MYSQL_LCTN1_PORT="${SMOKE_MYSQL_LCTN1_PORT:-17015}"
+export SMOKE_BIGQUERY_PORT="${SMOKE_BIGQUERY_PORT:-17017}"
 CP_HTTP="${SMOKE_CP_HTTP_PORT:-17000}"
 CP_GRPC="${SMOKE_CP_GRPC_PORT:-17001}"
 CP_CHILD_HTTP="${SMOKE_CP_CHILD_HTTP_PORT:-17030}"
@@ -25,9 +26,12 @@ PROXY_MYSQL="${SMOKE_PROXY_MYSQL_PORT:-17002}"
 PROXY_PG="${SMOKE_PROXY_PG_PORT:-17003}"
 PROXY_ATHENA="${SMOKE_PROXY_ATHENA_PORT:-17014}"
 PROXY_MYSQL_LCTN1="${SMOKE_PROXY_MYSQL_LCTN1_PORT:-17016}"
+PROXY_BIGQUERY="${SMOKE_PROXY_BIGQUERY_PORT:-17018}"
 PMON_BASE="${SMOKE_PMON_PORT_BASE:-17020}"
 GITHUB_TLS="${SMOKE_GITHUB_PORT:-17040}"
 GITHUB_HTTP="${SMOKE_GITHUB_TOKEN_PORT:-17041}"
+GOOGLE_TLS="${SMOKE_GOOGLE_PORT:-17042}"
+GOOGLE_TOKEN="${SMOKE_GOOGLE_TOKEN_PORT:-17043}"
 WEB="${SMOKE_WEB_PORT:-17004}"
 
 KEEP=0; BUILD=1; ONLY=""; ENGINE=""
@@ -42,8 +46,8 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-mkdir -p "$SMOKE_DIR/logs" "$SMOKE_DIR/bin" "$SMOKE_DIR/pmon" "$SMOKE_DIR/athena" "$SMOKE_DIR/github"
-chmod 700 "$SMOKE_DIR/pmon" "$SMOKE_DIR/athena" "$SMOKE_DIR/github"
+mkdir -p "$SMOKE_DIR/logs" "$SMOKE_DIR/bin" "$SMOKE_DIR/pmon" "$SMOKE_DIR/athena" "$SMOKE_DIR/github" "$SMOKE_DIR/bigquery"
+chmod 700 "$SMOKE_DIR/pmon" "$SMOKE_DIR/athena" "$SMOKE_DIR/github" "$SMOKE_DIR/bigquery"
 echo "smoke: logs in $SMOKE_DIR/logs"
 
 compose() { docker compose -p "$PROJECT" -f "$ROOT/smoke/docker-compose.yml" "$@"; }
@@ -159,17 +163,55 @@ athena_proxy() {
     "$SMOKE_DIR/bin/goproxy" > "$SMOKE_DIR/logs/proxy-athena.log" 2>&1 &
   pids+=($!)
 }
-echo "smoke: starting proxies on :$PROXY_MYSQL (mysql), :$PROXY_MYSQL_LCTN1 (mysql-lctn1), :$PROXY_PG (postgres), :$PROXY_ATHENA (athena)"
+# The BigQuery proxy reaches the emulator through smoke/fake_google.py (HTTPS plus a token endpoint), with a
+# throwaway service-account key whose token_uri is that endpoint, and serves its own HTTPS wire like Athena.
+bigquery_proxy() {
+  local BQ="$SMOKE_DIR/bigquery"
+  rm -rf "$BQ"/*
+  openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 2 -subj "/CN=smoke-google" \
+    -addext "subjectAltName=IP:127.0.0.1,DNS:localhost" -keyout "$BQ/google-key.pem" -out "$BQ/google-cert.pem" 2>/dev/null
+  openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 2 -subj "/CN=smoke-bigquery" \
+    -addext "subjectAltName=IP:127.0.0.1,DNS:localhost" -keyout "$BQ/wire-key.pem" -out "$BQ/wire-cert.pem" 2>/dev/null
+  openssl genrsa -out "$BQ/sa-key.pem" 2048 2>/dev/null
+  python3 - "$BQ" "$GOOGLE_TOKEN" <<'PY'
+import json, os, sys
+d, port = sys.argv[1], sys.argv[2]
+key = {"type": "service_account", "project_id": "pmsmoke", "private_key_id": "smoke", "client_id": "1",
+       "private_key": open(os.path.join(d, "sa-key.pem")).read(), "token_uri": f"http://127.0.0.1:{port}/token",
+       "client_email": "smoke-proxy@pmsmoke.iam.gserviceaccount.com"}
+fd = os.open(os.path.join(d, "sa.json"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+os.write(fd, json.dumps(key).encode())
+os.close(fd)
+PY
+  python3 "$ROOT/smoke/fake_google.py" "$GOOGLE_TLS" "$GOOGLE_TOKEN" "$BQ/google-cert.pem" "$BQ/google-key.pem" "$SMOKE_BIGQUERY_PORT" \
+    > "$SMOKE_DIR/logs/fake-google.log" 2>&1 &
+  pids+=($!)
+  for _ in $(seq 1 30); do
+    curl -sf -m 2 -o /dev/null "http://127.0.0.1:$SMOKE_BIGQUERY_PORT/bigquery/v2/projects/pmsmoke/datasets" && break
+    sleep 1
+  done
+  env PM_ENGINE=bigquery PM_DATASOURCE_NAME=smoke-bigquery PM_DATASOURCE_TAGS=system:production \
+    PM_PROXY_PORT="$PROXY_BIGQUERY" PM_TARGET_DB=acme PM_BIGQUERY_PROJECT=pmsmoke PM_BIGQUERY_LOCATION=US \
+    PM_BIGQUERY_ENDPOINT="https://127.0.0.1:$GOOGLE_TLS" PM_BIGQUERY_CA_FILE="$BQ/google-cert.pem" \
+    PM_BIGQUERY_CONTEXT_PATH="$BQ/contexts.db" GOOGLE_APPLICATION_CREDENTIALS="$BQ/sa.json" \
+    PM_CONTROL_PLANE_GRPC="127.0.0.1:$CP_GRPC" PM_SECRET_TOKEN="$SECRET" \
+    PM_ADVERTISE_ADDR="127.0.0.1:$PROXY_BIGQUERY" \
+    PM_TLS_CERT="$BQ/wire-cert.pem" PM_TLS_KEY="$BQ/wire-key.pem" \
+    "$SMOKE_DIR/bin/goproxy" > "$SMOKE_DIR/logs/proxy-bigquery.log" 2>&1 &
+  pids+=($!)
+}
+echo "smoke: starting proxies on :$PROXY_MYSQL (mysql), :$PROXY_MYSQL_LCTN1 (mysql-lctn1), :$PROXY_PG (postgres), :$PROXY_ATHENA (athena), :$PROXY_BIGQUERY (bigquery)"
 proxy mysql smoke-mysql "$PROXY_MYSQL" "$SMOKE_MYSQL_PORT"
 proxy mysql smoke-mysql-lctn1 "$PROXY_MYSQL_LCTN1" "$SMOKE_MYSQL_LCTN1_PORT" mysql-lctn1
 proxy postgres smoke-postgres "$PROXY_PG" "$SMOKE_PG_PORT"
 athena_proxy
+bigquery_proxy
 for _ in $(seq 1 60); do
-  n=$(grep -l "datasource registered + catalog pushed" "$SMOKE_DIR"/logs/proxy-{mysql,mysql-lctn1,postgres,athena}.log 2>/dev/null | wc -l | tr -d ' ' || true)
-  [ "$n" = 4 ] && break
+  n=$(grep -l "datasource registered + catalog pushed" "$SMOKE_DIR"/logs/proxy-{mysql,mysql-lctn1,postgres,athena,bigquery}.log 2>/dev/null | wc -l | tr -d ' ' || true)
+  [ "$n" = 5 ] && break
   sleep 1
 done
-[ "$n" = 4 ] || { echo "smoke: a proxy did not register; see $SMOKE_DIR/logs/proxy-*.log" >&2; exit 1; }
+[ "$n" = 5 ] || { echo "smoke: a proxy did not register; see $SMOKE_DIR/logs/proxy-*.log" >&2; exit 1; }
 
 for _ in $(seq 1 90); do
   curl -sf -m 3 -o /dev/null "http://127.0.0.1:$WEB/login" 2>/dev/null && break
@@ -185,7 +227,7 @@ fi
 
 args=(--cp "http://127.0.0.1:$CP_HTTP" --web "http://127.0.0.1:$WEB" --root "$ROOT" --cp-db "postgresql://proxymonster:proxymonster@127.0.0.1:$SMOKE_CP_DB_PORT/proxymonster" --pmon "$SMOKE_DIR/bin/pmon" --pmon-dir "$SMOKE_DIR/pmon" --pmon-port-base "$PMON_BASE" --logs "$SMOKE_DIR/logs")
 args+=(--github "$GITHUB_TLS,$GITHUB_HTTP,$GH/tls-cert.pem,$GH/tls-key.pem,$GH/oidc-key.pem,1" --pm-ci "$SMOKE_DIR/bin/pm-ci")
-args+=(--datasource "mysql:smoke-mysql:$PROXY_MYSQL" --datasource "mysql:smoke-mysql-lctn1:$PROXY_MYSQL_LCTN1:mysql-lctn1" --datasource "postgres:smoke-postgres:$PROXY_PG" --datasource "athena:smoke-athena:$PROXY_ATHENA")
+args+=(--datasource "mysql:smoke-mysql:$PROXY_MYSQL" --datasource "mysql:smoke-mysql-lctn1:$PROXY_MYSQL_LCTN1:mysql-lctn1" --datasource "postgres:smoke-postgres:$PROXY_PG" --datasource "athena:smoke-athena:$PROXY_ATHENA" --datasource "bigquery:smoke-bigquery:$PROXY_BIGQUERY")
 [ -n "$ONLY" ] && args+=(--only "$ONLY")
 [ -n "$ENGINE" ] && args+=(--engine "$ENGINE")
 python3 "$ROOT/smoke/smoke.py" "${args[@]}"

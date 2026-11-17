@@ -1,0 +1,84 @@
+# Seeds the BigQuery emulator the way deploy/seed seeds the SQL targets: dataset acme with the same three users,
+# and Customers with mixed-case columns (the emulator folds table names, so no customers beside it), plus a
+# second dataset beside the default one.
+projects:
+  - id: pmsmoke
+    datasets:
+      - id: acme
+        tables:
+          - id: users
+            columns:
+              - { name: id, type: INTEGER }
+              - { name: email, type: STRING }
+              - { name: phone, type: STRING }
+              - { name: name, type: STRING }
+              - { name: ssn, type: STRING }
+              - { name: region, type: STRING }
+              - { name: created_at, type: STRING }
+            data:
+              - {
+                  id: 1,
+                  email: jiwon@example.com,
+                  phone: 010-1111-2222,
+                  name: Kim Jiwon,
+                  ssn: 987-65-4320,
+                  region: KR-11,
+                  created_at: "2025-01-02 09:00:00",
+                }
+              - {
+                  id: 2,
+                  email: minseo@example.com,
+                  phone: 010-3333-4444,
+                  name: Lee Minseo,
+                  ssn: 987-65-4322,
+                  region: KR-26,
+                  created_at: "2025-02-14 13:30:00",
+                }
+              - {
+                  id: 3,
+                  email: haeun@example.com,
+                  phone: 010-5555-6666,
+                  name: Park Haeun,
+                  ssn: 987-65-4323,
+                  region: KR-41,
+                  created_at: "2025-03-21 18:45:00",
+                }
+          - id: Customers
+            columns:
+              - { name: id, type: INTEGER }
+              - { name: Email, type: STRING }
+              - { name: Phone, type: STRING }
+              - { name: SSN, type: STRING }
+              - { name: Secret, type: STRING }
+            data:
+              - {
+                  id: 1,
+                  Email: upper-email-1,
+                  Phone: upper-phone-1,
+                  SSN: upper-ssn-1,
+                  Secret: upper-secret-1,
+                }
+              - {
+                  id: 2,
+                  Email: upper-email-2,
+                  Phone: upper-phone-2,
+                  SSN: upper-ssn-2,
+                  Secret: upper-secret-2,
+                }
+              - {
+                  id: 3,
+                  Email: upper-email-3,
+                  Phone: upper-phone-3,
+                  SSN: upper-ssn-3,
+                  Secret: upper-secret-3,
+                }
+      - id: sales
+        tables:
+          - id: orders
+            columns:
+              - { name: id, type: INTEGER }
+              - { name: note, type: STRING }
+            data:
+              - { id: 1, note: sales-note-1 }
+              - { id: 2, note: sales-note-2 }
+              - { id: 3, note: sales-note-3 }

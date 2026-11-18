@@ -10,11 +10,11 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 // the same controlplane.proto (goproxy/buf.gen.yaml → goproxy/internal/pb).
 plugins {
     kotlin("jvm")
-    id("com.google.protobuf") version "0.10.0"
+    id("com.google.protobuf") version "0.10.1"
 }
 
-val protobufVersion = "4.36.0"
-val grpcVersion = "1.83.1"
+val protobufVersion = "4.36.2"
+val grpcVersion = "1.85.1"
 val grpcKotlinVersion = "1.5.0"
 
 dependencies {

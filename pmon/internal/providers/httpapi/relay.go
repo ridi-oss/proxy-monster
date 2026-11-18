@@ -64,7 +64,11 @@ func Serve(ctx context.Context, listener net.Listener, handler http.Handler) err
 		IdleTimeout:       90 * time.Second,
 		MaxHeaderBytes:    64 << 10,
 		BaseContext:       func(net.Listener) context.Context { return ctx },
+		Protocols:         new(http.Protocols),
 	}
+	// gRPC clients reach the local endpoint over cleartext HTTP/2.
+	server.Protocols.SetHTTP1(true)
+	server.Protocols.SetUnencryptedHTTP2(true)
 	done := make(chan struct{})
 	defer close(done)
 	defer server.Close()
@@ -87,19 +91,19 @@ type Upstream struct {
 	mu        sync.Mutex
 	trust     string
 	transport *http.Transport
+	// streams carries gRPC calls, over HTTP/2 only.
+	streams *http.Transport
 }
 
-func (u *Upstream) client(chain string) (*http.Client, error) {
+func (u *Upstream) transports(chain string) (*http.Transport, *http.Transport, error) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	if u.transport == nil || u.trust != chain {
 		config, err := TLSConfig(chain)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		if u.transport != nil {
-			u.transport.CloseIdleConnections()
-		}
+		u.closeIdle()
 		u.transport = &http.Transport{
 			TLSClientConfig:       config,
 			DialContext:           (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
@@ -110,21 +114,38 @@ func (u *Upstream) client(chain string) (*http.Client, error) {
 			MaxIdleConns:          16,
 			MaxIdleConnsPerHost:   16,
 		}
+		u.streams = u.transport.Clone()
+		u.streams.Protocols = new(http.Protocols)
+		u.streams.Protocols.SetHTTP2(true)
 		u.trust = chain
 	}
+	return u.transport, u.streams, nil
+}
+
+func (u *Upstream) client(chain string) (*http.Client, error) {
+	transport, _, err := u.transports(chain)
+	if err != nil {
+		return nil, err
+	}
 	return &http.Client{
-		Transport:     u.transport,
+		Transport:     transport,
 		Timeout:       2 * time.Minute,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}, nil
 }
 
+func (u *Upstream) closeIdle() {
+	for _, transport := range []*http.Transport{u.transport, u.streams} {
+		if transport != nil {
+			transport.CloseIdleConnections()
+		}
+	}
+}
+
 func (u *Upstream) Close() {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	if u.transport != nil {
-		u.transport.CloseIdleConnections()
-	}
+	u.closeIdle()
 }
 
 // Forward sends incoming with body to the same path and query under the endpoint, authenticated by token,

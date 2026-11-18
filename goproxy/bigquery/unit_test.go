@@ -29,7 +29,7 @@ func TestOperationRoutes(t *testing.T) {
 		{"POST", "/bigquery/v2/projects/p/queries", "", "jobs.query", httpdb.KindSubmission, false},
 		{"POST", "/bigquery/v2/projects/p/jobs?alt=json&prettyPrint=false", "", "jobs.insert", httpdb.KindSubmission, false},
 		{"GET", "/bigquery/v2/projects/p/queries/j?location=US&maxResults=5&pageToken=t&timeoutMs=1&formatOptions.useInt64Timestamp=true", "", "jobs.getQueryResults", httpdb.KindResultPage, false},
-		{"GET", "/bigquery/v2/projects/p/jobs/j?location=US", "", "jobs.get", httpdb.KindMetadata, false},
+		{"GET", "/bigquery/v2/projects/p/jobs/j?location=US&projection=full", "", "jobs.get", httpdb.KindMetadata, false},
 		{"POST", "/bigquery/v2/projects/p/jobs/j/cancel", "", "jobs.cancel", httpdb.KindMetadata, false},
 		{"GET", "/bigquery/v2/projects/p/jobs?stateFilter=done&stateFilter=running&allUsers=true", "", "jobs.list", httpdb.KindListing, false},
 		{"GET", "/bigquery/v2/projects", "", "projects.list", httpdb.KindMetadata, false},

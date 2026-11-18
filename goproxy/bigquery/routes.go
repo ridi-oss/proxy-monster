@@ -35,7 +35,7 @@ const (
 var routes = []route{
 	{"jobs.query", "POST", "projects/{p}/queries", httpdb.KindSubmission, nil},
 	{"jobs.insert", "POST", "projects/{p}/jobs", httpdb.KindSubmission, nil},
-	{"jobs.get", "GET", "projects/{p}/jobs/{j}", httpdb.KindMetadata, location},
+	{"jobs.get", "GET", "projects/{p}/jobs/{j}", httpdb.KindMetadata, []string{"location", "projection"}},
 	{"jobs.getQueryResults", "GET", "projects/{p}/queries/{j}", httpdb.KindResultPage,
 		[]string{"location", "maxResults", "pageToken", "startIndex", "timeoutMs", "formatOptions.useInt64Timestamp"}},
 	{"jobs.cancel", "POST", "projects/{p}/jobs/{j}/cancel", httpdb.KindMetadata, location},

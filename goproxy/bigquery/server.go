@@ -16,14 +16,19 @@ import (
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
-// newServer serves the BigQuery REST API under /bigquery/v2/; uploads and tabledata are refused.
+// newServer serves the BigQuery REST API under /bigquery/v2/, and the Storage Read API over gRPC on the same
+// port for query results; uploads and tabledata are refused.
 func newServer(t *target, listen spi.Listen, client spi.ControlPlane, tlsProvider func() (*tls.Config, error)) *httpdb.Server {
-	return &httpdb.Server{
+	server := &httpdb.Server{
 		Engine: engine{t}, Name: "bigquery", Listen: listen, Client: client, TLSProvider: tlsProvider,
 		Contexts: t.contexts, TargetBinding: t.binding, ContextLifetime: contextLifetime,
 		Forward:       httpdb.ForwardOptions{Endpoint: t.endpoint, KeepPath: true, MaxBodyBytes: defaultRequestLimit, Sign: t.sign, Transport: t.transport},
 		ResponseLimit: defaultResponseLimit, DiagnosticKeys: diagnosticKeys,
 	}
+	if t.storage != nil {
+		server.GRPC = newStorageServer(t, server)
+	}
+	return server
 }
 
 type engine struct{ target *target }
@@ -264,7 +269,8 @@ func referencedJobs(body []byte) ([]string, error) {
 	return ids, nil
 }
 
-func (engine) CreatedResource(body []byte) (string, error) {
+func (e engine) CreatedResource(body []byte) (string, error) {
+	e.target.noteDestinations(body)
 	ids, err := referencedJobs(body)
 	if err != nil || len(ids) != 1 {
 		return "", httpdb.ErrResultShape
@@ -272,7 +278,8 @@ func (engine) CreatedResource(body []byte) (string, error) {
 	return ids[0], nil
 }
 
-func (engine) Observe(body []byte) ([]*pb.HttpDbObservation, error) {
+func (e engine) Observe(body []byte) ([]*pb.HttpDbObservation, error) {
+	e.target.noteDestinations(body)
 	ids, err := referencedJobs(body)
 	if err != nil {
 		return nil, err

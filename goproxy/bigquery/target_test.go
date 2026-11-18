@@ -27,18 +27,20 @@ func TestSettings(t *testing.T) {
 		advertise string
 		ok        bool
 	}{
-		"valid":                {valid, "proxy.example:6444", true},
-		"multi-region":         {with(func(f *Flags) { f.Location = "US" }), "", true},
-		"domain-scoped":        {with(func(f *Flags) { f.Project = "example.com:proj-a" }), "", true},
-		"emulator endpoint":    {with(func(f *Flags) { f.Endpoint = "https://localhost:9050/" }), "", true},
-		"no project":           {with(func(f *Flags) { f.Project = "" }), "", false},
-		"project injection":    {with(func(f *Flags) { f.Project = "proj-a`.x" }), "", false},
-		"no location":          {with(func(f *Flags) { f.Location = "" }), "", false},
-		"location injection":   {with(func(f *Flags) { f.Location = "us`.x" }), "", false},
-		"no dataset":           {with(func(f *Flags) { f.Dataset = " " }), "", false},
-		"http endpoint":        {with(func(f *Flags) { f.Endpoint = "http://bigquery.googleapis.com" }), "", false},
-		"endpoint with path":   {with(func(f *Flags) { f.Endpoint = "https://bigquery.googleapis.com/bigquery/v2" }), "", false},
-		"advertise not a host": {valid, "https://proxy.example:6444", false},
+		"valid":                 {valid, "proxy.example:6444", true},
+		"multi-region":          {with(func(f *Flags) { f.Location = "US" }), "", true},
+		"domain-scoped":         {with(func(f *Flags) { f.Project = "example.com:proj-a" }), "", true},
+		"emulator endpoint":     {with(func(f *Flags) { f.Endpoint = "https://localhost:9050/" }), "", true},
+		"no project":            {with(func(f *Flags) { f.Project = "" }), "", false},
+		"project injection":     {with(func(f *Flags) { f.Project = "proj-a`.x" }), "", false},
+		"no location":           {with(func(f *Flags) { f.Location = "" }), "", false},
+		"location injection":    {with(func(f *Flags) { f.Location = "us`.x" }), "", false},
+		"no dataset":            {with(func(f *Flags) { f.Dataset = " " }), "", false},
+		"http endpoint":         {with(func(f *Flags) { f.Endpoint = "http://bigquery.googleapis.com" }), "", false},
+		"endpoint with path":    {with(func(f *Flags) { f.Endpoint = "https://bigquery.googleapis.com/bigquery/v2" }), "", false},
+		"advertise not a host":  {valid, "https://proxy.example:6444", false},
+		"emulator storage":      {with(func(f *Flags) { f.StorageEndpoint = "localhost:9060" }), "", true},
+		"storage not host:port": {with(func(f *Flags) { f.StorageEndpoint = "https://bigquerystorage.googleapis.com" }), "", false},
 	} {
 		cfg, err := newSettings(tc.flags, tc.advertise)
 		if (err == nil) != tc.ok {

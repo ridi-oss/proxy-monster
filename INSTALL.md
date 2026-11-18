@@ -282,8 +282,10 @@ configured per proxy under `PM_TARGET_*`.
   default dataset. `PM_BIGQUERY_CONTEXT_PATH` works like
   `PM_ATHENA_CONTEXT_PATH`, and `PM_BIGQUERY_ENDPOINT` (default
   `https://bigquery.googleapis.com`, HTTPS only) points the proxy at an
-  emulator, whose certificate `PM_BIGQUERY_CA_FILE` (a PEM bundle) trusts. Wire
-  TLS is required. Default port `6444`.
+  emulator, as `PM_BIGQUERY_STORAGE_ENDPOINT` (default
+  `bigquerystorage.googleapis.com:443`) does for the Storage Read API; a
+  `PM_BIGQUERY_CA_FILE` PEM bundle is trusted for both instead of the system
+  roots. Wire TLS is required. Default port `6444`.
 - `PM_TLS_CERT` / `PM_TLS_KEY` — _optional (both or neither; one alone ⇒ refuses
   to start)_. TLS cert+key file paths for the wire listener. Wire TLS is
   optional — the cleaner pattern is a private transport (peered VPC,

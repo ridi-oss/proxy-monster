@@ -199,9 +199,8 @@ captured on the connection's own held target-DB connection (design:
   project or location is unanalyzable and denies.
 - 🟡 Reflection runs two metadata queries per dataset in the location, at
   startup and on every catalog refresh.
-- 🟡 Rows come only through `jobs.getQueryResults`. The Python client's
-  dataframe path reads through the BigQuery Storage API, which does not go
-  through the proxy; pass `create_bqstorage_client=False`.
+- 🟡 The Storage Read API reads only the caller's own query results, in Arrow; a
+  direct table read, a row restriction, or Avro is refused.
 
 ## Wire-cert distribution (direct clients and `pmon`)
 

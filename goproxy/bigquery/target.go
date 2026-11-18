@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"cloud.google.com/go/bigquery/storage/apiv1/storagepb"
 	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	"github.com/ridi-oss/proxy-monster/goproxy/httpdb"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
@@ -44,6 +45,10 @@ type target struct {
 	binding     []byte
 	contexts    *httpdb.EnforcementContextCache
 	generations wire.BackendGenerations
+	// storage reaches the Storage Read API; storageConn is its connection.
+	storage      storagepb.BigQueryReadClient
+	storageConn  io.Closer
+	destinations destinations
 }
 
 func newTarget(cfg settings, token TokenSource, principal string, transport http.RoundTripper) (*target, error) {
@@ -74,10 +79,14 @@ func (t *target) Close() error {
 	if transport, ok := t.transport.(interface{ CloseIdleConnections() }); ok {
 		transport.CloseIdleConnections()
 	}
-	if t.contexts != nil {
-		return t.contexts.Close()
+	var failures []error
+	if t.storageConn != nil {
+		failures = append(failures, t.storageConn.Close())
 	}
-	return nil
+	if t.contexts != nil {
+		failures = append(failures, t.contexts.Close())
+	}
+	return errors.Join(failures...)
 }
 
 func (t *target) sign(ctx context.Context, request *http.Request, _ []byte) error {
@@ -174,10 +183,41 @@ func (t *target) call(ctx context.Context, method, path string, query url.Values
 
 func projectPath(project string) string { return "projects/" + url.PathEscape(project) }
 
+// jobResource is a job's reference and the result table its query wrote.
+type jobResource struct {
+	JobReference  *jobReference `json:"jobReference"`
+	Configuration struct {
+		Query struct {
+			DestinationTable *struct {
+				ProjectID string `json:"projectId"`
+				DatasetID string `json:"datasetId"`
+				TableID   string `json:"tableId"`
+			} `json:"destinationTable"`
+		} `json:"query"`
+	} `json:"configuration"`
+}
+
+// destination is the job's result table as the Storage API names it, or "" for none.
+func (j *jobResource) destination() string {
+	table := j.Configuration.Query.DestinationTable
+	if table == nil {
+		return ""
+	}
+	name := "projects/" + table.ProjectID + "/datasets/" + table.DatasetID + "/tables/" + table.TableID
+	if _, _, _, ok := tableName(name); !ok {
+		return ""
+	}
+	return name
+}
+
 // jobStatus is the part of a jobs.get response the proxy reads.
 type jobStatus struct {
+	jobResource
 	Statistics struct {
 		CreationTime string `json:"creationTime"`
+		Query        struct {
+			StatementType string `json:"statementType"`
+		} `json:"query"`
 	} `json:"statistics"`
 	Status struct {
 		State       string `json:"state"`

@@ -3,6 +3,7 @@ module github.com/ridi-oss/proxy-monster/goproxy
 go 1.26.10
 
 require (
+	cloud.google.com/go/bigquery v1.74.0
 	github.com/alecthomas/kong v1.17.0
 	github.com/apache/arrow-go/v18 v18.4.1
 	github.com/aws/aws-sdk-go-v2 v1.48.0
@@ -117,5 +118,6 @@ require (
 	golang.org/x/text v0.43.0 // indirect
 	golang.org/x/tools v0.51.0 // indirect
 	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect
+	google.golang.org/genproto/googleapis/api v0.0.0-20260817212433-ac3dfec99bb1 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260817212433-ac3dfec99bb1 // indirect
 )

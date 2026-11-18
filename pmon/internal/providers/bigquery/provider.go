@@ -1,5 +1,5 @@
-// Package bigquery is pmon's BigQuery provider: it formats client configuration for a local BigQuery REST
-// endpoint and relays those clients' requests to the datasource proxy with the current token.
+// Package bigquery is pmon's BigQuery provider: it formats client configuration for a local BigQuery REST and
+// Storage Read endpoint and relays those clients' requests to the datasource proxy with the current token.
 package bigquery
 
 import (
@@ -15,6 +15,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -84,7 +85,18 @@ type broker struct {
 	discovery    []byte
 }
 
+// storageMethods are the Storage Read API calls relayed; the proxy serves only reads of query results.
+var storageMethods = []string{
+	"/google.cloud.bigquery.storage.v1.BigQueryRead/CreateReadSession",
+	"/google.cloud.bigquery.storage.v1.BigQueryRead/ReadRows",
+	"/google.cloud.bigquery.storage.v1.BigQueryRead/SplitReadStream",
+}
+
 func (b *broker) ServeHTTP(w http.ResponseWriter, incoming *http.Request) {
+	if httpapi.IsGRPC(incoming) {
+		b.serveStorage(w, incoming)
+		return
+	}
 	if incoming.Method == http.MethodGet && incoming.URL.Path == "/$discovery/rest" {
 		b.serveDiscovery(w, incoming.Context())
 		return
@@ -94,8 +106,7 @@ func (b *broker) ServeHTTP(w http.ResponseWriter, incoming *http.Request) {
 		writeError(w, http.StatusForbidden, "PERMISSION_DENIED", "pmon.sessionUnavailable")
 		return
 	}
-	want := "Bearer " + localToken(credentials.Principal, endpoint.Name, credentials.LocalPassword)
-	if subtle.ConstantTimeCompare([]byte(incoming.Header.Get("Authorization")), []byte(want)) != 1 {
+	if !authenticated(incoming, endpoint, credentials) {
 		writeError(w, http.StatusUnauthorized, "UNAUTHENTICATED", "pmon.bigquery.invalidToken")
 		return
 	}
@@ -120,6 +131,35 @@ func (b *broker) ServeHTTP(w http.ResponseWriter, incoming *http.Request) {
 	if err := b.upstream.Forward(w, incoming, endpoint, credentials.Token, bytes.NewReader(body)); err != nil {
 		writeError(w, http.StatusBadGateway, "UNAVAILABLE", "pmon.bigquery.upstreamUnavailable")
 	}
+}
+
+// serveStorage relays a Storage Read API call to the datasource proxy, which serves it on its HTTPS port.
+func (b *broker) serveStorage(w http.ResponseWriter, incoming *http.Request) {
+	endpoint, credentials, ok := b.resolve()
+	if !ok || credentials.Principal == "" || credentials.Token == "" || credentials.LocalPassword == "" {
+		httpapi.WriteGRPCError(w, httpapi.GRPCPermissionDenied, "pmon.sessionUnavailable")
+		return
+	}
+	if !authenticated(incoming, endpoint, credentials) {
+		httpapi.WriteGRPCError(w, httpapi.GRPCUnauthenticated, "pmon.bigquery.invalidToken")
+		return
+	}
+	if incoming.Method != http.MethodPost || !slices.Contains(storageMethods, incoming.URL.Path) {
+		httpapi.WriteGRPCError(w, httpapi.GRPCUnimplemented, "pmon.bigquery.invalidRequest")
+		return
+	}
+	if (Provider{}).UnavailableReason(endpoint) != "" {
+		httpapi.WriteGRPCError(w, httpapi.GRPCUnavailable, "pmon.bigquery.endpointUnavailable")
+		return
+	}
+	if err := b.upstream.ForwardGRPC(w, incoming, endpoint, credentials.Token); err != nil {
+		httpapi.WriteGRPCError(w, httpapi.GRPCUnavailable, "pmon.bigquery.upstreamUnavailable")
+	}
+}
+
+func authenticated(incoming *http.Request, endpoint driver.Endpoint, credentials driver.Credentials) bool {
+	want := "Bearer " + localToken(credentials.Principal, endpoint.Name, credentials.LocalPassword)
+	return len(incoming.Header.Values("Authorization")) == 1 && subtle.ConstantTimeCompare([]byte(incoming.Header.Get("Authorization")), []byte(want)) == 1
 }
 
 // serveDiscovery hands the bq CLI the public API description it fetches from its endpoint before any call.

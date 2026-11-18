@@ -47,7 +47,10 @@ func (e *gateEngine) Operation(r *http.Request) (Operation, error) {
 	return Operation{Name: "op", Kind: Kind(kind), InlineResult: r.Header.Get("X-Inline") != ""}, err
 }
 
-func (e *gateEngine) References(_ *http.Request, body []byte) ([]string, bool, error) {
+func (e *gateEngine) References(r *http.Request, body []byte) ([]string, bool, error) {
+	if body == nil {
+		return r.Header.Values("X-Id"), false, nil
+	}
 	var refs struct {
 		IDs   []string
 		First bool

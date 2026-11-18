@@ -102,6 +102,8 @@ type Server struct {
 	Forward        ForwardOptions
 	ResponseLimit  int64
 	DiagnosticKeys []string
+	// GRPC serves HTTP/2 gRPC calls on the same port; nil serves only the REST calls.
+	GRPC http.Handler
 
 	mu      sync.Mutex
 	server  *http.Server
@@ -120,6 +122,10 @@ func (s *Server) Start() error {
 	if tlsConfig == nil {
 		return errors.New("httpdb: TLS is required")
 	}
+	tlsConfig = tlsConfig.Clone()
+	if s.GRPC != nil {
+		tlsConfig.NextProtos = []string{"h2", "http/1.1"}
+	}
 	listener, err := listen.Open(s.Listen)
 	if err != nil {
 		return err
@@ -134,7 +140,7 @@ func (s *Server) Start() error {
 	s.server = &http.Server{Handler: s, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, IdleTimeout: time.Minute, MaxHeaderBytes: 64 << 10}
 	server := s.server
 	s.mu.Unlock()
-	err = server.Serve(tls.NewListener(listener, tlsConfig.Clone()))
+	err = server.Serve(tls.NewListener(listener, tlsConfig))
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}
@@ -164,6 +170,12 @@ func (s *Server) Drain(ctx context.Context) {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, request *http.Request) {
+	if s.GRPC != nil && request.ProtoMajor == 2 && strings.HasPrefix(request.Header.Get("Content-Type"), "application/grpc") {
+		// A result stream outlives the REST read deadline.
+		_ = http.NewResponseController(w).SetReadDeadline(time.Time{})
+		s.GRPC.ServeHTTP(w, request)
+		return
+	}
 	if s.buffers != nil {
 		select {
 		case s.buffers <- struct{}{}:

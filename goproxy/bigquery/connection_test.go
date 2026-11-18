@@ -32,9 +32,13 @@ type fakeEditorUpstream struct {
 }
 
 func (f *fakeEditorUpstream) handle(w http.ResponseWriter, r *http.Request) {
-	if f.hold != nil && r.Method == f.holdOn {
-		f.reading <- struct{}{}
-		<-f.hold
+	f.mu.Lock()
+	hold, reading := f.hold, f.reading
+	held := hold != nil && r.Method == f.holdOn
+	f.mu.Unlock()
+	if held {
+		reading <- struct{}{}
+		<-hold
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -160,27 +164,28 @@ func TestConnectionCancelsTheRunningJob(t *testing.T) {
 		t.Fatalf("idle cancel: %v %v", err, upstream.canceled)
 	}
 	for stage, method := range map[string]string{"submitting": http.MethodPost, "reading results": http.MethodGet} {
+		reading, hold := make(chan struct{}, 1), make(chan struct{})
 		upstream.mu.Lock()
 		upstream.canceled = nil
+		upstream.holdOn, upstream.reading, upstream.hold = method, reading, hold
 		upstream.mu.Unlock()
-		upstream.holdOn, upstream.reading, upstream.hold = method, make(chan struct{}, 1), make(chan struct{})
 		done := make(chan error, 1)
 		go func() {
 			_, err := connection.ServeStatement("SELECT * FROM users", 100)
 			done <- err
 		}()
-		<-upstream.reading
+		<-reading
 		if err := connection.Cancel(); err != nil {
 			t.Fatal(err)
 		}
 		if method == http.MethodPost {
-			close(upstream.hold)
+			close(hold)
 		}
 		if err := <-done; !errors.Is(err, httpdb.ErrCanceled) {
 			t.Fatalf("%s: statement err = %v", stage, err)
 		}
 		if method == http.MethodGet {
-			close(upstream.hold)
+			close(hold)
 		}
 		upstream.mu.Lock()
 		canceled := upstream.canceled

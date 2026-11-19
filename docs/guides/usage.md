@@ -52,7 +52,8 @@ Each statement is also gated by its kind, separately from the columns it reads:
 Holding a role that reads a table does not let you run `SHOW TABLES` or `SET` on
 it — those are their own grants. Session statements run from the console editor
 and a wire connection. An approval runs only a variable `SET`, which holds for
-the statements after it; MCP runs none.
+the statements after it; `SET autocommit` controls the transaction like `BEGIN`
+and is denied there. MCP runs none.
 
 ## 1. Run a query against dev
 

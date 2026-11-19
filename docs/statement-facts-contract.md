@@ -103,7 +103,8 @@ Both request and response messages live in `proto/src/main/proto/analyzer.proto`
    shape, not from any SQL-shape knowledge in Kotlin. The seeded
    `stmt.cat.session` Cedar forbid admits session statements on the wire and the
    editor, only `stmt.kind.set_session_var` on the workflow channels, and none
-   on MCP.
+   on MCP. An `autocommit` assignment is `stmt.kind.set_transaction`: it commits
+   or opens a transaction, as `COMMIT` and `BEGIN` do.
 
 ## The deny taxonomy
 

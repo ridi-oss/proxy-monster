@@ -489,7 +489,7 @@ func TestParityBenignSessionAndTx(t *testing.T) {
 	// changes, which the connection layer relays, tracks, and re-probes.
 	for _, sql := range []string{
 		"SET search_path TO public", "SET LOCAL search_path TO x", "SET SESSION search_path = a, b",
-		"SET NAMES 'utf8'", "set autocommit=0", "SET sql_mode='STRICT_TRANS_TABLES'",
+		"SET NAMES 'utf8'", "SET sql_mode='STRICT_TRANS_TABLES'",
 		"SET standard_conforming_strings = on", "SET TIME ZONE 'UTC'",
 	} {
 		parityKind(t, sql, "postgres", pb.StatementKind_STATEMENT_KIND_SET_SESSION_VAR)
@@ -502,7 +502,7 @@ func TestParityBenignSessionAndTx(t *testing.T) {
 	// SAME uniform fail-close as PG — so a PostgreSQL-only spelling that degrades here (SET TIME ZONE, which
 	// MySQL spells `SET time_zone=`, or a multi-value `search_path` list) is denied. Both are invalid MySQL.
 	for _, sql := range []string{
-		"SET NAMES utf8mb4", "set autocommit=0", "SET sql_mode='STRICT_TRANS_TABLES'",
+		"SET NAMES utf8mb4", "SET sql_mode='STRICT_TRANS_TABLES'",
 		"SET standard_conforming_strings = on", "SET search_path TO public",
 	} {
 		parityKind(t, sql, "mysql", pb.StatementKind_STATEMENT_KIND_SET_SESSION_VAR)

@@ -21,7 +21,7 @@ import urllib.parse
 import urllib.request
 import uuid
 
-LEGS = ["editor", "browser", "wire", "pmon", "workflow", "rate", "audit", "github", "names", "native"]
+LEGS = ["editor", "browser", "wire", "pmon", "workflow", "rate", "audit", "github", "names", "native", "storage"]
 MASK = "####"
 TRUSTED_IP = "100.100.1.8"
 PRODUCTION_PRESETS = [-200, -201, -202, *range(-238, -229), -250, -251, -252, -253, -255, *range(-262, -255), -280, -300, -305, -306, -307]
@@ -317,10 +317,11 @@ class Stack:
                 break
         return True, rows, ""
 
-    def bigquery_call(self, ds, token, method, path, body=None):
-        """One BigQuery REST call at the proxy, the wire token as bearer; returns (status, parsed body)."""
-        ctx = ssl.create_default_context(cadata=ds["certChain"])
-        req = urllib.request.Request(f"https://127.0.0.1:{ds['port']}/bigquery/v2/projects/pmsmoke/{path}", method=method,
+    def bigquery_call(self, ds, token, method, path, body=None, base=None):
+        """One BigQuery REST call at the proxy (or at base, cleartext), the token as bearer; returns (status, parsed body)."""
+        ctx = None if base else ssl.create_default_context(cadata=ds["certChain"])
+        base = base or f"https://127.0.0.1:{ds['port']}"
+        req = urllib.request.Request(f"{base}/bigquery/v2/projects/pmsmoke/{path}", method=method,
                                      data=None if body is None else json.dumps(body).encode(),
                                      headers={"Content-Type": "application/json", "Authorization": "Bearer " + token})
         try:
@@ -688,6 +689,58 @@ class Stack:
         expect(not ok and "rate 2/1h spent" in err, f"wire query past the rate: expected a deny naming the rate, got ok={ok} rows={rows} err={err.strip()}")
         self.produced.setdefault(ds["engine"], set()).add("rate")
 
+    def leg_storage(self, ds):
+        """BigQuery Storage Read API: a viewer reads its own query's result table masked, at the proxy and through
+        pmon's cleartext HTTP/2 relay, and a read session on a base table is refused."""
+        if ds["engine"] != "bigquery":
+            raise Skip()
+        viewer = self.session("storage").login("smoke-viewer", ["system:production-viewer"])
+        token = self.wire_token(viewer)
+        with tempfile.NamedTemporaryFile("w", suffix=".pem") as chain:
+            chain.write(ds["certChain"])
+            chain.flush()
+            addr, ca = f"127.0.0.1:{ds['port']}", ["-ca", chain.name]
+            self.storage_read_masked(ds, token, addr, ca, None)
+            ok, out = self.storage_read(addr, ca, token, "projects/pmsmoke/datasets/acme/tables/users")
+            expect(not ok and out.startswith(("PermissionDenied", "FailedPrecondition")),
+                   f"a read session on a base table should be refused: {out.strip()}")
+        env = self.pmon_env()
+        log = open(os.path.join(self.logs, "storage.log"), "a")
+        try:
+            flags = dict(f.split("=", 1) for f in shlex.split(self.pmon_login(ds, env, log)) if f.startswith("--") and "=" in f)
+            api = flags["--api"].rstrip("/")
+            self.storage_read_masked(ds, flags["--oauth_access_token"], urllib.parse.urlparse(api).netloc, [], api)
+        finally:
+            run([self.args.pmon, "logout"], env=env)
+        self.produced.setdefault(ds["engine"], set()).add("storage")
+
+    def storage_read_masked(self, ds, token, addr, ca, base):
+        """jobs.insert a masked read, then read its result table through the Storage Read API at addr."""
+        job_id = "smoke_storage_" + uuid.uuid4().hex[:12]
+        status, r = self.bigquery_call(ds, token, "POST", "jobs", {
+            "jobReference": {"projectId": "pmsmoke", "jobId": job_id, "location": "US"},
+            "configuration": {"query": {"query": "SELECT id, email FROM users ORDER BY id", "useLegacySql": False,
+                                        "defaultDataset": {"projectId": "pmsmoke", "datasetId": "acme"}}}}, base)
+        expect(status == 200, f"jobs.insert via {base or 'the proxy'}: {status} {r}")
+        deadline = time.time() + 60
+        while r.get("status", {}).get("state") != "DONE" and time.time() < deadline:
+            time.sleep(0.2)
+            status, r = self.bigquery_call(ds, token, "GET", f"jobs/{job_id}?location=US", None, base)
+            expect(status == 200, f"jobs.get {job_id}: {status} {r}")
+        dest = r["configuration"]["query"].get("destinationTable")
+        expect(dest, f"job {job_id} names no destination table: {r}")
+        ok, out = self.storage_read(addr, ca, token, f"projects/{dest['projectId']}/datasets/{dest['datasetId']}/tables/{dest['tableId']}")
+        expect(ok, f"Storage read of the job's result via {base or 'the proxy'} failed: {out.strip()}")
+        result = json.loads(out)
+        rows = result["rows"]
+        expect(result["fields"] == ["id", "email"] and len(rows) == 3, f"Storage read result: {result}")
+        expect(all(r[1] == MASK and r[0] != MASK for r in rows), f"Storage read not masked: {rows}")
+
+    def storage_read(self, addr, ca, token, table):
+        """bqsmoke read; returns (ok, JSON result or the gRPC status)."""
+        rc, out, err = run([self.args.bqsmoke, "read", "-addr", addr, *ca, "-token", token, "-parent", "projects/pmsmoke", "-table", table])
+        return rc == 0, out if rc == 0 else err
+
     def leg_native(self, ds):
         """Every Athena API call the proxy reads, sent by the AWS CLI through pmon: what smoke-native's scoped
         native.invoke policy names reaches the target, the rest is refused at the proxy, a principal holding no
@@ -1049,6 +1102,7 @@ def main():
     ap.add_argument("--pm-ci", help="the pm-ci binary the github leg files with")
     ap.add_argument("--github", help="tlsPort,httpPort,cert,key,signingKey,appId for the fake GitHub; the github leg skips without it")
     ap.add_argument("--engine", choices=list(NAMES), help="one matrix row")
+    ap.add_argument("--bqsmoke", help="the Storage Read client the storage leg reads with")
     args = ap.parse_args()
     args.datasource = [(*f, f[0]) if len(f) == 3 else tuple(f) for f in (d.split(":") for d in args.datasource)]
     if args.engine:

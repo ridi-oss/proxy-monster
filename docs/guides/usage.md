@@ -124,6 +124,7 @@ Other reasons you will meet:
 | --- | --- |
 | `no access to datasource 'acme-prod'` | No role of yours grants `datasource.connect` there |
 | `statement kind 'set_session_var' is not permitted` | That statement kind is not granted (see the kind table above) |
+| `statement kind 'set_transaction' is not permitted` | `SET TRANSACTION`, or `SET autocommit` (which drivers send when they switch autocommit), is not granted |
 | `policy denies column def.app.users.ssn` | A policy forbids that column, or no role of yours reads it |
 | `rate 10000/1h spent` | Your result-volume rate is used up (§4) |
 

@@ -26,6 +26,13 @@ key, the GCE/GKE metadata server, or workload identity federation through
 service-account impersonation. It pins the principal those credentials act as at
 startup and refuses to start when it cannot name it.
 
+On AWS (ECS, EC2, EKS) use federation with no key: the file from
+`gcloud iam workload-identity-pools create-cred-config <provider> --service-account=<sa> --aws --output-file=wif.json`,
+mounted and named by `GOOGLE_APPLICATION_CREDENTIALS`. The proxy signs its
+subject token with the AWS SDK's default credentials (the ECS task role
+included) in `AWS_REGION`; map that role to the service account through the
+provider's `attribute.aws_role`.
+
 ## What a client may call
 
 | Calls                                                                        | Decided as                                                                             |

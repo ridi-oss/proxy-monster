@@ -1,5 +1,41 @@
 # Changelog
 
+## [0.1.45](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.44...server-v0.1.45) (2026-11-19)
+
+
+### Features
+
+* **goproxy:** BigQuery Storage Read API for query results ([40cff83](https://github.com/ridi-oss/proxy-monster/commit/40cff83f8248cf93b96a3e98ab360c2b4c657429))
+* **goproxy:** mask BigQuery Arrow record batches ([246c2ee](https://github.com/ridi-oss/proxy-monster/commit/246c2ee831d465f31b6ad2e934c2bc620e104d0f))
+* **goproxy:** serve gRPC beside an HTTP-API engine's REST calls ([6c8ae4a](https://github.com/ridi-oss/proxy-monster/commit/6c8ae4ad992491cf5ede5e6547cb4191c2f26aa3))
+* **goproxy:** trust a PEM bundle for the BigQuery endpoint ([f1cc686](https://github.com/ridi-oss/proxy-monster/commit/f1cc6866a5e446cf6110c43a88928f9021e79a43))
+
+
+### Bug Fixes
+
+* **cp-go:** admit the bq CLI's continuous=false on a query job ([7684910](https://github.com/ridi-oss/proxy-monster/commit/76849108cf66b84a30ff9b5e95c04ce6c97a416c))
+* **goproxy:** accept projection on BigQuery jobs.get ([5f26bc6](https://github.com/ridi-oss/proxy-monster/commit/5f26bc6b408f5f5c8a6df3a4946048809ebffd0c))
+* **goproxy:** give BigQuery errors the errors[].reason bq reads ([e6f3c64](https://github.com/ridi-oss/proxy-monster/commit/e6f3c64d5f6bd19f4f20309d743661719cf2a8bc))
+* **goproxy:** reflect BigQuery datasets through their own INFORMATION_SCHEMA ([f2658fa](https://github.com/ridi-oss/proxy-monster/commit/f2658fa77cab5d471f3fa6f670c669cd0aaef161))
+* **goproxy:** show BigQuery RECORD and REPEATED cells as plain JSON ([80dfaab](https://github.com/ridi-oss/proxy-monster/commit/80dfaab260c13e61abbe7924dc4c72435a4e3e6f))
+* **web:** backtick-quote BigQuery names in the editor ([7687688](https://github.com/ridi-oss/proxy-monster/commit/7687688fe269cad9beca315617102ae8ce10b851))
+
+
+### Build & Dependencies
+
+* **deps:** Bump actions/create-github-app-token from 3.2.0 to 3.3.0 ([#598](https://github.com/ridi-oss/proxy-monster/issues/598)) ([720db18](https://github.com/ridi-oss/proxy-monster/commit/720db1876733b0387761af62f060c30b09449dfa))
+* **deps:** Bump aws-actions/configure-aws-credentials ([#331](https://github.com/ridi-oss/proxy-monster/issues/331)) ([6e8c91d](https://github.com/ridi-oss/proxy-monster/commit/6e8c91d26926d9876b3305fa41503603de942751))
+* **deps:** Bump the go group across 3 directories with 21 updates ([9ec40e6](https://github.com/ridi-oss/proxy-monster/commit/9ec40e687c9d0ec56ee12a8e9ce914fdd8d41088))
+* **deps:** Bump the jvm group across 1 directory with 39 updates ([#680](https://github.com/ridi-oss/proxy-monster/issues/680)) ([fe2c8cb](https://github.com/ridi-oss/proxy-monster/commit/fe2c8cb546220ffd0f414759a696bdb9a4b2425f))
+* **deps:** Bump the web group across 1 directory with 27 updates ([7fa51b5](https://github.com/ridi-oss/proxy-monster/commit/7fa51b5b5833deda7ce39d9d049a827376cc097c))
+* **deps:** tidy cpgo and pmon/tray for the go group bump ([b04f43b](https://github.com/ridi-oss/proxy-monster/commit/b04f43b9dfdbd819c2b34ba22496b606a7dfc80a))
+
+
+### Documentation
+
+* BigQuery forwarding proxy ([1272edc](https://github.com/ridi-oss/proxy-monster/commit/1272edc51850638452386e2bf61e58278d4cfc70))
+* BigQuery Storage Read API through the proxy ([2e46e27](https://github.com/ridi-oss/proxy-monster/commit/2e46e27dfb815a024b32573c6c0eb757644f646c))
+
 ## [0.1.44](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.43...server-v0.1.44) (2026-11-16)
 
 

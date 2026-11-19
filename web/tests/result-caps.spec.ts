@@ -192,6 +192,7 @@ for (const denyReason of ['rate 10000/1h spent', 'rate 10000/1h x2 spent']) {
         datasourceId: 1,
         reason: `Blocked running a query: ${denyReason}`,
         requestedDurationSec: 3600,
+        private: false,
       });
   });
 }

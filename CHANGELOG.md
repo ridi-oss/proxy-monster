@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.46](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.45...server-v0.1.46) (2026-11-19)
+
+
+### Bug Fixes
+
+* **goproxy:** federate BigQuery credentials from the AWS SDK chain ([4276cbf](https://github.com/ridi-oss/proxy-monster/commit/4276cbf516a8c05f5e57ca011d04c34dcb67405b))
+
 ## [0.1.45](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.44...server-v0.1.45) (2026-11-19)
 
 

@@ -1,6 +1,7 @@
 package engines
 
 import (
+	"fmt"
 	"strings"
 
 	exp "github.com/ridi-oss/sqlglot-go/expressions"
@@ -209,8 +210,8 @@ func showKind(root exp.Expression) pb.StatementKind {
 
 // setKind maps a structured Set to its kind by reusing EmitFacts's SET classifiers, in the same order:
 // an identity change, a privileged scope / credential, a lexer-mode GUC, then the two distinguished
-// session forms (SET TRANSACTION, sql_log_bin). Everything else benign — SET NAMES, SET @var,
-// SET CHARACTER SET — is SET_SESSION_VAR (they are not separately distinguished).
+// session forms (SET TRANSACTION or SET autocommit, sql_log_bin). Everything else benign — SET NAMES,
+// SET @var, SET CHARACTER SET — is SET_SESSION_VAR (they are not separately distinguished).
 func setKind(root exp.Expression) pb.StatementKind {
 	switch sessionIdentitySetCommand(root) {
 	case cmdSetRole:
@@ -241,7 +242,7 @@ func setKind(root exp.Expression) pb.StatementKind {
 	controlsTransaction := false
 	for _, item := range root.FindAll(exp.KindSetItem) {
 		// SetItem.kind is canonical uppercase — compare directly to the exported constant.
-		if item.Text("kind") == exp.SetItemTransaction || assignsAutocommitSystemVariable(item) {
+		if item.Text("kind") == exp.SetItemTransaction || isSessionSystemVariable(setItemTarget(item), "autocommit") {
 			controlsTransaction = true
 		}
 		// sql_log_bin is a variable name (not a discriminator arg), so case is not contract-guaranteed.
@@ -255,12 +256,20 @@ func setKind(root exp.Expression) pb.StatementKind {
 	return pb.StatementKind_STATEMENT_KIND_SET_SESSION_VAR
 }
 
-func assignsAutocommitSystemVariable(item exp.Expression) bool {
-	target := setItemTarget(item)
-	if target == nil || !strings.EqualFold(target.Name(), "autocommit") {
+func isSessionSystemVariable(target exp.Expression, name string) bool {
+	if target == nil || !strings.EqualFold(target.Name(), name) {
 		return false
 	}
-	return target.Kind() == exp.KindColumn || target.Kind() == exp.KindSessionParameter
+	switch target.Kind() {
+	case exp.KindColumn:
+		return target.TableName() == ""
+	case exp.KindSessionParameter:
+		switch strings.ToLower(fmt.Sprint(target.Arg("kind"))) {
+		case "<nil>", "", "session", "local":
+			return true
+		}
+	}
+	return false
 }
 
 // commandKind classifies a Command — a statement sqlglot-go did not structure. It reads ONLY the

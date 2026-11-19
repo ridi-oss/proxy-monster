@@ -170,27 +170,10 @@ func (mysqlHooks) rewriteStatement(root exp.Expression) string {
 	// still returns "character_set_results", and `x.character_set_results` to a qualified Column — both would
 	// otherwise be turned into a system-variable SET the client never asked for.
 	left := eq.Left()
-	switch left.Kind() {
-	case exp.KindColumn:
-		if left.TableName() != "" {
-			return ""
-		}
-	case exp.KindSessionParameter:
-		// `@@[session.|local.]character_set_results` is this session's variable; `@@global.` is excluded by
-		// setUtilityCommands above, but a bogus scope (`@@nonsense.…`) reaches here — MySQL would reject it,
-		// so it must not normalize into a successful pin.
-		switch strings.ToLower(fmt.Sprint(left.Arg("kind"))) {
-		case "<nil>", "", "session", "local":
-		default:
-			return ""
-		}
-	default:
-		return ""
-	}
 	// A system-variable name is ASCII and case-insensitive — MySQL matches it independent of
 	// lower_case_table_names — so it is compared case-folded, not through the dialect's schema-identifier
 	// folding (which is for table/column names). utf8mb4 is full Unicode, so the pin is lossless.
-	if !strings.EqualFold(left.Name(), "character_set_results") {
+	if !isSessionSystemVariable(left, "character_set_results") {
 		return ""
 	}
 	if eq.Right().Kind() != exp.KindNull {

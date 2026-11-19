@@ -1,7 +1,6 @@
 package engines
 
 import (
-	"reflect"
 	"testing"
 
 	pb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
@@ -40,16 +39,9 @@ func TestGlobalAutocommitStaysSetGlobal(t *testing.T) {
 	parityKind(t, "SET @@global.autocommit = 0", "mysql", pb.StatementKind_STATEMENT_KIND_SET_GLOBAL)
 }
 
-func TestSplitBatchMarksSetAutocommitAsTransactionControl(t *testing.T) {
-	batch, ok := SplitBatch("SET autocommit = 0; UPDATE t SET a = 1; SET @autocommit = 1", mysqlSplitConfig())
-	if !ok {
-		t.Fatal("split failed")
+func TestQualifiedOrBogusScopedAutocommitIsNotTheSessionVariable(t *testing.T) {
+	for _, sql := range []string{"SET foo.autocommit = 0", "SET @@hot_cache.autocommit = 0"} {
+		parityKind(t, sql, "mysql", pb.StatementKind_STATEMENT_KIND_SET_SESSION_VAR)
 	}
-	var got []bool
-	for _, statement := range batch {
-		got = append(got, statement.MayControlTransaction)
-	}
-	if want := []bool{true, false, false}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("transaction control = %v, want %v", got, want)
-	}
+	parityKind(t, "SET myapp.autocommit = 'off'", "postgres", pb.StatementKind_STATEMENT_KIND_SET_SESSION_VAR)
 }

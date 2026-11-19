@@ -27,8 +27,8 @@ func SplitStatements(sql string, config *pb.EngineConfig) (statements []string, 
 type BatchStatement struct {
 	SQL  string
 	Kind pb.StatementKind
-	// BEGIN/START TRANSACTION, COMMIT/END, ROLLBACK, SAVEPOINT/RELEASE, SET TRANSACTION, or a statement
-	// sqlglot-go did not parse as one (PostgreSQL `ABORT` reads as a column), which could be any of them.
+	// BEGIN/START TRANSACTION, COMMIT/END, ROLLBACK, SAVEPOINT/RELEASE, SET TRANSACTION, SET autocommit, or a
+	// statement sqlglot-go did not parse as one (PostgreSQL `ABORT` reads as a column), which could be any of them.
 	MayControlTransaction bool
 	// An empty statement (`;;`, or a comment alone) comes before it, which MySQL stops at.
 	AfterEmpty bool

@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.1.17](https://github.com/ridi-oss/proxy-monster/compare/pmon-v0.1.16...pmon-v0.1.17) (2026-11-19)
+
+
+### Features
+
+* **pmon:** broker BigQuery clients ([8eed899](https://github.com/ridi-oss/proxy-monster/commit/8eed89920bedcd5283f082f2eb8754276d50755d))
+* **pmon:** relay BigQuery Storage Read calls ([61a718c](https://github.com/ridi-oss/proxy-monster/commit/61a718c759dc882181ec795adcaaea352c4ad529))
+
+
+### Refactoring
+
+* **pmon:** read the database from connection info ([bba4329](https://github.com/ridi-oss/proxy-monster/commit/bba43297aca5b46752210792abffb493af94a550))
+* **pmon:** share the HTTP-API broker relay ([b6658af](https://github.com/ridi-oss/proxy-monster/commit/b6658af530d14d55c113e84d6af6ccd5124821e1))
+
+
+### Build & Dependencies
+
+* **deps:** Bump the go group across 3 directories with 21 updates ([9ec40e6](https://github.com/ridi-oss/proxy-monster/commit/9ec40e687c9d0ec56ee12a8e9ce914fdd8d41088))
+* **deps:** tidy cpgo and pmon/tray for the go group bump ([b04f43b](https://github.com/ridi-oss/proxy-monster/commit/b04f43b9dfdbd819c2b34ba22496b606a7dfc80a))
+
 ## [0.1.16](https://github.com/ridi-oss/proxy-monster/compare/pmon-v0.1.15...pmon-v0.1.16) (2026-10-21)
 
 

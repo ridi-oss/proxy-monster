@@ -210,7 +210,7 @@ func showKind(root exp.Expression) pb.StatementKind {
 // setKind maps a structured Set to its kind by reusing EmitFacts's SET classifiers, in the same order:
 // an identity change, a privileged scope / credential, a lexer-mode GUC, then the two distinguished
 // session forms (SET TRANSACTION, sql_log_bin). Everything else benign — SET NAMES, SET @var,
-// SET autocommit, SET CHARACTER SET — is SET_SESSION_VAR (they are not separately distinguished).
+// SET CHARACTER SET — is SET_SESSION_VAR (they are not separately distinguished).
 func setKind(root exp.Expression) pb.StatementKind {
 	switch sessionIdentitySetCommand(root) {
 	case cmdSetRole:
@@ -238,17 +238,29 @@ func setKind(root exp.Expression) pb.StatementKind {
 	case cmdSetStandardConformingStrings:
 		return pb.StatementKind_STATEMENT_KIND_SET_STANDARD_CONFORMING_STRINGS
 	}
+	controlsTransaction := false
 	for _, item := range root.FindAll(exp.KindSetItem) {
 		// SetItem.kind is canonical uppercase — compare directly to the exported constant.
-		if item.Text("kind") == exp.SetItemTransaction {
-			return pb.StatementKind_STATEMENT_KIND_SET_TRANSACTION
+		if item.Text("kind") == exp.SetItemTransaction || assignsAutocommitSystemVariable(item) {
+			controlsTransaction = true
 		}
 		// sql_log_bin is a variable name (not a discriminator arg), so case is not contract-guaranteed.
 		if target := setItemTarget(item); target != nil && strings.EqualFold(target.Name(), "sql_log_bin") {
 			return pb.StatementKind_STATEMENT_KIND_SET_SQL_LOG_BIN
 		}
 	}
+	if controlsTransaction {
+		return pb.StatementKind_STATEMENT_KIND_SET_TRANSACTION
+	}
 	return pb.StatementKind_STATEMENT_KIND_SET_SESSION_VAR
+}
+
+func assignsAutocommitSystemVariable(item exp.Expression) bool {
+	target := setItemTarget(item)
+	if target == nil || !strings.EqualFold(target.Name(), "autocommit") {
+		return false
+	}
+	return target.Kind() == exp.KindColumn || target.Kind() == exp.KindSessionParameter
 }
 
 // commandKind classifies a Command — a statement sqlglot-go did not structure. It reads ONLY the

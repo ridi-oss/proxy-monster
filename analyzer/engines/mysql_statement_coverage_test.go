@@ -228,7 +228,7 @@ var mysqlStatements = []mysqlStatement{
 	{"ROLLBACK TO SAVEPOINT", "ROLLBACK TO SAVEPOINT s", "stmt.kind.rollback", pb.StatementKind_STATEMENT_KIND_ROLLBACK},
 	{"RELEASE SAVEPOINT", "RELEASE SAVEPOINT s", "stmt.kind.savepoint", pb.StatementKind_STATEMENT_KIND_SAVEPOINT},
 	{"SET TRANSACTION", "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE", "stmt.kind.set_transaction", pb.StatementKind_STATEMENT_KIND_SET_TRANSACTION},
-	{"SET autocommit", "SET autocommit=0", "stmt.kind.set_session_var", pb.StatementKind_STATEMENT_KIND_SET_SESSION_VAR},
+	{"SET autocommit", "SET autocommit=0", "stmt.kind.set_transaction", pb.StatementKind_STATEMENT_KIND_SET_TRANSACTION},
 	{"LOCK TABLES", "LOCK TABLES users READ", "stmt.kind.lock_tables + unanalyzable→exception.unanalyzable", pb.StatementKind_STATEMENT_KIND_LOCK_TABLES},
 	{"UNLOCK TABLES", "UNLOCK TABLES", "stmt.kind.unlock_tables + unanalyzable→exception.unanalyzable", pb.StatementKind_STATEMENT_KIND_UNLOCK_TABLES},
 	{"LOCK INSTANCE FOR BACKUP", "LOCK INSTANCE FOR BACKUP", "unanalyzable→exception.unanalyzable", pb.StatementKind_STATEMENT_KIND_STMT_UNKNOWN}, // parse error

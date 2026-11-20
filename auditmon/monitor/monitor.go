@@ -101,9 +101,8 @@ type Monitor struct {
 	// a chain it has already proven tampered. It never blocks a decision (the monitor is read-side only).
 	halted atomic.Bool
 
-	verdictMu          sync.Mutex
-	anchorVerdicts     map[worm.Anchor]bool
-	acceptanceVerdicts map[worm.Acceptance]bool
+	anchorVerdicts     verdictCache[worm.Anchor]
+	acceptanceVerdicts verdictCache[worm.Acceptance]
 }
 
 // New builds a Monitor.
@@ -118,9 +117,6 @@ func New(reader *store.Reader, signer sign.Signer, os worm.ObjectStore, genesis 
 		detect:  detect,
 		report:  report,
 		log:     slog.Default(),
-
-		anchorVerdicts:     make(map[worm.Anchor]bool),
-		acceptanceVerdicts: make(map[worm.Acceptance]bool),
 	}
 }
 
@@ -148,7 +144,7 @@ func (m *Monitor) anchorVerify(a worm.Anchor) (headHash []byte, valid bool, err 
 	if err != nil {
 		return nil, false, nil
 	}
-	valid, err = cachedVerdict(&m.verdictMu, m.anchorVerdicts, a, func() (bool, error) {
+	valid, err = m.anchorVerdicts.get(a, func() (bool, error) {
 		return m.signer.Verify(sign.AnchorDigest(a.UpToID, headHash), sig, a.KeyID)
 	})
 	if err != nil {
@@ -416,6 +412,8 @@ func (m *Monitor) signAnchor(head store.ChainHead) error {
 //
 // A returned error is an infrastructure failure the Run loop logs and retries; it never blocks a decision.
 func (m *Monitor) FullVerify(ctx context.Context) error {
+	m.anchorVerdicts.forget()
+	m.acceptanceVerdicts.forget()
 	w, err := m.witnesses("full verify")
 	if err != nil {
 		return err
@@ -549,7 +547,7 @@ func (m *Monitor) acceptanceVerify(r worm.Acceptance) (verify.Accepted, bool, er
 	if err != nil {
 		return verify.Accepted{}, false, nil
 	}
-	valid, err := cachedVerdict(&m.verdictMu, m.acceptanceVerdicts, r, func() (bool, error) {
+	valid, err := m.acceptanceVerdicts.get(r, func() (bool, error) {
 		return m.signer.Verify(sign.AcceptanceDigest(r.DivergentID, r.Reason, expected, actual, resume), sig, r.KeyID)
 	})
 	if err != nil {
@@ -567,10 +565,15 @@ func (m *Monitor) acceptanceVerify(r worm.Acceptance) (verify.Accepted, bool, er
 	}, true, nil
 }
 
-func cachedVerdict[K comparable](mu *sync.Mutex, verdicts map[K]bool, key K, verify func() (bool, error)) (bool, error) {
-	mu.Lock()
-	valid, seen := verdicts[key]
-	mu.Unlock()
+type verdictCache[K comparable] struct {
+	mu       sync.Mutex
+	verdicts map[K]bool
+}
+
+func (c *verdictCache[K]) get(key K, verify func() (bool, error)) (bool, error) {
+	c.mu.Lock()
+	valid, seen := c.verdicts[key]
+	c.mu.Unlock()
 	if seen {
 		return valid, nil
 	}
@@ -578,10 +581,19 @@ func cachedVerdict[K comparable](mu *sync.Mutex, verdicts map[K]bool, key K, ver
 	if err != nil {
 		return false, err
 	}
-	mu.Lock()
-	verdicts[key] = valid
-	mu.Unlock()
+	c.mu.Lock()
+	if c.verdicts == nil {
+		c.verdicts = make(map[K]bool)
+	}
+	c.verdicts[key] = valid
+	c.mu.Unlock()
 	return valid, nil
+}
+
+func (c *verdictCache[K]) forget() {
+	c.mu.Lock()
+	c.verdicts = nil
+	c.mu.Unlock()
 }
 
 // Halted reports whether a chain break has latched this monitor into its halted state.

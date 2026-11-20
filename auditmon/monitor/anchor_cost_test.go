@@ -105,7 +105,7 @@ func (fx *costFixture) resetCounts() {
 	fx.store.gets = 0
 }
 
-func TestPollAndFullVerifyNeverRecheckAnUnchangedAnchor(t *testing.T) {
+func TestPollsNeverRecheckAnUnchangedAnchor(t *testing.T) {
 	fx := newCostFixture(t)
 	if err := fx.m.Poll(fx.ctx); err != nil {
 		t.Fatalf("poll: %v", err)
@@ -122,15 +122,65 @@ func TestPollAndFullVerifyNeverRecheckAnUnchangedAnchor(t *testing.T) {
 			t.Fatalf("poll: %v", err)
 		}
 	}
-	if err := fx.m.FullVerify(fx.ctx); err != nil {
-		t.Fatalf("full verify: %v", err)
-	}
 	if fx.signer.verifies != 0 || fx.store.gets != 0 {
-		t.Fatalf("idle polls and a full verify made %d Verify calls and %d anchor GETs, want 0 and 0",
+		t.Fatalf("idle polls made %d Verify calls and %d anchor GETs, want 0 and 0",
 			fx.signer.verifies, fx.store.gets)
 	}
 	if len(fx.reporter.findings) != 0 {
 		t.Fatalf("unexpected findings: %+v", fx.reporter.findings)
+	}
+}
+
+func TestFullVerifyAsksTheSignerAboutEveryAnchorWithoutRereadingThem(t *testing.T) {
+	fx := newCostFixture(t)
+	if err := fx.m.Poll(fx.ctx); err != nil {
+		t.Fatalf("poll: %v", err)
+	}
+	fx.appendAndSign(t, "select 3")
+	fx.appendAndSign(t, "select 4")
+	if err := fx.m.FullVerify(fx.ctx); err != nil {
+		t.Fatalf("full verify: %v", err)
+	}
+	anchors, err := worm.ReadAnchors(fx.store.ObjectStore)
+	if err != nil || len(anchors) < 2 {
+		t.Fatalf("read anchors = %+v, %v; want at least two", anchors, err)
+	}
+
+	fx.resetCounts()
+	if err := fx.m.FullVerify(fx.ctx); err != nil {
+		t.Fatalf("full verify: %v", err)
+	}
+	if fx.signer.verifies != len(anchors) || fx.store.gets != 0 {
+		t.Fatalf("a full verify over %d unchanged anchors made %d Verify calls and %d anchor GETs, want %d and 0",
+			len(anchors), fx.signer.verifies, fx.store.gets, len(anchors))
+	}
+	if len(fx.reporter.findings) != 0 {
+		t.Fatalf("unexpected findings: %+v", fx.reporter.findings)
+	}
+}
+
+func TestAKeyThatStopsVerifyingIsCaughtOnTheNextFullVerify(t *testing.T) {
+	fx := newCostFixture(t)
+	if err := fx.m.Poll(fx.ctx); err != nil {
+		t.Fatalf("poll: %v", err)
+	}
+	if err := fx.m.Poll(fx.ctx); err != nil {
+		t.Fatalf("poll: %v", err)
+	}
+
+	fx.signer.failWith = errors.New("kms: key is disabled")
+	if err := fx.m.Poll(fx.ctx); err != nil {
+		t.Fatalf("poll: %v", err)
+	}
+	if len(fx.reporter.findings) != 0 {
+		t.Fatalf("a poll with a cached verdict raised findings: %+v", fx.reporter.findings)
+	}
+
+	if err := fx.m.FullVerify(fx.ctx); err != nil {
+		t.Fatalf("full verify: %v", err)
+	}
+	if len(fx.reporter.findings) != 1 || fx.reporter.findings[0].Reason != monitor.ReasonAnchorSignatureInvalid {
+		t.Fatalf("findings = %+v, want one %s once the key stops verifying", fx.reporter.findings, monitor.ReasonAnchorSignatureInvalid)
 	}
 }
 

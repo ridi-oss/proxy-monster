@@ -5,7 +5,7 @@
 #   smoke/run.sh                 full run, tears everything down at the end
 #   smoke/run.sh --keep          leave the stack up for debugging (prints how to stop it)
 #   smoke/run.sh --no-build      reuse the binaries from the last run
-#   smoke/run.sh --only wire     run one leg (editor|browser|wire|pmon|workflow|audit|rate|github|names|native)
+#   smoke/run.sh --only wire     run one leg (editor|browser|wire|pmon|workflow|audit|rate|github|names|native|storage)
 #   smoke/run.sh --engine mysql  run one matrix row (mysql|mysql-lctn1|postgres|athena|bigquery)
 set -euo pipefail
 
@@ -18,6 +18,7 @@ export SMOKE_PG_PORT="${SMOKE_PG_PORT:-17012}"
 export SMOKE_ATHENA_PORT="${SMOKE_ATHENA_PORT:-17013}"
 export SMOKE_MYSQL_LCTN1_PORT="${SMOKE_MYSQL_LCTN1_PORT:-17015}"
 export SMOKE_BIGQUERY_PORT="${SMOKE_BIGQUERY_PORT:-17017}"
+export SMOKE_BIGQUERY_GRPC_PORT="${SMOKE_BIGQUERY_GRPC_PORT:-17019}"
 CP_HTTP="${SMOKE_CP_HTTP_PORT:-17000}"
 CP_GRPC="${SMOKE_CP_GRPC_PORT:-17001}"
 CP_CHILD_HTTP="${SMOKE_CP_CHILD_HTTP_PORT:-17030}"
@@ -32,6 +33,7 @@ GITHUB_TLS="${SMOKE_GITHUB_PORT:-17040}"
 GITHUB_HTTP="${SMOKE_GITHUB_TOKEN_PORT:-17041}"
 GOOGLE_TLS="${SMOKE_GOOGLE_PORT:-17042}"
 GOOGLE_TOKEN="${SMOKE_GOOGLE_TOKEN_PORT:-17043}"
+GOOGLE_STORAGE="${SMOKE_GOOGLE_STORAGE_PORT:-17044}"
 WEB="${SMOKE_WEB_PORT:-17004}"
 
 KEEP=0; BUILD=1; ONLY=""; ENGINE=""
@@ -79,7 +81,7 @@ if [ "$BUILD" = 1 ]; then
   (cd "$ROOT" && ./gradlew --no-daemon -q :control-plane:installDist) > "$SMOKE_DIR/logs/build-cp.log" 2>&1 &
   builds+=($!)
   pids+=($!)
-  for target in cpgo:cp-go:./cmd/cp-go goproxy:goproxy:./cmd/goproxy pmon:pmon:. sql-action:pm-ci:.; do
+  for target in cpgo:cp-go:./cmd/cp-go goproxy:goproxy:./cmd/goproxy goproxy:bqsmoke:./internal/bqsmoke pmon:pmon:. sql-action:pm-ci:.; do
     IFS=: read -r dir bin pkg <<< "$target"
     (cd "$ROOT/$dir" && go build -o "$SMOKE_DIR/bin/$bin" "$pkg") > "$SMOKE_DIR/logs/build-$bin.log" 2>&1 &
     builds+=($!)
@@ -164,7 +166,8 @@ athena_proxy() {
   pids+=($!)
 }
 # The BigQuery proxy reaches the emulator through smoke/fake_google.py (HTTPS plus a token endpoint), with a
-# throwaway service-account key whose token_uri is that endpoint, and serves its own HTTPS wire like Athena.
+# throwaway service-account key whose token_uri is that endpoint, and serves its own HTTPS wire like Athena. Its
+# Storage Read calls go through bqsmoke's relay, which serves the emulator's gRPC over TLS in Google's Arrow framing.
 bigquery_proxy() {
   local BQ="$SMOKE_DIR/bigquery"
   rm -rf "$BQ"/*
@@ -186,6 +189,9 @@ PY
   python3 "$ROOT/smoke/fake_google.py" "$GOOGLE_TLS" "$GOOGLE_TOKEN" "$BQ/google-cert.pem" "$BQ/google-key.pem" "$SMOKE_BIGQUERY_PORT" \
     > "$SMOKE_DIR/logs/fake-google.log" 2>&1 &
   pids+=($!)
+  "$SMOKE_DIR/bin/bqsmoke" relay -addr "127.0.0.1:$GOOGLE_STORAGE" -cert "$BQ/google-cert.pem" -key "$BQ/google-key.pem" \
+    -upstream "127.0.0.1:$SMOKE_BIGQUERY_GRPC_PORT" > "$SMOKE_DIR/logs/bigquery-storage-relay.log" 2>&1 &
+  pids+=($!)
   for _ in $(seq 1 30); do
     curl -sf -m 2 -o /dev/null "http://127.0.0.1:$SMOKE_BIGQUERY_PORT/bigquery/v2/projects/pmsmoke/datasets" && break
     sleep 1
@@ -193,6 +199,7 @@ PY
   env PM_ENGINE=bigquery PM_DATASOURCE_NAME=smoke-bigquery PM_DATASOURCE_TAGS=system:production \
     PM_PROXY_PORT="$PROXY_BIGQUERY" PM_TARGET_DB=acme PM_BIGQUERY_PROJECT=pmsmoke PM_BIGQUERY_LOCATION=US \
     PM_BIGQUERY_ENDPOINT="https://127.0.0.1:$GOOGLE_TLS" PM_BIGQUERY_CA_FILE="$BQ/google-cert.pem" \
+    PM_BIGQUERY_STORAGE_ENDPOINT="127.0.0.1:$GOOGLE_STORAGE" \
     PM_BIGQUERY_CONTEXT_PATH="$BQ/contexts.db" GOOGLE_APPLICATION_CREDENTIALS="$BQ/sa.json" \
     PM_CONTROL_PLANE_GRPC="127.0.0.1:$CP_GRPC" PM_SECRET_TOKEN="$SECRET" \
     PM_ADVERTISE_ADDR="127.0.0.1:$PROXY_BIGQUERY" \
@@ -226,7 +233,7 @@ if [ -n "${SMOKE_WAIT_FOR:-}" ]; then
 fi
 
 args=(--cp "http://127.0.0.1:$CP_HTTP" --web "http://127.0.0.1:$WEB" --root "$ROOT" --cp-db "postgresql://proxymonster:proxymonster@127.0.0.1:$SMOKE_CP_DB_PORT/proxymonster" --pmon "$SMOKE_DIR/bin/pmon" --pmon-dir "$SMOKE_DIR/pmon" --pmon-port-base "$PMON_BASE" --logs "$SMOKE_DIR/logs")
-args+=(--github "$GITHUB_TLS,$GITHUB_HTTP,$GH/tls-cert.pem,$GH/tls-key.pem,$GH/oidc-key.pem,1" --pm-ci "$SMOKE_DIR/bin/pm-ci")
+args+=(--github "$GITHUB_TLS,$GITHUB_HTTP,$GH/tls-cert.pem,$GH/tls-key.pem,$GH/oidc-key.pem,1" --pm-ci "$SMOKE_DIR/bin/pm-ci" --bqsmoke "$SMOKE_DIR/bin/bqsmoke")
 args+=(--datasource "mysql:smoke-mysql:$PROXY_MYSQL" --datasource "mysql:smoke-mysql-lctn1:$PROXY_MYSQL_LCTN1:mysql-lctn1" --datasource "postgres:smoke-postgres:$PROXY_PG" --datasource "athena:smoke-athena:$PROXY_ATHENA" --datasource "bigquery:smoke-bigquery:$PROXY_BIGQUERY")
 [ -n "$ONLY" ] && args+=(--only "$ONLY")
 [ -n "$ENGINE" ] && args+=(--engine "$ENGINE")

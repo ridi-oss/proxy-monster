@@ -277,7 +277,11 @@ configured per proxy under `PM_TARGET_*`.
 - BigQuery (`PM_ENGINE=bigquery`) authenticates with Google Application Default
   Credentials (`GOOGLE_APPLICATION_CREDENTIALS`, workload identity federation,
   or the GCE/GKE metadata server) and refuses to start when it cannot tell which
-  principal those credentials act as. It requires `PM_BIGQUERY_PROJECT` and
+  principal those credentials act as. On ECS, point
+  `GOOGLE_APPLICATION_CREDENTIALS` at an AWS workload identity federation file
+  (`gcloud iam workload-identity-pools create-cred-config … --aws --service-account=<sa>`)
+  and set `AWS_REGION`; the task role's credentials sign the exchange, with no
+  service-account key. It requires `PM_BIGQUERY_PROJECT` and
   `PM_BIGQUERY_LOCATION` (`US`, `asia-northeast3`, …); `PM_TARGET_DB` is the
   default dataset. `PM_BIGQUERY_CONTEXT_PATH` works like
   `PM_ATHENA_CONTEXT_PATH`, and `PM_BIGQUERY_ENDPOINT` (default

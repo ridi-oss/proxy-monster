@@ -22,6 +22,8 @@ type S3Config struct {
 	UsePathStyle bool
 }
 
+const s3ReadTimeout = time.Minute
+
 type s3Store struct {
 	client *s3.Client
 	bucket string
@@ -63,23 +65,7 @@ func (s *s3Store) Put(key string, body []byte) error {
 }
 
 func (s *s3Store) List(prefix string) ([]string, error) {
-	var keys []string
-	p := s3.NewListObjectsV2Paginator(s.client, &s3.ListObjectsV2Input{
-		Bucket: aws.String(s.bucket),
-		Prefix: aws.String(prefix),
-	})
-	for p.HasMorePages() {
-		page, err := p.NextPage(context.Background())
-		if err != nil {
-			return nil, fmt.Errorf("worm: list %q: %w", prefix, err)
-		}
-		for _, obj := range page.Contents {
-			if obj.Key != nil {
-				keys = append(keys, *obj.Key)
-			}
-		}
-	}
-	return keys, nil
+	return keysOf(s.ListObjects(prefix))
 }
 
 func (s *s3Store) ListObjects(prefix string) ([]ObjectInfo, error) {
@@ -89,7 +75,9 @@ func (s *s3Store) ListObjects(prefix string) ([]ObjectInfo, error) {
 		Prefix: aws.String(prefix),
 	})
 	for p.HasMorePages() {
-		page, err := p.NextPage(context.Background())
+		ctx, cancel := context.WithTimeout(context.Background(), s3ReadTimeout)
+		page, err := p.NextPage(ctx)
+		cancel()
 		if err != nil {
 			return nil, fmt.Errorf("worm: list %q: %w", prefix, err)
 		}
@@ -107,7 +95,9 @@ func (s *s3Store) ListObjects(prefix string) ([]ObjectInfo, error) {
 }
 
 func (s *s3Store) Get(key string) ([]byte, error) {
-	out, err := s.client.GetObject(context.Background(), &s3.GetObjectInput{
+	ctx, cancel := context.WithTimeout(context.Background(), s3ReadTimeout)
+	defer cancel()
+	out, err := s.client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(key),
 	})

@@ -36,16 +36,7 @@ func (m *memoryStore) Put(key string, body []byte) error {
 }
 
 func (m *memoryStore) List(prefix string) ([]string, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	var keys []string
-	for k := range m.objects {
-		if strings.HasPrefix(k, prefix) {
-			keys = append(keys, k)
-		}
-	}
-	sort.Strings(keys)
-	return keys, nil
+	return keysOf(m.ListObjects(prefix))
 }
 
 func (m *memoryStore) ListObjects(prefix string) ([]ObjectInfo, error) {

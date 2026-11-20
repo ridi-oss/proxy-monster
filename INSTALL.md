@@ -317,54 +317,70 @@ configured per proxy under `PM_TARGET_*`.
   an entry that is neither an address nor a block refuses to start. Example:
   `16033` · `10.20.0.0/16`
 
-#### Single entry port (edge mode)
+#### Single entry port (pm-edge)
 
 Every datasource proxy otherwise needs its own wire port on every hop in front
-of it (a VPN service port, a load-balancer listener). Edge mode lets many
-datasources share one entry port per engine. Run the same image with
-`PM_MODE=edge` and it becomes a router: the port a connection arrives on picks
-the engine, and the host name in the client's TLS ClientHello (SNI) picks the
-datasource proxy. The edge never terminates TLS: it answers the engine's pre-TLS
-exchange, reads the ClientHello, connects to the chosen proxy's PROXY protocol
-port, and from then on copies bytes both ways. The client therefore verifies the
-datasource proxy's own certificate, exactly as on a direct connection.
+of it (a VPN service port, a load-balancer listener). `pm-edge` lets many
+datasources share one entry port per engine. It is a separate binary in the
+same image (`/usr/local/bin/pm-edge`; set it as the container's entrypoint or
+command). The port a connection arrives on picks the engine, and the host name
+in the client's TLS ClientHello (SNI) picks the datasource proxy. The edge never
+terminates TLS: it answers the engine's pre-TLS exchange, reads the ClientHello,
+connects to the chosen proxy's PROXY protocol port, and from then on copies
+bytes both ways. The client therefore verifies the datasource proxy's own
+certificate, exactly as on a direct connection.
 
-An edge reads only these variables; the datasource variables above (and
-`PM_SECRET_TOKEN`) are unused, and it holds no control-plane connection.
+`pm-edge` reads only these variables; it holds no control-plane connection and
+no datasource settings.
 
-- `PM_MODE` — _optional_. `edge` runs the router. Unset runs the datasource
-  proxy. Any other value refuses to start.
-- `PM_EDGE_LISTEN` — _required in edge mode_. Comma-separated `kind:port`
-  entries; the kind is `mysql`, `postgres`, or `https` (an Athena datasource
-  proxy, which clients reach over HTTPS). Use the default MySQL and PostgreSQL
-  ports so clients need no port setting; keep HTTPS off 443 when a console
-  shares the address (Athena's proxy default is 6443). Example:
+- `PM_EDGE_LISTEN` — _required_. Comma-separated `kind:port` entries; the kind
+  is `mysql`, `postgres`, or `https` (an Athena or BigQuery datasource proxy,
+  which clients reach over HTTPS). Use the default MySQL and PostgreSQL ports so
+  clients need no port setting; keep HTTPS off 443 when a console shares the
+  address (Athena's proxy default is 6443). Example:
   `mysql:3306,postgres:5432,https:6443`
-- `PM_WIRE_ROUTES` — _required in edge mode_. Comma-separated
+- `PM_WIRE_ROUTES` — _required_. Comma-separated
   `<kind>:<host>=<backend>:<port>` entries. `<kind>` is the datasource's engine,
-  as in `PM_EDGE_LISTEN`; a connection that arrives on another engine's port is
-  closed without dialing the backend. `<host>` is the name clients connect to
-  and must match the SNI exactly (case-insensitive, a trailing dot ignored, no
-  wildcards); a host listed twice refuses to start. The backend is that
-  datasource proxy's address and its `PM_PROXY_PROTOCOL_PORT`. Example:
+  as in `PM_EDGE_LISTEN`, and must have a listener there; a connection that
+  arrives on another engine's port is closed without dialing the backend.
+  `<host>` is the name clients connect to and must match the SNI exactly
+  (case-insensitive, a trailing dot ignored, no wildcards, no IP addresses); a
+  host listed twice refuses to start. The backend is that datasource proxy's
+  address and its `PM_PROXY_PROTOCOL_PORT`. Example:
   `mysql:orders.pm.example.com=10.20.1.5:16033,postgres:billing.pm.example.com=10.20.1.6:16432`
-- `PM_TRUSTED_PROXIES` — _required in edge mode_. Comma-separated addresses or
-  CIDR blocks. Every edge listener requires a PROXY protocol v1 or v2 header
-  from one of these peers, as on a datasource proxy's PROXY protocol port; any
-  other peer is closed at accept.
+- `PM_TRUSTED_PROXIES` — _required_. Comma-separated addresses or CIDR blocks.
+  Every edge listener requires a PROXY protocol v1 or v2 header from one of
+  these peers, as on a datasource proxy's PROXY protocol port; any other peer is
+  closed at accept.
 - `PM_EDGE_HEALTH_PORT` — _optional_. A plain TCP port that accepts and closes,
-  for load-balancer health checks. Unset disables it.
+  for load-balancer health checks. Unset disables it. The image's
+  `HEALTHCHECK` probes it when set.
 - `PM_EDGE_MAX_CONNECTIONS` — _optional_. The most connections the edge holds at
   once, across every listener and datasource. A connection over the limit is
   closed at accept and logged with outcome `at_capacity`. Default `1024`.
+- `PM_EDGE_MAX_HANDSHAKES` — _optional_. The most of those connections that may
+  still be in the pre-TLS exchange at once; a spliced session no longer counts.
+  A connection over the limit is closed at accept and logged with outcome
+  `handshakes_at_capacity`. Default `256` (or `PM_EDGE_MAX_CONNECTIONS` when
+  that is lower); it cannot exceed `PM_EDGE_MAX_CONNECTIONS`.
+- `PM_EDGE_MAX_HANDSHAKES_PER_SOURCE` — _optional_. The most pre-TLS exchanges
+  one client address (the source in the PROXY header) may hold at once. A
+  connection over the limit is closed and logged with outcome
+  `source_at_capacity`. Default `32`; it cannot exceed
+  `PM_EDGE_MAX_HANDSHAKES`.
+- `PM_EDGE_DRAIN_TIMEOUT` — _optional_. On `SIGTERM` the edge stops accepting,
+  waits this long for spliced sessions to end, and then closes the rest. Default
+  `10s`. Set it a little below the task's stop timeout (ECS
+  `stopTimeout`, Kubernetes `terminationGracePeriodSeconds`).
 
 Each routed datasource proxy needs:
 
 - Wire TLS (`PM_TLS_CERT` / `PM_TLS_KEY`) with a certificate whose SANs cover
   its routed host name. A shared certificate must cover every routed host name.
-- `PM_ADVERTISE_ADDR` set to `<host>:<engine default port>` (for example
-  `orders.pm.example.com:3306`), so `pmon` and direct clients dial the edge with
-  the right SNI.
+- `PM_ADVERTISE_ADDR` set to `<host>:<entry port>`, where the entry port is the
+  edge's `PM_EDGE_LISTEN` port for that kind (for example
+  `orders.pm.example.com:3306`, or `athena.pm.example.com:6443`), so `pmon` and
+  direct clients dial the edge with the right SNI.
 - `PM_PROXY_PROTOCOL_PORT` set, with the edge's address in its
   `PM_TRUSTED_PROXIES`. The edge sends a PROXY v2 header whose source is the
   client address from its own inbound header, so the CP still audits the real
@@ -372,10 +388,15 @@ Each routed datasource proxy needs:
 
 A client that does not ask for TLS is refused before any datasource is chosen:
 MySQL gets error 1045 (`28000`), PostgreSQL a `FATAL` `28000`. A ClientHello
-with no SNI or an unrouted host is closed. The edge accepts at most 256
-connections at once and gives each 15 seconds to finish the pre-TLS exchange. It
-logs one line per connection: client, kind, SNI, backend, bytes each way,
-duration, and outcome.
+with no SNI or an unrouted host gets a TLS `unrecognized_name` alert. When the
+chosen backend cannot be reached or refuses the connection, the client gets a
+TLS `internal_error` alert, and the edge's log line carries the backend's
+reason. The edge gives each connection 15 seconds to finish the pre-TLS exchange.
+It logs one line per connection: client, kind, SNI, backend, bytes each way,
+duration, and outcome. Connections refused at accept (`at_capacity`,
+`handshakes_at_capacity`, `untrusted_peer`) are logged before the PROXY header
+is read, so their `peer` is the hop in front of the edge, not the client; those
+lines are sampled to one a second, with a `suppressed` count.
 
 #### Target DB service-account grants
 

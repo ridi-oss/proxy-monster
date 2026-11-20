@@ -18,7 +18,9 @@ import (
 )
 
 const (
-	FrontendServerVersion      = "8.0.40-proxy-monster"
+	FrontendServerVersion = "8.0.40-proxy-monster"
+	FrontendConnectWithDB = true
+
 	frontendHandshakeTimeout   = 15 * time.Second
 	maxFrontendHandshakePacket = 64 << 10
 	maxFrontendTokenPacket     = 64 << 10
@@ -62,11 +64,9 @@ func (s *Server) handleConn(clientConn net.Conn) {
 		return
 	}
 	connID := s.connID.Add(1)
-	// true: this handler relays a handshake-supplied database to the target DB as COM_INIT_DB below, so
-	// it is safe (and, for a real client's self-consistency, necessary) to advertise CapConnectWithDB.
-	greeting := mysqlwire.ServerGreeting(connID, scramble, FrontendServerVersion, true)
+	greeting := mysqlwire.ServerGreeting(connID, scramble, FrontendServerVersion, FrontendConnectWithDB)
 	if tlsConfig != nil {
-		greeting = FrontendGreetingSSL(connID, scramble)
+		greeting = mysqlwire.ServerGreetingSSL(connID, scramble, FrontendServerVersion, FrontendConnectWithDB)
 	}
 	if err := mysqlwire.WritePacket(clientConn, 0, greeting); err != nil {
 		return
@@ -692,8 +692,4 @@ func splitBatch(enabled bool, sql string, split func() ([]engines.BatchStatement
 		statements[i] = statement.SQL
 	}
 	return statements
-}
-
-func FrontendGreetingSSL(connID uint32, scramble []byte) []byte {
-	return mysqlwire.ServerGreetingSSL(connID, scramble, FrontendServerVersion, true)
 }

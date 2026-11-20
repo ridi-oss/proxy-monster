@@ -14,6 +14,7 @@ import (
 
 	"github.com/alecthomas/kong"
 	"github.com/ridi-oss/proxy-monster/analyzer/engines"
+	"github.com/ridi-oss/proxy-monster/goproxy/listen"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
@@ -157,7 +158,7 @@ func Load(raw Flags, registry spi.Registry) (*Config, error) {
 	if proxyProtocolPort == 0 && strings.TrimSpace(raw.ProxyProtocolPort) != "" {
 		return nil, fmt.Errorf("PM_PROXY_PROTOCOL_PORT=%q has an invalid port (want 1-65535)", raw.ProxyProtocolPort)
 	}
-	trustedProxies, err := ParseTrustedProxies(raw.TrustedProxies)
+	trustedProxies, err := listen.ParseTrustedProxies(raw.TrustedProxies)
 	if err != nil {
 		return nil, err
 	}
@@ -197,26 +198,6 @@ func Load(raw Flags, registry spi.Registry) (*Config, error) {
 		ProxyProtocolPort:     proxyProtocolPort,
 		TrustedProxies:        trustedProxies,
 	}, nil
-}
-
-func ParseTrustedProxies(raw string) ([]netip.Prefix, error) {
-	var prefixes []netip.Prefix
-	for _, entry := range strings.Split(raw, ",") {
-		entry = strings.TrimSpace(entry)
-		if entry == "" {
-			continue
-		}
-		if prefix, err := netip.ParsePrefix(entry); err == nil {
-			prefixes = append(prefixes, prefix.Masked())
-			continue
-		}
-		addr, err := netip.ParseAddr(entry)
-		if err != nil {
-			return nil, fmt.Errorf("PM_TRUSTED_PROXIES entry %q is neither an IP address nor a CIDR block", entry)
-		}
-		prefixes = append(prefixes, netip.PrefixFrom(addr, addr.BitLen()))
-	}
-	return prefixes, nil
 }
 
 func (c *Config) Listen() spi.Listen {

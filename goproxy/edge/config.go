@@ -4,11 +4,13 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/alecthomas/kong"
-	"github.com/ridi-oss/proxy-monster/goproxy/config"
+	"github.com/ridi-oss/proxy-monster/goproxy/listen"
 )
 
 type Kind string
@@ -25,9 +27,17 @@ type rawFlags struct {
 	TrustedProxies string `env:"PM_TRUSTED_PROXIES"`
 	HealthPort     string `env:"PM_EDGE_HEALTH_PORT"`
 	MaxConnections string `env:"PM_EDGE_MAX_CONNECTIONS"`
+	MaxHandshakes  string `env:"PM_EDGE_MAX_HANDSHAKES"`
+	PerSource      string `env:"PM_EDGE_MAX_HANDSHAKES_PER_SOURCE"`
+	DrainTimeout   string `env:"PM_EDGE_DRAIN_TIMEOUT"`
 }
 
-const defaultMaxConnections = 1024
+const (
+	defaultMaxConnections         = 1024
+	defaultMaxHandshakes          = 256
+	defaultMaxHandshakesPerSource = 32
+	defaultDrainTimeout           = 10 * time.Second
+)
 
 type Listener struct {
 	Kind Kind
@@ -40,11 +50,14 @@ type Route struct {
 }
 
 type Config struct {
-	Listeners      []Listener
-	Routes         map[string]Route
-	TrustedProxies []netip.Prefix
-	HealthPort     int
-	MaxConnections int
+	Listeners              []Listener
+	Routes                 map[string]Route
+	TrustedProxies         []netip.Prefix
+	HealthPort             int
+	MaxConnections         int
+	MaxHandshakes          int
+	MaxHandshakesPerSource int
+	DrainTimeout           time.Duration
 }
 
 func Load() (*Config, error) {
@@ -68,7 +81,12 @@ func parse(raw rawFlags) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	trusted, err := config.ParseTrustedProxies(raw.TrustedProxies)
+	for host, route := range routes {
+		if !slices.ContainsFunc(listeners, func(l Listener) bool { return l.Kind == route.Kind }) {
+			return nil, fmt.Errorf("PM_WIRE_ROUTES routes %q to %s, but PM_EDGE_LISTEN has no %s port", host, route.Kind, route.Kind)
+		}
+	}
+	trusted, err := listen.ParseTrustedProxies(raw.TrustedProxies)
 	if err != nil {
 		return nil, err
 	}
@@ -87,21 +105,53 @@ func parse(raw rawFlags) (*Config, error) {
 			}
 		}
 	}
-	maxConnections := defaultMaxConnections
-	if s := strings.TrimSpace(raw.MaxConnections); s != "" {
-		n, err := strconv.ParseUint(s, 10, 31)
-		if err != nil || n == 0 {
-			return nil, fmt.Errorf("PM_EDGE_MAX_CONNECTIONS=%q must be a positive integer", raw.MaxConnections)
+	maxConnections, err := parseCount("PM_EDGE_MAX_CONNECTIONS", raw.MaxConnections, defaultMaxConnections)
+	if err != nil {
+		return nil, err
+	}
+	maxHandshakes, err := parseCount("PM_EDGE_MAX_HANDSHAKES", raw.MaxHandshakes, min(defaultMaxHandshakes, maxConnections))
+	if err != nil {
+		return nil, err
+	}
+	if maxHandshakes > maxConnections {
+		return nil, fmt.Errorf("PM_EDGE_MAX_HANDSHAKES=%d is above PM_EDGE_MAX_CONNECTIONS=%d", maxHandshakes, maxConnections)
+	}
+	perSource, err := parseCount("PM_EDGE_MAX_HANDSHAKES_PER_SOURCE", raw.PerSource, min(defaultMaxHandshakesPerSource, maxHandshakes))
+	if err != nil {
+		return nil, err
+	}
+	if perSource > maxHandshakes {
+		return nil, fmt.Errorf("PM_EDGE_MAX_HANDSHAKES_PER_SOURCE=%d is above PM_EDGE_MAX_HANDSHAKES=%d", perSource, maxHandshakes)
+	}
+	drainTimeout := defaultDrainTimeout
+	if s := strings.TrimSpace(raw.DrainTimeout); s != "" {
+		drainTimeout, err = time.ParseDuration(s)
+		if err != nil || drainTimeout < 0 {
+			return nil, fmt.Errorf("PM_EDGE_DRAIN_TIMEOUT=%q must be a duration such as 30s", raw.DrainTimeout)
 		}
-		maxConnections = int(n)
 	}
 	return &Config{
-		Listeners:      listeners,
-		Routes:         routes,
-		TrustedProxies: trusted,
-		HealthPort:     healthPort,
-		MaxConnections: maxConnections,
+		Listeners:              listeners,
+		Routes:                 routes,
+		TrustedProxies:         trusted,
+		HealthPort:             healthPort,
+		MaxConnections:         maxConnections,
+		MaxHandshakes:          maxHandshakes,
+		MaxHandshakesPerSource: perSource,
+		DrainTimeout:           drainTimeout,
 	}, nil
+}
+
+func parseCount(name, raw string, fallback int) (int, error) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return fallback, nil
+	}
+	n, err := strconv.ParseUint(s, 10, 31)
+	if err != nil || n == 0 {
+		return 0, fmt.Errorf("%s=%q must be a positive integer", name, raw)
+	}
+	return int(n), nil
 }
 
 func parseListeners(raw string) ([]Listener, error) {
@@ -155,6 +205,9 @@ func parseRoutes(raw string) (map[string]Route, error) {
 		host := normalizeHost(hostText)
 		if host == "" || strings.ContainsAny(host, ":/* ") || strings.HasPrefix(host, ".") || strings.Contains(host, "..") {
 			return nil, fmt.Errorf("PM_WIRE_ROUTES entry %q has an invalid host name %q", entry, hostText)
+		}
+		if _, err := netip.ParseAddr(host); err == nil {
+			return nil, fmt.Errorf("PM_WIRE_ROUTES entry %q routes an IP address, which a TLS ClientHello never carries as SNI", entry)
 		}
 		backend = strings.TrimSpace(backend)
 		backendHost, backendPort, err := net.SplitHostPort(backend)

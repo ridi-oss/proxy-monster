@@ -4,11 +4,14 @@ import (
 	"net/netip"
 	"strings"
 	"testing"
+	"time"
 )
 
 func setEdgeEnv(t *testing.T, listen, routes, trusted, health string) {
 	t.Helper()
-	t.Setenv("PM_EDGE_MAX_CONNECTIONS", "")
+	for _, name := range []string{"PM_EDGE_MAX_CONNECTIONS", "PM_EDGE_MAX_HANDSHAKES", "PM_EDGE_MAX_HANDSHAKES_PER_SOURCE", "PM_EDGE_DRAIN_TIMEOUT"} {
+		t.Setenv(name, "")
+	}
 	t.Setenv("PM_EDGE_LISTEN", listen)
 	t.Setenv("PM_WIRE_ROUTES", routes)
 	t.Setenv("PM_TRUSTED_PROXIES", trusted)
@@ -71,6 +74,40 @@ func TestLoadReadsMaxConnections(t *testing.T) {
 	}
 }
 
+func TestLoadReadsHandshakeLimitsAndDrainTimeout(t *testing.T) {
+	setEdgeEnv(t, "mysql:3306", "mysql:db1.example.com=10.0.1.5:16033", "10.0.0.0/8", "")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MaxHandshakes != defaultMaxHandshakes || cfg.MaxHandshakesPerSource != defaultMaxHandshakesPerSource || cfg.DrainTimeout != defaultDrainTimeout {
+		t.Fatalf("defaults = %d, %d, %v", cfg.MaxHandshakes, cfg.MaxHandshakesPerSource, cfg.DrainTimeout)
+	}
+
+	t.Setenv("PM_EDGE_MAX_CONNECTIONS", "100")
+	t.Setenv("PM_EDGE_DRAIN_TIMEOUT", "2m")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MaxHandshakes != 100 || cfg.MaxHandshakesPerSource != defaultMaxHandshakesPerSource || cfg.DrainTimeout != 2*time.Minute {
+		t.Fatalf("with 100 connections = %d, %d, %v", cfg.MaxHandshakes, cfg.MaxHandshakesPerSource, cfg.DrainTimeout)
+	}
+
+	for name, value := range map[string]string{
+		"PM_EDGE_MAX_HANDSHAKES":            "200",
+		"PM_EDGE_MAX_HANDSHAKES_PER_SOURCE": "101",
+		"PM_EDGE_DRAIN_TIMEOUT":             "soon",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(name, value)
+			if _, err := Load(); err == nil || !strings.Contains(err.Error(), name) {
+				t.Fatalf("%s=%s: err = %v", name, value, err)
+			}
+		})
+	}
+}
+
 func TestLoadLeavesHealthPortOffWhenUnset(t *testing.T) {
 	setEdgeEnv(t, "mysql:3306", "mysql:db1.example.com=10.0.1.5:16033", "10.0.0.0/8", "")
 	cfg, err := Load()
@@ -111,6 +148,8 @@ func TestLoadRefusesInvalidConfiguration(t *testing.T) {
 		{"route empty label", listen, "mysql:db1..example.com=10.0.1.5:16033", trusted, "", "invalid host name"},
 		{"health port collides", listen, routes, trusted, "3306", "also a PM_EDGE_LISTEN port"},
 		{"health port garbage", listen, routes, trusted, "abc", "PM_EDGE_HEALTH_PORT"},
+		{"route kind without a listener", listen, "postgres:db2.example.com=10.0.1.6:16432", trusted, "", "PM_EDGE_LISTEN has no postgres port"},
+		{"route to an IP address", listen, "mysql:10.0.1.5=10.0.1.5:16033", trusted, "", "routes an IP address"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

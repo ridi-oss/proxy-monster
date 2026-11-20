@@ -19,7 +19,7 @@ WORKDIR /workspace/goproxy
 # GOTOOLCHAIN=local pins the module's go 1.26 (no network toolchain fetch); CGO off → a static binary,
 # so the runtime image needs no libc beyond the base.
 ENV GOTOOLCHAIN=local CGO_ENABLED=0
-RUN go build -trimpath -o /out/goproxy ./cmd/goproxy
+RUN go build -trimpath -o /out/goproxy ./cmd/goproxy && go build -trimpath -o /out/pm-edge ./cmd/pm-edge
 
 # ---- Runtime ----
 # debian-slim (rather than scratch/distroless) so the TCP health check below has a shell; the binary is
@@ -28,7 +28,7 @@ FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
 RUN groupadd --system --gid 10001 pm && useradd --system --uid 10001 --gid pm --create-home pm
-COPY --from=build /out/goproxy /usr/local/bin/goproxy
+COPY --from=build /out/goproxy /out/pm-edge /usr/local/bin/
 USER pm
 
 # Informational only (the actual bind port is PM_PROXY_PORT, engine-dependent) — the Postgres / MySQL
@@ -39,6 +39,6 @@ EXPOSE 6432 6033
 # signal, same as the former :proxy image. PM_TARGET_* reachability and control-plane connectivity are
 # NOT checked here; those surface as query-time errors, not a dead process.
 HEALTHCHECK --interval=10s --timeout=3s --start-period=15s --retries=5 \
-    CMD bash -c 'exec 3<>/dev/tcp/127.0.0.1/${PM_PROXY_PORT:-6432}' || exit 1
+    CMD bash -c 'exec 3<>/dev/tcp/127.0.0.1/${PM_EDGE_HEALTH_PORT:-${PM_PROXY_PORT:-6432}}' || exit 1
 
 ENTRYPOINT ["/usr/local/bin/goproxy"]

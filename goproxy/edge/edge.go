@@ -20,10 +20,14 @@ import (
 )
 
 const (
-	handshakeTimeout = 15 * time.Second
-	drainTimeout     = 10 * time.Second
-	minAcceptBackoff = 5 * time.Millisecond
-	maxAcceptBackoff = time.Second
+	handshakeTimeout   = 15 * time.Second
+	minAcceptBackoff   = 5 * time.Millisecond
+	maxAcceptBackoff   = time.Second
+	rejectLogInterval  = time.Second
+	tlsAlertRecord     = 21
+	tlsAlertFatal      = 2
+	alertInternalError = 80
+	alertUnrecognized  = 112
 )
 
 var (
@@ -43,7 +47,14 @@ type Server struct {
 	dial             func(ctx context.Context, network, address string) (net.Conn, error)
 	handshakeTimeout time.Duration
 	slots            chan struct{}
+	handshakes       chan struct{}
+	perSourceCap     int
 	connID           atomic.Uint32
+	rejectLog        sampledLog
+	untrustedLog     sampledLog
+
+	sourcesMu sync.Mutex
+	sources   map[string]int
 
 	mu        sync.Mutex
 	closed    bool
@@ -61,12 +72,24 @@ func New(config *Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	maxConnections := max(config.MaxConnections, 1)
+	maxHandshakes := maxConnections
+	if config.MaxHandshakes > 0 {
+		maxHandshakes = min(config.MaxHandshakes, maxConnections)
+	}
+	perSourceCap := maxHandshakes
+	if config.MaxHandshakesPerSource > 0 {
+		perSourceCap = min(config.MaxHandshakesPerSource, maxHandshakes)
+	}
 	return &Server{
 		config:           config,
 		trust:            trust,
 		dial:             (&net.Dialer{}).DialContext,
 		handshakeTimeout: handshakeTimeout,
-		slots:            make(chan struct{}, max(config.MaxConnections, 1)),
+		slots:            make(chan struct{}, maxConnections),
+		handshakes:       make(chan struct{}, maxHandshakes),
+		perSourceCap:     perSourceCap,
+		sources:          map[string]int{},
 		listeners:        map[net.Listener]struct{}{},
 		conns:            map[net.Conn]struct{}{},
 	}, nil
@@ -123,13 +146,13 @@ func Run() error {
 	defer signal.Stop(signals)
 	select {
 	case <-signals:
-		slog.Info("shutting down the edge router", "timeout", drainTimeout)
-		ctx, cancel := context.WithTimeout(context.Background(), drainTimeout)
+		slog.Info("shutting down the edge router", "timeout", config.DrainTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), config.DrainTimeout)
 		defer cancel()
 		server.Shutdown(ctx)
 		return nil
 	case err := <-errs:
-		ctx, cancel := context.WithTimeout(context.Background(), drainTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), config.DrainTimeout)
 		defer cancel()
 		server.Shutdown(ctx)
 		if err == nil {
@@ -156,17 +179,26 @@ func (s *Server) Serve(kind Kind, ln net.Listener) error {
 		}
 		backoff = 0
 		if !s.acquire() {
-			slog.Warn("edge connection", "client", socketPeer(conn), "kind", string(kind), "outcome", "at_capacity", "max_connections", cap(s.slots))
+			s.logRejected(conn, kind, "at_capacity", "max_connections", cap(s.slots))
+			_ = conn.Close()
+			continue
+		}
+		if !s.acquireHandshake() {
+			s.release()
+			s.logRejected(conn, kind, "handshakes_at_capacity", "max_handshakes", cap(s.handshakes))
 			_ = conn.Close()
 			continue
 		}
 		if !s.trackConn(conn) {
+			s.releaseHandshake()
 			s.release()
 			_ = conn.Close()
 			return nil
 		}
 		go func() {
+			ticket := &handshakeTicket{server: s}
 			defer s.release()
+			defer ticket.end()
 			defer s.untrackConn(conn)
 			defer func() {
 				if recovered := recover(); recovered != nil {
@@ -174,7 +206,7 @@ func (s *Server) Serve(kind Kind, ln net.Listener) error {
 					slog.Error("edge connection handler panicked", "client", socketPeer(conn), "kind", string(kind), "panic", recovered, "stack", string(debug.Stack()))
 				}
 			}()
-			s.handle(kind, conn)
+			s.handle(kind, conn, ticket)
 		}()
 	}
 }
@@ -237,9 +269,84 @@ func (s *Server) Shutdown(ctx context.Context) {
 func (s *Server) policy(opts proxyproto.ConnPolicyOptions) (proxyproto.Policy, error) {
 	policy, err := s.trust(opts)
 	if err != nil {
-		slog.Info("edge connection", "client", opts.Upstream.String(), "outcome", "untrusted_peer")
+		if ok, suppressed := s.untrustedLog.allow(time.Now()); ok {
+			slog.Warn("edge connection", "peer", opts.Upstream.String(), "outcome", "untrusted_peer", "suppressed", suppressed)
+		}
 	}
 	return policy, err
+}
+
+func (s *Server) logRejected(conn net.Conn, kind Kind, outcome string, attrs ...any) {
+	ok, suppressed := s.rejectLog.allow(time.Now())
+	if !ok {
+		return
+	}
+	attrs = append([]any{"peer", socketPeer(conn), "kind", string(kind), "outcome", outcome, "suppressed", suppressed}, attrs...)
+	slog.Warn("edge connection", attrs...)
+}
+
+type sampledLog struct {
+	mu         sync.Mutex
+	next       time.Time
+	suppressed int
+}
+
+func (l *sampledLog) allow(now time.Time) (bool, int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if now.Before(l.next) {
+		l.suppressed++
+		return false, 0
+	}
+	suppressed := l.suppressed
+	l.suppressed = 0
+	l.next = now.Add(rejectLogInterval)
+	return true, suppressed
+}
+
+func (s *Server) acquireHandshake() bool {
+	select {
+	case s.handshakes <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Server) releaseHandshake() { <-s.handshakes }
+
+type handshakeTicket struct {
+	server *Server
+	source string
+	ended  bool
+}
+
+func (t *handshakeTicket) claimSource(source string) bool {
+	s := t.server
+	s.sourcesMu.Lock()
+	defer s.sourcesMu.Unlock()
+	if s.sources[source] >= s.perSourceCap {
+		return false
+	}
+	s.sources[source]++
+	t.source = source
+	return true
+}
+
+func (t *handshakeTicket) end() {
+	if t.ended {
+		return
+	}
+	t.ended = true
+	s := t.server
+	if t.source != "" {
+		s.sourcesMu.Lock()
+		if s.sources[t.source]--; s.sources[t.source] <= 0 {
+			delete(s.sources, t.source)
+		}
+		s.sourcesMu.Unlock()
+	}
+	s.releaseHandshake()
 }
 
 func (s *Server) acquire() bool {
@@ -335,7 +442,7 @@ func (r *connRecord) log(duration time.Duration) {
 	slog.Log(context.Background(), level, "edge connection", attrs...)
 }
 
-func (s *Server) handle(kind Kind, conn net.Conn) {
+func (s *Server) handle(kind Kind, conn net.Conn, ticket *handshakeTicket) {
 	defer conn.Close()
 	start := time.Now()
 	record := &connRecord{kind: kind, client: socketPeer(conn)}
@@ -352,6 +459,10 @@ func (s *Server) handle(kind Kind, conn net.Conn) {
 		return
 	}
 	record.client = header.SourceAddr.String()
+	if !ticket.claimSource(sourceHost(header.SourceAddr)) {
+		record.outcome = "source_at_capacity"
+		return
+	}
 
 	var open opening
 	var err error
@@ -377,18 +488,22 @@ func (s *Server) handle(kind Kind, conn net.Conn) {
 		return
 	}
 	record.serverName = open.serverName
+	refuse := func(outcome string, err error, alert byte) {
+		record.fail(outcome, err)
+		sendTLSAlert(conn, alert)
+	}
 	if open.serverName == "" {
-		record.outcome = "no_sni"
+		refuse("no_sni", nil, alertUnrecognized)
 		return
 	}
 	route, ok := s.config.Routes[normalizeHost(open.serverName)]
 	if !ok {
-		record.outcome = "unknown_sni"
+		refuse("unknown_sni", nil, alertUnrecognized)
 		return
 	}
 	record.backend = route.Backend
 	if route.Kind != kind {
-		record.fail("wrong_engine", fmt.Errorf("host is routed to a %s backend", route.Kind))
+		refuse("wrong_engine", fmt.Errorf("host is routed to a %s backend", route.Kind), alertUnrecognized)
 		return
 	}
 	backendAddr := route.Backend
@@ -397,38 +512,39 @@ func (s *Server) handle(kind Kind, conn net.Conn) {
 	backend, err := s.dial(ctx, "tcp", backendAddr)
 	cancel()
 	if err != nil {
-		record.fail("backend_unreachable", err)
+		refuse("backend_unreachable", err, alertInternalError)
 		return
 	}
 	defer backend.Close()
 	if !s.addBackend(backend) {
-		record.outcome = "shutting_down"
+		refuse("shutting_down", nil, alertInternalError)
 		return
 	}
 	defer s.removeBackend(backend)
 	if err := backend.SetDeadline(deadline); err != nil {
-		record.fail("backend_error", err)
+		refuse("backend_error", err, alertInternalError)
 		return
 	}
 	forwarded := proxyproto.HeaderProxyFromAddrs(2, header.SourceAddr, header.DestinationAddr)
 	if _, err := forwarded.WriteTo(backend); err != nil {
-		record.fail("backend_error", err)
+		refuse("backend_error", err, alertInternalError)
 		return
 	}
 	if open.prepare != nil {
 		if err := open.prepare(backend); err != nil {
-			record.fail("backend_error", err)
+			refuse("backend_error", err, alertInternalError)
 			return
 		}
 	}
 	if _, err := backend.Write(open.hello); err != nil {
-		record.fail("backend_error", err)
+		refuse("backend_error", err, alertInternalError)
 		return
 	}
 	if err := errors.Join(conn.SetDeadline(time.Time{}), backend.SetDeadline(time.Time{})); err != nil {
 		record.fail("client_error", err)
 		return
 	}
+	ticket.end()
 	var spliceErr error
 	record.bytesUp, record.bytesDown, spliceErr = splice(conn, backend)
 	if spliceErr != nil {
@@ -448,6 +564,21 @@ func proxyHeader(conn net.Conn) *proxyproto.Header {
 		return nil
 	}
 	return header
+}
+
+func sourceHost(addr net.Addr) string {
+	if tcp, ok := addr.(*net.TCPAddr); ok {
+		return tcp.AddrPort().Addr().Unmap().String()
+	}
+	host, _, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		return addr.String()
+	}
+	return host
+}
+
+func sendTLSAlert(conn net.Conn, description byte) {
+	_, _ = conn.Write([]byte{tlsAlertRecord, 3, 3, 0, 2, tlsAlertFatal, description})
 }
 
 func socketPeer(conn net.Conn) string {
@@ -473,7 +604,17 @@ func splice(client, backend net.Conn) (up, down int64, err error) {
 	upResult := <-upDone
 	_ = client.Close()
 	_ = backend.Close()
-	return upResult.n, down, errors.Join(spliceError(upResult.err), spliceError(downErr))
+	return upResult.n, down, spliceErrors(upResult.err, downErr)
+}
+
+func spliceErrors(upErr, downErr error) error {
+	if upErr == nil && errors.Is(downErr, syscall.ECONNRESET) {
+		downErr = nil
+	}
+	if downErr == nil && errors.Is(upErr, syscall.ECONNRESET) {
+		upErr = nil
+	}
+	return errors.Join(spliceError(upErr), spliceError(downErr))
 }
 
 func finishDirection(dst, src net.Conn, err error) {

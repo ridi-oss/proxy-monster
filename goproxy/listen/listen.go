@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
+	"strings"
 	"sync"
 
 	"github.com/pires/go-proxyproto"
@@ -30,6 +32,26 @@ func Open(spec spi.Listen) (net.Listener, error) {
 		return nil, err
 	}
 	return merged, nil
+}
+
+func ParseTrustedProxies(raw string) ([]netip.Prefix, error) {
+	var prefixes []netip.Prefix
+	for _, entry := range strings.Split(raw, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		if prefix, err := netip.ParsePrefix(entry); err == nil {
+			prefixes = append(prefixes, prefix.Masked())
+			continue
+		}
+		addr, err := netip.ParseAddr(entry)
+		if err != nil {
+			return nil, fmt.Errorf("PM_TRUSTED_PROXIES entry %q is neither an IP address nor a CIDR block", entry)
+		}
+		prefixes = append(prefixes, netip.PrefixFrom(addr, addr.BitLen()))
+	}
+	return prefixes, nil
 }
 
 func Merge(plain, proxied net.Listener, spec spi.Listen) (net.Listener, error) {

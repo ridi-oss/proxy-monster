@@ -10,20 +10,25 @@ import os
 import re
 import shlex
 import shutil
+import socket
 import ssl
 import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
 
-LEGS = ["editor", "browser", "wire", "pmon", "workflow", "rate", "audit", "github", "names", "native", "storage"]
+LEGS = ["editor", "browser", "wire", "pmon", "workflow", "rate", "audit", "github", "names", "native", "storage", "edge"]
 MASK = "####"
 TRUSTED_IP = "100.100.1.8"
+EDGE_CLIENT = "198.51.100.7"
+EDGE_ROUTES = {"mysql": ("mysql.edge.test", "smoke-edge-mysql"), "postgres": ("postgres.edge.test", "smoke-edge-postgres"),
+               "bigquery": ("bigquery.edge.test", "smoke-bigquery")}
 PRODUCTION_PRESETS = [-200, -201, -202, *range(-238, -229), -250, -251, -252, -253, -255, *range(-262, -255), -280, -300, -305, -306, -307]
 
 
@@ -196,6 +201,48 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 def expect(cond, msg):
     if not cond:
         raise Fail(msg)
+
+
+class ProxyHeaderRelay:
+    """A load balancer in front of pm-edge: each loopback connection is forwarded behind a PROXY v1 header naming EDGE_CLIENT."""
+
+    def __init__(self, target_port):
+        self.target_port = target_port
+        self.sock = socket.create_server(("127.0.0.1", 0))
+        self.port = self.sock.getsockname()[1]
+        threading.Thread(target=self.serve, daemon=True).start()
+
+    def serve(self):
+        while True:
+            try:
+                client, (_, client_port) = self.sock.accept()
+            except OSError:
+                return
+            threading.Thread(target=self.forward, args=(client, client_port), daemon=True).start()
+
+    def forward(self, client, client_port):
+        with client, socket.create_connection(("127.0.0.1", self.target_port)) as upstream:
+            upstream.sendall(f"PROXY TCP4 {EDGE_CLIENT} 127.0.0.1 {client_port} {self.port}\r\n".encode())
+            down = threading.Thread(target=self.copy, args=(upstream, client), daemon=True)
+            down.start()
+            self.copy(client, upstream)
+            down.join()
+
+    @staticmethod
+    def copy(src, dst):
+        try:
+            while data := src.recv(65536):
+                dst.sendall(data)
+        except OSError:
+            pass
+        finally:
+            try:
+                dst.shutdown(socket.SHUT_WR)
+            except OSError:
+                pass
+
+    def close(self):
+        self.sock.close()
 
 
 def run(cmd, env=None, timeout=60, stdin=None, cwd=None):
@@ -714,6 +761,62 @@ class Stack:
             run([self.args.pmon, "logout"], env=env)
         self.produced.setdefault(ds["engine"], set()).add("storage")
 
+    def leg_edge(self, ds):
+        """A query through pm-edge, which picks the datasource by TLS SNI, and the audit row's client address behind it."""
+        if not self.args.edge or ds["row"] != ds["engine"] or ds["engine"] not in EDGE_ROUTES:
+            raise Skip()
+        mysql_port, pg_port, https_port, edge_ca, bigquery_ca, edgesmoke = self.args.edge.split(",")
+        host, name = EDGE_ROUTES[ds["engine"]]
+        entry = int({"mysql": mysql_port, "postgres": pg_port, "bigquery": https_port}[ds["engine"]])
+        viewer = self.session("edge").login("smoke-viewer", ["system:production-viewer"])
+        token = self.wire_token(viewer)
+        sql = "SELECT id FROM users ORDER BY id"
+        log = open(os.path.join(self.logs, "edge-leg.log"), "a")
+        relay = ProxyHeaderRelay(entry)
+        try:
+            if ds["engine"] == "mysql":
+                _, help_text, _ = run(["mysql", "--help"])
+                if "tls-sni-servername" in help_text:
+                    cmd = ["mysql", "--protocol=tcp", "-h", "127.0.0.1", "-P", str(relay.port), "-u", "smoke-viewer",
+                           "--enable-cleartext-plugin", "--ssl-mode=VERIFY_IDENTITY", f"--ssl-ca={edge_ca}",
+                           f"--tls-sni-servername={host}", "-N", "-B", "-e", sql, "acme"]
+                else:
+                    cmd = [edgesmoke, "-addr", f"127.0.0.1:{relay.port}", "-sni", host, "-ca", edge_ca,
+                           "-user", "smoke-viewer", "-db", "acme", "-e", sql]
+                code, out, err = run(cmd, env=dict(os.environ, MYSQL_PWD=token))
+                log.write(f"mysql via {os.path.basename(cmd[0])}: exit {code}\n{out}{err}\n")
+                rows = [line.split("\t") for line in out.splitlines() if line]
+                expect(code == 0 and len(rows) == 3, f"mysql through the edge ({os.path.basename(cmd[0])}): exit {code} rows={rows} {err.strip()}")
+            elif ds["engine"] == "postgres":
+                code, out, err = run(["psql", f"host={host} hostaddr=127.0.0.1 port={relay.port} dbname=acme user=smoke-viewer "
+                                      f"sslmode=verify-full sslrootcert={edge_ca}", "-v", "ON_ERROR_STOP=1", "-At", "-c", sql],
+                                     env=dict(os.environ, PGPASSWORD=token))
+                log.write(f"psql: exit {code}\n{out}{err}\n")
+                rows = [line for line in out.splitlines() if line]
+                expect(code == 0 and len(rows) == 3, f"psql through the edge: exit {code} rows={rows} {err.strip()}")
+            else:
+                with tempfile.NamedTemporaryFile("r", suffix=".json") as body:
+                    code, out, err = run(["curl", "-sS", "--http2", "--cacert", bigquery_ca, "--resolve", f"{host}:{relay.port}:127.0.0.1",
+                                          "-o", body.name, "-w", "%{http_version} %{http_code}",
+                                          "-H", "Authorization: Bearer " + token, "-H", "Content-Type: application/json",
+                                          "--data", json.dumps({"query": sql, "useLegacySql": False}),
+                                          f"https://{host}:{relay.port}/bigquery/v2/projects/pmsmoke/queries"])
+                    log.write(f"curl: exit {code} {out}\n{body.read()}{err}\n")
+                expect(code == 0 and out.strip() == "2 200", f"BigQuery jobs.query through the edge over HTTP/2: exit {code} {out.strip()} {err.strip()}")
+        finally:
+            relay.close()
+        deadline = time.time() + 10
+        while True:
+            _, events, _ = self.admin.call("GET", "/api/audit?limit=500")
+            addrs = {e["clientAddr"].rsplit(":", 1)[0] for e in events
+                     if e["datasource"] == name and e["principal"] == "smoke-viewer" and e.get("channel") == "wire" and e.get("clientAddr")}
+            if EDGE_CLIENT in addrs or time.time() > deadline:
+                break
+            time.sleep(0.5)
+        expect(EDGE_CLIENT in addrs, f"no audit row for {name} through the edge names client {EDGE_CLIENT}; client addresses: {sorted(addrs)}")
+        if name.startswith("smoke-edge-"):
+            expect(addrs == {EDGE_CLIENT}, f"{name} audit rows name {sorted(addrs)}, want only the client behind the edge")
+
     def storage_read_masked(self, ds, token, addr, ca, base):
         """jobs.insert a masked read, then read its result table through the Storage Read API at addr."""
         job_id = "smoke_storage_" + uuid.uuid4().hex[:12]
@@ -1103,6 +1206,7 @@ def main():
     ap.add_argument("--github", help="tlsPort,httpPort,cert,key,signingKey,appId for the fake GitHub; the github leg skips without it")
     ap.add_argument("--engine", choices=list(NAMES), help="one matrix row")
     ap.add_argument("--bqsmoke", help="the Storage Read client the storage leg reads with")
+    ap.add_argument("--edge", help="mysqlPort,pgPort,httpsPort,edgeCA,bigqueryCA,edgesmoke for pm-edge; the edge leg skips without it")
     args = ap.parse_args()
     args.datasource = [(*f, f[0]) if len(f) == 3 else tuple(f) for f in (d.split(":") for d in args.datasource)]
     if args.engine:

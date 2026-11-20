@@ -241,13 +241,13 @@ func setKind(root exp.Expression) pb.StatementKind {
 	}
 	controlsTransaction := false
 	for _, item := range root.FindAll(exp.KindSetItem) {
-		// SetItem.kind is canonical uppercase — compare directly to the exported constant.
-		if item.Text("kind") == exp.SetItemTransaction || isSessionSystemVariable(setItemTarget(item), "autocommit") {
-			controlsTransaction = true
-		}
-		// sql_log_bin is a variable name (not a discriminator arg), so case is not contract-guaranteed.
-		if target := setItemTarget(item); target != nil && strings.EqualFold(target.Name(), "sql_log_bin") {
+		target := setItemTarget(item)
+		if isSessionSystemVariable(target, "sql_log_bin") {
 			return pb.StatementKind_STATEMENT_KIND_SET_SQL_LOG_BIN
+		}
+		// SetItem.kind is canonical uppercase — compare directly to the exported constant.
+		if item.Text("kind") == exp.SetItemTransaction || isSessionSystemVariable(target, "autocommit") {
+			controlsTransaction = true
 		}
 	}
 	if controlsTransaction {

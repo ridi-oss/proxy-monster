@@ -181,7 +181,7 @@ class ApprovalDiscoverPickSubmitRouteDbTest {
     }
 
     @Test
-    fun `discover offers a role that runs a session variable SET ahead of the query, but never for BEGIN`() = testApplication {
+    fun `discover offers a role that runs a session variable SET ahead of the query, but never for BEGIN or SET autocommit`() = testApplication {
         val client = wire()
         val ds = fx.datasource
         fx.policyStore.createRole(RoleInput("session-reader"))
@@ -215,6 +215,9 @@ class ApprovalDiscoverPickSubmitRouteDbTest {
 
         val withBegin = offeredFor("BEGIN;\n$sql")
         assertFalse("session-reader" in withBegin, "a workflow may not open a transaction it cannot commit. Offered: $withBegin")
+
+        val withAutocommit = offeredFor("SET autocommit = 0;\n$sql")
+        assertFalse("session-reader" in withAutocommit, "SET autocommit opens a transaction just as BEGIN does. Offered: $withAutocommit")
     }
 
     /**

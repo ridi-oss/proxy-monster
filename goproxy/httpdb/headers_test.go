@@ -1,4 +1,4 @@
-package athena
+package httpdb
 
 import (
 	"context"
@@ -48,16 +48,16 @@ func TestForwardPreservesFunctionalHeaders(t *testing.T) {
 			}))
 			defer upstream.Close()
 			forwarder := forwarderForTest(t, upstream, func(options *ForwardOptions) {
-				options.Authorize = func(_ context.Context, request *http.Request, envelope *Envelope) (*Envelope, error) {
+				options.Authorize = func(_ context.Context, request *http.Request, body []byte) ([]byte, error) {
 					for name, want := range headers {
 						if got := request.Header.Values(name); !reflect.DeepEqual(got, want) {
 							t.Errorf("authorization header %s = %v, want %v", name, got, want)
 						}
 					}
 					if rewrite {
-						return envelope.WithQueryString("SELECT new")
+						return withQuery(body, "SELECT new")
 					}
-					return envelope, nil
+					return body, nil
 				}
 			})
 			request := requestForTest("StartQueryExecution", `{"QueryString":"SELECT old"}`)
@@ -101,11 +101,11 @@ func TestForwardStripsCredentialsIdentityAndHopHeaders(t *testing.T) {
 	}))
 	defer upstream.Close()
 	forwarder := forwarderForTest(t, upstream, func(options *ForwardOptions) {
-		options.Authorize = func(_ context.Context, request *http.Request, envelope *Envelope) (*Envelope, error) {
+		options.Authorize = func(_ context.Context, request *http.Request, body []byte) ([]byte, error) {
 			if request.Header.Get("Authorization") != "private" || request.Header.Get("X-Pmon-Principal") != "private" {
 				t.Error("authorization lost original identity headers")
 			}
-			return envelope, nil
+			return body, nil
 		}
 		options.Sign = func(ctx context.Context, request *http.Request, body []byte) error {
 			for _, name := range blocked {
@@ -134,8 +134,8 @@ func TestForwardRejectsStaleChecksumsAfterRewrite(t *testing.T) {
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls.Add(1) }))
 	defer upstream.Close()
 	forwarder := forwarderForTest(t, upstream, func(options *ForwardOptions) {
-		options.Authorize = func(_ context.Context, _ *http.Request, envelope *Envelope) (*Envelope, error) {
-			return envelope.WithQueryString("SELECT new")
+		options.Authorize = func(_ context.Context, _ *http.Request, body []byte) ([]byte, error) {
+			return withQuery(body, "SELECT new")
 		}
 		options.Sign = func(context.Context, *http.Request, []byte) error {
 			t.Error("stale checksum reached signer")

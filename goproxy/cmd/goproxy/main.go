@@ -1,30 +1,25 @@
 package main
 
 import (
-	"fmt"
 	"log/slog"
 	"os"
-	"strings"
 
 	"github.com/ridi-oss/proxy-monster/goproxy/boot"
-	"github.com/ridi-oss/proxy-monster/goproxy/edge"
-	"github.com/ridi-oss/proxy-monster/goproxy/spi"
+	"github.com/ridi-oss/proxy-monster/goproxy/config"
 )
 
 func main() {
-	if err := run(registry, os.Getenv("PM_MODE")); err != nil {
+	if err := run(); err != nil {
 		slog.Error(err.Error())
 		os.Exit(1)
 	}
 }
 
-func run(registry spi.Registry, mode string) error {
-	switch strings.TrimSpace(mode) {
-	case "":
-		return boot.Run(registry)
-	case "edge":
-		return edge.Run()
-	default:
-		return fmt.Errorf("PM_MODE=%q is not a known mode (want edge, or unset for a datasource proxy)", mode)
+func run() error {
+	var perEngine engineFlags
+	flags, err := config.Parse(&perEngine)
+	if err != nil {
+		return err
 	}
+	return boot.Run(flags, perEngine.registry(flags.AdvertiseAddr))
 }

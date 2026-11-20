@@ -15,7 +15,24 @@ import "errors"
 type ObjectStore interface {
 	Put(key string, body []byte) error
 	List(prefix string) ([]string, error)
+	ListObjects(prefix string) ([]ObjectInfo, error)
 	Get(key string) ([]byte, error)
+}
+
+type ObjectInfo struct {
+	Key     string
+	Version string
+}
+
+func keysOf(objects []ObjectInfo, err error) ([]string, error) {
+	if err != nil {
+		return nil, err
+	}
+	keys := make([]string, len(objects))
+	for i, o := range objects {
+		keys[i] = o.Key
+	}
+	return keys, nil
 }
 
 // ErrNotFound reports that an object does not exist, as distinct from being unreadable.

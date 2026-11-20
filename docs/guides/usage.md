@@ -50,9 +50,10 @@ Each statement is also gated by its kind, separately from the columns it reads:
 | admin | `KILL`, `FLUSH`, `GRANT`, `LOAD DATA` | `stmt.cat.admin.*` |
 
 Holding a role that reads a table does not let you run `SHOW TABLES` or `SET` on
-it — those are their own grants. Session statements run only from the console
-editor and a wire connection; through MCP or an approval they are always denied,
-since each of those runs on a fresh connection.
+it — those are their own grants. Session statements run from the console editor
+and a wire connection. An approval runs only a variable `SET`, which holds for
+the statements after it; `SET autocommit` controls the transaction like `BEGIN`
+and is denied there. MCP runs none.
 
 ## 1. Run a query against dev
 
@@ -123,6 +124,7 @@ Other reasons you will meet:
 | --- | --- |
 | `no access to datasource 'acme-prod'` | No role of yours grants `datasource.connect` there |
 | `statement kind 'set_session_var' is not permitted` | That statement kind is not granted (see the kind table above) |
+| `statement kind 'set_transaction' is not permitted` | `SET TRANSACTION`, or `SET autocommit` (which drivers send when they switch autocommit), is not granted |
 | `policy denies column def.app.users.ssn` | A policy forbids that column, or no role of yours reads it |
 | `rate 10000/1h spent` | Your result-volume rate is used up (§4) |
 

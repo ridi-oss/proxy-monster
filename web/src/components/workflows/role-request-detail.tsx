@@ -11,6 +11,7 @@ import { swrKeys, useRequestThread } from '@/lib/hooks';
 import { cn } from '@/lib/utils';
 import { RejectDialog } from '@/components/access/reject-dialog';
 import { CloseRequestButton, RequestTimeline } from '@/components/approvals/request-timeline';
+import { MakePrivateButton, PrivateBadge } from './private-request';
 import { useAuth } from '@/lib/auth';
 import { ErrorState } from '@/components/page-scaffold';
 import { Button } from '@/components/ui/button';
@@ -125,7 +126,9 @@ export function RoleRequestDetail({ request }: { request: AccessRequest }) {
               >
                 {request.status}
               </span>
+              <PrivateBadge request={request} />
             </div>
+            <MakePrivateButton request={request} onDone={() => refreshRoleWorkflow(request.id)} />
 
             {request.status === 'PENDING' && (
               <div className="flex flex-wrap items-end justify-end gap-2">

@@ -1,11 +1,11 @@
-package athena
+package httpapi
 
 import (
 	"net/http"
 	"strings"
 )
 
-func withoutHopHeaders(source http.Header) http.Header {
+func WithoutHopHeaders(source http.Header) http.Header {
 	header := source.Clone()
 	for _, value := range source.Values("Connection") {
 		for _, name := range strings.Split(value, ",") {
@@ -18,8 +18,8 @@ func withoutHopHeaders(source http.Header) http.Header {
 	return header
 }
 
-func upstreamHeaders(source http.Header) http.Header {
-	header := withoutHopHeaders(source)
+func UpstreamHeaders(source http.Header) http.Header {
+	header := WithoutHopHeaders(source)
 	for name := range header {
 		if credentialOrIdentityHeader(name) {
 			header.Del(name)
@@ -39,7 +39,7 @@ func credentialOrIdentityHeader(name string) bool {
 	case "host", "content-length", "authorization", "cookie", "cookie2", "set-cookie",
 		"forwarded", "x-real-ip", "x-client-ip", "client-ip", "true-client-ip", "x-original-forwarded-for",
 		"cf-connecting-ip", "cf-connecting-ipv6", "remote-user", "x-remote-user", "x-authenticated-user", "x-authenticated-groups",
-		"x-auth-token", "x-api-key", "date", "x-amz-date", "x-amz-security-token", "x-amz-content-sha256",
+		"x-auth-token", "x-api-key", "x-goog-api-key", "x-goog-user-project", "date", "x-amz-date", "x-amz-security-token", "x-amz-content-sha256",
 		"x-amz-algorithm", "x-amz-credential", "x-amz-signedheaders", "x-amz-signature", "x-amz-expires", "x-amz-region-set", "x-amz-sso-bearer-token":
 		return true
 	}

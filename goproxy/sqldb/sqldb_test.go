@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ridi-oss/proxy-monster/goproxy/athena"
 	"github.com/ridi-oss/proxy-monster/goproxy/mysql"
 	"github.com/ridi-oss/proxy-monster/goproxy/postgres"
 
@@ -18,10 +17,12 @@ import (
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
+	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
 )
 
 func TestRegistryProviderContracts(t *testing.T) {
-	registry := registry
+	flags := sqldb.Flags{Host: "target", Port: "1234", Db: "app", User: "service", Password: "secret"}
+	registry := spi.MustRegistry(mysql.Provider{Flags: flags}, postgres.Provider{Flags: flags})
 	for _, test := range []struct {
 		name   string
 		engine *engines.Engine
@@ -38,14 +39,13 @@ func TestRegistryProviderContracts(t *testing.T) {
 			if provider.Engine() != test.engine {
 				t.Errorf("Engine() = %s, want %s", provider.Engine().WireName, test.engine.WireName)
 			}
-			config := spi.TargetConfig{Host: "target", Port: 1234, Db: "app", User: "service", Password: "secret"}
-			target, err := provider.OpenTarget(config)
+			target, err := provider.OpenTarget()
 			if err != nil {
 				t.Fatalf("OpenTarget: %v", err)
 			}
 			defer target.Close()
-			if target.Config() != config {
-				t.Fatalf("Config() = %+v, want %+v", target.Config(), config)
+			if db := target.ConnectionInfo().GetProperties()["database"]; db != "app" {
+				t.Fatalf("database = %q, want app", db)
 			}
 			if target.TargetInfo() != "target:1234" {
 				t.Errorf("TargetInfo() = %q, want target:1234", target.TargetInfo())
@@ -92,8 +92,7 @@ func TestRegistryIntrospectDelegates(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			provider, _ := registry.For(test.engine)
-			target, err := provider.OpenTarget(spi.TargetConfig{Host: test.targetConfig.Host, Port: test.targetConfig.Port, Db: test.targetConfig.DB, User: test.targetConfig.User, Password: test.targetConfig.Password})
+			target, err := openers[test.engine](sqldb.Settings{Host: test.targetConfig.Host, Port: test.targetConfig.Port, Db: test.targetConfig.DB, User: test.targetConfig.User, Password: test.targetConfig.Password}, "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -112,8 +111,7 @@ func TestRegistryIntrospectDelegates(t *testing.T) {
 func TestNewWireServerStartsExpectedProtocol(t *testing.T) {
 	for _, e := range []*engines.Engine{engines.MySQL, engines.Postgres} {
 		t.Run(e.WireName, func(t *testing.T) {
-			provider, _ := registry.For(e)
-			target, err := provider.OpenTarget(spi.TargetConfig{})
+			target, err := openers[e](sqldb.Settings{}, "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -180,7 +178,7 @@ func TestCatalogRefreshObservesNewConnectionDefaults(t *testing.T) {
 	if _, err := seed.Exec("ALTER ROLE " + role + " SET search_path TO public"); err != nil {
 		t.Fatal(err)
 	}
-	target := openTarget(t, engines.Postgres, spi.TargetConfig{Host: database.Host, Port: database.Port, Db: database.DB, User: role, Password: "test-secret"})
+	target := openTarget(t, engines.Postgres, sqldb.Settings{Host: database.Host, Port: database.Port, Db: database.DB, User: role, Password: "test-secret"})
 	first, err := target.Introspect(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -200,13 +198,9 @@ func TestCatalogRefreshObservesNewConnectionDefaults(t *testing.T) {
 	}
 }
 
-func openTarget(t *testing.T, e *engines.Engine, config spi.TargetConfig) spi.Target {
+func openTarget(t *testing.T, e *engines.Engine, settings sqldb.Settings) spi.Target {
 	t.Helper()
-	provider, err := registry.For(e)
-	if err != nil {
-		t.Fatal(err)
-	}
-	target, err := provider.OpenTarget(config)
+	target, err := openers[e](settings, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,4 +208,8 @@ func openTarget(t *testing.T, e *engines.Engine, config spi.TargetConfig) spi.Ta
 	return target
 }
 
-var registry = spi.MustRegistry(athena.Provider{}, mysql.Provider{}, postgres.Provider{})
+// openers opens a MySQL or PostgreSQL target straight from its settings.
+var openers = map[*engines.Engine]func(sqldb.Settings, string) (spi.Target, error){
+	engines.MySQL:    mysql.OpenTarget,
+	engines.Postgres: postgres.OpenTarget,
+}

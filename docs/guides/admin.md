@@ -24,7 +24,7 @@ asserted by the client.
 | --- | --- | --- |
 | `datasource.connect` | datasource | Every statement, before anything else |
 | `stmt.cat.read` `stmt.cat.write.insert` `stmt.cat.write.update` `stmt.cat.write.delete` `stmt.cat.ddl` `stmt.cat.metadata` `stmt.cat.session` `stmt.cat.admin.*` | datasource | Running a statement of that category |
-| `stmt.kind.<kind>` | datasource | The same, for one kind (`stmt.kind.select`, `stmt.kind.set_session_var`, …) |
+| `stmt.kind.<kind>` | datasource | The same, for one kind (`stmt.kind.select`, `stmt.kind.set_session_var`, …). `SET autocommit`, which drivers send, is `stmt.kind.set_transaction` |
 | `exception.unanalyzable` `exception.unmaskable` | datasource | Relaying a statement the analyzer cannot prove safe, or a result the proxy cannot mask |
 | `result.read.unmasked` `result.read.masked` | column, table, function, utility | Returning a value in cleartext, or masked |
 | `result.cap` | column, table, datasource, … | Never for access; carries the `@cap` limits (below) |
@@ -165,8 +165,9 @@ the trusted-network preset also applies; elsewhere the stored value comes back
 masked.
 
 Enabled guardrails you normally leave alone: `system:session-channel-forbid`
-(session statements only on the editor and wire), the `system:` classification
-floors (`system:critical-guard` and friends), and the result caps below.
+(session statements on the editor and wire; a workflow only a variable `SET`,
+never `autocommit`), the `system:` classification floors
+(`system:critical-guard` and friends), and the result caps below.
 
 ### 4. Map groups to roles
 

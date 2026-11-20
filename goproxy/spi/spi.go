@@ -16,17 +16,6 @@ import (
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 )
 
-// TargetConfig is the per-datasource target-DB connection details (the service-account broker target).
-type TargetConfig struct {
-	Host     string
-	Port     int
-	Db       string
-	User     string
-	Password string
-	// TLS secures the proxy's own connection to the target DB; nil is plaintext.
-	TLS *tls.Config
-}
-
 // Identity is the authenticated wire identity retained for a client session.
 type Identity struct {
 	Principal    string
@@ -180,23 +169,22 @@ type Classification struct {
 	MaskFnName *string  `json:"maskFnName"`
 }
 
-// Provider is one engine's registration: its identity and how to open a Target. The engine's own
-// facts (default ports, placeholder, schema resolution) live on *engines.Engine; a new engine is one Provider
-// implementation plus one registry row.
+// Provider is one engine's registration: its identity and how to open its Target from the settings it was
+// built with. The engine's own facts (default ports, placeholder, schema resolution) live on *engines.Engine;
+// a new engine is one Provider implementation plus one registry row.
 type Provider interface {
 	Engine() *engines.Engine
-	OpenTarget(config TargetConfig) (Target, error)
+	OpenTarget() (Target, error)
 }
 
 // Target is one open target database. It owns its connection pool and answers everything the proxy core asks of
 // a target: the catalog scan, a table's detail, the wire server, and a connection for an editor session. Boot and the
 // Server hold a Target and never see a connection string or a *sql.DB.
 type Target interface {
-	Config() TargetConfig
 	// TargetInfo says where the proxy connects, in the engine's own terms; the control plane only shows it.
 	TargetInfo() string
 	// ConnectionInfo is the nonsecret client-facing metadata published at Register: an endpoint plus the
-	// properties the engine allows. A wire dialect publishes only the advertised address.
+	// properties the engine allows.
 	ConnectionInfo() *pb.ConnectionInfo
 	Introspect(ctx context.Context) (*pb.CatalogRequest, error)
 	ReadTableDetail(ctx context.Context, table *enginepb.ObjectRef) (*TableDetail, error)

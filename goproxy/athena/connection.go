@@ -3,14 +3,14 @@ package athena
 import (
 	"context"
 	"errors"
-	"fmt"
 	"slices"
-	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsa "github.com/aws/aws-sdk-go-v2/service/athena"
 	"github.com/aws/aws-sdk-go-v2/service/athena/types"
+	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
+	"github.com/ridi-oss/proxy-monster/goproxy/httpdb"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
@@ -21,123 +21,57 @@ const (
 	resultPageSize = 1000
 )
 
-// connection serves the console editor: the proxy is the Athena client, so it submits, polls, reads, masks,
-// and cancels through the SDK with its own credentials. No enforcement context is cached: the control plane
-// stores the rows it receives.
-type connection struct {
-	target        *target
-	authz         *spi.Authorizer
-	commandRunner *proxyCommandRunner
-	guard         spi.ExecGuard
-	timeout       time.Duration
-	mu            sync.Mutex
-	current       string
-	closed        bool
-	cancel        context.CancelFunc
+func (t *target) OpenConnection(_ context.Context, authz *spi.Authorizer, guard spi.ExecGuard, _ time.Duration, defaultSchema string) (spi.Connection, error) {
+	return httpdb.OpenConnection("athena", engine{t}, authz, guard, defaultSchema)
 }
 
-func (t *target) OpenConnection(_ context.Context, authz *spi.Authorizer, guard spi.ExecGuard, readTimeout time.Duration, defaultSchema string) (spi.Connection, error) {
-	// Every Athena query names the configured database, so an editor session cannot open anywhere else.
-	if defaultSchema != "" && defaultSchema != t.databaseIdentity() {
-		return nil, fmt.Errorf("athena editor session cannot open in database %q: the target is configured for %q", defaultSchema, t.config.database)
-	}
-	commandRunner, err := t.newProxyCommandRunner(authz)
-	if err != nil {
-		return nil, err
-	}
-	return &connection{target: t, authz: authz, commandRunner: commandRunner, guard: guard, timeout: readTimeout}, nil
+func (e engine) Namespace() (string, string) {
+	return e.target.catalogIdentity(), e.target.databaseIdentity()
 }
 
-func (c *connection) OnOpen(ctx context.Context, commands []*pb.ProxyCommand) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	return c.commandRunner.RunAll(commands, nil)
+func (e engine) Session(maxRows int) *enginepb.SessionObservation {
+	return e.target.session(nil, maxRows)
 }
 
-// Namespace is the configured catalog and database in canonical spelling; nothing on the session changes them.
-func (c *connection) Namespace() (string, []string, error) {
-	return c.target.catalogIdentity(), []string{c.target.databaseIdentity()}, nil
-}
-
-func (c *connection) ServeStatement(sql string, maxRows int) (result spi.StatementResult, err error) {
-	verdict := c.target.authorize(c.authz, c.commandRunner, sql, nil, maxRows)
-	var proceed spi.Proceed
-	switch v := verdict.(type) {
-	case spi.Fail:
-		return result, relay.FailError{Message: v.Message}
-	case spi.Deny:
-		result.Decision, result.Denied = v.Decision, true
-		return result, nil
-	case spi.Proceed:
-		proceed = v
-		result.Decision = v.Decision
-	default:
-		return result, verdictError(verdict)
-	}
-	query, parameters := submittedQuery(sql, nil, proceed.Decision)
-	budget := &relay.RowBudget{MaxRows: proceed.Decision.PageRows(maxRows), MaxBytes: proceed.Decision.MaxBytes}
-	exec := func() error {
-		columns, rows, affected, execErr := c.execute(query, parameters, budget, proceed.Masks, proceed.Decision.AfterStatement)
-		if execErr != nil {
-			return execErr
-		}
-		result.Columns, result.Rows, result.RowsAffected = columns, rows, affected
-		result.TruncatedByCap = budget.CapTruncated(proceed.Decision, maxRows)
-		return nil
-	}
-	if c.guard != nil {
-		err = c.guard(exec)
-	} else {
-		err = exec()
-	}
-	return result, err
-}
-
-func (c *connection) execute(query string, parameters []string, budget *relay.RowBudget, masks []*pb.ColumnMask, afterStatement []*pb.ProxyCommand) ([]string, [][]*string, int, error) {
-	ctx, cancel := withDeadline(context.Background(), 0)
-	c.mu.Lock()
-	if c.closed {
-		c.mu.Unlock()
-		cancel()
-		return nil, nil, 0, errors.New("athena: connection is closed")
-	}
-	c.cancel = cancel
-	c.mu.Unlock()
-	defer func() {
-		c.mu.Lock()
-		c.cancel = nil
-		c.current = ""
-		c.mu.Unlock()
-		cancel()
-	}()
+func (e engine) Submit(ctx context.Context, query string, parameters []string, _ int) (httpdb.Job, error) {
+	t := e.target
 	input := &awsa.StartQueryExecutionInput{
-		QueryString: aws.String(query), WorkGroup: aws.String(c.target.config.workgroup),
-		QueryExecutionContext: &types.QueryExecutionContext{Catalog: aws.String(c.target.config.catalog), Database: aws.String(c.target.config.database)},
+		QueryString: aws.String(query), WorkGroup: aws.String(t.settings.workgroup),
+		QueryExecutionContext: &types.QueryExecutionContext{Catalog: aws.String(t.settings.catalog), Database: aws.String(t.settings.database)},
 	}
 	if len(parameters) > 0 {
 		input.ExecutionParameters = parameters
 	}
-	started, err := c.target.api.StartQueryExecution(ctx, input)
+	started, err := t.api.StartQueryExecution(ctx, input)
 	if err != nil {
-		return nil, nil, 0, describeFailure(err.Error())
+		return nil, describeFailure(err.Error())
 	}
 	id := aws.ToString(started.QueryExecutionId)
 	if id == "" {
-		return nil, nil, 0, errors.New("athena: StartQueryExecution returned no execution id")
+		return nil, errors.New("athena: StartQueryExecution returned no execution id")
 	}
-	c.mu.Lock()
-	c.current = id
-	c.mu.Unlock()
-	execution, err := c.target.awaitExecution(ctx, id)
+	return &execution{target: t, id: id}, nil
+}
+
+type execution struct {
+	target *target
+	id     string
+	// headerRow: Athena prefixes DML (SELECT) results with a header row of column names, DDL results not.
+	headerRow bool
+}
+
+func (x *execution) Await(ctx context.Context) error {
+	done, err := x.target.awaitExecution(ctx, x.id)
 	if err != nil {
-		return nil, nil, 0, err
+		return err
 	}
-	if err := c.commandRunner.RunAll(afterStatement, nil); err != nil {
-		return nil, nil, 0, err
-	}
-	// Athena prefixes DML (SELECT) results with a header row of column names; DDL and utility results have none.
-	return c.read(ctx, id, budget, masks, execution.StatementType == types.StatementTypeDml)
+	x.headerRow = done.StatementType == types.StatementTypeDml
+	return nil
+}
+
+func (x *execution) Cancel(ctx context.Context) error {
+	_, err := x.target.api.StopQueryExecution(ctx, &awsa.StopQueryExecutionInput{QueryExecutionId: aws.String(x.id)})
+	return err
 }
 
 // awaitExecution polls Athena until the execution is terminal; the SDK client returns the state, Athena owns it.
@@ -174,9 +108,9 @@ func (t *target) awaitExecution(ctx context.Context, id string) (*types.QueryExe
 	}
 }
 
-// read pages the managed result set within budget, drops Athena's header row on a DML first page, and masks
+// Read pages the managed result set within budget, drops Athena's header row on a DML first page, and masks
 // inline.
-func (c *connection) read(ctx context.Context, id string, budget *relay.RowBudget, masks []*pb.ColumnMask, headerRow bool) ([]string, [][]*string, int, error) {
+func (x *execution) Read(ctx context.Context, budget *relay.RowBudget, masks []*pb.ColumnMask) ([]string, [][]*string, int, error) {
 	var columns []string
 	var masker *relay.RowMasker
 	rows := [][]*string{}
@@ -184,11 +118,8 @@ func (c *connection) read(ctx context.Context, id string, budget *relay.RowBudge
 	var next *string
 	first := true
 	for !budget.Overflowed {
-		page, err := c.target.api.GetQueryResults(ctx, &awsa.GetQueryResultsInput{QueryExecutionId: aws.String(id), NextToken: next, MaxResults: aws.Int32(resultPageSize)})
+		page, err := x.target.api.GetQueryResults(ctx, &awsa.GetQueryResultsInput{QueryExecutionId: aws.String(x.id), NextToken: next, MaxResults: aws.Int32(resultPageSize)})
 		if err != nil {
-			if ctx.Err() != nil {
-				return nil, nil, 0, errRunCanceled
-			}
 			return nil, nil, 0, describeFailure(err.Error())
 		}
 		if page.UpdateCount != nil {
@@ -216,7 +147,7 @@ func (c *connection) read(ctx context.Context, id string, budget *relay.RowBudge
 			if len(row.Data) != len(columns) {
 				return nil, nil, 0, ErrResultShape
 			}
-			if first && i == 0 && headerRow {
+			if first && i == 0 && x.headerRow {
 				continue
 			}
 			values := make([]*string, len(row.Data))
@@ -245,31 +176,4 @@ func (c *connection) read(ctx context.Context, id string, budget *relay.RowBudge
 	return columns, rows, affected, nil
 }
 
-func (c *connection) Cancel() error {
-	c.mu.Lock()
-	id, cancel := c.current, c.cancel
-	c.mu.Unlock()
-	if cancel != nil {
-		cancel()
-	}
-	if id == "" {
-		return nil
-	}
-	ctx, stop := context.WithTimeout(context.Background(), 10*time.Second)
-	defer stop()
-	_, err := c.target.api.StopQueryExecution(ctx, &awsa.StopQueryExecutionInput{QueryExecutionId: aws.String(id)})
-	return err
-}
-
-func (c *connection) Close() error {
-	c.mu.Lock()
-	c.closed = true
-	cancel := c.cancel
-	c.mu.Unlock()
-	if cancel != nil {
-		cancel()
-	}
-	return nil
-}
-
-var _ spi.Connection = (*connection)(nil)
+var _ httpdb.Executor = engine{}

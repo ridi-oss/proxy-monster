@@ -18,6 +18,7 @@ import (
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
+	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
 	"github.com/ridi-oss/proxy-monster/goproxy/wire"
 	"github.com/ridi-oss/proxy-monster/mysqlwire"
 )
@@ -44,7 +45,7 @@ var testHookCachingSHA2FullAuth func(viaPublicKey bool)
 // (RSA public-key over a plaintext link, cleartext over TLS) when the server's fast-auth cache misses.
 // CLIENT_SESSION_TRACK is required so text-protocol database changes arrive as protocol signals instead
 // of requiring an interposed SELECT DATABASE() that would corrupt ROW_COUNT/FOUND_ROWS diagnostics.
-func dialTargetDbAuth(config spi.TargetConfig, mirrorDeprecateEOF bool) (net.Conn, error) {
+func dialTargetDbAuth(config sqldb.Settings, mirrorDeprecateEOF bool) (net.Conn, error) {
 	conn, _, err := dialTargetDbAuthID(context.Background(), config, mirrorDeprecateEOF)
 	return conn, err
 }
@@ -53,7 +54,7 @@ func dialTargetDbAuth(config spi.TargetConfig, mirrorDeprecateEOF bool) (net.Con
 // (deadline-bounded) auth exchange runs, an AfterFunc closes the conn on cancel so a blocked read unwinds at
 // once. On the run path ctx is the target-DB open context, so a run the control-plane already closed does not
 // finish a target-DB handshake nobody is waiting for; the wire path passes a background ctx (never cancelled).
-func dialTargetDbAuthID(ctx context.Context, config spi.TargetConfig, mirrorDeprecateEOF bool) (net.Conn, mysqlwire.Greeting, error) {
+func dialTargetDbAuthID(ctx context.Context, config sqldb.Settings, mirrorDeprecateEOF bool) (net.Conn, mysqlwire.Greeting, error) {
 	dialer := net.Dialer{Timeout: targetDbHandshakeTimeout}
 	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(config.Host, strconv.Itoa(config.Port)))
 	if err != nil {
@@ -554,7 +555,7 @@ func mysqlSnapshot(namespace []string, ansiQuotes bool) spi.SessionSnapshot {
 	}
 }
 
-func cancelTargetDbQuery(config spi.TargetConfig, connID uint32) error {
+func cancelTargetDbQuery(config sqldb.Settings, connID uint32) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	conn, _, err := dialTargetDbAuthID(ctx, config, true)

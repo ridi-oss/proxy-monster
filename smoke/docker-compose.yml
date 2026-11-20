@@ -74,6 +74,18 @@ services:
       timeout: 5s
       retries: 20
 
+  # BigQuery emulator (GoogleSQL on SQLite). It serves plain HTTP and checks no credentials, so the BigQuery
+  # proxy reaches it through smoke/fake_google.py, which adds HTTPS and a token endpoint. 9060 is its Storage
+  # Read API, plain gRPC.
+  bigquery:
+    image: ${SMOKE_BIGQUERY_IMAGE:-ghcr.io/goccy/bigquery-emulator:0.8.1}
+    command: ["--project=pmsmoke", "--data-from-yaml=/data.yaml"]
+    ports:
+      - "${SMOKE_BIGQUERY_PORT:-17017}:9050"
+      - "${SMOKE_BIGQUERY_GRPC_PORT:-17019}:9060"
+    volumes:
+      - ./bigquery/data.yaml:/data.yaml:ro
+
   # Athena emulator: MiniStack's full image (DuckDB execution), which serves a Glue-backed catalog. The
   # Athena proxy points at it through AWS_ENDPOINT_URL; the emulator serves HTTPS with a self-signed cert
   # because the proxy forwards only to an HTTPS origin.

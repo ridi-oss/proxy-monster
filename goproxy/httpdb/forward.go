@@ -1,4 +1,4 @@
-package athena
+package httpdb
 
 import (
 	"bytes"
@@ -13,55 +13,64 @@ import (
 )
 
 var (
-	ErrBodyTooLarge = errors.New("athena: request body exceeds limit")
-	ErrUnauthorized = errors.New("athena: request authorization required")
-	ErrUnsigned     = errors.New("athena: upstream signing required")
+	ErrBodyTooLarge = errors.New("httpdb: request body exceeds limit")
+	ErrUnsigned     = errors.New("httpdb: upstream signing required")
 )
 
-// AuthorizeRequest must authenticate and authorize the operation and any rewritten envelope.
-type AuthorizeRequest func(context.Context, *http.Request, *Envelope) (*Envelope, error)
+// AuthorizeRequest must authenticate and authorize the operation and return the body to send upstream.
+type AuthorizeRequest func(context.Context, *http.Request, []byte) ([]byte, error)
 
 // SignRequest adds upstream credentials to the final request without changing its body or destination.
 type SignRequest func(context.Context, *http.Request, []byte) error
 
 // ForwardOptions fixes where a request may go and who may approve it. Endpoint is the only destination the
-// signer may produce; Authorize sees every request before it leaves and may rewrite the envelope.
+// signer may produce; Authorize sees every request before it leaves and may rewrite the body.
 type ForwardOptions struct {
 	Endpoint     string
 	MaxBodyBytes int64
 	Authorize    AuthorizeRequest
 	Sign         SignRequest
 	Transport    http.RoundTripper
+	// KeepPath sends the incoming path and query under Endpoint's origin instead of to Endpoint itself.
+	KeepPath bool
 }
 
-// Forwarder relays one authenticated client request to the fixed AWS endpoint: read and bound the body,
+// Forwarder relays one authenticated client request to the fixed upstream endpoint: read and bound the body,
 // have Authorize approve or rewrite it, drop the client's credentials and hop headers, sign with the
-// proxy's AWS credentials, and refuse if the signer changed the destination. Responses are not buffered.
+// proxy's upstream credentials, and refuse if the signer changed the destination. Responses are not buffered.
 type Forwarder struct {
-	endpoint     string
+	endpoint     *url.URL
+	keepPath     bool
 	maxBodyBytes int64
 	authorize    AuthorizeRequest
 	sign         SignRequest
 	client       *http.Client
 }
 
-// upstreamEndpoint accepts only a bare HTTPS origin, the one shape the forwarder may sign requests for.
-func upstreamEndpoint(raw string) (string, error) {
+// UpstreamEndpoint accepts only a bare HTTPS origin, the one shape the forwarder may sign requests for.
+func UpstreamEndpoint(raw string) (string, error) {
 	endpoint, err := url.Parse(raw)
 	if err != nil || endpoint.Hostname() == "" || endpoint.Scheme != "https" ||
 		endpoint.User != nil || endpoint.RawQuery != "" || endpoint.ForceQuery || endpoint.Fragment != "" || endpoint.Opaque != "" {
-		return "", errors.New("athena: fixed HTTPS upstream endpoint required")
+		return "", errors.New("httpdb: fixed HTTPS upstream endpoint required")
 	}
 	return endpoint.String(), nil
 }
 
 func NewForwarder(options ForwardOptions) (*Forwarder, error) {
-	endpoint, err := upstreamEndpoint(options.Endpoint)
+	raw, err := UpstreamEndpoint(options.Endpoint)
 	if err != nil {
 		return nil, err
 	}
+	endpoint, err := url.Parse(raw)
+	if err != nil {
+		return nil, err
+	}
+	if options.KeepPath && endpoint.Path != "" && endpoint.Path != "/" {
+		return nil, errors.New("httpdb: a path-keeping forwarder needs a bare origin")
+	}
 	if options.MaxBodyBytes <= 0 || options.MaxBodyBytes == math.MaxInt64 {
-		return nil, errors.New("athena: positive finite request body limit required")
+		return nil, errors.New("httpdb: positive finite request body limit required")
 	}
 	if options.Authorize == nil {
 		return nil, ErrUnauthorized
@@ -71,6 +80,7 @@ func NewForwarder(options ForwardOptions) (*Forwarder, error) {
 	}
 	return &Forwarder{
 		endpoint:     endpoint,
+		keepPath:     options.KeepPath,
 		maxBodyBytes: options.MaxBodyBytes,
 		authorize:    options.Authorize,
 		sign:         options.Sign,
@@ -83,7 +93,7 @@ func NewForwarder(options ForwardOptions) (*Forwarder, error) {
 	}, nil
 }
 
-// Forward returns the native response without buffering it; the caller must close its body.
+// Forward returns the upstream response without buffering it; the caller must close its body.
 func (f *Forwarder) Forward(incoming *http.Request) (*http.Response, error) {
 	if f == nil || f.authorize == nil {
 		return nil, ErrUnauthorized
@@ -98,9 +108,6 @@ func (f *Forwarder) Forward(incoming *http.Request) (*http.Response, error) {
 	if incoming.ContentLength > f.maxBodyBytes {
 		return nil, ErrBodyTooLarge
 	}
-	if len(incoming.Header.Values("X-Amz-Target")) > 1 {
-		return nil, errors.New("athena: multiple operation headers")
-	}
 	body := incoming.Body
 	if body == nil {
 		body = http.NoBody
@@ -112,52 +119,54 @@ func (f *Forwarder) Forward(incoming *http.Request) (*http.Response, error) {
 	if int64(len(data)) > f.maxBodyBytes {
 		return nil, ErrBodyTooLarge
 	}
-	envelope, err := DecodeEnvelope(data)
+	approved, err := f.authorize(ctx, incoming, bytes.Clone(data))
 	if err != nil {
 		return nil, err
 	}
-	approved, err := f.authorize(ctx, incoming, envelope)
-	if err != nil {
-		return nil, err
-	}
-	if approved == nil || approved.fields == nil {
+	if approved == nil {
 		return nil, ErrUnauthorized
 	}
-	if int64(len(approved.body)) > f.maxBodyBytes {
+	if int64(len(approved)) > f.maxBodyBytes {
 		return nil, ErrBodyTooLarge
 	}
-	if !bytes.Equal(data, approved.body) {
+	if !bytes.Equal(data, approved) {
 		for name := range incoming.Header {
 			if isBodyChecksum(name) {
-				return nil, fmt.Errorf("athena: cannot rewrite a request with %s", name)
+				return nil, fmt.Errorf("httpdb: cannot rewrite a request with %s", name)
 			}
 		}
 	}
-	outgoing, err := http.NewRequestWithContext(ctx, incoming.Method, f.endpoint, bytes.NewReader(approved.body))
+	destination := *f.endpoint
+	if f.keepPath {
+		destination.Path, destination.RawPath, destination.RawQuery = incoming.URL.Path, incoming.URL.RawPath, incoming.URL.RawQuery
+	}
+	target := destination.String()
+	outgoing, err := http.NewRequestWithContext(ctx, incoming.Method, target, bytes.NewReader(approved))
 	if err != nil {
 		return nil, err
 	}
 	outgoing.GetBody = nil
 	outgoing.Header = upstreamHeaders(incoming.Header)
-	if err := f.sign(ctx, outgoing, approved.Bytes()); err != nil {
+	if err := f.sign(ctx, outgoing, bytes.Clone(approved)); err != nil {
 		return nil, err
 	}
 	if outgoing.Header.Get("Authorization") == "" {
 		return nil, ErrUnsigned
 	}
-	if outgoing.URL.String() != f.endpoint || outgoing.Host != outgoing.URL.Host {
-		return nil, errors.New("athena: signer changed upstream destination")
+	if outgoing.URL.String() != target || outgoing.Host != outgoing.URL.Host {
+		return nil, errors.New("httpdb: signer changed upstream destination")
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	response, err := f.client.Do(outgoing)
 	if err != nil {
-		return nil, fmt.Errorf("athena: forward request: %w", err)
+		return nil, fmt.Errorf("httpdb: forward request: %w", err)
 	}
 	return response, nil
 }
 
+// upstreamHeaders is the incoming header set with client credentials, identity, and hop headers removed.
 func upstreamHeaders(incoming http.Header) http.Header {
 	hopHeaders := make(map[string]bool)
 	for name, values := range incoming {
@@ -177,10 +186,8 @@ func upstreamHeaders(incoming http.Header) http.Header {
 		name = http.CanonicalHeaderKey(name)
 		header[name] = append(header[name], values...)
 	}
-	// Disable transparent decompression so native response bytes and headers stay paired.
-	if header.Get("Accept-Encoding") == "" {
-		header.Set("Accept-Encoding", "identity")
-	}
+	// The server masks and refuses encoded bodies, so no response may be encoded.
+	header.Set("Accept-Encoding", "identity")
 	return header
 }
 

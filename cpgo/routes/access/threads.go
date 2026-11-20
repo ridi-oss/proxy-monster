@@ -12,6 +12,7 @@ import (
 
 	"github.com/ridi-oss/proxy-monster/cpgo/api"
 	"github.com/ridi-oss/proxy-monster/cpgo/audit"
+	"github.com/ridi-oss/proxy-monster/cpgo/bridge"
 	"github.com/ridi-oss/proxy-monster/cpgo/store/db"
 	"github.com/ridi-oss/proxy-monster/cpgo/timeline"
 )
@@ -269,4 +270,47 @@ func (a access) close(w http.ResponseWriter, r *http.Request, id int64) error {
 		_, err = timeline.Record(ctx, tx, id, timeline.Closed, &actor.Principal, actor.Channel, nil)
 		return id, notifyCancelled, err
 	})
+}
+
+// makePrivate stops all Slack messages about the request and deletes the ones sent, for good. Its requester or
+// an admin may.
+func (a access) makePrivate(w http.ResponseWriter, r *http.Request, id int64) error {
+	ctx := r.Context()
+	req, err := a.workflowRequest(ctx, id)
+	if err != nil {
+		return err
+	}
+	if req.Principal != api.Principal(ctx) {
+		admin, err := a.isAdmin(ctx)
+		if err != nil {
+			return err
+		}
+		if !admin {
+			return api.CodeMakePrivateForbidden.Err()
+		}
+	}
+	return a.decided(w, r, http.StatusOK, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (int64, notice, error) {
+		n, err := db.New(tx).MakeRequestPrivate(ctx, id)
+		if err != nil || n == 0 {
+			// Already private: signal again so a retry redoes the Slack cleanup.
+			return id, notifyPrivatized, err
+		}
+		idText := strconv.FormatInt(id, 10)
+		if err := audit.Admin(ctx, tx, actor, "task.make_private", audit.Entity("AccessRequest", idText), "make request #"+idText+" private"); err != nil {
+			return id, notice{}, err
+		}
+		_, err = timeline.Record(ctx, tx, id, timeline.MadePrivate, &actor.Principal, actor.Channel, nil)
+		return id, notifyPrivatized, err
+	})
+}
+
+// isAdmin is the console's isAdmin: Cedar allows the caller any admin action on the System.
+func (a access) isAdmin(ctx context.Context) (bool, error) {
+	for _, action := range []string{"admin.datasources", "admin.policies", "admin.identity"} {
+		ok, _, err := a.authz.Authorize(ctx, api.Principal(ctx), action, bridge.System, api.RequesterIP(ctx))
+		if err != nil || ok {
+			return ok, err
+		}
+	}
+	return false, nil
 }

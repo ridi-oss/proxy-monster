@@ -186,6 +186,7 @@ class NotificationRenderer(private val catalog: MessageCatalog = MessageCatalog(
         NotificationEvent.TASK_EDITED -> "task.edited"
         NotificationEvent.TASK_REOPENED -> "task.reopened"
         NotificationEvent.TASK_CC_ADDED, NotificationEvent.TASK_REDRAWN -> "task.cc_added"
+        NotificationEvent.TASK_PRIVATIZED -> error("a privatized row deletes messages, it is never rendered")
         NotificationEvent.TASK_EXECUTED -> "task.executed"
         NotificationEvent.TASK_FAILED -> "task.failed"
         NotificationEvent.TASK_CANCELLED -> "task.cancelled"

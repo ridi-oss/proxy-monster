@@ -28,16 +28,16 @@ func canonicalSchema(database string) string {
 
 // catalogIdentity is the catalog name the control plane and analyzer key on.
 func (t *target) catalogIdentity() string {
-	return engines.Athena.CatalogName(t.config.catalog).String()
+	return engines.Athena.CatalogName(t.settings.catalog).String()
 }
 
 // databaseIdentity is the configured database as the control plane and analyzer key on it.
-func (t *target) databaseIdentity() string { return canonicalSchema(t.config.database) }
+func (t *target) databaseIdentity() string { return canonicalSchema(t.settings.database) }
 
 var catalogedTableTypes = map[string]bool{"EXTERNAL_TABLE": true, "MANAGED_TABLE": true, "VIRTUAL_VIEW": true, "GOVERNED": true, "": true}
 
 func (t *target) Introspect(ctx context.Context) (*pb.CatalogRequest, error) {
-	group, err := t.api.GetWorkGroup(ctx, &awsa.GetWorkGroupInput{WorkGroup: aws.String(t.config.workgroup)})
+	group, err := t.api.GetWorkGroup(ctx, &awsa.GetWorkGroupInput{WorkGroup: aws.String(t.settings.workgroup)})
 	if err != nil {
 		return nil, err
 	}
@@ -45,13 +45,13 @@ func (t *target) Introspect(ctx context.Context) (*pb.CatalogRequest, error) {
 	if group.WorkGroup != nil && group.WorkGroup.Configuration != nil && group.WorkGroup.Configuration.EngineVersion != nil {
 		version = aws.ToString(group.WorkGroup.Configuration.EngineVersion.EffectiveEngineVersion)
 	}
-	databases, err := t.databases(ctx, t.config.catalog)
+	databases, err := t.databases(ctx, t.settings.catalog)
 	if err != nil {
 		return nil, err
 	}
 	columns := []*enginepb.Column{}
 	for _, database := range databases {
-		fragment, err := t.readColumns(ctx, t.config.catalog, database)
+		fragment, err := t.readColumns(ctx, t.settings.catalog, database)
 		if err != nil {
 			return nil, err
 		}
@@ -68,7 +68,7 @@ func (t *target) readColumns(ctx context.Context, catalog, database string) ([]*
 		return nil, errors.New("athena: namespace is incomplete")
 	}
 	pages := awsa.NewListTableMetadataPaginator(t.api, &awsa.ListTableMetadataInput{
-		CatalogName: aws.String(catalog), DatabaseName: aws.String(database), WorkGroup: aws.String(t.config.workgroup),
+		CatalogName: aws.String(catalog), DatabaseName: aws.String(database), WorkGroup: aws.String(t.settings.workgroup),
 	})
 	var columns []*enginepb.Column
 	seen := make(map[string]bool)
@@ -125,10 +125,10 @@ func (t *target) ReadTableDetail(ctx context.Context, table *enginepb.ObjectRef)
 	}
 	catalog := table.Catalog
 	if catalog == "" || catalog == t.catalogIdentity() {
-		catalog = t.config.catalog
+		catalog = t.settings.catalog
 	}
 	response, err := t.api.GetTableMetadata(ctx, &awsa.GetTableMetadataInput{
-		CatalogName: aws.String(catalog), DatabaseName: aws.String(table.Schema), TableName: aws.String(table.Table), WorkGroup: aws.String(t.config.workgroup),
+		CatalogName: aws.String(catalog), DatabaseName: aws.String(table.Schema), TableName: aws.String(table.Table), WorkGroup: aws.String(t.settings.workgroup),
 	})
 	if err != nil {
 		return nil, err

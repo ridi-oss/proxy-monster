@@ -187,7 +187,8 @@ configured per proxy under `PM_TARGET_*`.
   become comments only when the app also has the `channels:history`,
   `groups:history`, and `im:history` scopes and the `message.channels`,
   `message.groups`, and `message.im` events
-  ([docs/notifications.md](./docs/notifications.md#threads)).
+  ([docs/notifications.md](./docs/notifications.md#threads)). Making a request
+  private needs the same three history scopes to find the bot's thread replies.
 - `PM_NOTIFY_STATEMENT` — _optional_. How much of a requester's SQL a
   notification may carry: `auto` (default) shows a statement only when a
   disclosure hint clears it, hiding one whose predicate compares a literal
@@ -273,6 +274,22 @@ configured per proxy under `PM_TARGET_*`.
   an Athena emulator instead of the regional endpoint; it must be an HTTPS
   origin. Wire TLS is required: Athena clients speak HTTPS to the proxy. Default
   port `6443`.
+- BigQuery (`PM_ENGINE=bigquery`) authenticates with Google Application Default
+  Credentials (`GOOGLE_APPLICATION_CREDENTIALS`, workload identity federation,
+  or the GCE/GKE metadata server) and refuses to start when it cannot tell which
+  principal those credentials act as. On ECS, point
+  `GOOGLE_APPLICATION_CREDENTIALS` at an AWS workload identity federation file
+  (`gcloud iam workload-identity-pools create-cred-config … --aws --service-account=<sa>`)
+  and set `AWS_REGION`; the task role's credentials sign the exchange, with no
+  service-account key. It requires `PM_BIGQUERY_PROJECT` and
+  `PM_BIGQUERY_LOCATION` (`US`, `asia-northeast3`, …); `PM_TARGET_DB` is the
+  default dataset. `PM_BIGQUERY_CONTEXT_PATH` works like
+  `PM_ATHENA_CONTEXT_PATH`, and `PM_BIGQUERY_ENDPOINT` (default
+  `https://bigquery.googleapis.com`, HTTPS only) points the proxy at an
+  emulator, as `PM_BIGQUERY_STORAGE_ENDPOINT` (default
+  `bigquerystorage.googleapis.com:443`) does for the Storage Read API; a
+  `PM_BIGQUERY_CA_FILE` PEM bundle is trusted for both instead of the system
+  roots. Wire TLS is required. Default port `6444`.
 - `PM_TLS_CERT` / `PM_TLS_KEY` — _optional (both or neither; one alone ⇒ refuses
   to start)_. TLS cert+key file paths for the wire listener. Wire TLS is
   optional — the cleaner pattern is a private transport (peered VPC,
@@ -483,7 +500,7 @@ OAuth-authenticated MCP client is
 ### Prerequisites
 
 - JDK, Gradle, Go, Node, pnpm — all pinned in `mise.toml` (temurin-24, Gradle
-  8.14.5, Go 1.23, Node 24.18.0, pnpm 10.22.0 — matching `web/Dockerfile`'s base
+  8.14.5, Go 1.23, Node 24.22.2, pnpm 10.22.0 — matching `web/Dockerfile`'s base
   image + corepack pin). Run `mise install` from the repo root, or use your own
   matching toolchain. JDK 24 is the floor: the Gradle build compiles with
   `--release 24` and targets JVM 24, so an older JDK fails with

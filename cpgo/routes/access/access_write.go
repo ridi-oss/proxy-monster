@@ -40,6 +40,7 @@ type accessRequestInput struct {
 	DatasourceID         *int64  `json:"datasourceId"`
 	Reason               *string `json:"reason"`
 	RequestedDurationSec *int64  `json:"requestedDurationSec"`
+	Private              bool    `json:"private"`
 }
 
 // createRequest opens a ROLE request; a datasource-less one has no Datasource to decide task.request on.
@@ -72,7 +73,7 @@ func (a access) createRequest(w http.ResponseWriter, r *http.Request) error {
 	return a.created(w, r, func(ctx context.Context, tx pgx.Tx, actor audit.Actor) (int64, notice, error) {
 		q := db.New(tx)
 		id, err := q.CreateRoleRequest(ctx, db.CreateRoleRequestParams{Principal: actor.Principal, RoleID: in.RoleID,
-			DatasourceID: in.DatasourceID, Reason: in.Reason, RequestedDurationSec: duration})
+			DatasourceID: in.DatasourceID, Reason: in.Reason, RequestedDurationSec: duration, Private: in.Private})
 		if err != nil {
 			return 0, notice{}, err
 		}
@@ -99,9 +100,10 @@ func (a access) createRequest(w http.ResponseWriter, r *http.Request) error {
 type notice struct{ event, principal string }
 
 var (
-	notifyRequested = notice{event: "requested"}
-	notifyDecided   = notice{event: "decided"}
-	notifyCancelled = notice{event: "cancelled"}
+	notifyRequested  = notice{event: "requested"}
+	notifyDecided    = notice{event: "decided"}
+	notifyCancelled  = notice{event: "cancelled"}
+	notifyPrivatized = notice{event: "privatized"}
 )
 
 // requestWrite writes on tx and returns the request it names and the notification to send, if any.

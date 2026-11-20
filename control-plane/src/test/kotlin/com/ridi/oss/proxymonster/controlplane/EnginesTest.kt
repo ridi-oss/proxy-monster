@@ -157,6 +157,13 @@ class EnginesTest {
         assertEquals("`a``b`", Engine.MYSQL.definition.quoteIdentifier("a`b"))
         assertEquals("\"a\"\"b\"", Engine.POSTGRES.definition.quoteIdentifier("a\"b"))
         assertEquals("\"Users\"", Engine.ATHENA.definition.quoteIdentifier("Users"))
+        assertEquals("`Users`", Engine.BIGQUERY.definition.quoteIdentifier("Users"))
+    }
+
+    @Test fun `BigQuery is registered and keeps the project as written`() {
+        assertEquals(Engine.BIGQUERY, engineFromWire("bigquery"))
+        assertEquals("Sample-Project", Engine.BIGQUERY.catalogName("Sample-Project"))
+        assertFalse(Engine.BIGQUERY.checksTargetErrors)
     }
 
     @Test fun `isTempSchema is the Postgres session temp schema, exactly`() {

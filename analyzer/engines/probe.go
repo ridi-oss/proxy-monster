@@ -2,6 +2,7 @@ package engines
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 	"sort"
 	"strconv"
@@ -697,8 +698,8 @@ func (p *prober) qualifyOptions(report map[exp.Expression]optimizer.ResolvedSour
 	opts := optimizer.DefaultQualifyOpts()
 	opts.Dialect = p.dialect
 	opts.Schema = p.qualifySchema
-	p.session.engine.hooks.configureNamespace(&opts, p.namespace)
-	opts.SearchPath, opts.DefaultSchema, opts.Catalog = p.canonicalNamespace(opts)
+	p.session.engine.hooks.configureNamespace(p.session, &opts, p.namespace)
+	opts.SearchPath, opts.DefaultSchema, opts.Catalog, opts.DefaultSchemaCatalog = p.canonicalNamespace(opts)
 	opts.ResolutionReport = report
 	opts.InferSchema = boolPtr(false)
 	opts.ValidateQualifyColumns = !p.isWrite
@@ -707,7 +708,7 @@ func (p *prober) qualifyOptions(report map[exp.Expression]optimizer.ResolvedSour
 
 // canonicalNamespace hands the namespace's canonical names to QualifyTables, which parses each as SQL: unquoted,
 // a Postgres `App` would fold to the different schema `app`.
-func (p *prober) canonicalNamespace(opts optimizer.QualifyOpts) ([]string, exp.IdentifierName, exp.IdentifierName) {
+func (p *prober) canonicalNamespace(opts optimizer.QualifyOpts) ([]string, exp.IdentifierName, exp.IdentifierName, exp.IdentifierName) {
 	literal := func(name exp.IdentifierName) exp.IdentifierName {
 		if s, ok := name.(string); ok && s != "" {
 			return exp.Identifier(exp.Args{"this": s, "quoted": true})
@@ -722,7 +723,7 @@ func (p *prober) canonicalNamespace(opts optimizer.QualifyOpts) ([]string, exp.I
 		}
 		searchPath = append(searchPath, quoted)
 	}
-	return searchPath, literal(opts.DefaultSchema), literal(opts.Catalog)
+	return searchPath, literal(opts.DefaultSchema), literal(opts.Catalog), literal(opts.DefaultSchemaCatalog)
 }
 
 // qualify is optimizer.Qualify with the engine catalog resolved against the namespace's canonical search path.
@@ -2063,6 +2064,11 @@ func (p *prober) predicateLiteralRefs() []PredicateLiteralRef {
 func (p *prober) resolveCalls() *ProbeResult {
 	builtins := map[string]bool{}
 	udfs := map[string]bool{}
+	for kind, name := range p.session.engine.Traits.typedBuiltins {
+		if p.qroot.Find(kind) != nil {
+			builtins[name] = true
+		}
+	}
 	for _, fn := range p.qroot.FindAll(exp.KindAnonymous) {
 		if !fn.Is(exp.TraitFunc) {
 			continue
@@ -2175,6 +2181,13 @@ func (p *prober) calledFunctions() []string {
 	}
 	seen := map[string]bool{}
 	out := []string{}
+	for _, kind := range slices.Sorted(maps.Keys(p.session.engine.Traits.typedBuiltins)) {
+		if p.root.Find(kind) != nil {
+			name := p.session.engine.Traits.typedBuiltins[kind]
+			seen[name] = true
+			out = append(out, name)
+		}
+	}
 	for _, fn := range p.root.FindAll(exp.TraitFunc) {
 		if fn.Kind() != exp.KindAnonymous {
 			continue
@@ -2922,7 +2935,11 @@ func (p *prober) fromSourceOrder(sel exp.Expression) []string {
 	return out
 }
 
+// isStar: `*`, `t.*`, or a BigQuery struct star `t.s.*` that Qualify could not expand.
 func (p *prober) isStar(proj exp.Expression) bool {
+	if proj != nil && proj.Kind() == exp.KindDot {
+		proj = proj.Expr()
+	}
 	return proj != nil && (proj.Kind() == exp.KindStar || (proj.Kind() == exp.KindColumn && proj.This() != nil && proj.This().Kind() == exp.KindStar))
 }
 

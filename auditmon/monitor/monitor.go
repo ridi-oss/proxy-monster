@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -78,6 +79,7 @@ type Monitor struct {
 	reader  *store.Reader
 	signer  sign.Signer
 	store   worm.ObjectStore
+	objects *worm.Reader
 	genesis []byte
 	cfg     config.MonitorConfig
 	detect  Detector
@@ -98,6 +100,9 @@ type Monitor struct {
 	// exporting and stops signing new anchors, so it can never lend its signature to — or ship to the SIEM —
 	// a chain it has already proven tampered. It never blocks a decision (the monitor is read-side only).
 	halted atomic.Bool
+
+	anchorVerdicts     verdictCache[worm.Anchor]
+	acceptanceVerdicts verdictCache[worm.Acceptance]
 }
 
 // New builds a Monitor.
@@ -106,6 +111,7 @@ func New(reader *store.Reader, signer sign.Signer, os worm.ObjectStore, genesis 
 		reader:  reader,
 		signer:  signer,
 		store:   os,
+		objects: worm.NewReader(os),
 		genesis: genesis,
 		cfg:     cfg,
 		detect:  detect,
@@ -138,7 +144,9 @@ func (m *Monitor) anchorVerify(a worm.Anchor) (headHash []byte, valid bool, err 
 	if err != nil {
 		return nil, false, nil
 	}
-	valid, err = m.signer.Verify(sign.AnchorDigest(a.UpToID, headHash), sig, a.KeyID)
+	valid, err = m.anchorVerdicts.get(a, func() (bool, error) {
+		return m.signer.Verify(sign.AnchorDigest(a.UpToID, headHash), sig, a.KeyID)
+	})
 	if err != nil {
 		return nil, false, err
 	}
@@ -151,7 +159,7 @@ func (m *Monitor) anchorVerify(a worm.Anchor) (headHash []byte, valid bool, err 
 // finding (present=false, finding set) — the monitor must not silently fall back to a from-genesis first run
 // and launder over it. With no anchors at all it is the genuine first run (genesis head, present=false).
 func (m *Monitor) selectBaseline() (baseline store.ChainHead, present bool, finding *verify.Finding, err error) {
-	anchors, err := worm.ReadAnchors(m.store)
+	anchors, err := m.objects.Anchors()
 	if err != nil {
 		return store.ChainHead{}, false, nil, fmt.Errorf("monitor: read anchors: %w", err)
 	}
@@ -404,6 +412,8 @@ func (m *Monitor) signAnchor(head store.ChainHead) error {
 //
 // A returned error is an infrastructure failure the Run loop logs and retries; it never blocks a decision.
 func (m *Monitor) FullVerify(ctx context.Context) error {
+	m.anchorVerdicts.forget()
+	m.acceptanceVerdicts.forget()
 	w, err := m.witnesses("full verify")
 	if err != nil {
 		return err
@@ -465,7 +475,7 @@ type evidence struct {
 // witnesses reads and signature-verifies the off-box evidence. An unsigned or badly-signed acceptance is NOT
 // honored, so writing an acceptance object is useless to anyone who cannot sign with the monitor's key.
 func (m *Monitor) witnesses(what string) (evidence, error) {
-	anchors, err := worm.ReadAnchors(m.store)
+	anchors, err := m.objects.Anchors()
 	if err != nil {
 		return evidence{}, fmt.Errorf("monitor: %s: read anchors: %w", what, err)
 	}
@@ -494,7 +504,7 @@ func (m *Monitor) witnesses(what string) (evidence, error) {
 		out.checks = append(out.checks, verify.AnchorCheck{UpToID: a.UpToID, HeadHash: head})
 	}
 
-	records, err := worm.ReadAcceptances(m.store)
+	records, err := m.objects.Acceptances()
 	if err != nil {
 		return evidence{}, fmt.Errorf("monitor: %s: read acceptances: %w", what, err)
 	}
@@ -537,7 +547,9 @@ func (m *Monitor) acceptanceVerify(r worm.Acceptance) (verify.Accepted, bool, er
 	if err != nil {
 		return verify.Accepted{}, false, nil
 	}
-	valid, err := m.signer.Verify(sign.AcceptanceDigest(r.DivergentID, r.Reason, expected, actual, resume), sig, r.KeyID)
+	valid, err := m.acceptanceVerdicts.get(r, func() (bool, error) {
+		return m.signer.Verify(sign.AcceptanceDigest(r.DivergentID, r.Reason, expected, actual, resume), sig, r.KeyID)
+	})
 	if err != nil {
 		return verify.Accepted{}, false, err
 	}
@@ -551,6 +563,37 @@ func (m *Monitor) acceptanceVerify(r worm.Acceptance) (verify.Accepted, bool, er
 		Actual:      actual,
 		ResumeHash:  resume,
 	}, true, nil
+}
+
+type verdictCache[K comparable] struct {
+	mu       sync.Mutex
+	verdicts map[K]bool
+}
+
+func (c *verdictCache[K]) get(key K, verify func() (bool, error)) (bool, error) {
+	c.mu.Lock()
+	valid, seen := c.verdicts[key]
+	c.mu.Unlock()
+	if seen {
+		return valid, nil
+	}
+	valid, err := verify()
+	if err != nil {
+		return false, err
+	}
+	c.mu.Lock()
+	if c.verdicts == nil {
+		c.verdicts = make(map[K]bool)
+	}
+	c.verdicts[key] = valid
+	c.mu.Unlock()
+	return valid, nil
+}
+
+func (c *verdictCache[K]) forget() {
+	c.mu.Lock()
+	c.verdicts = nil
+	c.mu.Unlock()
 }
 
 // Halted reports whether a chain break has latched this monitor into its halted state.
@@ -597,7 +640,7 @@ func (m *Monitor) anchorTrustFinding(validChecks int) (*verify.Finding, error) {
 	if validChecks > 0 {
 		return nil, nil
 	}
-	anchors, err := worm.ReadAnchors(m.store)
+	anchors, err := m.objects.Anchors()
 	if err != nil {
 		return nil, fmt.Errorf("monitor: diagnose: read anchors: %w", err)
 	}

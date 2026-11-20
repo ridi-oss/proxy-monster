@@ -799,6 +799,7 @@ private fun schemaFor(tool: String): ToolSchema {
             "discover_roles" -> { string("datasource"); string("sql") }
             "request_approval" -> {
                 integer("decisionId"); string("datasource"); string("sql"); string("title"); string("roleName"); string("reason")
+                boolean("private")
             }
             "edit_approval" -> { integer("id"); string("sql"); string("title"); string("reason") }
             "list_my_approvals" -> string("status")
@@ -810,7 +811,9 @@ private fun schemaFor(tool: String): ToolSchema {
             "get_approval_result" -> { integer("id"); resultPage() }
             "list_audit" -> integer("limit", min = 1, max = 500)
             "get_audit_event" -> integer("id")
-            "request_access" -> { string("roleName"); string("reason"); string("datasource"); integer("durationSec", min = 1) }
+            "request_access" -> {
+                string("roleName"); string("reason"); string("datasource"); integer("durationSec", min = 1); boolean("private")
+            }
             "list_access_requests" -> string("status")
             "list_access_grants" -> { string("principal"); boolean("active") }
             "list_query_history" -> integer("limit", min = 1, max = 200)

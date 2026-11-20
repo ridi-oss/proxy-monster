@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"sort"
 	"strings"
 )
 
@@ -59,25 +58,5 @@ func WriteAcceptance(os ObjectStore, a Acceptance) error {
 // Object-Lock) must never wedge the monitor. Signature validity is NOT judged here — that needs the signer,
 // so the caller verifies each one before honoring it.
 func ReadAcceptances(os ObjectStore) ([]Acceptance, error) {
-	keys, err := os.List(acceptancePrefix)
-	if err != nil {
-		return nil, err
-	}
-	var out []Acceptance
-	for _, k := range keys {
-		if !strings.HasSuffix(k, ".json") {
-			continue
-		}
-		body, err := os.Get(k)
-		if err != nil {
-			return nil, err
-		}
-		var a Acceptance
-		if err := json.Unmarshal(body, &a); err != nil {
-			continue
-		}
-		out = append(out, a)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].DivergentID < out[j].DivergentID })
-	return out, nil
+	return NewReader(os).Acceptances()
 }

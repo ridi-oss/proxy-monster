@@ -152,7 +152,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 	defer authz.Close()
 	slog.Info("authenticated mysql client", "client", clientConn.RemoteAddr().String(), "principal", identity.Principal, "roles", identity.Roles)
 
-	c, err := openConnection(context.Background(), s.target.config, authz, nil, deprecateEOF, s.WrapTargetDbConn)
+	c, err := s.target.openConnection(context.Background(), s.target.config, authz, nil, deprecateEOF, s.WrapTargetDbConn)
 	if errors.Is(err, errTargetDbUnavailable) {
 		slog.Warn("mysql target DB unavailable", "host", s.target.config.Host, "port", s.target.config.Port, "error", err)
 		_ = mysqlwire.WritePacket(clientConn, tokenSeq+1, mysqlwire.ErrPacketState(

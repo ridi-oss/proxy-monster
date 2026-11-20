@@ -100,10 +100,11 @@ Both request and response messages live in `proto/src/main/proto/analyzer.proto`
    to `stmt.cat.session`. Kotlin authorizes the kind, then relays the statement
    verbatim: a resolved statement with no column/table/function grant (and no
    catalog change) has nothing to mask, so the relay is derived from the grant
-   shape, not from any SQL-shape knowledge in Kotlin. A session statement is
-   denied on a non-persistent channel (MCP or a workflow phase) by the seeded
-   `stmt.cat.session` Cedar forbid, since each such query runs on a fresh
-   connection.
+   shape, not from any SQL-shape knowledge in Kotlin. The seeded
+   `stmt.cat.session` Cedar forbid admits session statements on the wire and the
+   editor, only `stmt.kind.set_session_var` on the workflow channels, and none
+   on MCP. An `autocommit` assignment is `stmt.kind.set_transaction`: it commits
+   or opens a transaction, as `COMMIT` and `BEGIN` do.
 
 ## The deny taxonomy
 

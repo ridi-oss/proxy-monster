@@ -35,9 +35,9 @@ glue.create_table(
         "Parameters": {"classification": "csv"},
     },
 )
-# For the names leg: accounts lowercase as Glue stores names, Customers in a mixed case only the emulator keeps.
+# Glue folds table and column names to lowercase when it stores them; the emulator does not, so seed them folded.
 for table, prefix, names in (("accounts", "acct", ("email", "phone", "ssn", "secret")),
-                             ("Customers", "upper", ("Email", "Phone", "Ssn", "Secret"))):
+                             ("customers", "upper", ("email", "phone", "ssn", "secret"))):
     body = "id," + ",".join(names) + "\n" + "".join(
         f"{i}," + ",".join(f"{prefix}-{n.lower()}-{i}" for n in names) + "\n" for i in (1, 2, 3))
     s3.put_object(Bucket="acme-data", Key=f"{table.lower()}/{table.lower()}.csv", Body=body.encode())
@@ -53,4 +53,4 @@ for table, prefix, names in (("accounts", "acct", ("email", "phone", "ssn", "sec
             "Parameters": {"classification": "csv"},
         },
     )
-print("athena seed: acme.users, acme.accounts, acme.Customers ready")
+print("athena seed: acme.users, acme.accounts, acme.customers ready")

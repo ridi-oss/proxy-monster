@@ -24,4 +24,5 @@ enum Engine {
   POSTGRES = 1;
   MYSQL = 2;
   ATHENA = 3;
+  BIGQUERY = 4;
 }

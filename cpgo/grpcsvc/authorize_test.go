@@ -144,8 +144,8 @@ func tableOp(t *apb.ObjectRef) *pb.RequestAuthorization {
 	return &pb.RequestAuthorization{Operation: &pb.RequestAuthorization_ReadTableMetadata{ReadTableMetadata: &pb.ReadTableMetadata{Table: t}}}
 }
 
-func athenaOp(d *apb.AthenaNativeDescriptor) *pb.RequestAuthorization {
-	return &pb.RequestAuthorization{Operation: &pb.RequestAuthorization_Athena{Athena: d}}
+func athenaOp(d *pb.HttpDbRequest) *pb.RequestAuthorization {
+	return &pb.RequestAuthorization{Operation: &pb.RequestAuthorization_HttpDb{HttpDb: d}}
 }
 
 func on(r *pb.RequestAuthorization, token, ds, addr string) *pb.RequestAuthorization {
@@ -191,8 +191,8 @@ func TestMetadataUsesConnectGate(t *testing.T) {
 	for _, ds := range []struct{ name, catalog string }{{"reports", "def"}, {"reports-pg", "app"}} {
 		for _, r := range []*pb.RequestAuthorization{catalogOp(ref(ds.catalog, "app", "")), tableOp(ref(ds.catalog, "app", "users"))} {
 			f.policies(connectAll)
-			if res := f.want(ds.name+" permitted", on(r, alice, ds.name, ""), ""); res.GetPrincipal() != "alice" || res.GetInstructions() != nil {
-				t.Errorf("%s: principal %q instructions %v", ds.name, res.GetPrincipal(), res.GetInstructions())
+			if res := f.want(ds.name+" permitted", on(r, alice, ds.name, ""), ""); res.GetPrincipal() != "alice" || res.GetHttpDbInstructions() != nil {
+				t.Errorf("%s: principal %q instructions %v", ds.name, res.GetPrincipal(), res.GetHttpDbInstructions())
 			}
 			f.policies()
 			f.want(ds.name+" no permit", on(r, alice, ds.name, ""), notConnectable)
@@ -414,15 +414,15 @@ func TestAdmissionInstructions(t *testing.T) {
 	f.grant("alice", "reader")
 	f.policies(connectAll, invokeAll)
 	alice := f.token("USER", "alice")
-	if res := f.want("native", on(athenaOp(descriptor("ListWorkGroups", "{}", requestPhase)), alice, "lake", ""), ""); res.GetAthena() == nil {
+	if res := f.want("native", on(athenaOp(descriptor("ListWorkGroups", "{}", requestPhase)), alice, "lake", ""), ""); res.GetHttpDbInstructions() == nil {
 		t.Error("native allow without instructions")
 	}
-	if res := f.want("metadata", on(catalogOp(ref("def", "app", "")), alice, "reports", ""), ""); res.GetInstructions() != nil {
-		t.Errorf("metadata allow with instructions %v", res.GetInstructions())
+	if res := f.want("metadata", on(catalogOp(ref("def", "app", "")), alice, "reports", ""), ""); res.GetHttpDbInstructions() != nil {
+		t.Errorf("metadata allow with instructions %v", res.GetHttpDbInstructions())
 	}
 	scope := descriptor("StartQueryExecution", `{"QueryString":"select 1","WorkGroup":"other"}`, requestPhase)
-	if res := f.want("engine deny code", on(athenaOp(scope), alice, "lake", ""), nativeScopeViolation); res.GetInstructions() != nil || res.GetPrincipal() != "" {
-		t.Errorf("denied result carries %v %q", res.GetInstructions(), res.GetPrincipal())
+	if res := f.want("engine deny code", on(athenaOp(scope), alice, "lake", ""), nativeScopeViolation); res.GetHttpDbInstructions() != nil || res.GetPrincipal() != "" {
+		t.Errorf("denied result carries %v %q", res.GetHttpDbInstructions(), res.GetPrincipal())
 	}
 }
 
@@ -433,10 +433,10 @@ func TestNativeDispatchRefusesBeforeTheEngine(t *testing.T) {
 	calls := 0
 	f.s.read = func(r *pb.RequestAuthorization, _ requestDatasource, principal string, _ time.Time) access {
 		calls++
-		if r.GetAthena() == nil || principal != "alice" {
+		if r.GetHttpDb() == nil || principal != "alice" {
 			t.Errorf("engine read %v as %q", r, principal)
 		}
-		return access{native: true, athena: &apb.AthenaNativeInstructions{}}
+		return access{native: true, instructions: &apb.HttpDbInstructions{}}
 	}
 	ds := reqDS("lake", "athena", "analytics", "production")
 	r := athenaOp(descriptor("ListWorkGroups", "{}", requestPhase))

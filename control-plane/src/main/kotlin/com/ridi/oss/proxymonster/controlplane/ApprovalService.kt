@@ -145,7 +145,8 @@ class ApprovalService(
                     source = source,
                     contentHash = contentHash(denied.statement, ds),
                     rawHash = rawSqlHash(denied.statement),
-                    onCreated = { c, taskId, roleName -> notifications?.emitRequested(c, taskId, principal, ds, roleName) },
+                    onCreated = { c, taskId, roleName -> notifications?.emitRequested(c, taskId, principal, ds, roleName, private = input.private) },
+                    private = input.private,
                 )
             } catch (_: DuplicatePendingQueryRequestException) {
                 throw pendingExists()
@@ -178,10 +179,11 @@ class ApprovalService(
             actor = actor,
             recorder = recorder,
             carriesProtectedLiteral = analysis.carriesProtectedLiteral,
-            onCreated = { c, taskId, roleName -> notifications?.emitRequested(c, taskId, principal, ds, roleName) },
+            onCreated = { c, taskId, roleName -> notifications?.emitRequested(c, taskId, principal, ds, roleName, private = input.private) },
             source = source,
             contentHash = contentHash(sql, ds),
             rawHash = rawSqlHash(sql),
+            private = input.private,
         )
         notifications?.wake()
         return CreateQueryRequestResponse(request, wouldAllow = analysis.decision == EnfAction.ALLOW)

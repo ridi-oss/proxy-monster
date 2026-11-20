@@ -11,7 +11,6 @@ import (
 
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
 	"github.com/ridi-oss/proxy-monster/goproxy/mysql"
-	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
 )
 
@@ -103,7 +102,7 @@ func TestRunRefusesUnknownLowerCaseTableNames(t *testing.T) {
 		{"negative", "-1"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cat, err := runWith(mysql.OpenPool, reportingQueries(tc.lctn), mysql.ProbeNamespace, spi.TargetConfig{Host: targetConfig.Host, Port: targetConfig.Port, Db: targetConfig.DB, User: targetConfig.User, Password: targetConfig.Password})
+			cat, err := runWith(mysql.OpenPool, reportingQueries(tc.lctn), mysql.ProbeNamespace, sqldb.Settings{Host: targetConfig.Host, Port: targetConfig.Port, Db: targetConfig.DB, User: targetConfig.User, Password: targetConfig.Password})
 			if err == nil {
 				t.Fatalf("sqldb.Introspect pushed a catalog of %d columns, want refused", len(cat.GetCatalog().GetColumns()))
 			}

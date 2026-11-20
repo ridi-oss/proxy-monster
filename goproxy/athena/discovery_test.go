@@ -141,8 +141,8 @@ func TestStatementOnACatalogedViewResolves(t *testing.T) {
 
 func TestConnectionMetadataUsesHTTPSWithoutExposingAWSProfile(t *testing.T) {
 	target := testTarget(t, func(w http.ResponseWriter, request *http.Request) { t.Fatal("connection metadata made an AWS call") })
-	target.config.advertise = "proxy.example:6443"
-	target.config.profile = "private-profile"
+	target.settings.advertise = "proxy.example:6443"
+	target.settings.profile = "private-profile"
 	info := target.ConnectionInfo()
 	if info.Endpoint != "https://proxy.example:6443" || info.Properties["catalog"] != "AwsDataCatalog" {
 		t.Fatalf("bad connection metadata: %v", info)

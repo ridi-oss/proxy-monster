@@ -20,8 +20,8 @@ func TestNativeProtocolFieldNumbers(t *testing.T) {
 
 func TestAthenaScopeSharesAnalyzerTypeAndPreservesParameterOrder(t *testing.T) {
 	context := &analyzerpb.AthenaSqlContext{
-		Workgroup:           "reports",
-		ExecutionParameters: []string{"'second'", "'first'"},
+		Workgroup: "reports",
+		Httpdb:    &analyzerpb.HttpDbSqlContext{Parameters: []*analyzerpb.HttpDbParameter{{Value: "'second'"}, {Value: "'first'"}}},
 		PreparedDefinitions: []*analyzerpb.AthenaPreparedDefinition{{
 			Workgroup: "reports", Name: "lookup", QueryString: "SELECT email FROM users WHERE id = ?",
 		}},
@@ -41,30 +41,12 @@ func TestAthenaScopeSharesAnalyzerTypeAndPreservesParameterOrder(t *testing.T) {
 	}
 }
 
-func TestAthenaSubmissionEmptyParametersRemainPresent(t *testing.T) {
-	verdict := &Verdict{RewrittenSql: proto.String("SELECT email FROM users"), Submission: &analyzerpb.Submission{Engine: &analyzerpb.Submission_Athena{Athena: &analyzerpb.AthenaSubmission{}}}}
-	encoded, err := proto.Marshal(verdict)
-	if err != nil {
-		t.Fatal(err)
-	}
-	decoded := new(Verdict)
-	if err := proto.Unmarshal(encoded, decoded); err != nil {
-		t.Fatal(err)
-	}
-	if decoded.GetSubmission().GetAthena() == nil || len(decoded.GetSubmission().GetAthena().GetExecutionParameters()) != 0 {
-		t.Fatalf("replacement with empty parameters lost presence: %v", decoded)
-	}
-	if new(Verdict).GetSubmission() != nil || new(DecisionRequest).GetSession().GetAthena() != nil {
-		t.Fatal("absent Athena fields must remain absent")
-	}
-}
-
 func TestNativeResultInstructionsReferenceOriginalContext(t *testing.T) {
-	instructions := &analyzerpb.AthenaNativeInstructions{
-		Action:   analyzerpb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_APPLY_ORIGINAL_CONTEXT,
-		Contexts: []*analyzerpb.AthenaContextRef{{ResourceId: "execution-123", ContextId: "context-456"}},
+	instructions := &analyzerpb.HttpDbInstructions{
+		Action:   analyzerpb.HttpDbInstruction_HTTP_DB_INSTRUCTION_APPLY_ORIGINAL_CONTEXT,
+		Contexts: []*analyzerpb.HttpDbContextRef{{ResourceId: "execution-123", ContextId: "context-456"}},
 	}
-	response := &RequestAuthorizationResult{Allowed: true, Instructions: &RequestAuthorizationResult_Athena{Athena: instructions}}
+	response := &RequestAuthorizationResult{Allowed: true, HttpDbInstructions: instructions}
 	encoded, err := proto.Marshal(response)
 	if err != nil {
 		t.Fatal(err)
@@ -73,11 +55,11 @@ func TestNativeResultInstructionsReferenceOriginalContext(t *testing.T) {
 	if err := proto.Unmarshal(encoded, decoded); err != nil {
 		t.Fatal(err)
 	}
-	got := decoded.GetAthena()
+	got := decoded.GetHttpDbInstructions()
 	if !proto.Equal(got, instructions) {
 		t.Fatalf("native result instructions changed: %v", got)
 	}
-	if new(analyzerpb.AthenaNativeInstructions).GetAction() != analyzerpb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_UNSPECIFIED {
+	if new(analyzerpb.HttpDbInstructions).GetAction() != analyzerpb.HttpDbInstruction_HTTP_DB_INSTRUCTION_UNSPECIFIED {
 		t.Fatal("an absent native instruction must not imply response release")
 	}
 }

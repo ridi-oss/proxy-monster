@@ -1,391 +1,139 @@
 package athena
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"io"
-	"log/slog"
-	"net"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
+	"github.com/ridi-oss/proxy-monster/goproxy/httpdb"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
-	"github.com/ridi-oss/proxy-monster/goproxy/listen"
 	"github.com/ridi-oss/proxy-monster/goproxy/relay"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/proto"
 )
 
-var errAuthorizationUnavailable = errors.New("athena: request authorization is unavailable")
+var (
+	ErrUnauthorized = httpdb.ErrUnauthorized
+	ErrUnsigned     = httpdb.ErrUnsigned
+)
 
-// nativeServer serves the Athena JSON 1.1 API over TLS. Every call authenticates the bearer credential as a
-// proxy-monster token, asks the control plane (AuthorizeRequest) what to do with the operation in the
-// request phase and again in the response phase, submits StartQueryExecution SQL through Decide, and applies
-// the cached enforcement context to result and status reads. Streaming and S3 result paths are refused.
-type nativeServer struct {
-	target      *target
-	listen      spi.Listen
-	client      spi.ControlPlane
-	tlsProvider func() (*tls.Config, error)
-	mu          sync.Mutex
-	server      *http.Server
-	stopped     bool
-	buffers     chan struct{}
-}
-
-func (s *nativeServer) Start() error {
-	if s.client == nil || s.tlsProvider == nil {
-		return ErrUnauthorized
-	}
-	tlsConfig, err := s.tlsProvider()
-	if err != nil {
-		return err
-	}
-	if tlsConfig == nil {
-		return errors.New("athena: TLS is required")
-	}
-	listener, err := listen.Open(s.listen)
-	if err != nil {
-		return err
-	}
-	s.mu.Lock()
-	if s.stopped {
-		s.mu.Unlock()
-		_ = listener.Close()
-		return nil
-	}
-	s.buffers = make(chan struct{}, 8)
-	s.server = &http.Server{Handler: s, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, IdleTimeout: time.Minute, MaxHeaderBytes: 64 << 10}
-	server := s.server
-	s.mu.Unlock()
-	err = server.Serve(tls.NewListener(listener, tlsConfig.Clone()))
-	if errors.Is(err, http.ErrServerClosed) {
-		return nil
-	}
-	return err
-}
-
-func (s *nativeServer) Shutdown() {
-	s.mu.Lock()
-	s.stopped = true
-	server := s.server
-	s.mu.Unlock()
-	if server != nil {
-		_ = server.Close()
+// newServer serves the Athena JSON 1.1 API; streaming and S3 result paths are refused.
+func newServer(t *target, listen spi.Listen, client spi.ControlPlane, tlsProvider func() (*tls.Config, error)) *httpdb.Server {
+	return &httpdb.Server{
+		Engine: engine{t}, Name: "athena", Listen: listen, Client: client, TLSProvider: tlsProvider,
+		Contexts: t.contexts, TargetBinding: t.binding, ContextLifetime: contextLifetime,
+		Forward:       httpdb.ForwardOptions{Endpoint: t.endpoint, MaxBodyBytes: defaultRequestLimit, Sign: t.sign, Transport: t.transport},
+		ResponseLimit: defaultResponseLimit, DiagnosticKeys: diagnosticKeys,
 	}
 }
 
-func (s *nativeServer) Drain(ctx context.Context) {
-	s.mu.Lock()
-	s.stopped = true
-	server := s.server
-	s.mu.Unlock()
-	if server != nil {
-		if err := server.Shutdown(ctx); err != nil {
-			_ = server.Close()
-		}
-	}
-}
+type engine struct{ target *target }
 
-// nativeRequest is one authenticated Athena call as it moves through request authorization, forwarding,
-// and response authorization.
-type nativeRequest struct {
-	server      *nativeServer
-	request     *http.Request
-	token       string
-	clientAddr  string
-	operation   string
-	principal   string
-	requestBody []byte
-	// SQL submission state, set only for StartQueryExecution.
-	authz         *spi.Authorizer
-	commandRunner *proxyCommandRunner
-	decision      *spi.Decision
-	submitted     []byte
-	tokened       bool
-	started       time.Time
-	// Cached contexts the request phase found for the referenced executions.
-	contexts  map[string]*enginepb.AthenaCachedContext
-	firstPage bool
-}
-
-func (s *nativeServer) ServeHTTP(w http.ResponseWriter, request *http.Request) {
-	if s.buffers != nil {
-		select {
-		case s.buffers <- struct{}{}:
-			defer func() { <-s.buffers }()
-		case <-request.Context().Done():
-			return
-		}
-	}
-	if s.client == nil {
-		nativeError(w, http.StatusServiceUnavailable, "athena.authorization_unavailable")
-		return
-	}
+func (engine) Operation(request *http.Request) (httpdb.Operation, error) {
 	if request.Method != http.MethodPost || request.URL.Path != "/" || request.URL.RawQuery != "" {
-		nativeError(w, http.StatusBadRequest, "athena.unsupported_transport")
-		return
+		return httpdb.Operation{}, httpdb.ErrUnsupportedTransport
 	}
-	if len(request.Header.Values("Authorization")) != 1 || !strings.HasPrefix(request.Header.Get("Authorization"), "Bearer ") {
-		nativeError(w, http.StatusForbidden, "athena.authentication_required")
-		return
+	if len(request.Header.Values("X-Amz-Target")) > 1 {
+		return httpdb.Operation{}, errors.New("athena: multiple operation headers")
 	}
-	token := strings.TrimPrefix(request.Header.Get("Authorization"), "Bearer ")
-	if token == "" || strings.ContainsAny(token, " \t\r\n") {
-		nativeError(w, http.StatusForbidden, "athena.authentication_required")
-		return
+	name, valid := strings.CutPrefix(request.Header.Get("X-Amz-Target"), "AmazonAthena.")
+	if !valid || name == "" {
+		return httpdb.Operation{}, errors.New("athena: invalid operation")
 	}
-	operation, valid := strings.CutPrefix(request.Header.Get("X-Amz-Target"), "AmazonAthena.")
-	if !valid || operation == "" {
-		nativeError(w, http.StatusBadRequest, "athena.invalid_operation")
-		return
+	kind := httpdb.KindMetadata
+	switch name {
+	case "StartQueryExecution":
+		kind = httpdb.KindSubmission
+	case "GetQueryResults":
+		kind = httpdb.KindResultPage
+	case "ListQueryExecutions":
+		kind = httpdb.KindListing
+	case "GetQueryResultsStream":
+		kind = httpdb.KindRefused
 	}
-	clientAddr, _, err := net.SplitHostPort(request.RemoteAddr)
-	if err != nil {
-		nativeError(w, http.StatusBadRequest, "athena.invalid_client_address")
-		return
-	}
-	call := &nativeRequest{server: s, request: request, token: token, clientAddr: clientAddr, operation: operation, contexts: map[string]*enginepb.AthenaCachedContext{}}
-	defer call.release()
-	forwarder, err := NewForwarder(ForwardOptions{
-		Endpoint: s.target.endpoint, MaxBodyBytes: defaultRequestLimit, Sign: s.target.sign, Transport: s.target.transport,
-		Authorize: call.authorizeRequest,
-	})
-	if err != nil {
-		nativeError(w, http.StatusServiceUnavailable, "athena.forwarding_unavailable")
-		return
-	}
-	response, err := forwarder.Forward(request)
-	if err != nil {
-		call.fail(w, err)
-		return
-	}
-	defer response.Body.Close()
-	if response.Header.Get("Content-Encoding") != "" && response.Header.Get("Content-Encoding") != "identity" {
-		call.complete("error")
-		nativeError(w, http.StatusBadGateway, "athena.unsupported_response_encoding")
-		return
-	}
-	body, err := io.ReadAll(io.LimitReader(response.Body, defaultResponseLimit+1))
-	if err != nil || len(body) > defaultResponseLimit {
-		call.complete("error")
-		nativeError(w, http.StatusBadGateway, "athena.response_too_large")
-		return
-	}
-	body, err = call.authorizeResponse(response.StatusCode, body)
-	if err != nil {
-		call.fail(w, err)
-		return
-	}
-	for name, values := range response.Header {
-		if stripResponseHeader(name) {
-			continue
-		}
-		for _, value := range values {
-			w.Header().Add(name, value)
-		}
-	}
-	w.WriteHeader(response.StatusCode)
-	_, _ = w.Write(body)
+	return httpdb.Operation{Name: name, Kind: kind}, nil
 }
 
-// authorizeRequest runs the REQUEST phase: the control plane admits the operation, then a SQL submission is
-// decided and rewritten before it may leave.
-func (c *nativeRequest) authorizeRequest(ctx context.Context, incoming *http.Request, envelope *Envelope) (*Envelope, error) {
-	c.requestBody = envelope.Bytes()
-	if err := c.lookupContexts(envelope); err != nil {
-		return nil, err
-	}
-	descriptor := c.descriptor(enginepb.NativeAuthorizationPhase_NATIVE_AUTHORIZATION_PHASE_REQUEST, nil)
-	result, instructions, err := c.server.authorize(ctx, c.token, c.clientAddr, descriptor)
+func (engine) References(_ *http.Request, body []byte) ([]string, bool, error) {
+	envelope, err := httpdb.DecodeEnvelope(body)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	c.principal = result.Principal
-	if c.principal == "" {
-		return nil, ErrUnauthorized
-	}
-	switch instructions.Action {
-	case enginepb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_FORWARD_REQUEST:
-		if c.operation == "StartQueryExecution" || c.operation == "GetQueryResultsStream" {
-			return nil, ErrUnauthorized
-		}
-		return envelope, nil
-	case enginepb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_REQUIRE_SQL_ADMISSION:
-		if c.operation != "StartQueryExecution" {
-			return nil, ErrUnauthorized
-		}
-		return c.admitSubmission(envelope)
-	default:
-		return nil, ErrUnauthorized
-	}
-}
-
-// lookupContexts attaches the cached context of every execution the body names, so the control plane can
-// judge ownership; an unknown execution is simply absent and the control plane fails it closed.
-func (c *nativeRequest) lookupContexts(envelope *Envelope) error {
-	ids, err := referencedExecutions(envelope)
-	if err != nil {
-		return err
-	}
-	for _, id := range ids {
-		if err := c.attachContext(id); err != nil {
-			return err
-		}
-	}
-	c.firstPage = envelope.Field("NextToken") == nil
-	return nil
-}
-
-func (c *nativeRequest) attachContext(id string) error {
-	if _, found := c.contexts[id]; found {
-		return nil
-	}
-	record, err := c.server.target.contexts.Find(c.server.datasourceName(), id)
-	if errors.Is(err, ErrOriginalContextUnavailable) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	c.contexts[id] = record
-	return nil
-}
-
-func referencedExecutions(envelope *Envelope) ([]string, error) {
 	var ids []string
 	if raw := envelope.Field("QueryExecutionId"); raw != nil {
 		var id string
 		if err := json.Unmarshal(raw, &id); err != nil {
-			return nil, errors.New("athena: QueryExecutionId must be a string")
+			return nil, false, errors.New("athena: QueryExecutionId must be a string")
 		}
 		ids = append(ids, id)
 	}
 	if raw := envelope.Field("QueryExecutionIds"); raw != nil {
 		var batch []string
 		if err := json.Unmarshal(raw, &batch); err != nil {
-			return nil, errors.New("athena: QueryExecutionIds must be strings")
+			return nil, false, errors.New("athena: QueryExecutionIds must be strings")
 		}
 		ids = append(ids, batch...)
 	}
-	return ids, nil
+	return ids, envelope.Field("NextToken") == nil, nil
 }
 
-// admitSubmission decides the actual SQL and parameters, then replaces them with the admitted submission.
-func (c *nativeRequest) admitSubmission(envelope *Envelope) (*Envelope, error) {
-	scope, err := readSubmission(envelope, c.server.target.config)
+func (e engine) SetTarget(d *pb.HttpDbRequest) {
+	t := e.target
+	d.Target = &pb.HttpDbRequest_Athena{Athena: &enginepb.AthenaTarget{Region: t.settings.region, DefaultWorkgroup: t.settings.workgroup, DefaultCatalog: t.settings.catalog, DefaultDatabase: t.settings.database, Endpoint: t.endpoint}}
+}
+
+func (e engine) ReadSubmission(body []byte) (httpdb.Submission, error) {
+	envelope, err := httpdb.DecodeEnvelope(body)
+	if err != nil {
+		return httpdb.Submission{}, err
+	}
+	scope, err := readSubmission(envelope, e.target.settings)
+	if err != nil {
+		return httpdb.Submission{}, err
+	}
+	return httpdb.Submission{Query: scope.query, Parameters: scope.parameters, Token: scope.token, Session: e.target.session(scope.parameters, 0)}, nil
+}
+
+func (e engine) WriteSubmission(body []byte, admitted httpdb.Submission) ([]byte, error) {
+	envelope, err := httpdb.DecodeEnvelope(body)
 	if err != nil {
 		return nil, err
 	}
-	// The control plane pinned the scope: any other workgroup or database was already a scope violation.
-	authz, identity, err := spi.Authenticate(c.server.client, c.token, c.clientAddr, pb.ConnectionDoor_CONNECTION_DOOR_WIRE)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrUnauthorized, err)
-	}
-	if identity.Principal != c.principal {
-		authz.Close()
-		return nil, ErrUnauthorized
-	}
-	commandRunner, err := c.server.target.newProxyCommandRunner(authz)
-	if err != nil {
-		authz.Close()
+	if envelope, err = applySubmission(envelope, admitted.Query, admitted.Parameters); err != nil {
 		return nil, err
 	}
-	c.authz, c.commandRunner = authz, commandRunner
-	if err := commandRunner.RunAll(identity.OnOpen, nil); err != nil {
+	if envelope, err = pinScope(envelope, e.target.settings); err != nil {
 		return nil, err
 	}
-	c.started = time.Now()
-	verdict := c.server.target.authorize(authz, commandRunner, scope.query, scope.parameters, 0)
-	switch v := verdict.(type) {
-	case spi.Fail:
-		return nil, relay.FailError{Message: v.Message}
-	case spi.Deny:
-		// A DENY relays nothing: the control plane already failed its task inline, so no completion follows.
-		return nil, &denied{reason: v.Decision.DenyReason}
-	case spi.Proceed:
-		c.decision = v.Decision
-	default:
-		return nil, relay.FailError{Message: fmt.Sprintf("unexpected authorization verdict %T", verdict)}
-	}
-	query, parameters := submittedQuery(scope.query, scope.parameters, c.decision)
-	admitted, err := applySubmission(envelope, query, parameters)
-	if err != nil {
-		return nil, err
-	}
-	if admitted, err = pinScope(admitted, c.server.target.config); err != nil {
-		return nil, err
-	}
-	c.tokened = scope.token != ""
-	if scope.token != "" {
-		admitted, err = admitted.WithField("ClientRequestToken", namespacedToken(c.server.datasourceName(), c.principal, scope.token))
-		if err != nil {
+	if admitted.Token != "" {
+		if envelope, err = envelope.WithField("ClientRequestToken", admitted.Token); err != nil {
 			return nil, err
 		}
 	}
-	c.submitted = admitted.Bytes()
-	return admitted, nil
+	return envelope.Bytes(), nil
 }
 
-// authorizeResponse runs the RESPONSE phase and applies the resulting instruction to the body.
-func (c *nativeRequest) authorizeResponse(status int, body []byte) ([]byte, error) {
-	if c.operation == "StartQueryExecution" {
-		return c.associate(status, body)
-	}
-	observations, err := c.observe(status, body)
-	if err != nil {
-		return nil, err
-	}
-	for _, observation := range observations {
-		if err := c.attachContext(observation.Id); err != nil {
-			return nil, err
-		}
-	}
-	descriptor := c.descriptor(enginepb.NativeAuthorizationPhase_NATIVE_AUTHORIZATION_PHASE_RESPONSE, observations)
-	result, instructions, err := c.server.authorize(c.request.Context(), c.token, c.clientAddr, descriptor)
-	if err != nil {
-		return nil, err
-	}
-	if result.Principal != c.principal {
-		return nil, ErrUnauthorized
-	}
-	switch instructions.Action {
-	case enginepb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_RELEASE_METADATA:
-		if c.operation == "GetQueryResults" || c.operation == "GetQueryResultsStream" {
-			return nil, ErrUnauthorized
-		}
-		return body, nil
-	case enginepb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_APPLY_ORIGINAL_CONTEXT:
-		return c.applyContexts(status, body, instructions.Contexts)
-	default:
-		return nil, ErrUnauthorized
-	}
-}
+func (engine) CreatedResource(body []byte) (string, error) { return executionID(body) }
 
-// observe reports AWS-returned execution identities so the control plane can bind them to cached contexts.
-func (c *nativeRequest) observe(status int, body []byte) ([]*enginepb.AthenaResourceObservation, error) {
-	if status != http.StatusOK {
-		return nil, nil
-	}
-	envelope, err := DecodeEnvelope(body)
+// Observe reports AWS-returned execution identities so the control plane can bind them to cached contexts.
+func (engine) Observe(body []byte) ([]*pb.HttpDbObservation, error) {
+	envelope, err := httpdb.DecodeEnvelope(body)
 	if err != nil {
 		return nil, ErrResultShape
 	}
-	var observations []*enginepb.AthenaResourceObservation
+	var observations []*pb.HttpDbObservation
+	add := func(id string) {
+		observations = append(observations, &pb.HttpDbObservation{Source: pb.HttpDbObservationSource_HTTP_DB_OBSERVATION_SOURCE_UPSTREAM_RESPONSE, Kind: "query-execution", Id: id})
+	}
 	observe := func(raw json.RawMessage) error {
 		if raw == nil {
 			return nil
 		}
-		execution, err := DecodeEnvelope(raw)
+		execution, err := httpdb.DecodeEnvelope(raw)
 		if err != nil {
 			return ErrResultShape
 		}
@@ -396,11 +144,7 @@ func (c *nativeRequest) observe(status int, body []byte) ([]*enginepb.AthenaReso
 		if err := json.Unmarshal(execution.Field("QueryExecutionId"), &id); err != nil || id == "" {
 			return ErrResultShape
 		}
-		observation := &enginepb.AthenaResourceObservation{Source: enginepb.AthenaObservationSource_ATHENA_OBSERVATION_SOURCE_AWS_RESPONSE, Kind: "query-execution", Id: id}
-		if raw := execution.Field("WorkGroup"); raw != nil {
-			_ = json.Unmarshal(raw, &observation.Workgroup)
-		}
-		observations = append(observations, observation)
+		add(id)
 		return nil
 	}
 	if err := observe(envelope.Field("QueryExecution")); err != nil {
@@ -423,147 +167,16 @@ func (c *nativeRequest) observe(status int, body []byte) ([]*enginepb.AthenaReso
 			return nil, ErrResultShape
 		}
 		for _, id := range ids {
-			observations = append(observations, &enginepb.AthenaResourceObservation{Source: enginepb.AthenaObservationSource_ATHENA_OBSERVATION_SOURCE_AWS_RESPONSE, Kind: "query-execution", Id: id})
+			add(id)
 		}
 	}
 	return observations, nil
 }
 
-// associate binds the execution AWS returned to the decision it was submitted under. A stable-token retry
-// AWS matched to an existing execution binds only when that execution's context is already the same one.
-func (c *nativeRequest) associate(status int, body []byte) ([]byte, error) {
-	if c.decision == nil || c.authz == nil {
-		return nil, ErrUnauthorized
-	}
-	if status != http.StatusOK {
-		sanitize := c.decision.SanitizeDiagnostics
-		c.complete("error")
-		if sanitize {
-			return redactDiagnostics(body)
-		}
-		return body, nil
-	}
-	id, err := executionID(body)
-	if err != nil {
-		c.complete("error")
-		return nil, ErrResultShape
-	}
-	record, err := newCachedContext(id, c.principal, c.server.target.binding, c.decision, nil, requestBinding(c.submitted), time.Now())
-	if err != nil {
-		c.complete("error")
-		return nil, err
-	}
-	// A stable token can replay an execution this proxy no longer has a context for (cache loss); the
-	// current decision must not become that old result's plan, so only a fresh execution binds.
-	if _, findErr := c.server.target.contexts.Find(c.server.datasourceName(), id); c.tokened && errors.Is(findErr, ErrOriginalContextUnavailable) {
-		fresh, err := c.server.target.submittedAfter(c.request.Context(), id, c.started.Add(-replayTolerance))
-		if err != nil || !fresh {
-			c.complete("error")
-			return nil, ErrOriginalContextUnavailable
-		}
-	}
-	err = c.server.target.contexts.Associate(c.server.datasourceName(), record)
-	if errors.Is(err, ErrContextConflict) {
-		existing, findErr := c.server.target.contexts.Find(c.server.datasourceName(), id)
-		if findErr != nil || existing.Owner != c.principal || !bytes.Equal(existing.RequestBinding, record.RequestBinding) {
-			c.complete("error")
-			return nil, ErrOriginalContextUnavailable
-		}
-		err = nil
-	}
-	if err != nil {
-		c.complete("error")
-		return nil, err
-	}
-	c.settle(id)
-	return body, nil
-}
-
-// settle reports the accepted submission and, for a catalog-changing statement, keeps the connection
-// until the execution finishes so its after-statement refetches run; Athena executes asynchronously and a
-// client need not poll.
-func (c *nativeRequest) settle(id string) {
-	decision, authz, commandRunner := c.decision, c.authz, c.commandRunner
-	c.complete("ok")
-	if len(decision.AfterStatement) == 0 {
-		return
-	}
-	c.authz, c.commandRunner = nil, nil
-	go func() {
-		defer authz.Close()
-		ctx, cancel := context.WithTimeout(context.Background(), afterStatementTimeout)
-		defer cancel()
-		if _, err := c.server.target.awaitExecution(ctx, id); err != nil {
-			return
-		}
-		if err := commandRunner.RunAll(decision.AfterStatement, nil); err != nil {
-			slog.Warn("athena: catalog refresh after statement failed", "execution_id", id, "error", err)
-		}
-	}()
-}
-
-// applyContexts enforces the admitted instructions on a result page or releases a status response.
-func (c *nativeRequest) applyContexts(status int, body []byte, refs []*enginepb.AthenaContextRef) ([]byte, error) {
-	if status != http.StatusOK {
-		if c.sanitizeDiagnostics(nil) {
-			return redactDiagnostics(body)
-		}
-		return body, nil
-	}
-	if len(refs) == 0 && c.operation != "ListQueryExecutions" {
-		return nil, ErrOriginalContextUnavailable
-	}
-	for _, ref := range refs {
-		record, found := c.contexts[ref.GetResourceId()]
-		if !found || record.ContextId != ref.GetContextId() || record.Owner != c.principal || !bytes.Equal(record.TargetBinding, c.server.target.binding) {
-			return nil, ErrOriginalContextUnavailable
-		}
-	}
-	if c.operation == "ListQueryExecutions" {
-		return filterExecutionIDs(body, refs)
-	}
-	if c.operation != "GetQueryResults" {
-		if c.sanitizeDiagnostics(refs) {
-			return redactDiagnostics(body)
-		}
-		return body, nil
-	}
-	if len(refs) != 1 {
-		return nil, ErrOriginalContextUnavailable
-	}
-	record := c.contexts[refs[0].GetResourceId()]
-	verdict, err := cachedVerdict(record)
-	if err != nil {
-		return nil, err
-	}
-	envelope, err := DecodeEnvelope(body)
-	if err != nil {
-		return nil, ErrResultShape
-	}
-	if envelope.Field("ResultSet") == nil {
-		return nil, ErrResultShape
-	}
-	if verdict.Decision == pb.EnfAction_ALLOW {
-		return body, nil
-	}
-	masked, digest, err := MaskResultPage(body, verdict.Masks, expectedWidth(record), record.MetadataDigest, c.firstPage)
-	if err != nil {
-		return nil, err
-	}
-	if len(record.MetadataDigest) == 0 {
-		bound := proto.Clone(record).(*enginepb.AthenaCachedContext)
-		bound.MetadataDigest = digest
-		if err := c.server.target.contexts.Rebind(c.server.datasourceName(), record, bound); err != nil {
-			return nil, err
-		}
-	}
-	return masked, nil
-}
-
-// filterExecutionIDs keeps only the referenced executions in a listing, in AWS order; the page token passes
-// through so the client keeps paging.
-func filterExecutionIDs(body []byte, refs []*enginepb.AthenaContextRef) ([]byte, error) {
-	envelope, err := DecodeEnvelope(body)
+// FilterListing keeps only the owned executions in a listing, in AWS order; the page token passes through
+// so the client keeps paging.
+func (engine) FilterListing(body []byte, owned map[string]bool) ([]byte, error) {
+	envelope, err := httpdb.DecodeEnvelope(body)
 	if err != nil {
 		return nil, ErrResultShape
 	}
@@ -573,11 +186,7 @@ func filterExecutionIDs(body []byte, refs []*enginepb.AthenaContextRef) ([]byte,
 			return nil, ErrResultShape
 		}
 	}
-	owned := make(map[string]bool, len(refs))
-	for _, ref := range refs {
-		owned[ref.GetResourceId()] = true
-	}
-	kept := make([]string, 0, len(refs))
+	kept := make([]string, 0, len(owned))
 	for _, id := range ids {
 		if owned[id] {
 			kept = append(kept, id)
@@ -590,174 +199,44 @@ func filterExecutionIDs(body []byte, refs []*enginepb.AthenaContextRef) ([]byte,
 	return filtered.Bytes(), nil
 }
 
-// sanitizeDiagnostics reports whether any context this call touches (the referenced ones, else every one
-// the request named) was admitted with diagnostic redaction; an undecodable context redacts too.
-func (c *nativeRequest) sanitizeDiagnostics(refs []*enginepb.AthenaContextRef) bool {
-	records := make([]*enginepb.AthenaCachedContext, 0, len(c.contexts))
-	if refs == nil {
-		for _, record := range c.contexts {
-			records = append(records, record)
-		}
+func (engine) MaskResult(body []byte, verdict *pb.Verdict, expectedWidth *int32, metadataDigest []byte, firstPage bool) ([]byte, []byte, error) {
+	envelope, err := httpdb.DecodeEnvelope(body)
+	if err != nil || envelope.Field("ResultSet") == nil {
+		return nil, nil, ErrResultShape
 	}
-	for _, ref := range refs {
-		if record, found := c.contexts[ref.GetResourceId()]; found {
-			records = append(records, record)
-		}
+	if verdict.Decision == pb.EnfAction_ALLOW {
+		return body, nil, nil
 	}
-	for _, record := range records {
-		verdict, err := cachedVerdict(record)
-		if err != nil || verdict.SanitizeDiagnostics {
-			return true
-		}
-	}
-	return false
+	return MaskResultPage(body, verdict.Masks, expectedWidth, metadataDigest, firstPage)
 }
 
-func expectedWidth(record *enginepb.AthenaCachedContext) *int32 {
-	if record.ExpectedWidth == nil {
-		return nil
-	}
-	width := int32(*record.ExpectedWidth)
-	return &width
+func (e engine) Authorize(authz *spi.Authorizer, commands *relay.ProxyCommandRunner, submission httpdb.Submission) spi.Verdict {
+	return e.target.authorize(authz, commands, submission.Query, submission.Session)
 }
 
-func (c *nativeRequest) descriptor(phase enginepb.NativeAuthorizationPhase, observations []*enginepb.AthenaResourceObservation) *enginepb.AthenaNativeDescriptor {
-	descriptor := nativeDescriptor(c.request, c.operation, c.requestBody, phase)
-	descriptor.Observations = observations
-	for _, record := range c.contexts {
-		descriptor.CachedContexts = append(descriptor.CachedContexts, record)
-	}
-	return descriptor
+func (e engine) NewProxyCommandRunner(authz *spi.Authorizer) (*relay.ProxyCommandRunner, error) {
+	return e.target.newProxyCommandRunner(authz)
 }
 
-// denied carries the control plane's SQL deny reason to the client as a native error.
-type denied struct{ reason string }
-
-func (d *denied) Error() string { return "athena: statement denied: " + d.reason }
-
-func (c *nativeRequest) fail(w http.ResponseWriter, err error) {
-	var deny *denied
-	var fail relay.FailError
-	code, status := "athena.forwarding_failed", http.StatusBadGateway
-	switch {
-	case errors.As(err, &deny):
-		nativeStatementError(w, deny.reason)
-		return
-	case errors.As(err, &fail):
-		c.complete("error")
-		code, status = "athena.decision_failed", http.StatusServiceUnavailable
-	case errors.Is(err, ErrUnauthorized):
-		code, status = "athena.request_denied", http.StatusForbidden
-	case errors.Is(err, errAuthorizationUnavailable):
-		code, status = "athena.authorization_unavailable", http.StatusServiceUnavailable
-	case errors.Is(err, ErrOriginalContextUnavailable):
-		code, status = "athena.original_context_unavailable", http.StatusConflict
-	case errors.Is(err, ErrBodyTooLarge):
-		code, status = "athena.request_too_large", http.StatusRequestEntityTooLarge
-	case errors.Is(err, ErrResultShape), errors.Is(err, relay.ErrMaskUnbound):
-		code, status = "athena.result_unenforceable", http.StatusBadGateway
-	}
-	if c.decision != nil && c.operation == "StartQueryExecution" {
-		c.complete("error")
-	}
-	nativeError(w, status, code)
+func (e engine) SubmittedAfter(ctx context.Context, id string, instant time.Time) (bool, error) {
+	return e.target.submittedAfter(ctx, id, instant)
 }
 
-// complete reports a submission's outcome once; later calls are no-ops.
-func (c *nativeRequest) complete(status string) {
-	if c.decision == nil || c.authz == nil {
-		return
-	}
-	completion(c.server.client, c.decision, status, c.started)
-	c.decision = nil
+func (e engine) AwaitExecution(ctx context.Context, id string) error {
+	_, err := e.target.awaitExecution(ctx, id)
+	return err
 }
 
-func (c *nativeRequest) release() {
-	if c.authz != nil {
-		c.authz.Close()
-		c.authz, c.commandRunner = nil, nil
-	}
-}
-
-func (s *nativeServer) authorize(ctx context.Context, token, clientAddr string, descriptor *enginepb.AthenaNativeDescriptor) (*pb.RequestAuthorizationResult, *enginepb.AthenaNativeInstructions, error) {
-	descriptor.Target = &enginepb.AthenaTarget{Region: s.target.config.region, DefaultWorkgroup: s.target.config.workgroup, DefaultCatalog: s.target.config.catalog, DefaultDatabase: s.target.config.database, Endpoint: s.target.endpoint, TargetBinding: s.target.binding}
-	if proto.Size(descriptor) > 1<<20 {
-		return nil, nil, ErrBodyTooLarge
-	}
-	result, err := s.client.AuthorizeRequest(ctx, &pb.RequestAuthorization{
-		Token: token, ClientAddr: clientAddr,
-		Operation: &pb.RequestAuthorization_Athena{Athena: descriptor},
-	})
-	if err != nil {
-		if st, ok := status.FromError(err); ok {
-			switch st.Code() {
-			case codes.Unauthenticated, codes.PermissionDenied, codes.NotFound, codes.FailedPrecondition, codes.InvalidArgument:
-				return nil, nil, fmt.Errorf("%w: %s", ErrUnauthorized, st.Message())
-			}
-		}
-		return nil, nil, fmt.Errorf("%w: %v", errAuthorizationUnavailable, err)
-	}
-	if result != nil && !result.Allowed && result.DenyReason == "native.context_unavailable" {
-		return nil, nil, ErrOriginalContextUnavailable
-	}
-	if result == nil || !result.Allowed || result.GetAthena() == nil {
-		return nil, nil, ErrUnauthorized
-	}
-	instructions := *result.GetAthena()
-	switch descriptor.Phase {
-	case enginepb.NativeAuthorizationPhase_NATIVE_AUTHORIZATION_PHASE_REQUEST:
-		if instructions.Action != enginepb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_FORWARD_REQUEST &&
-			instructions.Action != enginepb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_REQUIRE_SQL_ADMISSION {
-			return nil, nil, ErrUnauthorized
-		}
-	case enginepb.NativeAuthorizationPhase_NATIVE_AUTHORIZATION_PHASE_RESPONSE:
-		if instructions.Action != enginepb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_RELEASE_METADATA &&
-			instructions.Action != enginepb.AthenaNativeInstruction_ATHENA_NATIVE_INSTRUCTION_APPLY_ORIGINAL_CONTEXT {
-			return nil, nil, ErrUnauthorized
-		}
-	default:
-		return nil, nil, ErrUnauthorized
-	}
-	return result, &instructions, nil
-}
-
-func nativeDescriptor(request *http.Request, operation string, body []byte, phase enginepb.NativeAuthorizationPhase) *enginepb.AthenaNativeDescriptor {
-	descriptor := &enginepb.AthenaNativeDescriptor{Service: "athena", Operation: operation, Method: request.Method, Path: request.URL.Path, RawQuery: request.URL.RawQuery, Body: body, Phase: phase}
-	for name, values := range upstreamHeaders(request.Header) {
-		descriptor.FunctionalHeaders = append(descriptor.FunctionalHeaders, &enginepb.NativeHeader{Name: name, Values: values})
-	}
-	return descriptor
-}
-
-func stripResponseHeader(name string) bool {
-	switch strings.ToLower(name) {
-	case "connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade", "content-length", "set-cookie":
-		return true
-	}
-	return false
-}
-
-func nativeError(w http.ResponseWriter, status int, code string) {
+func (engine) WriteError(w http.ResponseWriter, status int, code string) {
 	w.Header().Set("Content-Type", "application/x-amz-json-1.1")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]string{"__type": "AccessDeniedException", "Message": code})
 }
 
-// nativeStatementError renders a SQL deny the way Athena reports a rejected statement, so clients surface the
-// reason instead of retrying.
-func nativeStatementError(w http.ResponseWriter, reason string) {
+// WriteDenied renders a SQL deny the way Athena reports a rejected statement, so clients surface the reason
+// instead of retrying.
+func (engine) WriteDenied(w http.ResponseWriter, reason string) {
 	w.Header().Set("Content-Type", "application/x-amz-json-1.1")
 	w.WriteHeader(http.StatusBadRequest)
 	_ = json.NewEncoder(w).Encode(map[string]string{"__type": "InvalidRequestException", "AthenaErrorCode": "PROXY_MONSTER_DENIED", "Message": "proxy-monster denied this statement: " + reason})
-}
-
-var _ spi.WireServer = (*nativeServer)(nil)
-
-// datasourceName keys the enforcement-context cache; the control-plane client is bound to exactly one
-// datasource, so the name is read from it rather than configured twice.
-func (s *nativeServer) datasourceName() string {
-	if named, ok := s.client.(interface{ DatasourceName() string }); ok {
-		return named.DatasourceName()
-	}
-	return ""
 }

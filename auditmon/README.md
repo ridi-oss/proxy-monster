@@ -41,6 +41,12 @@ finding halts export and signing so the monitor never witnesses a chain it has
 proven tampered. See [When the chain breaks](#when-the-chain-breaks) for what an
 operator does next.
 
+Each poll reuses the signature verdicts the process already holds, so it reads
+and verifies only anchors it has not seen. The full pass asks the signer about
+every anchor and acceptance again. A key that is disabled, or dropped from
+`allowed_key_ids` and restarted, therefore stops vouching for its anchors within
+one `full_verify_interval`, not on the next poll.
+
 Exported events carry `SHA-256(statement)` only — never the SQL text — so a
 statement literal can never reach the permanent WORM/SIEM store; the full SQL
 stays in the in-VPC `audit_event` row behind the `audit.read` gate, and the hash

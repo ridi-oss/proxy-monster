@@ -10,12 +10,11 @@ import (
 	mysqldriver "github.com/go-sql-driver/mysql"
 	"github.com/ridi-oss/proxy-monster/analyzer/engines"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
-	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
 )
 
 // OpenPool opens a database/sql handle to a MySQL target (5s connect / 30s socket).
-func OpenPool(config spi.TargetConfig) (*sql.DB, error) {
+func OpenPool(config sqldb.Settings) (*sql.DB, error) {
 	cfg := mysqldriver.NewConfig()
 	cfg.User = config.User
 	cfg.Passwd = config.Password

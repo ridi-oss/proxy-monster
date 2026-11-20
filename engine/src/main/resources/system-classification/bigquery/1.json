@@ -1,0 +1,27 @@
+{
+  "engine": "bigquery",
+  "series": "1",
+  "manifestVersion": 1,
+  "curatedThrough": "GoogleSQL function index, 2026-11",
+  "logicalFunctionSchemas": [{ "catalog": "*", "schema": "ai" }],
+  "functions": [
+    {
+      "schema": "ai",
+      "name": "generate",
+      "tag": "system:critical",
+      "reason": "Sends its arguments, masked columns in cleartext, to a model endpoint outside the target. Critical until a system:egress tag exists."
+    },
+    {
+      "schema": "ai",
+      "name": "embed",
+      "tag": "system:critical",
+      "reason": "Sends its arguments, masked columns in cleartext, to a model endpoint outside the target. Critical until a system:egress tag exists."
+    },
+    {
+      "schema": "ai",
+      "name": "similarity",
+      "tag": "system:critical",
+      "reason": "Sends its arguments, masked columns in cleartext, to a model endpoint outside the target. Critical until a system:egress tag exists."
+    }
+  ]
+}

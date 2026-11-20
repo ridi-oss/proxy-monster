@@ -725,4 +725,100 @@ class NotificationServiceDbTest {
             loop.cancel()
         }
     }
+
+    private fun withChannel(dms: FakeTransport, channel: FakeTransport, approver: String) = NotificationService(
+        store = store,
+        recipients = RecipientResolver(fx.authz, fx.roleResolver) { listOf(approver) },
+        transports = listOf(dms, channel),
+        accessStore = fx.accessStore,
+        queryResultStore = null,
+        webBaseUrl = "https://console.example",
+        disclosure = StatementDisclosure.FULL,
+        defaultLocale = "en",
+    )
+
+    @Test
+    fun `a private request sends no notification`() = runBlocking {
+        val approver = "approver@example.com"
+        fx.policyStore.createAssignment(RoleAssignmentInput(approver, adminRoleId()))
+        val channel = FakeTransport(name = "chan", channel = "C123")
+        val routing = withChannel(transport, channel, approver)
+        val task = fx.accessStore.createQueryRequest(
+            principal = "req@example.com", datasourceId = fx.datasource.id, statements = listOf("SELECT 1"),
+            denyReason = null, sourceDecisionId = null, reason = "r", title = "t", evaluatedDecision = "ALLOW",
+            carriesProtectedLiteral = false, private = true,
+        )
+        fx.dataSource.connection.use { c -> routing.emitRequested(c, task.id, task.principal, fx.datasource, null, private = true) }
+        routing.drainOnce()
+
+        assertTrue(channel.delivered.isEmpty())
+        assertTrue(transport.delivered.isEmpty())
+    }
+
+    @Test
+    fun `a notification queued before the request went private is not sent`() = runBlocking {
+        val approver = "approver@example.com"
+        fx.policyStore.createAssignment(RoleAssignmentInput(approver, adminRoleId()))
+        val routing = serviceWith(StatementDisclosure.FULL, candidates = listOf(approver))
+        val task = newTask()
+        fx.dataSource.connection.use { c ->
+            routing.emitRequested(c, task.id, task.principal, fx.datasource, null)
+            c.prepareStatement("UPDATE access_request SET private = true WHERE id = ?").use { it.setLong(1, task.id); it.executeUpdate() }
+        }
+        routing.drainOnce()
+
+        assertTrue(transport.delivered.isEmpty(), "got: ${transport.delivered}")
+    }
+
+    @Test
+    fun `a private request's surviving threads get no replies`() = runBlocking {
+        val approver = "approver@example.com"
+        fx.policyStore.createAssignment(RoleAssignmentInput(approver, adminRoleId()))
+        val dms = FakeTransport(supportsReplies = true)
+        val routing = withChannel(dms, FakeTransport(name = "chan", channel = "C123", supportsReplies = true), approver)
+        val task = newTask()
+        fx.dataSource.connection.use { c -> routing.emitRequested(c, task.id, task.principal, fx.datasource, null) }
+        routing.drainOnce()
+
+        fx.dataSource.connection.use { c ->
+            c.prepareStatement("UPDATE access_request SET private = true WHERE id = ?").use { it.setLong(1, task.id); it.executeUpdate() }
+            RequestEvents.record(c, task.id, RequestEventKind.COMMENT, "sam@x", "console", "still there?")
+        }
+        routing.drainOnce()
+
+        assertTrue(dms.replies.isEmpty(), "got: ${dms.replies}")
+    }
+
+    @Test
+    fun `making a request private deletes its channel message and its DMs`() = runBlocking {
+        val approver = "approver@example.com"
+        fx.policyStore.createAssignment(RoleAssignmentInput(approver, adminRoleId()))
+        val dms = FakeTransport(supportsReplies = true)
+        val channel = FakeTransport(name = "chan", channel = "C123", supportsReplies = true)
+        val routing = withChannel(dms, channel, approver)
+        val task = newTask()
+        fx.dataSource.connection.use { c -> routing.emitRequested(c, task.id, task.principal, fx.datasource, null) }
+        routing.drainOnce()
+        val sent = dms.delivered.size
+
+        fx.dataSource.connection.use { c ->
+            c.prepareStatement("UPDATE access_request SET private = true WHERE id = ?").use { it.setLong(1, task.id); it.executeUpdate() }
+        }
+        requestNotifier(fx.accessStore, routing)(task.id, "privatized", null)
+        routing.drainOnce()
+
+        assertEquals(listOf("thread:C123:task.requested"), channel.deletedThreads)
+        assertTrue("thread:addr:$approver:task.requested" in dms.deletedThreads)
+        assertEquals(dms.delivered.map { "thread:${it.to}:${it.event.wire}" }.toSet(), dms.deletedThreads.toSet())
+        assertNull(store.externalRef(task.id, "chan", "C123", NotificationKind.APPROVER))
+        assertNull(store.externalRef(task.id, dms.name, approver, NotificationKind.APPROVER))
+
+        val later = fx.accessStore.getRequest(task.id)!!
+        fx.dataSource.connection.use { c -> routing.emit(c, NotificationEvent.TASK_CANCELLED, later) }
+        routing.drainOnce()
+        assertEquals(1, channel.delivered.size, "a private request's later events send nothing")
+        assertEquals(sent, dms.delivered.size)
+        assertTrue(dms.updated.isEmpty())
+    }
+
 }

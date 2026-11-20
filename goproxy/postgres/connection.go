@@ -28,7 +28,7 @@ type connection struct {
 	generation     uint64
 	currentCatalog string
 	authz          *spi.Authorizer
-	commandRunner  *sqldb.ProxyCommandRunner
+	commandRunner  *relay.ProxyCommandRunner
 	guard          spi.ExecGuard
 	lastTxStatus   byte
 	pendingDirty   bool
@@ -57,7 +57,7 @@ var errTargetDbUnavailable = errors.New("target DB unavailable")
 // builds the connection on it, for a wire client and an editor session alike. It also returns the target's startup
 // parameters, which a wire client is sent.
 func (t *target) openConnection(ctx context.Context, authz *spi.Authorizer, guard spi.ExecGuard, startup map[string]string, wrap func(net.Conn) net.Conn) (*connection, []pgproto3.ParameterStatus, error) {
-	generation, ok := wire.NextBackendGeneration()
+	generation, ok := t.generations.Next()
 	if !ok {
 		return nil, nil, errors.New("backend generation out of range")
 	}
@@ -169,7 +169,7 @@ func (c *connection) newSession() (*engines.Session, error) {
 	return sqldb.NewSession(Queries, c.runProbe)
 }
 
-func (c *connection) newCommandRunner(probe func(sql string, expectedColumns int) ([][]*string, error)) *sqldb.ProxyCommandRunner {
+func (c *connection) newCommandRunner(probe func(sql string, expectedColumns int) ([][]*string, error)) *relay.ProxyCommandRunner {
 	commandRunner := sqldb.NewProxyCommandRunner(Queries, c.session, c.authz.ConnectionID(), c.generation, probe, c.authz.Client().PushSchemaFragment)
 	commandRunner.Catalog = c.currentCatalog
 	return commandRunner

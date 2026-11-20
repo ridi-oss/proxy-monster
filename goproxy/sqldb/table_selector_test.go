@@ -8,7 +8,7 @@ import (
 
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
-	"github.com/ridi-oss/proxy-monster/goproxy/spi"
+	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
 )
 
 func TestMySQLQualifiedPublicSchemaIsLiteral(t *testing.T) {
@@ -27,7 +27,7 @@ func TestMySQLQualifiedPublicSchemaIsLiteral(t *testing.T) {
 			}
 		})
 	}
-	target := openTarget(t, engines.MySQL, spi.TargetConfig{Host: database.Host, Port: database.Port, Db: "app", User: database.User, Password: database.Password})
+	target := openTarget(t, engines.MySQL, sqldb.Settings{Host: database.Host, Port: database.Port, Db: "app", User: database.User, Password: database.Password})
 	if _, err := target.ReadTableDetail(context.Background(), &enginepb.ObjectRef{Schema: "app", Table: "users"}); err == nil {
 		t.Fatal("blank catalog was answered")
 	}
@@ -71,7 +71,7 @@ func TestMySQLTableDetailNamesAreCanonical(t *testing.T) {
 			}
 		}
 	})
-	target := openTarget(t, engines.MySQL, spi.TargetConfig{Host: database.Host, Port: database.Port, Db: "app", User: database.User, Password: database.Password})
+	target := openTarget(t, engines.MySQL, sqldb.Settings{Host: database.Host, Port: database.Port, Db: "app", User: database.User, Password: database.Password})
 	detail, err := target.ReadTableDetail(context.Background(), &enginepb.ObjectRef{Catalog: "def", Schema: "app", Table: "Mixed"})
 	if err != nil || detail == nil {
 		t.Fatalf("detail: %v %v", detail, err)

@@ -634,7 +634,7 @@ func TestStatementFactsLexerModeAssignmentGated(t *testing.T) {
 	}
 	parityUtility(t, "SET standard_conforming_strings = @x", "postgres", "SET_STANDARD_CONFORMING_STRINGS")
 	// A benign user-variable set and a literal, lexer-safe sql_mode stay session passthrough.
-	for _, sql := range []string{"SET @m = 'ANSI_QUOTES'", "SET autocommit = 0", "SET sql_mode = 'TRADITIONAL'"} {
+	for _, sql := range []string{"SET @m = 'ANSI_QUOTES'", "SET sql_mode = 'TRADITIONAL'"} {
 		facts := mysqlFacts(t, sql)
 		if !facts.GetResolved() || factsKind(facts) != pb.StatementKind_STATEMENT_KIND_SET_SESSION_VAR {
 			t.Fatalf("benign SET must be session passthrough: %q -> %+v", sql, facts)

@@ -184,8 +184,8 @@ captured on the connection's own held target-DB connection (design:
   (`;;`) runs nothing, where MySQL runs the statements before it. A MySQL stored
   procedure that returns result sets fails (1312): the proxy relays one result
   per statement.
-- 🟡 A datasource behind the edge router (`pm-edge`) requires wire TLS: the
-  edge picks the datasource from the TLS SNI, so a plaintext client is refused.
+- 🟡 A datasource behind the edge router (`pm-edge`) requires wire TLS: the edge
+  picks the datasource from the TLS SNI, so a plaintext client is refused.
   Plaintext wire is not recommended for routed datasources; reach a proxy
   directly on its own port if it must stay plaintext.
 - 🟡 A plaintext PostgreSQL `CancelRequest` is not routed through the edge: it
@@ -194,9 +194,9 @@ captured on the connection's own held target-DB connection (design:
   is routed like any other connection.
 - 🟡 The edge accepts connections before any authentication, so clients that
   stall in the pre-TLS exchange can fill `PM_EDGE_MAX_HANDSHAKES` and keep new
-  connections to every routed datasource out for up to 15 seconds at a time.
-  One client address holds at most `PM_EDGE_MAX_HANDSHAKES_PER_SOURCE` of them,
-  and spliced sessions do not count, so it takes many source addresses at once.
+  connections to every routed datasource out for up to 15 seconds at a time. One
+  client address holds at most `PM_EDGE_MAX_HANDSHAKES_PER_SOURCE` of them, and
+  spliced sessions do not count, so it takes many source addresses at once.
   Rate-limit or filter in front of the edge if it faces untrusted networks.
 - 🟡 Restarting the edge cuts the sessions spliced through it once
   `PM_EDGE_DRAIN_TIMEOUT` passes. The edge does not terminate TLS, so it cannot

@@ -321,8 +321,8 @@ configured per proxy under `PM_TARGET_*`.
 
 Every datasource proxy otherwise needs its own wire port on every hop in front
 of it (a VPN service port, a load-balancer listener). `pm-edge` lets many
-datasources share one entry port per engine. It is a separate binary in the
-same image (`/usr/local/bin/pm-edge`; set it as the container's entrypoint or
+datasources share one entry port per engine. It is a separate binary in the same
+image (`/usr/local/bin/pm-edge`; set it as the container's entrypoint or
 command). The port a connection arrives on picks the engine, and the host name
 in the client's TLS ClientHello (SNI) picks the datasource proxy. The edge never
 terminates TLS: it answers the engine's pre-TLS exchange, reads the ClientHello,
@@ -353,8 +353,8 @@ no datasource settings.
   these peers, as on a datasource proxy's PROXY protocol port; any other peer is
   closed at accept.
 - `PM_EDGE_HEALTH_PORT` — _optional_. A plain TCP port that accepts and closes,
-  for load-balancer health checks. Unset disables it. The image's
-  `HEALTHCHECK` probes it when set.
+  for load-balancer health checks. Unset disables it. The image's `HEALTHCHECK`
+  probes it when set.
 - `PM_EDGE_MAX_CONNECTIONS` — _optional_. The most connections the edge holds at
   once, across every listener and datasource. A connection over the limit is
   closed at accept and logged with outcome `at_capacity`. Default `1024`.
@@ -366,12 +366,11 @@ no datasource settings.
 - `PM_EDGE_MAX_HANDSHAKES_PER_SOURCE` — _optional_. The most pre-TLS exchanges
   one client address (the source in the PROXY header) may hold at once. A
   connection over the limit is closed and logged with outcome
-  `source_at_capacity`. Default `32`; it cannot exceed
-  `PM_EDGE_MAX_HANDSHAKES`.
+  `source_at_capacity`. Default `32`; it cannot exceed `PM_EDGE_MAX_HANDSHAKES`.
 - `PM_EDGE_DRAIN_TIMEOUT` — _optional_. On `SIGTERM` the edge stops accepting,
   waits this long for spliced sessions to end, and then closes the rest. Default
-  `10s`. Set it a little below the task's stop timeout (ECS
-  `stopTimeout`, Kubernetes `terminationGracePeriodSeconds`).
+  `10s`. Set it a little below the task's stop timeout (ECS `stopTimeout`,
+  Kubernetes `terminationGracePeriodSeconds`).
 
 Each routed datasource proxy needs:
 
@@ -391,9 +390,9 @@ MySQL gets error 1045 (`28000`), PostgreSQL a `FATAL` `28000`. A ClientHello
 with no SNI or an unrouted host gets a TLS `unrecognized_name` alert. When the
 chosen backend cannot be reached or refuses the connection, the client gets a
 TLS `internal_error` alert, and the edge's log line carries the backend's
-reason. The edge gives each connection 15 seconds to finish the pre-TLS exchange.
-It logs one line per connection: client, kind, SNI, backend, bytes each way,
-duration, and outcome. Connections refused at accept (`at_capacity`,
+reason. The edge gives each connection 15 seconds to finish the pre-TLS
+exchange. It logs one line per connection: client, kind, SNI, backend, bytes
+each way, duration, and outcome. Connections refused at accept (`at_capacity`,
 `handshakes_at_capacity`, `untrusted_peer`) are logged before the PROXY header
 is read, so their `peer` is the hop in front of the edge, not the client; those
 lines are sampled to one a second, with a `suppressed` count.

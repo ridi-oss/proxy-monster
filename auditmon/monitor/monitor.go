@@ -462,7 +462,14 @@ type evidence struct {
 
 // witnesses reads and signature-verifies the off-box evidence. An unsigned or badly-signed acceptance is NOT
 // honored, so writing an acceptance object is useless to anyone who cannot sign with the monitor's key.
-func (m *Monitor) witnesses(what string, everyAnchor bool) (evidence, error) {
+type anchorScope int
+
+const (
+	newestAndNamedAnchors anchorScope = iota
+	everyAnchor
+)
+
+func (m *Monitor) witnesses(what string, scope anchorScope) (evidence, error) {
 	anchors, err := m.objects.Anchors()
 	if err != nil {
 		return evidence{}, fmt.Errorf("monitor: %s: read anchors: %w", what, err)
@@ -473,12 +480,14 @@ func (m *Monitor) witnesses(what string, everyAnchor bool) (evidence, error) {
 	}
 	named := make(map[int64]bool, len(records))
 	for _, r := range records {
-		named[r.DivergentID] = true
+		if _, ok, err := m.acceptanceVerify(r); err == nil && ok {
+			named[r.DivergentID] = true
+		}
 	}
 	out := evidence{complete: true}
 	for i := len(anchors) - 1; i >= 0; i-- {
 		a := anchors[i]
-		if !everyAnchor && len(out.checks) > 0 && !named[a.UpToID] {
+		if scope == newestAndNamedAnchors && len(out.checks) > 0 && !named[a.UpToID] {
 			continue
 		}
 		head, valid, verr := m.anchorVerify(a)
@@ -492,7 +501,7 @@ func (m *Monitor) witnesses(what string, everyAnchor bool) (evidence, error) {
 			continue
 		}
 		if !valid {
-			// A checkpoint object that does not validate is not a harmless stray. It occupies the key where a
+			// An invalid checkpoint above the newest valid one is not a harmless stray. It occupies the key where a
 			// real witness belongs, and on a versioned store it may be a forgery placed over one — so the
 			// witness it should have provided is missing from this pass. Treat the evidence as incomplete
 			// rather than quietly cross-checking against whatever older anchors remain, which is what would let
@@ -526,15 +535,20 @@ func (m *Monitor) witnesses(what string, everyAnchor bool) (evidence, error) {
 }
 
 func (m *Monitor) judge(ctx context.Context, what string) (evidence, *verify.Finding, []verify.Finding, error) {
-	w, f, waived, err := m.judgeAgainst(ctx, what, false)
+	w, f, waived, err := m.judgeAgainst(ctx, what, newestAndNamedAnchors)
 	if err != nil || f == nil {
 		return w, f, waived, err
 	}
-	return m.judgeAgainst(ctx, what, true)
+	ew, ef, ewaived, err := m.judgeAgainst(ctx, what, everyAnchor)
+	if err != nil {
+		m.log.Error("monitor: "+what+" could not re-check every anchor; reporting the first finding", "err", err)
+		return w, f, waived, nil
+	}
+	return ew, ef, ewaived, nil
 }
 
-func (m *Monitor) judgeAgainst(ctx context.Context, what string, everyAnchor bool) (evidence, *verify.Finding, []verify.Finding, error) {
-	w, err := m.witnesses(what, everyAnchor)
+func (m *Monitor) judgeAgainst(ctx context.Context, what string, scope anchorScope) (evidence, *verify.Finding, []verify.Finding, error) {
+	w, err := m.witnesses(what, scope)
 	if err != nil {
 		return evidence{}, nil, nil, err
 	}

@@ -39,7 +39,19 @@ func (s *countingSigner) Verify(digest, sig []byte, keyID string) (bool, error) 
 
 type checkpointGetCounter struct {
 	worm.ObjectStore
-	gets int
+	gets       int
+	limitLists bool
+	listBudget int
+}
+
+func (s *checkpointGetCounter) ListObjects(prefix string) ([]worm.ObjectInfo, error) {
+	if s.limitLists && strings.HasPrefix(prefix, "checkpoints/") {
+		if s.listBudget == 0 {
+			return nil, errors.New("s3: list timed out")
+		}
+		s.listBudget--
+	}
+	return s.ObjectStore.ListObjects(prefix)
 }
 
 func (s *checkpointGetCounter) Get(key string) ([]byte, error) {
@@ -214,6 +226,50 @@ func TestARewriteIsReportedAtTheLowestAnchorItReaches(t *testing.T) {
 	if len(f) != 1 || f[0].Reason != verify.ReasonAnchorHeadMismatch || f[0].DivergentID != anchors[0].UpToID {
 		t.Fatalf("findings = %+v, want one %s at id %d, the lowest anchor the rewrite reaches",
 			f, verify.ReasonAnchorHeadMismatch, anchors[0].UpToID)
+	}
+}
+
+func TestAFindingSurvivesAFailedRecheckOfEveryAnchor(t *testing.T) {
+	fx := newCostFixture(t)
+	anchors := fx.withThreeAnchors(t)
+	fx.rewriteFromGenesis(t)
+
+	fx.store.limitLists, fx.store.listBudget = true, 1
+	if err := fx.m.FullVerify(fx.ctx); err != nil {
+		t.Fatalf("full verify: %v", err)
+	}
+	newest := anchors[len(anchors)-1].UpToID
+	f := fx.reporter.findings
+	if len(f) != 1 || f[0].Reason != verify.ReasonAnchorHeadMismatch || f[0].DivergentID != newest {
+		t.Fatalf("findings = %+v, want the first pass's %s at id %d", f, verify.ReasonAnchorHeadMismatch, newest)
+	}
+	if !fx.m.Halted() {
+		t.Fatal("a proven rewrite did not halt the monitor because re-checking every anchor failed")
+	}
+}
+
+func TestAnUnsignedAcceptanceDoesNotWidenTheFullVerify(t *testing.T) {
+	fx := newCostFixture(t)
+	anchors := fx.withThreeAnchors(t)
+	junk := worm.Acceptance{
+		DivergentID: anchors[0].UpToID, Reason: verify.ReasonAnchorHeadMismatch,
+		Expected: "aa", Actual: "bb", ResumeHash: "bb",
+		Signature: base64.StdEncoding.EncodeToString([]byte("forged")), KeyID: "k1",
+	}
+	if err := worm.WriteAcceptance(fx.store, junk); err != nil {
+		t.Fatalf("write acceptance: %v", err)
+	}
+	if err := fx.m.FullVerify(fx.ctx); err != nil {
+		t.Fatalf("full verify: %v", err)
+	}
+
+	fx.resetCounts()
+	if err := fx.m.FullVerify(fx.ctx); err != nil {
+		t.Fatalf("full verify: %v", err)
+	}
+	if fx.signer.verifies != 2 {
+		t.Fatalf("a full verify with one unsigned acceptance made %d Verify calls, want 2 (the newest anchor and the acceptance)",
+			fx.signer.verifies)
 	}
 }
 

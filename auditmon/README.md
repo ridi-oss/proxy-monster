@@ -44,11 +44,11 @@ operator does next.
 Each row's hash covers the row before it, so the newest valid anchor witnesses
 every row at or below it: one anchor is enough to catch a rewrite or a
 truncation anywhere beneath it. The full pass therefore checks that anchor, any
-invalid anchors above it, and the anchors an acceptance names. Only when it
-finds a divergence does it check every anchor, to report the same lowest anchor
-the rewrite reaches and to honor acceptances exactly as before. An invalid
-object at an older anchor key does not keep a halt latched; one above the newest
-valid anchor still does.
+invalid anchors above it, and the anchors a signed acceptance names. Only when
+it finds a divergence does it check every anchor, to report the lowest anchor
+the rewrite reaches and to honor every acceptance; if that second check fails,
+the pass reports what the first one found. An invalid object at an older anchor
+key does not keep a halt latched; one above the newest valid anchor still does.
 
 Each poll reuses the signature verdicts the process already holds, so it reads
 and verifies only anchors it has not seen. The full pass asks the signer about

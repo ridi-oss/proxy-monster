@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -171,7 +172,7 @@ func (m *Monitor) selectBaseline() (baseline store.ChainHead, present bool, find
 		verifyErr   error
 		verifyErrID int64
 	)
-	for i := range anchors {
+	for i := len(anchors) - 1; i >= 0 && best == nil; i-- {
 		a := anchors[i]
 		head, valid, verr := m.anchorVerify(a)
 		switch {
@@ -396,7 +397,7 @@ func (m *Monitor) signAnchor(head store.ChainHead) error {
 }
 
 // FullVerify re-walks the entire chained trail from the pinned genesis and cross-checks the recomputed head
-// at every valid signed anchor against the head that anchor witnessed. It runs on boot and on
+// at the newest valid signed anchor against the head that anchor witnessed. It runs on boot and on
 // full_verify_interval, alongside the per-poll incremental tail verify, so a rewrite of a row at or below an
 // already-anchored head — which the tail walk (rows after the anchor only) never sees — is caught. A
 // partial rewrite breaks the row-walk; an internally-consistent full rewrite from genesis passes the
@@ -414,23 +415,9 @@ func (m *Monitor) signAnchor(head store.ChainHead) error {
 func (m *Monitor) FullVerify(ctx context.Context) error {
 	m.anchorVerdicts.forget()
 	m.acceptanceVerdicts.forget()
-	w, err := m.witnesses("full verify")
+	w, f, waived, err := m.judge(ctx, "full verify")
 	if err != nil {
 		return err
-	}
-
-	// With every off-box anchor unusable there is nothing left to contradict an internally-consistent rewrite,
-	// so treat that as the finding it is rather than letting a clean row-walk pass.
-	f, trustErr := m.anchorTrustFinding(w)
-	if trustErr != nil {
-		return trustErr
-	}
-	var waived []verify.Finding
-	if f == nil {
-		f, waived, err = verify.VerifyFromGenesisAccepting(ctx, m.reader, m.genesis, w.checks, w.accepted)
-		if err != nil {
-			return fmt.Errorf("monitor: full verify: %w", err)
-		}
 	}
 	for _, wf := range waived {
 		m.log.Warn("monitor: chain divergence stands, previously accepted by an operator",
@@ -475,13 +462,25 @@ type evidence struct {
 
 // witnesses reads and signature-verifies the off-box evidence. An unsigned or badly-signed acceptance is NOT
 // honored, so writing an acceptance object is useless to anyone who cannot sign with the monitor's key.
-func (m *Monitor) witnesses(what string) (evidence, error) {
+func (m *Monitor) witnesses(what string, everyAnchor bool) (evidence, error) {
 	anchors, err := m.objects.Anchors()
 	if err != nil {
 		return evidence{}, fmt.Errorf("monitor: %s: read anchors: %w", what, err)
 	}
+	records, err := m.objects.Acceptances()
+	if err != nil {
+		return evidence{}, fmt.Errorf("monitor: %s: read acceptances: %w", what, err)
+	}
+	named := make(map[int64]bool, len(records))
+	for _, r := range records {
+		named[r.DivergentID] = true
+	}
 	out := evidence{complete: true}
-	for _, a := range anchors {
+	for i := len(anchors) - 1; i >= 0; i-- {
+		a := anchors[i]
+		if !everyAnchor && len(out.checks) > 0 && !named[a.UpToID] {
+			continue
+		}
 		head, valid, verr := m.anchorVerify(a)
 		if verr != nil {
 			// Cannot confirm this one anchor now; skip cross-checking it rather than aborting the whole pass.
@@ -505,11 +504,8 @@ func (m *Monitor) witnesses(what string) (evidence, error) {
 		}
 		out.checks = append(out.checks, verify.AnchorCheck{UpToID: a.UpToID, HeadHash: head})
 	}
+	slices.Reverse(out.checks)
 
-	records, err := m.objects.Acceptances()
-	if err != nil {
-		return evidence{}, fmt.Errorf("monitor: %s: read acceptances: %w", what, err)
-	}
 	for _, r := range records {
 		a, ok, verr := m.acceptanceVerify(r)
 		if verr != nil {
@@ -527,6 +523,29 @@ func (m *Monitor) witnesses(what string) (evidence, error) {
 		out.accepted = append(out.accepted, a)
 	}
 	return out, nil
+}
+
+func (m *Monitor) judge(ctx context.Context, what string) (evidence, *verify.Finding, []verify.Finding, error) {
+	w, f, waived, err := m.judgeAgainst(ctx, what, false)
+	if err != nil || f == nil {
+		return w, f, waived, err
+	}
+	return m.judgeAgainst(ctx, what, true)
+}
+
+func (m *Monitor) judgeAgainst(ctx context.Context, what string, everyAnchor bool) (evidence, *verify.Finding, []verify.Finding, error) {
+	w, err := m.witnesses(what, everyAnchor)
+	if err != nil {
+		return evidence{}, nil, nil, err
+	}
+	if f, err := m.anchorTrustFinding(w); err != nil || f != nil {
+		return w, f, nil, err
+	}
+	f, waived, err := verify.VerifyFromGenesisAccepting(ctx, m.reader, m.genesis, w.checks, w.accepted)
+	if err != nil {
+		return evidence{}, nil, nil, fmt.Errorf("monitor: %s: %w", what, err)
+	}
+	return w, f, waived, nil
 }
 
 // acceptanceVerify reports whether an acceptance record is genuinely signed by a configured key. As with
@@ -618,18 +637,9 @@ type Diagnosis struct {
 // judged intact — the off-box witness is exactly what proves an internally-consistent rewrite — so that is
 // reported as a finding rather than letting a clean row-walk print "intact".
 func (m *Monitor) Diagnose(ctx context.Context) (Diagnosis, error) {
-	w, err := m.witnesses("diagnose")
+	_, f, waived, err := m.judge(ctx, "diagnose")
 	if err != nil {
 		return Diagnosis{}, err
-	}
-	if f, err := m.anchorTrustFinding(w); err != nil {
-		return Diagnosis{}, err
-	} else if f != nil {
-		return Diagnosis{Finding: f}, nil
-	}
-	f, waived, err := verify.VerifyFromGenesisAccepting(ctx, m.reader, m.genesis, w.checks, w.accepted)
-	if err != nil {
-		return Diagnosis{}, fmt.Errorf("monitor: diagnose: %w", err)
 	}
 	return Diagnosis{Finding: f, Accepted: waived}, nil
 }

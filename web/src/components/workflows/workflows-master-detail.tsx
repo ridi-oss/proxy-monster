@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { ChevronDown, Inbox, Plus, ShieldCheck } from 'lucide-react';
@@ -41,28 +41,21 @@ function DetailScroll({ children }: { children: React.ReactNode }) {
   );
 }
 
-function DetailPanel({
+/** The right-hand pane each workflows route renders beside the list `WorkflowsMasterDetail` keeps mounted. */
+export function WorkflowDetailPanel({
   selectedId,
   compose,
   auxiliary,
-  lists,
-  roleRequestsById,
-  roleLookupLoading,
-  roleLookupError,
-  onCreated,
-  onCancel,
 }: {
   selectedId?: number | null;
   compose?: WorkflowComposeDraft | null;
   auxiliary?: 'ACTIVE_GRANTS' | null;
-  lists: ReturnType<typeof useWorkflowRequests>['lists'];
-  roleRequestsById: ReturnType<typeof useWorkflowRequests>['roleRequestsById'];
-  roleLookupLoading: boolean;
-  roleLookupError: unknown;
-  onCreated: (request: AccessRequest) => void;
-  onCancel: () => void;
 }) {
   const t = useTranslations('Workflows');
+  const router = useRouter();
+  const { lists, roleRequestsById, roleLookupLoading, roleLookupError } = useWorkflowRequests();
+  const onCreated = (request: AccessRequest) => router.push(`/workflows/${request.id}`);
+  const onCancel = () => router.push('/workflows');
   const invalidSelectedId = selectedId != null && (!Number.isFinite(selectedId) || selectedId <= 0);
   const composeError = compose?.kind === 'QUERY' ? compose.sourceDecisionError : null;
 
@@ -166,20 +159,17 @@ function DetailPanel({
   );
 }
 
-export function WorkflowsMasterDetail({
-  selectedId,
-  compose,
-  auxiliary,
-}: {
-  selectedId?: number | null;
-  compose?: WorkflowComposeDraft | null;
-  auxiliary?: 'ACTIVE_GRANTS' | null;
-}) {
+/**
+ * The header and request list every workflows route shares. It belongs in the workflows layout: a layout
+ * stays mounted across navigation between its pages, so the selected tab and the list's scroll survive
+ * opening a request.
+ */
+export function WorkflowsMasterDetail({ children }: { children: React.ReactNode }) {
   const t = useTranslations('Workflows');
-  const router = useRouter();
+  const params = useParams<{ id?: string }>();
+  const selectedId = params.id == null ? null : Number(params.id);
   const [tab, setTab] = useState<WorkflowTab>('all');
-  const { lists, incomingCount, roleRequestsById, isLoading, error, roleLookupLoading, roleLookupError } =
-    useWorkflowRequests();
+  const { lists, incomingCount, isLoading, error } = useWorkflowRequests();
   const entries = lists[tab];
   const tabs: { value: WorkflowTab; label: string }[] = [
     { value: 'all', label: t('masterDetail.tabs.all') },
@@ -192,10 +182,6 @@ export function WorkflowsMasterDetail({
       : tab === 'outgoing'
         ? { title: t('masterDetail.empty.outgoingTitle'), hint: t('masterDetail.empty.outgoingHint') }
         : { title: t('masterDetail.empty.allTitle'), hint: t('masterDetail.empty.allHint') };
-
-  const handleCreated = (request: AccessRequest) => {
-    router.push(`/workflows/${request.id}`);
-  };
 
   return (
     <div data-testid="workflows-master-detail" className="flex min-h-0 flex-1 flex-col">
@@ -274,17 +260,7 @@ export function WorkflowsMasterDetail({
         </div>
 
         <div data-testid="workflow-detail-panel" className="flex min-h-0 min-w-0 flex-1 flex-col">
-          <DetailPanel
-            selectedId={selectedId}
-            compose={compose}
-            auxiliary={auxiliary}
-            lists={lists}
-            roleRequestsById={roleRequestsById}
-            roleLookupLoading={roleLookupLoading}
-            roleLookupError={roleLookupError}
-            onCreated={handleCreated}
-            onCancel={() => router.push('/workflows')}
-          />
+          {children}
         </div>
       </div>
     </div>

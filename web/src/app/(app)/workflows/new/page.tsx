@@ -3,7 +3,7 @@
 import { Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useTranslations } from 'next-intl';
-import { WorkflowsMasterDetail, type WorkflowComposeDraft } from '@/components/workflows/workflows-master-detail';
+import { WorkflowDetailPanel, type WorkflowComposeDraft } from '@/components/workflows/workflows-master-detail';
 
 type Translator = ReturnType<typeof useTranslations>;
 
@@ -42,12 +42,12 @@ function parseDraft(search: URLSearchParams, t: Translator): WorkflowComposeDraf
 function NewWorkflowRequestInner() {
   const search = useSearchParams();
   const t = useTranslations('Workflows');
-  return <WorkflowsMasterDetail compose={parseDraft(search, t)} />;
+  return <WorkflowDetailPanel compose={parseDraft(search, t)} />;
 }
 
 export default function NewWorkflowRequestPage() {
   return (
-    <Suspense fallback={<WorkflowsMasterDetail />}>
+    <Suspense fallback={<WorkflowDetailPanel />}>
       <NewWorkflowRequestInner />
     </Suspense>
   );

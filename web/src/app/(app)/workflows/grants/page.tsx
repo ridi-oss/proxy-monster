@@ -1,5 +1,5 @@
-import { WorkflowsMasterDetail } from '@/components/workflows/workflows-master-detail';
+import { WorkflowDetailPanel } from '@/components/workflows/workflows-master-detail';
 
 export default function WorkflowGrantsPage() {
-  return <WorkflowsMasterDetail auxiliary="ACTIVE_GRANTS" />;
+  return <WorkflowDetailPanel auxiliary="ACTIVE_GRANTS" />;
 }

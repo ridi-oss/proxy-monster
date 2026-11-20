@@ -19,8 +19,12 @@ class MessageCatalog(
     private val catalogs: Map<String, JsonObject> = load(domain),
 ) {
     /** [key] in [locale], falling back to the default locale, then English, then the key itself. */
-    fun text(key: String, locale: String, params: Map<String, String> = emptyMap()): String {
-        val raw = lookup(locale, key) ?: lookup(defaultLocale, key) ?: lookup(FALLBACK, key) ?: return key
+    fun text(key: String, locale: String, params: Map<String, String> = emptyMap()): String =
+        textOrNull(key, locale, params) ?: key
+
+    /** [text], or null when no locale has [key]. */
+    fun textOrNull(key: String, locale: String, params: Map<String, String> = emptyMap()): String? {
+        val raw = lookup(locale, key) ?: lookup(defaultLocale, key) ?: lookup(FALLBACK, key) ?: return null
         // Single pass over the TEMPLATE: each {placeholder} is resolved from params, and a substituted value is
         // never re-scanned. A sequential replace would let one field's value smuggle another field's
         // placeholder — a requester's free-text reason containing "{statementNote}" would expand to that field

@@ -274,17 +274,27 @@ class NotificationStore(private val dataSource: DataSource) {
 
     fun eventsAfter(taskId: Long, afterId: Long) = dataSource.connection.use { RequestEvents.after(it, taskId, afterId) }
 
-    fun advanceThread(thread: MessageThread, eventId: Long) {
-        dataSource.connection.use { c ->
-            c.prepareStatement(
-                "UPDATE notification_message SET last_event_id = ? WHERE external_ref = ? AND transport = ? AND last_event_id < ?",
-            ).use { ps ->
-                ps.setLong(1, eventId)
-                ps.setString(2, thread.externalRef)
-                ps.setString(3, thread.transport)
-                ps.setLong(4, eventId)
-                ps.executeUpdate()
-            }
+    /** Move [thread]'s cursor from [from] to [to]; false when another control plane moved it first. */
+    fun moveThread(thread: MessageThread, from: Long, to: Long): Boolean = dataSource.connection.use { c ->
+        c.prepareStatement(
+            "UPDATE notification_message SET last_event_id = ? WHERE external_ref = ? AND transport = ? AND last_event_id = ?",
+        ).use { ps ->
+            ps.setLong(1, to)
+            ps.setString(2, thread.externalRef)
+            ps.setString(3, thread.transport)
+            ps.setLong(4, from)
+            ps.executeUpdate() > 0
+        }
+    }
+
+    /** The event that finished [taskId], while it stays EXECUTED or FAILED; null otherwise. */
+    fun finishedAt(taskId: Long): Long? = dataSource.connection.use { c ->
+        c.prepareStatement(
+            """SELECT max(e.id) FROM request_event e JOIN access_request r ON r.id = e.request_id
+               WHERE e.request_id = ? AND r.status IN ('EXECUTED', 'FAILED') AND e.kind IN ('executed', 'failed')""",
+        ).use { ps ->
+            ps.setLong(1, taskId)
+            ps.executeQuery().use { rs -> rs.next(); rs.getLong(1).takeUnless { rs.wasNull() } }
         }
     }
 

@@ -35,6 +35,11 @@ func TestSqlLogBinOutranksAutocommitInOneSet(t *testing.T) {
 	}
 }
 
+func TestUserVariableNamedSqlLogBinDoesNotHideAutocommit(t *testing.T) {
+	parityKind(t, "SET @sql_log_bin = 0, autocommit = 0", "mysql", pb.StatementKind_STATEMENT_KIND_SET_TRANSACTION)
+	parityKind(t, "SET @sql_log_bin = 0", "mysql", pb.StatementKind_STATEMENT_KIND_SET_SESSION_VAR)
+}
+
 func TestGlobalAutocommitStaysSetGlobal(t *testing.T) {
 	parityKind(t, "SET @@global.autocommit = 0", "mysql", pb.StatementKind_STATEMENT_KIND_SET_GLOBAL)
 }

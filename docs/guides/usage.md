@@ -315,7 +315,10 @@ codex mcp add pmon-acme -- pmon mcp
 
 Claude Desktop, in `claude_desktop_config.json`:
 `"mcpServers": {"pmon-acme": {"command": "pmon", "args": ["mcp"]}}`. If the
-server is not logged in, `pmon mcp` exits with the `pmon login` to run.
+server is not logged in, `pmon mcp` still starts and offers two tools:
+`list_servers`, the servers on this machine with what each holds, and `login`,
+which opens the sign-in page in the browser. The server's own tools appear once
+signed in.
 
 claude.ai and ChatGPT connect from the vendor's cloud, which cannot reach a
 private proxy-monster; use Claude Desktop through pmon instead.

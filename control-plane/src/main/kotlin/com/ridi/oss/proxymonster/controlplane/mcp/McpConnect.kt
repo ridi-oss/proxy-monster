@@ -41,10 +41,13 @@ data class InstanceInfo(
     val version: String,
     val mcpUrl: String,
     val installName: String,
+    val description: String,
 )
 
 internal fun Route.instanceInfoRoute(config: Config) {
     get("/api/instance") {
-        call.respond(InstanceInfo(config.instanceName, SERVER_VERSION, config.mcpResource, installName(config)))
+        call.respond(
+            InstanceInfo(config.instanceName, SERVER_VERSION, config.mcpResource, installName(config), config.instanceDescription),
+        )
     }
 }

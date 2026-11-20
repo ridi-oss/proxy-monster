@@ -2,6 +2,7 @@ package worm
 
 import (
 	"encoding/json"
+	"maps"
 	"sort"
 	"strings"
 	"sync"
@@ -57,17 +58,20 @@ func (c *objectCache[T]) read(os ObjectStore, prefix string, want func(string) b
 		return nil, err
 	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	prev := c.seen
+	c.mu.Unlock()
+
 	next := make(map[string]cachedObject[T], len(objects))
 	var out []T
 	for _, o := range objects {
 		if !want(o.Key) {
 			continue
 		}
-		obj, hit := c.seen[o.Key]
+		obj, hit := prev[o.Key]
 		if !hit || obj.version != o.Version {
 			body, err := os.Get(o.Key)
 			if err != nil {
+				c.keep(prev, next)
 				return nil, err
 			}
 			obj = cachedObject[T]{version: o.Version}
@@ -78,6 +82,17 @@ func (c *objectCache[T]) read(os ObjectStore, prefix string, want func(string) b
 			out = append(out, obj.value)
 		}
 	}
+	c.mu.Lock()
 	c.seen = next
+	c.mu.Unlock()
 	return out, nil
+}
+
+func (c *objectCache[T]) keep(prev, fetched map[string]cachedObject[T]) {
+	merged := make(map[string]cachedObject[T], len(prev)+len(fetched))
+	maps.Copy(merged, prev)
+	maps.Copy(merged, fetched)
+	c.mu.Lock()
+	c.seen = merged
+	c.mu.Unlock()
 }

@@ -143,23 +143,34 @@ func TestReaderDropsAKeyNoLongerListed(t *testing.T) {
 	}
 }
 
-func TestReaderLeavesItsCacheIntactWhenAGetFails(t *testing.T) {
-	backing := NewMemory()
+func TestReaderKeepsWhatItFetchedWhenAGetFails(t *testing.T) {
+	backing := newCountingGetStore()
 	writeTestAnchor(t, backing, 1, "aa")
 	writeTestAnchor(t, backing, 2, "bb")
-	blind := failingGetStore{ObjectStore: backing, failKey: checkpointPrefix + "2.json"}
-	r := NewReader(blind)
+	writeTestAnchor(t, backing, 3, "cc")
+	r := NewReader(backing)
+	if _, err := r.Anchors(); err != nil {
+		t.Fatalf("read anchors: %v", err)
+	}
+	writeTestAnchor(t, backing, 4, "dd")
+	writeTestAnchor(t, backing, 5, "ee")
+
+	r.store = failingGetStore{ObjectStore: backing, failKey: checkpointPrefix + "5.json"}
 	if _, err := r.Anchors(); err == nil || !strings.Contains(err.Error(), "connection reset") {
 		t.Fatalf("read with a failing GET returned err=%v, want the GET error", err)
 	}
 
 	r.store = backing
+	backing.gets = map[string]int{}
 	got, err := r.Anchors()
 	if err != nil {
 		t.Fatalf("read anchors: %v", err)
 	}
-	if len(got) != 2 {
-		t.Fatalf("anchors = %+v, want both after the GET recovers", got)
+	if len(got) != 5 {
+		t.Fatalf("anchors = %+v, want all five after the GET recovers", got)
+	}
+	if n := backing.totalGets(); n != 1 || backing.gets[checkpointPrefix+"5.json"] != 1 {
+		t.Fatalf("GETs after the failed read = %v, want only the key that failed", backing.gets)
 	}
 }
 

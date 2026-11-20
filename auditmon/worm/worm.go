@@ -24,5 +24,16 @@ type ObjectInfo struct {
 	Version string
 }
 
+func keysOf(objects []ObjectInfo, err error) ([]string, error) {
+	if err != nil {
+		return nil, err
+	}
+	keys := make([]string, len(objects))
+	for i, o := range objects {
+		keys[i] = o.Key
+	}
+	return keys, nil
+}
+
 // ErrNotFound reports that an object does not exist, as distinct from being unreadable.
 var ErrNotFound = errors.New("worm: object not found")

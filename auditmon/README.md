@@ -33,19 +33,28 @@ passes, Kotlin-write and Go-verify agree byte-for-byte.
 The monitor verifies at two cadences: a fast incremental **tail** walk each poll
 (rows past the last anchor), and a full **from-genesis** re-verification on boot
 and on `full_verify_interval` that re-walks every chained row and cross-checks
-the recomputed head at each signed anchor against the head that anchor
-witnessed. The full pass is what catches a rewrite of a row at or below an
-already-anchored head — including an internally-consistent rewrite from the
+the recomputed head at the newest valid signed anchor against the head that
+anchor witnessed. The full pass is what catches a rewrite of a row at or below
+an already-anchored head — including an internally-consistent rewrite from the
 public genesis, which only the off-box signed anchor contradicts. A full-pass
 finding halts export and signing so the monitor never witnesses a chain it has
 proven tampered. See [When the chain breaks](#when-the-chain-breaks) for what an
 operator does next.
 
+Each row's hash covers the row before it, so the newest valid anchor witnesses
+every row at or below it: one anchor is enough to catch a rewrite or a
+truncation anywhere beneath it. The full pass therefore checks that anchor, any
+invalid anchors above it, and the anchors a signed acceptance names. Only when
+it finds a divergence does it check every anchor, to report the lowest anchor
+the rewrite reaches and to honor every acceptance; if that second check fails,
+the pass reports what the first one found. An invalid object at an older anchor
+key does not keep a halt latched; one above the newest valid anchor still does.
+
 Each poll reuses the signature verdicts the process already holds, so it reads
 and verifies only anchors it has not seen. The full pass asks the signer about
-every anchor and acceptance again. A key that is disabled, or dropped from
-`allowed_key_ids` and restarted, therefore stops vouching for its anchors within
-one `full_verify_interval`, not on the next poll.
+the anchors it checks and every acceptance again. A key that is disabled, or
+dropped from `allowed_key_ids` and restarted, therefore stops vouching for its
+anchors within one `full_verify_interval`, not on the next poll.
 
 Exported events carry `SHA-256(statement)` only — never the SQL text — so a
 statement literal can never reach the permanent WORM/SIEM store; the full SQL

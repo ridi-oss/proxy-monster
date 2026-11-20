@@ -421,7 +421,7 @@ func (m *Monitor) FullVerify(ctx context.Context) error {
 
 	// With every off-box anchor unusable there is nothing left to contradict an internally-consistent rewrite,
 	// so treat that as the finding it is rather than letting a clean row-walk pass.
-	f, trustErr := m.anchorTrustFinding(len(w.checks))
+	f, trustErr := m.anchorTrustFinding(w)
 	if trustErr != nil {
 		return trustErr
 	}
@@ -467,9 +467,10 @@ func (m *Monitor) FullVerify(ctx context.Context) error {
 // could not be verified at all (a signer or store failure, as opposed to a signature that definitively does
 // not validate) — a clean pass over incomplete evidence proves less than a clean pass over all of it.
 type evidence struct {
-	checks   []verify.AnchorCheck
-	accepted []verify.Accepted
-	complete bool
+	checks      []verify.AnchorCheck
+	accepted    []verify.Accepted
+	complete    bool
+	anchorError error
 }
 
 // witnesses reads and signature-verifies the off-box evidence. An unsigned or badly-signed acceptance is NOT
@@ -488,6 +489,7 @@ func (m *Monitor) witnesses(what string) (evidence, error) {
 			// clean result from this pass must not be read as proof the trail is whole.
 			m.log.Warn("monitor: "+what+" could not verify an anchor", "err", verr, "up_to_id", a.UpToID)
 			out.complete = false
+			out.anchorError = verr
 			continue
 		}
 		if !valid {
@@ -620,7 +622,7 @@ func (m *Monitor) Diagnose(ctx context.Context) (Diagnosis, error) {
 	if err != nil {
 		return Diagnosis{}, err
 	}
-	if f, err := m.anchorTrustFinding(len(w.checks)); err != nil {
+	if f, err := m.anchorTrustFinding(w); err != nil {
 		return Diagnosis{}, err
 	} else if f != nil {
 		return Diagnosis{Finding: f}, nil
@@ -636,9 +638,12 @@ func (m *Monitor) Diagnose(ctx context.Context) (Diagnosis, error) {
 // an internally-consistent rewrite comes back clean, so with every witness unusable there is nothing left to
 // contradict it: reporting "intact" there would be a false all-clear. With no anchors at all it is a genuine
 // first run, which is not a finding.
-func (m *Monitor) anchorTrustFinding(validChecks int) (*verify.Finding, error) {
-	if validChecks > 0 {
+func (m *Monitor) anchorTrustFinding(w evidence) (*verify.Finding, error) {
+	if len(w.checks) > 0 {
 		return nil, nil
+	}
+	if w.anchorError != nil {
+		return nil, fmt.Errorf("monitor: no anchor could be verified: %w", w.anchorError)
 	}
 	anchors, err := m.objects.Anchors()
 	if err != nil {

@@ -159,7 +159,7 @@ func TestFullVerifyAsksTheSignerAboutEveryAnchorWithoutRereadingThem(t *testing.
 	}
 }
 
-func TestAKeyThatStopsVerifyingIsCaughtOnTheNextFullVerify(t *testing.T) {
+func TestAKeyThatStopsVerifyingStopsVouchingAfterTheNextFullVerify(t *testing.T) {
 	fx := newCostFixture(t)
 	if err := fx.m.Poll(fx.ctx); err != nil {
 		t.Fatalf("poll: %v", err)
@@ -176,11 +176,17 @@ func TestAKeyThatStopsVerifyingIsCaughtOnTheNextFullVerify(t *testing.T) {
 		t.Fatalf("a poll with a cached verdict raised findings: %+v", fx.reporter.findings)
 	}
 
-	if err := fx.m.FullVerify(fx.ctx); err != nil {
-		t.Fatalf("full verify: %v", err)
+	if err := fx.m.FullVerify(fx.ctx); err == nil {
+		t.Fatal("a full verify that could not verify any anchor returned no error")
 	}
-	if len(fx.reporter.findings) != 1 || fx.reporter.findings[0].Reason != monitor.ReasonAnchorSignatureInvalid {
-		t.Fatalf("findings = %+v, want one %s once the key stops verifying", fx.reporter.findings, monitor.ReasonAnchorSignatureInvalid)
+	if len(fx.reporter.findings) != 0 || fx.m.Halted() {
+		t.Fatalf("a signer failure was judged a forgery: findings=%+v halted=%v", fx.reporter.findings, fx.m.Halted())
+	}
+	if err := fx.m.Poll(fx.ctx); err != nil {
+		t.Fatalf("poll: %v", err)
+	}
+	if len(fx.reporter.findings) != 1 || fx.reporter.findings[0].Reason != monitor.ReasonAnchorVerifyError {
+		t.Fatalf("findings = %+v, want one %s once the key stops verifying", fx.reporter.findings, monitor.ReasonAnchorVerifyError)
 	}
 }
 

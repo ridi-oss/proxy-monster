@@ -40,6 +40,7 @@ var MySQL = &Engine{
 		rejectsDuplicateDerivedOutputLabels: true,
 		rightJoinStarOrder:                  starOrderCommonRightLeft,
 
+		connectionProperties:           []string{"database"},
 		catalogIsConnectionIndependent: true,
 		checksTargetErrors:             true,
 		defaultSchemaPrefix:            "USE ",

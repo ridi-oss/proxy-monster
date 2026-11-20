@@ -147,7 +147,7 @@ SELECT ar.id, ar.principal, ar.role_id, r.name AS role_name, ar.datasource_id, d
        ar.statement_carries_protected_literal, ar.source, ar.scope, ar.change_key, ar.merged_at,
        ar.revision, ar.revised_at, ar.content_hash, ar.raw_hash,
        ar.file_key, ar.path, ar.pr_url, ar.repository, ar.pr, ar.default_schema, ar.pr_auto_merge,
-       ar.head_sha, ar.merge_sha, ar.approved_review_id, ar.filed_head, ar.key_order, ar.force_run, ar.force_run_by,
+       ar.head_sha, ar.merge_sha, ar.approved_review_id, ar.filed_head, ar.key_order, ar.force_run, ar.force_run_by, ar.private,
        (SELECT coalesce(array_agg(p.principal ORDER BY p.principal), '{}') FROM request_participant p
         WHERE p.request_id = ar.id AND p.kind = 'cc')::text[] AS ccs
 FROM access_request ar LEFT JOIN app_role r ON r.id = ar.role_id
@@ -206,6 +206,7 @@ type AccessRequestRow struct {
 	KeyOrder                         *string
 	ForceRun                         bool
 	ForceRunBy                       *string
+	Private                          bool
 	Ccs                              []string
 }
 
@@ -263,6 +264,7 @@ func (q *Queries) AccessRequest(ctx context.Context, id int64) (AccessRequestRow
 		&i.KeyOrder,
 		&i.ForceRun,
 		&i.ForceRunBy,
+		&i.Private,
 		&i.Ccs,
 	)
 	return i, err
@@ -281,7 +283,7 @@ SELECT ar.id, ar.principal, ar.role_id, r.name AS role_name, ar.datasource_id, d
        ar.statement_carries_protected_literal, ar.source, ar.scope, ar.change_key, ar.merged_at,
        ar.revision, ar.revised_at, ar.content_hash, ar.raw_hash,
        ar.file_key, ar.path, ar.pr_url, ar.repository, ar.pr, ar.default_schema, ar.pr_auto_merge,
-       ar.head_sha, ar.merge_sha, ar.approved_review_id, ar.filed_head, ar.key_order, ar.force_run, ar.force_run_by,
+       ar.head_sha, ar.merge_sha, ar.approved_review_id, ar.filed_head, ar.key_order, ar.force_run, ar.force_run_by, ar.private,
        (SELECT coalesce(array_agg(p.principal ORDER BY p.principal), '{}') FROM request_participant p
         WHERE p.request_id = ar.id AND p.kind = 'cc')::text[] AS ccs
 FROM access_request ar LEFT JOIN app_role r ON r.id = ar.role_id
@@ -340,6 +342,7 @@ type AccessRequestsRow struct {
 	KeyOrder                         *string
 	ForceRun                         bool
 	ForceRunBy                       *string
+	Private                          bool
 	Ccs                              []string
 }
 
@@ -403,6 +406,7 @@ func (q *Queries) AccessRequests(ctx context.Context) ([]AccessRequestsRow, erro
 			&i.KeyOrder,
 			&i.ForceRun,
 			&i.ForceRunBy,
+			&i.Private,
 			&i.Ccs,
 		); err != nil {
 			return nil, err
@@ -428,7 +432,7 @@ SELECT ar.id, ar.principal, ar.role_id, r.name AS role_name, ar.datasource_id, d
        ar.statement_carries_protected_literal, ar.source, ar.scope, ar.change_key, ar.merged_at,
        ar.revision, ar.revised_at, ar.content_hash, ar.raw_hash,
        ar.file_key, ar.path, ar.pr_url, ar.repository, ar.pr, ar.default_schema, ar.pr_auto_merge,
-       ar.head_sha, ar.merge_sha, ar.approved_review_id, ar.filed_head, ar.key_order, ar.force_run, ar.force_run_by,
+       ar.head_sha, ar.merge_sha, ar.approved_review_id, ar.filed_head, ar.key_order, ar.force_run, ar.force_run_by, ar.private,
        (SELECT coalesce(array_agg(p.principal ORDER BY p.principal), '{}') FROM request_participant p
         WHERE p.request_id = ar.id AND p.kind = 'cc')::text[] AS ccs
 FROM access_request ar LEFT JOIN app_role r ON r.id = ar.role_id
@@ -487,6 +491,7 @@ type AccessRequestsByStatusRow struct {
 	KeyOrder                         *string
 	ForceRun                         bool
 	ForceRunBy                       *string
+	Private                          bool
 	Ccs                              []string
 }
 
@@ -550,6 +555,7 @@ func (q *Queries) AccessRequestsByStatus(ctx context.Context, status string) ([]
 			&i.KeyOrder,
 			&i.ForceRun,
 			&i.ForceRunBy,
+			&i.Private,
 			&i.Ccs,
 		); err != nil {
 			return nil, err
@@ -594,8 +600,8 @@ func (q *Queries) CloseRequest(ctx context.Context, id int64) (int64, error) {
 }
 
 const createRoleRequest = `-- name: CreateRoleRequest :one
-INSERT INTO access_request (principal, role_id, datasource_id, reason, requested_duration_sec, creator_kind)
-VALUES ($1, $2, $3, $4, $5, 'WORKFLOW') RETURNING id
+INSERT INTO access_request (principal, role_id, datasource_id, reason, requested_duration_sec, creator_kind, private)
+VALUES ($1, $2, $3, $4, $5, 'WORKFLOW', $6) RETURNING id
 `
 
 type CreateRoleRequestParams struct {
@@ -604,6 +610,7 @@ type CreateRoleRequestParams struct {
 	DatasourceID         *int64
 	Reason               *string
 	RequestedDurationSec int64
+	Private              bool
 }
 
 func (q *Queries) CreateRoleRequest(ctx context.Context, arg CreateRoleRequestParams) (int64, error) {
@@ -613,6 +620,7 @@ func (q *Queries) CreateRoleRequest(ctx context.Context, arg CreateRoleRequestPa
 		arg.DatasourceID,
 		arg.Reason,
 		arg.RequestedDurationSec,
+		arg.Private,
 	)
 	var id int64
 	err := row.Scan(&id)
@@ -680,7 +688,7 @@ SELECT ar.id, ar.principal, ar.role_id, r.name AS role_name, ar.datasource_id, d
        ar.statement_carries_protected_literal, ar.source, ar.scope, ar.change_key, ar.merged_at,
        ar.revision, ar.revised_at, ar.content_hash, ar.raw_hash,
        ar.file_key, ar.path, ar.pr_url, ar.repository, ar.pr, ar.default_schema, ar.pr_auto_merge,
-       ar.head_sha, ar.merge_sha, ar.approved_review_id, ar.filed_head, ar.key_order, ar.force_run, ar.force_run_by,
+       ar.head_sha, ar.merge_sha, ar.approved_review_id, ar.filed_head, ar.key_order, ar.force_run, ar.force_run_by, ar.private,
        (SELECT coalesce(array_agg(p.principal ORDER BY p.principal), '{}') FROM request_participant p
         WHERE p.request_id = ar.id AND p.kind = 'cc')::text[] AS ccs
 FROM access_request ar LEFT JOIN app_role r ON r.id = ar.role_id
@@ -742,6 +750,7 @@ type InvolvedRequestsRow struct {
 	KeyOrder                         *string
 	ForceRun                         bool
 	ForceRunBy                       *string
+	Private                          bool
 	Ccs                              []string
 }
 
@@ -805,6 +814,7 @@ func (q *Queries) InvolvedRequests(ctx context.Context, principal string) ([]Inv
 			&i.KeyOrder,
 			&i.ForceRun,
 			&i.ForceRunBy,
+			&i.Private,
 			&i.Ccs,
 		); err != nil {
 			return nil, err
@@ -909,6 +919,18 @@ func (q *Queries) LiveAccessGrantsOf(ctx context.Context, principal string) ([]L
 	return items, nil
 }
 
+const makeRequestPrivate = `-- name: MakeRequestPrivate :execrows
+UPDATE access_request SET private = true WHERE id = $1 AND NOT private
+`
+
+func (q *Queries) MakeRequestPrivate(ctx context.Context, id int64) (int64, error) {
+	result, err := q.db.Exec(ctx, makeRequestPrivate, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const ownApprovals = `-- name: OwnApprovals :many
 SELECT ar.id, ar.principal, ar.role_id, r.name AS role_name, ar.datasource_id, d.name AS datasource_name,
        ar.reason, ar.requested_duration_sec, ar.status, ar.decided_by,
@@ -922,7 +944,7 @@ SELECT ar.id, ar.principal, ar.role_id, r.name AS role_name, ar.datasource_id, d
        ar.statement_carries_protected_literal, ar.source, ar.scope, ar.change_key, ar.merged_at,
        ar.revision, ar.revised_at, ar.content_hash, ar.raw_hash,
        ar.file_key, ar.path, ar.pr_url, ar.repository, ar.pr, ar.default_schema, ar.pr_auto_merge,
-       ar.head_sha, ar.merge_sha, ar.approved_review_id, ar.filed_head, ar.key_order, ar.force_run, ar.force_run_by,
+       ar.head_sha, ar.merge_sha, ar.approved_review_id, ar.filed_head, ar.key_order, ar.force_run, ar.force_run_by, ar.private,
        (SELECT coalesce(array_agg(p.principal ORDER BY p.principal), '{}') FROM request_participant p
         WHERE p.request_id = ar.id AND p.kind = 'cc')::text[] AS ccs
 FROM access_request ar LEFT JOIN app_role r ON r.id = ar.role_id
@@ -981,6 +1003,7 @@ type OwnApprovalsRow struct {
 	KeyOrder                         *string
 	ForceRun                         bool
 	ForceRunBy                       *string
+	Private                          bool
 	Ccs                              []string
 }
 
@@ -1044,6 +1067,7 @@ func (q *Queries) OwnApprovals(ctx context.Context, principal string) ([]OwnAppr
 			&i.KeyOrder,
 			&i.ForceRun,
 			&i.ForceRunBy,
+			&i.Private,
 			&i.Ccs,
 		); err != nil {
 			return nil, err
@@ -1069,7 +1093,7 @@ SELECT ar.id, ar.principal, ar.role_id, r.name AS role_name, ar.datasource_id, d
        ar.statement_carries_protected_literal, ar.source, ar.scope, ar.change_key, ar.merged_at,
        ar.revision, ar.revised_at, ar.content_hash, ar.raw_hash,
        ar.file_key, ar.path, ar.pr_url, ar.repository, ar.pr, ar.default_schema, ar.pr_auto_merge,
-       ar.head_sha, ar.merge_sha, ar.approved_review_id, ar.filed_head, ar.key_order, ar.force_run, ar.force_run_by,
+       ar.head_sha, ar.merge_sha, ar.approved_review_id, ar.filed_head, ar.key_order, ar.force_run, ar.force_run_by, ar.private,
        (SELECT coalesce(array_agg(p.principal ORDER BY p.principal), '{}') FROM request_participant p
         WHERE p.request_id = ar.id AND p.kind = 'cc')::text[] AS ccs
 FROM access_request ar LEFT JOIN app_role r ON r.id = ar.role_id
@@ -1133,6 +1157,7 @@ type OwnApprovalsByStatusRow struct {
 	KeyOrder                         *string
 	ForceRun                         bool
 	ForceRunBy                       *string
+	Private                          bool
 	Ccs                              []string
 }
 
@@ -1196,6 +1221,7 @@ func (q *Queries) OwnApprovalsByStatus(ctx context.Context, arg OwnApprovalsBySt
 			&i.KeyOrder,
 			&i.ForceRun,
 			&i.ForceRunBy,
+			&i.Private,
 			&i.Ccs,
 		); err != nil {
 			return nil, err

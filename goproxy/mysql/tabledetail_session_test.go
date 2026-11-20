@@ -7,7 +7,6 @@ import (
 
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
-	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
 )
 
@@ -25,7 +24,7 @@ func TestTableDetailProbesItsConnectionSessionOnce(t *testing.T) {
 		probes.Add(1)
 		return Queries.TargetSettings(row)
 	}
-	pool, _, err := sqldb.OpenPool(OpenPool, spi.TargetConfig{Host: targetConfig.Host, Port: targetConfig.Port, Db: targetConfig.DB, User: targetConfig.User, Password: targetConfig.Password})
+	pool, _, err := sqldb.OpenPool(OpenPool, sqldb.Settings{Host: targetConfig.Host, Port: targetConfig.Port, Db: targetConfig.DB, User: targetConfig.User, Password: targetConfig.Password}, "")
 	if err != nil {
 		t.Fatal(err)
 	}

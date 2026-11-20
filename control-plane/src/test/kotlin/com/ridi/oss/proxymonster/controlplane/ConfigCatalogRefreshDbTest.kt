@@ -67,7 +67,7 @@ abstract class ConfigCatalogRefreshDbContract {
     private val ds get() = fixture.datasource
     private val writer = "writer@example.com"
 
-    private fun schema(): String = if (ds.engine == Engine.MYSQL) ds.dbName else ds.defaultSchemas.first { it !in ds.engine.systemSchemas }
+    private fun schema(): String = if (ds.engine == Engine.MYSQL) fixture.enforcement.database else ds.defaultSchemas.first { it !in ds.engine.systemSchemas }
 
     private fun target(): Connection = DriverManager.getConnection(
         fixture.enforcement.targetJdbcUrl, fixture.enforcement.targetUser, fixture.enforcement.targetPassword,

@@ -205,9 +205,7 @@ class PrincipalSessionStoreDbTest {
         // (deleteEditorResultsForPrincipal on the passed connection) and drives it through inTx.
         val resultStore = QueryResultStore(dataSource, ResultCrypto(key))
         val accessStore = AccessStore(dataSource)
-        val dsId = DatasourceStore(dataSource).create(
-            DatasourceInput(name = "ds-teardown", engine = "postgres", host = "h", port = 5432, dbName = "d"),
-        ).id
+        val dsId = DatasourceStore(dataSource).registerOnly("ds-teardown", "postgres").id
         val composed = PrincipalSessionStore(
             dataSource, ResultCrypto(key),
             onWebSessionEnded = { p, conn -> resultStore.deleteEditorResultsForPrincipal(p, conn) },

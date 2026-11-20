@@ -8,6 +8,8 @@ package proxymonster.v1;
 import "engine.proto";
 import "analyzer.proto";
 import "athena.proto";
+import "bigquery.proto";
+import "httpdb.proto";
 import "google/protobuf/empty.proto";
 
 option java_package = "com.ridi.oss.proxymonster.grpc";
@@ -94,9 +96,9 @@ message CompletionReport {
 message RegisterRequest {
   string name = 1;              // stable identity; Cedar's Datasource::"<name>"; upsert key
   Engine engine = 2;
-  string host = 3;              // advisory only (admin UI / triage)
-  int32 port = 4;               // advisory only
-  string db_name = 5;           // advisory only
+  // Reserved: the target's host and port, which only MySQL and PostgreSQL have, and its database, which
+  // connection_info carries. target_info replaces the first two.
+  reserved 3, 4, 5;
   repeated string tags = 6;     // optional free-form; posture tags system:development/system:production; empty => production floor via deny-by-default (policy-store.md)
   string advertise_addr = 7;    // client-facing host:port a wire client dials to reach THIS datasource's proxy (not the upstream host/port above); empty when the proxy isn't told its reachable address. Surfaced by GET /api/datasources so a client (pmon) can open a local broker per datasource.
   // Reserved: a leaf SHA-256 clients pinned against, and the leaf alone. Neither number may be reused.
@@ -131,6 +133,8 @@ message RegisterRequest {
   ConnectionInfo connection_info = 13;
   // One line telling people and agents what this datasource holds. Absent retains the stored value; empty clears it.
   optional string description = 14;
+  // Where the proxy connects, in its engine's words (MySQL `host:port`, Athena its endpoint and workgroup); shown in the console.
+  string target_info = 15;
 }
 message RegisterResponse {
   string name = 1;
@@ -168,10 +172,47 @@ message RequestAuthorization {
   oneof operation {
     ReadCatalog read_catalog = 4;
     ReadTableMetadata read_table_metadata = 5;
-    // A provider-native API call, described by that engine's own message; the engine's request authorizer
-    // decides it. An arm the datasource's engine does not own is denied.
-    proxymonster.athena.v1.AthenaNativeDescriptor athena = 6;
+    // An HTTP-API call; the datasource engine's request authorizer decides it, and a target arm
+    // that engine does not own is denied.
+    HttpDbRequest http_db = 7;
   }
+  reserved 6;
+  reserved "athena";
+}
+
+// One call to an HTTP-API engine as the proxy received it; credentials, cookies, signatures, and result rows
+// are forbidden.
+message HttpDbRequest {
+  string service = 1;
+  string operation = 2;
+  string method = 3;
+  string path = 4;
+  string raw_query = 5;
+  repeated proxymonster.httpdb.v1.HttpDbHeader functional_headers = 6;
+  // The sanitized request body in both phases; response resources belong in observations, never result cells.
+  bytes body = 7;
+  proxymonster.httpdb.v1.HttpDbAuthorizationPhase phase = 8;
+  // Resource identities the target returned, never client assertions or cached ownership claims.
+  repeated HttpDbObservation observations = 9;
+  repeated proxymonster.httpdb.v1.HttpDbCachedContext cached_contexts = 10;
+  // Canonical configured target and stable upstream account/principal identity, attested by the proxy.
+  bytes target_binding = 11;
+  oneof target {
+    proxymonster.athena.v1.AthenaTarget athena = 12;
+    proxymonster.bigquery.v1.BigQueryTarget bigquery = 13;
+  }
+}
+
+enum HttpDbObservationSource {
+  HTTP_DB_OBSERVATION_SOURCE_UNSPECIFIED = 0;
+  HTTP_DB_OBSERVATION_SOURCE_UPSTREAM_RESPONSE = 1;
+}
+
+message HttpDbObservation {
+  HttpDbObservationSource source = 1;
+  string kind = 2;
+  string id = 3;
+  optional string owner = 4;
 }
 
 // Deny by default: allowed is false unless the engine admitted the operation. deny_reason is a stable
@@ -182,10 +223,8 @@ message RequestAuthorizationResult {
   repeated string effective_roles = 3;
   string principal = 4;
   // For a native operation, what the proxy must do with the call; allowed never grants arbitrary response
-  // bytes. Set exactly when the request's operation was a native arm, in that engine's own message.
-  oneof instructions {
-    proxymonster.athena.v1.AthenaNativeInstructions athena = 5;
-  }
+  // bytes. Set exactly when the request's operation was a native arm.
+  proxymonster.httpdb.v1.HttpDbInstructions http_db_instructions = 5;
 }
 
 // ---- Catalog ----
@@ -347,8 +386,8 @@ message Verdict {
   // control plane: 0 = uncapped, which only a result.cap forbid produces. Set explicitly on every verdict.
   int64 max_rows = 12;
   int64 max_bytes = 13;
-  // The engine-specific companion to rewritten_sql (analyzer.proto Submission); absent = text only.
-  proxymonster.analyzer.v1.Submission submission = 14;
+  reserved 14;
+  reserved "submission";
   // The proxy sends the target's error from check_target_error, redacted, and runs nothing.
   bool forward_target_error = 15;
   // A stable code for the deny_reason the caller can branch on: "rate_spent", or empty.

@@ -16,6 +16,7 @@ import (
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
+	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -96,7 +97,7 @@ func TestPostgresCatalogThroughDatabaseAlias(t *testing.T) {
 		}
 	}
 	gateway, rewritten := dbtest.PostgresAlias(t, database, "advisory")
-	target := openTarget(t, engines.Postgres, spi.TargetConfig{Host: gateway.Host, Port: gateway.Port, Db: gateway.DB, User: gateway.User, Password: gateway.Password})
+	target := openTarget(t, engines.Postgres, sqldb.Settings{Host: gateway.Host, Port: gateway.Port, Db: gateway.DB, User: gateway.User, Password: gateway.Password})
 	// After setup, which can include starting the shared container: the catalog read includes the function
 	// inventory, which takes tens of seconds on a CI runner.
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
@@ -106,8 +107,8 @@ func TestPostgresCatalogThroughDatabaseAlias(t *testing.T) {
 		t.Fatal(err)
 	}
 	actual := catalog.GetCurrentCatalog()
-	if actual != database.DB || actual == target.Config().Db {
-		t.Fatalf("actual/advisory catalog = %q/%q, want %q/advisory", actual, target.Config().Db, database.DB)
+	if advisory := target.ConnectionInfo().GetProperties()["database"]; actual != database.DB || actual == advisory {
+		t.Fatalf("actual/advisory catalog = %q/%q, want %q/advisory", actual, advisory, database.DB)
 	}
 	for _, column := range catalog.GetCatalog().GetColumns() {
 		if column.GetCatalog() != actual {

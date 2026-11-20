@@ -46,6 +46,8 @@ const ENGINE_SQL: Record<string, EngineSql> = {
     // Unquoted names fold to lower case, so a name with an upper-case letter needs quotes.
     bare: (name) => /^[a-z_][a-z0-9_$]*$/.test(name) && !POSTGRES_RESERVED.has(name),
   },
+  // GoogleSQL reads "x" as a string, so names are always backtick-quoted.
+  bigquery: { dialect: MySQL, quote: '`', bare: () => false },
 };
 // Any other engine (Athena) quotes every name: there is no reserved-word list for it here.
 const OTHER_ENGINE: EngineSql = { dialect: PostgreSQL, quote: '"', bare: () => false };

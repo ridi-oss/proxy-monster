@@ -29,7 +29,7 @@ func parityNamespace(dialect string) NamespaceConfig {
 	if dialect == "mysql" {
 		ns = NamespaceConfig{Catalog: "def", SearchPath: []string{"public"}}
 	}
-	ns.EngineCatalog = engineCatalogFromProto(testFunctionCatalog(dialect == "mysql", ns.SearchPath), ns.SearchPath)
+	ns.EngineCatalog = engineCatalogFromProto(testFunctionCatalog(dialect == "mysql", ns.SearchPath), ns.Catalog, ns.SearchPath)
 	return ns
 }
 

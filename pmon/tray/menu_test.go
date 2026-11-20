@@ -26,9 +26,9 @@ func twoServers() *control.Status {
 		LoggedIn: true, LocalPassword: "pw",
 		Servers: []control.ServerInfo{signedIn("acme", 9*time.Hour), signedIn("staging", 3*time.Hour)},
 		Datasources: []control.Datasource{
-			{Server: "acme", Name: "orders", Engine: "mysql", DbName: "orders", LocalPort: 6100, Brokered: true},
-			{Server: "acme", Name: "analytics", Engine: "postgres", DbName: "analytics", LocalPort: 6101, Brokered: true},
-			{Server: "staging", Name: "orders", Engine: "mysql", DbName: "orders_stg", LocalPort: 6102, Brokered: true},
+			{Server: "acme", Name: "orders", Engine: "mysql", ConnectionInfo: database("orders"), LocalPort: 6100, Brokered: true},
+			{Server: "acme", Name: "analytics", Engine: "postgres", ConnectionInfo: database("analytics"), LocalPort: 6101, Brokered: true},
+			{Server: "staging", Name: "orders", Engine: "mysql", ConnectionInfo: database("orders_stg"), LocalPort: 6102, Brokered: true},
 			{Server: "staging", Name: "legacy", Engine: "mysql", Brokered: false, Reason: "no proxy address"},
 		},
 	}
@@ -69,7 +69,7 @@ func TestEveryCopyItemCopiesItsOwnDatasource(t *testing.T) {
 			if e == nil {
 				t.Fatalf("no Copy %s item for %s/%s", f, ds.Server, ds.Name)
 			}
-			want := conn.StringWithOptions(f, driver.Target{Name: ds.Name, Engine: ds.Engine, DbName: ds.DbName,
+			want := conn.StringWithOptions(f, driver.Target{Name: ds.Name, ConnectionInfo: ds.ConnectionInfo, Engine: ds.Engine,
 				Port: ds.LocalPort, User: srv.Principal, Password: s.LocalPassword}, driver.Options{})
 			if e.act == nil || e.act.payload != want || e.act.server != ds.Server {
 				t.Errorf("%s/%s %s copies %+v, want %q", ds.Server, ds.Name, f, e.act, want)
@@ -296,4 +296,8 @@ func twoServersWith(name string) *control.Status {
 	s.Servers = s.Servers[:1]
 	s.Servers[0].Name = name
 	return s
+}
+
+func database(name string) *driver.ConnectionInfo {
+	return &driver.ConnectionInfo{Properties: map[string]string{"database": name}}
 }

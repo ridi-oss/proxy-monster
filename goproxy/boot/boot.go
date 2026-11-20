@@ -35,11 +35,11 @@ const sessionDrainTimeout = 10 * time.Second
 
 // Run is the dialect-neutral boot consumer. The executable composition root injects the provider registry;
 // this package imports only the SPI, never the concrete dialect wiring package.
-func Run(registry spi.Registry) error {
+func Run(flags config.Flags, registry spi.Registry) error {
 	if registry == nil {
 		return fmt.Errorf("provider registry is required")
 	}
-	cfg, err := config.Load(registry)
+	cfg, err := config.Load(flags, registry)
 	if err != nil {
 		return fmt.Errorf("failed to load configuration: %w", err)
 	}
@@ -57,14 +57,7 @@ func Run(registry spi.Registry) error {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	provider := cfg.Provider
-	target, err := provider.OpenTarget(spi.TargetConfig{
-		Host:     cfg.TargetHost,
-		Port:     cfg.TargetPort,
-		Db:       cfg.TargetDb,
-		User:     cfg.TargetUser,
-		Password: cfg.TargetPassword,
-		TLS:      cfg.TargetTLS,
-	})
+	target, err := provider.OpenTarget()
 	if err != nil {
 		return fmt.Errorf("failed to open target: %w", err)
 	}

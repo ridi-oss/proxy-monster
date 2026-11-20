@@ -1,21 +1,12 @@
 package athena
 
 import (
-	"bytes"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"strings"
 	"time"
 
-	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
-	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
-	"github.com/ridi-oss/proxy-monster/goproxy/relay"
-	"github.com/ridi-oss/proxy-monster/goproxy/spi"
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/timestamppb"
+	"github.com/ridi-oss/proxy-monster/goproxy/httpdb"
 )
 
 // Athena keeps managed results for 24 hours; the enforcement context lives exactly that long.
@@ -32,12 +23,12 @@ type submissionScope struct {
 	token      string
 }
 
-func readSubmission(envelope *Envelope, defaults targetConfig) (*submissionScope, error) {
-	query, present, err := envelope.QueryString()
+func readSubmission(envelope *httpdb.Envelope, defaults settings) (*submissionScope, error) {
+	query, present, err := queryString(envelope)
 	if err != nil || !present {
 		return nil, errors.New("athena: QueryString is required")
 	}
-	parameters, _, err := envelope.ExecutionParameters()
+	parameters, _, err := executionParameters(envelope)
 	if err != nil {
 		return nil, err
 	}
@@ -71,8 +62,8 @@ func readSubmission(envelope *Envelope, defaults targetConfig) (*submissionScope
 }
 
 // applySubmission replaces the query string and execution parameters with the admitted ones.
-func applySubmission(envelope *Envelope, query string, parameters []string) (*Envelope, error) {
-	replaced, err := envelope.WithQueryString(query)
+func applySubmission(envelope *httpdb.Envelope, query string, parameters []string) (*httpdb.Envelope, error) {
+	replaced, err := withQueryString(envelope, query)
 	if err != nil {
 		return nil, err
 	}
@@ -84,7 +75,7 @@ func applySubmission(envelope *Envelope, query string, parameters []string) (*En
 
 // pinScope forwards the submission in exactly the scope it was admitted for; AWS would otherwise fill an
 // omitted workgroup or database with its own defaults.
-func pinScope(envelope *Envelope, cfg targetConfig) (*Envelope, error) {
+func pinScope(envelope *httpdb.Envelope, cfg settings) (*httpdb.Envelope, error) {
 	pinned, err := envelope.WithField("WorkGroup", cfg.workgroup)
 	if err != nil {
 		return nil, err
@@ -92,78 +83,9 @@ func pinScope(envelope *Envelope, cfg targetConfig) (*Envelope, error) {
 	return pinned.WithField("QueryExecutionContext", map[string]string{"Catalog": cfg.catalog, "Database": cfg.database})
 }
 
-// requestBinding fingerprints the upstream submission's fields so a stable-token retry can be matched to the
-// context it was admitted under; field order and whitespace do not change the submission.
-func requestBinding(body []byte) []byte {
-	decoder := json.NewDecoder(bytes.NewReader(body))
-	decoder.UseNumber()
-	var fields map[string]any
-	canonical := body
-	if decoder.Decode(&fields) == nil {
-		if encoded, err := json.Marshal(fields); err == nil {
-			canonical = encoded
-		}
-	}
-	hash := sha256.Sum256(canonical)
-	return hash[:]
-}
-
-// namespacedToken maps a client idempotency token to one stable upstream token per (datasource, principal),
-// so one principal's retry can never return another principal's execution.
-func namespacedToken(datasource, principal, token string) string {
-	hash := sha256.Sum256([]byte(datasource + "\x00" + principal + "\x00" + token))
-	return hex.EncodeToString(hash[:])
-}
-
-// newCachedContext freezes an ALLOW/MASK decision for a returned execution id.
-func newCachedContext(resourceID, owner string, targetBinding []byte, decision *spi.Decision, expectedWidth *uint32, binding []byte, now time.Time) (*enginepb.AthenaCachedContext, error) {
-	action := relay.ParseEnfActionName(decision.Action)
-	if action != pb.EnfAction_ALLOW && action != pb.EnfAction_MASK {
-		return nil, ErrUnauthorized
-	}
-	if action == pb.EnfAction_ALLOW && len(decision.Masks) > 0 {
-		return nil, ErrUnauthorized
-	}
-	trimmed := &pb.Verdict{Decision: action, Masks: decision.Masks, UnmaskablePermitted: decision.UnmaskablePermitted, SanitizeDiagnostics: decision.SanitizeDiagnostics, DecisionId: decision.DecisionID}
-	instructions, err := proto.MarshalOptions{Deterministic: true}.Marshal(trimmed)
-	if err != nil {
-		return nil, err
-	}
-	var nonce [16]byte
-	if _, err := rand.Read(nonce[:]); err != nil {
-		return nil, err
-	}
-	record := &enginepb.AthenaCachedContext{
-		Version: 1, ContextId: hex.EncodeToString(nonce[:]), ResourceId: resourceID, Owner: owner,
-		TargetBinding: bytes.Clone(targetBinding), ExpiresAt: timestamppb.New(now.Add(contextLifetime)),
-		ExpectedWidth: expectedWidth, RequestBinding: bytes.Clone(binding), EnforcementInstructions: instructions,
-	}
-	if _, err := decodeContextRecord(record); err != nil {
-		return nil, err
-	}
-	return record, nil
-}
-
-func decodeContextRecord(record *enginepb.AthenaCachedContext) (*enginepb.AthenaCachedContext, error) {
-	data, err := proto.MarshalOptions{Deterministic: true}.Marshal(record)
-	if err != nil {
-		return nil, err
-	}
-	return decodeContext(data)
-}
-
-// cachedVerdict decodes the trimmed enforcement instructions a cached context carries.
-func cachedVerdict(record *enginepb.AthenaCachedContext) (*pb.Verdict, error) {
-	var verdict pb.Verdict
-	if err := proto.Unmarshal(record.GetEnforcementInstructions(), &verdict); err != nil {
-		return nil, ErrContextCorrupt
-	}
-	return &verdict, nil
-}
-
 // executionID reads the QueryExecutionId AWS returned; a client-supplied id never reaches here.
 func executionID(body []byte) (string, error) {
-	envelope, err := DecodeEnvelope(body)
+	envelope, err := httpdb.DecodeEnvelope(body)
 	if err != nil {
 		return "", err
 	}
@@ -176,4 +98,59 @@ func executionID(body []byte) (string, error) {
 		return "", errors.New("athena: QueryExecutionId is malformed")
 	}
 	return id, nil
+}
+
+func queryString(e *httpdb.Envelope) (string, bool, error) {
+	value := e.Field("QueryString")
+	if value == nil {
+		return "", false, nil
+	}
+	if len(value) == 0 || value[0] != '"' {
+		return "", true, errors.New("athena: QueryString must be a string")
+	}
+	var query string
+	err := json.Unmarshal(value, &query)
+	return query, true, err
+}
+
+func executionParameters(e *httpdb.Envelope) ([]string, bool, error) {
+	value := e.Field("ExecutionParameters")
+	if value == nil {
+		return nil, false, nil
+	}
+	if len(value) == 0 || value[0] != '[' {
+		return nil, true, errors.New("athena: ExecutionParameters must be a string array")
+	}
+	var values []json.RawMessage
+	if err := json.Unmarshal(value, &values); err != nil {
+		return nil, true, err
+	}
+	parameters := make([]string, len(values))
+	for i, value := range values {
+		if len(value) == 0 || value[0] != '"' {
+			return nil, true, errors.New("athena: ExecutionParameters must be a string array")
+		}
+		if err := json.Unmarshal(value, &parameters[i]); err != nil {
+			return nil, true, err
+		}
+	}
+	return parameters, true, nil
+}
+
+func withQueryString(e *httpdb.Envelope, query string) (*httpdb.Envelope, error) {
+	original, present, err := queryString(e)
+	if err != nil {
+		return nil, err
+	}
+	if !present {
+		return nil, errors.New("athena: QueryString is missing")
+	}
+	if query == original {
+		return e, nil
+	}
+	body, err := e.Replace("QueryString", query)
+	if err != nil {
+		return nil, err
+	}
+	return httpdb.DecodeEnvelope(body)
 }

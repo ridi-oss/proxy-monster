@@ -291,7 +291,7 @@ func startBroker(t *testing.T, proxyAddr string) int {
 
 // clientTarget is the pmon connection Target for the running broker, in the format a given client wants.
 func clientTarget(port int) driver.Target {
-	return driver.Target{Engine: "mysql", DbName: itDatabase, Port: port, User: itPrincipal, Password: itLocalPassword}
+	return driver.Target{Engine: "mysql", ConnectionInfo: database(itDatabase), Port: port, User: itPrincipal, Password: itLocalPassword}
 }
 
 // forContainer rewrites the loopback host in a pmon connection string to the alias a client container
@@ -450,7 +450,7 @@ func jdbcURL(scheme string, port int) string {
 		return forContainer(conn.String(driver.JDBC, clientTarget(port)))
 	}
 	tgt := clientTarget(port)
-	return fmt.Sprintf("jdbc:%s://%s:%d/%s?user=%s&password=%s", scheme, dockerHostAlias, port, tgt.DbName, tgt.User, tgt.Password)
+	return fmt.Sprintf("jdbc:%s://%s:%d/%s?user=%s&password=%s", scheme, dockerHostAlias, port, tgt.ConnectionInfo.Property("database"), tgt.User, tgt.Password)
 }
 
 // TestClientInteropGoDriver drives go-sql-driver/mysql against the exact `pmon show --go-dsn` DSN.
@@ -518,7 +518,7 @@ func TestClientInteropPHP(t *testing.T) {
 	h := newHarness(t)
 	tgt := clientTarget(h.brokerPort)
 	probe := writeTempFile(t, "probe.php", phpProbeSource)
-	dsn := fmt.Sprintf("mysql:host=%s;port=%d;dbname=%s", dockerHostAlias, tgt.Port, tgt.DbName)
+	dsn := fmt.Sprintf("mysql:host=%s;port=%d;dbname=%s", dockerHostAlias, tgt.Port, tgt.ConnectionInfo.Property("database"))
 	for _, img := range phpImages {
 		img := img
 		t.Run(img, func(t *testing.T) {
@@ -607,4 +607,8 @@ func writeTempFile(t *testing.T, name, content string) string {
 		t.Fatalf("write %s: %v", name, err)
 	}
 	return p
+}
+
+func database(name string) *driver.ConnectionInfo {
+	return &driver.ConnectionInfo{Properties: map[string]string{"database": name}}
 }

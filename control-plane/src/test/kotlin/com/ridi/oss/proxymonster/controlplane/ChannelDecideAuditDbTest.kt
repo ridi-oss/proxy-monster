@@ -53,9 +53,7 @@ class ChannelDecideAuditDbTest {
 
 
     @Test
-    fun `the editor channel passthrough-allows a session statement, workflow phases still deny`() {
-        // The stateful editor may run SET/USE/BEGIN (its held connection persists them; the proxy
-        // re-probes the live path per query, so it's safe). The one-shot workflow phases still deny.
+    fun `the editor passthrough-allows SET and BEGIN, a workflow passthrough-allows SET but denies BEGIN`() {
         val editor = decide("SET search_path = public", Channel.EDITOR)
         assertEquals(EnfAction.ALLOW, editor.action, "editor session may passthrough SET: ${editor.denyReason}")
         assertTrue(editor.passthrough, "SET is a session-mutating passthrough on the editor channel")
@@ -64,7 +62,14 @@ class ChannelDecideAuditDbTest {
         assertEquals(EnfAction.ALLOW, begin.action, "editor session may passthrough BEGIN: ${begin.denyReason}")
 
         val wfexec = decide("SET search_path = public", Channel.WORKFLOW_EXECUTOR)
-        assertEquals(EnfAction.DENY, wfexec.action, "a workflow-executor one-shot may not run a session statement")
+        assertEquals(EnfAction.ALLOW, wfexec.action, "workflow executor may passthrough SET: ${wfexec.denyReason}")
+        assertTrue(wfexec.passthrough, "SET is a session-mutating passthrough on the workflow executor")
+
+        val viewer = decide("SET search_path = public", Channel.WORKFLOW_VIEWER)
+        assertEquals(EnfAction.ALLOW, viewer.action, "a stored SET result stays viewable: ${viewer.denyReason}")
+
+        val wfBegin = decide("BEGIN", Channel.WORKFLOW_EXECUTOR)
+        assertEquals(EnfAction.DENY, wfBegin.action, "a workflow may not open a transaction it cannot commit")
     }
 
     @Test
@@ -139,7 +144,7 @@ class ChannelDecideAuditDbTest {
         // the temp (what the target DB binds). A temp is unclassified + owned by the user → read UNMASKED.
         val tempSchema = "pg_temp_9"
         val tempCol = CatalogColumn(
-            catalog = fx.datasource.dbName, schema = tempSchema, table = "scratch", column = "secret",
+            catalog = fx.datasource.effectiveCatalog, schema = tempSchema, table = "scratch", column = "secret",
             dataType = "text", sqlType = "text", ordinal = 1, nullable = true, isTemp = true,
         )
         val sql = "select secret from scratch"
@@ -167,7 +172,7 @@ class ChannelDecideAuditDbTest {
         val tempSchema = "pg_temp_9"
         // A session temp the attacker already holds (in the overlay), as the INSERT sink — the strongest form.
         val scratch = CatalogColumn(
-            catalog = fx.datasource.dbName, schema = tempSchema, table = "scratch", column = "ssn",
+            catalog = fx.datasource.effectiveCatalog, schema = tempSchema, table = "scratch", column = "ssn",
             dataType = "text", sqlType = "text", ordinal = 1, nullable = true, isTemp = true,
         )
         fun decideWrite(principal: String, sql: String) = decideQuery(
@@ -192,7 +197,7 @@ class ChannelDecideAuditDbTest {
         // overlay the same scan is unresolvable → DENY, so the exclusion is what ALLOWs it, not a hole.
         val tempSchema = "pg_temp_9"
         val tempCol = CatalogColumn(
-            catalog = fx.datasource.dbName, schema = tempSchema, table = "scratch", column = "secret",
+            catalog = fx.datasource.effectiveCatalog, schema = tempSchema, table = "scratch", column = "secret",
             dataType = "text", sqlType = "text", ordinal = 1, nullable = true, isTemp = true,
         )
         fun decideCount(temps: List<CatalogColumn>) = decideQuery(

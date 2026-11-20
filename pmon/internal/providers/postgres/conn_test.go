@@ -7,7 +7,7 @@ import (
 )
 
 func TestFormatsCarrySSLModeDisable(t *testing.T) {
-	target := driver.Target{Engine: "postgres", DbName: "app", Port: 6101, User: "you@example.com", Password: "pw"}
+	target := driver.Target{Engine: "postgres", ConnectionInfo: database("app"), Port: 6101, User: "you@example.com", Password: "pw"}
 	cases := map[driver.Format]string{
 		driver.URL:   "postgresql://you%40example.com:pw@127.0.0.1:6101/app?sslmode=disable",
 		driver.JDBC:  "jdbc:postgresql://127.0.0.1:6101/app?user=you%40example.com&password=pw&sslmode=disable",
@@ -22,7 +22,7 @@ func TestFormatsCarrySSLModeDisable(t *testing.T) {
 }
 
 func TestEscapesURLPathAndUserInfo(t *testing.T) {
-	target := driver.Target{Engine: "postgres", DbName: "team / reports", Port: 6101, User: "user name", Password: "pw/secret"}
+	target := driver.Target{Engine: "postgres", ConnectionInfo: database("team / reports"), Port: 6101, User: "user name", Password: "pw/secret"}
 	cases := map[driver.Format]string{
 		driver.URL:  "postgresql://user%20name:pw%2Fsecret@127.0.0.1:6101/team%20%2F%20reports?sslmode=disable",
 		driver.JDBC: "jdbc:postgresql://127.0.0.1:6101/team%20%2F%20reports?user=user+name&password=pw%2Fsecret&sslmode=disable",
@@ -35,7 +35,7 @@ func TestEscapesURLPathAndUserInfo(t *testing.T) {
 }
 
 func TestEscapesKeywordValues(t *testing.T) {
-	target := driver.Target{Engine: "postgres", DbName: "team / reports", Port: 6101, User: "user name", Password: `pw'\secret`}
+	target := driver.Target{Engine: "postgres", ConnectionInfo: database("team / reports"), Port: 6101, User: "user name", Password: `pw'\secret`}
 	wantDSN := `host=127.0.0.1 port=6101 user='user name' password='pw\'\\secret' dbname='team / reports' sslmode=disable`
 	if got := (Provider{}).FormatConnectionString(driver.GoDSN, target, driver.Options{}); got != wantDSN {
 		t.Errorf("GoDSN = %q, want %q", got, wantDSN)
@@ -44,4 +44,8 @@ func TestEscapesKeywordValues(t *testing.T) {
 	if got := (Provider{}).FormatConnectionString(driver.CLI, target, driver.Options{}); got != wantCLI {
 		t.Errorf("CLI = %q, want %q", got, wantCLI)
 	}
+}
+
+func database(name string) *driver.ConnectionInfo {
+	return &driver.ConnectionInfo{Properties: map[string]string{"database": name}}
 }

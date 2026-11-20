@@ -97,9 +97,8 @@ func TestFormatEscapesMetadata(t *testing.T) {
 func TestFormatDefaultsStayProviderOwned(t *testing.T) {
 	target := formatTarget()
 	target.ConnectionInfo = &driver.ConnectionInfo{Properties: map[string]string{"region": "us-east-1"}}
-	target.DbName = "fallback"
 	got := (Provider{}).FormatConnectionString(driver.CLI, target, driver.Options{})
-	for _, part := range []string{"--work-group 'primary'", `"Catalog":"AwsDataCatalog"`, `"Database":"fallback"`} {
+	for _, part := range []string{"--work-group 'primary'", `"Catalog":"AwsDataCatalog"`, `"Database":"default"`} {
 		if !strings.Contains(got, part) {
 			t.Errorf("missing default %q in %s", part, got)
 		}

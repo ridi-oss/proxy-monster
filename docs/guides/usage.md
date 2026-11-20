@@ -50,9 +50,9 @@ Each statement is also gated by its kind, separately from the columns it reads:
 | admin | `KILL`, `FLUSH`, `GRANT`, `LOAD DATA` | `stmt.cat.admin.*` |
 
 Holding a role that reads a table does not let you run `SHOW TABLES` or `SET` on
-it — those are their own grants. Session statements run only from the console
-editor and a wire connection; through MCP or an approval they are always denied,
-since each of those runs on a fresh connection.
+it — those are their own grants. Session statements run from the console editor
+and a wire connection. An approval runs only a variable `SET`, which holds for
+the statements after it; MCP runs none.
 
 ## 1. Run a query against dev
 

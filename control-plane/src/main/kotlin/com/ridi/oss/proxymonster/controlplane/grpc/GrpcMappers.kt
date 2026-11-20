@@ -40,7 +40,6 @@ internal fun DecisionContext.toWireDecision(
             // decision in decideQuery (Cedar + engine capability + action).
             this.sanitizeDiagnostics = ctx.sanitizeDiagnostics
             forwardTargetError = ctx.forwardTargetError
-            ctx.submission?.let { submission = it }
             ctx.resultRequirements?.let { resultRequirements = it }
         }
     }

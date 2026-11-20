@@ -14,22 +14,23 @@ func (Provider) SupportedFormats() []driver.Format {
 func (Provider) DefaultFormat() driver.Format { return driver.URL }
 
 func (Provider) FormatConnectionString(format driver.Format, t driver.Target, opts driver.Options) string {
+	database := t.ConnectionInfo.Property("database")
 	switch format {
 	case driver.JDBC:
 		jdbc := fmt.Sprintf("jdbc:mysql://%s:%d/%s?user=%s&password=%s",
-			driver.Host, t.Port, t.DbName, url.QueryEscape(t.User), url.QueryEscape(t.Password))
+			driver.Host, t.Port, database, url.QueryEscape(t.User), url.QueryEscape(t.Password))
 		if opts.JDBCTruncationDiagnostics {
 			return jdbc
 		}
 		return jdbc + "&jdbcCompliantTruncation=false"
 	case driver.GoDSN:
 		return fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?parseTime=true&charset=utf8mb4",
-			t.User, t.Password, driver.Host, t.Port, t.DbName)
+			t.User, t.Password, driver.Host, t.Port, database)
 	case driver.CLI:
 		return fmt.Sprintf("mysql -h %s -P %d -u %s -p%s %s",
-			driver.Host, t.Port, driver.ShellQuote(t.User), driver.ShellQuote(t.Password), driver.ShellQuote(t.DbName))
+			driver.Host, t.Port, driver.ShellQuote(t.User), driver.ShellQuote(t.Password), driver.ShellQuote(database))
 	default:
 		return fmt.Sprintf("mysql://%s:%s@%s:%d/%s",
-			url.QueryEscape(t.User), url.QueryEscape(t.Password), driver.Host, t.Port, t.DbName)
+			url.QueryEscape(t.User), url.QueryEscape(t.Password), driver.Host, t.Port, database)
 	}
 }

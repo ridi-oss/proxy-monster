@@ -11,13 +11,9 @@ import com.ridi.oss.proxymonster.controlplane.ClassificationInput
 import com.ridi.oss.proxymonster.controlplane.ConnectionCatalogRegistry
 import com.ridi.oss.proxymonster.controlplane.PrincipalSessionStore
 import com.ridi.oss.proxymonster.controlplane.Datasource
-import com.ridi.oss.proxymonster.controlplane.DatasourceEngineConflictException
-import com.ridi.oss.proxymonster.controlplane.DatasourceInput
 import com.ridi.oss.proxymonster.controlplane.RefreshResult
 import com.ridi.oss.proxymonster.controlplane.TestResult
-import com.ridi.oss.proxymonster.controlplane.engineFromWireOrNull
 import com.ridi.oss.proxymonster.controlplane.isSystemSchema
-import com.ridi.oss.proxymonster.controlplane.wireName
 import com.ridi.oss.proxymonster.controlplane.columnKey
 import com.ridi.oss.proxymonster.probe.ColumnKey
 import com.ridi.oss.proxymonster.controlplane.DatasourceStore
@@ -130,33 +126,6 @@ class DatasourceManagementService(
         }
     }
 
-    fun createDatasource(input: DatasourceInput, actor: AuditActor): Datasource =
-        store.dataSource.inTx { createDatasource(input, actor, it) }
-
-    fun createDatasource(input: DatasourceInput, actor: AuditActor, c: Connection): Datasource {
-        val created = store.create(canonical(input), c)
-        recordDatasource(c, actor, created.name, "create datasource '${created.name}'")
-        return created
-    }
-
-    fun updateDatasource(id: Long, input: DatasourceInput, actor: AuditActor): Datasource? =
-        store.dataSource.inTx { updateDatasource(id, input, actor, it) }
-
-    fun updateDatasource(id: Long, input: DatasourceInput, actor: AuditActor, c: Connection): Datasource? {
-        val canonical = canonical(input)
-        val before = store.get(id, c) ?: return null
-        val updated = try {
-            store.update(id, canonical, c)
-        } catch (_: DatasourceEngineConflictException) {
-            throw ManagementException(ApiError("datasource.engine_immutable"))
-        } ?: return null
-        recordDatasource(c, actor, updated.name, updateSummary("datasource", before.name, updated.name))
-        return updated
-    }
-
-    fun updateDatasource(name: String, input: DatasourceInput, actor: AuditActor, c: Connection): Datasource =
-        updateDatasource(datasource(name, c).id, input, actor, c) ?: notFound("datasource")
-
     fun deleteDatasource(name: String, actor: AuditActor, c: Connection): DeleteResult =
         deleteDatasource(datasource(name, c).id, actor, c)
 
@@ -170,15 +139,6 @@ class DatasourceManagementService(
     fun testDatasource(name: String): TestResult = test(datasource(name))
 
     private fun test(ds: Datasource): TestResult = store.test(ds, ds.name in eventsHub.attached())
-
-    // A non-canonical engine would be stored verbatim and then locked by the immutability guard, so the
-    // datasource could never be adopted by its proxy, which registers only the canonical wire names.
-    private fun canonical(input: DatasourceInput): DatasourceInput {
-        required("name", input.name)
-        val engine = engineFromWireOrNull(input.engine)
-            ?: throw ManagementException(ApiError("datasource.invalid_engine", mapOf("engine" to input.engine)))
-        return input.copy(engine = engine.wireName)
-    }
 
     fun deleteDatasource(id: Long, actor: AuditActor): DeleteResult =
         store.dataSource.inTx { deleteDatasource(id, actor, it) }

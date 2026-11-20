@@ -38,9 +38,7 @@ class RequestOrderingDbTest {
         requireDockerOrSkip()
         dataSource = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_request_ordering"))
         core = ControlPlaneCore(dataSource)
-        ds = core.datasourceStore.create(
-            DatasourceInput(name = "ordering-ds", engine = "postgres", host = "h", port = 5432, dbName = "d"),
-        )
+        ds = core.datasourceStore.registerOnly("ordering-ds", "postgres")
         role = core.policyStore.createRole(RoleInput("ordering-role"))
         appScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     }

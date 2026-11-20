@@ -165,8 +165,9 @@ the trusted-network preset also applies; elsewhere the stored value comes back
 masked.
 
 Enabled guardrails you normally leave alone: `system:session-channel-forbid`
-(session statements only on the editor and wire), the `system:` classification
-floors (`system:critical-guard` and friends), and the result caps below.
+(session statements on the editor and wire; a workflow only a variable `SET`),
+the `system:` classification floors (`system:critical-guard` and friends), and
+the result caps below.
 
 ### 4. Map groups to roles
 
@@ -320,9 +321,8 @@ Tools worth knowing:
 - `set_column_classifications` — bulk tagging, all or nothing, up to 500
   columns.
 - `get_policy_schema`, `validate_policy` — check Cedar before `create_policy`.
-- `create_datasource`, `update_datasource`, `refresh_datasource`,
-  `test_datasource` — pre-provision a datasource, ask its proxy to re-push the
-  catalog, check that a proxy is attached.
+- `refresh_datasource`, `test_datasource` — ask a datasource's proxy to re-push
+  the catalog, check that a proxy is attached.
 - `list_audit`, `get_audit_event` — the decision log.
 
 Scope is a ceiling, never a grant. Cedar still decides every call; a write scope

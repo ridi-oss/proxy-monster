@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ridi-oss/proxy-monster/goproxy/athena"
 	"github.com/ridi-oss/proxy-monster/goproxy/mysql"
 	"github.com/ridi-oss/proxy-monster/goproxy/postgres"
 
@@ -30,6 +29,7 @@ import (
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
+	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
 )
 
 const (
@@ -249,7 +249,7 @@ func (f *editorFakeCP) editorSetFragmentPushError(err error) {
 type editorEngineFixture struct {
 	editorEngine    *engines.Engine
 	editorTarget    spi.Target
-	editorConfig    spi.TargetConfig
+	editorConfig    sqldb.Settings
 	editorTable     string
 	editorNamespace []string
 }
@@ -1070,6 +1070,23 @@ func TestServerMySQLReportsNamespaceAfterUse(t *testing.T) {
 	}
 }
 
+func TestServerMySQLKeepsSessionSqlModeAcrossStatements(t *testing.T) {
+	fixture := editorSeedMySQL(t)
+	fake, client := editorStartFakeCP(t, editorSessionID)
+	editorLaunch(t, fake, client, fixture)
+
+	editorSendQuery(fake, "SET SESSION sql_mode = 'STRICT_TRANS_TABLES'", 20)
+	editorExpectDecision(t, editorRecv(t, fake), pb.EnfAction_ALLOW, nil, "")
+	editorExpectRows(t, editorRecv(t, fake), nil)
+	editorExpectDone(t, editorRecv(t, fake), 0)
+
+	editorSendQuery(fake, "SELECT @@SESSION.sql_mode AS mode", 20)
+	editorExpectDecision(t, editorRecv(t, fake), pb.EnfAction_ALLOW, nil, "")
+	rows := editorExpectRows(t, editorRecv(t, fake), []string{"mode"})
+	editorExpectValues(t, rows, [][]editorExpectedValue{{{value: "STRICT_TRANS_TABLES"}}})
+	editorExpectDone(t, editorRecv(t, fake), -1)
+}
+
 func TestServerMySQLOpensInDefaultSchema(t *testing.T) {
 	fixture := editorSeedMySQL(t)
 	const altSchema = editorMySQLSchema + "_default"
@@ -1845,7 +1862,7 @@ func editorSeedMySQL(t *testing.T) editorEngineFixture {
 		}
 	}
 	editorSeedRows(t, seed, "INSERT INTO "+editorMySQLSchema+".pm_run_rows (id, secret) VALUES ")
-	config := spi.TargetConfig{
+	config := sqldb.Settings{
 		Host: targetConfig.Host, Port: targetConfig.Port, Db: editorMySQLSchema,
 		User: editorMySQLService, Password: editorMySQLServicePwd,
 	}
@@ -1873,7 +1890,7 @@ func editorSeedPostgres(t *testing.T) editorEngineFixture {
 		}
 	}
 	editorSeedRows(t, seed, "INSERT INTO "+editorPGSchema+".pm_run_rows (id, secret) VALUES ")
-	config := spi.TargetConfig{
+	config := sqldb.Settings{
 		Host: targetConfig.Host, Port: targetConfig.Port, Db: targetConfig.DB,
 		User: targetConfig.User, Password: targetConfig.Password,
 	}
@@ -1886,13 +1903,10 @@ func editorSeedPostgres(t *testing.T) editorEngineFixture {
 	}
 }
 
-func mustTarget(t *testing.T, e *engines.Engine, config spi.TargetConfig) spi.Target {
+func mustTarget(t *testing.T, e *engines.Engine, settings sqldb.Settings) spi.Target {
 	t.Helper()
-	provider, err := registry.For(e)
-	if err != nil {
-		t.Fatalf("registry.For(%s): %v", e.WireName, err)
-	}
-	target, err := provider.OpenTarget(config)
+	open := map[*engines.Engine]func(sqldb.Settings, string) (spi.Target, error){engines.MySQL: mysql.OpenTarget, engines.Postgres: postgres.OpenTarget}[e]
+	target, err := open(settings, "")
 	if err != nil {
 		t.Fatalf("OpenTarget(%s): %v", e.WireName, err)
 	}
@@ -1977,7 +1991,7 @@ func editorWaitForClosesWithin(t *testing.T, fake *editorFakeCP, count int, with
 // editorStallingTarget is a TCP endpoint that accepts connections and holds them open without ever writing, so a
 // target-DB handshake read against it stalls. accepted fires on the first accepted connection.
 type editorStallingTarget struct {
-	config   spi.TargetConfig
+	config   sqldb.Settings
 	accepted <-chan struct{}
 }
 
@@ -2018,7 +2032,7 @@ func editorStartStallingTarget(t *testing.T) editorStallingTarget {
 	})
 	addr := listener.Addr().(*net.TCPAddr)
 	return editorStallingTarget{
-		config: spi.TargetConfig{
+		config: sqldb.Settings{
 			Host: addr.IP.String(), Port: addr.Port, Db: editorMySQLSchema,
 			User: editorMySQLService, Password: editorMySQLServicePwd,
 		},
@@ -2247,5 +2261,3 @@ func editorExpectNoServing(t *testing.T, fake *editorFakeCP) {
 	default:
 	}
 }
-
-var registry = spi.MustRegistry(athena.Provider{}, mysql.Provider{}, postgres.Provider{})

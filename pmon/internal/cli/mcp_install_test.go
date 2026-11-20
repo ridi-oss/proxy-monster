@@ -134,7 +134,7 @@ func TestServerRenameMovesEverything(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	cp := fakeCP(t, []map[string]any{{"name": "acme-mysql", "engine": "mysql", "dbName": "app", "advertiseAddr": dummyProxy(t)}})
+	cp := fakeCP(t, []map[string]any{{"name": "acme-mysql", "engine": "mysql", "connectionInfo": map[string]any{"properties": map[string]string{"database": "app"}}, "advertiseAddr": dummyProxy(t)}})
 	e.mustRun(t, "login", "--url", cp.URL, "dev")
 	e.mustRun(t, "mcp", "--install", "--app", "claude-desktop")
 	// An https entry for the server, added after the install: a rename moves pmon's entry without replacing it.

@@ -88,7 +88,7 @@ class ApprovalDiscoverPickSubmitRouteDbTest {
     private fun seedRolesForUnionVsAloneTeeth() {
         val ds = fx.datasource
         // Postgres EUID shape used by EnforcementFixture.seedPolicy: "<ds>/<catalog>/<schema>/users".
-        val usersEuid = "${ds.name}/${ds.dbName}/public/users"
+        val usersEuid = "${ds.name}/${ds.effectiveCatalog}/public/users"
 
         fun grant(name: String, src: String) =
             fx.cedarPolicyStore.create(CedarPolicyInput(name = name, cedarSrc = src), updatedBy = "discover-pick-submit-test")
@@ -178,6 +178,43 @@ class ApprovalDiscoverPickSubmitRouteDbTest {
         val stored = fx.accessStore.getRequest(created.request.id)
         assertTrue(stored != null, "the created request must be readable back from the store")
         assertEquals(fullReader.roleId, stored!!.roleId, "the stored request's roleId must match what was picked/submitted")
+    }
+
+    @Test
+    fun `discover offers a role that runs a session variable SET ahead of the query, but never for BEGIN`() = testApplication {
+        val client = wire()
+        val ds = fx.datasource
+        fx.policyStore.createRole(RoleInput("session-reader"))
+        fx.cedarPolicyStore.create(
+            CedarPolicyInput(
+                name = "session-reader-connect-select-session",
+                cedarSrc = """permit(principal in Role::"session-reader", action in [Action::"datasource.connect", Action::"stmt.cat.read", Action::"stmt.cat.session"], resource in Datasource::"${ds.name}");""",
+            ),
+            updatedBy = "discover-pick-submit-test",
+        )
+        fx.cedarPolicyStore.create(
+            CedarPolicyInput(
+                name = "session-reader-users-unmasked",
+                cedarSrc = """permit(principal in Role::"session-reader", action == Action::"result.read.unmasked", resource in Table::"${ds.name}/${ds.effectiveCatalog}/public/users");""",
+            ),
+            updatedBy = "discover-pick-submit-test",
+        )
+
+        suspend fun offeredFor(batch: String): Set<String> {
+            val response = client.post("/api/approvals/discover-roles") {
+                contentType(ContentType.Application.Json)
+                setBody(DiscoverRolesRequest(datasourceId = ds.id, sql = batch))
+            }
+            assertEquals(HttpStatusCode.OK, response.status)
+            return response.body<DiscoverRolesResponse>().options.map { it.roleName }.toSet()
+        }
+
+        val withSet = offeredFor("SET statement_timeout = '5min';\n$sql")
+        assertTrue("session-reader" in withSet, "the workflow executor admits a granted session variable SET. Offered: $withSet")
+        assertFalse("full-reader" in withSet, "a role without the session grant still cannot run the SET. Offered: $withSet")
+
+        val withBegin = offeredFor("BEGIN;\n$sql")
+        assertFalse("session-reader" in withBegin, "a workflow may not open a transaction it cannot commit. Offered: $withBegin")
     }
 
     /**

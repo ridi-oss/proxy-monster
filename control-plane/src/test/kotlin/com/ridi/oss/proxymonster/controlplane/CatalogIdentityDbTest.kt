@@ -35,7 +35,7 @@ class CatalogIdentityDbTest {
             assertEquals("def", store.catalog(1).columns.single().classification!!.catalog)
             assertEquals("old", store.catalog(2).columns.single().classification!!.catalog)
 
-            store.register("pg", Engine.POSTGRES, "h", 5432, "new", emptyList(), "", null, false)
+            store.register("pg", Engine.POSTGRES, "h:5432", emptyList(), "", null, false)
             store.storePushedCatalog(2, listOf("public"), null, "16.3", snapshotOf(pushedColumn("public", "users", "ssn", "text", 1, true, catalog = "new")), currentCatalog = "new")
             val current = store.catalog(2).columns.single()
             assertEquals("new", current.catalog)
@@ -64,7 +64,7 @@ class CatalogIdentityDbTest {
         try {
             Flyway.configure().dataSource(dataSource).load().migrate()
             val store = DatasourceStore(dataSource)
-            val ds = store.create(DatasourceInput("joined", "postgres", dbName = "a"))
+            val ds = store.registerOnly("joined", "postgres")
             dataSource.connection.use { c ->
                 c.prepareStatement("UPDATE datasource SET catalog = ?, current_catalog_name = 'a' WHERE id = ?").use { ps ->
                     ps.setBytes(1, snapshotOf(
@@ -95,19 +95,19 @@ class CatalogIdentityDbTest {
         try {
             Flyway.configure().dataSource(dataSource).load().migrate()
             val store = DatasourceStore(dataSource)
-            val mysql = store.create(DatasourceInput("shop", "mysql", dbName = "app"))
+            val mysql = store.registerOnly("shop", "mysql")
             store.storePushedCatalog(mysql.id, listOf("app"), 1, "8.0", snapshotOf(pushedColumn("app", "users", "ssn", "text", 1, true, catalog = "def")), currentCatalog = "def")
             val written = store.upsertClassification(mysql.id, ClassificationInput("App", "Users", "SSN", listOf("pii"), catalog = "def"))
             assertEquals(listOf("app", "users", "ssn"), listOf(written.schema, written.table, written.column))
             assertEquals(listOf("pii"), store.catalog(mysql.id).columns.single().classification!!.tags)
             assertEquals(true, store.deleteClassification(mysql.id, "APP", "users", "Ssn", "def"))
 
-            val athena = store.create(DatasourceInput("lake", "athena", dbName = "hr"))
+            val athena = store.registerOnly("lake", "athena")
             store.storePushedCatalog(athena.id, listOf("hr"), null, "3", snapshotOf(pushedColumn("hr", "salaries", "ssn", "string", 1, true, catalog = "awsdatacatalog")), currentCatalog = "awsdatacatalog")
             store.upsertClassification(athena.id, ClassificationInput("HR", "Salaries", "SSN", listOf("pii"), catalog = "AwsDataCatalog"))
             assertEquals(listOf("pii"), store.catalog(athena.id).columns.single().classification!!.tags)
 
-            val pg = store.create(DatasourceInput("pg", "postgres", dbName = "a"))
+            val pg = store.registerOnly("pg", "postgres")
             store.storePushedCatalog(
                 pg.id, listOf("public"), null, "16.3",
                 snapshotOf(
@@ -126,7 +126,7 @@ class CatalogIdentityDbTest {
             }
 
             // A browsed Postgres name sent quoted, the way the console sends it, keys the exact catalog row.
-            val shop = store.create(DatasourceInput("browsed", "postgres", dbName = "Shop"))
+            val shop = store.registerOnly("browsed", "postgres")
             store.storePushedCatalog(
                 shop.id, listOf("public"), null, "16.3",
                 snapshotOf(
@@ -144,13 +144,13 @@ class CatalogIdentityDbTest {
                 store.upsertClassification(shop.id, ClassificationInput("public", "Users", "SSN", listOf("pii"), catalog = "Shop"))
             }
 
-            val unintrospected = store.create(DatasourceInput("fresh", "mysql", dbName = "app"))
+            val unintrospected = store.registerOnly("fresh", "mysql")
             val refused = assertFailsWith<ManagementException> {
                 store.upsertClassification(unintrospected.id, ClassificationInput("app", "users", "ssn", listOf("pii"), catalog = "def"))
             }
             assertEquals("datasource.case_mode_unknown", refused.error.code)
             for ((mode, expected) in listOf(0 to listOf("App", "Users", "ssn"), 2 to listOf("app", "users", "ssn"))) {
-                val ds = store.create(DatasourceInput("mysql$mode", "mysql", dbName = "App"))
+                val ds = store.registerOnly("mysql$mode", "mysql")
                 store.storePushedCatalog(ds.id, listOf("App"), mode, "8.0", snapshotOf(), currentCatalog = "def")
                 val key = store.upsertClassification(ds.id, ClassificationInput("App", "Users", "SSN", listOf("pii"), catalog = "def"))
                 assertEquals(expected, listOf(key.schema, key.table, key.column), "lower_case_table_names=$mode")

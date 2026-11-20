@@ -37,9 +37,7 @@ class QueryResultBatchDbTest {
         requireDockerOrSkip()
         dataSource = SharedPostgres.hikari(SharedPostgres.migratedDatabase("pm_qr_batch"))
         accessStore = AccessStore(dataSource)
-        datasourceId = DatasourceStore(dataSource).create(
-            DatasourceInput(name = "ds", engine = "postgres", host = "h", port = 5432, dbName = "d"),
-        ).id
+        datasourceId = DatasourceStore(dataSource).registerOnly("ds", "postgres").id
         store = QueryResultStore(dataSource, ResultCrypto(ByteArray(32) { it.toByte() }))
     }
 

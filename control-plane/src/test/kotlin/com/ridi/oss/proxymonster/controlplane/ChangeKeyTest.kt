@@ -11,7 +11,7 @@ import kotlin.test.assertTrue
 
 class ChangeKeyTest {
     private val mysql = Datasource(
-        id = 1, name = "app", engine = Engine.MYSQL, host = "db", port = 3306, dbName = "app",
+        id = 1, name = "app", engine = Engine.MYSQL, targetInfo = "db:3306", dbName = "app",
         mysqlLowerCaseTableNames = 0, engineVersion = "8.0.36",
     )
 

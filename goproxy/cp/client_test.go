@@ -72,21 +72,6 @@ func TestDecisionFromWire(t *testing.T) {
 		}
 	})
 
-	t.Run("the submission rides rewritten sql", func(t *testing.T) {
-		_, got := decisionFromWire(wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW, RewrittenSql: proto.String("SELECT 1"), Submission: &enginepb.Submission{Engine: &enginepb.Submission_Athena{Athena: &enginepb.AthenaSubmission{ExecutionParameters: []string{"'x'"}}}}}))
-		if got.Action != "ALLOW" || got.RewrittenSQL == nil || *got.RewrittenSQL != "SELECT 1" || got.Submission.GetAthena() == nil || len(got.Submission.GetAthena().ExecutionParameters) != 1 {
-			t.Fatalf("submission not mapped: %+v", got)
-		}
-		_, got = decisionFromWire(wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW, RewrittenSql: proto.String("SELECT 1"), Submission: &enginepb.Submission{Engine: &enginepb.Submission_Athena{Athena: &enginepb.AthenaSubmission{}}}}))
-		if got.Action != "ALLOW" || got.Submission.GetAthena() == nil || len(got.Submission.GetAthena().ExecutionParameters) != 0 {
-			t.Fatalf("empty parameter list lost its presence: %+v", got)
-		}
-		_, got = decisionFromWire(wireVerdict(&pb.Verdict{Decision: pb.EnfAction_ALLOW, Submission: &enginepb.Submission{Engine: &enginepb.Submission_Athena{Athena: &enginepb.AthenaSubmission{}}}}))
-		if got.Action != "DENY" {
-			t.Fatalf("parameters without rewritten sql accepted: %+v", got)
-		}
-	})
-
 	t.Run("targeted after statement and generation survive", func(t *testing.T) {
 		commands, got := decisionFromWire(wireVerdict(&pb.Verdict{
 			Decision:            pb.EnfAction_MASK,
@@ -230,7 +215,7 @@ func TestOpenConnectionAndDecideUnreachable(t *testing.T) {
 func TestRegisterUnspecifiedEngineRejectedBeforeRPC(t *testing.T) {
 	fake := &fakeControlPlane{}
 	c := startFakeControlPlane(t, fake)
-	if err := c.Register(enginepb.Engine_ENGINE_UNSPECIFIED, "localhost", 1234, "db", nil, "", nil, false, nil, nil); err == nil || !strings.Contains(err.Error(), "unspecified engine") {
+	if err := c.Register(enginepb.Engine_ENGINE_UNSPECIFIED, "localhost:1234", nil, "", nil, false, nil, nil); err == nil || !strings.Contains(err.Error(), "unspecified engine") {
 		t.Fatalf("Register error = %v, want local unspecified-engine error", err)
 	}
 	fake.mu.Lock()
@@ -625,7 +610,7 @@ func TestRegisterAndPushCatalog(t *testing.T) {
 	fake := &fakeControlPlane{}
 	c := startFakeControlPlane(t, fake)
 	chain := "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
-	if err := c.Register(enginepb.Engine_MYSQL, "target DB", 3306, "app", []string{"tag"}, "127.0.0.1:6033", &chain, true, nil, nil); err != nil {
+	if err := c.Register(enginepb.Engine_MYSQL, "target DB:3306", []string{"tag"}, "127.0.0.1:6033", &chain, true, nil, nil); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	catalog := &pb.CatalogRequest{Catalog: &enginepb.CatalogSnapshot{Columns: []*enginepb.Column{{Schema: "s", Table: "t", Column: "c"}}}}
@@ -635,7 +620,7 @@ func TestRegisterAndPushCatalog(t *testing.T) {
 	fake.mu.Lock()
 	register, catalogReq := fake.lastRegisterReq, fake.lastCatalog
 	fake.mu.Unlock()
-	if register.GetEngine() != enginepb.Engine_MYSQL || register.GetName() != "ds-1" {
+	if register.GetEngine() != enginepb.Engine_MYSQL || register.GetName() != "ds-1" || register.GetTargetInfo() != "target DB:3306" {
 		t.Fatalf("RegisterRequest = %+v", register)
 	}
 	// The proxy must announce its wire-protocol version so the control plane can turn away a skewed rollout.
@@ -670,7 +655,7 @@ func TestRegisterRejectsIncompatibleControlPlaneVersion(t *testing.T) {
 	bad := ProtocolVersion + 1
 	fake := &fakeControlPlane{registerRespVersion: &bad}
 	c := startFakeControlPlane(t, fake)
-	err := c.Register(enginepb.Engine_MYSQL, "target DB", 3306, "app", nil, "", nil, false, nil, nil)
+	err := c.Register(enginepb.Engine_MYSQL, "target DB:3306", nil, "", nil, false, nil, nil)
 	if !errors.Is(err, ErrIncompatibleControlPlane) {
 		t.Fatalf("Register against a version-skewed control plane must return ErrIncompatibleControlPlane: %v", err)
 	}
@@ -687,7 +672,7 @@ func TestRegisterTreatsControlPlaneRejectionAsIncompatible(t *testing.T) {
 		"proxy wire-protocol version 1 is incompatible with this control-plane's version 2 — deploy the proxy and control-plane from the same server-v* release",
 	)}
 	c := startFakeControlPlane(t, fake)
-	err := c.Register(enginepb.Engine_MYSQL, "target DB", 3306, "app", nil, "", nil, false, nil, nil)
+	err := c.Register(enginepb.Engine_MYSQL, "target DB:3306", nil, "", nil, false, nil, nil)
 	if !errors.Is(err, ErrIncompatibleControlPlane) {
 		t.Fatalf("a control-plane version rejection must surface as ErrIncompatibleControlPlane: %v", err)
 	}

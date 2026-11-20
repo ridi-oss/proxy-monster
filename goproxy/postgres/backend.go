@@ -19,6 +19,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgproto3"
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
+	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
 	"github.com/ridi-oss/proxy-monster/goproxy/wire"
 )
 
@@ -28,12 +29,12 @@ const targetDbHandshakeTimeout = 10 * time.Second
 // (deadline-bounded) auth exchange runs, an AfterFunc closes the conn on cancel so a blocked read unwinds at
 // once. On the run path ctx is the target-DB open context, so a run the control-plane already closed does not
 // finish a target-DB handshake nobody is waiting for; the wire path passes a background ctx (never cancelled).
-func dialTargetDbAuth(ctx context.Context, config spi.TargetConfig) (net.Conn, []pgproto3.ParameterStatus, pgproto3.BackendKeyData, byte, string, error) {
+func dialTargetDbAuth(ctx context.Context, config sqldb.Settings) (net.Conn, []pgproto3.ParameterStatus, pgproto3.BackendKeyData, byte, string, error) {
 	return dialTargetDbAuthParams(ctx, config, nil)
 }
 
 // dialTargetDbAuthParams adds extra startup parameters; the server applies them as session settings.
-func dialTargetDbAuthParams(ctx context.Context, config spi.TargetConfig, extra map[string]string) (net.Conn, []pgproto3.ParameterStatus, pgproto3.BackendKeyData, byte, string, error) {
+func dialTargetDbAuthParams(ctx context.Context, config sqldb.Settings, extra map[string]string) (net.Conn, []pgproto3.ParameterStatus, pgproto3.BackendKeyData, byte, string, error) {
 	dialer := net.Dialer{Timeout: targetDbHandshakeTimeout}
 	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(config.Host, strconv.Itoa(config.Port)))
 	if err != nil {
@@ -418,7 +419,7 @@ func startTargetDbTLS(ctx context.Context, conn net.Conn, config *tls.Config) (n
 	return tlsConn, nil
 }
 
-func sendCancelRequest(config spi.TargetConfig, processID uint32, secretKey []byte) error {
+func sendCancelRequest(config sqldb.Settings, processID uint32, secretKey []byte) error {
 	request := &pgproto3.CancelRequest{ProcessID: processID, SecretKey: secretKey}
 	encoded, err := request.Encode(nil)
 	if err != nil {

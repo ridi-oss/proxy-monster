@@ -13,6 +13,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
+import { PrivateField } from './private-request';
 import { DatasourceSelect } from '@/components/datasource-select';
 import { ErrorState, LoadingState } from '@/components/page-scaffold';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -60,6 +61,7 @@ export function QueryRequestComposer({
   const [sql, setSql] = useState('');
   const [title, setTitle] = useState('');
   const [reason, setReason] = useState('');
+  const [isPrivate, setIsPrivate] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   // The role the user explicitly picked, remembered across query changes so it can be RECOVERED when it is
@@ -163,6 +165,7 @@ export function QueryRequestComposer({
             title: title.trim() || undefined,
             reason: reason.trim(),
             roleId: pickedRoleId,
+            private: isPrivate,
           })
         : await createApproval({
             datasourceId: datasourceId!,
@@ -170,6 +173,7 @@ export function QueryRequestComposer({
             title: title.trim(),
             reason: reason.trim(),
             roleId: pickedRoleId,
+            private: isPrivate,
           });
       if (res.wouldAllow) {
         toast.info(t('queryComposer.wouldAllowToast'));
@@ -363,6 +367,8 @@ export function QueryRequestComposer({
               required
             />
           </div>
+
+          <PrivateField id="approval-private" checked={isPrivate} onCheckedChange={setIsPrivate} />
 
           <div className="flex justify-end gap-2">
             <Button type="button" variant="outline" onClick={onCancel} disabled={submitting}>

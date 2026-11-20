@@ -1,10 +1,7 @@
 package athena
 
 import (
-	"context"
 	"errors"
-	"fmt"
-	"time"
 
 	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/relay"
@@ -12,37 +9,28 @@ import (
 )
 
 // authorize obtains the control plane's verdict for one statement in the target's fixed scope.
-func (t *target) authorize(authz *spi.Authorizer, commandRunner *proxyCommandRunner, sql string, parameters []string, maxRows int) spi.Verdict {
+func (t *target) authorize(authz *spi.Authorizer, commandRunner *relay.ProxyCommandRunner, sql string, session *enginepb.SessionObservation) spi.Verdict {
 	// The snapshot carries this request's parameters and row cap, so a cached one would be stale.
 	authz.MarkNamespaceDirty()
 	return authz.Authorize(spi.AuthzInput{
 		SQL: sql,
 		ProbeSession: func() (spi.SessionSnapshot, error) {
-			return spi.SessionSnapshot{
-				CurrentCatalog: t.catalogIdentity(), Namespace: []string{t.databaseIdentity()},
-				SessionObservation: &enginepb.SessionObservation{Engine: &enginepb.SessionObservation_Athena{Athena: &enginepb.AthenaSqlContext{Workgroup: t.config.workgroup, ExecutionParameters: parameters, MaxRows: uint32(max(maxRows, 0))}}},
-			}, nil
+			if session.GetAthena() == nil {
+				return spi.SessionSnapshot{}, errors.New("athena: submission has no SQL context")
+			}
+			return spi.SessionSnapshot{CurrentCatalog: t.catalogIdentity(), Namespace: []string{t.databaseIdentity()}, SessionObservation: session}, nil
 		},
 		Commands: commandRunner,
 	})
 }
 
-// submittedQuery is the text and parameters the proxy sends: the control plane's rewrite and the parameter
-// list that goes with it when present, else the client's own.
-func submittedQuery(sql string, parameters []string, decision *spi.Decision) (string, []string) {
-	if decision != nil && decision.RewrittenSQL != nil {
-		sql = *decision.RewrittenSQL
+// session is the SQL context Decide sees for a statement with these parameters and row cap.
+func (t *target) session(parameters []string, maxRows int) *enginepb.SessionObservation {
+	sql := &enginepb.HttpDbSqlContext{MaxRows: uint32(max(maxRows, 0))}
+	for _, value := range parameters {
+		sql.Parameters = append(sql.Parameters, &enginepb.HttpDbParameter{Value: value})
 	}
-	if decision != nil && decision.Submission.GetAthena() != nil {
-		parameters = decision.Submission.GetAthena().GetExecutionParameters()
-	}
-	return sql, parameters
-}
-
-// completion reports the wire task's outcome; Athena executes asynchronously, so an accepted submission is
-// the proxy's execution boundary and row volume is unknown.
-func completion(reporter spi.ControlPlane, decision *spi.Decision, status string, start time.Time) {
-	relay.EmitCompletion(reporter, decision, spi.RelayStats{}, status, start)
+	return &enginepb.SessionObservation{Engine: &enginepb.SessionObservation_Athena{Athena: &enginepb.AthenaSqlContext{Workgroup: t.settings.workgroup, Httpdb: sql}}}
 }
 
 var errRunCanceled = errors.New("athena: query execution was canceled")
@@ -52,24 +40,4 @@ func describeFailure(reason string) error {
 		reason = "query execution failed"
 	}
 	return relay.TargetDbError{Message: reason, Redacted: relay.RedactedDiagnosticMessage}
-}
-
-func withDeadline(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
-	if timeout <= 0 {
-		return context.WithCancel(parent)
-	}
-	return context.WithTimeout(parent, timeout)
-}
-
-func verdictError(verdict spi.Verdict) error {
-	switch v := verdict.(type) {
-	case spi.Fail:
-		return relay.FailError{Message: v.Message}
-	case spi.Deny:
-		return nil
-	case spi.Proceed:
-		return nil
-	default:
-		return relay.FailError{Message: fmt.Sprintf("unexpected authorization verdict %T", verdict)}
-	}
 }

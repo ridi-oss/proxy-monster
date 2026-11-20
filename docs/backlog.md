@@ -249,9 +249,6 @@ Fixes for gaps documented in
   behind an admin assertion, auto-clearing declared-pure functions (low
   priority).
 - Surface computed `system:` tags in the catalog browser (display only).
-- Clear the config catalog and re-introspect when a datasource's identity
-  changes through the admin API. A retarget of the target database invalidates
-  it; other updates leave a stale catalog behind the config surfaces.
 - Tombstone a closed `connection_id` and require mint evidence. A closed or
   forged connection id is indistinguishable from a genuine post-restart id, so
   the decide path re-establishes it as restart recovery. No cross-principal
@@ -463,6 +460,13 @@ Fixes for gaps documented in
   mutate sequence / large-object state. Decide the tag (reuse `system:critical`
   vs. a new state-mutation category) and audit the full surface before landing —
   a manifest change per shipped engine version, curated like the native lists.
+- A `system:egress` tag for calls that send row values out of the database,
+  where masking on the result stream can't follow them. They borrow
+  `system:critical`: PostgreSQL `dblink_exec` and `lo_export`, and BigQuery
+  `AI.GENERATE`/`AI.EMBED`/`AI.SIMILARITY` (its manifest lands with BigQuery's
+  control-plane registration), whose model endpoint receives the cleartext of a
+  masked column. Audit the rest of the surface (remote UDFs, Athena external
+  functions, export statements) before landing.
 - Reconsider redacting, rather than denying, a masked column used only in
   `GROUP BY` / `DISTINCT`; `DISTINCT` is the more defensible loosening.
 - Validate that a bare column's inferred source actually exposes it before
@@ -495,6 +499,26 @@ Fixes for gaps documented in
 
 ## Refactoring
 
+- Retire `dbName`. pmon reads a datasource's database from its connection info,
+  and `dbName` remains only for releases from before the published `database`
+  property: `/api/datasources` serves it for older pmon, and pmon reads and
+  writes it at its JSON boundaries (`driver.Endpoint` from the control plane,
+  `control.Datasource` between the daemon and its CLI and tray) for older
+  control planes and daemons. Remove all of them once no supported pmon or
+  server predates the property.
+- Retire `advertise_addr`. The proxy publishes the address clients dial twice at
+  Register: as `advertise_addr` and as `connection_info.endpoint` (Athena's with
+  an `https://` prefix). pmon (`driver.Endpoint.AdvertiseAddr`, its MySQL and
+  PostgreSQL brokers) and the console's direct-connect strings read
+  `advertiseAddr`. Move them to the endpoint, then drop the field from
+  `RegisterRequest`, the `datasource` column and `/api/datasources`, keeping
+  `advertiseAddr` served for released pmon the way `dbName` is.
+- Delete the registered-database engine traits. Since the control plane stopped
+  holding `db_name`, nothing calls `Engine.defaultSchema(registeredDbName)` (the
+  `defaultSchema` trait, its `EngineCallRequest` arm and the Kotlin wrappers).
+  `catalogName` is still called, by `CatalogIdentity`, with a catalog name; its
+  parameter, like the others still spelled `registeredDbName`, should say so.
+
 - Make Go the canonical implementation for logic that lives in both languages,
   and call it from Kotlin over FFM instead of hand-maintaining byte-identical
   copies. Masking is the clearest case: `Masking.kt` and `Masks.kt` under
@@ -512,3 +536,12 @@ Fixes for gaps documented in
   repeats the admission, the deferred closes, the on-open run and the drain
   point around its own protocol. Move the shared steps into shared code and
   leave each engine its dial, framing and protocol loop.
+
+## To discuss
+
+- Is `connection_info` for clients only? The proto describes it as a nonsecret
+  endpoint and properties for clients, but `Datasource.targetSettings()` hands
+  every property to the analyzer, and Athena's default session takes its
+  workgroup from `properties["workgroup"]`, so for Athena it steers enforcement.
+  Either name that dual role, or have the proxy report the workgroup as a target
+  setting (like `engine_version`) and keep `connection_info` client-facing.

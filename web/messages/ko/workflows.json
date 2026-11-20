@@ -275,10 +275,23 @@
       "cc_removed": "님이 {body} 님을 참조에서 뺐습니다",
       "code_approved": "님이 GitHub에서 코드를 승인했습니다",
       "code_changes_requested": "님이 GitHub에서 코드 변경을 요청했습니다",
-      "code_review_dismissed": "님의 GitHub 코드 리뷰가 해제되었습니다"
+      "code_review_dismissed": "님의 GitHub 코드 리뷰가 해제되었습니다",
+      "made_private": "님이 요청을 비공개로 전환했습니다"
     },
     "notOnRequest": "이 요청의 참여자가 아님",
     "edited": "수정됨",
     "deleted": "삭제된 댓글입니다."
+  },
+  "private": {
+    "label": "비공개",
+    "hint": "Slack 메시지를 DM까지 포함해 하나도 보내지 않습니다. 승인자는 워크플로우의 받은 요청에서 확인합니다.",
+    "badge": "비공개",
+    "make": "비공개로 전환",
+    "making": "비공개로 전환하는 중…",
+    "dialogTitle": "이 요청을 비공개로 전환할까요?",
+    "dialogBody": "채널과 DM의 Slack 메시지를 모두 지우고, 이후로도 보내지 않습니다. 승인자는 워크플로우의 받은 요청에서 확인합니다. 되돌릴 수 없습니다.",
+    "confirm": "비공개로 전환",
+    "madeToast": "요청을 비공개로 전환했습니다.",
+    "failed": "요청을 비공개로 전환하지 못했습니다."
   }
 }

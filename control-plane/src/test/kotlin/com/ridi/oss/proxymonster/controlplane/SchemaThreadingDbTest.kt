@@ -149,15 +149,7 @@ object SchemaThreadingFixtures {
                 createUsers(st, "analytics.users", analyticsSsn)
             }
         }
-        val created = stores.datasourceStore.create(
-            DatasourceInput(
-                name = "schema-pg",
-                engine = "postgres",
-                host = SharedPostgres.host(),
-                port = SharedPostgres.port(),
-                dbName = database,
-            ),
-        )
+        val created = stores.datasourceStore.seed(name = "schema-pg", engine = "postgres")
         return finish(
             stores = stores,
             created = created,
@@ -184,15 +176,7 @@ object SchemaThreadingFixtures {
         DriverManager.getConnection(SharedMySql.jdbcUrlFor(analytics), SharedMySql.username(), SharedMySql.password()).use { c ->
             c.createStatement().use { st -> createUsers(st, "$analytics.users", analyticsSsn) }
         }
-        val created = stores.datasourceStore.create(
-            DatasourceInput(
-                name = "schema-mysql",
-                engine = "mysql",
-                host = SharedMySql.host(),
-                port = SharedMySql.port(),
-                dbName = database,
-            ),
-        )
+        val created = stores.datasourceStore.seed(name = "schema-mysql", engine = "mysql")
         return finish(
             stores = stores,
             created = created,

@@ -151,9 +151,7 @@ class AuthAndIngestRoutesDbTest {
         val core = ControlPlaneCore(dataSource)
         val client = cpGoClient(core, dataSource)
 
-        core.datasourceStore.create(
-            DatasourceInput(name = "ds-bearer", engine = "mysql", host = "h", port = 3306, dbName = "app"),
-        )
+        core.datasourceStore.registerOnly("ds-bearer", "mysql")
         val token = core.tokenStore.issue(TokenKind.USER, "alice@example.com", emptyList(), name = null, ttlSeconds = 3600).token
 
         // A valid wire-token Bearer authenticates discovery (the pmon daemon's path) and lists the datasource.

@@ -10,7 +10,7 @@ import kotlin.test.assertTrue
  *  analyzer's own tests mirror with a helper that can drift. */
 class ImplicitColumnSynthesisTest {
     private fun ds(engine: Engine) = Datasource(
-        id = 1, name = "t", engine = engine, host = "h", port = 5432, dbName = "acme",
+        id = 1, name = "t", engine = engine, targetInfo = "h:5432", dbName = "acme",
         defaultSchemas = listOf("public"),
         mysqlLowerCaseTableNames = if (engine == Engine.MYSQL) 0 else null,
         engineVersion = if (engine == Engine.MYSQL) "8.0.44" else "PostgreSQL 16.4",

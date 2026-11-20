@@ -42,7 +42,7 @@ class SystemClassificationEnforcementMySqlDbTest {
         fx.datasourceStore.storePushedCatalog(
             id = fx.datasource.id,
             currentCatalog = fx.datasource.effectiveCatalog,
-            defaultSchemas = listOf(fx.datasource.dbName),
+            defaultSchemas = listOf(fx.database),
             mysqlLowerCaseTableNames = 0,
             engineVersion = "5.7.44",
             catalog = snapshotOf(

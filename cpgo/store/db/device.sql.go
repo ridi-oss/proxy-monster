@@ -35,6 +35,17 @@ func (q *Queries) ApproveDeviceLogin(ctx context.Context, arg ApproveDeviceLogin
 	return result.RowsAffected(), nil
 }
 
+const clockNow = `-- name: ClockNow :one
+SELECT clock_timestamp()::timestamptz AS now
+`
+
+func (q *Queries) ClockNow(ctx context.Context) (time.Time, error) {
+	row := q.db.QueryRow(ctx, clockNow)
+	var now time.Time
+	err := row.Scan(&now)
+	return now, err
+}
+
 const consumeDeviceLogin = `-- name: ConsumeDeviceLogin :execrows
 UPDATE device_login SET status = 'CONSUMED' WHERE handle = $1 AND status = 'APPROVED' AND expires_at > now()
 `

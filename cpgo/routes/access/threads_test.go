@@ -82,7 +82,7 @@ func TestRequestThread(t *testing.T) {
 	e := setupThreads(t)
 	alice := e.St.WebSession(t, requester, "k-alice", "dev-1")
 	bob := e.St.WebSession(t, approver, "k-bob", "dev-2")
-	gone := e.id(`INSERT INTO datasource (name, host, port, db_name, tags) VALUES ('gone', 'h', 1, 'd', '["pii"]') RETURNING id`)
+	gone := e.id(`INSERT INTO datasource (name, tags) VALUES ('gone', '["pii"]') RETURNING id`)
 	e.Exec(t, `UPDATE datasource SET deleted_at = now() WHERE id = $1`, gone)
 	role := e.roleRequest("PENDING")
 	query := e.queryRequest(requester, "APPROVED", "WORKFLOW", "console", gone, nil)
@@ -226,7 +226,7 @@ func TestRequestCCs(t *testing.T) {
 	}
 
 	added := e.do(http.MethodPost, path, `{"principal":" cc-mail@example.COM "}`, alice, http.StatusOK)
-	if !strings.HasPrefix(added, fmt.Sprintf(`{"id":%d,"principal":"alice@example.com",`, role)) || !strings.HasSuffix(added, `"ccs":["cc@example.com"]}`) {
+	if !strings.HasPrefix(added, fmt.Sprintf(`{"id":%d,"principal":"alice@example.com",`, role)) || !strings.HasSuffix(added, `"ccs":["cc@example.com"],"private":false}`) {
 		t.Fatalf("added: %s", added)
 	}
 	e.do(http.MethodPost, path, `{"principal":"cc@example.com"}`, bob, http.StatusOK)
@@ -242,7 +242,7 @@ func TestRequestCCs(t *testing.T) {
 	}
 
 	removed := e.do(http.MethodDelete, path+"/cc@example.com", "", bob, http.StatusOK)
-	if !strings.HasSuffix(removed, `"ccs":[]}`) {
+	if !strings.HasSuffix(removed, `"ccs":[],"private":false}`) {
 		t.Fatalf("removed: %s", removed)
 	}
 	e.do(http.MethodDelete, path+"/cc@example.com", "", bob, http.StatusOK)
@@ -266,7 +266,7 @@ func TestRequestClose(t *testing.T) {
 	e := setupThreads(t)
 	alice := e.St.WebSession(t, requester, "k-alice", "dev-1")
 	bob := e.St.WebSession(t, approver, "k-bob", "dev-2")
-	ds := e.id(`INSERT INTO datasource (name, host, port, db_name) VALUES ('orders', 'h', 1, 'd') RETURNING id`)
+	ds := e.id(`INSERT INTO datasource (name) VALUES ('orders') RETURNING id`)
 	pending := e.roleRequest("PENDING")
 	grantedRole := e.roleRequest("APPROVED")
 	approvedQuery := e.queryRequest(requester, "APPROVED", "WORKFLOW", "console", ds, nil)
@@ -312,7 +312,7 @@ func TestRequestClose(t *testing.T) {
 
 func TestRequestsInvolved(t *testing.T) {
 	e := setupThreads(t)
-	ds := e.id(`INSERT INTO datasource (name, host, port, db_name) VALUES ('orders', 'h', 1, 'd') RETURNING id`)
+	ds := e.id(`INSERT INTO datasource (name) VALUES ('orders') RETURNING id`)
 	yes, no := true, false
 	flagged := e.queryRequest(requester, "PENDING", "WORKFLOW", "console", ds, &yes)
 	cleared := e.queryRequest(requester, "PENDING", "WORKFLOW", "console", ds, &no)
@@ -370,5 +370,54 @@ func TestRequestsInvolved(t *testing.T) {
 	}
 	if status, _ := e.Do(t, http.MethodGet, "/api/requests/involved", "", nil); status != http.StatusUnauthorized {
 		t.Fatalf("without a session: %d", status)
+	}
+}
+
+func TestRequestMakePrivate(t *testing.T) {
+	e := setupThreads(t)
+	alice := e.St.WebSession(t, requester, "k-alice", "dev-1")
+	bob := e.St.WebSession(t, approver, "k-bob", "dev-2")
+	carol := e.St.WebSession(t, "carol@example.com", "k-carol", "dev-3")
+	ds := e.id(`INSERT INTO datasource (name) VALUES ('orders') RETURNING id`)
+	role := e.roleRequest("PENDING")
+	query := e.queryRequest(requester, "EXECUTED", "WORKFLOW", "console", ds, nil)
+	editor := e.queryRequest(requester, "APPROVED", "EDITOR", "console", ds, nil)
+	path := func(id int64) string { return fmt.Sprintf("/api/requests/%d/private", id) }
+
+	if body := e.do(http.MethodPost, path(role), "", bob, http.StatusForbidden); body != `{"code":"approval.make_private_forbidden","params":{}}` {
+		t.Fatalf("not requester, not admin: %s", body)
+	}
+	e.do(http.MethodPost, path(editor), "", alice, http.StatusNotFound)
+	if body := e.do(http.MethodPost, path(role), "", alice, http.StatusOK); !strings.Contains(body, `"private":true`) {
+		t.Fatalf("requester: %s", body)
+	}
+	e.do(http.MethodPost, path(role), "", alice, http.StatusOK)
+	e.Authz.Allow = map[string]bool{"carol@example.com admin.identity System:": true}
+	if body := e.do(http.MethodPost, path(query), "", carol, http.StatusOK); !strings.Contains(body, `"private":true`) {
+		t.Fatalf("admin: %s", body)
+	}
+	if got := e.kinds(role); !slices.Equal(got, []string{"made_private:alice@example.com:"}) {
+		t.Fatalf("timeline, made private twice: %v", got)
+	}
+	if want := []string{fmt.Sprintf("%d:privatized", role), fmt.Sprintf("%d:privatized", role), fmt.Sprintf("%d:privatized", query)}; !slices.Equal(e.Authz.Notified, want) {
+		t.Fatalf("notified %v", e.Authz.Notified)
+	}
+	want := []string{
+		fmt.Sprintf(`admin|alice@example.com|task.make_private|AccessRequest::"%d"|make request #%d private|127.0.0.1|console`, role, role),
+		fmt.Sprintf(`admin|carol@example.com|task.make_private|AccessRequest::"%d"|make request #%d private|127.0.0.1|console`, query, query),
+	}
+	if got := routetest.AuditRows(t, e.Env); !slices.Equal(got, want) {
+		t.Fatalf("audit rows:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	routetest.VerifyChain(t, e.Env)
+}
+
+func TestRoleRequestFiledPrivate(t *testing.T) {
+	e := setupThreads(t)
+	alice := e.St.WebSession(t, requester, "k-alice", "dev-1")
+	roleID := e.id(`INSERT INTO app_role (name) VALUES ('private-filing') RETURNING id`)
+	body := e.do(http.MethodPost, "/api/access-requests", fmt.Sprintf(`{"roleId":%d,"reason":"on call","private":true}`, roleID), alice, http.StatusCreated)
+	if !strings.Contains(body, `"private":true`) {
+		t.Fatalf("filed: %s", body)
 	}
 }

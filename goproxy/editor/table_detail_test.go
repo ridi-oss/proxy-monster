@@ -22,6 +22,7 @@ import (
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
+	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
 )
 
 const tableDetailTestTimeout = 10 * time.Second
@@ -124,8 +125,8 @@ func tableDetailRun(
 	}
 }
 
-func tableDetailTargetConfig(tableDetailConfig dbtest.TargetDb) spi.TargetConfig {
-	return spi.TargetConfig{
+func tableDetailSettings(tableDetailConfig dbtest.TargetDb) sqldb.Settings {
+	return sqldb.Settings{
 		Host:     tableDetailConfig.Host,
 		Port:     tableDetailConfig.Port,
 		Db:       tableDetailConfig.DB,
@@ -282,7 +283,7 @@ CREATE TABLE pm_tdetail_plain (
 ) ENGINE=InnoDB;`)
 
 	tableDetailClient, tableDetailFake := tableDetailStartFakeCP(t)
-	tableDetailTarget := mustTarget(t, engines.MySQL, tableDetailTargetConfig(tableDetailConfig))
+	tableDetailTarget := mustTarget(t, engines.MySQL, tableDetailSettings(tableDetailConfig))
 
 	tableDetailUsersPayload := tableDetailRequireResult(t, tableDetailRun(
 		t, tableDetailClient, tableDetailFake, tableDetailTarget,
@@ -371,7 +372,7 @@ CREATE TABLE pm_tdetail_it.pm_tdetail_plain (
 );`)
 
 	tableDetailClient, tableDetailFake := tableDetailStartFakeCP(t)
-	tableDetailTarget := mustTarget(t, engines.Postgres, tableDetailTargetConfig(tableDetailConfig))
+	tableDetailTarget := mustTarget(t, engines.Postgres, tableDetailSettings(tableDetailConfig))
 
 	tableDetailUsersPayload := tableDetailRequireResult(t, tableDetailRun(
 		t, tableDetailClient, tableDetailFake, tableDetailTarget,

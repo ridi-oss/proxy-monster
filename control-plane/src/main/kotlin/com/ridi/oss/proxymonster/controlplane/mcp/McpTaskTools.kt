@@ -131,6 +131,7 @@ internal class McpTaskTools(
                     sql = sql,
                     title = args.string("title"),
                     reason = args.requiredString("reason"),
+                    private = args.boolean("private") ?: false,
                 )
                 structured(approvals.create(p, ip, actor(ctx), input, roleName = args.requiredString("roleName"), source = "mcp"))
             }
@@ -173,7 +174,10 @@ internal class McpTaskTools(
             "request_access" -> {
                 val role = core.policyStore.getRoleByName(args.requiredString("roleName")) ?: throw serviceNotFound("role")
                 val ds = args.string("datasource")?.let(::datasource)
-                val input = AccessRequestInput(role.id, ds?.id, args.requiredString("reason"), args.long("durationSec") ?: 3600)
+                val input = AccessRequestInput(
+                    role.id, ds?.id, args.requiredString("reason"), args.long("durationSec") ?: 3600,
+                    private = args.boolean("private") ?: false,
+                )
                 structured(access.createRequest(p, ip, actor(ctx), input, source = "mcp"))
             }
             "list_access_requests" -> structured(access.listRequests(p, args.string("status")))

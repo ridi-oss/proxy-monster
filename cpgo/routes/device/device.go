@@ -589,7 +589,12 @@ func (d device) mcpToken(w http.ResponseWriter, r *http.Request) error {
 		if err != nil {
 			return err
 		}
-		now := time.Now().Truncate(time.Microsecond)
+		q := db.New(tx)
+		// The database's clock, which stamped created_at and elevated_until.
+		now, err := q.ClockNow(ctx)
+		if err != nil {
+			return err
+		}
 		loginEnds := fresh.createdAt.Add(time.Duration(fresh.ttlSeconds) * time.Second)
 		if !now.Before(loginEnds) {
 			return api.CodeWindowExpired.Err()
@@ -609,7 +614,6 @@ func (d device) mcpToken(w http.ResponseWriter, r *http.Request) error {
 			}
 		}
 		scope := session.CanonicalScopes(scopes)
-		q := db.New(tx)
 		consentID, err := q.UpsertConsent(ctx, db.UpsertConsentParams{Principal: fresh.principal, ClientID: pmonClientID, Resource: settings.MCPResource, Scope: scope})
 		if err != nil {
 			return err

@@ -49,7 +49,7 @@ func dialable(port int) bool {
 // closes only its own.
 func TestTwoServersBrokerTheSameNameSeparately(t *testing.T) {
 	isolate(t)
-	ds := []driver.Endpoint{{Name: "acme-mysql", Engine: "mysql", DbName: "app", AdvertiseAddr: freePort(t)}}
+	ds := []driver.Endpoint{{Name: "acme-mysql", Engine: "mysql", AdvertiseAddr: freePort(t)}}
 	a, b := newFakeCP(t, ds), newFakeCP(t, ds)
 
 	d := New("test", providers.Builtins())
@@ -103,7 +103,7 @@ func TestLoginWithoutAServerExplainsHowToSetOne(t *testing.T) {
 // A token is only good against the control plane that minted it, so moving a server logs it out.
 func TestSetServerToANewURLLogsItOut(t *testing.T) {
 	isolate(t)
-	cp := newFakeCP(t, []driver.Endpoint{{Name: "acme-mysql", Engine: "mysql", DbName: "app", AdvertiseAddr: freePort(t)}})
+	cp := newFakeCP(t, []driver.Endpoint{{Name: "acme-mysql", Engine: "mysql", AdvertiseAddr: freePort(t)}})
 	d := New("test", providers.Builtins())
 	defer d.closeAllListeners()
 	loginTo(t, d, "", cp.URL)
@@ -140,7 +140,7 @@ func TestSetServerToANewURLLogsItOut(t *testing.T) {
 
 func TestUnsetServerLogsOutAndDeletesIt(t *testing.T) {
 	isolate(t)
-	cp := newFakeCP(t, []driver.Endpoint{{Name: "acme-mysql", Engine: "mysql", DbName: "app", AdvertiseAddr: freePort(t)}})
+	cp := newFakeCP(t, []driver.Endpoint{{Name: "acme-mysql", Engine: "mysql", AdvertiseAddr: freePort(t)}})
 	d := New("test", providers.Builtins())
 	defer d.closeAllListeners()
 	loginTo(t, d, "dev", cp.URL)
@@ -168,8 +168,8 @@ func TestUnsetServerLogsOutAndDeletesIt(t *testing.T) {
 // Each server's broker resolves its own endpoint and credentials, never another server's.
 func TestEachServerResolvesItsOwnSession(t *testing.T) {
 	isolate(t)
-	a := newFakeCPAs(t, "prod@example.com", "tok-prod", []driver.Endpoint{{Name: "acme", Engine: "mysql", DbName: "app", AdvertiseAddr: "prod-proxy:3306"}})
-	b := newFakeCPAs(t, "dev@example.com", "tok-dev", []driver.Endpoint{{Name: "acme", Engine: "mysql", DbName: "app", AdvertiseAddr: "dev-proxy:3306"}})
+	a := newFakeCPAs(t, "prod@example.com", "tok-prod", []driver.Endpoint{{Name: "acme", Engine: "mysql", AdvertiseAddr: "prod-proxy:3306"}})
+	b := newFakeCPAs(t, "dev@example.com", "tok-dev", []driver.Endpoint{{Name: "acme", Engine: "mysql", AdvertiseAddr: "dev-proxy:3306"}})
 	d := New("test", providers.Builtins())
 	defer d.closeAllListeners()
 	loginTo(t, d, "", a.URL)
@@ -228,7 +228,7 @@ func TestConcurrentLoginsToTwoServersBothStick(t *testing.T) {
 func TestLogoutDuringDiscoveryLeavesNoRows(t *testing.T) {
 	isolate(t)
 	discovering, release := make(chan struct{}), make(chan struct{})
-	cp := newFakeCP(t, []driver.Endpoint{{Name: "acme-mysql", Engine: "mysql", DbName: "app", AdvertiseAddr: freePort(t)}, {Name: "unsupported", Engine: "sqlite"}})
+	cp := newFakeCP(t, []driver.Endpoint{{Name: "acme-mysql", Engine: "mysql", AdvertiseAddr: freePort(t)}, {Name: "unsupported", Engine: "sqlite"}})
 	gate := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/datasources" && r.Header.Get("X-Gate") == "" {
 			select {

@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ridi-oss/proxy-monster/pmon/driver"
 	"github.com/ridi-oss/proxy-monster/pmon/internal/state"
 )
 
@@ -156,7 +158,7 @@ func serve(t *testing.T, backend Backend) *Client {
 func TestStatusRoundTrips(t *testing.T) {
 	backend := newFakeBackend()
 	backend.status.Datasources = []Datasource{
-		{Name: "acme-mysql", Engine: "mysql", DbName: "app", LocalPort: 6100, Brokered: true, LiveConns: 2},
+		{Name: "acme-mysql", Engine: "mysql", LocalPort: 6100, Brokered: true, LiveConns: 2},
 		{Name: "unsupported", Engine: "sqlite", Brokered: false, Reason: "engine \"sqlite\" not brokered"},
 	}
 	c := serve(t, backend)
@@ -173,6 +175,22 @@ func TestStatusRoundTrips(t *testing.T) {
 	}
 	if got := s.TotalLiveConns(); got != 2 {
 		t.Errorf("TotalLiveConns() = %d, want 2", got)
+	}
+}
+
+// A daemon and a peer from before the database property exchange it as dbName.
+func TestDatasourceKeepsTheLegacyDbName(t *testing.T) {
+	current := Datasource{Name: "acme-mysql", ConnectionInfo: &driver.ConnectionInfo{Properties: map[string]string{"database": "app"}}}
+	data, err := json.Marshal(current)
+	if err != nil || !strings.Contains(string(data), `"dbName":"app"`) {
+		t.Fatalf("marshal = %s, %v; want dbName for an older peer", data, err)
+	}
+	var legacy Datasource
+	if err := json.Unmarshal([]byte(`{"name":"acme-mysql","dbName":"app","connectionInfo":{"endpoint":"proxy:3306","properties":null}}`), &legacy); err != nil {
+		t.Fatal(err)
+	}
+	if legacy.Name != "acme-mysql" || legacy.ConnectionInfo.Endpoint != "proxy:3306" || legacy.ConnectionInfo.Property("database") != "app" {
+		t.Errorf("an older daemon's datasource = %+v", legacy)
 	}
 }
 

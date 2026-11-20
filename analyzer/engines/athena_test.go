@@ -15,9 +15,13 @@ func catalogColumn(catalog, schema, table, column, dataType string) *pb.Column {
 }
 
 func athenaRequest(sql string, parameters ...string) *pb.AnalyzeRequest {
+	sqlContext := &pb.HttpDbSqlContext{}
+	for _, value := range parameters {
+		sqlContext.Parameters = append(sqlContext.Parameters, &pb.HttpDbParameter{Value: value})
+	}
 	return &pb.AnalyzeRequest{
 		Sql:          sql,
-		EngineConfig: &pb.EngineConfig{Engine: pb.Engine_ATHENA, Session: &pb.SessionObservation{Engine: &pb.SessionObservation_Athena{Athena: &pb.AthenaSqlContext{Workgroup: "sample", ExecutionParameters: parameters}}}},
+		EngineConfig: &pb.EngineConfig{Engine: pb.Engine_ATHENA, Session: &pb.SessionObservation{Engine: &pb.SessionObservation_Athena{Athena: &pb.AthenaSqlContext{Workgroup: "sample", Httpdb: sqlContext}}}},
 		Namespace:    &pb.Namespace{Catalog: "awsdatacatalog", SearchPath: []string{"sample"}},
 		Catalog: &pb.CatalogSnapshot{
 			Columns: []*pb.Column{
@@ -122,7 +126,7 @@ func TestAthenaPartitionValuesRequireUtilityGrant(t *testing.T) {
 func TestAthenaCrossCatalogRewrite(t *testing.T) {
 	request := athenaRequest("SELECT * FROM archive.sample.users")
 	facts := analyzeProto(t, request)
-	if !facts.GetResolved() || facts.GetSubmission().GetAthena() == nil {
+	if !facts.GetResolved() || facts.RewrittenSql == nil {
 		t.Fatalf("missing resolved submission: %s", facts)
 	}
 	root, err := sqlglot.ParseOne(facts.GetRewrittenSql(), "athena")
@@ -150,11 +154,11 @@ func TestAthenaCrossCatalogRewrite(t *testing.T) {
 func TestAthenaParameterBinding(t *testing.T) {
 	request := athenaRequest("SELECT email FROM users WHERE id = ? AND email = ?", "CAST('7' AS BIGINT)", "'sample@example.test'")
 	facts := analyzeProto(t, request)
-	if !facts.GetResolved() || facts.GetSubmission().GetAthena() == nil {
+	if !facts.GetResolved() || facts.RewrittenSql == nil {
 		t.Fatalf("unresolved parameters: %s", facts)
 	}
 	submitted := facts.GetRewrittenSql()
-	if len(facts.GetSubmission().GetAthena().GetExecutionParameters()) != 0 || strings.Contains(submitted, "?") {
+	if strings.Contains(submitted, "?") {
 		t.Fatalf("parameters were not replaced together: %s", facts)
 	}
 	if !strings.Contains(submitted, "sample@example.test") || !strings.Contains(submitted, "BIGINT") {
@@ -169,7 +173,7 @@ func TestAthenaParameterBinding(t *testing.T) {
 func TestAthenaParametersFollowSQLOrderAcrossScopes(t *testing.T) {
 	request := athenaRequest("/* 한글 */ WITH a AS (SELECT r.email, r.id FROM users r WHERE r.email = ?) SELECT a.email FROM a WHERE EXISTS (SELECT 1 FROM users s WHERE s.id = ?) AND a.id = ?", "'한글'", "20", "30")
 	facts := analyzeProto(t, request)
-	if !facts.GetResolved() || facts.GetSubmission().GetAthena() == nil {
+	if !facts.GetResolved() || facts.RewrittenSql == nil {
 		t.Fatalf("scoped parameters did not resolve: %s", facts)
 	}
 	root, err := sqlglot.ParseOne(facts.GetRewrittenSql(), "athena")
@@ -191,7 +195,10 @@ func TestAthenaParametersFollowSQLOrderAcrossScopes(t *testing.T) {
 }
 
 func TestAthenaParameterFailures(t *testing.T) {
+	named := athenaRequest("SELECT email FROM users WHERE id = ?", "1")
+	named.EngineConfig.Session.GetAthena().Httpdb.Parameters[0].Name = "id"
 	for _, request := range []*pb.AnalyzeRequest{
+		named,
 		athenaRequest("SELECT email FROM users WHERE id = ?"),
 		athenaRequest("SELECT email FROM users", "1"),
 		athenaRequest("SELECT ? FROM users", "1"),
@@ -207,7 +214,7 @@ func TestAthenaParameterFailures(t *testing.T) {
 		athenaRequest("SELECT email FROM users WHERE id = ?", "@named"),
 		athenaRequest("SELECT email FROM users WHERE id = ?", "$?"),
 	} {
-		if facts := analyzeProto(t, request); facts.GetResolved() || facts.GetSubmission().GetAthena() != nil || facts.GetFailureClass() != pb.FailureClass_FAILURE_CLASS_UNANALYZABLE {
+		if facts := analyzeProto(t, request); facts.GetResolved() || facts.RewrittenSql != nil || facts.GetFailureClass() != pb.FailureClass_FAILURE_CLASS_UNANALYZABLE {
 			t.Fatalf("unproven parameters did not reach exception: %s: %s", request, facts)
 		}
 	}
@@ -262,7 +269,7 @@ func TestAthenaPreparedDefinition(t *testing.T) {
 	}
 	request.EngineConfig.Session.GetAthena().PreparedDefinitions = []*pb.AthenaPreparedDefinition{{Workgroup: "sample", Name: "lookup_user", QueryString: "SELECT email FROM users WHERE id = ?"}}
 	facts = analyzeProto(t, request)
-	if !facts.GetResolved() || facts.GetSubmission().GetAthena() == nil || facts.GetAthenaPreparedDefinitionNeed() != nil {
+	if !facts.GetResolved() || facts.RewrittenSql == nil || facts.GetAthenaPreparedDefinitionNeed() != nil {
 		t.Fatalf("prepared definition not expanded: %s", facts)
 	}
 	if strings.HasPrefix(facts.GetRewrittenSql(), "EXECUTE") || strings.Contains(facts.GetRewrittenSql(), "?") {
@@ -281,7 +288,7 @@ func TestAthenaMissingContextAndUnknownSemantics(t *testing.T) {
 	}
 	request := athenaRequest("SELECT email FROM users")
 	request.EngineConfig.Session.Engine = nil
-	if facts := analyzeProto(t, request); facts.GetResolved() || facts.GetSubmission().GetAthena() != nil {
+	if facts := analyzeProto(t, request); facts.GetResolved() || facts.RewrittenSql != nil {
 		t.Fatalf("missing context resolved: %s", facts)
 	}
 	for _, sql := range []string{
@@ -306,7 +313,7 @@ func TestAthenaRowCapIsPushedIntoTheSubmission(t *testing.T) {
 		{"SELECT * FROM users", "LIMIT 5"},
 	} {
 		request := athenaRequest(tc.sql)
-		request.EngineConfig.Session.GetAthena().MaxRows = 5
+		request.EngineConfig.Session.GetAthena().Httpdb.MaxRows = 5
 		facts := analyzeProto(t, request)
 		if !facts.GetResolved() {
 			t.Fatalf("%s: unresolved: %s", tc.sql, facts)
@@ -320,7 +327,7 @@ func TestAthenaRowCapIsPushedIntoTheSubmission(t *testing.T) {
 		}
 	}
 	request := athenaRequest("SELECT email FROM users")
-	if facts := analyzeProto(t, request); facts.GetSubmission().GetAthena() != nil {
-		t.Fatalf("no cap requested but the submission was replaced: %s", facts)
+	if facts := analyzeProto(t, request); facts.RewrittenSql != nil {
+		t.Fatalf("no cap requested but the text was rewritten: %s", facts)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -17,7 +18,7 @@ import (
 
 func TestShowGenericFormatsPreserveExistingFlags(t *testing.T) {
 	e := newEnv(t)
-	cp := fakeCP(t, []map[string]any{{"name": "mysql", "engine": "mysql", "dbName": "sample", "advertiseAddr": dummyProxy(t)}})
+	cp := fakeCP(t, []map[string]any{{"name": "mysql", "engine": "mysql", "connectionInfo": map[string]any{"properties": map[string]string{"database": "sample"}}, "advertiseAddr": dummyProxy(t)}})
 	e.mustRun(t, "login", "--url", cp.URL)
 	for _, format := range []string{"url", "jdbc", "go-dsn", "cli"} {
 		legacy := e.mustRun(t, "show", "mysql", "--"+format)
@@ -119,6 +120,74 @@ func TestShowAthenaFormatsAndFormattedAWSCLI(t *testing.T) {
 		output, err := command.CombinedOutput()
 		if err != nil || !strings.Contains(string(output), `"QueryExecutionId": "cli-query"`) || received.Load() != 1 {
 			t.Fatalf("formatted CLI did not complete through the spawned daemon: %v, %s, requests: %d", err, output, received.Load())
+		}
+	})
+}
+
+func TestShowBigQueryFormatsAndFormattedBQ(t *testing.T) {
+	e := newEnv(t)
+	var received atomic.Int64
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received.Add(1)
+		if r.Header.Get("Authorization") != "Bearer pmk_tok" || r.Header.Get("X-Goog-User-Project") != "" {
+			t.Errorf("unexpected credentials reached the proxy: %v", r.Header)
+		}
+		job := `"jobReference":{"projectId":"proj","jobId":"j1","location":"US"}`
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/bigquery/v2/projects/proj/jobs":
+			_, _ = io.WriteString(w, `{"kind":"bigquery#job","id":"proj:US.j1",`+job+`,"configuration":{"query":{"query":"SELECT 1","useLegacySql":false}},"statistics":{"query":{"statementType":"SELECT"}},"status":{"state":"DONE"}}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/bigquery/v2/projects/proj/queries/j1":
+			_, _ = io.WriteString(w, `{"kind":"bigquery#getQueryResultsResponse",`+job+`,"jobComplete":true,"totalRows":"1","schema":{"fields":[{"name":"f0_","type":"INTEGER","mode":"NULLABLE"}]},"rows":[{"f":[{"v":"1"}]}]}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/bigquery/v2/projects/proj/jobs/j1":
+			_, _ = io.WriteString(w, `{"kind":"bigquery#job","id":"proj:US.j1",`+job+`,"configuration":{"query":{"query":"SELECT 1","useLegacySql":false}},"statistics":{"query":{"statementType":"SELECT"}},"status":{"state":"DONE"}}`)
+		default:
+			t.Errorf("unexpected call %s %s", r.Method, r.URL)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer upstream.Close()
+	cp := fakeCP(t, []map[string]any{{
+		"name": "warehouse", "engine": "bigquery", "advertiseAddr": strings.TrimPrefix(upstream.URL, "https://"),
+		"advertiseWireTls":   true,
+		"advertiseCertChain": string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: upstream.Certificate().Raw})),
+		"connectionInfo": map[string]any{"endpoint": upstream.URL, "properties": map[string]string{
+			"project": "proj", "location": "US", "dataset": "sales",
+		}},
+	}})
+	e.mustRun(t, "login", "--url", cp.URL)
+	bare := strings.TrimSpace(e.mustRun(t, "show", "warehouse"))
+	if !strings.HasPrefix(bare, "bq --api=") {
+		t.Fatalf("BigQuery default is not the bq command: %q", bare)
+	}
+	if output := e.mustRun(t, "show", "warehouse", "--format", "python"); !strings.Contains(output, "bigquery.Client(") {
+		t.Errorf("python format: %s", output)
+	}
+	endpoint := strings.TrimSpace(e.mustRun(t, "show", "warehouse", "--format", "url"))
+	token := regexp.MustCompile(`--oauth_access_token='([^']+)'`).FindStringSubmatch(bare)
+	if token == nil {
+		t.Fatalf("no local token in %q", bare)
+	}
+	request, _ := http.NewRequest(http.MethodGet, endpoint+"/bigquery/v2/projects/proj/queries/j1", nil)
+	request.Header.Set("Authorization", "Bearer "+token[1])
+	request.Header.Set("X-Goog-User-Project", "proj")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil || response.StatusCode != http.StatusOK || received.Load() != 1 {
+		t.Fatalf("shown token did not reach the proxy through the daemon: %v %v", err, response)
+	}
+	response.Body.Close()
+	t.Run("actual bq", func(t *testing.T) {
+		if _, err := exec.LookPath("bq"); err != nil {
+			t.Skip("bq is not installed")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		command := exec.CommandContext(ctx, "sh", "-c", strings.Replace(bare, "bq ", "bq --format=json ", 1))
+		command.WaitDelay = 10 * time.Second
+		command.Env = append(os.Environ(), "CLOUDSDK_CONFIG="+t.TempDir(), "BIGQUERYRC="+os.DevNull)
+		output, err := command.CombinedOutput()
+		if err != nil || !strings.Contains(string(output), `"f0_":"1"`) {
+			t.Fatalf("formatted bq did not complete through the spawned daemon: %v, %s", err, output)
 		}
 	})
 }

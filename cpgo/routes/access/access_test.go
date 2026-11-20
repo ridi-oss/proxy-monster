@@ -85,7 +85,7 @@ func TestOwnApprovals(t *testing.T) {
 	e := routetest.Setup(t)
 	ctx := context.Background()
 	var ds int64
-	if err := e.St.Pool.QueryRow(ctx, `INSERT INTO datasource (name, host, port, db_name) VALUES ('acme', 'db', 5432, 'acme') RETURNING id`).Scan(&ds); err != nil {
+	if err := e.St.Pool.QueryRow(ctx, `INSERT INTO datasource (name) VALUES ('acme') RETURNING id`).Scan(&ds); err != nil {
 		t.Fatal(err)
 	}
 	var mine int64
@@ -121,7 +121,7 @@ func TestOwnApprovalsPullRequest(t *testing.T) {
 	e := routetest.Setup(t)
 	ctx := context.Background()
 	var ds, id int64
-	if err := e.St.Pool.QueryRow(ctx, `INSERT INTO datasource (name, host, port, db_name) VALUES ('acme', 'db', 5432, 'acme') RETURNING id`).Scan(&ds); err != nil {
+	if err := e.St.Pool.QueryRow(ctx, `INSERT INTO datasource (name) VALUES ('acme') RETURNING id`).Scan(&ds); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.St.Pool.QueryRow(ctx, `INSERT INTO access_request (principal, kind, creator_kind, status, requested_duration_sec, datasource_id, source,
@@ -136,7 +136,7 @@ func TestOwnApprovalsPullRequest(t *testing.T) {
 	_, body := e.Do(t, http.MethodGet, "/api/approvals", "", e.St.WebSession(t, "alice@example.com", "k-a", "dev-a"))
 	want := `"source":"github","scope":"acme/main","fileKey":"0001","changeKey":"ck","revision":1,"contentHash":"h",` +
 		`"pullRequest":{"repository":"o/r","pr":7,"prUrl":"https://github.com/o/r/pull/7","path":"sql/0001.sql","headSha":"abc","prAutoMerge":false},` +
-		`"forceRun":true,"forceRunBy":"boss@example.com","ccs":["carol@example.com","zed@example.com"]}]`
+		`"forceRun":true,"forceRunBy":"boss@example.com","ccs":["carol@example.com","zed@example.com"],"private":false}]`
 	if !strings.HasSuffix(body, want) {
 		t.Fatalf("pull request fields in Kotlin's order:\n got %s\nwant suffix %s", body, want)
 	}
@@ -148,7 +148,7 @@ func TestAccessListFilters(t *testing.T) {
 	var roleID, goneRole, ds int64
 	_ = e.St.Pool.QueryRow(ctx, `INSERT INTO app_role (name) VALUES ('zz-live') RETURNING id`).Scan(&roleID)
 	_ = e.St.Pool.QueryRow(ctx, `INSERT INTO app_role (name, deleted_at) VALUES ('zz-gone', now()) RETURNING id`).Scan(&goneRole)
-	_ = e.St.Pool.QueryRow(ctx, `INSERT INTO datasource (name, host, port, db_name) VALUES ('prod', 'h', 1, 'd') RETURNING id`).Scan(&ds)
+	_ = e.St.Pool.QueryRow(ctx, `INSERT INTO datasource (name) VALUES ('prod') RETURNING id`).Scan(&ds)
 	exec := func(sql string, args ...any) {
 		t.Helper()
 		if _, err := e.St.Pool.Exec(ctx, sql, args...); err != nil {
@@ -190,7 +190,7 @@ func TestAccessListFilters(t *testing.T) {
 	if got := statuses(body); got != "RATE_RESET/PENDING,ROLE/APPROVED,ROLE/PENDING" {
 		t.Fatalf("requests newest first, query tasks excluded: %s", got)
 	}
-	if !strings.Contains(body, `"executeAs":["analyst"],"creatorKind":"WORKFLOW","statementCarriesProtectedLiteral":false,"source":"console","revision":1,"forceRun":false,"ccs":[]}`) {
+	if !strings.Contains(body, `"executeAs":["analyst"],"creatorKind":"WORKFLOW","statementCarriesProtectedLiteral":false,"source":"console","revision":1,"forceRun":false,"ccs":[],"private":false}`) {
 		t.Fatalf("populated optional fields: %s", body)
 	}
 	byKind := map[string]bridge.Resource{}

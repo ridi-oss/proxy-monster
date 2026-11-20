@@ -10,9 +10,8 @@ const mysql: Datasource = {
   id: 1,
   name: 'test',
   engine: 'mysql',
-  host: 'db.example.test',
-  port: 3306,
   dbName: 'app',
+  targetInfo: 'db.example.test:3306',
   tags: [],
   defaultSchemas: ['app'],
   identifierQuote: '`',
@@ -20,7 +19,6 @@ const mysql: Datasource = {
 const postgres: Datasource = {
   ...mysql,
   engine: 'postgres',
-  port: 5432,
   defaultSchemas: ['public'],
   identifierQuote: '"',
 };
@@ -108,12 +106,22 @@ describe('query catalog tree', () => {
     const athena = {
       ...postgres,
       engine: 'athena',
-      port: 443,
       dbName: 'acme',
       defaultSchemas: ['acme'],
       currentCatalog: 'awsdatacatalog',
     };
     expect(buildTree([column('awsdatacatalog', 'acme')], athena)[0].insert).toBe('"acme"."users"');
+  });
+
+  it('backtick-quotes BigQuery names, where a double-quoted name is a string', () => {
+    const bigquery = {
+      ...postgres,
+      engine: 'bigquery',
+      dbName: 'sales',
+      defaultSchemas: ['sales'],
+      currentCatalog: 'proj',
+    };
+    expect(buildTree([column('proj', 'sales')], bigquery)[0].insert).toBe('`sales`.`users`');
   });
 
   it('qualifies public as explicitly as a shadow schema, without catalog qualifiers', () => {

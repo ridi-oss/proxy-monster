@@ -6,7 +6,6 @@ import com.ridi.oss.proxymonster.controlplane.Binding
 import com.ridi.oss.proxymonster.controlplane.effectiveCatalog
 import com.ridi.oss.proxymonster.controlplane.ControlPlaneCore
 import com.ridi.oss.proxymonster.controlplane.Datasource
-import com.ridi.oss.proxymonster.controlplane.DatasourceInput
 import com.ridi.oss.proxymonster.controlplane.TokenKind
 import com.ridi.oss.proxymonster.controlplane.seed
 import com.ridi.oss.proxymonster.controlplane.support.SharedPostgres

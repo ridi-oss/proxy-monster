@@ -263,7 +263,7 @@ class BaselineDangerousFunctionEnforcementDbTest {
     @Test
     fun `a MySQL stored function named load_file is not the builtin`() {
         val fx = EnforcementFixture.mysql()
-        val db = fx.datasource.dbName
+        val db = fx.database
         SharedMySql.executeAdmin("CREATE FUNCTION `$db`.load_file(p VARCHAR(64)) RETURNS VARCHAR(64) DETERMINISTIC RETURN p")
         try {
             fx.datasourceStore.pushTestCatalog(fx.datasource, fx.targetJdbcUrl, fx.targetUser, fx.targetPassword)

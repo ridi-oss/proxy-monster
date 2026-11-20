@@ -37,7 +37,7 @@ func TestMetadataNamesAreCanonical(t *testing.T) {
 			w.WriteHeader(http.StatusBadRequest)
 		}
 	})
-	target.config.database = "Sales"
+	target.settings.database = "Sales"
 
 	catalog, err := target.Introspect(context.Background())
 	if err != nil {

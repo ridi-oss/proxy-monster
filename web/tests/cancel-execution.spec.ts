@@ -63,6 +63,7 @@ function request(id: number, status: string) {
     decidedAt: '2026-07-24T00:01:00Z',
     decidedBy: 'approver@example.com',
     evaluatedDecision: 'ALLOW',
+    executeAs: [],
   };
 }
 

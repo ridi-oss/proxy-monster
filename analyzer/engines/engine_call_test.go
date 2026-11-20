@@ -135,13 +135,17 @@ func TestNativeConnectionInfoValid(t *testing.T) {
 		"db.internal:1#":       false,
 		"[fe80::1%en0]:3306":   true,
 	} {
-		if got := MySQL.connectionInfoValid(&pb.EngineConnectionInfo{Endpoint: endpoint}); got != want {
+		info := &pb.EngineConnectionInfo{Endpoint: endpoint, Properties: map[string]string{"database": "app"}}
+		if got := MySQL.connectionInfoValid(info); got != want {
 			t.Errorf("%q: %v, want %v", endpoint, got, want)
 		}
 	}
+	if Postgres.connectionInfoValid(&pb.EngineConnectionInfo{Endpoint: "db:1"}) {
+		t.Error("a wire engine published an endpoint without its database")
+	}
 	withProperty := &pb.EngineConnectionInfo{Endpoint: "db:1", Properties: map[string]string{"region": "x"}}
 	if Postgres.connectionInfoValid(withProperty) {
-		t.Error("a wire engine published a property")
+		t.Error("a wire engine published a property other than its database")
 	}
 }
 

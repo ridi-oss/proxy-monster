@@ -9,21 +9,22 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	enginepb "github.com/ridi-oss/proxy-monster/analyzer/probe/pb"
+	"github.com/ridi-oss/proxy-monster/goproxy/httpdb"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
 	"github.com/ridi-oss/proxy-monster/goproxy/relay"
+	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
-func flowServer(t *testing.T, principal string, verdict *pb.Verdict) (*nativeServer, *flowClient, *fakeAthena) {
+func flowServer(t *testing.T, principal string, verdict *pb.Verdict) (*httpdb.Server, *flowClient, *fakeAthena) {
 	t.Helper()
 	aws := newFakeAthena()
 	target := testTarget(t, aws.handle)
 	client := &flowClient{principal: principal, verdict: verdict, completed: make(chan struct{}, 8)}
-	server := &nativeServer{target: target, client: client}
+	server := newServer(target, spi.Listen{}, client, nil)
 	return server, client, aws
 }
 
-func serve(server *nativeServer, principal, operation, body string) *httptest.ResponseRecorder {
+func serve(server *httpdb.Server, principal, operation, body string) *httptest.ResponseRecorder {
 	request := nativeTestRequest(operation, body)
 	request.Header.Set("Authorization", "Bearer login-"+principal)
 	response := httptest.NewRecorder()
@@ -37,7 +38,7 @@ func TestSubmissionIsDecidedRewrittenAndMaskedOnRead(t *testing.T) {
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "exec-0001") {
 		t.Fatalf("submission failed: %d %s", response.Code, response.Body.String())
 	}
-	if len(client.decisions) != 1 || client.decisions[0].GetSession().GetAthena().GetWorkgroup() != "primary" || client.decisions[0].GetSession().GetAthena().GetMaxRows() != 0 || len(client.decisions[0].GetSession().GetAthena().GetExecutionParameters()) != 1 || client.decisions[0].CurrentCatalog != "awsdatacatalog" {
+	if len(client.decisions) != 1 || client.decisions[0].GetSession().GetAthena().GetWorkgroup() != "primary" || client.decisions[0].GetSession().GetAthena().GetHttpdb().GetMaxRows() != 0 || len(client.decisions[0].GetSession().GetAthena().GetHttpdb().GetParameters()) != 1 || client.decisions[0].CurrentCatalog != "awsdatacatalog" {
 		t.Fatalf("decision request lacks Athena scope: %+v", client.decisions)
 	}
 	if len(client.pushes) != 1 || client.pushes[0].Schema != "example" || len(client.pushes[0].Columns) != 1 {
@@ -67,7 +68,7 @@ func TestSubmissionIsDecidedRewrittenAndMaskedOnRead(t *testing.T) {
 		t.Fatalf("own history not released: %d %s", response.Code, response.Body.String())
 	}
 	bob := &flowClient{principal: "bob", verdict: maskVerdict(), completed: make(chan struct{}, 8)}
-	server.client = bob
+	server.Client = bob
 	response = serve(server, "bob", "GetQueryResults", `{"QueryExecutionId":"exec-0001"}`)
 	if response.Code != http.StatusConflict {
 		t.Fatalf("another principal read alice's execution: %d %s", response.Code, response.Body.String())
@@ -102,7 +103,7 @@ func TestReplayWithoutContextNeverBindsTheCurrentPlan(t *testing.T) {
 		t.Fatalf("first submission failed: %d %s", response.Code, response.Body.String())
 	}
 	// The proxy loses its contexts; AWS still replays exec-0001 for the token, submitted long ago.
-	server.target.contexts, _ = OpenContextCache(":memory:", 10)
+	server.Contexts, _ = httpdb.OpenContextCache(":memory:", contextFormat, 10)
 	aws.mu.Lock()
 	aws.submitted["exec-0001"] = time.Now().Add(-time.Hour)
 	aws.mu.Unlock()
@@ -156,7 +157,7 @@ func TestStableTokenReplayKeepsTheOriginalContext(t *testing.T) {
 		t.Fatalf("reordered retry not accepted: %d %s", response.Code, response.Body.String())
 	}
 	// A later, looser decision does not replace the plan the execution was admitted under.
-	client.verdict = &pb.Verdict{Decision: pb.EnfAction_ALLOW, DecisionId: 9, RewrittenSql: proto.String("SELECT email, n FROM users WHERE n > (1)"), Submission: &enginepb.Submission{Engine: &enginepb.Submission_Athena{Athena: &enginepb.AthenaSubmission{}}}}
+	client.verdict = &pb.Verdict{Decision: pb.EnfAction_ALLOW, DecisionId: 9, RewrittenSql: proto.String("SELECT email, n FROM users WHERE n > (1)")}
 	if response := serve(server, "alice", "StartQueryExecution", body); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "exec-0001") {
 		t.Fatalf("replay under a later admission rejected: %d %s", response.Code, response.Body.String())
 	}
@@ -166,7 +167,7 @@ func TestStableTokenReplayKeepsTheOriginalContext(t *testing.T) {
 	}
 	// A different submission under the same token is a different request; its admission must not be
 	// attached to the execution AWS replays.
-	client.verdict = &pb.Verdict{Decision: pb.EnfAction_ALLOW, DecisionId: 11, RewrittenSql: proto.String("SELECT n FROM users"), Submission: &enginepb.Submission{Engine: &enginepb.Submission_Athena{Athena: &enginepb.AthenaSubmission{}}}}
+	client.verdict = &pb.Verdict{Decision: pb.EnfAction_ALLOW, DecisionId: 11, RewrittenSql: proto.String("SELECT n FROM users")}
 	if response := serve(server, "alice", "StartQueryExecution", `{"QueryString":"SELECT n FROM users","ClientRequestToken":"stable"}`); response.Code != http.StatusConflict {
 		t.Fatalf("replayed execution bound to a different submission: %d %s", response.Code, response.Body.String())
 	}

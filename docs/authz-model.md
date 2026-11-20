@@ -351,13 +351,13 @@ of a route and the gate it calls. Paths are relative to
 | Audit ingest (from the proxy) | `/api/ingest/decision` | `App.kt` | `X-PM-Ingest-Token` vs `PM_SECRET_TOKEN`; open when that env is unset (dev only) |
 | Audit read | `/api/audit`, `/api/audit/{id}` | `cpgo/routes/auditlog/audit.go` | `requireApi` + Cedar `audit.read` — allow on `AuditLog` returns all rows, else own rows only |
 | Caller capability summary | `/api/me/permissions` | `cpgo/routes/policies/permissions.go` | `requireApi`; UI convenience, computed from `admin.*` + `audit.read` |
-| Datasources, catalog, classification | `/api/datasources**` | `Datasources.kt`; the list, `{id}`, `{id}/wire-cert`, create, edit and delete in `cpgo/routes/datasources/` | mixed: list = `requireApiOrBearer`, redacting non-connectable rows; `live` = `requireApi`; `{id}`, `{id}/catalog`, `{id}/wire-cert`, `{id}/table-detail` = `requireApiOrBearer` + `datasource.connect`; rest = `requireAdmin(admin.datasources)` |
+| Datasources, catalog, classification | `/api/datasources**` | `Datasources.kt`; the list, `{id}`, `{id}/wire-cert` and delete in `cpgo/routes/datasources/` | mixed: list = `requireApiOrBearer`, redacting non-connectable rows; `live` = `requireApi`; `{id}`, `{id}/catalog`, `{id}/wire-cert`, `{id}/table-detail` = `requireApiOrBearer` + `datasource.connect`; rest = `requireAdmin(admin.datasources)` |
 | One-shot editor query | `/api/datasources/{id}/query` | `Query.kt` | `requireApi`, then the per-statement `decideQuery` |
 | Editor sessions and tasks | `/api/editor/**` | `Query.kt` | `requireApi` + owner scope; cancel adds `task.cancel`, result adds `task.assume` |
 | Task-completion SSE | `/api/tasks/events` | `App.kt` | resolves the session itself; each push re-filtered through `task.read` |
 | Editor query history | `/api/query-history` | `cpgo/routes/me/me.go` | `requireApi`, own rows only |
 | Query-approval workflow | `/api/approvals**` | `Approvals.kt`; the inbox, `{id}`, approve, reject and unapprove in `cpgo/routes/access/approvals.go`, the own-requests list in `access.go` | `requireApi` + per-route Cedar (`task.read` / `task.approve` / `task.run` / `task.cancel` / `task.assume` / `task.force_run`) |
-| Request threads (every kind) | `/api/requests**` | `cpgo/routes/access/threads.go` | `requireApi` + per-route Cedar (`task.read` / `task.comment` / `task.cc` / `task.cancel`) |
+| Request threads (every kind) | `/api/requests**` | `cpgo/routes/access/threads.go` | `requireApi` + per-route Cedar (`task.read` / `task.comment` / `task.cc` / `task.cancel`); make private = the requester, or a caller Cedar allows an `admin.*` action |
 | JIT access requests and grants | `/api/access-requests**`, `/api/access-grants**` | `cpgo/routes/access/access.go`, `access_write.go` | `requireApi` + `task.read` forward-filtering; create = `task.request` on the datasource; approve and reject = `task.approve` with the `workflow-viewer` channel; revoke = `grant.revoke` |
 | Wire tokens | `/api/wire-tokens`, `/api/tokens**` | `cpgo/routes/tokens/tokens.go` | `requireAuthz(token.mint / token.list / token.revoke)` on the token's real owner and kind |
 | Roles, mask functions | `/api/roles**`, `/api/mask-fns**` | `cpgo/routes/policies/policies.go`, `policies_write.go` | `requireAdmin(admin.policies)`; `GET /api/roles` is `requireApi` |
@@ -439,10 +439,11 @@ physical shape needs the same authority as querying it.
 
 The unfiltered list is the alternate path to those same bytes, so it redacts
 rather than filters: a row the caller cannot connect to keeps its identity
-(name, engine, tags) and loses its connection material — `host`, `port`,
-`dbName`, `advertiseAddr`, `advertiseCertChain`. Enough to name in an access
-request, not enough to dial. There is no admin exemption: a list row that
-answered more fully than `{id}` does would simply be a way around `{id}`.
+(name, engine, tags) and loses its connection material — `targetInfo`, `dbName`,
+`connectionInfo`, `advertiseAddr`, `advertiseCertChain`, the current catalog and
+the description. Enough to name in an access request, not enough to dial. There
+is no admin exemption: a list row that answered more fully than `{id}` does
+would simply be a way around `{id}`.
 
 `admin.datasources` does **not** imply any of these reads. The seeded
 `system:admin` role carries the three `admin.*` actions and no

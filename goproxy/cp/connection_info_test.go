@@ -12,7 +12,7 @@ func TestRegisterPreservesConnectionInfoPresence(t *testing.T) {
 	fake := &fakeControlPlane{}
 	client := startFakeControlPlane(t, fake)
 	for _, info := range []*pb.ConnectionInfo{nil, {}, {Endpoint: "proxy.example:6033", Properties: map[string]string{"database": "app"}}} {
-		if err := client.Register(enginepb.Engine_MYSQL, "target", 3306, "app", nil, "", nil, false, info, nil); err != nil {
+		if err := client.Register(enginepb.Engine_MYSQL, "target:3306", nil, "", nil, false, info, nil); err != nil {
 			t.Fatal(err)
 		}
 		fake.mu.Lock()
@@ -29,7 +29,7 @@ func TestRegisterSendsDescriptionPresence(t *testing.T) {
 	client := startFakeControlPlane(t, fake)
 	empty, set := "", "Orders and payments"
 	for _, description := range []*string{nil, &empty, &set} {
-		if err := client.Register(enginepb.Engine_MYSQL, "target", 3306, "app", nil, "", nil, false, nil, description); err != nil {
+		if err := client.Register(enginepb.Engine_MYSQL, "target:3306", nil, "", nil, false, nil, description); err != nil {
 			t.Fatal(err)
 		}
 		fake.mu.Lock()

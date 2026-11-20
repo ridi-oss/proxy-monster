@@ -32,8 +32,7 @@ function datasource(overrides: Record<string, unknown> = {}) {
     id: 1,
     name: 'demo',
     engine: 'mysql',
-    host: 'db.internal',
-    port: 3306,
+    targetInfo: 'db.internal:3306',
     dbName: 'acme',
     tags: [],
     defaultSchemas: [],
@@ -193,6 +192,7 @@ for (const denyReason of ['rate 10000/1h spent', 'rate 10000/1h x2 spent']) {
         datasourceId: 1,
         reason: `Blocked running a query: ${denyReason}`,
         requestedDurationSec: 3600,
+        private: false,
       });
   });
 }

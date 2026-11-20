@@ -199,6 +199,15 @@ class SystemClassificationServiceTest {
         assertNull(svc.tagForFunction(Engine.POSTGRES, null, "my_udf"))
     }
 
+    @Test
+    fun `BigQuery AI calls are critical without an engine version`() {
+        for (name in listOf("ai.generate", "ai.embed", "ai.similarity")) {
+            assertEquals("system:critical", svc.tagForFunction(Engine.BIGQUERY, null, name), name)
+        }
+        assertNull(svc.tagForFunction(Engine.BIGQUERY, null, "sales.generate"))
+        assertNull(svc.tagForFunction(Engine.BIGQUERY, null, "net.host"))
+    }
+
     // The version-independent baseline is a FLOOR that classifies the cross-engine-stable dangerous
     // IO/exec builtins on EVERY datasource state — governed or
     // not — with the SAME tag the manifests assign, so removing the hardcode leaves none of them ungated.

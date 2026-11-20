@@ -130,7 +130,7 @@ class ResultCapsE2eDbTest {
         fx.policyStore.createAssignment(RoleAssignmentInput(admin, adminRoleId))
         fx.policyStore.createAssignment(RoleAssignmentInput(approver, adminRoleId))
         // The shipped production presets ship disabled, so the exporter gets the fixture's own read grants.
-        val usersTable = "${fx.datasource.name}/${fx.datasource.engine.catalogName(fx.datasource.dbName)}/$schema/users"
+        val usersTable = "${fx.datasource.name}/${fx.datasource.effectiveCatalog}/$schema/users"
         policy(
             "e2e-exporter-reads",
             """permit(

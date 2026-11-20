@@ -7,20 +7,20 @@ import (
 
 	"github.com/ridi-oss/proxy-monster/goproxy/internal/dbtest"
 	pb "github.com/ridi-oss/proxy-monster/goproxy/internal/pb"
-	"github.com/ridi-oss/proxy-monster/goproxy/spi"
+	"github.com/ridi-oss/proxy-monster/goproxy/sqldb"
 	"github.com/ridi-oss/proxy-monster/goproxy/targettls"
 )
 
 func TestIntrospectsTLSOnlyTargets(t *testing.T) {
 	for name, tc := range map[string]struct {
 		db  dbtest.TargetDb
-		run func(spi.TargetConfig) (*pb.CatalogRequest, error)
+		run func(sqldb.Settings) (*pb.CatalogRequest, error)
 	}{
 		"mysql":    {dbtest.MySQLTLS(t), runMySQL},
 		"postgres": {dbtest.PostgresTLS(t), runPostgres},
 	} {
 		t.Run(name, func(t *testing.T) {
-			config := spi.TargetConfig{Host: tc.db.Host, Port: tc.db.Port, Db: tc.db.DB, User: tc.db.User, Password: tc.db.Password}
+			config := sqldb.Settings{Host: tc.db.Host, Port: tc.db.Port, Db: tc.db.DB, User: tc.db.User, Password: tc.db.Password}
 			if _, err := tc.run(config); err == nil {
 				t.Fatal("plaintext introspection of a TLS-only target succeeded")
 			}

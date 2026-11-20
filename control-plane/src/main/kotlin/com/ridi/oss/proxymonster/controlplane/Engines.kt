@@ -96,7 +96,7 @@ class EngineDefinition internal constructor(val engine: Engine) {
     fun quoteIdentifier(name: String): String = "$identifierQuote${name.replace(identifierQuote, identifierQuote + identifierQuote)}$identifierQuote"
 }
 
-private val engineDefinitions = listOf(Engine.MYSQL, Engine.POSTGRES, Engine.ATHENA).map(::EngineDefinition).associateBy { it.engine }
+private val engineDefinitions = listOf(Engine.MYSQL, Engine.POSTGRES, Engine.ATHENA, Engine.BIGQUERY).map(::EngineDefinition).associateBy { it.engine }
 
 val Engine.definition: EngineDefinition
     get() = checkNotNull(engineDefinitions[this]) { "unregistered engine: $this" }

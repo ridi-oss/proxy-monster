@@ -17,23 +17,17 @@ import com.ridi.oss.proxymonster.controlplane.support.testLoginRoute
 import io.ktor.client.request.delete
 import io.ktor.client.request.get
 import io.ktor.client.request.post
-import io.ktor.client.request.put
-import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
-import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
-import io.ktor.http.contentType
 import io.ktor.server.testing.testApplication
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.long
 import kotlinx.serialization.json.put
 import io.ktor.server.routing.routing
 import org.junit.jupiter.api.AfterAll
@@ -100,74 +94,34 @@ class McpAdminParityToolsDbTest {
     }
 
     @Test
-    fun `datasource create update refresh test and delete through MCP`() = testApplication {
+    fun `datasource refresh test and delete through MCP`() = testApplication {
         val client = cpGo.client()
         val admin = admin()
-        val n = seq.incrementAndGet()
-        val name = "mcp-crud-$n"
+        val name = "mcp-crud-${seq.incrementAndGet()}"
         val token = tokens.token(admin, setOf("mcp:read", "mcp:datasources:write"))
         client.login(admin)
+        val id = core.datasourceStore.registerOnly(name, "mysql").id
 
-        val created = client.mcpCall(token, "create_datasource", buildJsonObject {
-            put("name", name); put("engine", "mysql"); put("host", "db.internal"); put("port", 3306); put("dbName", "app")
-        }).okResult().jsonObject
-        assertEquals("mysql", created.str("engine"))
-        val id = created.getValue("id").jsonPrimitive.long
-        assertEquals("db.internal", core.datasourceStore.get(id)?.host)
-        assertEquals(1L, adminRows(admin, "admin.datasources", "Datasource::\"$name\""))
-
-        val rest = client.post("/api/datasources") { json("""{"name":"mcp-crud-rest-$n","engine":"mysql","host":"db.internal","port":3306,"dbName":"app"}""") }
-        assertEquals(HttpStatusCode.Created, rest.status)
-        val restCreated = parseJson(rest.bodyAsText()).jsonObject
-        assertEquals(restCreated.keys, created.keys)
-
-        val updated = client.mcpCall(token, "update_datasource", buildJsonObject {
-            put("datasource", name); put("newName", "$name-renamed"); put("port", 3307)
-        }).okResult().jsonObject
-        assertEquals("$name-renamed", updated.str("name"))
-        assertEquals(3307, updated.getValue("port").jsonPrimitive.int)
-        assertEquals("db.internal", updated.str("host"), "an omitted field keeps its value")
-        assertEquals("app", updated.str("dbName"))
-        val restUpdated = client.put("/api/datasources/${restCreated.getValue("id").jsonPrimitive.long}") {
-            json("""{"name":"mcp-crud-rest-$n","engine":"mysql","host":"db.internal","port":3307,"dbName":"app"}""")
-        }
-        assertEquals(HttpStatusCode.OK, restUpdated.status)
-        assertEquals(parseJson(restUpdated.bodyAsText()).jsonObject.keys, updated.keys)
-
-        val refreshed = client.mcpCall(token, "refresh_datasource", buildJsonObject { put("datasource", "$name-renamed") }).okResult()
+        val refreshed = client.mcpCall(token, "refresh_datasource", buildJsonObject { put("datasource", name) }).okResult()
         assertEquals(parseJson(client.post("/api/datasources/$id/refresh").bodyAsText()), refreshed)
-        val tested = client.mcpCall(token, "test_datasource", buildJsonObject { put("datasource", "$name-renamed") }).okResult()
+        val tested = client.mcpCall(token, "test_datasource", buildJsonObject { put("datasource", name) }).okResult()
         assertEquals(parseJson(client.post("/api/datasources/$id/test").bodyAsText()), tested)
         assertEquals("false", tested.jsonObject.str("ok"))
 
-        val deleted = client.mcpCall(token, "delete_datasource", buildJsonObject { put("datasource", "$name-renamed") }).okResult()
+        val deleted = client.mcpCall(token, "delete_datasource", buildJsonObject { put("datasource", name) }).okResult()
         assertEquals("true", deleted.jsonObject.str("deleted"))
         assertEquals(null, core.datasourceStore.get(id))
-        assertEquals("common.not_found", client.mcpCall(token, "delete_datasource", buildJsonObject { put("datasource", "$name-renamed") }).errorCode())
+        assertEquals("common.not_found", client.mcpCall(token, "delete_datasource", buildJsonObject { put("datasource", name) }).errorCode())
     }
 
     @Test
-    fun `invalid engine, engine change and in-use delete answer REST's codes`() = testApplication {
+    fun `in-use delete answers REST's code`() = testApplication {
         val client = cpGo.client()
         val admin = admin()
         val n = seq.incrementAndGet()
         val token = tokens.token(admin, setOf("mcp:read", "mcp:datasources:write"))
         client.login(admin)
-
-        val invalid = client.mcpCall(token, "create_datasource", buildJsonObject { put("name", "mcp-bad-$n"); put("engine", "oracle") })
-        assertEquals("datasource.invalid_engine", invalid.errorCode())
-        assertEquals("oracle", invalid.getValue("structuredContent").jsonObject.getValue("params").jsonObject.str("engine"))
-        val restInvalid = client.post("/api/datasources") { json("""{"name":"mcp-bad-rest-$n","engine":"oracle"}""") }
-        assertEquals(HttpStatusCode.BadRequest, restInvalid.status)
-        assertEquals("datasource.invalid_engine", restCode(restInvalid))
-        assertEquals(null, core.datasourceStore.getByName("mcp-bad-$n"))
-
-        val ds = core.datasourceStore.create(DatasourceInput("mcp-immutable-$n", "postgres"))
-        val immutable = client.mcpCall(token, "update_datasource", buildJsonObject { put("datasource", ds.name); put("engine", "mysql") })
-        assertEquals("datasource.engine_immutable", immutable.errorCode())
-        val restImmutable = client.put("/api/datasources/${ds.id}") { json("""{"name":"${ds.name}","engine":"mysql"}""") }
-        assertEquals(HttpStatusCode.Conflict, restImmutable.status)
-        assertEquals("datasource.engine_immutable", restCode(restImmutable))
+        val ds = core.datasourceStore.registerOnly("mcp-in-use-$n", "postgres")
 
         val role = core.policyStore.createRole(RoleInput("mcp-in-use-role-$n"))
         core.accessStore.createRequest("requester-$n@example.com", AccessRequestInput(roleId = role.id, datasourceId = ds.id))
@@ -200,7 +154,7 @@ class McpAdminParityToolsDbTest {
         val token = tokens.token(outsider, setOf("mcp:read", "mcp:identity:write", "mcp:datasources:write"))
         client.login(outsider)
         val group = core.userGroupStore.createGroup(AppGroupInput("mcp-outsider-group-${seq.incrementAndGet()}"))
-        val ds = core.datasourceStore.create(DatasourceInput("mcp-outsider-ds-${seq.incrementAndGet()}", "postgres"))
+        val ds = core.datasourceStore.registerOnly("mcp-outsider-ds-${seq.incrementAndGet()}", "postgres")
 
         for (tool in READS + WRITES.keys) {
             val response = client.mcpRaw(token, tool, argsFor(tool, group.name, ds.name))
@@ -210,8 +164,6 @@ class McpAdminParityToolsDbTest {
         val rest = listOf(
             client.get("/api/groups/${group.id}/members"),
             client.get("/api/groups/${group.id}/roles"),
-            client.post("/api/datasources") { json("""{"name":"mcp-outsider-new"}""") },
-            client.put("/api/datasources/${ds.id}") { json("""{"name":"${ds.name}"}""") },
             client.delete("/api/datasources/${ds.id}"),
             client.post("/api/datasources/${ds.id}/refresh"),
             client.post("/api/datasources/${ds.id}/test"),
@@ -220,14 +172,12 @@ class McpAdminParityToolsDbTest {
             assertEquals(HttpStatusCode.Forbidden, response.status)
             assertEquals("common.forbidden", restCode(response))
         }
-        assertEquals(null, core.datasourceStore.getByName("mcp-outsider-new"))
         assertNotNull(core.datasourceStore.get(ds.id))
     }
 
     private fun argsFor(tool: String, group: String = "g", ds: String = "d"): JsonObject = buildJsonObject {
         when (tool) {
             "list_group_members", "list_group_roles" -> put("groupName", group)
-            "create_datasource" -> put("name", "mcp-outsider-new")
             else -> put("datasource", ds)
         }
     }
@@ -239,28 +189,12 @@ class McpAdminParityToolsDbTest {
         return principal
     }
 
-    private fun adminRows(principal: String, action: String, resource: String): Long = dataSource.connection.use { c ->
-        c.prepareStatement(
-            "SELECT count(*) FROM audit_event WHERE kind='admin' AND channel='mcp' AND principal=? AND action=? AND resource=?",
-        ).use { ps ->
-            ps.setString(1, principal); ps.setString(2, action); ps.setString(3, resource)
-            ps.executeQuery().use { rs -> rs.next(); rs.getLong(1) }
-        }
-    }
-
     private suspend fun restCode(response: HttpResponse): String? =
         parseJson(response.bodyAsText()).jsonObject["code"]?.jsonPrimitive?.content
-
-    private fun io.ktor.client.request.HttpRequestBuilder.json(body: String) {
-        contentType(ContentType.Application.Json)
-        setBody(body)
-    }
 
     private companion object {
         val READS = listOf("list_group_members", "list_group_roles")
         val WRITES = mapOf(
-            "create_datasource" to "mcp:datasources:write",
-            "update_datasource" to "mcp:datasources:write",
             "delete_datasource" to "mcp:datasources:write",
             "refresh_datasource" to "mcp:datasources:write",
             "test_datasource" to "mcp:datasources:write",

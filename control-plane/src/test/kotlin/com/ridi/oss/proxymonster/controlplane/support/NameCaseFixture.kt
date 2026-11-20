@@ -3,7 +3,6 @@ package com.ridi.oss.proxymonster.controlplane.support
 import com.ridi.oss.proxymonster.controlplane.Channel
 import com.ridi.oss.proxymonster.controlplane.ControlPlaneCore
 import com.ridi.oss.proxymonster.controlplane.Datasource
-import com.ridi.oss.proxymonster.controlplane.DatasourceInput
 import com.ridi.oss.proxymonster.controlplane.DecisionContext
 import com.ridi.oss.proxymonster.controlplane.MaskFn
 import com.ridi.oss.proxymonster.controlplane.MaskFnInput
@@ -13,6 +12,7 @@ import com.ridi.oss.proxymonster.controlplane.RoleInput
 import com.ridi.oss.proxymonster.controlplane.authz.CedarPolicyInput
 import com.ridi.oss.proxymonster.controlplane.decideQuery
 import com.ridi.oss.proxymonster.controlplane.effectiveCatalog
+import com.ridi.oss.proxymonster.controlplane.seed
 import com.ridi.oss.proxymonster.grpc.EnfAction
 import io.ktor.client.HttpClient
 import io.ktor.client.request.put
@@ -57,18 +57,18 @@ class NameCaseStack private constructor(val metadata: DataSource, val core: Cont
         val database = server.freshDatabase("pm_names")
         val url = server.jdbcUrlFor(database)
         DriverManager.getConnection(url, server.username(), server.password()).use { c -> c.createStatement().use(setup) }
-        return register("mysql", server.host(), server.port(), database, url, server.username(), server.password())
+        return register("mysql", url, server.username(), server.password())
     }
 
     fun postgres(setup: (Statement) -> Unit): NameCaseTarget {
         val database = SharedPostgres.freshDatabase("pm_names_pg")
         val url = SharedPostgres.jdbcUrlFor(database)
         DriverManager.getConnection(url, SharedPostgres.username(), SharedPostgres.password()).use { c -> c.createStatement().use(setup) }
-        return register("postgres", SharedPostgres.host(), SharedPostgres.port(), database, url, SharedPostgres.username(), SharedPostgres.password())
+        return register("postgres", url, SharedPostgres.username(), SharedPostgres.password())
     }
 
-    private fun register(engine: String, host: String, port: Int, database: String, url: String, user: String, password: String): NameCaseTarget {
-        val created = core.datasourceStore.create(DatasourceInput("names-$engine-${counter.incrementAndGet()}", engine, host, port, database))
+    private fun register(engine: String, url: String, user: String, password: String): NameCaseTarget {
+        val created = core.datasourceStore.seed("names-$engine-${counter.incrementAndGet()}", engine)
         core.datasourceStore.pushTestCatalog(created, url, user, password, canonical = true)
         val ds = checkNotNull(core.datasourceStore.get(created.id))
         policy(

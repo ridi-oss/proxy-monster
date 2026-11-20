@@ -1,7 +1,4 @@
-// Package athena is the AWS Athena provider: the proxy serves the Athena JSON API over HTTPS, asks the
-// control plane what to do with each operation, decides StartQueryExecution SQL through Decide, and masks
-// GetQueryResults pages inline.
-package athena
+package httpdb
 
 import (
 	"bytes"
@@ -16,7 +13,7 @@ type fieldSpan struct {
 	end   int
 }
 
-// Envelope is one AWS JSON object kept as its original bytes. Fields the proxy never touches keep their exact
+// Envelope is one JSON object kept as its original bytes. Fields the proxy never touches keep their exact
 // representation (numbers, ordering, unknown future fields), and only the named field a rewrite replaces
 // changes, so a forwarded body is byte-identical to what the client sent except where a decision applied.
 type Envelope struct {
@@ -32,7 +29,7 @@ func DecodeEnvelope(body []byte) (*Envelope, error) {
 		return nil, err
 	}
 	if token != json.Delim('{') {
-		return nil, errors.New("athena: request must be a JSON object")
+		return nil, errors.New("httpdb: request must be a JSON object")
 	}
 	envelope := &Envelope{body: body, fields: make(map[string]fieldSpan)}
 	for decoder.More() {
@@ -42,7 +39,7 @@ func DecodeEnvelope(body []byte) (*Envelope, error) {
 		}
 		name := token.(string)
 		if _, exists := envelope.fields[name]; exists {
-			return nil, fmt.Errorf("athena: duplicate field %q", name)
+			return nil, fmt.Errorf("httpdb: duplicate field %q", name)
 		}
 		var value json.RawMessage
 		if err := decoder.Decode(&value); err != nil {
@@ -56,7 +53,7 @@ func DecodeEnvelope(body []byte) (*Envelope, error) {
 	}
 	var extra json.RawMessage
 	if err := decoder.Decode(&extra); err != io.EOF {
-		return nil, errors.New("athena: trailing JSON data")
+		return nil, errors.New("httpdb: trailing JSON data")
 	}
 	return envelope, nil
 }
@@ -71,64 +68,21 @@ func (e *Envelope) Field(name string) json.RawMessage {
 	return bytes.Clone(e.body[span.start:span.end])
 }
 
-func (e *Envelope) QueryString() (string, bool, error) {
-	value := e.Field("QueryString")
-	if value == nil {
-		return "", false, nil
-	}
-	if len(value) == 0 || value[0] != '"' {
-		return "", true, errors.New("athena: QueryString must be a string")
-	}
-	var query string
-	err := json.Unmarshal(value, &query)
-	return query, true, err
-}
-
-func (e *Envelope) ExecutionParameters() ([]string, bool, error) {
-	value := e.Field("ExecutionParameters")
-	if value == nil {
-		return nil, false, nil
-	}
-	if len(value) == 0 || value[0] != '[' {
-		return nil, true, errors.New("athena: ExecutionParameters must be a string array")
-	}
-	var values []json.RawMessage
-	if err := json.Unmarshal(value, &values); err != nil {
-		return nil, true, err
-	}
-	parameters := make([]string, len(values))
-	for i, value := range values {
-		if len(value) == 0 || value[0] != '"' {
-			return nil, true, errors.New("athena: ExecutionParameters must be a string array")
-		}
-		if err := json.Unmarshal(value, &parameters[i]); err != nil {
-			return nil, true, err
-		}
-	}
-	return parameters, true, nil
-}
-
-func (e *Envelope) WithQueryString(query string) (*Envelope, error) {
-	original, present, err := e.QueryString()
-	if err != nil {
-		return nil, err
-	}
+// Replace returns the body with a present field's value replaced, or an error when the field is absent.
+func (e *Envelope) Replace(name string, value any) ([]byte, error) {
+	span, present := e.fields[name]
 	if !present {
-		return nil, errors.New("athena: QueryString is missing")
+		return nil, fmt.Errorf("httpdb: missing field %s", name)
 	}
-	if query == original {
-		return e, nil
-	}
-	replacement, err := json.Marshal(query)
+	replacement, err := json.Marshal(value)
 	if err != nil {
 		return nil, err
 	}
-	span := e.fields["QueryString"]
-	body := make([]byte, 0, len(e.body)-(span.end-span.start)+len(replacement))
-	body = append(body, e.body[:span.start]...)
-	body = append(body, replacement...)
-	body = append(body, e.body[span.end:]...)
-	return DecodeEnvelope(body)
+	result := make([]byte, 0, len(e.body)+len(replacement))
+	result = append(result, e.body[:span.start]...)
+	result = append(result, replacement...)
+	result = append(result, e.body[span.end:]...)
+	return result, nil
 }
 
 // WithField replaces the named field's value, appending the field when absent.
@@ -153,7 +107,7 @@ func (e *Envelope) WithField(name string, value any) (*Envelope, error) {
 	}
 	closing := bytes.LastIndexByte(e.body, '}')
 	if closing < 0 {
-		return nil, errors.New("athena: request is not a JSON object")
+		return nil, errors.New("httpdb: request is not a JSON object")
 	}
 	body := make([]byte, 0, len(e.body)+len(key)+len(replacement)+2)
 	body = append(body, e.body[:closing]...)

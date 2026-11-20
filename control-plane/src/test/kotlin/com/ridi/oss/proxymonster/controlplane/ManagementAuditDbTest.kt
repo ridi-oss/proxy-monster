@@ -54,8 +54,6 @@ class ManagementAuditDbTest {
         }
         identities.createUser(AppUserInput(principal, active = true), actor)
         assertEvent(principal, AuthzAction.ADMIN_IDENTITY, "User::\"$principal\"", "create user '$principal'")
-        val datasource = datasources.createDatasource(DatasourceInput("audit-ds-${System.nanoTime()}", "postgres"), actor)
-        assertEvent(principal, AuthzAction.ADMIN_DATASOURCES, "Datasource::\"${datasource.name}\"", "create datasource '${datasource.name}'")
         verifyAuditChain(dataSource)
     }
 
@@ -63,7 +61,7 @@ class ManagementAuditDbTest {
     fun `batch classification writes one row naming resolved columns in canonical order`() {
         val principal = "management-batch-${System.nanoTime()}@example.com"
         val actor = AuditActor(principal, channel = AuditSource.CONSOLE)
-        val ds = datasources.createDatasource(DatasourceInput("audit-batch-${System.nanoTime()}", "postgres"), actor)
+        val ds = core.datasourceStore.registerOnly("audit-batch-${System.nanoTime()}", "postgres")
         defaultSchemaPublic(ds.id)
         dataSource.inTx { c ->
             datasources.setColumnClassifications(
@@ -195,35 +193,28 @@ class ManagementAuditDbTest {
     }
 
     @Test
-    fun `datasource CRUD and single-column tagging record the resolved column path`() {
+    fun `datasource delete and single-column tagging record the resolved column path`() {
         val principal = "management-ds-${System.nanoTime()}@example.com"
         val actor = AuditActor(principal, channel = AuditSource.CONSOLE)
-        val created = datasources.createDatasource(DatasourceInput("audit-crud-${System.nanoTime()}", "postgres"), actor)
-        defaultSchemaPublic(created.id)
-        val renamed = assertNotNull(
-            datasources.updateDatasource(created.id, DatasourceInput("${created.name}-v2", "postgres"), actor),
-        )
-        assertEvent(
-            principal, AuthzAction.ADMIN_DATASOURCES, """Datasource::"${renamed.name}"""",
-            "update datasource '${created.name}' -> '${renamed.name}'",
-        )
+        val ds = core.datasourceStore.registerOnly("audit-crud-${System.nanoTime()}", "postgres")
+        defaultSchemaPublic(ds.id)
 
         // Schema omitted on the wire: both the descriptor and the summary must carry the RESOLVED schema,
         // since that is the column the mask decision reads.
-        datasources.setColumnClassification(renamed.id, null, "users", "ssn", listOf("pii"), null, actor, "app")
+        datasources.setColumnClassification(ds.id, null, "users", "ssn", listOf("pii"), null, actor, "app")
         assertEvent(
-            principal, AuthzAction.ADMIN_DATASOURCES, """Datasource::"${renamed.name}" col public.users.ssn""",
-            "tag ${renamed.name}.public.users.ssn [pii]",
+            principal, AuthzAction.ADMIN_DATASOURCES, """Datasource::"${ds.name}" col public.users.ssn""",
+            "tag ${ds.name}.public.users.ssn [pii]",
         )
-        assertEquals(true, datasources.clearColumnClassification(renamed.id, null, "users", "ssn", actor, "app").deleted)
+        assertEquals(true, datasources.clearColumnClassification(ds.id, null, "users", "ssn", actor, "app").deleted)
         assertEvent(
-            principal, AuthzAction.ADMIN_DATASOURCES, """Datasource::"${renamed.name}" col public.users.ssn""",
-            "clear tags on ${renamed.name}.public.users.ssn",
+            principal, AuthzAction.ADMIN_DATASOURCES, """Datasource::"${ds.name}" col public.users.ssn""",
+            "clear tags on ${ds.name}.public.users.ssn",
         )
 
-        assertEquals(true, datasources.deleteDatasource(renamed.id, actor).deleted)
-        assertEvent(principal, AuthzAction.ADMIN_DATASOURCES, """Datasource::"${renamed.name}"""", "delete datasource '${renamed.name}'")
-        assertEquals(false, datasources.deleteDatasource(renamed.id, actor).deleted)
+        assertEquals(true, datasources.deleteDatasource(ds.id, actor).deleted)
+        assertEvent(principal, AuthzAction.ADMIN_DATASOURCES, """Datasource::"${ds.name}"""", "delete datasource '${ds.name}'")
+        assertEquals(false, datasources.deleteDatasource(ds.id, actor).deleted)
         assertEquals(1, count("SELECT count(*) FROM audit_event WHERE principal=? AND statement LIKE 'delete datasource %'", principal))
         verifyAuditChain(dataSource)
     }
@@ -286,7 +277,7 @@ class ManagementAuditDbTest {
     @Test
     fun `quoted names and the default schema keep the target's spelling through batch and clear`() {
         val actor = AuditActor("management-quoted-${System.nanoTime()}@example.com", channel = AuditSource.CONSOLE)
-        val ds = datasources.createDatasource(DatasourceInput("quoted-${System.nanoTime()}", "postgres"), actor)
+        val ds = core.datasourceStore.registerOnly("quoted-${System.nanoTime()}", "postgres")
         dataSource.connection.use { c ->
             c.prepareStatement("UPDATE datasource SET current_catalog_name='app', default_schemas='[\"App\"]'::jsonb WHERE id=?").use { ps ->
                 ps.setLong(1, ds.id); ps.executeUpdate()

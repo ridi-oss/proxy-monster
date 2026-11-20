@@ -11,6 +11,7 @@ import com.ridi.oss.proxymonster.controlplane.catalogName
 import com.ridi.oss.proxymonster.controlplane.columnRef
 import com.ridi.oss.proxymonster.controlplane.decideConnection
 import com.ridi.oss.proxymonster.controlplane.decideQuery
+import com.ridi.oss.proxymonster.controlplane.effectiveCatalog
 import com.ridi.oss.proxymonster.controlplane.functionCatalog
 import com.ridi.oss.proxymonster.controlplane.sqlTypeFor
 import com.ridi.oss.proxymonster.controlplane.support.CpGoStack
@@ -93,7 +94,7 @@ abstract class WireTaskCompletionCpGoContract {
     private fun preChangeWireDecision(sql: String): WireDecision {
         val connection = fixture.core.connectionCatalog.find(lastOpened.connectionId)
             ?: fail("connection disappeared before baseline decision")
-        val catalogName = fixture.datasource.engine.catalogName(fixture.datasource.dbName)
+        val catalogName = fixture.datasource.effectiveCatalog
         val classifications = fixture.core.datasourceStore.classificationsFor(fixture.datasource.id)
         val catalog = fixture.core.connectionCatalog.structuralRows(connection).map { row ->
             CatalogColumn(

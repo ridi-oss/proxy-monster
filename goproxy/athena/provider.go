@@ -1,3 +1,6 @@
+// Package athena is the AWS Athena provider: the proxy serves the Athena JSON API over HTTPS, asks the
+// control plane what to do with each operation, decides StartQueryExecution SQL through Decide, and masks
+// GetQueryResults pages inline.
 package athena
 
 import (
@@ -5,7 +8,6 @@ import (
 	"crypto/tls"
 	"errors"
 	"net/http"
-	"os"
 	"time"
 
 	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
@@ -13,15 +15,19 @@ import (
 	"github.com/ridi-oss/proxy-monster/goproxy/spi"
 )
 
-// Provider registers the Athena engine under PM_ENGINE=athena. OpenTarget reads the target scope from the
-// environment (PM_TARGET_DB is the default database) and pins the AWS identity; the Db then serves the
-// Athena JSON API to clients and editor sessions.
-type Provider struct{}
+// Provider registers the Athena engine under PM_ENGINE=athena. OpenTarget scopes the target to Flags
+// (PM_TARGET_DB is the default database) and pins the AWS identity; the target then serves the Athena JSON
+// API to clients and editor sessions.
+type Provider struct {
+	Flags Flags
+	// AdvertiseAddr is the host:port clients reach this proxy's HTTPS endpoint at.
+	AdvertiseAddr string
+}
 
 func (Provider) Engine() *engines.Engine { return engines.Athena }
 
-func (Provider) OpenTarget(config spi.TargetConfig) (spi.Target, error) {
-	cfg, err := configure(os.LookupEnv, config)
+func (p Provider) OpenTarget() (spi.Target, error) {
+	cfg, err := newSettings(p.Flags, p.AdvertiseAddr)
 	if err != nil {
 		return nil, err
 	}
@@ -44,7 +50,7 @@ func (Provider) OpenTarget(config spi.TargetConfig) (spi.Target, error) {
 }
 
 func (t *target) NewWireServer(listen spi.Listen, client spi.ControlPlane, tlsProvider func() (*tls.Config, error)) spi.WireServer {
-	return &nativeServer{target: t, listen: listen, client: client, tlsProvider: tlsProvider}
+	return newServer(t, listen, client, tlsProvider)
 }
 
 var _ spi.Provider = Provider{}

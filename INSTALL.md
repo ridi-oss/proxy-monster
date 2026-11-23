@@ -330,6 +330,10 @@ connects to the chosen proxy's PROXY protocol port, and from then on copies
 bytes both ways. The client therefore verifies the datasource proxy's own
 certificate, exactly as on a direct connection.
 
+The client must send SNI. `pmon` does. The `mysql` CLI does only from 8.1, with
+`--tls-sni-servername=<host>`; the 8.0 CLI sends none and is refused with
+`unrecognized_name`.
+
 `pm-edge` reads only these variables; it holds no control-plane connection and
 no datasource settings.
 

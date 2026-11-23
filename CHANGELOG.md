@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.1.47](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.46...server-v0.1.47) (2026-11-23)
+
+
+### Features
+
+* **goproxy:** add edge mode to route datasources by TLS SNI ([#649](https://github.com/ridi-oss/proxy-monster/issues/649)) ([bbdd9ff](https://github.com/ridi-oss/proxy-monster/commit/bbdd9ff4e4de3eca84a569ec7533a2198bf13cab))
+
+
+### Bug Fixes
+
+* **analyzer:** classify SET autocommit as transaction control ([832a189](https://github.com/ridi-oss/proxy-monster/commit/832a189c5d6ef9b7d359145cdf26f54f1e814a02))
+* **analyzer:** match only the session autocommit variable ([3c6a7b7](https://github.com/ridi-oss/proxy-monster/commit/3c6a7b7e23fd820be788dd909f9a00e72e6bc977))
+* **analyzer:** match only the session sql_log_bin variable ([2deeb62](https://github.com/ridi-oss/proxy-monster/commit/2deeb622ba485faa7a374f1ee5d68d51297e4251))
+* **auditmon:** ask the signer again on every full verify ([0c06dd4](https://github.com/ridi-oss/proxy-monster/commit/0c06dd4442f8a2d63bdde87d638a21b6e44b2477))
+* **auditmon:** read and verify each anchor once, not on every poll ([e150884](https://github.com/ridi-oss/proxy-monster/commit/e150884bbd0ec15d9b6fbc679bd8fd549c312cc4))
+* **web:** keep a dialog and its actions inside the viewport ([625f11d](https://github.com/ridi-oss/proxy-monster/commit/625f11db442883a059cac5476731936f3ca3c077))
+
+
+### Refactoring
+
+* **auditmon:** fetch objects outside the reader lock and keep partial reads ([a4cebe7](https://github.com/ridi-oss/proxy-monster/commit/a4cebe70a7d8027082681be0d2bf392285c1120d))
+
+
+### Documentation
+
+* name set_transaction for the SET autocommit drivers send ([f5128fc](https://github.com/ridi-oss/proxy-monster/commit/f5128fcb7fb6381216feb3963189c682f6f9c8c8))
+* note that an admin SET item outranks autocommit ([a5ea40b](https://github.com/ridi-oss/proxy-monster/commit/a5ea40bc2d810e22191cc418861246cb337635ef))
+* state that a workflow denies SET autocommit ([19527f8](https://github.com/ridi-oss/proxy-monster/commit/19527f8678da575695326450cacdb967bd7bb5a1))
+
 ## [0.1.46](https://github.com/ridi-oss/proxy-monster/compare/server-v0.1.45...server-v0.1.46) (2026-11-19)
 
 

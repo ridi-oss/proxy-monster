@@ -35,6 +35,15 @@ GOOGLE_TLS="${SMOKE_GOOGLE_PORT:-17042}"
 GOOGLE_TOKEN="${SMOKE_GOOGLE_TOKEN_PORT:-17043}"
 GOOGLE_STORAGE="${SMOKE_GOOGLE_STORAGE_PORT:-17044}"
 WEB="${SMOKE_WEB_PORT:-17004}"
+EDGE_MYSQL="${SMOKE_EDGE_MYSQL_PORT:-17050}"
+EDGE_PG="${SMOKE_EDGE_PG_PORT:-17051}"
+EDGE_HTTPS="${SMOKE_EDGE_HTTPS_PORT:-17052}"
+EDGE_HEALTH="${SMOKE_EDGE_HEALTH_PORT:-17053}"
+PROXY_EDGE_MYSQL="${SMOKE_PROXY_EDGE_MYSQL_PORT:-17054}"
+PROXY_EDGE_PG="${SMOKE_PROXY_EDGE_PG_PORT:-17055}"
+PP_EDGE_MYSQL="${SMOKE_PP_EDGE_MYSQL_PORT:-17056}"
+PP_EDGE_PG="${SMOKE_PP_EDGE_PG_PORT:-17057}"
+PP_BIGQUERY="${SMOKE_PP_BIGQUERY_PORT:-17058}"
 
 KEEP=0; BUILD=1; ONLY=""; ENGINE=""
 while [ $# -gt 0 ]; do
@@ -48,7 +57,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-mkdir -p "$SMOKE_DIR/logs" "$SMOKE_DIR/bin" "$SMOKE_DIR/pmon" "$SMOKE_DIR/athena" "$SMOKE_DIR/github" "$SMOKE_DIR/bigquery"
+mkdir -p "$SMOKE_DIR/logs" "$SMOKE_DIR/bin" "$SMOKE_DIR/pmon" "$SMOKE_DIR/athena" "$SMOKE_DIR/github" "$SMOKE_DIR/bigquery" "$SMOKE_DIR/edge"
 chmod 700 "$SMOKE_DIR/pmon" "$SMOKE_DIR/athena" "$SMOKE_DIR/github" "$SMOKE_DIR/bigquery"
 echo "smoke: logs in $SMOKE_DIR/logs"
 
@@ -76,12 +85,12 @@ compose_pid=$!
 pids+=("$compose_pid")
 
 if [ "$BUILD" = 1 ]; then
-  echo "smoke: building control plane, cp-go, goproxy, pmon, pm-ci"
+  echo "smoke: building control plane, cp-go, goproxy, pm-edge, pmon, pm-ci"
   builds=()
   (cd "$ROOT" && ./gradlew --no-daemon -q :control-plane:installDist) > "$SMOKE_DIR/logs/build-cp.log" 2>&1 &
   builds+=($!)
   pids+=($!)
-  for target in cpgo:cp-go:./cmd/cp-go goproxy:goproxy:./cmd/goproxy goproxy:bqsmoke:./internal/bqsmoke pmon:pmon:. sql-action:pm-ci:.; do
+  for target in cpgo:cp-go:./cmd/cp-go goproxy:goproxy:./cmd/goproxy goproxy:pm-edge:./cmd/pm-edge goproxy:bqsmoke:./internal/bqsmoke goproxy:edgesmoke:./internal/edgesmoke pmon:pmon:. sql-action:pm-ci:.; do
     IFS=: read -r dir bin pkg <<< "$target"
     (cd "$ROOT/$dir" && go build -o "$SMOKE_DIR/bin/$bin" "$pkg") > "$SMOKE_DIR/logs/build-$bin.log" 2>&1 &
     builds+=($!)
@@ -174,7 +183,7 @@ bigquery_proxy() {
   openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 2 -subj "/CN=smoke-google" \
     -addext "subjectAltName=IP:127.0.0.1,DNS:localhost" -keyout "$BQ/google-key.pem" -out "$BQ/google-cert.pem" 2>/dev/null
   openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 2 -subj "/CN=smoke-bigquery" \
-    -addext "subjectAltName=IP:127.0.0.1,DNS:localhost" -keyout "$BQ/wire-key.pem" -out "$BQ/wire-cert.pem" 2>/dev/null
+    -addext "subjectAltName=IP:127.0.0.1,DNS:localhost,DNS:bigquery.edge.test" -keyout "$BQ/wire-key.pem" -out "$BQ/wire-cert.pem" 2>/dev/null
   openssl genrsa -out "$BQ/sa-key.pem" 2048 2>/dev/null
   python3 - "$BQ" "$GOOGLE_TOKEN" <<'PY'
 import json, os, sys
@@ -204,21 +213,53 @@ PY
     PM_CONTROL_PLANE_GRPC="127.0.0.1:$CP_GRPC" PM_SECRET_TOKEN="$SECRET" \
     PM_ADVERTISE_ADDR="127.0.0.1:$PROXY_BIGQUERY" \
     PM_TLS_CERT="$BQ/wire-cert.pem" PM_TLS_KEY="$BQ/wire-key.pem" \
+    PM_PROXY_PROTOCOL_PORT="$PP_BIGQUERY" PM_TRUSTED_PROXIES=127.0.0.1/32 \
     "$SMOKE_DIR/bin/goproxy" > "$SMOKE_DIR/logs/proxy-bigquery.log" 2>&1 &
   pids+=($!)
 }
-echo "smoke: starting proxies on :$PROXY_MYSQL (mysql), :$PROXY_MYSQL_LCTN1 (mysql-lctn1), :$PROXY_PG (postgres), :$PROXY_ATHENA (athena), :$PROXY_BIGQUERY (bigquery)"
+EDGE="$SMOKE_DIR/edge"
+rm -f "$EDGE"/*
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 2 -subj "/CN=smoke-edge" \
+  -addext "subjectAltName=IP:127.0.0.1,DNS:localhost,DNS:mysql.edge.test,DNS:postgres.edge.test" \
+  -keyout "$EDGE/wire-key.pem" -out "$EDGE/wire-cert.pem" 2>/dev/null
+edge_proxy() {
+  local engine=$1 port=$2 pp_port=$3 target_port=$4
+  env PM_ENGINE="$engine" PM_DATASOURCE_NAME="smoke-edge-$engine" PM_DATASOURCE_TAGS=system:production \
+    PM_PROXY_PORT="$port" PM_TARGET_HOST=127.0.0.1 PM_TARGET_PORT="$target_port" \
+    PM_TARGET_DB=acme PM_TARGET_USER=acme PM_TARGET_PASSWORD=acme \
+    PM_CONTROL_PLANE_GRPC="127.0.0.1:$CP_GRPC" PM_SECRET_TOKEN="$SECRET" \
+    PM_ADVERTISE_ADDR="127.0.0.1:$port" \
+    PM_TLS_CERT="$EDGE/wire-cert.pem" PM_TLS_KEY="$EDGE/wire-key.pem" \
+    PM_PROXY_PROTOCOL_PORT="$pp_port" PM_TRUSTED_PROXIES=127.0.0.1/32 \
+    "$SMOKE_DIR/bin/goproxy" > "$SMOKE_DIR/logs/proxy-edge-$engine.log" 2>&1 &
+  pids+=($!)
+}
+echo "smoke: starting proxies on :$PROXY_MYSQL (mysql), :$PROXY_MYSQL_LCTN1 (mysql-lctn1), :$PROXY_PG (postgres), :$PROXY_ATHENA (athena), :$PROXY_BIGQUERY (bigquery), :$PROXY_EDGE_MYSQL (edge-mysql), :$PROXY_EDGE_PG (edge-postgres)"
 proxy mysql smoke-mysql "$PROXY_MYSQL" "$SMOKE_MYSQL_PORT"
 proxy mysql smoke-mysql-lctn1 "$PROXY_MYSQL_LCTN1" "$SMOKE_MYSQL_LCTN1_PORT" mysql-lctn1
 proxy postgres smoke-postgres "$PROXY_PG" "$SMOKE_PG_PORT"
 athena_proxy
 bigquery_proxy
+edge_proxy mysql "$PROXY_EDGE_MYSQL" "$PP_EDGE_MYSQL" "$SMOKE_MYSQL_PORT"
+edge_proxy postgres "$PROXY_EDGE_PG" "$PP_EDGE_PG" "$SMOKE_PG_PORT"
 for _ in $(seq 1 60); do
-  n=$(grep -l "datasource registered + catalog pushed" "$SMOKE_DIR"/logs/proxy-{mysql,mysql-lctn1,postgres,athena,bigquery}.log 2>/dev/null | wc -l | tr -d ' ' || true)
-  [ "$n" = 5 ] && break
+  n=$(grep -l "datasource registered + catalog pushed" "$SMOKE_DIR"/logs/proxy-{mysql,mysql-lctn1,postgres,athena,bigquery,edge-mysql,edge-postgres}.log 2>/dev/null | wc -l | tr -d ' ' || true)
+  [ "$n" = 7 ] && break
   sleep 1
 done
-[ "$n" = 5 ] || { echo "smoke: a proxy did not register; see $SMOKE_DIR/logs/proxy-*.log" >&2; exit 1; }
+[ "$n" = 7 ] || { echo "smoke: a proxy did not register; see $SMOKE_DIR/logs/proxy-*.log" >&2; exit 1; }
+
+echo "smoke: starting pm-edge on :$EDGE_MYSQL (mysql), :$EDGE_PG (postgres), :$EDGE_HTTPS (https)"
+env PM_EDGE_LISTEN="mysql:$EDGE_MYSQL,postgres:$EDGE_PG,https:$EDGE_HTTPS" \
+  PM_WIRE_ROUTES="mysql:mysql.edge.test=127.0.0.1:$PP_EDGE_MYSQL,postgres:postgres.edge.test=127.0.0.1:$PP_EDGE_PG,https:bigquery.edge.test=127.0.0.1:$PP_BIGQUERY" \
+  PM_TRUSTED_PROXIES=127.0.0.1/32 PM_EDGE_HEALTH_PORT="$EDGE_HEALTH" \
+  "$SMOKE_DIR/bin/pm-edge" > "$SMOKE_DIR/logs/edge.log" 2>&1 &
+pids+=($!)
+for _ in $(seq 1 30); do
+  (exec 3<>"/dev/tcp/127.0.0.1/$EDGE_HEALTH") 2>/dev/null && break
+  sleep 1
+done
+(exec 3<>"/dev/tcp/127.0.0.1/$EDGE_HEALTH") 2>/dev/null || { echo "smoke: pm-edge did not come up; see $SMOKE_DIR/logs/edge.log" >&2; exit 1; }
 
 for _ in $(seq 1 90); do
   curl -sf -m 3 -o /dev/null "http://127.0.0.1:$WEB/login" 2>/dev/null && break
@@ -234,6 +275,7 @@ fi
 
 args=(--cp "http://127.0.0.1:$CP_HTTP" --web "http://127.0.0.1:$WEB" --root "$ROOT" --cp-db "postgresql://proxymonster:proxymonster@127.0.0.1:$SMOKE_CP_DB_PORT/proxymonster" --pmon "$SMOKE_DIR/bin/pmon" --pmon-dir "$SMOKE_DIR/pmon" --pmon-port-base "$PMON_BASE" --logs "$SMOKE_DIR/logs")
 args+=(--github "$GITHUB_TLS,$GITHUB_HTTP,$GH/tls-cert.pem,$GH/tls-key.pem,$GH/oidc-key.pem,1" --pm-ci "$SMOKE_DIR/bin/pm-ci" --bqsmoke "$SMOKE_DIR/bin/bqsmoke")
+args+=(--edge "$EDGE_MYSQL,$EDGE_PG,$EDGE_HTTPS,$EDGE/wire-cert.pem,$SMOKE_DIR/bigquery/wire-cert.pem,$SMOKE_DIR/bin/edgesmoke")
 args+=(--datasource "mysql:smoke-mysql:$PROXY_MYSQL" --datasource "mysql:smoke-mysql-lctn1:$PROXY_MYSQL_LCTN1:mysql-lctn1" --datasource "postgres:smoke-postgres:$PROXY_PG" --datasource "athena:smoke-athena:$PROXY_ATHENA" --datasource "bigquery:smoke-bigquery:$PROXY_BIGQUERY")
 [ -n "$ONLY" ] && args+=(--only "$ONLY")
 [ -n "$ENGINE" ] && args+=(--engine "$ENGINE")

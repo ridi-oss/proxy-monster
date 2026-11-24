@@ -134,4 +134,7 @@ interface SourceAdapter {
         role: MappingRole,
         commitEmails: List<String> = emptyList(),
     ): String?
+
+    /** [user]'s email from the org's SSO identity or their verified emails, for naming someone who maps to no principal. */
+    suspend fun emailOf(org: String, user: SourceUser): String?
 }

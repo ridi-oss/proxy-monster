@@ -169,6 +169,28 @@ class GitHubAdapter(
         return null
     }
 
+    override suspend fun emailOf(org: String, user: SourceUser): String? {
+        val asked = identityRequest {
+            this.org = org
+            this.login = user.login
+        }
+        for (resolver in config.identity) {
+            val email = when (resolver) {
+                GitHubIdentityResolver.EXTERNAL_IDENTITY -> call { stub.externalIdentity(asked) }.let { out ->
+                    note(if (out.hasRateLimit()) out.rateLimit else null)
+                    out.nameId.takeIf { out.hasNameId() && '@' in it }
+                }
+                GitHubIdentityResolver.VERIFIED_EMAIL -> call { stub.verifiedEmails(asked) }.let { out ->
+                    note(if (out.hasRateLimit()) out.rateLimit else null)
+                    out.emailsList.map { it.trim() }.filter { it.isNotEmpty() }.distinct().singleOrNull()
+                }
+                GitHubIdentityResolver.COMMIT_EMAIL -> null
+            }
+            if (email != null) return email
+        }
+        return null
+    }
+
     private fun uniquePrincipalByEmail(emails: List<String>): String? =
         emails.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
             .mapNotNull { directory.activePrincipalByEmail(it) }

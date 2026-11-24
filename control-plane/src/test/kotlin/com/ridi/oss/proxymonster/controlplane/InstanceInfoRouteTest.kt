@@ -17,8 +17,13 @@ import kotlin.test.assertEquals
 
 class InstanceInfoRouteTest {
     @Test
-    fun `names the instance and its version without a session`() = testApplication {
-        val config = Config.fromEnv { mapOf("PM_MCP_RESOURCE" to "https://hr-pmon.example.com/mcp")[it] }
+    fun `names and describes the instance without a session`() = testApplication {
+        val config = Config.fromEnv {
+            mapOf(
+                "PM_MCP_RESOURCE" to "https://hr-pmon.example.com/mcp",
+                "PM_INSTANCE_DESCRIPTION" to "HR databases",
+            )[it]
+        }
         application {
             install(ContentNegotiation) { json() }
             routing { instanceInfoRoute(config) }
@@ -32,6 +37,7 @@ class InstanceInfoRouteTest {
                     "version" to JsonPrimitive(SERVER_VERSION),
                     "mcpUrl" to JsonPrimitive("https://hr-pmon.example.com/mcp"),
                     "installName" to JsonPrimitive("pmon-hr-pmon"),
+                    "description" to JsonPrimitive("HR databases"),
                 ),
             ),
             Json.parseToJsonElement(response.bodyAsText()),

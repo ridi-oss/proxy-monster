@@ -286,19 +286,20 @@ func (d *Daemon) Status() control.Status {
 	}
 	for name, srv := range d.cfg.Servers {
 		out.Servers = append(out.Servers, control.ServerInfo{
-			Name:               name,
-			Default:            name == d.cfg.Default,
-			ServerVersion:      d.instances[name].Version,
-			InstanceName:       d.instances[name].Name,
-			ControlPlane:       srv.ControlPlane,
-			Principal:          srv.Principal,
-			LoggedIn:           srv.LoggedIn(),
-			ExpiresAt:          srv.ExpiresAt,
-			SessionExpiresAt:   srv.SessionExpiresAt,
-			Scopes:             slices.Clone(srv.Scopes),
-			ElevatedUntil:      srv.ElevatedUntil,
-			ReauthRequired:     d.reauthRequired[name],
-			LastDiscoveryError: d.lastDiscoveryErr[name],
+			Name:                name,
+			Default:             name == d.cfg.Default,
+			ServerVersion:       d.instances[name].Version,
+			InstanceName:        d.instances[name].Name,
+			InstanceDescription: d.instances[name].Description,
+			ControlPlane:        srv.ControlPlane,
+			Principal:           srv.Principal,
+			LoggedIn:            srv.LoggedIn(),
+			ExpiresAt:           srv.ExpiresAt,
+			SessionExpiresAt:    srv.SessionExpiresAt,
+			Scopes:              slices.Clone(srv.Scopes),
+			ElevatedUntil:       srv.ElevatedUntil,
+			ReauthRequired:      d.reauthRequired[name],
+			LastDiscoveryError:  d.lastDiscoveryErr[name],
 		})
 	}
 	sort.Slice(out.Servers, func(i, j int) bool { return out.Servers[i].Name < out.Servers[j].Name })

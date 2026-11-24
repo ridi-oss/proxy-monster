@@ -174,13 +174,13 @@ class NotificationRendererTest {
     @Test
     fun `the statement follows the sentence as its own code block`() {
         val ko = renderer.summary(message(NotificationEvent.TASK_REQUESTED, RenderedStatement("UPDATE t SET a = 1", true)).copy(reason = null), "ko")
-        assertEquals("*alice@example.com* 님이 *acme-mysql*에서 *pii-reader* 역할로 다음 쿼리를 실행하고자 합니다.\n```\nUPDATE t SET a = 1\n```", ko)
+        assertEquals("*alice@example.com* 님이 *acme-mysql*\u200b에서 *pii-reader* 역할로 다음 쿼리를 실행하고자 합니다.\n```\nUPDATE t SET a = 1\n```", ko)
     }
 
     @Test
     fun `every query message opens with the title and keeps the reason`() {
         val m = message(NotificationEvent.TASK_EXECUTED, RenderedStatement("UPDATE t SET a = 1", true)).copy(title = "Refund 8812", reason = "ticket 8812")
-        assertEquals("*Refund 8812*\n*alice@example.com* 님이 *acme-mysql*에서 *pii-reader* 역할로 요청한 다음 쿼리가 실행되었습니다 (3행).\n> ticket 8812\n```\nUPDATE t SET a = 1\n```", renderer.summary(m, "ko"))
+        assertEquals("*Refund 8812*\n*alice@example.com* 님이 *acme-mysql*\u200b에서 *pii-reader* 역할로 요청한 다음 쿼리가 실행되었습니다 (3행).\n> ticket 8812\n```\nUPDATE t SET a = 1\n```", renderer.summary(m, "ko"))
     }
 
     @Test
